@@ -12,14 +12,15 @@
 
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "bun:test";
 import type { components } from "../../../src/api";
+import { installVariables } from "../../../src/test_helpers/settings_env";
 import { versioningOnForSuite } from "../../harness/versioning";
 import { type ResourcesEnv, startResourcesEnv } from "./resources_harness";
 
 type ModelEntities = components["schemas"]["ModelEntities"];
 
 const ENV_NAME = "versioned-package-resources-env";
-const INLINE = "PUBLISHER_PACKAGE_INLINE_FIELDS";
-const savedInline = process.env[INLINE];
+
+let restoreInline: (() => void) | undefined;
 
 const ROWS = `duckdb.sql("select * from (values (1, 'web'), (2, 'store')) as t(id, channel)")`;
 
@@ -55,8 +56,8 @@ describe("a versioned package's sub-resources", () => {
    }, 180_000);
 
    afterEach(() => {
-      if (savedInline === undefined) delete process.env[INLINE];
-      else process.env[INLINE] = savedInline;
+      restoreInline?.();
+      restoreInline = undefined;
    });
 
    afterAll(() => r.stop());
@@ -107,7 +108,12 @@ describe("a versioned package's sub-resources", () => {
    }, 60_000);
 
    it("with inline fields off, GET /status lists one slim entry per version", async () => {
-      process.env[INLINE] = "off";
+      // Installed over the process's variables, which do not hold the suite's
+      // versioning, so this keeps it on beside inline fields off.
+      restoreInline = installVariables({
+         PUBLISHER_PACKAGE_VERSIONING: "on",
+         PUBLISHER_PACKAGE_INLINE_FIELDS: "off",
+      });
       const entries = await r.statusEntries("shop");
       expect(entries.map((e) => e.versionId).sort()).toEqual([
          "1.0.0",

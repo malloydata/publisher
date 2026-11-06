@@ -10,6 +10,7 @@ import * as fs from "fs";
 import * as os from "os";
 import * as path from "path";
 import { EnvironmentStore } from "../../../src/service/environment_store";
+import { installSettings } from "../../../src/test_helpers/settings_env";
 
 /**
  * With package versioning on, a package in publisher.config.json loads as a
@@ -22,24 +23,15 @@ import { EnvironmentStore } from "../../../src/service/environment_store";
 
 const ENV = "org";
 
-const ENV_VARS = [
-   "PUBLISHER_PACKAGE_VERSIONING",
-   "PUBLISHER_VERSION_PROMOTION",
-   "PUBLISHER_WATCH",
-   "INITIALIZE_STORAGE",
-   "PUBLISHER_CONFIG_PATH",
-   "PUBLISHER_USE_BUNDLED_DEFAULT",
-] as const;
-const savedEnv = new Map<string, string | undefined>();
+/** The variables a case sets; the store starts with them and no others. */
+let env: Record<string, string>;
+let restoreSettings: (() => void) | undefined;
 
 let root: string;
 let store: EnvironmentStore | undefined;
 
 beforeEach(() => {
-   for (const name of ENV_VARS) {
-      savedEnv.set(name, process.env[name]);
-      delete process.env[name];
-   }
+   env = {};
    root = fs.realpathSync(
       fs.mkdtempSync(path.join(os.tmpdir(), "config-versions-")),
    );
@@ -48,14 +40,18 @@ beforeEach(() => {
 
 afterEach(async () => {
    await closeStore();
-   for (const [name, value] of savedEnv) {
-      if (value === undefined) delete process.env[name];
-      else process.env[name] = value;
-   }
+   restoreSettings?.();
+   restoreSettings = undefined;
    fs.rmSync(root, { recursive: true, force: true });
 });
 
+/** Start a store as a boot does: settings read from `env` and the config, then the store. */
 async function openStore(): Promise<EnvironmentStore> {
+   restoreSettings?.();
+   restoreSettings = installSettings({
+      env,
+      cwd: path.join(root, "server"),
+   }).restore;
    store = new EnvironmentStore(path.join(root, "server"));
    await store.finishedInitialization;
    return store;
@@ -112,7 +108,7 @@ async function versionsOf(s: EnvironmentStore, packageName: string) {
 
 describe("configured packages with package versioning on", () => {
    it("publishes each as the version its publisher.json declares, and restores it on a later boot", async () => {
-      process.env.PUBLISHER_PACKAGE_VERSIONING = "on";
+      env.PUBLISHER_PACKAGE_VERSIONING = "on";
       configure([{ name: "sales", location: source("sales", "1.2.0") }]);
 
       const first = await openStore();
@@ -135,7 +131,7 @@ describe("configured packages with package versioning on", () => {
    });
 
    it("records a package whose publisher.json declares no version as its load error, and loads the others", async () => {
-      process.env.PUBLISHER_PACKAGE_VERSIONING = "on";
+      env.PUBLISHER_PACKAGE_VERSIONING = "on";
       configure([
          { name: "plain", location: source("plain") },
          { name: "sales", location: source("sales", "1.0.0") },
@@ -150,8 +146,8 @@ describe("configured packages with package versioning on", () => {
    });
 
    it("under explicit promotion publishes with no latest, as a publish does", async () => {
-      process.env.PUBLISHER_PACKAGE_VERSIONING = "on";
-      process.env.PUBLISHER_VERSION_PROMOTION = "explicit";
+      env.PUBLISHER_PACKAGE_VERSIONING = "on";
+      env.PUBLISHER_VERSION_PROMOTION = "explicit";
       configure([{ name: "sales", location: source("sales", "1.0.0") }]);
 
       const s = await openStore();
@@ -162,8 +158,8 @@ describe("configured packages with package versioning on", () => {
    });
 
    it("loads a watched environment's packages in place, with no versions", async () => {
-      process.env.PUBLISHER_PACKAGE_VERSIONING = "on";
-      process.env.PUBLISHER_WATCH = ENV;
+      env.PUBLISHER_PACKAGE_VERSIONING = "on";
+      env.PUBLISHER_WATCH = ENV;
       configure([{ name: "sales", location: source("sales", "1.0.0") }]);
 
       const s = await openStore();

@@ -27,6 +27,11 @@ export interface RunContext {
     *  page's Givens section shows the same set, so a gate never asks for a given
     *  that section can't set. */
    givensBySource?: ReadonlyMap<string, GivenInfo[]>;
+   /** Source name → the givens in `givensBySource` the scan can't tie to it
+    *  either way (scanGivensForSource), for a source built on what its file
+    *  doesn't declare: a run's card says it ran with them only where the source
+    *  reads them. */
+   unknownGivensBySource?: ReadonlyMap<string, ReadonlySet<string>>;
    /** Source name → labels of its `#(filter … required)` filters; a run can't
     *  supply them, so it refuses rather than 400. */
    requiredFiltersBySource?: ReadonlyMap<string, string[]>;

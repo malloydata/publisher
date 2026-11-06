@@ -11,6 +11,7 @@ import * as os from "os";
 import * as path from "path";
 import type { Environment } from "../../../src/service/environment";
 import { EnvironmentStore } from "../../../src/service/environment_store";
+import { installSettings } from "../../../src/test_helpers/settings_env";
 import type { VersionService } from "../../../src/service/versions/version_service";
 
 /**
@@ -24,26 +25,12 @@ import type { VersionService } from "../../../src/service/versions/version_servi
 
 const ENV = "org";
 
-const ENV_VARS = [
-   "PUBLISHER_PACKAGE_VERSIONING",
-   "PUBLISHER_VERSION_PROMOTION",
-   "PUBLISHER_WATCH",
-   "INITIALIZE_STORAGE",
-   "PUBLISHER_CONFIG_PATH",
-   "PUBLISHER_USE_BUNDLED_DEFAULT",
-] as const;
-const savedEnv = new Map<string, string | undefined>();
+let restoreSettings: () => void;
 
 let root: string;
 let store: EnvironmentStore | undefined;
 
 beforeEach(() => {
-   for (const name of ENV_VARS) {
-      savedEnv.set(name, process.env[name]);
-      delete process.env[name];
-   }
-   process.env.PUBLISHER_PACKAGE_VERSIONING = "on";
-   process.env.PUBLISHER_VERSION_PROMOTION = "explicit";
    root = fs.realpathSync(
       fs.mkdtempSync(path.join(os.tmpdir(), "status-during-publish-")),
    );
@@ -64,6 +51,14 @@ beforeEach(() => {
          ],
       }),
    );
+   // Versioning on, explicit promotion, and no other variables.
+   restoreSettings = installSettings({
+      env: {
+         PUBLISHER_PACKAGE_VERSIONING: "on",
+         PUBLISHER_VERSION_PROMOTION: "explicit",
+      },
+      cwd: path.join(root, "server"),
+   }).restore;
 });
 
 afterEach(async () => {
@@ -77,10 +72,7 @@ afterEach(async () => {
       await internals.storageManager.close();
       store = undefined;
    }
-   for (const [name, value] of savedEnv) {
-      if (value === undefined) delete process.env[name];
-      else process.env[name] = value;
-   }
+   restoreSettings();
    fs.rmSync(root, { recursive: true, force: true });
 });
 

@@ -38,6 +38,7 @@ import {
 } from "../errors";
 import { logger, traceIdOf } from "../logger";
 import { redactConnectionSecretShapes } from "../pg_helpers";
+import { settings } from "../settings";
 import { readQueryFieldReads } from "./classification";
 
 const MAX_RECORDED_ERROR_CHARS = 2000;
@@ -45,13 +46,9 @@ const MAX_RECORDED_ERROR_CHARS = 2000;
 type ApiSource = components["schemas"]["Source"];
 type ApiGiven = components["schemas"]["Given"];
 
-/** The default request header a caller identity is read from. */
-export const DEFAULT_CALLER_HEADER = "x-publisher-caller";
-
 /** The request header the deployment names for the caller identity, lowercased. */
 export function callerHeaderName(): string {
-   const configured = process.env.PUBLISHER_CALLER_HEADER?.trim();
-   return (configured || DEFAULT_CALLER_HEADER).toLowerCase();
+   return settings.get("callerHeader").toLowerCase();
 }
 
 /** Who the gateway says is asking and the trace the request belongs to. */

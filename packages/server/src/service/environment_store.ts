@@ -24,6 +24,7 @@ import {
    ProcessedEnvironment,
    ProcessedPublisherConfig,
 } from "../config";
+import { settings } from "../settings";
 import {
    API_PREFIX,
    PUBLISHER_CONFIG_NAME,
@@ -373,9 +374,9 @@ export function formatReadinessLine(counts: {
    packages: number;
    loadErrors: number;
 }): string {
-   const host = displayHost(process.env.PUBLISHER_HOST || "0.0.0.0");
-   const port = Number(process.env.PUBLISHER_PORT || 4000);
-   const mcpPort = Number(process.env.MCP_PORT || 4040);
+   const host = displayHost(settings.get("host"));
+   const port = settings.get("port");
+   const mcpPort = settings.get("mcp.port");
    return (
       `PUBLISHER_READY url=http://${host}:${port} ` +
       `mcp=http://${host}:${mcpPort} ` +
@@ -464,14 +465,12 @@ export class EnvironmentStore {
    constructor(serverRootPath: string) {
       this.serverRootPath = serverRootPath;
       this.mcpIncludeHiddenFilesAndSources =
-         isMcpIncludeHiddenFilesAndSources(serverRootPath);
+         isMcpIncludeHiddenFilesAndSources();
       this.gcsClient = new Storage();
 
-      const watchEnvList = (process.env.PUBLISHER_WATCH || "")
-         .split(",")
-         .map((s) => s.trim())
-         .filter((s) => s.length > 0);
-      for (const envName of watchEnvList) this.inPlaceEnvs.add(envName);
+      for (const envName of settings.get("watchEnvironments")) {
+         this.inPlaceEnvs.add(envName);
+      }
 
       const storageConfig: StorageConfig = {
          type: "duckdb",
@@ -691,7 +690,7 @@ export class EnvironmentStore {
                   ),
                {
                   sourceLocation: configured.location,
-                  promotion: getVersionPromotionMode(this.serverRootPath),
+                  promotion: getVersionPromotionMode(),
                   validate: (loaded) => formatPublishRejections(loaded),
                },
             );
@@ -862,22 +861,13 @@ export class EnvironmentStore {
    }
 
    private async initialize() {
-      const reInit = process.env.INITIALIZE_STORAGE === "true";
+      const reInit = settings.get("initializeStorage");
       const initialTime = performance.now();
 
       try {
          await this.storageManager.initialize(reInit);
 
-         // Read both versioning settings and the model page now, so a value
-         // outside the set fails initialization naming the setting, rather
-         // than surfacing at the first publish or /status that reads it.
-         isVersioningEnabled();
-         getVersionPromotionMode(this.serverRootPath);
-         getModelPageMode();
-
-         this.publisherConfigIsFrozen = isPublisherConfigFrozen(
-            this.serverRootPath,
-         );
+         this.publisherConfigIsFrozen = isPublisherConfigFrozen();
 
          const environmentManifest =
             await EnvironmentStore.reloadEnvironmentManifest(
@@ -1610,7 +1600,7 @@ export class EnvironmentStore {
    }
 
    private async cleanupAndCreatePublisherPath() {
-      const reInit = process.env.INITIALIZE_STORAGE === "true";
+      const reInit = settings.get("initializeStorage");
 
       // mkdir rather than stat: Bun on Windows resolves fs.promises.stat to
       // undefined instead of throwing.
@@ -1688,27 +1678,18 @@ export class EnvironmentStore {
          timestamp: Date.now(),
          environments: [],
          initialized: this.isInitialized,
-         frozenConfig: isPublisherConfigFrozen(this.serverRootPath),
+         frozenConfig: isPublisherConfigFrozen(),
          operationalState,
          version: SERVER_VERSION,
       };
       // Whether a publish from a location publishes versions, so an
       // orchestrator mid-rollout can tell. A server from before versions sends
       // no field, which means "off".
-      status.packageVersioning = versioningEnabledForStatus() ? "on" : "off";
-      // A malformed value failed initialization, which this reports.
-      try {
-         status.versionPromotion = getVersionPromotionMode(this.serverRootPath);
-      } catch {
-         // Left absent.
-      }
+      status.packageVersioning = isVersioningEnabled() ? "on" : "off";
+      status.versionPromotion = getVersionPromotionMode();
       // The Console's model page. Absent, as from a server that predates the
       // setting, reads as "explorer".
-      try {
-         status.modelPage = getModelPageMode();
-      } catch {
-         // Left absent.
-      }
+      status.modelPage = getModelPageMode();
 
       // `/status` entries carry each package's serving state; a listing does not.
       const environments = await this.listEnvironments(true, {
@@ -2163,7 +2144,7 @@ export class EnvironmentStore {
                      });
                   }
                }
-               return { frozenConfig: false, environments };
+               return { environments };
             } catch (lsError) {
                // An Error's fields are not enumerable; `{ error }` logs {}.
                logger.error(`Error listing directories in ${serverRootPath}`, {
@@ -2172,7 +2153,7 @@ export class EnvironmentStore {
                         ? lsError.message
                         : String(lsError),
                });
-               return { frozenConfig: false, environments: [] };
+               return { environments: [] };
             }
          }
       }
@@ -2920,18 +2901,5 @@ export class EnvironmentStore {
       }
 
       await fs.promises.rm(packageFullPath, { recursive: true, force: true });
-   }
-}
-
-/**
- * The versioning flag for /status, which must answer even when the flag's
- * value is malformed: that failed initialization, and /status is where the
- * failure is reported.
- */
-function versioningEnabledForStatus(): boolean {
-   try {
-      return isVersioningEnabled();
-   } catch {
-      return false;
    }
 }

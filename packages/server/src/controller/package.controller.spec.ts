@@ -16,21 +16,27 @@ import {
 } from "../errors";
 import { logger } from "../logger";
 import type { EnvironmentStore } from "../service/environment_store";
+import { installSettings } from "../test_helpers/settings_env";
 import { PackageController } from "./package.controller";
 
-const savedVersioning = process.env.PUBLISHER_PACKAGE_VERSIONING;
+let restoreSettings: (() => void) | undefined;
+
+/** Run this test with `PUBLISHER_PACKAGE_VERSIONING` at `value`, or unset. */
+function versioning(value?: string): void {
+   restoreSettings?.();
+   restoreSettings = installSettings({
+      env: value === undefined ? {} : { PUBLISHER_PACKAGE_VERSIONING: value },
+   }).restore;
+}
 
 /** Turn package versioning on for this test, as a versioned publish needs. */
 function versioningOn(): void {
-   process.env.PUBLISHER_PACKAGE_VERSIONING = "on";
+   versioning("on");
 }
 
 afterEach(() => {
-   if (savedVersioning === undefined) {
-      delete process.env.PUBLISHER_PACKAGE_VERSIONING;
-   } else {
-      process.env.PUBLISHER_PACKAGE_VERSIONING = savedVersioning;
-   }
+   restoreSettings?.();
+   restoreSettings = undefined;
 });
 
 // DEPRECATED FEATURE COVERAGE — delete together with `explores` (see RELEASE_NOTES deprecations).
@@ -1192,7 +1198,7 @@ describe("PackageController.addPackage with package versioning off or on", () =>
       // What every publish from a location did before versions, with the
       // install's own arguments. The version service is never asked: off, a
       // publisher.json's version is not read.
-      delete process.env.PUBLISHER_PACKAGE_VERSIONING;
+      versioning();
       const versions = versionsPublishing(installedPackage);
       const installPackage = sinon.stub().resolves(installedPackage);
       const warn = spyOnWarn();
@@ -1222,7 +1228,7 @@ describe("PackageController.addPackage with package versioning off or on", () =>
    });
 
    it("off: warns once per package, not on every republish", async () => {
-      delete process.env.PUBLISHER_PACKAGE_VERSIONING;
+      versioning();
       const controller = controllerWith(
          versionsPublishing(installedPackage),
          sinon.stub().resolves(installedPackage),
@@ -1246,7 +1252,7 @@ describe("PackageController.addPackage with package versioning off or on", () =>
    });
 
    it("off: refuses to replace a package that has published versions, naming the flag", async () => {
-      process.env.PUBLISHER_PACKAGE_VERSIONING = "off";
+      versioning("off");
       const versions = {
          ...versionsPublishing(installedPackage),
          isVersioned: async () => true,

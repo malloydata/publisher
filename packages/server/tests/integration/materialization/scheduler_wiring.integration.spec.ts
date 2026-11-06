@@ -12,6 +12,7 @@ import {
    environmentStore,
    startMaterializationSchedulerFromEnv,
 } from "../../../src/main_server";
+import { withSettings } from "../../../src/test_helpers/settings_env";
 import { RestE2EEnv, startRestE2E } from "../../harness/rest_e2e";
 import { pollFor, waitUntilOk } from "./polling";
 
@@ -26,16 +27,16 @@ const ENABLE = "PUBLISHER_LOCAL_MATERIALIZATION_SCHEDULER";
 const INTERVAL = "PUBLISHER_MATERIALIZATION_SCHEDULER_INTERVAL_MS";
 
 // The other scheduler tests hand-construct MaterializationScheduler and call
-// tick() by hand, bypassing the env-var → getMaterializationSchedulerConfig →
-// construct → start()/unref() → real-timer path an operator actually runs. This
-// exercises that wiring: set the flag + a short interval, start the scheduler
-// through the same seam server.ts uses at boot, and observe a build fire through
-// the real timer (not a hand-driven tick).
+// tick() by hand, bypassing the env-var → settings →
+// getMaterializationSchedulerConfig → construct → start()/unref() → real-timer
+// path an operator actually runs. This exercises that wiring: set the flag + a
+// short interval, start the scheduler through the same seam server.ts uses at
+// boot, and observe a build fire through the real timer (not a hand-driven
+// tick).
 describe("MaterializationScheduler wiring (E2E, real env-var timer)", () => {
    let env: (RestE2EEnv & { stop(): Promise<void> }) | null = null;
    let baseUrl: string;
    let scheduler: MaterializationScheduler | null = null;
-   const prev: Record<string, string | undefined> = {};
 
    beforeAll(async () => {
       env = await startRestE2E();
@@ -77,11 +78,6 @@ describe("MaterializationScheduler wiring (E2E, real env-var timer)", () => {
 
    afterAll(async () => {
       scheduler?.stop();
-      // Restore env so the shared test process isn't left with the flag set.
-      for (const key of [ENABLE, INTERVAL]) {
-         if (prev[key] === undefined) delete process.env[key];
-         else process.env[key] = prev[key];
-      }
       if (baseUrl) {
          try {
             await fetch(`${baseUrl}/api/v0/environments/${PROJECT_NAME}`, {
@@ -98,16 +94,18 @@ describe("MaterializationScheduler wiring (E2E, real env-var timer)", () => {
    it(
       "boots the scheduler from env config and fires a build through the real timer",
       async () => {
-         // Enable via the real env-var path and use the minimum 1s sweep so the
+         // Enable via the real variables and use the minimum 1s sweep so the
          // every-minute cron is picked up promptly once its boundary passes.
-         prev[ENABLE] = process.env[ENABLE];
-         prev[INTERVAL] = process.env[INTERVAL];
-         process.env[ENABLE] = "true";
-         process.env[INTERVAL] = "1000";
-
-         scheduler = startMaterializationSchedulerFromEnv(
-            environmentStore,
-            new MaterializationService(environmentStore),
+         // The scheduler reads its settings when it is started, so they are
+         // installed only for that, and the shared process is not left with
+         // the flag set.
+         scheduler = withSettings(
+            { env: { [ENABLE]: "true", [INTERVAL]: "1000" } },
+            () =>
+               startMaterializationSchedulerFromEnv(
+                  environmentStore,
+                  new MaterializationService(environmentStore),
+               ),
          );
          // The config path must have constructed + started a scheduler (a null
          // here would mean the enable flag wasn't honored).

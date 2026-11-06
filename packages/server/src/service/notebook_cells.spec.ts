@@ -33,7 +33,6 @@ const FIXTURE_DIR = path.resolve(
    __dirname,
    "../../tests/fixtures/notebooks-malloyyo",
 );
-const ORIGINAL_ENV = process.env.PACKAGE_LOAD_WORKERS;
 
 const LAYOUT = "notebooks/layout.malloy";
 const SETTINGS = "notebooks/settings.malloy";
@@ -72,7 +71,6 @@ describe("served linear report cells", () => {
       harness = await startMetricsHarness();
       resetNotebookMetricsForTest();
       resetReportMetricsForTest();
-      process.env.PACKAGE_LOAD_WORKERS = "1";
       pool = new PackageLoadPool(1);
       await __setPackageLoadPoolForTests(pool);
       tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "publisher-nb-cells-"));
@@ -108,8 +106,6 @@ describe("served linear report cells", () => {
 
    afterAll(async () => {
       await __setPackageLoadPoolForTests(null);
-      if (ORIGINAL_ENV === undefined) delete process.env.PACKAGE_LOAD_WORKERS;
-      else process.env.PACKAGE_LOAD_WORKERS = ORIGINAL_ENV;
       fs.rmSync(tempDir, { recursive: true, force: true });
       resetNotebookMetricsForTest();
       resetReportMetricsForTest();

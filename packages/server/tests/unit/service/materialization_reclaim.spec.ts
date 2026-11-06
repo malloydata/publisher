@@ -21,6 +21,7 @@ import type { ResourceRepository } from "../../../src/storage/DatabaseInterface"
 import { initializeSchema } from "../../../src/storage/duckdb/schema";
 import { Environment } from "../../../src/service/environment";
 import { EnvironmentStore } from "../../../src/service/environment_store";
+import { installSettings } from "../../../src/test_helpers/settings_env";
 import { logger } from "../../../src/logger";
 import { MaterializationService } from "../../../src/service/materialization_service";
 import {
@@ -146,19 +147,16 @@ async function tablesIn(environment: Environment): Promise<string[]> {
    );
 }
 
-let setupSqlGate: string | undefined;
+/** The fixtures' connections use setupSQL, which this allows. */
+const ALLOW_SETUP_SQL = { PUBLISHER_ALLOW_DUCKDB_SETUP_SQL: "true" };
+let restoreSettings: () => void;
 
 beforeEach(() => {
-   setupSqlGate = process.env.PUBLISHER_ALLOW_DUCKDB_SETUP_SQL;
-   process.env.PUBLISHER_ALLOW_DUCKDB_SETUP_SQL = "true";
+   restoreSettings = installSettings({ env: ALLOW_SETUP_SQL }).restore;
 });
 
 afterEach(() => {
-   if (setupSqlGate === undefined) {
-      delete process.env.PUBLISHER_ALLOW_DUCKDB_SETUP_SQL;
-   } else {
-      process.env.PUBLISHER_ALLOW_DUCKDB_SETUP_SQL = setupSqlGate;
-   }
+   restoreSettings();
 });
 
 // ---------------------------------------------------------------------------
@@ -956,8 +954,9 @@ describe("the archive hook and the startup sweep, as main_server.ts wires them",
    let root: string;
    let serverRoot: string;
    let sourcesPath: string;
-   let versioningGate: string | undefined;
-   let promotionGate: string | undefined;
+   /** The variables the next server starts with; a case changes them first. */
+   let env: Record<string, string>;
+   const restores: Array<() => void> = [];
    const opened: EnvironmentStore[] = [];
 
    interface Server {
@@ -977,6 +976,7 @@ describe("the archive hook and the startup sweep, as main_server.ts wires them",
     * any reclaim runs. reclaimVersionTables is observed, never replaced.
     */
    async function openServer({ wired = true } = {}): Promise<Server> {
+      restores.push(installSettings({ env, cwd: serverRoot }).restore);
       const store = new EnvironmentStore(serverRoot);
       opened.push(store);
       const materializationService = new MaterializationService(store);
@@ -1103,10 +1103,7 @@ describe("the archive hook and the startup sweep, as main_server.ts wires them",
       )?.status ?? null;
 
    beforeEach(() => {
-      versioningGate = process.env.PUBLISHER_PACKAGE_VERSIONING;
-      promotionGate = process.env.PUBLISHER_VERSION_PROMOTION;
-      process.env.PUBLISHER_PACKAGE_VERSIONING = "on";
-      delete process.env.PUBLISHER_VERSION_PROMOTION;
+      env = { ...ALLOW_SETUP_SQL, PUBLISHER_PACKAGE_VERSIONING: "on" };
       root = fs.realpathSync(
          fs.mkdtempSync(
             path.join(os.tmpdir(), "materialization-reclaim-wired-"),
@@ -1124,14 +1121,8 @@ describe("the archive hook and the startup sweep, as main_server.ts wires them",
          }
          await store.storageManager.close().catch(() => undefined);
       }
+      while (restores.length) restores.pop()!();
       fs.rmSync(root, { recursive: true, force: true });
-      for (const [name, value] of [
-         ["PUBLISHER_PACKAGE_VERSIONING", versioningGate],
-         ["PUBLISHER_VERSION_PROMOTION", promotionGate],
-      ] as const) {
-         if (value === undefined) delete process.env[name];
-         else process.env[name] = value;
-      }
    });
 
    it("archiving a version of an environment created at runtime reclaims its auto-run tables", async () => {
@@ -1319,7 +1310,7 @@ describe("the archive hook and the startup sweep, as main_server.ts wires them",
             it(`${mode}, scope: ${scope}: ${action} ${drops ? "drops that version's own tables" : "drops no table"}`, async () => {
                // A control plane's mode: a publish never moves `latest`.
                if (mode === "orchestrated") {
-                  process.env.PUBLISHER_VERSION_PROMOTION = "explicit";
+                  env.PUBLISHER_VERSION_PROMOTION = "explicit";
                }
                const server = await openServer();
                await server.sweep;
@@ -1413,7 +1404,7 @@ describe("the archive hook and the startup sweep, as main_server.ts wires them",
    }
 
    it("orchestrated, end to end: archive, delete and package delete in turn leave the tables a control plane built holding what it wrote", async () => {
-      process.env.PUBLISHER_VERSION_PROMOTION = "explicit";
+      env.PUBLISHER_VERSION_PROMOTION = "explicit";
       const server = await openServer();
       await server.sweep;
       await server.store.addEnvironment({
@@ -1467,7 +1458,7 @@ describe("the archive hook and the startup sweep, as main_server.ts wires them",
    });
 
    it("an unversioned package's delete still drops nothing and starts no cleanup, as before versions", async () => {
-      process.env.PUBLISHER_PACKAGE_VERSIONING = "off";
+      env.PUBLISHER_PACKAGE_VERSIONING = "off";
       const server = await openServer();
       await server.sweep;
       await server.store.addEnvironment({

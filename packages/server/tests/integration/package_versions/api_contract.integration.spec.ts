@@ -24,6 +24,7 @@ import fs from "fs";
 import os from "os";
 import path from "path";
 import { RestE2EEnv, startRestE2E } from "../../harness/rest_e2e";
+import { installVariables } from "../../../src/test_helpers/settings_env";
 
 const ENV_NAME = "versions-api-contract-env";
 const FLAG = "PUBLISHER_PACKAGE_VERSIONING";
@@ -33,7 +34,6 @@ const TERMINAL = ["MANIFEST_FILE_READY", "FAILED", "CANCELLED"];
 let env: (RestE2EEnv & { stop(): Promise<void> }) | undefined;
 let baseUrl = "";
 let root = "";
-const saved = { flag: process.env[FLAG], promotion: process.env[PROMOTION] };
 
 /** The properties api-doc.yaml declares on a Materialization. */
 const MATERIALIZATION_PROPERTIES = new Set(
@@ -53,9 +53,15 @@ const MATERIALIZATION_PROPERTIES = new Set(
    ),
 );
 
+/** The variables this suite sets, installed over the process's own settings. */
+const variables: Record<string, string | undefined> = {};
+let restoreSettings: (() => void) | undefined;
+
+/** Give the in-process server `name` at `value`, or unset, as a restart with it would. */
 function setEnv(name: string, value: string | undefined): void {
-   if (value === undefined) delete process.env[name];
-   else process.env[name] = value;
+   variables[name] = value;
+   restoreSettings?.();
+   restoreSettings = installVariables(variables);
 }
 
 /**
@@ -223,8 +229,7 @@ describe("the versions contract a generated client sees", () => {
       }).catch(() => undefined);
       await env?.stop();
       fs.rmSync(root, { recursive: true, force: true });
-      setEnv(FLAG, saved.flag);
-      setEnv(PROMOTION, saved.promotion);
+      restoreSettings?.();
    });
 
    it(

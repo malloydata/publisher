@@ -10,6 +10,7 @@ import {
    splitLegacyPackageName,
 } from "./legacy_package_name";
 import { API_PREFIX, buildRouteApp } from "./test_helpers/route_app";
+import { installSettings } from "./test_helpers/settings_env";
 
 // A combined package name, `<package>___<version>`, from an orchestrator that
 // predates package versions: read as the package at that version when
@@ -17,15 +18,16 @@ import { API_PREFIX, buildRouteApp } from "./test_helpers/route_app";
 
 const ENV = `${API_PREFIX}/environments/acme`;
 
-let saved: string | undefined;
-beforeEach(() => {
-   saved = process.env.PUBLISHER_PACKAGE_VERSIONING;
-   process.env.PUBLISHER_PACKAGE_VERSIONING = "on";
-});
-afterEach(() => {
-   if (saved === undefined) delete process.env.PUBLISHER_PACKAGE_VERSIONING;
-   else process.env.PUBLISHER_PACKAGE_VERSIONING = saved;
-});
+let restoreSettings: () => void;
+/** Run the test with `PUBLISHER_PACKAGE_VERSIONING` at `value`. */
+function versioning(value: string): void {
+   restoreSettings?.();
+   restoreSettings = installSettings({
+      env: { PUBLISHER_PACKAGE_VERSIONING: value },
+   }).restore;
+}
+beforeEach(() => versioning("on"));
+afterEach(() => restoreSettings());
 
 describe("splitLegacyPackageName", () => {
    it("splits at the last delimiter, when the suffix is a version", () => {
@@ -74,7 +76,7 @@ describe("recoverVersionFromName", () => {
    });
 
    it("does nothing with versioning off: the combined name is the package", () => {
-      process.env.PUBLISHER_PACKAGE_VERSIONING = "off";
+      versioning("off");
       expect(recoverVersionFromName("sales___1.0.0", "").recovered).toBe(false);
    });
 });
@@ -214,7 +216,7 @@ describe("routes reached with a combined package name", () => {
    });
 
    it("leaves every route alone with versioning off", async () => {
-      process.env.PUBLISHER_PACKAGE_VERSIONING = "off";
+      versioning("off");
       const calls: unknown[][] = [];
       const app = buildRouteApp({
          packageController: {

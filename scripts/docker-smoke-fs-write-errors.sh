@@ -30,7 +30,7 @@
 #   S2   A publisher_data volume left root-owned by a 0.8.x: names EACCES.
 #   S6   A read-only root filesystem (Kubernetes readOnlyRootFilesystem): the
 #        server cannot open publisher.db, and /status must say so.
-#   S7   An unreadable publisher.config.json: /status must say so.
+#   S7   An unreadable publisher.config.json: startup fails, naming EACCES.
 # Credentials
 #   C1   GOOGLE_APPLICATION_CREDENTIALS names a file uid 1000 cannot read
 #        (a 0600 file owned by someone else): a gs:// package add must name
@@ -331,9 +331,22 @@ docker volume create "$CONFIG_VOLUME" >/dev/null
 as_root -v "$CONFIG_VOLUME:/cfg" "$IMAGE" sh -c \
    'printf "{\"environments\":[]}" >/cfg/publisher.config.json && chown 0:0 /cfg/publisher.config.json && chmod 600 /cfg/publisher.config.json'
 start s7 -v "$CONFIG_VOLUME:/cfg" -e PUBLISHER_CONFIG_PATH=/cfg/publisher.config.json
-wait_state s7 serving initializing >/dev/null
-sleep 3
-assert_status_names S7 'EACCES|permission denied'
+# The server refuses to start rather than run with the file's settings at
+# their defaults, so the cause is in its log, not on /status.
+for _ in $(seq 1 60); do
+   docker ps -q -f "name=^$PREFIX-s7$" | grep -q . || break
+   sleep 1
+done
+s7_exit=$(docker inspect -f '{{.State.ExitCode}}' "$PREFIX-s7" 2>/dev/null || echo running)
+s7_log=$(docker logs "$PREFIX-s7" 2>&1 || true)
+if [ "$s7_exit" != "0" ] && [ "$s7_exit" != "running" ] &&
+   echo "$s7_log" | grep -q PUBLISHER_INIT_FAILED &&
+   echo "$s7_log" | grep -Eqi 'EACCES|permission denied'; then
+   pass "S7: startup fails and the log names the cause"
+else
+   fail "S7: expected a failed startup naming EACCES (exit $s7_exit)"
+   echo "$s7_log" | tail -20
+fi
 
 echo "== Credentials"
 echo "C1: GOOGLE_APPLICATION_CREDENTIALS names a file uid 1000 cannot read"

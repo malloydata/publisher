@@ -7,8 +7,9 @@
  * classes, row count), the outcome a refusal maps to, the caller header, and
  * what one emitted record carries.
  */
-import { afterEach, describe, expect, it, spyOn } from "bun:test";
+import { describe, expect, it, spyOn } from "bun:test";
 import type { GivenValue } from "@malloydata/malloy";
+import { DEFAULT_CALLER_HEADER } from "../constants";
 import {
    AccessDeniedError,
    BadRequestError,
@@ -16,9 +17,9 @@ import {
 } from "../errors";
 import { logger } from "../logger";
 import { withAuthorizeModel } from "../test_helpers/authorize_fixture";
+import { withSettings } from "../test_helpers/settings_env";
 import {
    callerHeaderName,
-   DEFAULT_CALLER_HEADER,
    emitAccessRecord,
    outcomeOf,
    summarizeQueryAccess,
@@ -275,19 +276,17 @@ describe("outcomeOf", () => {
 });
 
 describe("callerHeaderName", () => {
-   const original = process.env.PUBLISHER_CALLER_HEADER;
-   afterEach(() => {
-      if (original === undefined) delete process.env.PUBLISHER_CALLER_HEADER;
-      else process.env.PUBLISHER_CALLER_HEADER = original;
-   });
+   const headerFrom = (env: Record<string, string>) =>
+      withSettings({ env }, () => callerHeaderName());
 
    it("defaults, and takes the deployment's header lowercased", () => {
-      delete process.env.PUBLISHER_CALLER_HEADER;
-      expect(callerHeaderName()).toBe(DEFAULT_CALLER_HEADER);
-      process.env.PUBLISHER_CALLER_HEADER = " X-Gateway-User ";
-      expect(callerHeaderName()).toBe("x-gateway-user");
-      process.env.PUBLISHER_CALLER_HEADER = "";
-      expect(callerHeaderName()).toBe(DEFAULT_CALLER_HEADER);
+      expect(headerFrom({})).toBe(DEFAULT_CALLER_HEADER);
+      expect(headerFrom({ PUBLISHER_CALLER_HEADER: " X-Gateway-User " })).toBe(
+         "x-gateway-user",
+      );
+      expect(headerFrom({ PUBLISHER_CALLER_HEADER: "" })).toBe(
+         DEFAULT_CALLER_HEADER,
+      );
    });
 });
 

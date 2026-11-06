@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 import { useMemo } from "react";
-import { givensOfNamedQuery } from "./givenUsage";
+import { scanGivensOfNamedQuery } from "./givenUsage";
 import { namedQueryRunQuery } from "./malloyRunText";
 import { ModelSection } from "./ModelSection";
 import {
@@ -41,6 +41,19 @@ export function QueriesGroup({
       () =>
          queries.map((query) => {
             const code = namedQueryCode(parsed, query.name);
+            // With no source to gate on, the givens its own text reads and
+            // those of the sources it names, not every given the model
+            // declares; and which of them it can't tie to the query. Not while
+            // the file is still being read.
+            const scan =
+               query.sourceName || !run?.givens || pending
+                  ? undefined
+                  : scanGivensOfNamedQuery(
+                       code,
+                       run.givens,
+                       run.givensBySource,
+                       run.unknownGivensBySource,
+                    );
             return {
                query,
                field: {
@@ -50,15 +63,18 @@ export function QueriesGroup({
                   tags: query.tags,
                } satisfies ExplorerField,
                code: { code, loading: pending },
-               // With no source to gate on, the givens its own text reads,
-               // not every given the model declares.
-               runGivens:
-                  query.sourceName || !run?.givens
-                     ? undefined
-                     : givensOfNamedQuery(code, run.givens, run.givensBySource),
+               runGivens: scan?.givens,
+               runGivensUnknown: scan?.unknown,
             };
          }),
-      [queries, parsed, pending, run?.givens, run?.givensBySource],
+      [
+         queries,
+         parsed,
+         pending,
+         run?.givens,
+         run?.givensBySource,
+         run?.unknownGivensBySource,
+      ],
    );
    // A query opens on its result, so Expand runs every query in the section.
    const expand = useSectionExpand({ noun: ["query", "queries"] });
@@ -70,18 +86,21 @@ export function QueriesGroup({
          action={expand.action}
       >
          <SectionOpenCommandContext.Provider value={expand.command}>
-            {cards.map(({ query, field, code, runGivens }) => (
-               <ViewRow
-                  key={query.name}
-                  field={field}
-                  modelPath={modelPath}
-                  sourceName={query.sourceName ?? ""}
-                  fieldCode={code}
-                  run={run}
-                  runQuery={namedQueryRunQuery(query.name)}
-                  runGivens={runGivens}
-               />
-            ))}
+            {cards.map(
+               ({ query, field, code, runGivens, runGivensUnknown }) => (
+                  <ViewRow
+                     key={query.name}
+                     field={field}
+                     modelPath={modelPath}
+                     sourceName={query.sourceName ?? ""}
+                     fieldCode={code}
+                     run={run}
+                     runQuery={namedQueryRunQuery(query.name)}
+                     runGivens={runGivens}
+                     runGivensUnknown={runGivensUnknown}
+                  />
+               ),
+            )}
          </SectionOpenCommandContext.Provider>
       </ModelSection>
    );

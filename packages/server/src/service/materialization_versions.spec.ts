@@ -24,6 +24,7 @@ import type { EnvironmentStore } from "./environment_store";
 import { MaterializationScheduler } from "./materialization_scheduler";
 import { MaterializationService } from "./materialization_service";
 import { Package } from "./package";
+import { installSettings } from "../test_helpers/settings_env";
 import {
    SUPERSEDED_TABLES_KEY,
    ServingReader,
@@ -266,11 +267,13 @@ function holdRuns(): () => void {
    };
 }
 
-let setupSqlGate: string | undefined;
+let restoreSettings: () => void;
 
 beforeEach(async () => {
-   setupSqlGate = process.env.PUBLISHER_ALLOW_DUCKDB_SETUP_SQL;
-   process.env.PUBLISHER_ALLOW_DUCKDB_SETUP_SQL = "true";
+   // The fixtures' connections use setupSQL, which this allows.
+   restoreSettings = installSettings({
+      env: { PUBLISHER_ALLOW_DUCKDB_SETUP_SQL: "true" },
+   }).restore;
    root = fs.realpathSync(
       fs.mkdtempSync(path.join(os.tmpdir(), "materialization-versions-")),
    );
@@ -296,11 +299,7 @@ afterEach(async () => {
    }
    await db.close();
    fs.rmSync(root, { recursive: true, force: true });
-   if (setupSqlGate === undefined) {
-      delete process.env.PUBLISHER_ALLOW_DUCKDB_SETUP_SQL;
-   } else {
-      process.env.PUBLISHER_ALLOW_DUCKDB_SETUP_SQL = setupSqlGate;
-   }
+   restoreSettings();
 });
 
 describe('scope "version": each version builds and serves its own tables', () => {

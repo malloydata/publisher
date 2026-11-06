@@ -53,14 +53,6 @@ let stubRequests = 0;
 /** Every text the stub was asked to embed, in order. */
 const stubInputs: string[] = [];
 
-const savedEnv: Record<string, string | undefined> = {};
-const ENV_KEYS = [
-   "EMBEDDING_API_KEY",
-   "EMBEDDING_API_BASE",
-   "EMBEDDING_MODEL",
-   "EMBEDDING_DIMENSIONS",
-];
-
 interface GetContextPayload {
    retrieval?: string;
    retrieval_reason?: string;
@@ -159,23 +151,19 @@ describe.serial("MCP getContext semantic retrieval (E2E Integration)", () => {
       );
       const port = (embeddingStub.address() as AddressInfo).port;
 
-      // Set the embedding env vars BEFORE the server harness dynamically
-      // imports src/server; config is read per call, but this keeps the
-      // whole server lifetime consistently configured.
-      for (const key of ENV_KEYS) {
-         savedEnv[key] = process.env[key];
-      }
-      process.env.EMBEDDING_API_KEY = "integration-test-key";
-      process.env.EMBEDDING_API_BASE = `http://127.0.0.1:${port}/v1`;
-      // A stub-distinct model name: the suite shares publisher.db with
-      // local manual runs, and rows cached under the real default model
-      // name would poison a later real-provider run (the stub's bigram
-      // vectors are not text-embedding-3-small's). Under this name the
-      // leftovers are inert; a real run's model diff replaces them.
-      process.env.EMBEDDING_MODEL = "integration-test-bigram-stub";
-      delete process.env.EMBEDDING_DIMENSIONS;
-
-      env = await setupE2ETestEnvironment();
+      env = await setupE2ETestEnvironment({
+         env: {
+            EMBEDDING_API_KEY: "integration-test-key",
+            EMBEDDING_API_BASE: `http://127.0.0.1:${port}/v1`,
+            // A stub-distinct model name: the suite shares publisher.db with
+            // local manual runs, and rows cached under the real default model
+            // name would poison a later real-provider run (the stub's bigram
+            // vectors are not text-embedding-3-small's). Under this name the
+            // leftovers are inert; a real run's model diff replaces them.
+            EMBEDDING_MODEL: "integration-test-bigram-stub",
+            EMBEDDING_DIMENSIONS: undefined,
+         },
+      });
       mcpClient = env.mcpClient;
       // The search index is built once for each loaded package and keeps the
       // embedding provider it was built with. When an earlier spec in the same
@@ -193,12 +181,6 @@ describe.serial("MCP getContext semantic retrieval (E2E Integration)", () => {
    afterAll(async () => {
       await cleanupE2ETestEnvironment(env);
       env = null;
-      // Restore the embedding env so later suites in this process run
-      // unconfigured (the provider getter re-reads env per call).
-      for (const key of ENV_KEYS) {
-         if (savedEnv[key] === undefined) delete process.env[key];
-         else process.env[key] = savedEnv[key];
-      }
       await new Promise<void>((resolve, reject) =>
          embeddingStub.close((err) => (err ? reject(err) : resolve())),
       );

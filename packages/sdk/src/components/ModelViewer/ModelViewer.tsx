@@ -9,6 +9,7 @@ import { parseResourceUri } from "../../utils/formatting";
 import { Loading } from "../Loading";
 import { ownSourceDoc } from "./docAnnotations";
 import { EmptyRow } from "./EmptyRow";
+import { GivenFacts } from "./GivenFacts";
 import {
    ModelViewerExtensionsContext,
    type ModelViewerExtensions,
@@ -22,12 +23,17 @@ import {
    type EntitiesByField,
    type FieldEntity,
 } from "./fieldEntities";
-import { givensForSource, givensInheritedBy } from "./givenUsage";
+import {
+   givensDeclaredIn,
+   givensInheritedBy,
+   scanGivensForSource,
+} from "./givenUsage";
 import { HeaderBar } from "./HeaderBar";
 import { isNotFoundOrForbidden } from "./httpStatus";
 import { joinAccess, type JoinLink } from "./joinAccess";
 import { ModelGivensContext } from "./modelGivensContext";
 import { ModelGivensSection } from "./ModelGivensSection";
+import { ModelSection } from "./ModelSection";
 import { declaredTypesOf, givensRequest, type GivenInfo } from "./modelGivens";
 import { sourceCountLabel } from "./modelHeaderPresentation";
 import { QueriesGroup } from "./QueriesGroup";
@@ -48,6 +54,8 @@ import {
 } from "./sourcePicker";
 import type { SourceNavItem } from "./SourcesDropdown";
 import { SourcesNav } from "./SourcesNav";
+import { wordList } from "./runGate";
+import { BodyText } from "./text";
 import { CONTENT_COLUMN_SX, FILE_VIEW_TOP_GAP, FLAT_PANE_SX } from "./surface";
 import { MONO_FONT_FAMILY, MONO_FONT_VAR, TEXT_TERTIARY } from "./theme";
 import { describeApiError, LoadErrorAlert, serverMessage } from "./ui";
@@ -137,6 +145,27 @@ const NO_ENTITIES: ReadonlyMap<string, EntitiesByField> = new Map();
 /** A model's display name: its file name without `.malloy`. */
 function modelDisplayName(modelPath: string): string {
    return (modelPath.split("/").pop() ?? modelPath).replace(/\.malloy$/, "");
+}
+
+/**
+ * Where a givens-only model's givens come from: the compiled model lists the
+ * ones it imports beside its own, so the line says which are which.
+ */
+function givensOnlyWhere(
+   sourceText: string | undefined,
+   givens: ReadonlyArray<GivenInfo>,
+): string {
+   const declared = givensDeclaredIn(sourceText, givens);
+   const imported = givens.filter((g) => !declared.has(g.name));
+   const readsNone = "Nothing on this page reads them.";
+   if (imported.length === 0)
+      return `Declared here for the models that import this file. ${readsNone}`;
+   if (imported.length === givens.length)
+      return `Imported from another file, for the models that import this one. ${readsNone}`;
+   return `For the models that import this file. ${wordList(
+      imported.map((g) => g.name),
+      "and",
+   )} ${imported.length === 1 ? "comes" : "come"} from a file this one imports; the rest are declared here. ${readsNone}`;
 }
 
 /**
@@ -267,17 +296,19 @@ export function ModelViewer({
    );
    // Each source's givens, as its Givens section shows them: what its
    // declaration reads (through what it extends or joins), plus the model-wide
-   // ones no source reads. A run gates on the same set.
-   const givensBySource = useMemo(
-      () =>
-         new Map(
-            sources.map((s) => [
-               s.name,
-               givensForSource(sourceText, s.name, givens),
-            ]),
-         ),
-      [sources, sourceText, givens],
-   );
+   // ones no source reads. A run gates on the same set. Where the scan can't
+   // tell, every given, and the ones it can't tie to the source either way are
+   // in `unknownGivensBySource`.
+   const { givensBySource, unknownGivensBySource } = useMemo(() => {
+      const bySource = new Map<string, GivenInfo[]>();
+      const unknown = new Map<string, ReadonlySet<string>>();
+      for (const s of sources) {
+         const scan = scanGivensForSource(sourceText, s.name, givens);
+         bySource.set(s.name, scan.givens);
+         if (scan.unknown.size > 0) unknown.set(s.name, scan.unknown);
+      }
+      return { givensBySource: bySource, unknownGivensBySource: unknown };
+   }, [sources, sourceText, givens]);
    const run = useMemo<RunContext>(
       () => ({
          projectName: environmentName,
@@ -285,6 +316,7 @@ export function ModelViewer({
          versionId,
          givens,
          givensBySource,
+         unknownGivensBySource,
          requiredFiltersBySource,
          givenValues,
          accessBySource,
@@ -299,6 +331,7 @@ export function ModelViewer({
          versionId,
          givens,
          givensBySource,
+         unknownGivensBySource,
          requiredFiltersBySource,
          givenValues,
          accessBySource,
@@ -504,12 +537,18 @@ export function ModelViewer({
       if (sources.length === 0) {
          if (queries.length === 0) {
             // Still the model's page, with its heading and actions (Copy
-            // link): a givens-only file is a model like any other.
+            // link): a givens-only file is a model like any other, and its
+            // givens are what it holds, so they are listed.
             return (
                <>
                   <HeaderBar
                      headingLevel={headingLevel}
                      title={modelDisplayName(modelPath)}
+                     meta={
+                        givens.length > 0
+                           ? `${givens.length} ${givens.length === 1 ? "given" : "givens"}`
+                           : undefined
+                     }
                      actions={headerActions}
                      isSource={false}
                      offSurface={includeHiddenFilesAndSources}
@@ -526,6 +565,19 @@ export function ModelViewer({
                         )
                      }
                   />
+                  <ModelSection
+                     label="Givens"
+                     count={givens.length}
+                     testId="model-viewer-declared-givens"
+                  >
+                     <BodyText
+                        data-testid="model-viewer-declared-givens-where"
+                        sx={{ mb: 1 }}
+                     >
+                        {givensOnlyWhere(sourceText, givens)}
+                     </BodyText>
+                     <GivenFacts givens={givens} />
+                  </ModelSection>
                </>
             );
          }
@@ -689,6 +741,11 @@ export function ModelViewer({
                   givens={
                      <ModelGivensSection
                         givens={sourceGivens}
+                        unknown={
+                           activeSource
+                              ? unknownGivensBySource.get(activeSource.name)
+                              : undefined
+                        }
                         inheritedFrom={inheritedGivens}
                         values={givensState.draft}
                         onChange={givensState.setGiven}
