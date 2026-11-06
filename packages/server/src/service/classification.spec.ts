@@ -1246,6 +1246,18 @@ export { s }
       expect(await warnings()).toEqual([]);
    });
 
+   it("keeps an earlier stage's filter a filter of the stage after it, never a value it copies", async () => {
+      const query = `source: s is people -> { where: social = 'x'; group_by: area } -> { group_by: area }`;
+      await leaksOf(query);
+      const message = await loadError();
+      expect(message).toContain(
+         "source s (index.malloy) carries [none] but its query filters on social (pii.direct_identifier)",
+      );
+      expect(message).not.toContain("plain copy");
+      await leaksOf(query, '["none", "pii.direct_identifier"]');
+      expect(await warnings()).toEqual([]);
+   });
+
    it("warns on a hidden computed downgrade a published field reads, and not on one nothing reads", async () => {
       const research = (extra: string) =>
          leaksOf(`source: s is people include { internal: social } extend {

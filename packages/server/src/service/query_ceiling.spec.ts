@@ -467,6 +467,59 @@ import { hub, comp_m } from "hub.malloy"
    });
 });
 
+describe("a filter an earlier stage of a query source applies", () => {
+   const ROWS = `duckdb.sql("select * from (values (1,'east','999-11-2222'),(2,'west','999-33-4444')) as t(id, region, ssn)")`;
+   const model = (carries: string) => `##! experimental.access_modifiers
+source: people is ${ROWS} include { internal: id, region, ssn } extend {
+   #(classification) "pii.direct_identifier"
+   dimension: social is ssn
+   #(classification) "none"
+   dimension: area is region
+   #(classification) "none"
+   dimension: pid is id
+}
+#(carries) ${carries}
+source: two is people -> { where: social = "999-11-2222"; group_by: area, pid } -> { group_by: area, pid }
+#(carries) ${carries}
+source: one is people -> { where: social = "999-11-2222"; group_by: area, pid }
+source: hub is duckdb.sql("select 1 as id") extend {
+   join_one: rr is two on id = rr.pid
+   join_one: r1 is one on id = r1.pid
+}
+`;
+
+   it("charges a read through a join every stage's filter, so two stages refuse as one does", async () => {
+      await withAuthorizeModel(model('["none"]'), async ({ model }) => {
+         for (const [query, path] of [
+            ["run: hub -> { group_by: rr.area }", "rr.area"],
+            ["run: hub -> { group_by: r1.area }", "r1.area"],
+         ]) {
+            const err = await run(model, query).catch((e) => e);
+            expect(err).toBeInstanceOf(BadRequestError);
+            expect((err as Error).message).toContain(
+               `${path}, which is classified pii.direct_identifier`,
+            );
+         }
+         expect(
+            (await run(model, "run: hub -> { aggregate: c is count() }"))
+               .compactResult.length,
+         ).toBe(1);
+      });
+   });
+
+   it("twin: serves the two-stage source under a ceiling that lists the filter's class", async () => {
+      await withAuthorizeModel(
+         model('["none", "pii.direct_identifier"]'),
+         async ({ model }) => {
+            expect(
+               (await run(model, "run: two -> { group_by: area }"))
+                  .compactResult,
+            ).toEqual([{ area: "east" }]);
+         },
+      );
+   });
+});
+
 describe("an unreadable chain on a joined struct", () => {
    const carried = {
       name: "carried",

@@ -1034,6 +1034,14 @@ function walkSourceClassifications(
          if (!unresolved.includes(refPath)) unresolved.push(refPath);
       };
       if (out && !out.outputs.reads.has(out.rel)) unresolvedRead(path);
+      const take = (list: ClassifiedInput[]): void => {
+         for (const c of list) {
+            if (seenInput.has(c.field)) continue;
+            seenInput.add(c.field);
+            inputs.push(c);
+         }
+      };
+      const filters: ClassifiedInput[] = [];
       const read = (refs: string[][]): void => {
          for (const ref of refs) {
             const name = ref.join(".");
@@ -1054,7 +1062,7 @@ function walkSourceClassifications(
             }
             // A classified input is an input; an unclassified one contributes
             // the inputs IT was read from, so lineage crosses an intermediate.
-            const carried =
+            take(
                input.classifications.length > 0
                   ? [
                        {
@@ -1067,25 +1075,18 @@ function walkSourceClassifications(
                                ])
                              : input.classifications,
                        },
-                       // Every row of a filtered output reveals what its filter selects on.
-                       ...input.filtered,
                     ]
-                  : input.inputs;
-            for (const c of carried) {
-               if (seenInput.has(c.field)) continue;
-               seenInput.add(c.field);
-               inputs.push(c);
-            }
+                  : input.inputs,
+            );
+            // Every row of a filtered output reveals what its filter selects on, a filter here too, not a value.
+            filters.push(...input.filtered);
          }
       };
       read(reads.value);
       const valueInputs = inputs.length;
       read(reads.filter);
-      for (const c of out?.outputs.rowFilters ?? []) {
-         if (seenInput.has(c.field)) continue;
-         seenInput.add(c.field);
-         inputs.push(c);
-      }
+      take(filters);
+      take(out?.outputs.rowFilters ?? []);
       visiting.delete(path);
       const classesOf = (list: ClassifiedInput[]): string[] =>
          tokenSet(list.flatMap((i) => i.classifications));
