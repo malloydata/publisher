@@ -20,7 +20,7 @@ export interface EmbeddableEntity {
    name: string;
    source: string | undefined;
    modelPath: string;
-   // #(doc)-only text (see get_context_tool docOnlyText). Deliberately NOT
+   // Doc text only (see package_entities docOnlyText). Deliberately NOT
    // the response `doc`, which can fall back to raw annotation lines and
    // would leak #(authorize) predicates to the embedding provider.
    embedDoc: string;
