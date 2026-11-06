@@ -13,6 +13,10 @@ SPDX-License-Identifier: MIT
 > [authorize.md](authorize.md); to decide what is discoverable at all, see
 > [discovery-and-access.md](discovery-and-access.md).
 
+> **Preview.** `#(carries)` does not yet close every path a read can take; [Known gaps](#known-gaps)
+> lists the open ones. Treat a `#(carries)` list as a review aid, not an enforcement boundary,
+> until they close. A package that declares neither annotation is unaffected.
+
 **The classes on the field; the ceiling on the source.** Every value is quoted, and every list is a quoted, comma-separated list in brackets, the form every list-valued annotation in Publisher uses (`tiles=[…]`, `# drill { to=[…] }`).
 
 ```malloy
@@ -268,6 +272,20 @@ Both follow what a caller can reach, not what a file declares:
   `#(carries)` on it is still enforced.
 - A view is not classified itself; a view under `#(carries)` is checked by the classes of the
   fields it reads. A join names a relationship and is not classified.
+
+## Known gaps
+
+Reads `#(carries)` does not yet hold to the list:
+
+- A multi-stage view used through `nest:` is not traced past its first stage, and its access record
+  claims a complete field list.
+- An expression over a classified and an unclassified field takes only the classified input's class.
+- A field that is both read and filtered on loses the filter's contribution.
+- Per query, a passthrough relabel read through a joined `#(carries)` source is charged only its
+  declared class. The package load refuses it, so this reaches only a model served without the load gates.
+- In a multi-stage `->` source, a downgrade in a middle stage is not checked, and same-named filter
+  inputs from different stages are merged.
+- An `index:` query is refused in any model that reaches a `#(carries)`, even on a source with no ceiling.
 
 ## What it is not
 

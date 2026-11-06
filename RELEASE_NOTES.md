@@ -36,6 +36,8 @@ A level with only one choice is entered rather than listed, and a warning says s
 
 A package that uses only `#(authorize)` and `#(access_filter)`, with no `#(carries)` and no `#(classification)` anywhere in it, loads and serves as it did in 0.11, including one 0.12.0 refused for a gate on a plain given; the join findings below are warnings for it, not refusals.
 
+`#(carries)` and `#(classification)` are a preview. This release closes many of the shapes 0.12.0 served past a `#(carries)` list, but not all of them yet; [docs/classification.md](docs/classification.md#known-gaps) lists the ones still open. Treat a `#(carries)` list as a review aid, not an enforcement boundary, until they close.
+
 A package that declares `#(carries)` or `#(classification)` is held to more. 0.12.0 loaded some such packages whose `#(carries)` lists and gates did not hold. These now refuse the load, as a gate that does not parse does: a 400 on publish and reload, an entry in `loadErrors` otherwise. Each message names the source, the field or join, and the fix. A package that loaded on 0.12.0 and trips one of these does not load after upgrade, so run the package through a reload before rolling out.
 
 - A view on a `#(carries)` source: A view returns what it groups by, aggregates and filters on, so a view that reads a class the source does not carry, a field with no class, or a field the view declares itself with `extend:` refuses the load. A view with no reference summary refuses too. Remove the view, or declare the field on the source with a `#(classification)` and read it from there.
