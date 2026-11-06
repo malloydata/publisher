@@ -21,6 +21,7 @@ const SQL = `select 1 as order_id,
   {'city': 'Boulder', 'card': '4111'} as billing,
   [{'sku': 'a', 'qty': 2}, {'sku': 'b', 'qty': 1}] as lines,
   ['gift', 'rush'] as tags,
+  {'ok': 1, 'a.b': 2, 'two words': 3, 'x y': {'z': 4}} as odd,
   7 as customer_id`;
 const MODEL = `##! experimental.access_modifiers
 source: customers is duckdb.sql("""select 7 as id, {'tier': 'gold'} as profile, [{'sku': 'x'}] as items""")
@@ -143,6 +144,16 @@ describe("record members (#1526)", () => {
       expect(entity("renamed", "delivery.city")).toBeUndefined();
    });
 
+   it("leaves out a member whose name is not a plain identifier, and everything under it", () => {
+      // `odd.a.b` would read as a nested record, and none of these compile
+      // as written without backticks.
+      expect(
+         fixture.pkgIndex.directEntities
+            .filter((e) => e.source === "orders" && e.name.startsWith("odd."))
+            .map((e) => e.name),
+      ).toEqual(["odd.ok"]);
+   });
+
    it("gives a member its record's classification", () => {
       expect(entity("orders", "billing_details")?.classifications).toEqual([
          "pci",
@@ -244,6 +255,34 @@ describe("record members on a wide table", () => {
          expect(indexed[0].name).toBe("params.m0");
       } finally {
          await wide.close();
+      }
+   });
+
+   it("counts a source's own members before a joined source's, even for a record declared after the join", async () => {
+      const members = Array.from(
+         { length: MAX_RECORD_MEMBERS_PER_SOURCE + 20 },
+         (_, i) => `'m${i}': ${i}`,
+      ).join(", ");
+      // The cap is shared, and spent in schema order. Malloy lists a source's
+      // own fields before its joins, even ship_to here, declared after the
+      // join, so the joined record cannot use up the source's own members.
+      const joined = await buildFcjIndexFixture(CLUSTER_SETTINGS, {
+         "joined.malloy": `##! experimental.access_modifiers
+source: events is duckdb.sql("""select 1 as k, {${members}} as params""")
+source: orders is duckdb.sql("""select 1 as k, {'city': 'Denver'} as delivery""") extend {
+  join_one: event is events on k = event.k
+  dimension: ship_to is delivery
+} include { public: k, event, ship_to }
+`,
+      });
+      try {
+         expect(
+            joined.pkgIndex.directEntities.find(
+               (e) => e.source === "orders" && e.name === "ship_to.city",
+            )?.recordPath,
+         ).toBe("ship_to");
+      } finally {
+         await joined.close();
       }
    });
 });

@@ -341,6 +341,13 @@ const MAX_RECORD_DEPTH = 4;
 export const MAX_RECORD_MEMBERS_PER_SOURCE = 300;
 
 /**
+ * A member name a dotted path can carry as written. A STRUCT key can hold a
+ * dot or a space (`{'a.b': 1}`): joined raw, `delivery.a.b` would read as a
+ * nested record and does not compile without backticks.
+ */
+const PLAIN_MEMBER_NAME = /^[A-Za-z_][A-Za-z0-9_]*$/;
+
+/**
  * The members of a record dimension (a BigQuery RECORD, a DuckDB STRUCT) as
  * entities of their own, under dotted names (`delivery.city`), so they can be
  * found and grouped by. A member of a source's own record is that source's
@@ -352,9 +359,10 @@ export const MAX_RECORD_MEMBERS_PER_SOURCE = 300;
  * relationship `many`, because aggregating through it counts each element; a
  * record inside a repeated record stays `many`. A member takes its record's
  * classification when it has none of its own. An array of scalars has no
- * members. At most MAX_RECORD_MEMBERS_PER_SOURCE are indexed per source
- * (`budget`), in schema order; a dropped member is still queryable by name,
- * only not offered by search.
+ * members. A member whose name is not a plain identifier (PLAIN_MEMBER_NAME)
+ * is not indexed, nor anything under it. At most MAX_RECORD_MEMBERS_PER_SOURCE
+ * are indexed per source (`budget`), in schema order; a dropped member is
+ * still queryable by name, only not offered by search.
  */
 function collectRecordMembers(args: {
    type: FieldType | undefined;
@@ -388,7 +396,7 @@ function collectRecordMembers(args: {
    }
    if (type?.kind !== "record_type" || depth > MAX_RECORD_DEPTH) return;
    for (const member of type.fields ?? []) {
-      if (!member.name) continue;
+      if (!member.name || !PLAIN_MEMBER_NAME.test(member.name)) continue;
       if (args.budget.left <= 0) return;
       args.budget.left -= 1;
       const name = `${path}.${member.name}`;
@@ -715,6 +723,9 @@ async function collectEntities(pkg: Package): Promise<CollectedModel> {
          // What each reachable field is, declared or by lineage. Absent for a
          // stand-in with no compiled model; fields then report their own note.
          // Record members this source may still index (collectRecordMembers).
+         // One budget for its own records and its joined sources' records:
+         // Malloy lists a source's own fields before its joins, so its own
+         // members are counted first and a joined record gets what is left.
          const memberBudget = { left: MAX_RECORD_MEMBERS_PER_SOURCE };
          // The source's visible fields: a hidden one (`include { public: ... }`)
          // is not in its schema, so nothing of it is indexed.
