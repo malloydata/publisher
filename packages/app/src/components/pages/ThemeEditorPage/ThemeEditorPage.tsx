@@ -41,7 +41,7 @@ const AUTO_SAVE_DELAY_MS = 600;
  * mode. Auto-saves on debounced edit.
  */
 export default function ThemeEditorPage() {
-   const { apiClients } = useServer();
+   const { apiClients, server } = useServer();
    const queryClient = useQueryClient();
 
    const themeQuery = useQuery({
@@ -52,7 +52,8 @@ export default function ThemeEditorPage() {
       },
    });
    const statusQuery = useQuery({
-      queryKey: ["status"],
+      // ServerProvider's key, so the page reads the same entry.
+      queryKey: ["status", server],
       queryFn: async () => {
          const res = await apiClients.publisher.getStatus();
          return res.data;
