@@ -34,14 +34,6 @@ export const query = [
       aliases: { env: ["PUBLISHER_MAX_RESPONSE_BYTES"] },
    }),
    setting({
-      key: "query.filesOverlayEnabled",
-      type: boolean(),
-      default: false,
-      description:
-         "Accept a `files` overlay on compile and query. Overlay files are package content, so their gates apply as written: turn it on only behind a host that offers `files` to callers who may edit the package.",
-      aliases: { env: ["PUBLISHER_QUERY_FILES_OVERLAY_ENABLED"] },
-   }),
-   setting({
       key: "query.maxOverlayFiles",
       type: integer({ min: 1 }),
       default: DEFAULT_MAX_OVERLAY_FILES,

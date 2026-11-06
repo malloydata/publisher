@@ -1089,19 +1089,6 @@ export const CONTRACT: Record<string, Case[]> = {
          expect: fails("PUBLISHER_MAX_RESPONSE_BYTES"),
       },
    ],
-   "query.filesOverlayEnabled": [
-      { name: "unset", expect: value(false) },
-      {
-         name: "PUBLISHER_QUERY_FILES_OVERLAY_ENABLED",
-         env: { PUBLISHER_QUERY_FILES_OVERLAY_ENABLED: "true" },
-         expect: value(true),
-      },
-      {
-         name: "not a boolean",
-         env: { PUBLISHER_QUERY_FILES_OVERLAY_ENABLED: "maybe" },
-         expect: fails("PUBLISHER_QUERY_FILES_OVERLAY_ENABLED"),
-      },
-   ],
    "query.maxOverlayFiles": [
       { name: "unset", expect: value(500) },
       {

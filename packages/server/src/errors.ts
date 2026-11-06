@@ -392,8 +392,6 @@ export function internalErrorToHttpError(
    } else if (error instanceof ServerConfigurationError) {
       logInternal("Server configuration error", error, "warn");
       return httpError(500, error.message);
-   } else if (error instanceof FeatureDisabledError) {
-      return httpError(403, error.message);
    } else if (error instanceof FrozenConfigError) {
       return httpError(403, error.message);
    } else if (error instanceof AccessDeniedError) {
@@ -868,17 +866,6 @@ export class FrozenConfigError extends Error {
       message = `Publisher config can't be updated when ${PUBLISHER_CONFIG_NAME} has { "frozenConfig": true }`,
    ) {
       super(message);
-   }
-}
-
-/**
- * A request uses something this server was not started with turned on (403):
- * the message names the setting that turns it on.
- */
-export class FeatureDisabledError extends Error {
-   constructor(message: string) {
-      super(message);
-      this.name = "FeatureDisabledError";
    }
 }
 

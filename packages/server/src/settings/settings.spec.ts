@@ -67,7 +67,6 @@ const DESIGN_VARIABLES: Partial<Record<SettingKey, string>> = {
    "query.maxRows": "PUBLISHER_QUERY_MAX_ROWS",
    "query.maxResponseBytes": "PUBLISHER_QUERY_MAX_RESPONSE_BYTES",
    "query.maxOverlayFiles": "PUBLISHER_QUERY_MAX_OVERLAY_FILES",
-   "query.filesOverlayEnabled": "PUBLISHER_QUERY_FILES_OVERLAY_ENABLED",
    "packageLoad.maxConcurrentDryRuns":
       "PUBLISHER_PACKAGE_LOAD_MAX_CONCURRENT_DRY_RUNS",
    "query.maxOverlayBytes": "PUBLISHER_QUERY_MAX_OVERLAY_BYTES",

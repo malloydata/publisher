@@ -117,7 +117,6 @@ export const PROBES: Record<string, (context: SettingsContext) => unknown> = {
 
    "query.maxRows": () => getMaxQueryRows(),
    "query.maxResponseBytes": () => getMaxResponseBytes(),
-   "query.filesOverlayEnabled": () => settings.get("query.filesOverlayEnabled"),
    "packageLoad.maxConcurrentDryRuns": () =>
       settings.get("packageLoad.maxConcurrentDryRuns"),
    "query.maxOverlayFiles": () => getMaxOverlayFiles(),

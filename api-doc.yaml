@@ -7989,11 +7989,9 @@ components:
             to another request. Overlay
             files are author content, read exactly as the package's own files:
             they are not restricted like ad-hoc text, and their `#(authorize)`
-            and `#(access_filter)` annotations gate as written. So the server
-            refuses `files` with 403 unless it was started with
-            PUBLISHER_QUERY_FILES_OVERLAY_ENABLED=true, and a deployment that
-            turns it on must offer `files` only to callers who may edit the
-            package. An empty list is no overlay. Only
+            and `#(access_filter)` annotations gate as written, so a host must
+            offer `files` only to callers who may edit the package. An empty
+            list is no overlay. Only
             `.malloy` and `.malloynb` files can be overlaid; data files and
             `publisher.json` are read from the package as published. A path that
             is absolute, has a "." or ".." segment or a backslash, names another
@@ -9598,11 +9596,9 @@ components:
             both is a 400. Overlay
             files are author content, read exactly as the package's own files:
             they are not restricted like ad-hoc text, and their `#(authorize)`
-            and `#(access_filter)` annotations gate as written. So the server
-            refuses `files` with 403 unless it was started with
-            PUBLISHER_QUERY_FILES_OVERLAY_ENABLED=true, and a deployment that
-            turns it on must offer `files` only to callers who may edit the
-            package. An empty list is no overlay. Only
+            and `#(access_filter)` annotations gate as written, so a host must
+            offer `files` only to callers who may edit the package. An empty
+            list is no overlay. Only
             `.malloy` and `.malloynb` files can be overlaid; data files and
             `publisher.json` are read from the package as published. A path that
             is absolute, has a "." or ".." segment or a backslash, names another
