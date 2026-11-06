@@ -137,6 +137,18 @@ export interface RouteOption extends Route {
 }
 
 /**
+ * The relationship of a field reached through a join: the join's, unless the
+ * field itself fans out. A member of a repeated record (`items.sku`) counts
+ * each element, so it is `many` even behind a join_one.
+ */
+export function throughFanout(
+   join: Relationship | undefined,
+   field: Relationship | undefined,
+): Relationship | undefined {
+   return field === "many" ? "many" : (join ?? field);
+}
+
+/**
  * The `cap` shortest routes to a dimension or measure from the given sources
  * (the other sources in the judge's list), at any depth the join walk
  * recorded. Ties go to the source key, then the path. None for a joined copy
@@ -160,7 +172,7 @@ export function routeOptions(
       out.push({
          from: r.from,
          path: r.path,
-         fanout: r.fanout,
+         fanout: throughFanout(r.fanout, node.relationship) ?? r.fanout,
          node: node.key,
          id: entityId(
             node.kind,
