@@ -180,6 +180,27 @@ describe("the startup settings line", () => {
       }
    });
 
+   it("hides a URL's password that holds a slash or an @", () => {
+      const line = withSettings(
+         {
+            env: {
+               EMBEDDING_API_BASE: "https://user:pa/ss@llm.example.com/v1",
+               PUBLISHER_ADMIN_STORAGE_ENDPOINT: "https://user:p@ss@minio:9000",
+            },
+         },
+         () => settingsLine(Settings.current()),
+      );
+      expect(line).toContain(
+         'retrieval.embedding.baseUrl="https://***@llm.example.com/v1" from EMBEDDING_API_BASE',
+      );
+      expect(line).toContain(
+         'admin.storage.endpoint="https://***@minio:9000" from PUBLISHER_ADMIN_STORAGE_ENDPOINT',
+      );
+      for (const leak of ["pa/ss", "p@ss", "ss@", "user"]) {
+         expect(line).not.toContain(leak);
+      }
+   });
+
    it("says so when every setting is at its default", () => {
       expect(withSettings({}, () => settingsLine(Settings.current()))).toBe(
          "Settings: every setting is at its default.",

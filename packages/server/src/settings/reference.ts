@@ -115,8 +115,8 @@ export function settingsLine(settings: Settings): string {
          shown =
             entry.secret || entry.masked
                ? "(set)"
-               : withoutUrlCredentials(
-                    JSON.stringify(settings.get(key) as unknown),
+               : JSON.stringify(
+                    withoutUrlCredentials(settings.get(key) as unknown),
                  );
       } catch {
          shown = "(invalid)";
@@ -128,9 +128,20 @@ export function settingsLine(settings: Settings): string {
       : `Settings given: ${given.join(", ")}`;
 }
 
-/** `https://user:pass@host` -> `https://***@host`, anywhere in `text`. */
-function withoutUrlCredentials(text: string): string {
-   return text.replace(/\b([a-z][a-z0-9+.-]*:\/\/)[^\s"/@]+@/gi, "$1***@");
+/**
+ * `https://user:pass@host` -> `https://***@host`, for a value or each value
+ * of a list. Everything between the scheme and the last `@` goes, so a
+ * password holding `/` or `@`, which `new URL` either refuses or splits at the
+ * wrong `@`, is hidden too. A path with an `@` in it loses its host as well,
+ * which only hides more.
+ */
+function withoutUrlCredentials(value: unknown): unknown {
+   if (Array.isArray(value)) return value.map(withoutUrlCredentials);
+   if (typeof value !== "string") return value;
+   const scheme = /^[a-z][a-z0-9+.-]*:\/\//i.exec(value)?.[0];
+   const at = value.lastIndexOf("@");
+   if (scheme === undefined || at < scheme.length) return value;
+   return `${scheme}***${value.slice(at)}`;
 }
 
 /**
