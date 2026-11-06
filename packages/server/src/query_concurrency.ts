@@ -134,12 +134,15 @@ export function tryAcquireQuerySlot(routeLabel: string): QuerySlotHandle {
  * memory. Complements the per-response row/byte caps, the memory governor,
  * and the query timeout.
  *
- * The timeout does not reach every slot holder: compile and the sqlSource
- * routes have no `abortSignal` upstream, so there is nothing to cancel, and
- * releasing their slot early would let the pod run more work than it has
- * slots. They are bounded by the HTTP server timeout (`close` releases the
- * slot); the MCP compile tool releases in a `finally`, so a client that
- * disconnects mid-compile holds its slot until the compile finishes.
+ * A slot is released when the response ends or closes, and `close` fires
+ * when the client disconnects (on Node, and on Bun from 1.4). The query routes
+ * abort their query then, but not all work stops: compile, the sqlSource
+ * routes and a model save have no abort signal, and the DuckDB, Postgres,
+ * MySQL and Trino drivers do not act on one. That work runs to completion
+ * after its slot is released, so the cap does not count it (#1482). While the
+ * client stays, the HTTP server timeout bounds the request and its slot. The
+ * MCP compile tool releases in a `finally`, so a client that disconnects
+ * mid-compile holds its slot until the compile finishes.
  *
  * It does NOT queue: a queue hides load and inflates p99, while failing fast
  * hands the caller a 503 it can retry. Where several replicas sit behind a

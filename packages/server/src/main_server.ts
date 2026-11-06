@@ -57,6 +57,7 @@ import {
    isPackageInlineFieldsEnabled,
    embeddingStartupNotices,
    getRetrievalConfig,
+   getServerSocketTimeoutMs,
 } from "./config";
 import { setRetrievalConfig } from "./retrieval_config";
 import { checkHeapConfiguration } from "./heap_check";
@@ -73,6 +74,7 @@ import {
 } from "./mcp_config";
 import { observePackageStates } from "./package_state_metrics";
 import { registerLegacyRoutes } from "./server-old";
+import { applyServerTimeouts } from "./server_timeouts";
 import { EnvironmentStore } from "./service/environment_store";
 import { MaterializationScheduler } from "./service/materialization_scheduler";
 import { MaterializationService } from "./service/materialization_service";
@@ -435,9 +437,10 @@ app.use(unhandledErrorMiddleware);
 
 const mainServer = http.createServer({ maxHeaderSize: 262144 }, app);
 
-mainServer.timeout = 600000;
-mainServer.keepAliveTimeout = 600000;
-mainServer.headersTimeout = 600000;
+// Outlasts the query timeout, so a long query ends in its 504 rather than a
+// dropped connection.
+const socketTimeoutMs = getServerSocketTimeoutMs();
+applyServerTimeouts(mainServer, socketTimeoutMs);
 
 // The .mcp.json write waits on this, so a process whose REST port fails to
 // bind never leaves a .mcp.json pointing at a server about to exit.
@@ -575,9 +578,7 @@ mcpServer.on(
    fatalListenError("MCP", MCP_PORT, "--mcp_port", mainServer),
 );
 
-mcpServer.timeout = 600000;
-mcpServer.keepAliveTimeout = 600000;
-mcpServer.headersTimeout = 600000;
+applyServerTimeouts(mcpServer, socketTimeoutMs);
 
 // The admin API (admin-api-doc.yaml): the DuckLake catalogs in the configured
 // catalog database, and controls of this process an operator uses. A file load
@@ -604,9 +605,7 @@ if (adminServer) {
       "error",
       fatalListenError("Admin", ADMIN_PORT!, "--admin_port", mainServer),
    );
-   adminServer.timeout = 600000;
-   adminServer.keepAliveTimeout = 600000;
-   adminServer.headersTimeout = 600000;
+   applyServerTimeouts(adminServer, socketTimeoutMs);
 }
 
 registerSignalHandlers(

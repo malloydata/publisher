@@ -8,7 +8,10 @@ import { components } from "./api";
 import {
    API_PREFIX,
    DEFAULT_EMBEDDING_MIN_SIMILARITY,
+   DEFAULT_SOCKET_TIMEOUT_MS,
+   MAX_SOCKET_TIMEOUT_MS,
    PUBLISHER_CONFIG_NAME,
+   SOCKET_TIMEOUT_GRACE_MS,
 } from "./constants";
 import { logger } from "./logger";
 import { defaultOpenAiBaseUrl } from "./providers/openai_compatible";
@@ -766,6 +769,33 @@ export const getDefaultQueryRowLimit = (): number =>
  * {@link DEFAULT_QUERY_TIMEOUT_MS}). `0` disables it.
  */
 export const getQueryTimeoutMs = (): number => settings.get("query.timeoutMs");
+
+/**
+ * `server.timeout` for the REST and MCP servers. Node destroys a socket that
+ * sends nothing this long; Bun 1.4 ends a request this long after it started,
+ * even one that is still writing, and Bun did not enforce it at all before 1.4
+ * (see `applyServerTimeouts`). On both, it bounds the wait for a query's
+ * answer, so it has to outlast the query timeout, or a query that runs past
+ * it ends in a dropped connection instead of the timeout's 504.
+ *
+ * {@link DEFAULT_SOCKET_TIMEOUT_MS}, or the query timeout plus
+ * {@link SOCKET_TIMEOUT_GRACE_MS} when that is longer, capped at
+ * {@link MAX_SOCKET_TIMEOUT_MS}. `0` (no limit) when the query timeout is
+ * disabled, since a query allowed to run indefinitely must not be cut off by
+ * its socket instead.
+ */
+export const getServerSocketTimeoutMs = (
+   queryTimeoutMs: number = getQueryTimeoutMs(),
+): number => {
+   if (queryTimeoutMs === 0) return 0;
+   return Math.min(
+      MAX_SOCKET_TIMEOUT_MS,
+      Math.max(
+         DEFAULT_SOCKET_TIMEOUT_MS,
+         queryTimeoutMs + SOCKET_TIMEOUT_GRACE_MS,
+      ),
+   );
+};
 
 /**
  * Per-process inbound query concurrency cap

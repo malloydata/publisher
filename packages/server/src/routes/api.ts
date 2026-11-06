@@ -48,6 +48,7 @@ import {
    queryVersionIdOf,
    setCollectionReloadError,
 } from "../route_params";
+import { exemptFromSocketTimeout } from "../server_timeouts";
 import { processStorageDestinationsOrThrow } from "../service/connection_config";
 import type { EnvironmentStore } from "../service/environment_store";
 import type { ThemeStore } from "../service/theme_store";
@@ -222,6 +223,9 @@ function registerWatchModeRoutes(
          "x-accel-buffering": "no",
       });
       res.flushHeaders();
+      // The stream stays open until the client leaves; on Bun 1.4 the socket
+      // timeout would end it however recently it wrote a heartbeat.
+      exemptFromSocketTimeout(res);
 
       const watching = watchModeController.isWatching(envName);
       res.write("event: hello\ndata: connected\n\n");

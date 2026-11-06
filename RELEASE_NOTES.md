@@ -21,6 +21,12 @@ Give the heading a title — `## [Unreleased] — what changed`, with an em dash
 
 Two consequences worth knowing. A section merged to `main` ships in the **next** release, whenever that is, so do not write one for work that has not landed. And a heading already stamped with a version is history: a follow-up that changes that behaviour opens a **new** `[Unreleased]` section referencing the shipped version by number, rather than editing the old one.
 
+## [Unreleased] — Runs on Bun 1.4.4, and a query whose client leaves frees its slot and is cancelled where the warehouse allows
+
+Publisher now requires Bun 1.4.4 or later (`engines.bun`), in the Docker image and when building from a clone. 1.4.4 fixes three high-severity Bun advisories, two of which also cover the 1.3.13 the previous image ran: an out-of-bounds write in the bundled brotli decoder (GHSA-663w-cv8g-jj2p, CVE-2026-111497), root certificates that still trusted compromised eMudhra intermediate CAs (GHSA-26q8-h657-pf84), and an HTTP/3 QPACK amplification (GHSA-cf8x-9m69-3gg3, 1.3.14 onward). On 1.4, a query whose client disconnects is cancelled on Snowflake, BigQuery, Databricks and SQL Server instead of running on; on DuckDB, Postgres, MySQL and Trino it still runs to completion. Either way its concurrency slot is released at the disconnect, and so is the slot of a compile, a `sqlSource` call or a model save, none of which can be cancelled. Work that runs on after its client leaves is therefore not counted against `PUBLISHER_MAX_CONCURRENT_QUERIES` (#1482); a server run under Node already behaved this way.
+
+Bun 1.4 also enforces the socket timeout of every listener (REST, MCP and admin), which 1.3 ignored. That timeout now follows `PUBLISHER_QUERY_TIMEOUT_MS`: 10 minutes while the query timeout is under that, otherwise the query timeout plus one minute, so a long query ends with its 504 rather than a dropped connection. `PUBLISHER_QUERY_TIMEOUT_MS=0` now removes the socket limit too. A value above `2147483647` (about 24.8 days) now fails startup: a timer set past it fires after 1 ms, so every query was answered with a 504 at once. The dashboards' live-reload stream stays open past the timeout.
+
 ## [Unreleased] — `--help` and the configuration reference come from the settings registry, and startup logs the settings given
 
 Every setting is described once, in the settings registry 0.12.2 added, and three things are now generated from it:

@@ -91,6 +91,29 @@ export const MAX_CONCURRENT_DRY_RUNS = 2;
  */
 export const DEFAULT_QUERY_TIMEOUT_MS = 300_000;
 /**
+ * Socket timeout (ms) for the REST and MCP servers while the query timeout is
+ * under it. It cuts a request even mid-flight (Node when the socket has sent
+ * nothing this long, Bun 1.4 this long after the request started), so a longer
+ * configured query timeout raises it (see `getServerSocketTimeoutMs`).
+ */
+export const DEFAULT_SOCKET_TIMEOUT_MS = 600_000;
+/**
+ * How long the socket outlives the query timeout, so the timeout's 504 is
+ * written before the socket is torn down.
+ */
+export const SOCKET_TIMEOUT_GRACE_MS = 60_000;
+/**
+ * The longest delay (ms) a timer takes: 2^31 - 1. Node and Bun fire a timer
+ * set past it after 1 ms, so `PUBLISHER_QUERY_TIMEOUT_MS` is refused above it.
+ */
+export const MAX_TIMER_DELAY_MS = 2_147_483_647;
+/**
+ * The largest socket timeout (ms): {@link MAX_TIMER_DELAY_MS}. A query
+ * timeout within a minute of that limit would otherwise push the socket
+ * timeout past it.
+ */
+export const MAX_SOCKET_TIMEOUT_MS = MAX_TIMER_DELAY_MS;
+/**
  * Concurrent query requests per pod; excess requests get a 503 so the load
  * balancer can shed load (`PUBLISHER_MAX_CONCURRENT_QUERIES`; `0` disables).
  * Bounds aggregate memory at ~32x {@link DEFAULT_MAX_RESPONSE_BYTES}.

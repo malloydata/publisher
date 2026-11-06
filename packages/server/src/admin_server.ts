@@ -5,11 +5,13 @@
 // API, no MCP, and no environment store, so the process that holds the catalog
 // credential has nothing of anyone's to serve.
 import "./instrumentation";
+import { getServerSocketTimeoutMs } from "./config";
 import { markReady, registerSignalHandlers } from "./health";
 import { getPrometheusMetricsHandler } from "./instrumentation";
 import { logger } from "./logger";
 import { resolveBoundPort } from "./mcp_config";
 import { createAdminApp } from "./routes/admin";
+import { applyServerTimeouts } from "./server_timeouts";
 import { CatalogAdmin, catalogAdminConfig } from "./service/catalog_admin";
 import { settings } from "./settings";
 
@@ -44,10 +46,9 @@ adminServer.on("error", (error: NodeJS.ErrnoException) => {
    );
    process.exit(1);
 });
-// A file load or a snapshot delete can run for minutes, as on the main API.
-adminServer.timeout = 600000;
-adminServer.keepAliveTimeout = 600000;
-adminServer.headersTimeout = 600000;
+// A file load or a snapshot delete can run for minutes, so this listener takes
+// the main API's socket limits.
+applyServerTimeouts(adminServer, getServerSocketTimeoutMs());
 
 registerSignalHandlers(
    null,
