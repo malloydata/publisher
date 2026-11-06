@@ -8,6 +8,7 @@ import sinon from "sinon";
 import type { components } from "../api";
 import {
    BadRequestError,
+   FrozenConfigError,
    PackageAdmissionRefusedError,
    PackageVersionError,
    BuildPlanUnavailableError,
@@ -1387,5 +1388,142 @@ describe("PackageController.getPackageBuildPlan", () => {
          status: 409,
          json: { reason: "BUILD_PLAN_UNAVAILABLE" },
       });
+   });
+});
+
+describe("PackageController.dryRunPackage", () => {
+   type DryRunOptions = {
+      validate?: (pkg: unknown) => string | undefined;
+      readVersion: boolean;
+      describe: (pkg: unknown, versionId: string | undefined) => unknown;
+   };
+
+   /** A controller whose environment answers a dry run with `answer`. */
+   function controllerWith(
+      answer: (options: DryRunOptions) => Promise<unknown>,
+      { frozen = false, versioned = false } = {},
+   ) {
+      const seen: DryRunOptions[] = [];
+      const environment = {
+         getVersionService: () => (versioned ? {} : null),
+         dryRunInstall: (
+            _name: string,
+            _download: unknown,
+            options: DryRunOptions,
+         ) => {
+            seen.push(options);
+            return answer(options);
+         },
+      };
+      const getEnvironment = sinon.stub().resolves(environment);
+      const controller = new PackageController({
+         publisherConfigIsFrozen: frozen,
+         serverRootPath: os.tmpdir(),
+         getEnvironment,
+      } as unknown as EnvironmentStore);
+      return { controller, seen, getEnvironment };
+   }
+
+   const loadedPackage = {
+      getPackageMetadata: () => ({ name: "pkg", warnings: [] }),
+   };
+   const body = { name: "pkg", location: "gs://bucket/pkg.zip" };
+
+   it("is refused on a frozen server, as a publish is, before anything is loaded", async () => {
+      const { controller, getEnvironment } = controllerWith(async () => ({}), {
+         frozen: true,
+      });
+      await expect(
+         controller.dryRunPackage("env", body),
+      ).rejects.toBeInstanceOf(FrozenConfigError);
+      expect(getEnvironment.called).toBe(false);
+   });
+
+   it("answers the package as it would load, with the location it came from and no serving state", async () => {
+      const { controller, seen } = controllerWith(async (options) =>
+         options.describe(loadedPackage, undefined),
+      );
+      const answer = await controller.dryRunPackage("env", body);
+      expect(answer).toEqual({
+         name: "pkg",
+         warnings: [],
+         location: "gs://bucket/pkg.zip",
+      });
+      expect(seen[0].readVersion).toBe(false);
+   });
+
+   it("with versioning on, reads the tree's version and names it in the answer", async () => {
+      versioningOn();
+      const { controller, seen } = controllerWith(
+         async (options) => options.describe(loadedPackage, "1.2.0"),
+         { versioned: true },
+      );
+      const answer = await controller.dryRunPackage("env", body);
+      expect(seen[0].readVersion).toBe(true);
+      expect((answer as { versionId?: string }).versionId).toBe("1.2.0");
+   });
+
+   it("with versioning on, refuses the request fields a versioned publish refuses, before loading anything", async () => {
+      versioningOn();
+      const { controller, seen } = controllerWith(
+         async (options) => options.describe(loadedPackage, "1.2.0"),
+         { versioned: true },
+      );
+      await expect(
+         controller.dryRunPackage("env", {
+            ...body,
+            manifestLocation: "relative/manifest.json",
+         }),
+      ).rejects.toBeInstanceOf(BadRequestError);
+      await expect(
+         controller.dryRunPackage("env", {
+            ...body,
+            description: 7 as unknown as string,
+         }),
+      ).rejects.toBeInstanceOf(BadRequestError);
+      expect(seen).toHaveLength(0);
+      // A manifest location it can read, and null (serve live), are accepted.
+      await controller.dryRunPackage("env", {
+         ...body,
+         manifestLocation: "gs://bucket/manifest.json",
+      });
+      expect(seen).toHaveLength(1);
+   });
+
+   it("does not read a version when versioning is off", async () => {
+      const { controller, seen } = controllerWith(
+         async (options) => options.describe(loadedPackage, undefined),
+         { versioned: true },
+      );
+      await controller.dryRunPackage("env", body);
+      expect(seen[0].readVersion).toBe(false);
+   });
+
+   it("classifies a failure without logging it, since the route logs it once", async () => {
+      const errorLog = spyOn(logger, "error");
+      try {
+         const { controller } = controllerWith(async () => {
+            throw new Error("EACCES: /var/publisher");
+         });
+         await expect(controller.dryRunPackage("env", body)).rejects.toThrow(
+            "EACCES",
+         );
+         expect(errorLog).not.toHaveBeenCalled();
+      } finally {
+         errorLog.mockRestore();
+      }
+   });
+
+   it("passes a memory-backpressure refusal through as the publish would answer it", async () => {
+      const { controller } = controllerWith(async () => {
+         throw new PackageAdmissionRefusedError("memory pressure");
+      });
+      const error = await controller
+         .dryRunPackage("env", body)
+         .catch((e: unknown) => e);
+      expect(error).toBeInstanceOf(PackageAdmissionRefusedError);
+      expect(
+         internalErrorToHttpError(error as Error, { log: false }).status,
+      ).toBe(503);
    });
 });

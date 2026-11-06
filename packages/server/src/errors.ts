@@ -1004,6 +1004,13 @@ export class ServiceUnavailableError extends Error {
 export class PackageAdmissionRefusedError extends ServiceUnavailableError {}
 
 /**
+ * A dry-run publish refused because the server is already running as many as
+ * it allows (`MAX_CONCURRENT_DRY_RUNS`): a 503 like an admission
+ * refusal, which a caller answers by retrying or asking another server.
+ */
+export class DryRunCapacityError extends PackageAdmissionRefusedError {}
+
+/**
  * A response would exceed a server-side size cap (e.g.
  * `PUBLISHER_MAX_QUERY_ROWS`): 413, refine the query or raise the cap, not retry.
  */
