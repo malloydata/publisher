@@ -520,6 +520,54 @@ source: hub is duckdb.sql("select 1 as id") extend {
    });
 });
 
+describe("a plain copy declared lower in a carried source an open one joins", () => {
+   const model = (yr: string) => `##! experimental.access_modifiers
+#(carries) ["none"]
+source: s is duckdb.table("child") include { internal: * } extend {
+   #(classification) "none"
+   dimension: sid is id
+   #(classification) "pii.direct_identifier"
+   internal dimension: social is name
+   #(classification) "none"
+   dimension: yr is ${yr}
+}
+source: hub is duckdb.table("child") include { internal: * } extend {
+   join_one: r is s on id = r.sid
+}
+`;
+   const QUERIES = [
+      "run: hub -> { group_by: r.yr }",
+      "run: hub extend { dimension: x is r.yr } -> { group_by: x }",
+      "run: hub -> { aggregate: m is count() { where: r.yr = 'north' } }",
+   ];
+
+   it("charges a read of the copy the class it copies", async () => {
+      await withAuthorizeModel(model("social"), async ({ model }) => {
+         for (const query of QUERIES) {
+            const err = await run(model, query).catch((e) => e);
+            expect(err).toBeInstanceOf(BadRequestError);
+            expect((err as Error).message).toContain("source r carries [none]");
+            expect((err as Error).message).toContain(
+               "which is classified pii.direct_identifier",
+            );
+         }
+      });
+   });
+
+   it("twin: serves a computed field declared lower, the author's word for it", async () => {
+      await withAuthorizeModel(
+         model("concat(social, '')"),
+         async ({ model }) => {
+            for (const query of QUERIES) {
+               expect((await run(model, query)).compactResult.length).toBe(
+                  query.includes("count()") ? 1 : 2,
+               );
+            }
+         },
+      );
+   });
+});
+
 describe("an unreadable chain on a joined struct", () => {
    const carried = {
       name: "carried",

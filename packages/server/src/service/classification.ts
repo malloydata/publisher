@@ -852,6 +852,8 @@ export function ceilingRefusal(
       }
       const classes = [
          ...known.classifications,
+         // A copy declared below its input still returns the input.
+         ...(known.passthrough ? known.dropped : []),
          ...known.filtered.flatMap((i) => i.classifications),
       ];
       for (const c of applicable) {
@@ -1631,6 +1633,17 @@ export function classificationLeaks(
                `${where} exposes ${path}, which reads through a source whose #(carries) Publisher cannot read, so what holds it is unknown.`,
             );
          }
+         // The entry's own #(carries), when it declares one, refuses the copy below.
+         const copy =
+            c.ceilings.length > 0 && !carries.declared
+               ? copyLeak(
+                    `${where} joins ${c.ceilings[0].source}, which`,
+                    c.ceilings[0].classes.join(", "),
+                    path,
+                    c,
+                 )
+               : undefined;
+         if (copy) messages.push(copy);
          for (const ceiling of c.ceilings) {
             const off = c.classifications.filter(
                (k) => !ceiling.classes.includes(k),

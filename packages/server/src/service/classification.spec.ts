@@ -1177,6 +1177,44 @@ export { hub }
       expect(await warnings()).toEqual([]);
    });
 
+   it("refuses a plain copy declared lower in a carried source that only an open source joins", async () => {
+      const joined = (yr: string) => {
+         write(
+            "base.malloy",
+            `##! experimental.access_modifiers
+#(carries) ["none"]
+source: s is ${ROWS} include { internal: id, region, ssn, amount } extend {
+   #(classification) "none"
+   dimension: sid is id
+   #(classification) "pii.direct_identifier"
+   internal dimension: social is ssn
+   #(classification) "none"
+   dimension: yr is ${yr}
+}
+source: hub is ${ROWS} include { internal: id, region, ssn, amount } extend {
+   join_one: r is s on id = r.sid
+   #(classification) "none"
+   measure: hc is count()
+}
+`,
+         );
+         write(
+            "index.malloy",
+            `import { hub, s } from "base.malloy"
+export { hub }
+`,
+         );
+      };
+      joined("social");
+      expect(await loadError()).toContain(
+         "source hub (index.malloy) joins r, which carries [none] but exposes r.yr, declared none over a plain copy of r.social (pii.direct_identifier)",
+      );
+      joined("concat(social, '')");
+      expect((await warnings()).map((w) => [w.code, w.subject])).toEqual([
+         [CLASSIFICATION_DOWNGRADE, "hub"],
+      ]);
+   });
+
    const leaksOf = async (source: string, carries = '["none"]') => {
       write("base.malloy", PEOPLE);
       write(
