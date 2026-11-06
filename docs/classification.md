@@ -286,6 +286,9 @@ Both follow what a caller can reach, not what a file declares:
   `#(carries)` on it is still enforced.
 - A view is not classified itself; a view under `#(carries)` is checked by the classes of the
   fields it reads. A join names a relationship and is not classified.
+- A record or array dimension is a field. One built by an expression (`{ v is ssn }`, `[ssn]`)
+  carries what the expression reads, and each of its parts carries the same. A struct column is
+  charged the union of its parts. A part that cannot be resolved fails closed.
 
 ## Known gaps
 
