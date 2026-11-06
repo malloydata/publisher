@@ -24,8 +24,9 @@ Publisher is a microservice, not an internet-facing product. It has no user acco
 authenticate anyone. It is meant to run in one of two ways:
 
 - **Locally, with your own permissions.** On a laptop or workstation, bound to loopback
-  (`--host 127.0.0.1`). Its connections use your own credentials, so it reads exactly what you can
-  already read.
+  (`--host 127.0.0.1`). Its connections use whatever credentials you configure, usually your own, so
+  it reads what those credentials can read. A connection in `publisher.config.json` that carries
+  someone else's credentials reads with theirs.
 - **Inside your existing cloud, behind your gateway.** A service in your own network, reached only
   through an authenticating gateway or the application that embeds it. Its connections use a
   service identity you grant, scoped by your cloud's own IAM.
@@ -42,8 +43,12 @@ stands in front of Publisher and does all of the following:
    untrusted callers.
 4. Blocks the routes a gated package's callers must not use:
    - raw SQL against a connection;
-   - `/compile` at `file` or `package` scope;
-   - the `x-publisher-bypass-authorize` header.
+   - `/compile` at `file` or `package` scope, and the MCP `compile_model` tool at the same scopes;
+   - the `x-publisher-bypass-authorize` header;
+   - the operator write routes: creating, updating or deleting an environment or package, writing a
+     model (`PUT …/models/{path}`), and managing connections. A caller who can write a package can
+     publish an ungated source over the same connection. Block them at the gateway, or set
+     `"frozenConfig": true` so the server refuses them.
 5. Forwards who is asking in the caller header (`x-publisher-caller`, renamed with
    `PUBLISHER_CALLER_HEADER`) and a `traceparent`, so
    the [access record](access-record.md) names the caller.

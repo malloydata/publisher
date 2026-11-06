@@ -291,8 +291,10 @@ Both follow what a caller can reach, not what a file declares:
 
 Reads `#(carries)` does not yet hold to the list:
 
-- A caller query that nests a multi-stage view (`run: s -> { group_by: k nest: v }`) is not traced
-  past the view's first stage, and its access record claims a complete field list.
+- A nest of a multi-stage view is not traced past the view's first stage, whether a caller's query
+  writes it (`run: s -> { group_by: k nest: v }`), an author's view does (`view: outer is
+  { group_by: k nest: v }`), or a named query does. Running the multi-stage view directly is held to
+  the list; nesting it is not, and its access record claims a complete field list.
 - An expression over a classified and an unclassified field takes only the classified input's class.
 - A field that is both read and filtered on loses the filter's contribution.
 - In a multi-stage `->` source, a field computed in a middle stage and declared below its inputs
@@ -300,6 +302,9 @@ Reads `#(carries)` does not yet hold to the list:
   warning, and a later stage serves it.
 - In a multi-stage `->` source, an earlier stage's filter is dropped when a later stage, or a `->`
   source built on it, reads or filters a field of the same name, so its class is lost.
+- A `->` source built on another `->` source does not inherit the filters of that source's query.
+  An output there that reads nothing, such as `count()` declared `"none"`, is not charged the
+  filter, so a count can still test which rows a classified filter admits.
 
 The ceiling also refuses shapes it could serve:
 
