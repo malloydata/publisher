@@ -11,7 +11,8 @@ import {
 import { logger } from "../logger";
 import type { LoadPackageOutcome } from "../package_load/package_load_pool";
 import { llmConfigured } from "../providers/active";
-import type { Package } from "./package";
+import type { PreparedCeilingQueries } from "./classification";
+import type { ApiPackage, Package } from "./package";
 import {
    DEFAULT_PACKAGE_RETRIEVAL,
    assertRequiredStagesAvailable,
@@ -83,9 +84,19 @@ export function warnInvalidExplores(pkg: Package): void {
 /**
  * The manifest and persistence policy gates a freshly loaded package passes
  * before it serves. Most warn; an invalid incremental refresh or
- * pre-aggregation declaration fails the load.
+ * pre-aggregation declaration fails the load. With a `listing`, the package is
+ * judged as that listing would serve it, and keeps its own.
  */
-export async function applyLoadGates(pkg: Package): Promise<void> {
+export async function applyLoadGates(
+   pkg: Package,
+   listing?: Pick<ApiPackage, "explores" | "queryableSources">,
+): Promise<void> {
+   // The only await, ahead of the listing, so no request is served under one the gates have not judged.
+   const prepared = await pkg.prepareCeilingQueries();
+   pkg.underListing(listing, () => judgeLoadGates(pkg, prepared));
+}
+
+function judgeLoadGates(pkg: Package, prepared: PreparedCeilingQueries): void {
    const packageName = pkg.getPackageName();
    warnInvalidExplores(pkg);
    // Same fail-safe split: warn at load, reject at publish.
@@ -125,7 +136,7 @@ export async function applyLoadGates(pkg: Package): Promise<void> {
       );
       throw new BadRequestError(leaks);
    }
-   const ceiling = await pkg.formatCarriesCeilingLeaks();
+   const ceiling = pkg.formatCarriesCeilingLeaks(prepared);
    if (ceiling) {
       logger.error(
          `Package ${packageName} has a query that reads past a source's #(carries)`,

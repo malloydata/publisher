@@ -12,7 +12,9 @@ import * as os from "os";
 import * as path from "path";
 
 import { BadRequestError } from "../errors";
+import { unrecordedAudit } from "./access_record";
 import { Environment } from "./environment";
+import { Model } from "./model";
 import * as loadGates from "./package_load_gates";
 
 const ROWS = `duckdb.sql("select * from (values (1,'org-a'),(2,'org-b')) as t(id, org)")`;
@@ -225,6 +227,77 @@ source: leaky is ${ROWS} extend {
          explores: ["index.malloy", "clean.malloy"],
       });
       expect(updated.queryableSources).not.toBe("all");
+   });
+
+   describe("while the gates are judging a new listing", () => {
+      let release: (error?: Error) => void;
+      let entered: Promise<void>;
+      let held: ReturnType<typeof spyOn>;
+
+      // Hold the gates' async step until the test releases it.
+      beforeEach(() => {
+         const prepared = Model.prototype.preparedCellQueries;
+         const gate = new Promise<void>((resolve, reject) => {
+            release = (error) => (error ? reject(error) : resolve());
+         });
+         let enter: () => void = () => {};
+         entered = new Promise((resolve) => (enter = resolve));
+         held = spyOn(
+            Model.prototype,
+            "preparedCellQueries",
+         ).mockImplementation(async function (this: Model) {
+            enter();
+            await gate;
+            return prepared.call(this);
+         });
+      });
+
+      afterEach(() => {
+         held.mockRestore();
+      });
+
+      const OFF_SURFACE = 'No queryable model "hidden.malloy"';
+      const queryHidden = async () =>
+         (await env.getPackage("pkg", false))
+            .getModel("hidden.malloy")!
+            .getQueryResults(
+               unrecordedAudit(),
+               undefined,
+               undefined,
+               "run: leaky -> { aggregate: c is count() }",
+               {},
+               true,
+            );
+
+      const patchToAll = () =>
+         env
+            .updatePackage("pkg", { name: "pkg", queryableSources: "all" })
+            .then(
+               () => undefined,
+               (e: unknown) => e,
+            );
+
+      it("serves the old listing until they refuse it", async () => {
+         const before = await metadata();
+         const patch = patchToAll();
+         await entered;
+         expect((await metadata()).queryableSources).not.toBe("all");
+         await expect(queryHidden()).rejects.toThrow(OFF_SURFACE);
+         release();
+         expect(await patch).toBeInstanceOf(BadRequestError);
+         expect(await metadata()).toEqual(before);
+      });
+
+      it("keeps the old listing when they throw", async () => {
+         const before = await metadata();
+         const patch = patchToAll();
+         await entered;
+         await expect(queryHidden()).rejects.toThrow(OFF_SURFACE);
+         release(new Error("boom"));
+         expect(((await patch) as Error).message).toBe("boom");
+         expect(await metadata()).toEqual(before);
+         await expect(queryHidden()).rejects.toThrow(OFF_SURFACE);
+      });
    });
 
    it("does not re-run the gates for a PATCH that changes nothing queryable", async () => {

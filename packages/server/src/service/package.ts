@@ -148,6 +148,8 @@ import {
    classificationLeaks,
    packageUsesClassification,
    classificationWarnings,
+   prepareCeilingQueries,
+   type PreparedCeilingQueries,
 } from "./classification";
 import {
    classificationSummary,
@@ -2417,10 +2419,36 @@ export class Package {
       );
    }
 
+   /** The async input of {@link formatCarriesCeilingLeaks}, prepared before a listing is judged. */
+   public prepareCeilingQueries(): Promise<PreparedCeilingQueries> {
+      return prepareCeilingQueries(this.models);
+   }
+
    /** REJECTION messages for every author query that reads past the `#(carries)` of its source, one per line. */
-   public async formatCarriesCeilingLeaks(): Promise<string> {
+   public formatCarriesCeilingLeaks(prepared: PreparedCeilingQueries): string {
       const { isListed } = this.gateScope();
-      return (await carriesCeilingLeaks(this.models, isListed)).join("\n");
+      return carriesCeilingLeaks(prepared, isListed).join("\n");
+   }
+
+   /**
+    * `judge`'s result with `listing` in force, the package's own put back
+    * before it returns. `judge` must be synchronous: nothing can be served
+    * under a listing that is in force only inside one synchronous step.
+    */
+   public underListing<T>(
+      listing: Pick<ApiPackage, "explores" | "queryableSources"> | undefined,
+      judge: () => T,
+   ): T {
+      if (!listing) return judge();
+      const existing = this.packageMetadata;
+      const memo = this.classificationMemo;
+      this.setPackageMetadata({ ...existing, ...listing });
+      try {
+         return judge();
+      } finally {
+         this.setPackageMetadata(existing);
+         this.classificationMemo = memo;
+      }
    }
 
    /** {@link joinBypasses}, memoized: the load gate and the `/status` warnings both read it. */

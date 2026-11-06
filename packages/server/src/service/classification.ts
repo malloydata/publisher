@@ -1636,18 +1636,40 @@ export function classificationWarnings(
    return warnings;
 }
 
+/** Each model with its notebook cells' prepared queries, the async input of {@link carriesCeilingLeaks}. */
+export type PreparedCeilingQueries = ReadonlyArray<{
+   modelPath: string;
+   model: Model;
+   cells: Awaited<ReturnType<Model["preparedCellQueries"]>>;
+}>;
+
+/** Prepare every notebook cell's query, which does not depend on the listing. */
+export async function prepareCeilingQueries(
+   models: ReadonlyMap<string, Model>,
+): Promise<PreparedCeilingQueries> {
+   const prepared = [];
+   for (const [modelPath, model] of models) {
+      prepared.push({
+         modelPath,
+         model,
+         cells: await model.preparedCellQueries(),
+      });
+   }
+   return prepared;
+}
+
 /**
  * Rejections for every author-declared query (a named query, a notebook cell)
  * that reads past the `#(carries)` of the source it enters, so it refuses at
  * load rather than on its first run. A caller's own queries are checked per
  * request ({@link ceilingRefusal}).
  */
-export async function carriesCeilingLeaks(
-   models: ReadonlyMap<string, Model>,
+export function carriesCeilingLeaks(
+   prepared: PreparedCeilingQueries,
    isListed: (modelPath: string) => boolean,
-): Promise<string[]> {
+): string[] {
    const messages: string[] = [];
-   for (const [modelPath, model] of models) {
+   for (const { modelPath, model, cells } of prepared) {
       const modelDef = model.getModelDef();
       // A notebook is served whether or not the package lists it, so its cells are always read.
       const queries: Array<{
@@ -1661,7 +1683,7 @@ export async function carriesCeilingLeaks(
             query,
             modelDef,
          }));
-      (await model.preparedCellQueries()).forEach((cell, i) =>
+      cells.forEach((cell, i) =>
          queries.push({ label: `notebook cell ${i + 1}`, ...cell }),
       );
       for (const { label, query, modelDef: def } of queries) {

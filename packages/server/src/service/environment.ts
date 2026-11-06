@@ -3185,7 +3185,7 @@ export class Environment {
    /**
     * The load gates' refusal for a package under the listing (`explores`,
     * `queryableSources`) a body would give it, empty when the body leaves the
-    * listing as it is or the gates pass. The package's own metadata is put back.
+    * listing as it is or the gates pass. The package keeps its own listing.
     */
    private async gatesRefuseUnder(
       pkg: Package,
@@ -3208,15 +3208,12 @@ export class Environment {
       ) {
          return "";
       }
-      pkg.setPackageMetadata({ ...existing, explores, queryableSources });
       try {
-         await applyLoadGates(pkg);
+         await applyLoadGates(pkg, { explores, queryableSources });
          return "";
       } catch (error) {
          if (error instanceof BadRequestError) return error.message;
          throw error;
-      } finally {
-         pkg.setPackageMetadata(existing);
       }
    }
 
@@ -3286,6 +3283,11 @@ export class Environment {
          materializationBase || queryMetadata !== null
             ? { ...(materializationBase ?? {}), queryMetadata }
             : materializationBase;
+      // Judged before the listing goes live, so a query meanwhile is served
+      // under the old one. Only a change to what is queryable re-runs them.
+      const gateMsg = options.regated
+         ? ""
+         : await this.gatesRefuseUnder(_package, body);
       // Omitted (or null) fields carry over, so a rebind PATCH keeps the
       // `location` a reload reinstalls from and the `resource` an
       // orchestrator identifies the package by. An empty string is a value.
@@ -3318,25 +3320,6 @@ export class Environment {
          normalizedExplores !== undefined
             ? _package.formatInvalidExplores()
             : "";
-      // Only a change to what is queryable re-runs the gates that judge it.
-      const listingChanged =
-         JSON.stringify([explores ?? null, queryableSources ?? "declared"]) !==
-         JSON.stringify([
-            existing.explores ?? null,
-            existing.queryableSources ?? "declared",
-         ]);
-      let gateMsg = "";
-      if (listingChanged && !options.regated) {
-         try {
-            await applyLoadGates(_package);
-         } catch (error) {
-            if (!(error instanceof BadRequestError)) {
-               _package.setPackageMetadata(existing);
-               throw error;
-            }
-            gateMsg = error.message;
-         }
-      }
       const invalidMsg = [exploresMsg, policyMsg, gateMsg]
          .filter(Boolean)
          .join("\n");
