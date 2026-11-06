@@ -1258,6 +1258,22 @@ export { s }
       expect(await warnings()).toEqual([]);
    });
 
+   it("charges an output that reads nothing, like a count, the filters of the stages before it", async () => {
+      const counted = (
+         where: string,
+      ) => `source: s is people -> { where: ${where}; group_by: area } -> {
+   aggregate:
+      #(classification) "none"
+      n is count()
+}`;
+      await leaksOf(counted("social = 'x'"));
+      expect(await loadError()).toContain(
+         "source s (index.malloy) carries [none] but its query filters on social (pii.direct_identifier)",
+      );
+      await leaksOf(counted("area = 'east'"));
+      expect(await warnings()).toEqual([]);
+   });
+
    it("warns on a hidden computed downgrade a published field reads, and not on one nothing reads", async () => {
       const research = (extra: string) =>
          leaksOf(`source: s is people include { internal: social } extend {
