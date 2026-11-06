@@ -26,6 +26,8 @@ import {
    extractPackageEntities,
 } from "./entities/extract";
 import { toApiEntities } from "./entities/to_api";
+import { isUnconditionalDenyAuthorize } from "./entities/access_gates";
+import { splitSourcePath } from "./entities/explore_walk";
 import recursive from "recursive-readdir";
 import { components } from "../api";
 import {
@@ -1543,26 +1545,37 @@ export class Package {
          } catch {
             return [];
          }
+         // The file's export closure, as the model GET limits it: a source it
+         // imports or leaves unexported is not shown, nor one locked with an
+         // unconditional deny.
+         const published = file?.getPublishedNames();
+         const shown = (name: string) => {
+            const root = splitSourcePath(name).rootSourceName;
+            return (
+               (published === undefined || published.has(root)) &&
+               !locked.has(root)
+            );
+         };
          const locked = new Set(
             (model.sources ?? [])
                .filter((s) =>
-                  (s.authorize ?? []).some(
-                     (g) =>
-                        g.route === "authorize" &&
-                        g.expression.trim() === "false",
-                  ),
+                  isUnconditionalDenyAuthorize({
+                     authorize: (s.authorize ?? [])
+                        .filter((g) => g.route === "authorize")
+                        .map((g) => g.expression),
+                     accessFilter: (s.authorize ?? [])
+                        .filter((g) => g.route === "access_filter")
+                        .map((g) => g.expression),
+                  }),
                )
-               .map((s) => s.name),
+               .map((s) => splitSourcePath(s.name).rootSourceName),
          );
-         if (locked.size === 0) return [model];
          return [
             {
                ...model,
-               fields: model.fields?.filter((f) => !locked.has(f.source)),
-               sources: model.sources?.filter((s) => !locked.has(s.name)),
-               sourceSchemas: model.sourceSchemas?.filter(
-                  (s) => !locked.has(s.name),
-               ),
+               fields: model.fields?.filter((f) => shown(f.source)),
+               sources: model.sources?.filter((s) => shown(s.name)),
+               sourceSchemas: model.sourceSchemas?.filter((s) => shown(s.name)),
             },
          ];
       });

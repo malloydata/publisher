@@ -5212,7 +5212,10 @@ components:
 
     PackageStatusEntryFields:
       type: object
-      description: What a `GET /status` entry carries with `PUBLISHER_PACKAGE_INLINE_FIELDS` off.
+      description: >-
+        What a `GET /status` entry carries with `PUBLISHER_PACKAGE_INLINE_FIELDS`
+        off. Each field is declared `deprecated: false` so it overrides the
+        deprecated `Package` field of the same name the `allOf` brings in.
       required: [name]
       properties:
         resource:
@@ -5236,6 +5239,7 @@ components:
             The package's `latest` version; null while none of its versions is
             `latest`. Absent for a package without versions.
         loaded:
+          deprecated: false
           type: boolean
           description: >-
             Set only on a version's entry: whether this server holds the version
@@ -5247,14 +5251,17 @@ components:
             `includeLoading`, with `loaded: false`, no `archiveStatus`, and
             `status.loading`.
         archiveStatus:
+          deprecated: false
           type: string
           enum: [archive, unarchive]
           description: >-
             Set only on a version's entry, except one still being published:
             whether the version is archived.
         status:
+          deprecated: false
           $ref: "#/components/schemas/PackageStatus"
         manifestBindingStatus:
+          deprecated: false
           type: string
           enum:
             - unbound
@@ -5265,6 +5272,7 @@ components:
             See `PackageServingState.manifestBindingStatus`, including the
             invariant a caller reclaiming superseded tables has to hold.
         boundManifestUri:
+          deprecated: false
           type: ["string", "null"]
           description: >-
             The manifest URI actually bound to the served models; null when

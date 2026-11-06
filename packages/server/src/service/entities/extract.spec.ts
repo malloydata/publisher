@@ -170,6 +170,33 @@ source: b is duckdb.table('orders.csv') extend {
       expect(n?.dim_index_fingerprint).toBeUndefined();
    }, 60_000);
 
+   test("a dropped required filter is not a partition key: the source's #(index) dimension is still fingerprinted", async () => {
+      const { files, lookup } = await workspace({
+         "a.malloy": `
+#(filter) name=c1 dimension=nope type=equal required
+source: a is duckdb.table('orders.csv') extend {
+  #(index)
+  dimension: region_label is concat('r-', region)
+}
+`,
+      });
+      const { results, findings } =
+         await packageCompilationService.extractPackage(
+            { modelFiles: files },
+            lookup,
+         );
+      expect(findings.map((f) => f.reason)).toEqual([
+         "required_filter_missing_dimension",
+      ]);
+      const label = results[0]!.entities.find((e) => e.name === "region_label");
+      expect(label?.dim_index_fingerprint?.sql_fingerprint).toMatch(
+         /^[0-9a-f]{64}$/,
+      );
+      expect(label?.dim_index_fingerprint?.required_filter_dimensions).toEqual(
+         [],
+      );
+   }, 60_000);
+
    test("reports every finding within one file, not only the first", async () => {
       const { files, lookup } = await workspace({
          "a.malloy": `

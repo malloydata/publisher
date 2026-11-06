@@ -52,16 +52,16 @@ export function splitSourcePath(sourcePath: string): {
    };
 }
 
-/**
- * Yield every explore reachable from ``explores`` through public joins that
- * ``descend`` admits, along with its composed source-name path.
- */
 /** Whether a walk descends into a public `join` of the source at `parentSourceName`. */
 export type JoinDescentRule = (
    join: MalloyExplore,
    parentSourceName: string,
 ) => boolean;
 
+/**
+ * Yield every explore reachable from ``explores`` through public joins that
+ * ``descend`` admits, along with its composed source-name path.
+ */
 export function* walkExploreTree(
    explores: MalloyExplore[],
    descend: JoinDescentRule = () => true,

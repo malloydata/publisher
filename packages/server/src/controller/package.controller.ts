@@ -243,10 +243,6 @@ export class PackageController {
    }
 
    /**
-    * `GET …/entities`: what every `.malloy` model declares, in the form an
-    * indexer reads, as computed at load.
-    */
-   /**
     * `GET …/entities`: the package's surface, as `GET …/models/{path}` shows
     * it, or with `includeHiddenFilesAndSources` every file and source, for a
     * host that indexes them.

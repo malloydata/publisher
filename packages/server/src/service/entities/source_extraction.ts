@@ -337,6 +337,7 @@ function getEntitiesFromExplore(
             : null,
          joinMetadata,
          nameOverride,
+         explore.sourceStructDef?.dialect ?? null,
       );
       // An ``#(index)``-tagged dimension carries its definitional fingerprint
       // (the compiled-SQL hash and required-filter set), from which a host can
@@ -461,9 +462,8 @@ export class RequiredFilterMissingDimensionError extends Error {
  * Thrown when a `#(filter ... required)` annotation references a dimension that
  * exists but is not public (internal/private). A required filter maps to a
  * dim-index partition key and is applied in queries issued against the source's
- * public surface, so a non-public dimension fails at index and/or query time;
- * refuse the package load (an `EntitiesValidationError`, a 400) rather than
- * produce an unusable index.
+ * public surface, so a non-public dimension fails at index and/or query time.
+ * The load reports it as a package warning and drops the filter.
  */
 export class RequiredFilterNonPublicDimensionError extends Error {
    constructor(message: string) {

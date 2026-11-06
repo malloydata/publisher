@@ -14,6 +14,7 @@ import { AccessModifierEnum, EntityTypeEnum } from "./internal_types";
 import {
    getAccessModifier,
    getDescriptionFromTags,
+   getEntityFromMalloyField,
    inferType,
    isFilePath,
    isMalloyDefined,
@@ -389,6 +390,42 @@ source: nums is duckdb.table('t') extend {
       assert.strictEqual(
          await describeField(model, "pub_label"),
          "Line one.\nLine two.\nLine three.",
+      );
+   });
+});
+
+describe("getEntityFromMalloyField table", () => {
+   const tableOf = (tablePath: string, dialect: string) =>
+      getEntityFromMalloyField(
+         mockDimensionField("d", "dimension: d is true").field,
+         "s",
+         "dimension: d is true",
+         "conn",
+         tablePath,
+         null,
+         null,
+         dialect,
+      ).table_info;
+
+   test("a DuckDB file is reported whole", () => {
+      assert.deepStrictEqual(tableOf("orders.csv", "duckdb"), {
+         connection_name: "conn",
+         catalog_name: null,
+         schema_name: null,
+         table_name: "orders.csv",
+      });
+   });
+
+   test("a warehouse name splits, a BigQuery wildcard table included", () => {
+      assert.deepStrictEqual(tableOf("proj.ds.events_*", "standardsql"), {
+         connection_name: "conn",
+         catalog_name: "proj",
+         schema_name: "ds",
+         table_name: "events_*",
+      });
+      assert.strictEqual(
+         tableOf("warehouse.data.csv", "snowflake")?.table_name,
+         "csv",
       );
    });
 });

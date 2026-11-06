@@ -315,7 +315,7 @@ export function assertNoForbiddenIndexPolicyKeys(
 
 // This file is the authority on which taglines opt a field into the index; keep
 // the accepted #(index)/#(index_values) tag set in sync with
-// index_annotation_parsing.ts's INDEX_TAG_BODY when adding a variant. A host that
+// index_annotation_parsing.ts's INDEX_TAG when adding a variant. A host that
 // recognizes index tags itself must accept the same set.
 //
 // Parenthesis-only on purpose, unlike the gate and agent-hidden matchers, which
@@ -349,12 +349,22 @@ function hasIndexTag(tags: string[]): boolean {
  */
 function requiredFilterDimensionsForExplore(explore: MalloyExplore): string[] {
    try {
-      // A dimension appears once even when two filters require it (a range):
-      // each is one partition key, and one group_by term.
+      // Only the filters the extraction keeps: a required filter on a missing
+      // or non-public dimension is a finding of its own and is dropped, so it
+      // must not become a partition key no query can select. A dimension
+      // appears once even when two filters require it (a range).
+      const publicFields = new Set(
+         (explore.allFields ?? [])
+            .filter((f) => getAccessModifier(f) === AccessModifierEnum.Public)
+            .map((f) => f.name),
+      );
       return [
          ...new Set(
             sourceFilters(explore)
-               .filter((f) => f.required && f.dimension)
+               .filter(
+                  (f) =>
+                     f.required && f.dimension && publicFields.has(f.dimension),
+               )
                .map((f) => f.dimension!),
          ),
       ];

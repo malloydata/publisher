@@ -185,6 +185,49 @@ source: lobby is ${ROWS}
       ).toEqual(["lobby", "vault"]);
    }, 60_000);
 
+   it("GET …/entities limits a surface file to its export closure, and withholds a FALSE-locked source and its nested joins", async () => {
+      const location = writePackage(
+         "closure",
+         {
+            "helper.malloy": `source: helper is ${ROWS}\n`,
+            "main.malloy": `import "helper.malloy"
+#(authorize) FALSE
+source: vault is ${ROWS} extend {
+  join_one: lining is ${ROWS} extend { join_one: deeper is ${ROWS} on id = deeper.id } on id = lining.id
+}
+source: shown is ${ROWS} extend {
+  join_one: helper on id = helper.id
+}
+`,
+         },
+         { explores: ["main.malloy"] },
+      );
+      expect((await publish("closure", location)).status).toBe(200);
+      const models = (await get(pkgUrl("closure", "/entities")))
+         .json as unknown as ModelEntities[];
+      expect(models.map((m) => m.modelPath)).toEqual(["main.malloy"]);
+      const roots = (names: string[]) =>
+         [...new Set(names.map((n) => n.split(".")[0]))].sort();
+      const main = models[0]!;
+      expect(roots((main.sources ?? []).map((s) => s.name))).toEqual(["shown"]);
+      expect(roots((main.fields ?? []).map((f) => f.source))).toEqual([
+         "shown",
+      ]);
+      expect(roots((main.sourceSchemas ?? []).map((s) => s.name))).toEqual([
+         "shown",
+      ]);
+
+      const all = (
+         await get(
+            pkgUrl("closure", "/entities?includeHiddenFilesAndSources=true"),
+         )
+      ).json as unknown as ModelEntities[];
+      const allMain = all.find((m) => m.modelPath === "main.malloy")!;
+      expect(roots((allMain.sources ?? []).map((s) => s.name))).toEqual(
+         expect.arrayContaining(["helper", "shown", "vault"]),
+      );
+   }, 60_000);
+
    it("GET …/build-plan and GET …/embedding-index read the loaded package", async () => {
       const plan = await get(pkgUrl("shop", "/build-plan"));
       expect(plan.status).toBe(200);

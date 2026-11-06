@@ -649,3 +649,21 @@ export const parseAccessFilterBody = (
    }
    return { ok: true, terms };
 };
+
+/**
+ * Whether `apiSource` is denied unconditionally: a bare `false` conjunct on
+ * EITHER route (the routes AND together) denies every caller whatever givens
+ * are supplied. The filter route can carry one as the fail-closed placeholder
+ * for an unattributable gate, so this keys on the deny, not the route.
+ * Case-insensitive, because the wire payload can carry `FALSE` uppercase.
+ */
+export function isUnconditionalDenyAuthorize(apiSource: {
+   accessFilter?: string[];
+   authorize?: string[];
+}): boolean {
+   const isDeny = (expr: string) => expr.trim().toLowerCase() === "false";
+   return (
+      (apiSource.accessFilter ?? []).some(isDeny) ||
+      (apiSource.authorize ?? []).some(isDeny)
+   );
+}

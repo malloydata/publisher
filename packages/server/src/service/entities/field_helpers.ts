@@ -75,6 +75,7 @@ export function getEntityFromMalloyField(
    tablePath: string | null,
    joinSourceMetadata: JoinSourceMetadata | null = null,
    nameOverride: string | null = null,
+   dialect: string | null = null,
 ): Entity {
    // For a leaf field reached through a nested-index join chain, the caller
    // passes a join-qualified path (e.g. "people.primaryName") here while
@@ -91,9 +92,11 @@ export function getEntityFromMalloyField(
    let catalog_name: string | null = null;
    let schema_name: string | null = null;
    let table_name: string | null = null;
-   if (tablePath && isFilePath(tablePath)) {
+   if (tablePath && dialect === "duckdb" && isFilePath(tablePath)) {
       // A file DuckDB reads (`duckdb.table('orders.csv')`) is not a dotted
-      // catalog.schema.table name: report it whole.
+      // catalog.schema.table name: report it whole. Only on DuckDB: a
+      // warehouse name may carry `*` (a BigQuery wildcard table) or a suffix
+      // that looks like a file extension.
       table_name = tablePath;
    } else if (tablePath) {
       const parts = tablePath.split(".");
