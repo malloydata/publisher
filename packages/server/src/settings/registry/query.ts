@@ -9,6 +9,7 @@ import {
    DEFAULT_POSTGRES_POOL_MAX,
    DEFAULT_QUERY_ROW_LIMIT,
    DEFAULT_QUERY_TIMEOUT_MS,
+   MAX_TIMER_DELAY_MS,
 } from "../../constants";
 import { setting } from "../setting";
 import { boolean, integer, number } from "../types";
@@ -44,11 +45,11 @@ export const query = [
    }),
    setting({
       key: "query.timeoutMs",
-      type: integer({ min: 0 }),
+      type: integer({ min: 0, max: MAX_TIMER_DELAY_MS }),
       default: DEFAULT_QUERY_TIMEOUT_MS,
       description:
          "Per-query wall-clock timeout in ms; 0 turns it and the socket timeout off.",
-      notes: "Wall-clock timeout per query (all surfaces). Wired to the underlying SDK via `AbortSignal`; queries that exceed the budget are aborted and return HTTP 504. It also sets the socket timeout of every listener (REST, MCP and admin): 10 minutes, or this plus one minute when that is longer, so a long query ends with its 504 rather than a dropped connection. Set to `0` to disable both: compile and `sqlSource`, which have no timeout of their own, then run until they finish.",
+      notes: "Wall-clock timeout per query (all surfaces). Wired to the underlying SDK via `AbortSignal`; queries that exceed the budget are aborted and return HTTP 504. It also sets the socket timeout of every listener (REST, MCP and admin): 10 minutes, or this plus one minute when that is longer, so a long query ends with its 504 rather than a dropped connection. Set to `0` to disable both: compile and `sqlSource`, which have no timeout of their own, then run until they finish. At most `2147483647` (about 24.8 days), the longest delay a timer takes.",
       defaultText: "`300000` (5 min)",
       aliases: { env: ["PUBLISHER_QUERY_TIMEOUT_MS"] },
    }),

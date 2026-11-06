@@ -32,6 +32,7 @@ import {
    DEFAULT_QUERY_TIMEOUT_MS,
    DEFAULT_SOCKET_TIMEOUT_MS,
    MAX_SOCKET_TIMEOUT_MS,
+   MAX_TIMER_DELAY_MS,
    PUBLISHER_CONFIG_NAME,
    SOCKET_TIMEOUT_GRACE_MS,
 } from "./constants";
@@ -1450,6 +1451,11 @@ describe("getQueryTimeoutMs", () => {
 
    it("rejects a non-numeric override", () => {
       expect(() => timeout("slow")).toThrow();
+   });
+
+   it("rejects an override past a timer's longest delay, which would fire after 1 ms", () => {
+      expect(timeout(String(MAX_TIMER_DELAY_MS))).toBe(MAX_TIMER_DELAY_MS);
+      expect(() => timeout(String(MAX_TIMER_DELAY_MS + 1))).toThrow();
    });
 });
 

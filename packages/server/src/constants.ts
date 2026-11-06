@@ -103,11 +103,16 @@ export const DEFAULT_SOCKET_TIMEOUT_MS = 600_000;
  */
 export const SOCKET_TIMEOUT_GRACE_MS = 60_000;
 /**
- * The largest socket timeout (ms): a timer's 32-bit limit. A longer
- * configured query timeout is capped here rather than left to each runtime's
- * handling of an overflowing timer.
+ * The longest delay (ms) a timer takes: 2^31 - 1. Node and Bun fire a timer
+ * set past it after 1 ms, so `PUBLISHER_QUERY_TIMEOUT_MS` is refused above it.
  */
-export const MAX_SOCKET_TIMEOUT_MS = 2_147_483_647;
+export const MAX_TIMER_DELAY_MS = 2_147_483_647;
+/**
+ * The largest socket timeout (ms): {@link MAX_TIMER_DELAY_MS}. A query
+ * timeout within a minute of that limit would otherwise push the socket
+ * timeout past it.
+ */
+export const MAX_SOCKET_TIMEOUT_MS = MAX_TIMER_DELAY_MS;
 /**
  * Concurrent query requests per pod; excess requests get a 503 so the load
  * balancer can shed load (`PUBLISHER_MAX_CONCURRENT_QUERIES`; `0` disables).
