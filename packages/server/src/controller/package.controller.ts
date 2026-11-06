@@ -712,9 +712,7 @@ export class PackageController {
          sourceLocation: location,
          manifestLocation,
          description: body.description ?? undefined,
-         promotion: getVersionPromotionMode(
-            this.environmentStore.serverRootPath,
-         ),
+         promotion: getVersionPromotionMode(),
          validate: (pkg) => formatPublishRejections(pkg),
       });
       return published.loaded;

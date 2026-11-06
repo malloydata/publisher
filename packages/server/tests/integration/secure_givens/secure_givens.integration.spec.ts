@@ -16,11 +16,21 @@ import * as fs from "fs";
 import * as os from "os";
 import * as path from "path";
 import type { Package } from "../../../src/service/package";
+import { installVariables } from "../../../src/test_helpers/settings_env";
 import { startRestE2E } from "../../harness/rest_e2e";
 
 const ENV_NAME = "secure-givens-env";
 const FLAG = "PUBLISHER_PACKAGE_VERSIONING";
-const savedFlag = process.env[FLAG];
+/** The variables this suite sets, installed over the process's own settings. */
+const variables: Record<string, string | undefined> = {};
+let restoreSettings: (() => void) | undefined;
+
+/** Give the in-process server `name` at `value`, or unset, as a restart with it would. */
+function setVariable(name: string, value: string | undefined): void {
+   variables[name] = value;
+   restoreSettings?.();
+   restoreSettings = installVariables(variables);
+}
 
 const ROWS = `duckdb.sql("select * from (values (1, 'a'), (2, 'b')) as t(id, role)")`;
 
@@ -142,12 +152,11 @@ describe("secureGivens on the package responses", () => {
    }, 180_000);
 
    afterEach(() => {
-      delete process.env[FLAG];
+      setVariable(FLAG, undefined);
    });
 
    afterAll(async () => {
-      if (savedFlag === undefined) delete process.env[FLAG];
-      else process.env[FLAG] = savedFlag;
+      restoreSettings?.();
       await fetch(`${baseUrl}/api/v0/environments/${ENV_NAME}`, {
          method: "DELETE",
       }).catch(() => undefined);
@@ -211,7 +220,7 @@ describe("secureGivens on the package responses", () => {
    }, 120_000);
 
    it("a versioned publish carries it too", async () => {
-      process.env[FLAG] = "on";
+      setVariable(FLAG, "on");
       const location = writePackage("versioned", SECURE_FILES, {
          version: "1.0.0",
       });
