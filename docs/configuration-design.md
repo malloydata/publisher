@@ -296,8 +296,10 @@ The block keeps its shape. Its scalar leaves gain a variable and a flag, and the
 | `EMBEDDING_INDEX_CONNECTION_SCHEMA` | `retrieval.embedding.connectionSchemaIndexingEnabled` | `PUBLISHER_RETRIEVAL_EMBEDDING_CONNECTION_SCHEMA_INDEXING_ENABLED` |
 | `LLM_API_KEY` | `retrieval.llm.apiKey` (secret) | `PUBLISHER_RETRIEVAL_LLM_API_KEY` |
 
-The other `retrieval` keys (`indexing.maxEntities`, `llm.provider`, `llm.model`, …, `egress.preset`)
-keep their file paths and gain derived variables and flags.
+The other `retrieval` keys (`llm.provider`, `llm.model`, …, `egress.preset`, `dimensionValues.enabled`)
+keep their file paths and gain derived variables and flags. `indexing.maxEntities` does nothing since
+[#1469](https://github.com/malloydata/publisher/pull/1469) (startup warns when it is set), so it gains
+none.
 
 ### Settings in open pull requests
 
