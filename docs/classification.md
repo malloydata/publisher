@@ -13,6 +13,13 @@ SPDX-License-Identifier: MIT
 > [authorize.md](authorize.md); to decide what is discoverable at all, see
 > [discovery-and-access.md](discovery-and-access.md).
 
+> **Operating model.** Publisher is a microservice. It runs locally with your own permissions, or
+> inside your cloud behind the gateway or application that authenticates your users; it does not
+> authenticate anyone itself. The controls on this page are evaluated against what each request
+> carries, so they enforce your policy only when that gateway authenticates the user, sets the
+> givens from the verified identity, and is the only way to reach Publisher. See
+> [the operating model](security-posture.md#operating-model-a-microservice-behind-your-gateway).
+
 > **Preview.** `#(carries)` does not yet close every path a read can take; [Known gaps](#known-gaps)
 > lists the open ones. Treat a `#(carries)` list as a review aid, not an enforcement boundary,
 > until they close. A package that declares neither annotation is unaffected.

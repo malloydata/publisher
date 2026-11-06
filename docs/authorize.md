@@ -10,6 +10,13 @@ SPDX-License-Identifier: MIT
 > Runnable example: [examples/governed-analytics](../examples/governed-analytics). For the base
 > mechanism, see [givens.md](givens.md); for row scoping, see [row-level-access.md](row-level-access.md).
 
+> **Operating model.** Publisher is a microservice. It runs locally with your own permissions, or
+> inside your cloud behind the gateway or application that authenticates your users; it does not
+> authenticate anyone itself. The controls on this page are evaluated against what each request
+> carries, so they enforce your policy only when that gateway authenticates the user, sets the
+> givens from the verified identity, and is the only way to reach Publisher. See
+> [the operating model](security-posture.md#operating-model-a-microservice-behind-your-gateway).
+
 **Two annotations, one question each, and the name tells you which.**
 
 | Annotation         | The question it answers                   | A denial is              |

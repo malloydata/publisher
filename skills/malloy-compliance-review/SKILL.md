@@ -34,6 +34,8 @@ reports as the control it breaks. It does not re-derive them.
   review against a server with **no gateway in front**: each persona's givens are sent with the
   request and honored, which is how the check asks "what would this role see". Never point it at a
   production endpoint, where a trusted tier sets those givens and the probe would be meaningless.
+  A pass certifies the package's controls. In production they hold only behind the gateway that
+  authenticates users, sets the givens and blocks raw SQL, so a report says that alongside the verdict.
 - The policy document.
 - A classified model. If fields are unclassified, `skill:malloy-classify` first.
 

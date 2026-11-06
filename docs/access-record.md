@@ -10,6 +10,13 @@ SPDX-License-Identifier: MIT
 > answer. It records; it decides nothing. The gates decide ([authorize.md](authorize.md)), the
 > load refuses ([classification.md](classification.md)), and the pipeline validates.
 
+> **Operating model.** Publisher is a microservice. It runs locally with your own permissions, or
+> inside your cloud behind the gateway or application that authenticates your users; it does not
+> authenticate anyone itself. The controls on this page are evaluated against what each request
+> carries, so they enforce your policy only when that gateway authenticates the user, sets the
+> givens from the verified identity, and is the only way to reach Publisher. See
+> [the operating model](security-posture.md#operating-model-a-microservice-behind-your-gateway).
+
 Every route that runs a query emits one record per request, on success and on refusal alike:
 
 - the REST query route, `POST …/models/{path}/query`;

@@ -11,6 +11,13 @@ SPDX-License-Identifier: MIT
 > source by caller identity, see [authorize.md](authorize.md); to scope **which rows** they see, see
 > [row-level-access.md](row-level-access.md).
 
+> **Operating model.** Publisher is a microservice. It runs locally with your own permissions, or
+> inside your cloud behind the gateway or application that authenticates your users; it does not
+> authenticate anyone itself. The controls on this page are evaluated against what each request
+> carries, so they enforce your policy only when that gateway authenticates the user, sets the
+> givens from the verified identity, and is the only way to reach Publisher. See
+> [the operating model](security-posture.md#operating-model-a-microservice-behind-your-gateway).
+
 **A package's published surface is its `index.malloy`.** Put a file with that name at the package
 root, `import` your models, and `export { … }` the sources you publish. What it exports is what
 Publisher lists **and** what callers may query. Nothing goes in `publisher.json`.

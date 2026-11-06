@@ -11,6 +11,13 @@ SPDX-License-Identifier: MIT
 > [authorize.md](authorize.md) and [row-level-access.md](row-level-access.md), and the record of each
 > query in [access-record.md](access-record.md).
 
+> **Operating model.** Publisher is a microservice. It runs locally with your own permissions, or
+> inside your cloud behind the gateway or application that authenticates your users; it does not
+> authenticate anyone itself. The controls on this page are evaluated against what each request
+> carries, so they enforce your policy only when that gateway authenticates the user, sets the
+> givens from the verified identity, and is the only way to reach Publisher. See
+> [the operating model](security-posture.md#operating-model-a-microservice-behind-your-gateway).
+
 A policy says who may read which data. A package enforces it with gates on its analytical domains,
 a class on every field, and a ceiling on what each domain carries. Some of that Publisher refuses at
 load: a domain exposing a class its `#(carries)` omits, a gate on a given the caller can set, a join
