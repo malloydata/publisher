@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 import { externalEnv, settings } from "../settings";
+import { boolean, Mismatch } from "../settings/types";
 import { createPrivateKey } from "crypto";
 import { existsSync } from "fs";
 import path from "path";
@@ -257,8 +258,20 @@ export function validateDuckdbApiSurface(connection: ApiConnection): void {
    }
 }
 
+/** The connection as stored and returned by the API, `dbmeta` as a boolean. */
 function cloneApiConnection(connection: ApiConnection): ApiConnection {
-   return { ...connection };
+   const clone = { ...connection };
+   const bigquery = connection.bigqueryConnection;
+   if (bigquery?.dbmeta !== undefined) {
+      clone.bigqueryConnection = {
+         ...bigquery,
+         dbmeta: configBoolean(
+            bigquery.dbmeta,
+            `dbmeta on BigQuery connection "${connection.name}"`,
+         ),
+      };
+   }
+   return clone;
 }
 
 export function getStaticConnectionAttributes(
@@ -1315,7 +1328,34 @@ function buildBigQueryEntry(connection: NamedConnection): CoreConnectionEntry {
       maximumBytesBilled: connection.bigqueryConnection?.maximumBytesBilled,
       timeoutMs: connection.bigqueryConnection?.queryTimeoutMilliseconds,
       billingProjectId: connection.bigqueryConnection?.billingProjectId,
+      dbmeta: configBoolean(
+         connection.bigqueryConnection?.dbmeta,
+         `dbmeta on BigQuery connection "${connection.name}"`,
+      ),
    };
+}
+
+const BOOLEAN = boolean();
+
+/**
+ * A boolean connection setting as a boolean. A string, as `${VAR}`
+ * substitution and API clients deliver it, is read the way a boolean setting
+ * is, blank as unset; anything else is refused rather than dropped.
+ */
+function configBoolean(value: unknown, name: string): boolean | undefined {
+   if (value === undefined || value === null) return undefined;
+   if (typeof value === "boolean") return value;
+   if (typeof value === "string") {
+      if (value.trim() === "") return undefined;
+      try {
+         return BOOLEAN.fromString(value);
+      } catch (error) {
+         if (!(error instanceof Mismatch)) throw error;
+      }
+   }
+   throw new Error(
+      `Invalid value for ${name}: expected ${BOOLEAN.expected}, got ${JSON.stringify(value)}`,
+   );
 }
 
 function buildSnowflakeEntry(connection: NamedConnection): CoreConnectionEntry {

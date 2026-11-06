@@ -18,6 +18,9 @@
  * split by the chat model when one is configured (one call per batch of
  * docs, cached by content), and by the rules in {@link splitDocByRules}
  * otherwise, or when the model's call fails.
+ *
+ * What is sent: a node's doc text (see docOnlyText), which on a connection
+ * with `dbmeta` on can be the database's description rather than the model's.
  */
 
 import type { ChatModel } from "../../providers/types";

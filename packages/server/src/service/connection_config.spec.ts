@@ -3,7 +3,12 @@
 
 import { afterEach, beforeEach, describe, expect, it, spyOn } from "bun:test";
 import { generateKeyPairSync } from "crypto";
+import fs from "fs";
+import os from "os";
+import path from "path";
 import { components } from "../api";
+import { getProcessedPublisherConfig } from "../config";
+import { PUBLISHER_CONFIG_NAME } from "../constants";
 import { logger } from "../logger";
 import {
    assembleEnvironmentConnections,
@@ -11,6 +16,7 @@ import {
    validateStorageDestinations,
 } from "./connection_config";
 import { installSettings } from "../test_helpers/settings_env";
+import { toPublicConnection } from "./connection_public_view";
 
 type ApiConnection = components["schemas"]["Connection"];
 
@@ -1182,6 +1188,109 @@ describe("assembleEnvironmentConnections — bigquery projectId", () => {
          },
       ]);
       expect(pojo.connections["bq"].projectId).toBe("data-project");
+   });
+});
+
+describe("assembleEnvironmentConnections — bigquery dbmeta", () => {
+   const bigquery = (dbmeta?: unknown): ApiConnection => ({
+      name: "bq",
+      type: "bigquery",
+      bigqueryConnection: {
+         defaultProjectId: "data-project",
+         dbmeta: dbmeta as boolean | undefined,
+      },
+   });
+
+   it("forwards dbmeta to the core entry", () => {
+      const { pojo } = assembleEnvironmentConnections([bigquery(true)]);
+      expect(pojo.connections["bq"].dbmeta).toBe(true);
+   });
+
+   it("leaves dbmeta off when the connection does not set it", () => {
+      const { pojo } = assembleEnvironmentConnections([bigquery()]);
+      expect(pojo.connections["bq"].dbmeta).toBeUndefined();
+   });
+
+   it("forwards an explicit false", () => {
+      const { pojo } = assembleEnvironmentConnections([bigquery(false)]);
+      expect(pojo.connections["bq"].dbmeta).toBe(false);
+   });
+
+   it.each([
+      ["true", true],
+      ["On", true],
+      ["false", false],
+      ["0", false],
+      ["", undefined],
+   ])(
+      "reads the string %p, as ${VAR} substitution delivers it",
+      (raw, want) => {
+         const { pojo } = assembleEnvironmentConnections([bigquery(raw)]);
+         expect(pojo.connections["bq"].dbmeta).toBe(want);
+      },
+   );
+
+   it.each([
+      ["true", true],
+      ["false", false],
+   ])(
+      "stores the string %p as a boolean, and the API returns it so",
+      (raw, want) => {
+         const { apiConnections } = assembleEnvironmentConnections([
+            bigquery(raw),
+         ]);
+         expect(apiConnections[0].bigqueryConnection?.dbmeta).toBe(want);
+         expect(
+            toPublicConnection(apiConnections[0]).bigqueryConnection?.dbmeta,
+         ).toBe(want);
+      },
+   );
+
+   it("returns a ${VAR} value from publisher.config.json as a boolean", () => {
+      const serverRoot = fs.mkdtempSync(path.join(os.tmpdir(), "dbmeta-"));
+      process.env.BQ_DBMETA = "true";
+      try {
+         fs.writeFileSync(
+            path.join(serverRoot, PUBLISHER_CONFIG_NAME),
+            JSON.stringify({
+               frozenConfig: true,
+               environments: [
+                  {
+                     name: "env",
+                     packages: [{ name: "pkg", location: "./pkg" }],
+                     connections: [
+                        {
+                           name: "bq",
+                           type: "bigquery",
+                           bigqueryConnection: {
+                              defaultProjectId: "data-project",
+                              dbmeta: "${BQ_DBMETA}",
+                           },
+                        },
+                     ],
+                  },
+               ],
+            }),
+         );
+         const [environment] =
+            getProcessedPublisherConfig(serverRoot).environments;
+         const { apiConnections, pojo } = assembleEnvironmentConnections(
+            environment.connections,
+         );
+         expect(pojo.connections["bq"].dbmeta).toBe(true);
+         expect(
+            toPublicConnection(apiConnections[0]).bigqueryConnection?.dbmeta,
+         ).toBe(true);
+      } finally {
+         delete process.env.BQ_DBMETA;
+         fs.rmSync(serverRoot, { recursive: true, force: true });
+      }
+   });
+
+   it.each(["ture", 1])("refuses %p", (raw) => {
+      expect(() => assembleEnvironmentConnections([bigquery(raw)])).toThrow(
+         /Invalid value for dbmeta on BigQuery connection "bq"/,
+      );
    });
 });
 

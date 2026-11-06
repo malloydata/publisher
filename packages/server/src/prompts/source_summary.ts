@@ -44,7 +44,7 @@ const REPLY_FORMAT = `Reply with one JSON object and nothing else:
 /** What the model is shown for one source. Nothing else leaves the server. */
 export interface SourceSummaryPromptInput {
    source: string;
-   /** The source's `#(doc)` text, flattened to one line; empty when it has none. */
+   /** The source's doc text (see docOnlyText), flattened to one line; empty when it has none. */
    doc: string;
    /** The rendered field list; see renderSourceFields. */
    fields: string;

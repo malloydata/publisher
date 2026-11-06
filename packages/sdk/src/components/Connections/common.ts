@@ -117,6 +117,16 @@ export const connectionFieldsByType: Record<
          type: "text",
          required: false,
       },
+      {
+         label: "Database Metadata",
+         name: "dbmeta",
+         type: "text",
+         required: false,
+         selectOptions: [
+            { label: "No", value: "false" },
+            { label: "Yes", value: "true" },
+         ],
+      },
    ],
    snowflake: [
       {
@@ -411,6 +421,9 @@ export const attributesFieldName: Record<ConnectionTypeEnum, string> = {
 const TYPED_FIELDS: Partial<
    Record<ConnectionTypeEnum, Record<string, "integer" | "boolean">>
 > = {
+   bigquery: {
+      dbmeta: "boolean",
+   },
    sqlserver: {
       port: "integer",
       encrypt: "boolean",
