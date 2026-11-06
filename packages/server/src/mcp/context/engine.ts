@@ -34,6 +34,7 @@ import type { EnvironmentStore } from "../../service/environment_store";
 import { alsoLikelyOn, fcjSettingsOf } from "../../service/package_retrieval";
 import { logger } from "../../logger";
 import { activeLlmSettings } from "../../providers/active";
+import { settings } from "../../settings";
 import type { ChatModel } from "../../providers/types";
 import { LlmMeter } from "../tools/get_context_llm";
 import { jsonResource, jsonToolError } from "../tool_response";
@@ -97,13 +98,12 @@ export type TraceMode = "none" | "summary" | "full";
 
 /**
  * `PUBLISHER_MCP_TRACE=retrieval` writes each ranked call's stage summary to
- * the server log, one line per call, and adds nothing to any response. Read on
- * each call so a test can change it.
+ * the server log, one line per call, and adds nothing to any response.
  */
 export const TRACE_ENV = "PUBLISHER_MCP_TRACE";
 
 function traceToLog(): boolean {
-   return process.env[TRACE_ENV]?.trim().toLowerCase() === "retrieval";
+   return settings.get("mcp.trace") === "retrieval";
 }
 
 /** One row of the stage trace. */

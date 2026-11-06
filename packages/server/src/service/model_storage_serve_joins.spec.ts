@@ -28,6 +28,26 @@ import { join } from "path";
 import { pathToFileURL } from "url";
 import { Model } from "./model";
 import type { ServeBinding } from "./materialization_serve_transform";
+import { installSettings } from "../test_helpers/settings_env";
+
+/** Puts back the settings the current test installed. */
+let restoreSettings: (() => void) | undefined;
+
+/**
+ * Install PERSIST_STORAGE_MODE=`mode` for this test, before its model is built;
+ * every other setting is at its default.
+ */
+function setStorageMode(mode: string): void {
+   restoreSettings?.();
+   restoreSettings = installSettings({
+      env: { PERSIST_STORAGE_MODE: mode },
+   }).restore;
+}
+
+afterEach(() => {
+   restoreSettings?.();
+   restoreSettings = undefined;
+});
 
 const MODEL_SRC = `source: regions is duckdb.sql("SELECT 'r1' AS region_id, 'LIVE' AS region_name")
 source: orders is duckdb.sql("SELECT 10 AS amount, 'r1' AS region_id") extend {
@@ -136,15 +156,12 @@ const VIEW_QUERY = "run: orders -> by_region";
 const PLAIN_QUERY = "run: orders -> { aggregate: t is amount.sum() }";
 
 describe("storage= serve routing with joins and views (end-to-end)", () => {
-   afterEach(() => {
-      delete process.env.PERSIST_STORAGE_MODE;
-   });
    afterAll(() => {
       for (const d of tmpDirs) rmSync(d, { recursive: true, force: true });
    });
 
    it("serves a join query from the materialized tables when both sources are bound", async () => {
-      process.env.PERSIST_STORAGE_MODE = "on";
+      setStorageMode("on");
       const model = await buildModel();
       model.setServeBindings([ORDERS_BINDING, REGIONS_BINDING]);
       const row = await runRow<{ region_name: string }>(model, JOIN_QUERY);
@@ -152,7 +169,7 @@ describe("storage= serve routing with joins and views (end-to-end)", () => {
    });
 
    it("serves a named view (grouping by a joined field) from the materialized tables", async () => {
-      process.env.PERSIST_STORAGE_MODE = "on";
+      setStorageMode("on");
       const model = await buildModel();
       model.setServeBindings([ORDERS_BINDING, REGIONS_BINDING]);
       const row = await runRow<{ region_name: string; total: number }>(
@@ -164,7 +181,7 @@ describe("storage= serve routing with joins and views (end-to-end)", () => {
    });
 
    it("falls back to live when the joined source is not materialized (the gate)", async () => {
-      process.env.PERSIST_STORAGE_MODE = "on";
+      setStorageMode("on");
       const model = await buildModel();
       // Only `orders` is bound; the join to `regions` is not carried, so a query
       // traversing it cannot compile against the serve shape → live.
@@ -175,7 +192,7 @@ describe("storage= serve routing with joins and views (end-to-end)", () => {
    });
 
    it("a view that reaches a non-materialized join does not disable base serving (escalation)", async () => {
-      process.env.PERSIST_STORAGE_MODE = "on";
+      setStorageMode("on");
       const model = await buildModel();
       // Only `orders` bound: the join is gated out, so the emitted `by_region`
       // view references an absent join and the RICH shape fails to compile. The
@@ -192,7 +209,7 @@ describe("storage= serve routing with joins and views (end-to-end)", () => {
    });
 
    it("mode=off serves live even with both bindings present", async () => {
-      process.env.PERSIST_STORAGE_MODE = "off";
+      setStorageMode("off");
       const model = await buildModel();
       model.setServeBindings([ORDERS_BINDING, REGIONS_BINDING]);
       expect(
@@ -252,12 +269,8 @@ async function runGivens(
 }
 
 describe("storage= serve routing with a caller join to a row-gated source", () => {
-   afterEach(() => {
-      delete process.env.PERSIST_STORAGE_MODE;
-   });
-
    it("serves the ungated run target alone from storage (control)", async () => {
-      process.env.PERSIST_STORAGE_MODE = "on";
+      setStorageMode("on");
       const model = await buildGatedModel();
       const row = await runGivens(
          model,
@@ -267,7 +280,7 @@ describe("storage= serve routing with a caller join to a row-gated source", () =
    });
 
    it("serves an author join into the row-gated source from storage", async () => {
-      process.env.PERSIST_STORAGE_MODE = "on";
+      setStorageMode("on");
       const model = await buildGatedModel();
       const row = await runGivens(
          model,
@@ -278,7 +291,7 @@ describe("storage= serve routing with a caller join to a row-gated source", () =
    });
 
    it("runs live when the request joins the row-gated source itself", async () => {
-      process.env.PERSIST_STORAGE_MODE = "on";
+      setStorageMode("on");
       const model = await buildGatedModel();
       const row = await runGivens(
          model,

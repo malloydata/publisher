@@ -1,6 +1,7 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
+import { isUnconditionalDenyAuthorize } from "../../service/entities/access_gates";
 import path from "path";
 import { fileURLToPath } from "url";
 import type { Relationship } from "@malloydata/malloy-interfaces";
@@ -651,24 +652,6 @@ function collectJoinedFields(args: {
 }
 
 /**
- * Whether `apiSource` is denied unconditionally: a bare `false` conjunct on
- * EITHER route (the routes AND together) denies every caller whatever givens
- * are supplied. The filter route can carry one as the fail-closed placeholder
- * for an unattributable gate, so this keys on the deny, not the route.
- * Case-insensitive, because the wire payload can carry `FALSE` uppercase.
- */
-function isUnconditionalDenyAuthorize(apiSource: {
-   accessFilter?: string[];
-   authorize?: string[];
-}): boolean {
-   const isDeny = (expr: string) => expr.trim().toLowerCase() === "false";
-   return (
-      (apiSource.accessFilter ?? []).some(isDeny) ||
-      (apiSource.authorize ?? []).some(isDeny)
-   );
-}
-
-/**
  * Walk every model in the package and collect sources, their views, fields
  * and joins, and named queries. Source drill-down is applied by the caller.
  */
@@ -1234,11 +1217,13 @@ export function entityCardKey(e: {
 const ONE_LINE_SUMMARY_MAX_CHARS = 120;
 
 /**
- * A source's doc reduced to a catalog label: its first sentence or line,
- * capped. Undocumented sources get nothing rather than a fabricated summary.
+ * A doc reduced to a catalog label: its first sentence or line (blank lines
+ * before it skipped), capped. Used for a source's card and for a package in
+ * a get_context listing, so one text gets one summary. Undocumented sources
+ * get nothing rather than a fabricated summary.
  */
-function oneLineSummary(doc: string): string | undefined {
-   const firstLine = doc.split("\n")[0]?.trim();
+export function oneLineSummary(doc: string): string | undefined {
+   const firstLine = doc.trim().split("\n")[0]?.trim();
    if (!firstLine) return undefined;
    const sentenceEnd = firstLine.search(/[.!?](\s|$)/);
    const summary =

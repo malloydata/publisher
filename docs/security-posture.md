@@ -83,8 +83,8 @@ Concretely:
     prose is refused with 400; gates live in the model file.
 - **Error bodies name the server's own paths, deliberately.** A filesystem access the server
   cannot make (`EACCES`, `EPERM`, `EROFS`) answers 500 naming the errno, the operation and the
-  path, and `/api/v0/status` names the config path in `initError` and the failing path in a
-  `loadErrors` entry. Those are the server's own paths -- a mount the operator has to fix -- and
+  path, and `/api/v0/status` names a server root it cannot write in `initError` and the failing
+  path in a `loadErrors` entry. Those are the server's own paths -- a mount the operator has to fix -- and
   the message is composed from the errno's fields, never copied from a driver or an SDK. Every
   other 5xx keeps the generic body, because its message can carry a warehouse host, caller SQL
   or a connection string, and a recorded load failure never says more than the response did.
@@ -237,8 +237,12 @@ It becomes a gap the moment one worker process serves more than one tenant, beca
 happen on a host holding another tenant's data. The control belongs at the layer that knows a
 request is untrusted, which Publisher does not: **a multi-tenant deployment must reject
 caller-supplied Malloy constructs before they reach compile.** Malloy's restricted mode is the
-mechanism -- it refuses `.sql()`, `.table()`, `import` and `given:` -- and the query path already
-uses it via `loadRestrictedQuery`. An egress policy denying link-local is the network-layer
+mechanism -- it refuses `.sql()`, `.table()`, direct SQL function calls and the `sql_*` functions,
+`import`, and `##!` flags (which also keeps out `given:` declarations) -- and the query path already
+uses it via `loadRestrictedQuery`. It does not stop a query from defining or extending sources, so
+a caller can still read an `internal:` field (`include { public: f }`); keep any data callers must
+not read in `private:` fields or behind an `#(authorize)` gate.
+An egress policy denying link-local is the network-layer
 backstop that survives a restricted-mode bypass.
 
 Do not reach for DuckDB's own `securityPolicy` to close this. `sandboxed` sets

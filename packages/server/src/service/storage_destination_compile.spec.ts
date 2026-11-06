@@ -44,6 +44,7 @@ import {
    startClosingListener,
    type ClosingListener,
 } from "../test_helpers/closing_listener";
+import { installSettings } from "../test_helpers/settings_env";
 import {
    buildEnvironmentMalloyConfig,
    restrictMalloyConfigToConnections,
@@ -91,15 +92,17 @@ function ducklakeDestination(name: string): ApiConnection {
    };
 }
 
-const ORIGINAL_WORKERS = process.env.PACKAGE_LOAD_WORKERS;
+/** The settings every case here runs under, installed before the pool. */
+const BASE_ENV = { PACKAGE_LOAD_WORKERS: "1" };
 
 describe("a storage destination is not in the namespace a tenant authors in", () => {
    let tempDir: string;
    let envDir: string;
    let pool: PackageLoadPool;
+   let restoreSettings: () => void;
 
    beforeAll(async () => {
-      process.env.PACKAGE_LOAD_WORKERS = "1";
+      restoreSettings = installSettings({ env: BASE_ENV }).restore;
       pool = new PackageLoadPool(1);
       await __setPackageLoadPoolForTests(pool);
       unreachableCatalog = await startClosingListener();
@@ -108,9 +111,7 @@ describe("a storage destination is not in the namespace a tenant authors in", ()
    afterAll(async () => {
       await unreachableCatalog.close();
       await __setPackageLoadPoolForTests(null);
-      if (ORIGINAL_WORKERS === undefined)
-         delete process.env.PACKAGE_LOAD_WORKERS;
-      else process.env.PACKAGE_LOAD_WORKERS = ORIGINAL_WORKERS;
+      restoreSettings();
    });
 
    beforeEach(() => {
@@ -314,7 +315,7 @@ describe("a storage destination is not in the namespace a tenant authors in", ()
       // `StorageServeShape` collaborator a routed query compiles through.
       const configured = spyOn(Model.prototype, "setServeDestinationConfig");
       const shapes = spyOn(StorageServeShape.prototype, "loadServeShapeQuery");
-      const originalMode = process.env.PERSIST_STORAGE_MODE;
+      let restoreMode: (() => void) | undefined;
       const providerOf = (target: Model) => {
          const call = configured.mock.contexts.lastIndexOf(target);
          return call < 0 ? undefined : configured.mock.calls[call][0];
@@ -364,7 +365,9 @@ describe("a storage destination is not in the namespace a tenant authors in", ()
          // it gets as far as needing that connection's dialect, which it can only
          // ask for after the name has resolved. The catalog is unreachable, so
          // the query itself falls back to live and still answers.
-         process.env.PERSIST_STORAGE_MODE = "on";
+         restoreMode = installSettings({
+            env: { ...BASE_ENV, PERSIST_STORAGE_MODE: "on" },
+         }).restore;
          const answered = await model.getQueryResults(
             undefined,
             undefined,
@@ -404,9 +407,7 @@ describe("a storage destination is not in the namespace a tenant authors in", ()
       } finally {
          configured.mockRestore();
          shapes.mockRestore();
-         if (originalMode === undefined)
-            delete process.env.PERSIST_STORAGE_MODE;
-         else process.env.PERSIST_STORAGE_MODE = originalMode;
+         restoreMode?.();
       }
    });
 

@@ -1,6 +1,7 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
+import { externalEnv } from "../settings";
 import "@malloydata/db-bigquery";
 import type { BigQueryConnection } from "@malloydata/db-bigquery";
 import "@malloydata/db-databricks";
@@ -687,8 +688,8 @@ function mapUriQuery(uri: string, fn: (params: string[]) => string[]): string {
  */
 function libpqSslmodeInRawString(connectionString: string): string {
    const envNoVerify =
-      process.env.PGSSLMODE?.toLowerCase() === "no-verify" &&
-      !process.env.PGSERVICE;
+      externalEnv("PGSSLMODE")?.toLowerCase() === "no-verify" &&
+      !externalEnv("PGSERVICE");
    const rewritten = `sslmode=${LIBPQ_NO_VERIFY_SSLMODE}`;
    if (isUriConnectionString(connectionString)) {
       return mapUriQuery(connectionString, (params) => {
@@ -810,11 +811,12 @@ function libpqConnectionString(
  * The libpq conninfo a DuckDB `TYPE postgres` attach opens a postgres connection
  * with.
  *
- * `applyConnectionOptions` decides whether the connection's own `sslmode` and
- * `statementTimeoutMilliseconds` reach the string: false for a DuckLake
- * catalog, true for an attached database and a federated source. When false or
- * unset, TLS comes from the deployment PGSSLMODE. A raw connectionString keeps
- * its own settings, but `sslmode=no-verify` (or an inherited
+ * A connection given as fields uses its own `sslmode` when it sets one, and the
+ * deployment PGSSLMODE otherwise. `applyConnectionOptions` decides whether
+ * `statementTimeoutMilliseconds` reaches the string: false for a DuckLake
+ * catalog, true for an attached database and a federated source. A raw
+ * connectionString keeps its own settings (and, for a catalog, ignores the
+ * `sslmode` field), but `sslmode=no-verify` (or an inherited
  * PGSSLMODE=no-verify) becomes `require`, which libpq accepts.
  *
  * Exported for tests.
@@ -848,19 +850,22 @@ export function buildPgConnectionString(
 
    if (applyConnectionOptions) {
       parts.push(...libpqStatementTimeoutParts(name, pg));
-      if (pg.sslmode != null) {
-         parts.push(
-            ...libpqSslmodeParts(
-               `Connection '${name}'`,
-               pg.sslmode,
-               defaultProxiedAttachTrust(),
-            ),
-         );
-         return parts.join(" ");
-      }
+   }
+   // A DuckLake catalog honors its own sslmode too: libpq keeps the last
+   // sslmode it reads, so falling through to PGSSLMODE (allow on a worker)
+   // would make every catalog attach try plaintext first.
+   if (pg.sslmode != null) {
+      parts.push(
+         ...libpqSslmodeParts(
+            `Connection '${name}'`,
+            pg.sslmode,
+            defaultProxiedAttachTrust(),
+         ),
+      );
+      return parts.join(" ");
    }
 
-   const pgSSLMode = process.env.PGSSLMODE;
+   const pgSSLMode = externalEnv("PGSSLMODE");
 
    if (pgSSLMode) {
       const mapping: Record<string, string> = {
@@ -1869,7 +1874,7 @@ export interface ProxiedAttachTrust {
 
 export function defaultProxiedAttachTrust(): ProxiedAttachTrust {
    return {
-      caBundle: process.env.NODE_EXTRA_CA_CERTS || undefined,
+      caBundle: externalEnv("NODE_EXTRA_CA_CERTS") || undefined,
       ambientBundle: ambientTrustBundlePath,
    };
 }
@@ -1889,7 +1894,7 @@ let ambientTrustDir: string | undefined;
  * startup, so the build trusts what the query path does. Exported for tests.
  */
 export function ambientTrustBundlePath(): string {
-   const extra = process.env.NODE_EXTRA_CA_CERTS || undefined;
+   const extra = externalEnv("NODE_EXTRA_CA_CERTS") || undefined;
    const cached = ambientTrustBundles.get(extra);
    if (cached) return cached;
    let extraPem: string | undefined;
@@ -2704,7 +2709,7 @@ function buildSnowflakePrivateKeyConnection(
 // `no-verify` encrypts without checking, `disable` uses no TLS. `verify-full`
 // needs an `ssl` object with `servername` (see resolveProxiedTls).
 export function buildProxiedSslQuery(name: string, sslmode?: string): string {
-   const caBundle = process.env.NODE_EXTRA_CA_CERTS;
+   const caBundle = externalEnv("NODE_EXTRA_CA_CERTS");
    // Default to encrypting so a force-SSL target (common on RDS) is not
    // rejected for plaintext.
    const mode = sslmode ?? "no-verify";

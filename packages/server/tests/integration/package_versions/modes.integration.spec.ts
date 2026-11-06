@@ -28,7 +28,7 @@ import fs from "fs/promises";
 import os from "os";
 import path from "path";
 import { RestE2EEnv, startRestE2E } from "../../harness/rest_e2e";
-import { versioningOnForSuite } from "../../harness/versioning";
+import { installVariables } from "../../../src/test_helpers/settings_env";
 
 const ENV_NAME = "versioning-modes-env";
 const PLAIN_ENV = "versioning-modes-plain-env";
@@ -254,19 +254,27 @@ const route = (name: string): Route => {
 };
 
 describe("package versions across promotion modes and package kinds", () => {
-   versioningOnForSuite();
+   // Versioning on for the suite, with the promotion a case sets over it.
+   const variables: Record<string, string | undefined> = {
+      PUBLISHER_PACKAGE_VERSIONING: "on",
+   };
+   let restoreSettings: (() => void) | undefined;
+   function installSuiteVariables(): void {
+      restoreSettings?.();
+      restoreSettings = installVariables(variables);
+   }
+   beforeAll(installSuiteVariables);
 
    let env: (RestE2EEnv & { stop(): Promise<void> }) | null = null;
    let baseUrl: string;
    let scratch: string;
-   const savedPromotion = process.env.PUBLISHER_VERSION_PROMOTION;
 
    const pkgApi = (name: string, environment = ENV_NAME) =>
       `${baseUrl}/api/v0/environments/${environment}/packages/${name}`;
 
    function setPromotion(promotion?: "explicit") {
-      if (promotion) process.env.PUBLISHER_VERSION_PROMOTION = promotion;
-      else delete process.env.PUBLISHER_VERSION_PROMOTION;
+      variables.PUBLISHER_VERSION_PROMOTION = promotion;
+      installSuiteVariables();
    }
 
    /** A package directory whose model, files and page answer `n`. */
@@ -408,9 +416,7 @@ describe("package versions across promotion modes and package kinds", () => {
    });
 
    afterAll(async () => {
-      if (savedPromotion === undefined)
-         delete process.env.PUBLISHER_VERSION_PROMOTION;
-      else process.env.PUBLISHER_VERSION_PROMOTION = savedPromotion;
+      restoreSettings?.();
       if (env) {
          for (const name of [ENV_NAME, PLAIN_ENV]) {
             await fetch(`${baseUrl}/api/v0/environments/${name}`, {

@@ -103,7 +103,7 @@ Two tools, in this order.
 - Omit a target's `search_text` to enumerate that type instead of ranking it. A lone `{"target_type": "source"}` is the catalog browse, which returns a thin card per source (a one-line summary rather than the full doc) and pages with `offset` and `next_offset`.
 - Add `source` to the scope to narrow to one source, which is also how to read that source's full doc after a browse.
 
-`scopes` is required and takes exactly one entry, because retrieval is indexed per package.
+A search takes exactly one `scopes` entry, because retrieval is indexed per package. With no `search_targets`, `get_context` lists instead: no arguments lists the environments, `environment` lists that environment's packages, a package in `scopes` lists its sources, and a source lists its fields. A level with only one choice is entered, so on a server with one package a call with no arguments returns its sources.
 
 Use the names it returns exactly. Do not invent environments, packages, sources, or fields. A field reached through a join is named by its full dotted path; pass it verbatim rather than rebuilding it. So is a member of a record column (`delivery.city`). A member of a repeated record has `relationship: "many"`: grouping or aggregating by it counts each element, not each row.
 

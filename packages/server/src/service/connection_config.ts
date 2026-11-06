@@ -1,6 +1,7 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
+import { externalEnv, settings } from "../settings";
 import { createPrivateKey } from "crypto";
 import { existsSync } from "fs";
 import path from "path";
@@ -10,7 +11,6 @@ import {
    ConnectionOrigin,
    getExtensionFetchPolicy,
    isDuckdbSetupSqlAllowed,
-   parseBoolEnv,
 } from "../config";
 import { BadRequestError } from "../errors";
 import { logger } from "../logger";
@@ -55,7 +55,7 @@ function validatePostgresSslmode(subject: string, sslmode: string): void {
       );
    }
    if (sslmode === "verify-ca") {
-      const caBundle = process.env.NODE_EXTRA_CA_CERTS;
+      const caBundle = externalEnv("NODE_EXTRA_CA_CERTS");
       if (!caBundle || !existsSync(caBundle)) {
          throw new Error(
             `${subject} uses sslmode 'verify-ca' but no readable ` +
@@ -380,7 +380,7 @@ function directSslParams(
          return {
             uselibpqcompat: "true",
             sslmode: "verify-ca",
-            sslrootcert: process.env.NODE_EXTRA_CA_CERTS ?? "",
+            sslrootcert: externalEnv("NODE_EXTRA_CA_CERTS") ?? "",
          };
    }
 }
@@ -404,14 +404,15 @@ export function buildPostgresConnectionString(
    }
 
    const params = new URLSearchParams();
+   const pgSslmode = externalEnv("PGSSLMODE");
    if (applySslmode && config.sslmode != null) {
       for (const [key, value] of Object.entries(
          directSslParams(config.sslmode),
       )) {
          params.set(key, value);
       }
-   } else if (process.env.PGSSLMODE) {
-      params.set("sslmode", process.env.PGSSLMODE);
+   } else if (pgSslmode) {
+      params.set("sslmode", pgSslmode);
    } else {
       return undefined;
    }
@@ -546,7 +547,7 @@ function validateProxyShape(
    // Config load can throw, so a misspelled opt-in (`=ture`) is caught here
    // rather than read as "off"; the connect-time check in proxy.ts falls back
    // instead (see allowUnverifiedHostKey).
-   parseBoolEnv(ALLOW_UNVERIFIED_SSH_HOST_KEY_ENV);
+   settings.get("allow.unverifiedSshHostKey");
    if (!hostKey && !allowUnverifiedHostKey()) {
       logger.warn(
          `Connection proxy on '${connection.name}' pins no SSH host key, so the tunnel will ` +
@@ -734,6 +735,17 @@ function validateDuckLakeShape(
    if (storage?.s3Connection) {
       validateS3ProviderShape(storage.s3Connection, connection.name, origin);
    }
+   // The attach applies the catalog's own sslmode (buildPgConnectionString) and
+   // throws on a value it cannot honor, at every query or build. An enum check,
+   // like the guards above. A connectionString carries its own sslmode and the
+   // field is ignored beside it, so it is not checked there.
+   const catalogPg = connection.ducklakeConnection.catalog.postgresConnection;
+   if (catalogPg.sslmode != null && !catalogPg.connectionString) {
+      validatePostgresSslmode(
+         `DuckLake catalog of connection '${connection.name}'`,
+         catalogPg.sslmode,
+      );
+   }
    // metadataSchema reaches the ATTACH as a quoted string literal AND the
    // catalog-format preflight as a quoted identifier. Rather than escape one
    // value for two grammars, restrict it to a plain identifier.
@@ -831,7 +843,7 @@ function validatePublisherShape(connection: ApiConnection): void {
    // hosted multi-tenant deployment, so it needs an explicit opt-in. Every
    // connection passes validateConnectionShape before it can be assembled,
    // queried, or introspected, so denying here shuts off all three.
-   if (process.env.PUBLISHER_ALLOW_PROXY_CONNECTIONS !== "true") {
+   if (!settings.get("allow.proxyConnections")) {
       throw new Error(
          `Publisher proxy connection '${connection.name}' is disabled in this deployment. ` +
             `'publisher' connections make the server issue outbound requests to a configured connectionUri, ` +

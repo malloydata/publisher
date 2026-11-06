@@ -10,8 +10,22 @@ import {
    normalizeSnowflakePrivateKey,
    validateStorageDestinations,
 } from "./connection_config";
+import { installSettings } from "../test_helpers/settings_env";
 
 type ApiConnection = components["schemas"]["Connection"];
+
+let restoreSettings: (() => void) | undefined;
+
+/** Make `env` the only variables the settings were loaded from. */
+function installEnv(env: Record<string, string>): void {
+   restoreSettings?.();
+   restoreSettings = installSettings({ env }).restore;
+}
+
+afterEach(() => {
+   restoreSettings?.();
+   restoreSettings = undefined;
+});
 
 describe("assembleEnvironmentConnections — sqlserver", () => {
    it("passes the connector's own field names through and reports it read-only", () => {
@@ -340,16 +354,8 @@ describe("assembleEnvironmentConnections — publisher", () => {
 
    // publisher connections are default-deny (SSRF gate); these assembly tests
    // exercise the enabled path, so opt in for the block and restore after.
-   const priorFlag = process.env.PUBLISHER_ALLOW_PROXY_CONNECTIONS;
    beforeEach(() => {
-      process.env.PUBLISHER_ALLOW_PROXY_CONNECTIONS = "true";
-   });
-   afterEach(() => {
-      if (priorFlag === undefined) {
-         delete process.env.PUBLISHER_ALLOW_PROXY_CONNECTIONS;
-      } else {
-         process.env.PUBLISHER_ALLOW_PROXY_CONNECTIONS = priorFlag;
-      }
+      installEnv({ PUBLISHER_ALLOW_PROXY_CONNECTIONS: "true" });
    });
 
    it("emits a publisher core entry proxying to the remote dataplane", () => {
@@ -469,21 +475,21 @@ describe("assembleEnvironmentConnections — publisher", () => {
 
    describe("SSRF gate (PUBLISHER_ALLOW_PROXY_CONNECTIONS)", () => {
       it("denies a valid publisher connection when the flag is unset (default-deny)", () => {
-         delete process.env.PUBLISHER_ALLOW_PROXY_CONNECTIONS;
+         installEnv({});
          expect(() => assembleEnvironmentConnections([validBase])).toThrow(
             "Publisher proxy connection 'analytics' is disabled in this deployment",
          );
       });
 
       it("error names the env var to flip", () => {
-         delete process.env.PUBLISHER_ALLOW_PROXY_CONNECTIONS;
+         installEnv({});
          expect(() => assembleEnvironmentConnections([validBase])).toThrow(
             "Fix: set the environment variable PUBLISHER_ALLOW_PROXY_CONNECTIONS=true",
          );
       });
 
       it("denies for any non-'true' value (fail-closed)", () => {
-         process.env.PUBLISHER_ALLOW_PROXY_CONNECTIONS = "1";
+         installEnv({ PUBLISHER_ALLOW_PROXY_CONNECTIONS: "1" });
          expect(() => assembleEnvironmentConnections([validBase])).toThrow(
             "is disabled in this deployment",
          );
@@ -493,7 +499,7 @@ describe("assembleEnvironmentConnections — publisher", () => {
          // A publisher connection missing connectionUri still surfaces the
          // disabled error first when the gate is closed — the type is refused
          // outright, not validated.
-         delete process.env.PUBLISHER_ALLOW_PROXY_CONNECTIONS;
+         installEnv({});
          const conn: ApiConnection = { name: "analytics", type: "publisher" };
          expect(() => assembleEnvironmentConnections([conn])).toThrow(
             "is disabled in this deployment",
@@ -501,7 +507,7 @@ describe("assembleEnvironmentConnections — publisher", () => {
       });
 
       it("allows a valid publisher connection when the flag is 'true'", () => {
-         process.env.PUBLISHER_ALLOW_PROXY_CONNECTIONS = "true";
+         installEnv({ PUBLISHER_ALLOW_PROXY_CONNECTIONS: "true" });
          const { pojo } = assembleEnvironmentConnections([validBase]);
          expect(pojo.connections["analytics"].is).toBe("publisher");
       });
@@ -534,18 +540,9 @@ describe("SSH proxy validation", () => {
       // The SSH proxy is a normal connection capability — deliberately NOT gated
       // by PUBLISHER_ALLOW_PROXY_CONNECTIONS (that flag is for the `publisher`
       // HTTP multi-hop type). Prove it assembles with the flag unset.
-      const priorFlag = process.env.PUBLISHER_ALLOW_PROXY_CONNECTIONS;
-      delete process.env.PUBLISHER_ALLOW_PROXY_CONNECTIONS;
-      try {
-         const { pojo } = assembleEnvironmentConnections([validSshProxy]);
-         expect(pojo.connections["pg-via-bastion"].is).toBe("postgres");
-      } finally {
-         if (priorFlag === undefined) {
-            delete process.env.PUBLISHER_ALLOW_PROXY_CONNECTIONS;
-         } else {
-            process.env.PUBLISHER_ALLOW_PROXY_CONNECTIONS = priorFlag;
-         }
-      }
+      installEnv({});
+      const { pojo } = assembleEnvironmentConnections([validSshProxy]);
+      expect(pojo.connections["pg-via-bastion"].is).toBe("postgres");
    });
 
    it("rejects a non-postgres (bigquery) connection with a proxy", () => {
@@ -1053,6 +1050,86 @@ describe("ducklake shape validation", () => {
          ).toThrow(/metadataSchema must be a plain identifier/i);
       }
    });
+
+   // The attach applies a catalog's own sslmode and throws on one it cannot
+   // honor, so a bad value is caught here instead of at every query or build.
+   const withCatalogPg = (pg: Record<string, unknown>): ApiConnection =>
+      ({
+         ...valid,
+         ducklakeConnection: {
+            ...valid.ducklakeConnection,
+            catalog: {
+               postgresConnection: {
+                  ...valid.ducklakeConnection!.catalog!.postgresConnection,
+                  ...pg,
+               },
+            },
+         },
+      }) as ApiConnection;
+
+   it("accepts a catalog sslmode the attach can apply", () => {
+      for (const ok of ["disable", "no-verify", "verify-full"]) {
+         expect(() =>
+            assembleEnvironmentConnections(
+               [withCatalogPg({ sslmode: ok })],
+               "/tmp/env",
+            ),
+         ).not.toThrow();
+      }
+   });
+
+   it("rejects a catalog sslmode the attach would refuse", () => {
+      for (const bad of ["require", "prefer", "allow", ""]) {
+         expect(() =>
+            assembleEnvironmentConnections(
+               [withCatalogPg({ sslmode: bad })],
+               "/tmp/env",
+            ),
+         ).toThrow(
+            /DuckLake catalog of connection 'lake' has unsupported sslmode/,
+         );
+      }
+   });
+
+   it("rejects a catalog verify-ca with no CA bundle", () => {
+      const saved = process.env.NODE_EXTRA_CA_CERTS;
+      delete process.env.NODE_EXTRA_CA_CERTS;
+      try {
+         expect(() =>
+            assembleEnvironmentConnections(
+               [withCatalogPg({ sslmode: "verify-ca" })],
+               "/tmp/env",
+            ),
+         ).toThrow(/uses sslmode 'verify-ca' but no readable CA bundle/);
+      } finally {
+         if (saved === undefined) delete process.env.NODE_EXTRA_CA_CERTS;
+         else process.env.NODE_EXTRA_CA_CERTS = saved;
+      }
+   });
+
+   it("ignores a catalog sslmode beside a connectionString, which the attach ignores too", () => {
+      expect(() =>
+         assembleEnvironmentConnections(
+            [
+               withCatalogPg({
+                  connectionString: "host=h dbname=d sslmode=require",
+                  sslmode: "require",
+               }),
+            ],
+            "/tmp/env",
+         ),
+      ).not.toThrow();
+   });
+
+   it("rejects a destination whose catalog sslmode the attach would refuse, alone", () => {
+      const { accepted, rejected } = validateStorageDestinations([
+         withCatalogPg({ sslmode: "require" }),
+         valid,
+      ]);
+      expect(rejected.map((r) => r.name)).toEqual(["lake"]);
+      expect(rejected[0].reason).toMatch(/unsupported sslmode 'require'/);
+      expect(accepted).toHaveLength(1);
+   });
 });
 
 // Malloy qualifies every `dataset.table` path with the connection's projectId.
@@ -1402,15 +1479,13 @@ describe("validateStorageDestinations — S3 credential, checked in full", () =>
    });
 
    describe("under S3_CREDENTIAL_CHAIN_POLICY=destinations-only", () => {
-      const original = process.env.S3_CREDENTIAL_CHAIN_POLICY;
+      let restoreSettings: () => void;
       beforeEach(() => {
-         process.env.S3_CREDENTIAL_CHAIN_POLICY = "destinations-only";
+         restoreSettings = installSettings({
+            env: { S3_CREDENTIAL_CHAIN_POLICY: "destinations-only" },
+         }).restore;
       });
-      afterEach(() => {
-         if (original === undefined)
-            delete process.env.S3_CREDENTIAL_CHAIN_POLICY;
-         else process.env.S3_CREDENTIAL_CHAIN_POLICY = original;
-      });
+      afterEach(() => restoreSettings());
 
       // The policy exists to refuse chain auth on author-supplied connections; a
       // destination is the operator's own, and its shape check runs the same gate.
@@ -1435,22 +1510,6 @@ describe("validateStorageDestinations — S3 credential, checked in full", () =>
 });
 
 describe("assembleEnvironmentConnections — duckdb setupSQL", () => {
-   const originalPolicy = process.env.EXTENSION_FETCH_POLICY;
-   const originalAllow = process.env.PUBLISHER_ALLOW_DUCKDB_SETUP_SQL;
-
-   const restore = (name: string, value: string | undefined) => {
-      if (value === undefined) {
-         delete process.env[name];
-      } else {
-         process.env[name] = value;
-      }
-   };
-
-   afterEach(() => {
-      restore("EXTENSION_FETCH_POLICY", originalPolicy);
-      restore("PUBLISHER_ALLOW_DUCKDB_SETUP_SQL", originalAllow);
-   });
-
    const withSetupSQL = (): ApiConnection => ({
       name: "my_duckdb",
       type: "duckdb",
@@ -1460,8 +1519,7 @@ describe("assembleEnvironmentConnections — duckdb setupSQL", () => {
    });
 
    it("refuses setupSQL unless PUBLISHER_ALLOW_DUCKDB_SETUP_SQL is set", () => {
-      delete process.env.EXTENSION_FETCH_POLICY;
-      delete process.env.PUBLISHER_ALLOW_DUCKDB_SETUP_SQL;
+      installEnv({});
 
       expect(() =>
          assembleEnvironmentConnections([withSetupSQL()], "/tmp/env"),
@@ -1471,8 +1529,7 @@ describe("assembleEnvironmentConnections — duckdb setupSQL", () => {
    });
 
    it("refuses setupSQL when PUBLISHER_ALLOW_DUCKDB_SETUP_SQL is false", () => {
-      delete process.env.EXTENSION_FETCH_POLICY;
-      process.env.PUBLISHER_ALLOW_DUCKDB_SETUP_SQL = "false";
+      installEnv({ PUBLISHER_ALLOW_DUCKDB_SETUP_SQL: "false" });
 
       expect(() =>
          assembleEnvironmentConnections([withSetupSQL()], "/tmp/env"),
@@ -1480,17 +1537,17 @@ describe("assembleEnvironmentConnections — duckdb setupSQL", () => {
    });
 
    it("rejects a misspelled PUBLISHER_ALLOW_DUCKDB_SETUP_SQL rather than reading it as off", () => {
-      delete process.env.EXTENSION_FETCH_POLICY;
-      process.env.PUBLISHER_ALLOW_DUCKDB_SETUP_SQL = "ture";
+      installEnv({ PUBLISHER_ALLOW_DUCKDB_SETUP_SQL: "ture" });
 
       expect(() =>
          assembleEnvironmentConnections([withSetupSQL()], "/tmp/env"),
-      ).toThrow(/Invalid value for PUBLISHER_ALLOW_DUCKDB_SETUP_SQL/);
+      ).toThrow(
+         'allow.duckdbSetupSql from PUBLISHER_ALLOW_DUCKDB_SETUP_SQL: expected a boolean (true/false, 1/0, yes/no or on/off), got "ture"',
+      );
    });
 
    it("accepts a DuckDB connection with setupSQL, sets metadata, and passes setupSQL to POJO", () => {
-      delete process.env.EXTENSION_FETCH_POLICY;
-      process.env.PUBLISHER_ALLOW_DUCKDB_SETUP_SQL = "true";
+      installEnv({ PUBLISHER_ALLOW_DUCKDB_SETUP_SQL: "true" });
       const conn: ApiConnection = {
          name: "my_duckdb",
          type: "duckdb",
@@ -1513,8 +1570,10 @@ describe("assembleEnvironmentConnections — duckdb setupSQL", () => {
    });
 
    it("refuses setupSQL when EXTENSION_FETCH_POLICY is local-only, even when allowed", () => {
-      process.env.EXTENSION_FETCH_POLICY = "local-only";
-      process.env.PUBLISHER_ALLOW_DUCKDB_SETUP_SQL = "true";
+      installEnv({
+         EXTENSION_FETCH_POLICY: "local-only",
+         PUBLISHER_ALLOW_DUCKDB_SETUP_SQL: "true",
+      });
 
       expect(() =>
          assembleEnvironmentConnections([withSetupSQL()], "/tmp/env"),
@@ -1524,7 +1583,7 @@ describe("assembleEnvironmentConnections — duckdb setupSQL", () => {
    });
 
    it("rejects a DuckDB connection with whitespace-only setupSQL", () => {
-      delete process.env.EXTENSION_FETCH_POLICY;
+      installEnv({});
       const conn: ApiConnection = {
          name: "empty_duckdb",
          type: "duckdb",
@@ -1539,7 +1598,7 @@ describe("assembleEnvironmentConnections — duckdb setupSQL", () => {
    });
 
    it("rejects a DuckDB connection with neither attachedDatabases nor setupSQL", () => {
-      delete process.env.EXTENSION_FETCH_POLICY;
+      installEnv({});
       const conn: ApiConnection = {
          name: "empty_duckdb",
          type: "duckdb",
