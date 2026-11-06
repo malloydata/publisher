@@ -10,7 +10,7 @@ import { describe, expect, it } from "bun:test";
 import { BadRequestError } from "../errors";
 import { withAuthorizeModel } from "../test_helpers/authorize_fixture";
 import { unrecordedAudit, type QueryAudit } from "./access_record";
-import { ceilingRefusal } from "./classification";
+import { ceilingRefusal, modelDeclaresCarries } from "./classification";
 import type { Model } from "./model";
 
 const MODEL = `##! experimental { access_modifiers composite_sources }
@@ -369,6 +369,97 @@ describe("#(carries) is checked per query", () => {
          expect(
             (await run(model, carried, unrecordedAudit(), true)).compactResult
                .length,
+         ).toBeGreaterThan(0);
+      });
+   });
+});
+
+describe("a ceiling the model reaches only through an import", () => {
+   const BASE = `##! experimental { access_modifiers composite_sources }
+source: people is duckdb.table("child") include { internal: * } extend {
+   primary_key: id
+   #(classification) "phi.direct_identifier"
+   dimension: ssn is name
+}
+#(carries) ["none"]
+source: s is duckdb.table("child") include { internal: * } extend {
+   join_one: p is people on id = p.id
+   #(classification) "none"
+   dimension: sid is id
+   #(classification) "none"
+   measure: c is count()
+}
+source: ca is duckdb.table("child") include { internal: * } extend {
+   #(classification) "none"
+   dimension: k is id
+}
+#(carries) ["none"]
+source: cmem is duckdb.table("child") include { internal: * } extend {
+   #(classification) "none"
+   dimension: k is id
+   dimension: only_m is name
+}
+`;
+   const FILES = {
+      "base.malloy": BASE,
+      "hub.malloy": `##! experimental { access_modifiers composite_sources }
+import { s, ca, cmem } from "base.malloy"
+source: hub is duckdb.table("child") include { internal: * } extend {
+   join_one: r is s on id = r.sid
+   #(classification) "none"
+   measure: hc is count()
+}
+source: comp_m is compose(ca, cmem)
+`,
+      "m.malloy": `##! experimental { access_modifiers composite_sources }
+import { hub, comp_m } from "hub.malloy"
+`,
+   };
+
+   it("refuses a read past the ceiling of a carried source joined or composed in another file", async () => {
+      await withAuthorizeModel(FILES, async ({ model, error }) => {
+         expect(error).toBeUndefined();
+         for (const [query, source, field] of [
+            ["run: hub -> { group_by: r.p.ssn }", "source r", "r.p.ssn"],
+            [
+               "run: hub extend { dimension: x is r.name } -> { group_by: x }",
+               "source r",
+               "x, which has no #(classification)",
+            ],
+            ["run: comp_m -> { group_by: only_m }", "source cmem", "only_m"],
+         ]) {
+            const err = await run(model, query).catch((e) => e);
+            expect(err).toBeInstanceOf(BadRequestError);
+            expect((err as Error).message).toContain(`${source} carries [none]`);
+            expect((err as Error).message).toContain(field);
+         }
+      });
+   });
+
+   it("twin: serves a read within that ceiling, and a model reaching no ceiling is not checked", async () => {
+      await withAuthorizeModel(FILES, async ({ model }) => {
+         for (const query of [
+            "run: hub -> { aggregate: r.c }",
+            "run: comp_m -> { group_by: k }",
+         ]) {
+            expect(
+               (await run(model, query)).compactResult.length,
+            ).toBeGreaterThan(0);
+         }
+      });
+      const open = {
+         ...FILES,
+         "base.malloy": BASE.replaceAll('#(carries) ["none"]\n', ""),
+      };
+      await withAuthorizeModel(open, async ({ model }) => {
+         expect(
+            modelDeclaresCarries(
+               (model as unknown as { modelDef: never }).modelDef,
+            ),
+         ).toBe(false);
+         expect(
+            (await run(model, "run: hub -> { group_by: r.p.ssn }"))
+               .compactResult.length,
          ).toBeGreaterThan(0);
       });
    });

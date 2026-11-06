@@ -644,20 +644,56 @@ export function readQueryFieldReads(
    };
 }
 
-/** Whether any source in the compiled model declares a `#(carries)`; a caller cannot add one. */
+/**
+ * Whether any struct the compiled model reaches declares a `#(carries)`: its
+ * sources and whatever they join, compose, run on or extend, an imported one
+ * included, since `contents` holds only the names a file imports. A caller
+ * cannot add one. Read once per compiled model.
+ */
 export function modelDeclaresCarries(modelDef: ModelDef | undefined): boolean {
    if (!modelDef) return false;
    let declared = carriesMemo.get(modelDef);
    if (declared === undefined) {
-      declared = Object.values(modelDef.contents ?? {}).some(
-         (def) => readCarries((def as IrField).annotations).declared,
-      );
+      declared = reachesCarries(Object.values(modelDef.contents ?? {}));
       carriesMemo.set(modelDef, declared);
    }
    return declared;
 }
 
 const carriesMemo = new WeakMap<object, boolean>();
+
+/** Whether a note on the `#(carries)` route sits anywhere under `roots`. */
+function reachesCarries(roots: unknown[]): boolean {
+   const seen = new Set<object>();
+   const stack = [...roots];
+   while (stack.length > 0) {
+      const node = stack.pop();
+      if (!node || typeof node !== "object" || seen.has(node)) continue;
+      seen.add(node);
+      if (Array.isArray(node)) {
+         stack.push(...node);
+         continue;
+      }
+      const obj = node as Record<string, unknown>;
+      for (const key of ["notes", "blockNotes"]) {
+         const notes = obj[key];
+         if (
+            Array.isArray(notes) &&
+            notes.some((n) =>
+               CARRIES_LINE.test(String((n as { text?: unknown })?.text).trim()),
+            )
+         ) {
+            return true;
+         }
+      }
+      for (const [key, value] of Object.entries(obj)) {
+         // Expressions and positions hold no struct.
+         if (key === "e" || key === "at" || key === "location") continue;
+         if (value && typeof value === "object") stack.push(value);
+      }
+   }
+   return false;
+}
 
 /**
  * The ceilings a struct carries: its own, read down its annotation chain so a
