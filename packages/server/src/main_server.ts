@@ -92,6 +92,8 @@ import { rateLimitMiddleware } from "./rate_limit";
 import { frameAncestorsMiddleware } from "./frame_ancestors";
 import { externalEnv, settings } from "./settings";
 import { acceptBundledExperimentalDialects } from "./service/experimental_dialects";
+import { isOverlayRoute } from "./service/request_overlay";
+import { MAX_OVERLAY_BYTES } from "./constants";
 
 // These getters throw on an invalid value. Read once at boot so a typo fails
 // startup instead of later requests: package metadata, publishes, and (for the
@@ -358,6 +360,16 @@ app.use(
    }),
 );
 
+// Compile takes a `files` overlay of up to MAX_OVERLAY_BYTES of text,
+// which JSON escaping can grow, so it parses a larger body; the
+// overlay's own bounds answer 413 past that. Parsed once: the general parser
+// below skips a body already read.
+const overlayBodyParser = bodyParser.json({
+   limit: 2 * MAX_OVERLAY_BYTES + 1024 * 1024,
+});
+app.use((req, res, next) =>
+   isOverlayRoute(req.path) ? overlayBodyParser(req, res, next) : next(),
+);
 app.use(bodyParser.json({ limit: "1mb" }));
 app.use(legacyPackageNameBodyMiddleware());
 
