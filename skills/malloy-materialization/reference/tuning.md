@@ -15,7 +15,7 @@ Assumes the `malloy-pub` CLI is on PATH and points at the server (`--url` or `MA
 
 Establish what the package persists today and how it is governed.
 
-- **Persist sources:** the sources annotated `#@ persist name="..."` in the package's `.malloy` files, with their tier (`storage=` or not), `partition=`, and `refresh=`. Read the models (or `get_context` the package) to list them, and read the package's `buildPlan` for what a run will build and what it will refuse.
+- **Persist sources:** the sources annotated `#@ persist name="..."` in the package's `.malloy` files, with their tier (`storage=` or not), `partition=`, and `refresh=`. Read the models (or `get_context` the package) to list them, and read `GET …/packages/{pkg}/build-plan` for what a run will build and what it will refuse.
 - **Schedule + scope:**
 
   ```bash

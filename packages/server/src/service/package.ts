@@ -15,10 +15,19 @@ import {
    FixedConnectionMap,
    MalloyConfig,
    MalloyError,
+   Model as MalloyModel,
    SourceDef,
    type ModelDef,
 } from "@malloydata/malloy";
 import { publisherMeter } from "../telemetry";
+import {
+   type EntitiesModelFile,
+   entitiesFindingCode,
+   extractPackageEntities,
+} from "./entities/extract";
+import { toApiEntities } from "./entities/to_api";
+import { isUnconditionalDenyAuthorize } from "./entities/access_gates";
+import { splitSourcePath } from "./entities/explore_walk";
 import recursive from "recursive-readdir";
 import { components } from "../api";
 import {
@@ -65,6 +74,7 @@ import {
 } from "../materialization_metrics";
 import {
    LOAD_DURATION_BUCKETS_MS,
+   recordEntitiesFindings,
    recordPackageLoadPhaseDurations,
    recordPackageLoadPhases,
    type PackageLoadStatus,
@@ -91,7 +101,11 @@ import {
    ManifestEntry,
 } from "../storage/DatabaseInterface";
 import { errMessage, ignoreDotfiles } from "../utils";
-import { getPersistCollisionEnforce, getPersistStorageMode } from "../config";
+import {
+   getPersistCollisionEnforce,
+   getPersistStorageMode,
+   isPackageInlineFieldsEnabled,
+} from "../config";
 import {
    deriveServeBindings,
    groupAliasesByName,
@@ -242,6 +256,7 @@ interface ReportDiscovery {
 }
 
 export type ApiPackage = components["schemas"]["Package"];
+type ApiModelEntities = components["schemas"]["ModelEntities"];
 type ApiPackageWarning = NonNullable<ApiPackage["warnings"]>[number];
 type ApiAgent = components["schemas"]["Agent"];
 type ApiAgentSummary = components["schemas"]["AgentSummary"];
@@ -309,6 +324,13 @@ export class Package {
            value: readonly ApiSecureGivenSummary[] | undefined;
         }
       | undefined;
+   /**
+    * What every `.malloy` model declares, in the form an indexer reads
+    * (`Package.entities`). Computed once at load from the models as they
+    * compiled then, before any manifest is bound, and frozen; a reload that
+    * rebinds models does not change it.
+    */
+   private entities: readonly ApiModelEntities[] | undefined;
    /** {@link classificationSummary} over the `models` map it was computed for, keyed like `secureGivensMemo`. */
    private classificationSummaryMemo:
       | {
@@ -349,6 +371,8 @@ export class Package {
    // it is stable per (package version, connection config). Null when the
    // package declares no persist source.
    private buildPlan: BuildPlan | null = null;
+   /** The build plan could not be derived at load (see applyLoadBuildPlan). */
+   private buildPlanFailed = false;
    // Keyed on the plan it came from, so a reload recomputes it.
    private preaggregateEntityIdCache:
       | { plan: BuildPlan | null; ids: ReadonlySet<string> }
@@ -372,6 +396,8 @@ export class Package {
    // Non-fatal render-tag findings across the models; a bad tag does not fail
    // the load, so this is its signal.
    private renderTagWarnings: ApiPackageWarning[] = [];
+   /** The annotations the entities extraction left out, as warnings. */
+   private entitiesWarnings: ApiPackageWarning[] = [];
    private reportWarnings: ApiPackageWarning[] = [];
    /** Linear reports whose cells the reader refused; set with the reports. */
    private readerWarnings: ApiPackageWarning[] = [];
@@ -804,7 +830,9 @@ export class Package {
             manifestValidationTime,
          );
       } catch (error) {
-         logger.error(`Error loading package ${packageName}`, { error });
+         logger.error(`Error loading package ${packageName}`, {
+            error: errMessage(error),
+         });
          const endTime = performance.now();
          const executionTime = endTime - startTime;
          this.packageLoadHistogram.record(executionTime, {
@@ -1110,9 +1138,18 @@ export class Package {
             ],
          };
       }
+      // The dry run reports what the reload warns about the entities too.
+      try {
+         await pkg.computeEntities();
+      } catch (err) {
+         logger.warn("Entities lint failed during compile", {
+            packageName,
+            error: errMessage(err),
+         });
+      }
       return {
          renderTagWarnings: pkg.surfacedRenderTagWarnings(renderTagWarnings),
-         reportWarnings: pkg.reportWarnings,
+         reportWarnings: [...pkg.reportWarnings, ...pkg.entitiesWarnings],
       };
    }
 
@@ -1208,18 +1245,8 @@ export class Package {
          throw err;
       }
 
-      const endTime = performance.now();
-      const executionTime = endTime - startTime;
-      this.packageLoadHistogram.record(executionTime, {
-         malloy_package_name: packageName,
-         status: "success",
-      });
-      recordPackageLoadPhases(outcome.timings, "success");
-      logger.info(`Successfully loaded package ${packageName}`, {
-         packageName,
-         duration: formatDuration(executionTime),
-      });
-
+      // `malloy_package_load_duration` measures up to here, before discovery.
+      const executionTime = performance.now() - startTime;
       const pkg = new Package(
          environmentName,
          packageName,
@@ -1229,26 +1256,52 @@ export class Package {
          models,
          malloyConfig,
       );
-      const reportTimings = await pkg.discoverReports("load");
-      // After discovery: which findings a tile explains depends on the reports.
-      pkg.renderTagWarnings = pkg.surfacedRenderTagWarnings(renderTagWarnings);
-      pkg.manifestWarnings = outcome.packageMetadata.manifestWarnings ?? [];
-      pkg.recordDeprecatedUsage(outcome);
-      pkg.retrievalSettings =
-         outcome.packageMetadata.retrieval ?? DEFAULT_PACKAGE_RETRIEVAL;
-      pkg.rawAgents = outcome.packageMetadata.agents;
-      // No manifest is bound yet, so this serves live until a bind.
-      pkg.wireFreshnessResolvers();
-      pkg.refreshServingIdentity();
+      let reportTimings: Awaited<ReturnType<Package["discoverReports"]>>;
+      let buildPlanMs: Awaited<ReturnType<Package["applyLoadBuildPlan"]>>;
+      let entitiesMs: number;
+      try {
+         reportTimings = await pkg.discoverReports("load");
+         // After discovery: which findings a tile explains depends on the reports.
+         pkg.renderTagWarnings =
+            pkg.surfacedRenderTagWarnings(renderTagWarnings);
+         pkg.manifestWarnings = outcome.packageMetadata.manifestWarnings ?? [];
+         pkg.recordDeprecatedUsage(outcome);
+         pkg.retrievalSettings =
+            outcome.packageMetadata.retrieval ?? DEFAULT_PACKAGE_RETRIEVAL;
+         pkg.rawAgents = outcome.packageMetadata.agents;
+         // No manifest is bound yet, so this serves live until a bind.
+         pkg.wireFreshnessResolvers();
+         pkg.refreshServingIdentity();
 
-      const buildPlanMs = await pkg.applyLoadBuildPlan(outcome.buildPlan);
+         buildPlanMs = await pkg.applyLoadBuildPlan(outcome.buildPlan);
 
-      applyLoadGates(pkg);
-      // After the gates, so a bad declaration is rejected before a companion is
-      // compiled. Unbound, the companion recomputes from the base until a bind.
-      await pkg.pushPreaggregateServeModels();
-      pkg.logEmptyDiscoveryWarnings();
+         applyLoadGates(pkg);
+         const entitiesStarted = performance.now();
+         await pkg.computeEntities();
+         entitiesMs = performance.now() - entitiesStarted;
+         // After the gates, so a bad declaration is rejected before a companion is
+         // compiled. Unbound, the companion recomputes from the base until a bind.
+         await pkg.pushPreaggregateServeModels();
+         pkg.logEmptyDiscoveryWarnings();
+      } catch (err) {
+         recordPackageLoadPhases(
+            outcome.timings,
+            packageLoadFailureStatus(err),
+         );
+         throw err;
+      }
 
+      // Recorded only now: a gate, the extraction or a companion compile can
+      // still refuse the load above, and Package.create records that failure.
+      this.packageLoadHistogram.record(executionTime, {
+         malloy_package_name: packageName,
+         status: "success",
+      });
+      recordPackageLoadPhases(outcome.timings, "success");
+      logger.info(`Successfully loaded package ${packageName}`, {
+         packageName,
+         duration: formatDuration(executionTime),
+      });
       recordPackageLoadPhaseDurations({
          worker: workerDoneTime - dispatchTime,
          hydrate: hydrationTimings.hydrateMs,
@@ -1256,6 +1309,7 @@ export class Package {
          discovery: reportTimings.discoveryMs,
          lint: reportTimings.lintMs,
          build_plan: buildPlanMs,
+         entities: entitiesMs,
          total: performance.now() - startTime,
       });
       return pkg;
@@ -1308,6 +1362,7 @@ export class Package {
             ? workerPlan.outcome
             : await computePackageBuildPlan(this);
          this.buildPlan = plan;
+         this.buildPlanFailed = false;
          this.droppedPersistSources = droppedPersistSources;
          this.sourceEligibility = sourceEligibility;
          this.colocatedSourceEligibility = colocatedSourceEligibility;
@@ -1330,6 +1385,7 @@ export class Package {
          );
          return performance.now() - buildPlanPhaseStart;
       } catch (err) {
+         this.buildPlanFailed = true;
          recordBuildPlanComputeFailed();
          logger.warn(
             `Failed to compute build plan for package ${this.packageName}`,
@@ -1354,6 +1410,11 @@ export class Package {
    /** The persist build plan, or null when the package declares no persist source. */
    public getBuildPlan(): BuildPlan | null {
       return this.buildPlan;
+   }
+
+   /** Whether the build plan could not be derived at load, so `getBuildPlan` says nothing. */
+   public isBuildPlanUnavailable(): boolean {
+      return this.buildPlanFailed;
    }
 
    /** The package-level `materialization` config, the least specific layer; null when none. */
@@ -1443,6 +1504,153 @@ export class Package {
       });
    }
 
+   /**
+    * For each published entry point, its `#(carries)` and its field count by
+    * class, or `undefined` when nothing published is classified. Walks every
+    * published field, so it is memoized per models map and served by
+    * `GET …/classification` (and, deprecated, inline on the single-package
+    * read while PUBLISHER_PACKAGE_INLINE_FIELDS is on), never on a listing or
+    * the `/status` poll path.
+    */
+   public getClassificationSummary(): ApiClassificationSummary | undefined {
+      const memo = this.classificationSummaryMemo;
+      if (memo?.forModels === this.models) return memo.value;
+      const forModels = this.models;
+      const value = classificationSummary(forModels, (modelPath) =>
+         this.isListedModelPath(modelPath),
+      );
+      this.classificationSummaryMemo = { forModels, value };
+      return value;
+   }
+
+   /**
+    * {@link entities}, or undefined before the package has loaded. Frozen, so
+    * callers share it.
+    */
+   public getEntities(): readonly ApiModelEntities[] | undefined {
+      return this.entities;
+   }
+
+   /**
+    * {@link entities} under the rules `GET …/models/{path}` applies: only the
+    * files on the package's surface, and no source locked with
+    * `#(authorize) false` (its fields and schema go with it). The whole set is
+    * for a host that indexes, and asks for it.
+    */
+   public getSurfaceEntities(): ApiModelEntities[] {
+      return (this.entities ?? []).flatMap((model) => {
+         const file = this.models.get(model.modelPath);
+         try {
+            file?.assertFileOnSurface();
+         } catch {
+            return [];
+         }
+         // The file's export closure, as the model GET limits it: a source it
+         // imports or leaves unexported is not shown, nor one locked with an
+         // unconditional deny.
+         const published = file?.getPublishedNames();
+         const shown = (name: string) => {
+            const root = splitSourcePath(name).rootSourceName;
+            return (
+               (published === undefined || published.has(root)) &&
+               !locked.has(root)
+            );
+         };
+         const locked = new Set(
+            (model.sources ?? [])
+               .filter((s) =>
+                  isUnconditionalDenyAuthorize({
+                     authorize: (s.authorize ?? [])
+                        .filter((g) => g.route === "authorize")
+                        .map((g) => g.expression),
+                     accessFilter: (s.authorize ?? [])
+                        .filter((g) => g.route === "access_filter")
+                        .map((g) => g.expression),
+                  }),
+               )
+               .map((s) => splitSourcePath(s.name).rootSourceName),
+         );
+         return [
+            {
+               ...model,
+               fields: model.fields?.filter((f) => shown(f.source)),
+               sources: model.sources?.filter((s) => shown(s.name)),
+               sourceSchemas: model.sourceSchemas?.filter((s) => shown(s.name)),
+            },
+         ];
+      });
+   }
+
+   /**
+    * Compute {@link entities} from the models now installed. An annotation an
+    * index cannot honor is left out of them and reported as a package warning
+    * with a stable code, so the package still loads and a host that indexes can
+    * refuse it at its own publish.
+    */
+   private async computeEntities(): Promise<void> {
+      const modelFiles: EntitiesModelFile[] = [];
+      for (const [modelPath, model] of this.models) {
+         if (!modelPath.endsWith(MODEL_FILE_SUFFIX)) continue;
+         const absolutePath = path.join(this.packagePath, modelPath);
+         const modelDef = model.getModelDef();
+         const compilationError = model.getCompilationError();
+         if (compilationError !== undefined || modelDef === undefined) {
+            modelFiles.push({
+               relativePath: modelPath,
+               absolutePath,
+               error: compilationError?.message ?? "The model did not compile.",
+            });
+            continue;
+         }
+         modelFiles.push({
+            relativePath: modelPath,
+            absolutePath,
+            model: new MalloyModel(modelDef, [], []),
+            // The text the model compiled from, so a field's code is sliced
+            // from the revision its range describes.
+            text:
+               model.getCompiledSourceText() ??
+               (await fs.readFile(absolutePath, "utf-8")),
+         });
+      }
+      const { results, findings } = await extractPackageEntities({
+         packageRoot: this.packagePath,
+         packageName: this.packageName,
+         modelFiles,
+         manifest: {
+            explores: this.packageMetadata.explores,
+            queryableSources: this.packageMetadata.queryableSources,
+         },
+         connections: this.malloyConfig.connections,
+      });
+      this.entitiesWarnings = findings.map((finding) => ({
+         model: finding.modelPath,
+         message: finding.message,
+         severity: "warn" as const,
+         code: entitiesFindingCode(finding.reason),
+      }));
+      if (findings.length > 0) {
+         logger.warn("Package declares annotations an index cannot honor", {
+            packageName: this.packageName,
+            reasons: findings.map((f) => f.reason),
+         });
+         recordEntitiesFindings(findings.map((f) => f.reason));
+      }
+      this.entities = Object.freeze(toApiEntities(results));
+      logger.info("Package entities computed", {
+         packageName: this.packageName,
+         models: this.entities.length,
+         failedModels: this.entities.filter((m) => m.error !== undefined)
+            .length,
+         fields: this.entities.reduce((n, m) => n + (m.fields?.length ?? 0), 0),
+         fingerprintedDimensions: this.entities.reduce(
+            (n, m) =>
+               n + (m.fields?.filter((f) => f.indexFingerprint).length ?? 0),
+            0,
+         ),
+      });
+   }
+
    /** How this package is searched and indexed (publisher.json `retrieval`). */
    public getRetrievalSettings(): PackageRetrievalSettings {
       return this.retrievalSettings;
@@ -1471,24 +1679,6 @@ export class Package {
    }
 
    /**
-    * For each published entry point, its `#(carries)` and its field count by
-    * class, or `undefined` when nothing published is classified. Walks every
-    * published field, so it is memoized per models map and kept OFF
-    * {@link getPackageMetadata} (the `/status` poll path): only the
-    * single-package read attaches it.
-    */
-   public getClassificationSummary(): ApiClassificationSummary | undefined {
-      const memo = this.classificationSummaryMemo;
-      if (memo?.forModels === this.models) return memo.value;
-      const forModels = this.models;
-      const value = classificationSummary(forModels, (modelPath) =>
-         this.isListedModelPath(modelPath),
-      );
-      this.classificationSummaryMemo = { forModels, value };
-      return value;
-   }
-
-   /**
     * ON THE `/status` POLL PATH: runs for every package every few seconds.
     * Anything added below must be trivially cheap or memoized on the Model; an
     * unmemoized walk over model fields blocks the event loop for seconds.
@@ -1499,21 +1689,25 @@ export class Package {
       const metadata: ApiPackage = {
          ...this.packageMetadata,
          name: this.packageName,
-         manifestBindingStatus: this.manifestBindingStatus,
-         manifestEntryCount: this.manifestEntryCount,
-         boundManifestUri: this.boundManifestUri,
-         buildPlan: this.buildPlan,
-         servedRevision: this.servedRevision,
-         sourceContentSha: this.sourceContentSha,
-         // Overlaid so a metadata PATCH body can neither set nor wipe it.
-         agents: this.rawAgents === undefined ? undefined : this.listAgents(),
       };
-      // Never stored in `packageMetadata` (see storableMetadata): memoized per
-      // models map and frozen, so it is returned by reference. Left off, not
-      // `[]`, when it is unknown.
-      const secureGivens = this.currentSecureGivens();
-      if (secureGivens !== undefined) {
-         metadata.secureGivens = secureGivens;
+      if (isPackageInlineFieldsEnabled()) {
+         // The deprecated inline fields, added while
+         // PUBLISHER_PACKAGE_INLINE_FIELDS is on: the serving and binding
+         // fields (getOperationalFields, also at `GET …/packages/{pkg}/status`)
+         // and the build plan and agents (also at their own routes).
+         Object.assign(metadata, this.getOperationalFields(), {
+            buildPlan: this.buildPlan,
+            // Overlaid so a metadata PATCH body can neither set nor wipe it.
+            agents:
+               this.rawAgents === undefined ? undefined : this.listAgents(),
+         });
+         // Never stored in `packageMetadata` (see storableMetadata): memoized
+         // per models map and frozen, so it is returned by reference. Left
+         // off, not `[]`, when it is unknown.
+         const secureGivens = this.currentSecureGivens();
+         if (secureGivens !== undefined) {
+            metadata.secureGivens = secureGivens;
+         }
       }
       const warnings = this.exploreWarnings();
       if (warnings.length > 0) {
@@ -1523,6 +1717,7 @@ export class Package {
       // API because the load tolerates it, so otherwise only the log says so.
       const allWarnings = [
          ...this.renderTagWarnings,
+         ...this.entitiesWarnings,
          ...this.readerWarnings,
          ...this.reportWarnings,
          ...this.packageSkillWarnings.map((message) => ({
@@ -1562,16 +1757,42 @@ export class Package {
       if (allWarnings.length > 0) {
          metadata.warnings = allWarnings;
       }
-      if (this.storageServeBindings.length > 0) {
-         // `origin` marks rows (rollups) whose `sourceName` is in no model file.
-         metadata.storageServeBindings = this.storageServeBindings.map((b) => ({
-            origin: b.origin ?? "persist",
-            sourceName: b.sourceName,
-            storageDestinationName: b.destinationName,
-            tablePath: b.tablePath,
-         }));
-      }
       return metadata;
+   }
+
+   /**
+    * What this server is serving for the package right now: the load's
+    * identity, its manifest binding and the sources it serves from storage.
+    * Served at `GET …/packages/{pkg}/status`, which is where an orchestrator
+    * reads them, and on a package response only while
+    * PUBLISHER_PACKAGE_INLINE_FIELDS is on. Cheap: every field is a value the
+    * load or the last bind recorded.
+    */
+   public getOperationalFields(): Pick<
+      ApiPackage,
+      | "manifestBindingStatus"
+      | "manifestEntryCount"
+      | "boundManifestUri"
+      | "servedRevision"
+      | "sourceContentSha"
+      | "storageServeBindings"
+   > {
+      return {
+         manifestBindingStatus: this.manifestBindingStatus,
+         manifestEntryCount: this.manifestEntryCount,
+         boundManifestUri: this.boundManifestUri,
+         servedRevision: this.servedRevision,
+         sourceContentSha: this.sourceContentSha,
+         // `origin` marks rows (rollups) whose `sourceName` is in no model file.
+         ...(this.storageServeBindings.length > 0 && {
+            storageServeBindings: this.storageServeBindings.map((b) => ({
+               origin: b.origin ?? "persist",
+               sourceName: b.sourceName,
+               storageDestinationName: b.destinationName,
+               tablePath: b.tablePath,
+            })),
+         }),
+      };
    }
 
    /** The bound manifest entries, or undefined when serving live; reused by /compile. */
@@ -3588,17 +3809,10 @@ export class Package {
     * cannot store a snapshot that outlives the models it describes.
     */
    private static storableMetadata(packageMetadata: ApiPackage): ApiPackage {
-      if (
-         !("secureGivens" in packageMetadata) &&
-         !("classification" in packageMetadata)
-      ) {
+      if (!("secureGivens" in packageMetadata)) {
          return packageMetadata;
       }
-      const {
-         secureGivens: _computed,
-         classification: _summary,
-         ...stored
-      } = packageMetadata;
+      const { secureGivens: _computed, ...stored } = packageMetadata;
       return stored;
    }
 

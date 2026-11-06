@@ -53,8 +53,9 @@ run that starts the moment the REST root replies would record those empty
 answers as retrieval misses.
 
 It drives one ranking call (older servers only started the sync on the first
-one), then polls the package resource until `embeddingIndex.status` reaches a
-terminal value and prints it. The values are `lexical` (no provider: a mode),
+one), then polls `GET …/packages/{package}/embedding-index` (the package
+resource's `embeddingIndex` on a server from before that route) until its
+`status` reaches a terminal value and prints it. The values are `lexical` (no provider: a mode),
 `indexing` (the only non-terminal one), `ready`, and `error`, which carries a
 `reason` and `lastError.message` that are printed. Only `ready` licenses
 reading a run's discoverability findings. A package resource with no
@@ -95,6 +96,7 @@ import socket
 import subprocess
 import sys
 import time
+import urllib.error
 import urllib.request
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent.parent
@@ -203,6 +205,27 @@ def warm_arguments(environment: str, package: str) -> dict:
     }
 
 
+def read_index(port: int, environment: str, package: str) -> dict | None:
+    """The package's embedding-index object, or None when the server has none.
+
+    Read from `GET …/embedding-index`; a server from before that route carries
+    the object on the package resource as `embeddingIndex`, so a 404 there
+    falls back to it. A transport failure raises, for the caller's retry.
+    """
+    package_url = (f"http://localhost:{port}/api/v0/environments/"
+                   f"{environment}/packages/{package}")
+    try:
+        with urllib.request.urlopen(f"{package_url}/embedding-index",
+                                    timeout=10) as r:
+            return json.loads(r.read().decode())
+    except urllib.error.HTTPError as e:
+        if e.code != 404:
+            raise
+    with urllib.request.urlopen(package_url, timeout=10) as r:
+        index = json.loads(r.read().decode()).get("embeddingIndex")
+    return index if isinstance(index, dict) else None
+
+
 def index_status(package_payload: dict) -> str | None:
     """`embeddingIndex.status` from a package resource, or None if absent.
 
@@ -235,13 +258,12 @@ def warm_retrieval(port: int, mcp_port: int, environment: str, package: str,
         return None, f"warm-up call failed: {e}"
 
     url = (f"http://localhost:{port}/api/v0/environments/{environment}"
-           f"/packages/{package}")
+           f"/packages/{package}/embedding-index")
     deadline = time.time() + wait
     status, last_error, read_one, index = None, None, False, {}
     while time.time() < deadline:
         try:
-            with urllib.request.urlopen(url, timeout=10) as r:
-                payload = json.loads(r.read().decode())
+            read = read_index(port, environment, package)
         except Exception as e:  # noqa: BLE001
             # A transport failure is not a capability verdict. Collapsing it
             # into `status = None` handed None a second meaning `index_status`
@@ -255,13 +277,13 @@ def warm_retrieval(port: int, mcp_port: int, environment: str, package: str,
             time.sleep(2)
             continue
         read_one = True
-        status = index_status(payload)
+        status = index_status({"embeddingIndex": read})
         if status is None:
             return None, ("no embeddingIndex on the package resource; this "
                           "server has no embedding provider or predates the "
                           "status field, so every run against it is LEXICAL "
                           "-- do not report discoverability findings from it")
-        index = payload["embeddingIndex"]
+        index = read
         if status in TERMINAL_INDEX_STATES:
             break
         time.sleep(2)

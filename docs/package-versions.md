@@ -120,7 +120,7 @@ A server that already published combined names with versioning on holds them as 
 
 ## Bind a version to a build manifest
 
-`PUT …/versions/{version}/manifest` with `{"manifestLocation": "gs://…/manifest.json"}` binds that one version's persist references to an externally computed build manifest, and `null` clears the binding so the version serves live. The location is what the manifest loader reads: a `gs://` or `s3://` URI, a `file://` URL, or an absolute path on a mounted volume. A relative path answers 400, since it would resolve against the server's working directory. The binding is recorded with the version and survives an unload or a restart. An archived version is refused before anything is written. The response is the version's package resource, which reports the outcome in `manifestBindingStatus` and `boundManifestUri`.
+`PUT …/versions/{version}/manifest` with `{"manifestLocation": "gs://…/manifest.json"}` binds that one version's persist references to an externally computed build manifest, and `null` clears the binding so the version serves live. The location is what the manifest loader reads: a `gs://` or `s3://` URI, a `file://` URL, or an absolute path on a mounted volume. A relative path answers 400, since it would resolve against the server's working directory. The binding is recorded with the version and survives an unload or a restart. An archived version is refused before anything is written. The response is the version's package resource; the outcome is in `manifestBindingStatus` and `boundManifestUri` on the version's entry in `GET /api/v0/status` (an older server, and this one while `PUBLISHER_PACKAGE_INLINE_FIELDS` is `on`, also carries them on the response).
 
 ### The deprecated PATCH, on a versioned package
 

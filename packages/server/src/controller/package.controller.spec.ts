@@ -10,6 +10,8 @@ import {
    BadRequestError,
    PackageAdmissionRefusedError,
    PackageVersionError,
+   BuildPlanUnavailableError,
+   internalErrorToHttpError,
    ServiceUnavailableError,
 } from "../errors";
 import { logger } from "../logger";
@@ -526,7 +528,10 @@ describe("PackageController.getPackage embeddingIndex", () => {
     */
    const controllerWithIndex = (embeddingIndex: EmbeddingIndex) => {
       const metadata = { name: "pkg", resource: "/pkg" };
-      const _package = { getPackageMetadata: () => metadata };
+      const _package = {
+         getPackageMetadata: () => metadata,
+         getOperationalFields: () => ({}),
+      };
       const getPackage = sinon.stub().resolves(_package);
       const environment = {
          getVersionService: () => null,
@@ -824,6 +829,7 @@ describe("PackageController.reloadPackage", () => {
       };
       const reinstalled = {
          getPackageMetadata: () => ({ name: "pkg", location }),
+         getOperationalFields: () => ({}),
       };
       const getPackage = sinon.stub().resolves(cached);
       const installPackage = sinon.stub().resolves(reinstalled);
@@ -1326,3 +1332,54 @@ function versionsPublishing(loaded: unknown, failWith?: Error) {
          ),
    };
 }
+
+describe("PackageController.getPackageBuildPlan", () => {
+   function controllerServing(pkg: {
+      getBuildPlan: () => unknown;
+      isBuildPlanUnavailable: () => boolean;
+   }): PackageController {
+      const environmentStore = {
+         getEnvironment: sinon.stub().resolves({
+            getPackage: sinon.stub().resolves(pkg),
+         }),
+      } as unknown as EnvironmentStore;
+      return new PackageController(environmentStore);
+   }
+
+   it("is the load's plan", async () => {
+      // The very object the load derived, not a copy.
+      const plan = { graphs: [], sources: {} };
+      const controller = controllerServing({
+         getBuildPlan: () => plan,
+         isBuildPlanUnavailable: () => false,
+      });
+      expect(await controller.getPackageBuildPlan("env", "pkg")).toBe(plan);
+   });
+
+   it("is an empty plan when the package declares no persist source", async () => {
+      const controller = controllerServing({
+         getBuildPlan: () => null,
+         isBuildPlanUnavailable: () => false,
+      });
+      expect(await controller.getPackageBuildPlan("env", "pkg")).toEqual({
+         graphs: [],
+         sources: {},
+      });
+   });
+
+   it("is a 409 BUILD_PLAN_UNAVAILABLE when the plan could not be derived at load", async () => {
+      const controller = controllerServing({
+         getBuildPlan: () => null,
+         isBuildPlanUnavailable: () => true,
+      });
+      const error = await controller.getPackageBuildPlan("env", "pkg").then(
+         () => undefined,
+         (e: unknown) => e,
+      );
+      expect(error).toBeInstanceOf(BuildPlanUnavailableError);
+      expect(internalErrorToHttpError(error as Error)).toMatchObject({
+         status: 409,
+         json: { reason: "BUILD_PLAN_UNAVAILABLE" },
+      });
+   });
+});
