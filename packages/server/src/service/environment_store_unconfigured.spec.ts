@@ -7,6 +7,7 @@ import * as path from "path";
 import { getUnresolvedPublisherConfigPath } from "../config";
 import { TEMP_DIR_PATH } from "../constants";
 import { logger } from "../logger";
+import { installSettings, withSettings } from "../test_helpers/settings_env";
 import {
    emptyRepository,
    stubStorageManager,
@@ -65,21 +66,24 @@ const resetRoot = () => {
 };
 
 describe("getUnresolvedPublisherConfigPath", () => {
-   const priorConfigPath = process.env.PUBLISHER_CONFIG_PATH;
+   let restoreSettings: () => void;
 
    beforeEach(() => {
       resetRoot();
-      delete process.env.PUBLISHER_CONFIG_PATH;
+      restoreSettings = installSettings({ cwd: serverRootPath }).restore;
    });
 
    afterEach(() => {
+      restoreSettings();
       rmSync(serverRootPath, { recursive: true, force: true });
-      if (priorConfigPath === undefined) {
-         delete process.env.PUBLISHER_CONFIG_PATH;
-      } else {
-         process.env.PUBLISHER_CONFIG_PATH = priorConfigPath;
-      }
    });
+
+   /** The unresolved path as a server started with `--config <configPath>` sees it. */
+   const unresolvedWithConfigFlag = (configPath: string) =>
+      withSettings(
+         { cwd: serverRootPath, argv: ["--config", configPath] },
+         () => getUnresolvedPublisherConfigPath(serverRootPath),
+      );
 
    it("names the path it looked for when no config is present", () => {
       expect(getUnresolvedPublisherConfigPath(serverRootPath)).toEqual({
@@ -100,8 +104,7 @@ describe("getUnresolvedPublisherConfigPath", () => {
       // A typo in the flag is the likelier way to boot empty, so it must not
       // read as "a config was found".
       const missing = path.join(serverRootPath, "nowhere.json");
-      process.env.PUBLISHER_CONFIG_PATH = missing;
-      expect(getUnresolvedPublisherConfigPath(serverRootPath)).toEqual({
+      expect(unresolvedWithConfigFlag(missing)).toEqual({
          path: missing,
          explicit: true,
       });
@@ -113,8 +116,7 @@ describe("getUnresolvedPublisherConfigPath", () => {
          present,
          JSON.stringify({ frozenConfig: false, environments: [] }),
       );
-      process.env.PUBLISHER_CONFIG_PATH = present;
-      expect(getUnresolvedPublisherConfigPath(serverRootPath)).toBeNull();
+      expect(unresolvedWithConfigFlag(present)).toBeNull();
    });
 });
 
@@ -136,9 +138,11 @@ describe("unconfigured boot notice", () => {
          ),
       ).toHaveLength(1);
 
+   let restoreSettings: () => void;
+
    beforeEach(() => {
       resetRoot();
-      delete process.env.PUBLISHER_CONFIG_PATH;
+      restoreSettings = installSettings({ cwd: serverRootPath }).restore;
       storedEnvironments = [];
       infoLines = [];
       infoSpy = spyOn(logger, "info").mockImplementation((message: unknown) => {
@@ -149,6 +153,7 @@ describe("unconfigured boot notice", () => {
 
    afterEach(() => {
       infoSpy.mockRestore();
+      restoreSettings();
       rmSync(serverRootPath, { recursive: true, force: true });
    });
 
@@ -220,7 +225,10 @@ describe("unconfigured boot notice", () => {
 
    it("reports a missing --config path on /status without logging it twice", async () => {
       const missing = path.join(serverRootPath, "nowhere.json");
-      process.env.PUBLISHER_CONFIG_PATH = missing;
+      const configured = installSettings({
+         cwd: serverRootPath,
+         argv: ["--config", missing],
+      });
       const errorSpy = spyOn(logger, "error").mockImplementation(() => logger);
       try {
          const store = new EnvironmentStore(serverRootPath);
@@ -242,7 +250,7 @@ describe("unconfigured boot notice", () => {
          expect(status.emptyReason).toContain("--config");
       } finally {
          errorSpy.mockRestore();
-         delete process.env.PUBLISHER_CONFIG_PATH;
+         configured.restore();
       }
    });
 
@@ -253,12 +261,17 @@ describe("unconfigured boot notice", () => {
          path.join(serverRootPath, "publisher.config.json"),
          JSON.stringify({ frozenConfig: false, environments: [] }),
       );
+      // Read again, as a server started on this root now would.
+      const configured = installSettings({ cwd: serverRootPath });
+      try {
+         const store = new EnvironmentStore(serverRootPath);
+         await store.finishedInitialization;
 
-      const store = new EnvironmentStore(serverRootPath);
-      await store.finishedInitialization;
-
-      assertInitialized();
-      expect(noticeLines()).toHaveLength(0);
-      expect((await store.getStatus()).emptyReason).toBeUndefined();
+         assertInitialized();
+         expect(noticeLines()).toHaveLength(0);
+         expect((await store.getStatus()).emptyReason).toBeUndefined();
+      } finally {
+         configured.restore();
+      }
    });
 });

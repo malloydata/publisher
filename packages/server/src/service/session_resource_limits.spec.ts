@@ -18,6 +18,20 @@ import {
    assertDuckDBResourceConfig,
    getPartitionedWriteFlushThreshold,
 } from "../config";
+import { installSettings } from "../test_helpers/settings_env";
+
+let restoreSettings: (() => void) | undefined;
+
+/** Make `env` the only variables the settings were loaded from. */
+function installEnv(env: Record<string, string>): void {
+   restoreSettings?.();
+   restoreSettings = installSettings({ env }).restore;
+}
+
+afterEach(() => {
+   restoreSettings?.();
+   restoreSettings = undefined;
+});
 
 function recorder(): { conn: DuckDBConnection; sql: string[] } {
    const sql: string[] = [];
@@ -31,33 +45,29 @@ function recorder(): { conn: DuckDBConnection; sql: string[] } {
 }
 
 describe("applySessionResourceLimits", () => {
-   afterEach(() => {
-      delete process.env.PUBLISHER_DUCKDB_MEMORY_LIMIT;
-      delete process.env.PUBLISHER_DUCKDB_TEMP_DIRECTORY;
-   });
-
    it("issues nothing when neither is configured", async () => {
+      installEnv({});
       const { conn, sql } = recorder();
       await applySessionResourceLimits(conn);
       expect(sql).toEqual([]);
    });
 
    it("sets a flat memory limit verbatim", async () => {
-      process.env.PUBLISHER_DUCKDB_MEMORY_LIMIT = "1GB";
+      installEnv({ PUBLISHER_DUCKDB_MEMORY_LIMIT: "1GB" });
       const { conn, sql } = recorder();
       await applySessionResourceLimits(conn);
       expect(sql).toEqual(["SET memory_limit = '1GB'"]);
    });
 
    it("treats `off` as unset, so a large single-session host can opt out", async () => {
-      process.env.PUBLISHER_DUCKDB_MEMORY_LIMIT = "off";
+      installEnv({ PUBLISHER_DUCKDB_MEMORY_LIMIT: "off" });
       const { conn, sql } = recorder();
       await applySessionResourceLimits(conn);
       expect(sql).toEqual([]);
    });
 
    it("sets the configured temp directory", async () => {
-      process.env.PUBLISHER_DUCKDB_TEMP_DIRECTORY = "/var/spill";
+      installEnv({ PUBLISHER_DUCKDB_TEMP_DIRECTORY: "/var/spill" });
       const { conn, sql } = recorder();
       await applySessionResourceLimits(conn);
       expect(sql).toEqual(["SET temp_directory = '/var/spill'"]);
@@ -65,7 +75,7 @@ describe("applySessionResourceLimits", () => {
 
    it("prefers a session-owned directory over the configured default", async () => {
       // A build session's disposable workDir: unique per build, removed with it.
-      process.env.PUBLISHER_DUCKDB_TEMP_DIRECTORY = "/var/spill";
+      installEnv({ PUBLISHER_DUCKDB_TEMP_DIRECTORY: "/var/spill" });
       const { conn, sql } = recorder();
       await applySessionResourceLimits(conn, { tempDirectory: "/tmp/build-1" });
       expect(sql).toEqual(["SET temp_directory = '/tmp/build-1'"]);
@@ -74,8 +84,10 @@ describe("applySessionResourceLimits", () => {
    it("sets temp_directory BEFORE memory_limit", async () => {
       // Order matters: a limit low enough to force spill must never be in effect
       // while temp_directory still points at DuckDB's default.
-      process.env.PUBLISHER_DUCKDB_MEMORY_LIMIT = "512MB";
-      process.env.PUBLISHER_DUCKDB_TEMP_DIRECTORY = "/var/spill";
+      installEnv({
+         PUBLISHER_DUCKDB_MEMORY_LIMIT: "512MB",
+         PUBLISHER_DUCKDB_TEMP_DIRECTORY: "/var/spill",
+      });
       const { conn, sql } = recorder();
       await applySessionResourceLimits(conn);
       expect(sql).toEqual([
@@ -91,8 +103,10 @@ describe("applySessionResourceLimits", () => {
       // cost the build its directory on the destination type that reaches
       // production, so spill went to the shared path, outlived `dispose`, and
       // could collide between concurrent builds.
-      process.env.PUBLISHER_DUCKDB_MEMORY_LIMIT = "512MB";
-      process.env.PUBLISHER_DUCKDB_TEMP_DIRECTORY = "/var/spill";
+      installEnv({
+         PUBLISHER_DUCKDB_MEMORY_LIMIT: "512MB",
+         PUBLISHER_DUCKDB_TEMP_DIRECTORY: "/var/spill",
+      });
       const { conn, sql } = recorder();
       await applySessionResourceLimits(conn); // the funnel
       await applySessionResourceLimits(conn, { tempDirectory: "/tmp/build-1" });
@@ -104,7 +118,7 @@ describe("applySessionResourceLimits", () => {
    });
 
    it("does not re-issue when the session-owned directory is already in effect", async () => {
-      process.env.PUBLISHER_DUCKDB_TEMP_DIRECTORY = "/var/spill";
+      installEnv({ PUBLISHER_DUCKDB_TEMP_DIRECTORY: "/var/spill" });
       const { conn, sql } = recorder();
       await applySessionResourceLimits(conn, { tempDirectory: "/tmp/build-1" });
       await applySessionResourceLimits(conn, { tempDirectory: "/tmp/build-1" });
@@ -113,7 +127,7 @@ describe("applySessionResourceLimits", () => {
    });
 
    it("applies once per connection even when the funnel is reached twice", async () => {
-      process.env.PUBLISHER_DUCKDB_MEMORY_LIMIT = "1GB";
+      installEnv({ PUBLISHER_DUCKDB_MEMORY_LIMIT: "1GB" });
       const { conn, sql } = recorder();
       await applySessionResourceLimits(conn);
       await applySessionResourceLimits(conn);
@@ -121,14 +135,14 @@ describe("applySessionResourceLimits", () => {
    });
 
    it("escapes a quote in a configured value rather than breaking the statement", async () => {
-      process.env.PUBLISHER_DUCKDB_TEMP_DIRECTORY = "/var/it's";
+      installEnv({ PUBLISHER_DUCKDB_TEMP_DIRECTORY: "/var/it's" });
       const { conn, sql } = recorder();
       await applySessionResourceLimits(conn);
       expect(sql).toEqual(["SET temp_directory = '/var/it''s'"]);
    });
 
    it("propagates a rejected value instead of opening an unbounded session", async () => {
-      process.env.PUBLISHER_DUCKDB_MEMORY_LIMIT = "not-a-size";
+      installEnv({ PUBLISHER_DUCKDB_MEMORY_LIMIT: "not-a-size" });
       const conn = {
          runSQL: async () => {
             throw new Error("Parser Error: unrecognized memory size");
@@ -146,7 +160,7 @@ describe("applySessionResourceLimits", () => {
       // ordering bug ship with nine green tests. `488.2 MiB` rather than `512MB`
       // is DuckDB reporting its own rounding, which is itself the evidence the
       // value was parsed rather than merely issued.
-      process.env.PUBLISHER_DUCKDB_MEMORY_LIMIT = "512MB";
+      installEnv({ PUBLISHER_DUCKDB_MEMORY_LIMIT: "512MB" });
       const { session, dispose, workDir } =
          createIsolatedBuildSession("limits_test");
       try {
@@ -173,7 +187,7 @@ describe("applySessionResourceLimits", () => {
       // The funnel is what covers the serve/package/attach paths — the limits sit
       // ahead of its autoinstall early-return precisely so they do not inherit
       // its conditions, and nothing held that.
-      process.env.PUBLISHER_DUCKDB_MEMORY_LIMIT = "512MB";
+      installEnv({ PUBLISHER_DUCKDB_MEMORY_LIMIT: "512MB" });
       const conn = new DuckDBConnection("funnel_wiring", ":memory:");
       try {
          await applyExtensionSessionSettings(conn);
@@ -192,7 +206,7 @@ describe("applySessionResourceLimits", () => {
       // `publisher.db` is not Malloy's connection, so the funnel never sees it and
       // it takes its bound as instance config. It is also held open for the whole
       // server lifetime, which makes it one of the budgets that has to fit.
-      process.env.PUBLISHER_DUCKDB_MEMORY_LIMIT = "512MB";
+      installEnv({ PUBLISHER_DUCKDB_MEMORY_LIMIT: "512MB" });
       const store = new MetadataStoreConnection(":memory:");
       try {
          await store.initialize();
@@ -207,14 +221,14 @@ describe("applySessionResourceLimits", () => {
 
    describe("assertDuckDBResourceConfig", () => {
       it("rejects trailing garbage that DuckDB would reject later", () => {
-         process.env.PUBLISHER_DUCKDB_MEMORY_LIMIT = "1GBB";
+         installEnv({ PUBLISHER_DUCKDB_MEMORY_LIMIT: "1GBB" });
          expect(() => assertDuckDBResourceConfig()).toThrow(
             /PUBLISHER_DUCKDB_MEMORY_LIMIT/,
          );
       });
 
       it("rejects a bare byte count, which DuckDB has no unit for", () => {
-         process.env.PUBLISHER_DUCKDB_MEMORY_LIMIT = "1073741824";
+         installEnv({ PUBLISHER_DUCKDB_MEMORY_LIMIT: "1073741824" });
          expect(() => assertDuckDBResourceConfig()).toThrow(
             /PUBLISHER_DUCKDB_MEMORY_LIMIT/,
          );
@@ -222,13 +236,13 @@ describe("applySessionResourceLimits", () => {
 
       it("accepts the spellings DuckDB accepts", () => {
          for (const value of ["1GB", "1gb", "1 GB", "1GiB", "1.5GB", "512MB"]) {
-            process.env.PUBLISHER_DUCKDB_MEMORY_LIMIT = value;
+            installEnv({ PUBLISHER_DUCKDB_MEMORY_LIMIT: value });
             expect(() => assertDuckDBResourceConfig()).not.toThrow();
          }
       });
 
       it("accepts `off`, which is the documented opt-out", () => {
-         process.env.PUBLISHER_DUCKDB_MEMORY_LIMIT = "off";
+         installEnv({ PUBLISHER_DUCKDB_MEMORY_LIMIT: "off" });
          expect(() => assertDuckDBResourceConfig()).not.toThrow();
       });
 
@@ -239,7 +253,7 @@ describe("applySessionResourceLimits", () => {
          // check this surfaced only at the first spill.
          const dir = mkdtempSync(path.join(os.tmpdir(), "unwritable-"));
          chmodSync(dir, 0o500);
-         process.env.PUBLISHER_DUCKDB_TEMP_DIRECTORY = dir;
+         installEnv({ PUBLISHER_DUCKDB_TEMP_DIRECTORY: dir });
          try {
             expect(() => assertDuckDBResourceConfig()).toThrow(
                /PUBLISHER_DUCKDB_TEMP_DIRECTORY/,
@@ -253,7 +267,7 @@ describe("applySessionResourceLimits", () => {
       it("creates a missing spill directory rather than failing at first spill", () => {
          const base = mkdtempSync(path.join(os.tmpdir(), "spillbase-"));
          const dir = path.join(base, "nested", "spill");
-         process.env.PUBLISHER_DUCKDB_TEMP_DIRECTORY = dir;
+         installEnv({ PUBLISHER_DUCKDB_TEMP_DIRECTORY: dir });
          try {
             expect(() => assertDuckDBResourceConfig()).not.toThrow();
             expect(existsSync(dir)).toBe(true);
@@ -265,22 +279,19 @@ describe("applySessionResourceLimits", () => {
 });
 
 describe("PUBLISHER_PARTITIONED_WRITE_FLUSH_THRESHOLD", () => {
-   afterEach(() => {
-      delete process.env.PUBLISHER_PARTITIONED_WRITE_FLUSH_THRESHOLD;
-   });
-
    it("defaults to 8192 rows, not to DuckDB's 524,288", () => {
+      installEnv({});
       expect(getPartitionedWriteFlushThreshold()).toBe(8192);
    });
 
    it("takes a configured row count", () => {
-      process.env.PUBLISHER_PARTITIONED_WRITE_FLUSH_THRESHOLD = "2048";
+      installEnv({ PUBLISHER_PARTITIONED_WRITE_FLUSH_THRESHOLD: "2048" });
       expect(getPartitionedWriteFlushThreshold()).toBe(2048);
       expect(() => assertDuckDBResourceConfig()).not.toThrow();
    });
 
    it("treats `off` as leave-it-to-DuckDB", () => {
-      process.env.PUBLISHER_PARTITIONED_WRITE_FLUSH_THRESHOLD = "off";
+      installEnv({ PUBLISHER_PARTITIONED_WRITE_FLUSH_THRESHOLD: "off" });
       expect(getPartitionedWriteFlushThreshold()).toBeUndefined();
       expect(() => assertDuckDBResourceConfig()).not.toThrow();
    });
@@ -289,7 +300,7 @@ describe("PUBLISHER_PARTITIONED_WRITE_FLUSH_THRESHOLD", () => {
       // The upper bound is operational: above a billion rows the bound is
       // indistinguishable from `off`.
       for (const bad of ["0", "-1", "8KB", "2048.5", "lots", "1000000000"]) {
-         process.env.PUBLISHER_PARTITIONED_WRITE_FLUSH_THRESHOLD = bad;
+         installEnv({ PUBLISHER_PARTITIONED_WRITE_FLUSH_THRESHOLD: bad });
          expect(() => assertDuckDBResourceConfig()).toThrow(
             /PUBLISHER_PARTITIONED_WRITE_FLUSH_THRESHOLD/,
          );

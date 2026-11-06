@@ -18,6 +18,7 @@ import {
    resolveBoundPort,
    resolveClientHost,
 } from "./mcp_config";
+import { installSettings, withSettings } from "./test_helpers/settings_env";
 
 const dirs: string[] = [];
 
@@ -438,10 +439,9 @@ describe("ensureMcpConfig", () => {
       });
 
       // Every way the bound port can differ from the requested one. Checking
-      // `requestedPort === 0` missed most of them, and the NaN case is not a
-      // typo-only scenario: Kubernetes injects MCP_PORT=tcp://10.96.0.1:4040
-      // into every pod in a namespace with a Service named `mcp`, and
-      // `Number()` of that is NaN, which bun binds ephemerally.
+      // `requestedPort === 0` missed most of them. A NaN no longer comes from
+      // MCP_PORT, since a non-numeric one fails startup, but the function
+      // still takes whatever number its caller hands it.
       const unstable: Array<[string, number]> = [
          ["--mcp_port 0", 0],
          ["a non-numeric MCP_PORT (NaN)", Number("tcp://10.96.0.1:4040")],
@@ -903,17 +903,12 @@ describe("logMcpConfigOutcome", () => {
 });
 
 describe("mcpConfigEnabled", () => {
-   /** Set the variable for one call and restore it. */
+   /** Run `body` with the settings the variable at `value` (or unset) gives. */
    function withEnv(value: string | undefined, body: () => void): void {
-      const saved = process.env.PUBLISHER_NO_MCP_CONFIG;
-      if (value === undefined) delete process.env.PUBLISHER_NO_MCP_CONFIG;
-      else process.env.PUBLISHER_NO_MCP_CONFIG = value;
-      try {
-         body();
-      } finally {
-         if (saved === undefined) delete process.env.PUBLISHER_NO_MCP_CONFIG;
-         else process.env.PUBLISHER_NO_MCP_CONFIG = saved;
-      }
+      withSettings(
+         { env: value === undefined ? {} : { PUBLISHER_NO_MCP_CONFIG: value } },
+         body,
+      );
    }
 
    it("is on when the variable is not set or empty", () => {
@@ -936,19 +931,29 @@ describe("mcpConfigEnabled", () => {
       }
    });
 
-   it("reads the variable when called, not when the module was imported", () => {
-      // server.ts sets this from --no-mcp-config in parseArgs() and reads it at
-      // module scope afterwards. If the read were ever hoisted above parseArgs,
-      // or the value captured at import, the flag would silently stop working.
+   it("reads the settings when called, not when the module was imported", () => {
+      // server.ts installs the settings (--no-mcp-config among them) at startup
+      // and reads this afterwards. If the value were captured at import, before
+      // the settings were installed, the flag would silently stop working.
       withEnv(undefined, () => {
          expect(mcpConfigEnabled()).toBe(true);
-         process.env.PUBLISHER_NO_MCP_CONFIG = "true";
-         expect(mcpConfigEnabled()).toBe(false);
+         const { restore } = installSettings({
+            env: { PUBLISHER_NO_MCP_CONFIG: "true" },
+         });
+         try {
+            expect(mcpConfigEnabled()).toBe(false);
+         } finally {
+            restore();
+         }
       });
    });
 
    it("throws on a value that is neither, like every other flag in this server", () => {
-      withEnv("please", () => expect(() => mcpConfigEnabled()).toThrow());
+      withEnv("please", () =>
+         expect(() => mcpConfigEnabled()).toThrow(
+            'mcp.configFileEnabled from PUBLISHER_NO_MCP_CONFIG: expected a boolean (true/false, 1/0, yes/no or on/off), got "please"',
+         ),
+      );
    });
 });
 

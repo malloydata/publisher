@@ -10,6 +10,7 @@ import { DuckDBConnection } from "../storage/duckdb/DuckDBConnection";
 import { createDuckDBRepository } from "../storage/duckdb/DuckDBRepository";
 import type { ResourceRepository } from "../storage/DatabaseInterface";
 import { initializeSchema } from "../storage/duckdb/schema";
+import { withSettings } from "../test_helpers/settings_env";
 import { Environment } from "./environment";
 import { Package } from "./package";
 
@@ -655,29 +656,24 @@ describe("a version's serving state", () => {
    it("lists each version's /status entry slim while inline fields are off", async () => {
       const env = await newEnvironment();
       await publish(env, source("1.0.0", 1));
-      const previous = process.env.PUBLISHER_PACKAGE_INLINE_FIELDS;
-      process.env.PUBLISHER_PACKAGE_INLINE_FIELDS = "off";
-      try {
-         const [entry] = (await env.listVersionEntries()).get(PKG)!;
-         expect(Object.keys(entry).sort()).toEqual(
-            [
-               "archiveStatus",
-               "boundManifestUri",
-               "latestVersion",
-               "loaded",
-               "manifestBindingStatus",
-               "name",
-               "resource",
-               "status",
-               "versionId",
-            ].sort(),
-         );
-      } finally {
-         if (previous === undefined) {
-            delete process.env.PUBLISHER_PACKAGE_INLINE_FIELDS;
-         } else {
-            process.env.PUBLISHER_PACKAGE_INLINE_FIELDS = previous;
-         }
-      }
+      await withSettings(
+         { env: { PUBLISHER_PACKAGE_INLINE_FIELDS: "off" } },
+         async () => {
+            const [entry] = (await env.listVersionEntries()).get(PKG)!;
+            expect(Object.keys(entry).sort()).toEqual(
+               [
+                  "archiveStatus",
+                  "boundManifestUri",
+                  "latestVersion",
+                  "loaded",
+                  "manifestBindingStatus",
+                  "name",
+                  "resource",
+                  "status",
+                  "versionId",
+               ].sort(),
+            );
+         },
+      );
    });
 });

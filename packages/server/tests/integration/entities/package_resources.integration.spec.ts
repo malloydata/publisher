@@ -19,6 +19,7 @@ import { afterAll, afterEach, beforeAll, describe, expect, it } from "bun:test";
 import type { components } from "../../../src/api";
 import { resetPackageLoadMetricsForTesting } from "../../../src/package_load_metrics";
 import { startMetricsHarness } from "../../../src/test_helpers/metrics_harness";
+import { installVariables } from "../../../src/test_helpers/settings_env";
 import { type ResourcesEnv, startResourcesEnv } from "./resources_harness";
 
 type ModelEntities = components["schemas"]["ModelEntities"];
@@ -26,7 +27,18 @@ type ApiPackage = components["schemas"]["Package"];
 
 const ENV_NAME = "package-resources-env";
 const INLINE = "PUBLISHER_PACKAGE_INLINE_FIELDS";
-const savedInline = process.env[INLINE];
+
+let restoreInline: (() => void) | undefined;
+
+/**
+ * PUBLISHER_PACKAGE_INLINE_FIELDS for the rest of the case, unset when
+ * `mode` is undefined. The in-process server reads it through the settings,
+ * so it is installed there rather than written to process.env.
+ */
+function inline(mode: "on" | "off" | undefined): void {
+   restoreInline?.();
+   restoreInline = installVariables({ [INLINE]: mode });
+}
 
 const ROWS = `duckdb.sql("select * from (values (1, 'web', 'us'), (2, 'store', 'eu')) as t(id, channel, region)")`;
 
@@ -107,8 +119,8 @@ describe("the package resource and its sub-resources", () => {
    }, 180_000);
 
    afterEach(() => {
-      if (savedInline === undefined) delete process.env[INLINE];
-      else process.env[INLINE] = savedInline;
+      restoreInline?.();
+      restoreInline = undefined;
    });
 
    afterAll(() => r.stop());
@@ -268,7 +280,7 @@ source: shown is ${ROWS} extend {
    it("each response's field set, with inline fields off and on", async () => {
       const shapes: Record<string, string[]> = {};
       for (const mode of ["off", "on"] as const) {
-         process.env[INLINE] = mode;
+         inline(mode);
          const pkg = (await get(pkgUrl("shop"))).json;
          const listed = (
             (await get(`/environments/${ENV_NAME}/packages`))
@@ -283,12 +295,12 @@ source: shown is ${ROWS} extend {
             (await get(pkgUrl("shop", "/status"))).json,
          ).sort();
       }
-      delete process.env[INLINE];
+      inline(undefined);
       expect(shapes).toMatchSnapshot();
    }, 60_000);
 
    it("with inline fields off, the package carries only its own fields and the /status entry only what a reconcile reads", async () => {
-      process.env[INLINE] = "off";
+      inline("off");
       const { status, json } = await get(pkgUrl("shop"));
       expect(status).toBe(200);
       const pkg = json as ApiPackage;
@@ -310,7 +322,7 @@ source: shown is ${ROWS} extend {
    }, 60_000);
 
    it("with inline fields on (the default), the moved fields are still on the package and its /status entry", async () => {
-      delete process.env[INLINE];
+      inline(undefined);
       const entry = await statusEntry("shop");
       expect(entry.servedRevision).toBeString();
       expect(entry.sourceContentSha).toBeString();
@@ -345,7 +357,7 @@ source: shown is ${ROWS} extend {
       const summary = (await get(pkgUrl("labeled", "/classification"))).json;
       expect((summary.sources as unknown[]).length).toBeGreaterThan(0);
 
-      delete process.env[INLINE];
+      inline(undefined);
       expect((await get(pkgUrl("labeled"))).json.classification).toEqual(
          summary,
       );
@@ -355,7 +367,7 @@ source: shown is ${ROWS} extend {
       ).find((p) => p.name === "labeled")!;
       expect("classification" in listed).toBe(false);
 
-      process.env[INLINE] = "off";
+      inline("off");
       expect("classification" in (await get(pkgUrl("labeled"))).json).toBe(
          false,
       );

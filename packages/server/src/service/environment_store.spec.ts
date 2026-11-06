@@ -1,15 +1,7 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
-import {
-   afterEach,
-   beforeEach,
-   describe,
-   expect,
-   it,
-   mock,
-   spyOn,
-} from "bun:test";
+import { afterEach, beforeEach, describe, expect, it, spyOn } from "bun:test";
 import {
    chmodSync,
    existsSync,
@@ -23,9 +15,9 @@ import { promises as fsPromises } from "fs";
 import * as path from "path";
 import * as sinon from "sinon";
 import { components } from "../api";
-import { isPublisherConfigFrozen } from "../config";
 import { TEMP_DIR_PATH } from "../constants";
 import { BadRequestError, EnvironmentNotFoundError } from "../errors";
+import { withSettings, type SettingsInput } from "../test_helpers/settings_env";
 import { stubStorageManager } from "../test_helpers/storage_manager_stub";
 import { Environment, PackageStatus } from "./environment";
 import {
@@ -326,13 +318,6 @@ describe("EnvironmentStore Service", () => {
       failNextDestinationReads = 0;
       sandbox = sinon.createSandbox();
 
-      // Mock the configuration to prevent initialization errors
-      mock(isPublisherConfigFrozen).mockReturnValue(false);
-      mock.module("../config", () => ({
-         isPublisherConfigFrozen: () => false,
-      }));
-
-      // Create project store after mocking
       environmentStore = new EnvironmentStore(serverRootPath);
    });
 
@@ -1731,57 +1716,28 @@ describe("EnvironmentStore Service", () => {
       },
    );
 
-   it("fails initialization on a versionPromotion outside its set", async () => {
-      // The store beforeEach made is still initializing in the background;
-      // let it finish, or it can recreate the test directory while afterEach
-      // is removing it (EEXIST on its mkdir).
-      await environmentStore.finishedInitialization;
-      writeFileSync(
-         path.join(serverRootPath, "publisher.config.json"),
-         JSON.stringify({ versionPromotion: "manual", environments: [] }),
-      );
-      const badPromotion = new EnvironmentStore(serverRootPath);
-      await badPromotion.finishedInitialization;
-      expect((await badPromotion.getStatus()).initError).toContain(
-         '"versionPromotion" in publisher.config.json must be one of on-publish | explicit',
-      );
-   });
-
    it("omits initError when initialization succeeds", async () => {
       await environmentStore.finishedInitialization;
       const status = await environmentStore.getStatus();
       expect(status.initError).toBeUndefined();
    });
 
-   describe("modelPage", () => {
-      const saved = process.env.PUBLISHER_MODEL_PAGE;
-      afterEach(() => {
-         if (saved === undefined) delete process.env.PUBLISHER_MODEL_PAGE;
-         else process.env.PUBLISHER_MODEL_PAGE = saved;
-      });
-
-      it("reports the model page the Console shows, the Explorer by default", async () => {
-         await environmentStore.finishedInitialization;
-         delete process.env.PUBLISHER_MODEL_PAGE;
+   // A value outside the set stops startup in the settings loader, before any
+   // store exists; the contract table and the first-boot specs cover that.
+   it("reports the model page the Console shows, the Explorer by default", async () => {
+      await environmentStore.finishedInitialization;
+      await withSettings({ cwd: serverRootPath }, async () =>
          expect((await environmentStore.getStatus()).modelPage).toBe(
             "explorer",
-         );
-         process.env.PUBLISHER_MODEL_PAGE = "viewer";
-         expect((await environmentStore.getStatus()).modelPage).toBe("viewer");
-      });
-
-      it("fails initialization on a value outside its set, and leaves modelPage absent", async () => {
-         // As above: let the beforeEach store finish before making another.
-         await environmentStore.finishedInitialization;
-         process.env.PUBLISHER_MODEL_PAGE = "both";
-         const badPage = new EnvironmentStore(serverRootPath);
-         await badPage.finishedInitialization;
-         const status = await badPage.getStatus();
-         expect(status.initError).toContain(
-            'PUBLISHER_MODEL_PAGE must be one of explorer | viewer (got "both")',
-         );
-         expect(status.modelPage).toBeUndefined();
-      });
+         ),
+      );
+      await withSettings(
+         { cwd: serverRootPath, env: { PUBLISHER_MODEL_PAGE: "viewer" } },
+         async () =>
+            expect((await environmentStore.getStatus()).modelPage).toBe(
+               "viewer",
+            ),
+      );
    });
 
    it("should handle invalid field names in publisher config without crashing", async () => {
@@ -1991,13 +1947,6 @@ describe("Project Service Error Recovery", () => {
       sandbox = sinon.createSandbox();
       mkdirSync(serverRootPath, { recursive: true });
 
-      // Mock the configuration to prevent initialization errors
-      mock(isPublisherConfigFrozen).mockReturnValue(false);
-      mock.module("../config", () => ({
-         isPublisherConfigFrozen: () => false,
-      }));
-
-      // Create project store after mocking
       environmentStore = new EnvironmentStore(serverRootPath);
    });
 
@@ -2193,10 +2142,6 @@ describe("EnvironmentStore path-injection guards", () => {
          rmSync(serverRootPath, { recursive: true, force: true });
       }
       mkdirSync(serverRootPath);
-      mock(isPublisherConfigFrozen).mockReturnValue(false);
-      mock.module("../config", () => ({
-         isPublisherConfigFrozen: () => false,
-      }));
       environmentStore = new EnvironmentStore(serverRootPath);
       await environmentStore.finishedInitialization;
    });
@@ -2589,27 +2534,14 @@ describe("CloneProgressReporter", () => {
 });
 
 describe("formatReadinessLine", () => {
-   const SAVED = ["PUBLISHER_HOST", "PUBLISHER_PORT", "MCP_PORT"] as const;
-   let saved: Record<string, string | undefined>;
-
-   beforeEach(() => {
-      saved = {};
-      for (const key of SAVED) {
-         saved[key] = process.env[key];
-         delete process.env[key];
-      }
-   });
-
-   afterEach(() => {
-      for (const key of SAVED) {
-         if (saved[key] === undefined) delete process.env[key];
-         else process.env[key] = saved[key];
-      }
-   });
+   const readinessLine = (
+      input: SettingsInput,
+      counts: { environments: number; packages: number; loadErrors: number },
+   ) => withSettings(input, () => formatReadinessLine(counts));
 
    it("uses the server defaults and displays the wildcard bind as localhost", () => {
       expect(
-         formatReadinessLine({ environments: 1, packages: 3, loadErrors: 0 }),
+         readinessLine({}, { environments: 1, packages: 3, loadErrors: 0 }),
       ).toBe(
          "PUBLISHER_READY url=http://localhost:4000 mcp=http://localhost:4040 " +
             "environments=1 packages=3 load_errors=0",
@@ -2617,9 +2549,11 @@ describe("formatReadinessLine", () => {
    });
 
    it("brackets an IPv6 literal host so the URL is dialable", () => {
-      process.env.PUBLISHER_HOST = "::1";
       expect(
-         formatReadinessLine({ environments: 1, packages: 1, loadErrors: 0 }),
+         readinessLine(
+            { env: { PUBLISHER_HOST: "::1" } },
+            { environments: 1, packages: 1, loadErrors: 0 },
+         ),
       ).toBe(
          "PUBLISHER_READY url=http://[::1]:4000 mcp=http://[::1]:4040 " +
             "environments=1 packages=1 load_errors=0",
@@ -2627,26 +2561,49 @@ describe("formatReadinessLine", () => {
    });
 
    it("displays the :: wildcard bind as localhost", () => {
-      process.env.PUBLISHER_HOST = "::";
       expect(
-         formatReadinessLine({ environments: 1, packages: 1, loadErrors: 0 }),
+         readinessLine(
+            { env: { PUBLISHER_HOST: "::" } },
+            { environments: 1, packages: 1, loadErrors: 0 },
+         ),
       ).toBe(
          "PUBLISHER_READY url=http://localhost:4000 mcp=http://localhost:4040 " +
             "environments=1 packages=1 load_errors=0",
       );
    });
 
-   it("respects the flag-derived env vars", () => {
-      // parseArgs writes --host/--port/--mcp_port here before the store exists.
-      process.env.PUBLISHER_HOST = "127.0.0.1";
-      process.env.PUBLISHER_PORT = "4321";
-      process.env.MCP_PORT = "4361";
-      expect(
-         formatReadinessLine({ environments: 2, packages: 5, loadErrors: 1 }),
-      ).toBe(
+   it("respects the host and ports given by flag or by variable", () => {
+      const expected =
          "PUBLISHER_READY url=http://127.0.0.1:4321 mcp=http://127.0.0.1:4361 " +
-            "environments=2 packages=5 load_errors=1",
-      );
+         "environments=2 packages=5 load_errors=1";
+      const counts = { environments: 2, packages: 5, loadErrors: 1 };
+      expect(
+         readinessLine(
+            {
+               argv: [
+                  "--host",
+                  "127.0.0.1",
+                  "--port",
+                  "4321",
+                  "--mcp_port",
+                  "4361",
+               ],
+            },
+            counts,
+         ),
+      ).toBe(expected);
+      expect(
+         readinessLine(
+            {
+               env: {
+                  PUBLISHER_HOST: "127.0.0.1",
+                  PUBLISHER_PORT: "4321",
+                  MCP_PORT: "4361",
+               },
+            },
+            counts,
+         ),
+      ).toBe(expected);
    });
 });
 
@@ -2673,9 +2630,6 @@ describe("readiness line emission", () => {
          rmSync(readinessRoot, { recursive: true, force: true });
       }
       mkdirSync(readinessRoot, { recursive: true });
-      mock.module("../config", () => ({
-         isPublisherConfigFrozen: () => false,
-      }));
       stderrWrites = [];
       stderrSpy = spyOn(process.stderr, "write").mockImplementation(
          (chunk: string | Uint8Array) => {

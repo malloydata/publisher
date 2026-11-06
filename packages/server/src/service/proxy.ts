@@ -17,6 +17,7 @@
  * transport is encrypted either way.
  */
 
+import { settings } from "../settings";
 import net from "net";
 import { Client as SshClient } from "ssh2";
 import type { ConnectConfig, SyncHostVerifier } from "ssh2";
@@ -34,22 +35,19 @@ export const ALLOW_UNVERIFIED_SSH_HOST_KEY_ENV =
  * Whether this deployment accepts an unverified bastion host key. Accepts the
  * same spellings as every other boolean flag (`1`, `true`, `yes`, `on`).
  *
- * Not `parseBoolEnv`, which throws on an unrecognised value: one caller is
+ * Never throws, though the setting does on an unrecognised value: one caller is
  * ssh2's synchronous `hostVerifier`, where a throw escapes past `fail()` and
  * loses the descriptive refusal. An unrecognised value falls back to the
  * secure default here; validateConnectionShape rejects it loudly at config
  * load.
  */
 export function allowUnverifiedHostKey(): boolean {
-   return TRUTHY_ENV_VALUES.has(
-      (process.env[ALLOW_UNVERIFIED_SSH_HOST_KEY_ENV] ?? "")
-         .trim()
-         .toLowerCase(),
-   );
+   try {
+      return settings.get("allow.unverifiedSshHostKey");
+   } catch {
+      return false;
+   }
 }
-
-// Mirrors the accepted set in config.ts's parseBoolEnv.
-const TRUTHY_ENV_VALUES = new Set(["1", "true", "yes", "on"]);
 
 function unpinnedRefusal(host: string): Error {
    return new Error(
