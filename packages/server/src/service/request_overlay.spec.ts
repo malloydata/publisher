@@ -15,6 +15,7 @@ import {
    overlaidText,
    overlayByUrl,
    parseOverlayFiles,
+   isOverlayRoute,
 } from "./request_overlay";
 
 describe("parseOverlayFiles", () => {
@@ -123,5 +124,37 @@ describe("overlayByUrl and overlaidText", () => {
       expect(overlaidText(files, "a.malloy")).toBe("A");
       expect(overlaidText(files, "b.malloy")).toBeUndefined();
       expect(overlaidText(undefined, "a.malloy")).toBeUndefined();
+   });
+});
+
+describe("isOverlayRoute", () => {
+   it("matches the compile and query routes, for any model path", () => {
+      for (const route of [
+         "/api/v0/environments/e/packages/p/models/m.malloy/compile",
+         "/api/v0/environments/e/packages/p/models/m.malloy/query",
+         "/api/v0/environments/e/packages/p/models/dir/sub/m.malloy/query",
+      ]) {
+         expect(isOverlayRoute(route)).toBe(true);
+      }
+   });
+
+   it("does not match any other route", () => {
+      for (const route of [
+         "/api/v0/environments/e/packages/p/models/m.malloy",
+         "/api/v0/environments/e/packages/p/models/compile",
+         "/api/v0/environments/e/packages//models/m.malloy/query",
+         "/api/v0/environments/e/packages/p/notebooks/m.malloy/query",
+         "/api/v0/environments/e/connections/c/query",
+         "/api/v0/environments/e/packages/p/query",
+      ]) {
+         expect(isOverlayRoute(route)).toBe(false);
+      }
+   });
+
+   it("answers a long adversarial path quickly", () => {
+      const path = "/packages/x/models/".repeat(20_000) + "x";
+      const started = performance.now();
+      expect(isOverlayRoute(path)).toBe(false);
+      expect(performance.now() - started).toBeLessThan(50);
    });
 });

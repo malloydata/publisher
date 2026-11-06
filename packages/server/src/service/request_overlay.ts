@@ -149,3 +149,26 @@ export function overlaidText(
 ): string | undefined {
    return files?.find((file) => file.path === filePath)?.content;
 }
+
+/**
+ * Whether `requestPath` is a compile or query route, the two that take a
+ * `files` overlay: `…/packages/{package}/models/{model path}/compile` or
+ * `…/query`. Plain string checks rather than a pattern, so the work is
+ * linear in the path's length whatever a caller sends.
+ */
+export function isOverlayRoute(requestPath: string): boolean {
+   const suffix = requestPath.endsWith("/compile")
+      ? "/compile"
+      : requestPath.endsWith("/query")
+        ? "/query"
+        : undefined;
+   if (suffix === undefined) return false;
+   const packages = requestPath.indexOf("/packages/");
+   if (packages < 0) return false;
+   const packageStart = packages + "/packages/".length;
+   const packageEnd = requestPath.indexOf("/", packageStart);
+   if (packageEnd <= packageStart) return false;
+   if (!requestPath.startsWith("/models/", packageEnd)) return false;
+   // A model path of at least one character between "/models/" and the suffix.
+   return packageEnd + "/models/".length < requestPath.length - suffix.length;
+}

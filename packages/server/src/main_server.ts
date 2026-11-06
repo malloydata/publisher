@@ -92,6 +92,7 @@ import { rateLimitMiddleware } from "./rate_limit";
 import { frameAncestorsMiddleware } from "./frame_ancestors";
 import { externalEnv, settings } from "./settings";
 import { acceptBundledExperimentalDialects } from "./service/experimental_dialects";
+import { isOverlayRoute } from "./service/request_overlay";
 import { MAX_OVERLAY_BYTES } from "./constants";
 
 // These getters throw on an invalid value. Read once at boot so a typo fails
@@ -363,12 +364,11 @@ app.use(
 // of text, which JSON escaping can grow, so they parse a larger body; the
 // overlay's own bounds answer 413 past that. Parsed once: the general parser
 // below skips a body already read.
-const OVERLAY_ROUTE = /\/packages\/[^/]+\/models\/.+\/(compile|query)$/;
 const overlayBodyParser = bodyParser.json({
    limit: 2 * MAX_OVERLAY_BYTES + 1024 * 1024,
 });
 app.use((req, res, next) =>
-   OVERLAY_ROUTE.test(req.path) ? overlayBodyParser(req, res, next) : next(),
+   isOverlayRoute(req.path) ? overlayBodyParser(req, res, next) : next(),
 );
 app.use(bodyParser.json({ limit: "1mb" }));
 app.use(legacyPackageNameBodyMiddleware());
