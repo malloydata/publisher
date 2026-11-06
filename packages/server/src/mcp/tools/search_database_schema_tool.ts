@@ -10,7 +10,12 @@ import { getEmbeddingProvider } from "../../service/embedding_provider";
 import { buildMalloyUri, classifyToolError } from "../handler_utils";
 import { jsonResource, jsonToolError } from "../tool_response";
 import { logger } from "../../logger";
-import { RankingMode, SchemaTableEntity, rankTables } from "./schema_index";
+import {
+   RankingMode,
+   SchemaTableEntity,
+   capColumns,
+   rankTables,
+} from "./schema_index";
 
 /** Tables returned when the caller does not ask for a specific number. */
 const DEFAULT_LIMIT = 20;
@@ -264,7 +269,7 @@ function toResponseTable(
               ),
            }
          : {}),
-      columns: entity.columns.slice(0, options.maxColumns),
+      columns: capColumns(entity.columns, options.maxColumns),
       columnCount: entity.columns.length,
       ...(options.score !== undefined ? { score: options.score } : {}),
    };
@@ -285,7 +290,7 @@ Supply what you know, omit the rest. No arguments lists the environments and the
 - Read warnings: they name anything omitted or ignored.
 
 ## Response
-JSON: tables (connectionName, schemaName, tableName, tablePath, malloySource, columns, columnCount, and score on a search), plus totalAvailable and returned. A search adds matched and ranking; a listing adds nextOffset when more remain, to pass back as offset.
+JSON: tables (connectionName, schemaName, tableName, tablePath, malloySource, columns (a record's members follow it as delivery.city), columnCount, and score on a search), plus totalAvailable and returned. A search adds matched and ranking; a listing adds nextOffset when more remain, to pass back as offset.
 
 ## Worked example
 Start with no arguments and follow what it names. For connection "warehouse", schema "sales":
@@ -838,7 +843,7 @@ async function listTablesTier(
    ).length;
    if (capped > 0) {
       warnings.push(
-         `${capped} table(s) have more than ${MAX_COLUMNS_PER_TABLE} columns; only the first ${MAX_COLUMNS_PER_TABLE} are shown. Pass tableName to see all columns of one table.`,
+         `${capped} table(s) have more than ${MAX_COLUMNS_PER_TABLE} columns; ${MAX_COLUMNS_PER_TABLE} are shown, the table's own columns before record members such as delivery.city. Pass tableName to see all columns of one table.`,
       );
    }
 

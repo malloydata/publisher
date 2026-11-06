@@ -9235,6 +9235,18 @@ components:
           type: array
           items:
             $ref: "#/components/schemas/Column"
+        membersUnread:
+          type: boolean
+          description: >-
+            Present, and true, when the table has a record column (a DuckDB
+            STRUCT, a Trino ROW, a Databricks STRUCT) whose members this
+            listing did not add to `columns`: the table's schema read failed,
+            or had not finished within the listing's time limit. Either can
+            clear on a later listing. `columns` then holds the database's
+            top-level columns only, so a missing member is not a removed one.
+            Absent when every record's members are listed, and when they are
+            never listed: a column type that declares none (a Databricks
+            ARRAY, a Snowflake OBJECT), or a table name that needs quoting.
 
     TemporaryTable:
       type: object
@@ -9362,10 +9374,20 @@ components:
       properties:
         name:
           type: string
-          description: Name of the column
+          description: |
+            Name of the column. A record column (a BigQuery RECORD, a DuckDB
+            STRUCT, a Trino ROW) is followed by its members, named by their
+            dotted path (`delivery.city`, `delivery.address.zip`). A member
+            that follows an `array` column belongs to a repeated record: it
+            has one value per element of the array, not one per row. A member
+            whose name is not a plain identifier (`a.b`, `two words`) is not
+            listed, nor anything under it.
         type:
           type: string
-          description: Data type of the column
+          description: |
+            Data type of the column. A top-level column has the type the
+            database reports; a record member has Malloy's type name
+            (`string`, `number`, `record`, `array`).
 
     TableDescription:
       type: object

@@ -6,7 +6,7 @@ import { ClientSecretCredential } from "@azure/identity";
 import { ContainerClient } from "@azure/storage-blob";
 import { BigQuery } from "@google-cloud/bigquery";
 import { Impersonated } from "google-auth-library";
-import { Connection, TableSourceDef } from "@malloydata/malloy";
+import { Connection, TableSourceDef, getDialect } from "@malloydata/malloy";
 import { components } from "../api";
 import { BadRequestError, InvalidArgumentError } from "../errors";
 import { logger } from "../logger";
@@ -26,11 +26,276 @@ import { getImpersonatedAuthClient } from "./gcp_impersonation";
 import { assertGoogleCredentialsIsNotADirectory } from "./google_credentials";
 import { ApiConnection } from "./model";
 import { runIntrospectionSQL, sqlLiteral } from "./introspection_sql";
+import { RECORD_COLUMN_TYPE } from "./record_column_type";
 
 export { sqlLiteral };
 
 type ApiSchema = components["schemas"]["Schema"];
 type ApiTable = components["schemas"]["Table"];
+
+type ApiColumn = NonNullable<ApiTable["columns"]>[number];
+
+/** A field of a Malloy table schema, as far as columnsOfSchema reads it. */
+interface SchemaField {
+   name: string;
+   type?: string;
+   fields?: SchemaField[];
+   elementTypeDef?: { type?: string };
+}
+
+/** How deep record members are listed: `delivery.address.zip` is depth 2. */
+const MAX_RECORD_DEPTH = 4;
+
+/**
+ * A member name a dotted column name can carry as written. A STRUCT key can
+ * hold a dot or a space (`{'a.b': 1}`): joined raw, `delivery.a.b` would read
+ * as a nested record and does not compile without backticks.
+ */
+const PLAIN_MEMBER_NAME = /^[A-Za-z_][A-Za-z0-9_]*$/;
+
+/**
+ * A table's columns from its Malloy schema: every top-level column, and after
+ * each record column (a BigQuery RECORD, a DuckDB STRUCT, a Trino ROW) its
+ * members under dotted names (`delivery.city`), nested records included. A
+ * repeated record (an array of records) keeps its type, `array`, and its
+ * members follow it the same way (`lines.sku`): a member under an `array`
+ * column has one value per element, not per row. An array of plain values
+ * has no members to list. A member whose name is not a plain identifier
+ * (PLAIN_MEMBER_NAME) is not listed, nor anything under it; a top-level
+ * column is always listed, as the database names it.
+ */
+export function columnsOfSchema(
+   fields: readonly SchemaField[] | undefined,
+   prefix = "",
+   depth = 1,
+): ApiColumn[] {
+   const out: ApiColumn[] = [];
+   for (const field of fields ?? []) {
+      if (!field.name) continue;
+      if (prefix && !PLAIN_MEMBER_NAME.test(field.name)) continue;
+      const name = `${prefix}${field.name}`;
+      out.push({ name, type: field.type });
+      const nested =
+         field.type === "record" ||
+         (field.type === "array" &&
+            field.elementTypeDef?.type === "record_element");
+      if (nested && depth <= MAX_RECORD_DEPTH) {
+         out.push(...columnsOfSchema(field.fields, `${name}.`, depth + 1));
+      }
+   }
+   return out;
+}
+
+/** Schema reads in flight at once: each is a round trip to the warehouse. */
+const SCHEMA_READ_CONCURRENCY = 8;
+/**
+ * How long one listing waits for schema reads. A table not read by then is
+ * listed from the cache when its record types are unchanged, and flat
+ * otherwise. Reads already in flight still finish and fill the cache, so a
+ * schema too large for one listing is covered over the next few.
+ */
+const SCHEMA_READ_DEADLINE_MS = 10_000;
+/** Tables whose members are cached per connection. Past it, the oldest go. */
+const MAX_CACHED_TABLES = 2_000;
+
+/** One table's record members, as last read, and the record types they were read at. */
+interface CachedMembers {
+   /** Every record column's name and INFORMATION_SCHEMA type, in order. */
+   recordTypes: string;
+   /** Each record column's members (columnsOfSchema), by the record's name. */
+   members: Map<string, ApiColumn[]>;
+}
+
+/**
+ * Record members by table, per Malloy connection. A listing reuses an entry
+ * without reading the schema when the table's record columns still have the
+ * same INFORMATION_SCHEMA types, since on DuckDB and Trino that type string
+ * spells out every member: `STRUCT(city VARCHAR, ...)`. A type that names no
+ * members (a Databricks `struct`) is read every time, and the entry is used
+ * only when that read fails.
+ */
+const memberCache = new WeakMap<Connection, Map<string, CachedMembers>>();
+
+/**
+ * The refresh timestamp of the last fresh read. Malloy re-reads a cached
+ * schema only when the timestamp passed is strictly newer than the cached
+ * one, so two reads in the same millisecond would get the first one's schema.
+ */
+let lastRefreshTimestamp = 0;
+function nextRefreshTimestamp(): number {
+   lastRefreshTimestamp = Math.max(Date.now() + 1, lastRefreshTimestamp + 1);
+   return lastRefreshTimestamp;
+}
+
+/**
+ * Whether Malloy will read a table's schema by this path. It refuses a path
+ * that is not canonical SQL for the dialect (`memory.main.my-tbl`, which needs
+ * quoting), on every read, so such a table's members are never listed, like a
+ * Databricks ARRAY's, rather than marked unread on every listing.
+ */
+function isReadablePath(dialectName: string, resource: string): boolean {
+   try {
+      const result = getDialect(dialectName).sqlValidateTableName(resource);
+      return result.ok && result.canonical === resource;
+   } catch {
+      return false;
+   }
+}
+
+function recordColumnsOf(table: ApiTable): ApiColumn[] {
+   return (table.columns ?? []).filter((c) =>
+      RECORD_COLUMN_TYPE.test(c.type ?? ""),
+   );
+}
+
+/**
+ * Add each record column's members after it (columnsOfSchema), for every
+ * table with a record column. The database's own list stays the authority:
+ * its columns, their order and their types are kept as reported, and members
+ * are spliced in after the record they belong to. A table whose members can
+ * be neither read nor taken from the cache keeps its flat list, marked
+ * `membersUnread`.
+ *
+ * The members come from the Malloy schema, read fresh (Malloy caches a schema
+ * for the life of the connection, and a cached one would list members of a
+ * struct that has since changed), unless memberCache already holds them for
+ * the same record types.
+ */
+async function withRecordMembers(
+   tables: ApiTable[],
+   malloyConnection: Connection,
+): Promise<ApiTable[]> {
+   const nested = tables.filter(
+      (t) =>
+         t.resource &&
+         recordColumnsOf(t).length > 0 &&
+         isReadablePath(malloyConnection.dialectName, t.resource),
+   );
+   if (nested.length === 0) return tables;
+
+   let cache = memberCache.get(malloyConnection);
+   if (!cache) {
+      cache = new Map();
+      memberCache.set(malloyConnection, cache);
+   }
+   const recordTypesOf = (t: ApiTable) =>
+      recordColumnsOf(t)
+         .map((c) => `${c.name}:${c.type}`)
+         .join("\n");
+   // The resolved members of each table in this listing.
+   const resolved = new Map<string, Map<string, ApiColumn[]>>();
+   const toRead: ApiTable[] = [];
+   for (const t of nested) {
+      const hit = cache.get(t.resource!);
+      const reusable = recordColumnsOf(t).every((c) =>
+         /[(<]/.test(c.type ?? ""),
+      );
+      if (hit && reusable && hit.recordTypes === recordTypesOf(t)) {
+         resolved.set(t.resource!, hit.members);
+      } else {
+         toRead.push(t);
+      }
+   }
+
+   const failed: string[] = [];
+   if (toRead.length > 0) {
+      const refreshTimestamp = nextRefreshTimestamp();
+      let next = 0;
+      let expired = false;
+      const readOne = async (t: ApiTable) => {
+         const resource = t.resource!;
+         let error: unknown;
+         try {
+            const read = await malloyConnection.fetchSchemaForTables(
+               { [resource]: resource },
+               { refreshTimestamp },
+            );
+            const schema = read.schemas[resource];
+            if (schema) {
+               const fields = new Map(
+                  (schema.fields as SchemaField[]).map((f) => [f.name, f]),
+               );
+               const members = new Map<string, ApiColumn[]>();
+               for (const column of recordColumnsOf(t)) {
+                  const field = fields.get(column.name ?? "");
+                  // The members alone: the record itself is the reported column.
+                  if (field) {
+                     members.set(
+                        column.name!,
+                        columnsOfSchema([field]).slice(1),
+                     );
+                  }
+               }
+               cache!.delete(resource);
+               cache!.set(resource, {
+                  recordTypes: recordTypesOf(t),
+                  members,
+               });
+               if (cache!.size > MAX_CACHED_TABLES) {
+                  cache!.delete(cache!.keys().next().value!);
+               }
+               if (!expired) resolved.set(resource, members);
+               return;
+            }
+            error = read.errors?.[resource];
+         } catch (e) {
+            error = extractErrorDataFromError(e);
+         }
+         failed.push(resource);
+         logger.warn("Record members not read: the table schema read failed", {
+            table: resource,
+            error,
+         });
+      };
+      const worker = async () => {
+         while (!expired && next < toRead.length) await readOne(toRead[next++]);
+      };
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      await Promise.race([
+         Promise.all(
+            Array.from(
+               { length: Math.min(SCHEMA_READ_CONCURRENCY, toRead.length) },
+               worker,
+            ),
+         ),
+         new Promise<void>((resolve) => {
+            timer = setTimeout(resolve, SCHEMA_READ_DEADLINE_MS);
+         }),
+      ]);
+      clearTimeout(timer);
+      expired = true;
+      const unread = toRead.filter((t) => !resolved.has(t.resource!));
+      for (const t of unread) {
+         // A read that failed or missed the deadline: the last good read
+         // serves when the record types have not changed since.
+         const hit = cache.get(t.resource!);
+         if (hit && hit.recordTypes === recordTypesOf(t)) {
+            resolved.set(t.resource!, hit.members);
+         }
+      }
+      const missed = unread.length - failed.length;
+      if (missed > 0) {
+         logger.warn(
+            "Record members not read for some tables: the schema reads ran past the deadline",
+            { tables: missed, deadlineMs: SCHEMA_READ_DEADLINE_MS },
+         );
+      }
+   }
+
+   const unlisted = new Set(nested);
+   return tables.map((t) => {
+      const members = t.resource ? resolved.get(t.resource) : undefined;
+      // A record whose members are not listed is flagged, so a reader can
+      // tell a member it was not given from one the table no longer has.
+      if (!members) return unlisted.has(t) ? { ...t, membersUnread: true } : t;
+      const columns: ApiColumn[] = [];
+      for (const column of t.columns ?? []) {
+         columns.push(column);
+         columns.push(...(members.get(column.name ?? "") ?? []));
+      }
+      return { ...t, columns };
+   });
+}
 type ApiAzureConnection = components["schemas"]["AzureConnection"];
 
 /**
@@ -1327,12 +1592,18 @@ export async function listTablesForSchema(
    malloyConnection: Connection,
    tableNames?: string[],
 ): Promise<ApiTable[]> {
-   return introspectorFor(connection).tables(
+   const tables = await introspectorFor(connection).tables(
       connection,
       schemaName,
       malloyConnection,
       tableNames,
    );
+   // BigQuery's introspector reads the Malloy schema already, members
+   // included; a `publisher` connection lists what the remote Publisher
+   // listed, which has expanded them already.
+   return connection.type === "bigquery" || connection.type === "publisher"
+      ? tables
+      : withRecordMembers(tables, malloyConnection);
 }
 
 /**
@@ -1382,11 +1653,9 @@ async function listTablesForBigQuery(
                         ) => Promise<TableSourceDef | undefined>;
                      }
                   ).fetchTableSchema(tableName, tablePath);
-                  const columns =
-                     source?.fields?.map((field) => ({
-                        name: field.name,
-                        type: field.type,
-                     })) || [];
+                  const columns = columnsOfSchema(
+                     source?.fields as SchemaField[] | undefined,
+                  );
                   return { resource: tablePath, columns };
                } catch (error) {
                   logger.warn(`Failed to get schema for table ${tableName}`, {
