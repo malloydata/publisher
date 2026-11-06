@@ -46,7 +46,7 @@ export const retrieval = [
       type: string(),
       description:
          "Base URL of the embedding API; default the provider's, else https://api.openai.com/v1.",
-      notes: "Base URL of an OpenAI-compatible embeddings API (`POST <base>/embeddings`). Point at any compatible endpoint (e.g. a local Ollama or vLLM server). A `retrieval.embedding.baseUrl` wins over it.",
+      notes: "Base URL of an OpenAI-compatible embeddings API (`POST <base>/embeddings`). Point at any compatible endpoint (e.g. a local Ollama or vLLM server). A `retrieval.embedding.baseUrl` in `publisher.config.json` wins over it.",
       defaultText: "the provider's, else `https://api.openai.com/v1`",
       aliases: {
          env: ["EMBEDDING_API_BASE"],
@@ -59,7 +59,7 @@ export const retrieval = [
       type: integer({ min: 1 }),
       description:
          "dimensions request parameter; unset takes the provider's vector length.",
-      notes: "Optional `dimensions` request parameter (e.g. `512` to shrink `text-embedding-3-small` vectors). When unset the parameter is omitted, which suits providers that do not support it. A `retrieval.embedding.dimensions` wins over it.",
+      notes: "Optional `dimensions` request parameter (e.g. `512` to shrink `text-embedding-3-small` vectors). When unset the parameter is omitted, which suits providers that do not support it. A `retrieval.embedding.dimensions` in `publisher.config.json` wins over it.",
       aliases: {
          env: ["EMBEDDING_DIMENSIONS"],
          file: ["retrieval.embedding.dimensions"],
