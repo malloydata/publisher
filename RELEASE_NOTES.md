@@ -21,7 +21,7 @@ Give the heading a title — `## [Unreleased] — what changed`, with an em dash
 
 Two consequences worth knowing. A section merged to `main` ships in the **next** release, whenever that is, so do not write one for work that has not landed. And a heading already stamped with a version is history: a follow-up that changes that behaviour opens a **new** `[Unreleased]` section referencing the shipped version by number, rather than editing the old one.
 
-## [Unreleased] — `#(classification)` and `#(carries)` are additive: gates load as in 0.11, `#(carries)` refuses only what it can reach, every query route writes an access record, and the compliance review separates what it could not check from what failed (BREAKING)
+## [0.12.4] — `#(classification)` and `#(carries)` are additive: gates load as in 0.11, `#(carries)` refuses only what it can reach, every query route writes an access record, and the compliance review separates what it could not check from what failed (BREAKING)
 
 `#(classification)` and `#(carries)` add to a package and change nothing about the tags already there. `#(authorize)`, `#(access_filter)` and givens load and serve as they did in 0.11 whether or not either new tag appears in the package, including a package 0.12.0 refused for a gate on a plain given. Only `#(carries)` refuses, and only for what a query or a source can reach; `#(classification)` labels and warns.
 
