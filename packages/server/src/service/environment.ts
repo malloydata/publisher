@@ -64,7 +64,7 @@ import {
    splitManifestEntries,
    type FetchedManifest,
 } from "./manifest_loader";
-import { ApiConnection } from "./model";
+import { ApiConnection, Model } from "./model";
 import { Package } from "./package";
 import type { PackageMemoryGovernor } from "./package_memory_governor";
 import {
@@ -72,6 +72,7 @@ import {
    type CompileScope,
    type TaggedLogMessage,
 } from "./compile_source";
+import { overlayByUrl, type OverlayFile } from "./request_overlay";
 import { destinationSchemaOf } from "./storage_table_path";
 
 export {
@@ -617,6 +618,7 @@ export class Environment {
       givens?: Record<string, GivenValue>,
       scope: CompileScope = "append",
       versionId?: unknown,
+      overlay?: readonly OverlayFile[],
    ): Promise<{
       problems: TaggedLogMessage[];
       sql?: string;
@@ -650,7 +652,39 @@ export class Environment {
          givens,
          scope,
          versionId,
+         overlay,
       );
+   }
+
+   /**
+    * `modelPath` of `pkg` compiled for one query with the request's `files`
+    * overlay read instead of the package's files (see `request_overlay.ts`).
+    * The model is the request's alone: nothing is written, cached or swapped
+    * into the package. An unversioned package compiles under its lock, as
+    * `/compile` does, so the files it still reads from disk are never caught
+    * mid-install; a published version's files never change.
+    */
+   public async compileOverlaidModel(
+      pkg: Package,
+      modelPath: string,
+      overlay: readonly OverlayFile[],
+   ): Promise<Model> {
+      assertSafeRelativeModelPath(modelPath);
+      const packagePath = pkg.getPackagePath();
+      const compile = () =>
+         Model.create(
+            pkg.getPackageName(),
+            packagePath,
+            modelPath,
+            pkg.getMalloyConfig(),
+            {
+               buildManifest: pkg.getBuildManifestEntries(),
+               overlay: overlayByUrl(packagePath, overlay),
+            },
+         );
+      return pkg.getVersionId() !== undefined
+         ? compile()
+         : this.withPackageLock(pkg.getPackageName(), compile);
    }
 
    public listApiConnections(): ApiConnection[] {

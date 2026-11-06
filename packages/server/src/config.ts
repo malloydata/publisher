@@ -891,6 +891,45 @@ export const getMaxResponseBytes = (): number => {
    return raw;
 };
 
+/** Default for {@link getMaxOverlayFiles}. */
+export const DEFAULT_MAX_OVERLAY_FILES = 500;
+/** Default for {@link getMaxOverlayBytes}: 8 MiB of overlay text. */
+export const DEFAULT_MAX_OVERLAY_BYTES = 8 * 1024 * 1024;
+
+/**
+ * How many files one compile or query request may overlay
+ * (`PUBLISHER_MAX_OVERLAY_FILES`, default {@link DEFAULT_MAX_OVERLAY_FILES});
+ * more is refused with 413. Must be positive.
+ */
+export const getMaxOverlayFiles = (): number => {
+   const raw = parseIntEnv("PUBLISHER_MAX_OVERLAY_FILES");
+   if (raw === undefined) return DEFAULT_MAX_OVERLAY_FILES;
+   if (raw <= 0) {
+      throw new Error(
+         `PUBLISHER_MAX_OVERLAY_FILES must be a positive integer (got ${raw})`,
+      );
+   }
+   return raw;
+};
+
+/**
+ * How many bytes of file text one compile or query request may overlay, summed
+ * over its files (`PUBLISHER_MAX_OVERLAY_BYTES`, default
+ * {@link DEFAULT_MAX_OVERLAY_BYTES}); more is refused with 413. The two routes
+ * that take an overlay accept a request body this much larger than the
+ * server's usual limit. Must be positive.
+ */
+export const getMaxOverlayBytes = (): number => {
+   const raw = parseIntEnv("PUBLISHER_MAX_OVERLAY_BYTES");
+   if (raw === undefined) return DEFAULT_MAX_OVERLAY_BYTES;
+   if (raw <= 0) {
+      throw new Error(
+         `PUBLISHER_MAX_OVERLAY_BYTES must be a positive integer (got ${raw})`,
+      );
+   }
+   return raw;
+};
+
 /**
  * Default row limit for a Malloy model query that carries no `LIMIT` of its
  * own (`PUBLISHER_DEFAULT_QUERY_ROW_LIMIT`, default

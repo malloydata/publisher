@@ -21,6 +21,15 @@ Give the heading a title — `## [Unreleased] — what changed`, with an em dash
 
 Two consequences worth knowing. A section merged to `main` ships in the **next** release, whenever that is, so do not write one for work that has not landed. And a heading already stamped with a version is history: a follow-up that changes that behaviour opens a **new** `[Unreleased]` section referencing the shipped version by number, rather than editing the old one.
 
+## [Unreleased] — Compile and query take a `files` overlay, so an author's tool can check and run unsaved edits
+
+`POST …/models/{path}/compile` (scopes `file` and `package`) and `POST …/models/{path}/query` take an optional `files`: a list of `{ path, content }` `.malloy` and `.malloynb` files read instead of, or beside, the package's own for that one request. An entry naming a package file replaces it, and one naming a new file adds it, so an import of it resolves. Nothing is written to disk, cached, or seen by another request: the overlay is served to the compiler by file URL and dropped with the request.
+
+- **Compile.** At `file`, the model in the URL and everything it imports read the overlaid text, and an entry for the model itself may stand in for `source` (giving both is a 400). At `package`, every file compiles as a reload would, overlaid files new to the package included. Each problem names its file (`model`) and its position in that file's text, so a tool can show each file's errors without saving. `files` at scope `append` is a 400: append checks text against the package as published.
+- **Query.** The model in the URL is compiled for that request alone with the overlay and the query runs against it. A model the overlay breaks answers with the compile's 400. Like `/compile`, it is an authoring query: the package's discovery surface does not restrict it.
+- **Overlay files are package files.** They are not restricted like ad-hoc text, and their `#(authorize)` and `#(access_filter)` annotations gate as written, including ones they add, change or remove. A host must offer `files` only to callers who may edit the package (see `docs/authorize.md`). `query` and `source` text beside an overlay is still caller text and may not declare a gate.
+- **Bounds.** At most `PUBLISHER_MAX_OVERLAY_FILES` files (default 500) and `PUBLISHER_MAX_OVERLAY_BYTES` bytes of text (default 8 MiB) per request; past either is a 413 naming the setting. A path that is absolute, has a `.` or `..` segment or a backslash, names a file other than a model or notebook, or appears twice is a 400. Data files and `publisher.json` are read from the package as published. These two routes accept a request body up to twice the byte bound plus 1 MiB, rather than the server's usual 1 MiB.
+- **Telemetry.** `publisher_request_overlay_total{route, outcome}` counts requests that carried an overlay (`accepted`, `refused_entry`, `refused_bounds`), and a query's access record carries `overlaid: true`.
 
 ## [Unreleased] — `PUBLISHER_MODEL_PAGE=viewer` takes the Explorer out of the Console
 

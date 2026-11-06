@@ -202,6 +202,8 @@ export interface LoadPackageJob {
    buildManifest?: unknown;
    /** Optional in-memory model replacement for a package compile dry-run. */
    replacement?: { modelPath: string; source: string };
+   /** More in-memory files for a package compile dry-run (a request's `files` overlay). */
+   overlay?: { modelPath: string; source: string }[];
    /** Return non-fatal compiler diagnostics for dry-run reporting. */
    collectProblems?: boolean;
    /** See {@link LoadPackageRequest.computeBuildPlan}. */
@@ -446,6 +448,7 @@ export class PackageLoadPool {
          defaultConnectionName: qj.request.defaultConnectionName,
          buildManifest: qj.request.buildManifest,
          replacement: qj.request.replacement,
+         overlay: qj.request.overlay,
          collectProblems: qj.request.collectProblems,
          computeBuildPlan: qj.request.computeBuildPlan,
          withPreaggregateCompanions: qj.request.withPreaggregateCompanions,

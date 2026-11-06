@@ -27,6 +27,7 @@ import { filterPublisherOwnedRenderLogs } from "../service/report_manifest";
 import { EnvironmentStore } from "../service/environment_store";
 import type { FilterParams } from "../service/filter";
 import type { GivenValue } from "@malloydata/malloy";
+import { parseOverlayFiles } from "../service/request_overlay";
 
 type ApiQuery = components["schemas"]["QueryResult"];
 
@@ -62,6 +63,8 @@ export class QueryController {
       includeHiddenFilesAndSources?: boolean,
       clientSignal?: AbortSignal,
       audit: { caller?: string; traceId?: string } = {},
+      /** The request's `files` overlay, unchecked (see `request_overlay.ts`). */
+      files?: unknown,
    ): Promise<ApiQuery> {
       const started = performance.now();
       const base = {
@@ -72,6 +75,7 @@ export class QueryController {
          ...(queryName ? { queryName } : {}),
          ...(sourceName ? { requestedSource: sourceName } : {}),
          adHoc: Boolean(query),
+         ...(files !== undefined && files !== null ? { overlaid: true } : {}),
          ...(audit.caller ? { caller: audit.caller } : {}),
          ...(audit.traceId ? { traceId: audit.traceId } : {}),
       };
@@ -91,6 +95,7 @@ export class QueryController {
             bypassAuthorize,
             includeHiddenFilesAndSources,
             clientSignal,
+            files,
          );
          emitAccessRecord({
             ...base,
@@ -149,6 +154,7 @@ export class QueryController {
       includeHiddenFilesAndSources?: boolean,
       /** Aborted when the HTTP client disconnects: cancels the query with it. */
       clientSignal?: AbortSignal,
+      files?: unknown,
    ): Promise<{
       api: ApiQuery;
       access?: QueryAccessSummary;
@@ -162,6 +168,7 @@ export class QueryController {
       } catch (error) {
          throw new BadRequestError((error as Error).message);
       }
+      const overlay = parseOverlayFiles(files, "query");
 
       const environment = await this.environmentStore.getEnvironment(
          environmentName,
@@ -174,7 +181,12 @@ export class QueryController {
       const p = await environment.getPackage(packageName, false, {
          versionId: metadata?.versionId,
       });
-      const model = p.getModel(modelPath);
+      // An overlaid query compiles the model for this request alone. It is an
+      // authoring query, as on /compile: the package's surface does not
+      // restrict it, and the overlaid files' own gates do.
+      const model = overlay
+         ? await environment.compileOverlaidModel(p, modelPath, overlay)
+         : p.getModel(modelPath);
 
       if (!model) {
          // Worded exactly as Model.assertQueryBoundaryEarly's generic refusal,
