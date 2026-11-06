@@ -9085,6 +9085,12 @@ components:
         queryTimeoutMilliseconds:
           type: string
           description: Query timeout in milliseconds
+        dbmeta:
+          type: boolean
+          default: false
+          description: >-
+            Copy table and column descriptions from BigQuery onto the schema
+            as `#(dbmeta)` annotations.
 
     SnowflakeConnection:
       type: object

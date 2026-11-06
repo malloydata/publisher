@@ -277,7 +277,8 @@ keyword and value matching still run, so a query only matches entities that shar
 
 What to know before turning it on:
 
-- What leaves the machine: for each field, its name, its `#(doc)` text and the sentences derived from
+- What leaves the machine: for each field, its name, its doc text (`#(doc)`, else `#"`, else the database's
+  description on a connection with `dbmeta` on) and the sentences derived from
   them; under `egress.preset: "full"` only, the values of `#(index)` dimensions on ungated sources
   (`fcj.valueEmbeddings: false` stops that too); and the query strings agents pass to `get_context`. Model source code, other data and query
   results are never sent. Point `EMBEDDING_API_BASE` at a local OpenAI-compatible server (Ollama, vLLM)
@@ -356,7 +357,7 @@ credentials, what may leave the machine and the spend ceilings are all in the op
 | `embedding.provider`                                                | One of `openai`, `openai-compatible`, `ollama`, `google`, `vertex` (Anthropic has no embeddings API). Omitted: the `EMBEDDING_*` variables decide, as before.                                                                          |
 | `embedding.model`, `dimensions`, `baseUrl`, `projectId`, `location` | As for `llm`. `model` defaults to `text-embedding-3-small` for `openai` and is required for the other providers. `dimensions` is omitted from requests when unset.                                                                     |
 | `embedding.queryPrefix` / `documentPrefix`                          | Text put before a search query / before indexed text (default empty). `nomic-embed-text` wants `search_query: ` and `search_document: `. Changing `documentPrefix` re-embeds; changing `queryPrefix` does not.                         |
-| `egress.preset`                                                     | `default`: entity names, `#(doc)` text and schema context may be sent to the LLM. `full`: also the field's code and matched dimension values. Access predicates (`#(access_filter)`, `#(authorize)`) are never sent, and there is no setting for that. |
+| `egress.preset`                                                     | `default`: entity names, doc text (an entity's `#(doc)` lines, else its `#"` doc strings, else the database's description of its table or column on a connection with `dbmeta` on) and schema context may be sent to the LLM. `full`: also the field's code and matched dimension values. Access predicates (`#(access_filter)`, `#(authorize)`) are never sent, and there is no setting for that. |
 | `dimensionValues.enabled`                                           | See "Dimension value search".                                                                                                                                                                                                          |
 
 **Keys.** Secrets are environment variables only, never file entries: `LLM_API_KEY` for the chat
@@ -472,7 +473,7 @@ between releases.
 ### The judge
 
 The judge is one chat call per request (one per group with `connect: "clusters"`). It sees the targets
-verbatim, and for each target the candidates with their kind, type, source, route and full `#(doc)`
+verbatim, and for each target the candidates with their kind, type, source, route and full doc
 text, rules included. It never sees an access predicate or a field's code (unless `egress.preset` is
 `full`). A target the judge picks nothing for comes back in `unresolved_targets`, which is the agent's
 signal to ask or to search again.
@@ -536,22 +537,22 @@ build, so it runs only when the server has an LLM. With `sourceSummary.enabled: 
 it is on whenever an LLM is configured; `true` with no LLM configured stops the package from loading;
 `false` turns it off.
 
-For each source the model gets one call. It is shown the source name, the source's `#(doc)` text (or
+For each source the model gets one call. It is shown the source name, the source's doc text (or
 `No source docs.`), and the source's fields in four groups, Dimensions, Measures, Views and Joins,
 each line `name (type): doc text on one line`. Each joined source is nested under the source with its
 own fields, up to three joins deep and 20 joined sources. A source or joined source with more than
 200 fields shows 200 of them, spread over the groups, and says `Showing 200 of N fields`. Nothing
-else is sent: no code, and no access predicate (every annotation line other than `#(doc)` is removed).
+else is sent: no code, and no access predicate (every annotation line other than the doc is removed).
 A source with no fields of its own is skipped, as is a source the package hides or locks (it is not an
 entity).
 
 The reply is `{"summary": "...", "one_line_summary": "..."}`. The summary is prose that names fields in
-backticks; the one-liner is one sentence of at most 120 characters. A source with no `#(doc)` text
+backticks; the one-liner is one sentence of at most 120 characters. A source with no doc text
 must get exactly ``The `<name>` source.``, so the model cannot invent a purpose. A reply that breaks
 a rule is shown back to the model once with the reason; if it is still wrong, the step fails.
 
 A source is identified by its model file and its name, so two files that each define `orders` get
-their own summary, and a join expands the source in the file it names. One field's `#(doc)` is cut to
+their own summary, and a join expands the source in the file it names. One field's doc text is cut to
 500 characters in the prompt, and a prompt over 60,000 characters shows fewer joined sources, then fewer
 fields, with a line that says what was left out. For a local model (`llm.provider` `ollama`) the cap
 is 6,000 characters: Ollama's default context window (2,048 to 4,096 tokens) cuts a longer prompt

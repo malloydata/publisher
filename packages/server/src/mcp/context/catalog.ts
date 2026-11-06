@@ -24,8 +24,7 @@ import type { ModelDef } from "@malloydata/malloy";
 import type { Relationship } from "@malloydata/malloy-interfaces";
 import { compareText as comparePaths } from "../../compare_text";
 import {
-   docOnlyText,
-   docText,
+   entityDocs,
    enterJoin,
    modelPathOfUrl,
    sourceContextKey,
@@ -53,10 +52,12 @@ export interface CatalogNode {
    sourceKey: string;
    /** Every model file the node resolves in, codepoint order. */
    modelPaths: string[];
-   /** `#(doc)` text only; safe to send to a model or an embedder. */
+   /** Doc text only (see docOnlyText); safe to send to a model or an embedder. */
    doc: string;
    /** The response's description (may fall back to raw annotation lines). */
    displayDoc: string;
+   /** "dbmeta" when the doc is the database's description (see Entity.docSource). */
+   docSource?: "dbmeta";
    dataType?: string;
    /** The authored expression, when the field has one. */
    code?: string;
@@ -225,6 +226,8 @@ export interface CatalogInput {
    topology: JoinTopology;
    /** Per (model path, source): whether a gate is in force. */
    gatedByContext: ReadonlyMap<string, boolean>;
+   /** Deny-all sources, by (model path, source): nothing they document is copied. */
+   droppedSources?: ReadonlySet<string>;
    models: readonly CatalogModel[];
    /**
     * PROVISIONAL, a diagnostic of the connect rule (`retrieval.fcj.collapseCopies`).
@@ -468,6 +471,16 @@ function allNotes(
 
 function noteKey(note: { text?: string; at?: CompiledLocation }): string {
    return `${locationKey(note.at) ?? ""}\u0000${note.text ?? ""}`;
+}
+
+function sourceInfoAnnotations(
+   model: CatalogModel | undefined,
+   name: string,
+): Array<string | { value: string }> | undefined {
+   const info = model?.sourceInfos.find(
+      (raw) => (raw as { name?: string }).name === name,
+   ) as { annotations?: Array<string | { value: string }> } | undefined;
+   return info?.annotations;
 }
 
 /**
@@ -828,6 +841,7 @@ function unservedCopies(args: {
    sources: ReadonlyMap<string, CatalogSource>;
    hasNode: (kind: string, sourceKey: string, name: string) => boolean;
    cap: number;
+   droppedSources?: ReadonlySet<string>;
 }): {
    added: Array<{ entity: Entity; sourceKey: string }>;
    capped: number;
@@ -840,6 +854,16 @@ function unservedCopies(args: {
       return parsed && at !== undefined
          ? sourceKeyOf(parsed.source, at)
          : undefined;
+   };
+   const isDropped = (id: string | undefined) => {
+      const parsed = splitSourceId(id);
+      const at = parsed ? modelPathOfUrl(parsed.url, modelPaths) : undefined;
+      return (
+         parsed !== undefined &&
+         at !== undefined &&
+         (args.droppedSources?.has(sourceContextKey(at, parsed.source)) ??
+            false)
+      );
    };
    interface Found {
       field: string;
@@ -874,6 +898,8 @@ function unservedCopies(args: {
             /** The id of the source the fields belong to, and the raw joins below it. */
             owner: string,
             rest: readonly string[],
+            /** Whether the path passes through a deny-all source. */
+            locked: boolean,
          ) => {
             for (const f of fields) {
                if (f.kind === "join") {
@@ -904,6 +930,7 @@ function unservedCopies(args: {
                      next.fanout,
                      id ?? owner,
                      id ? [] : [...rest, f.name],
+                     locked || isDropped(id),
                   );
                   continue;
                }
@@ -934,8 +961,9 @@ function unservedCopies(args: {
                      name,
                      source: sourceName,
                      modelPath: model.modelPath,
-                     doc: docText(f.annotations),
-                     embedDoc: docOnlyText(f.annotations),
+                     ...(locked
+                        ? { doc: "", embedDoc: "" }
+                        : entityDocs(f.annotations)),
                      joinPath,
                      relationship: fanout,
                      ...(dataType ? { dataType } : {}),
@@ -950,6 +978,7 @@ function unservedCopies(args: {
             "one",
             sourceKey,
             [],
+            false,
          );
       }
    }
@@ -1063,8 +1092,13 @@ export function buildCatalog(input: CatalogInput): Catalog {
       }
       if (e.modelPath === definedIn) gatedByDefinition.add(key);
       if (extendsKey) extendsOf.set(key, extendsKey);
-      // An extension's doc is the notes it writes, never its parent's.
-      const own = ownNotesOf(modelByPath.get(e.modelPath)?.modelDef, e.name);
+      // An extension's doc is the notes it writes, never its parent's; with
+      // none, its table's `#(dbmeta)` description.
+      const model = modelByPath.get(e.modelPath);
+      const own = ownNotesOf(model?.modelDef, e.name);
+      const ownDocs = own
+         ? entityDocs(own, sourceInfoAnnotations(model, e.name))
+         : undefined;
       const node: CatalogNode = {
          key: nodeKeyOf("source", key, e.name),
          id: entityId("source", e.name, e.name),
@@ -1073,8 +1107,9 @@ export function buildCatalog(input: CatalogInput): Catalog {
          source: e.name,
          sourceKey: key,
          modelPaths: [e.modelPath],
-         doc: own ? docOnlyText(own) : e.embedDoc,
-         displayDoc: own ? docText(own) : e.doc,
+         doc: ownDocs ? ownDocs.embedDoc : e.embedDoc,
+         displayDoc: ownDocs ? ownDocs.doc : e.doc,
+         ...((ownDocs ?? e).docSource ? { docSource: "dbmeta" as const } : {}),
          dependsOn: [],
          uses: [],
          indexed: false,
@@ -1120,6 +1155,7 @@ export function buildCatalog(input: CatalogInput): Catalog {
          modelPaths: [e.modelPath],
          doc: e.embedDoc,
          displayDoc: e.doc,
+         ...(e.docSource ? { docSource: e.docSource } : {}),
          ...(e.dataType ? { dataType: e.dataType } : {}),
          ...(e.code ? { code: e.code } : {}),
          ...(e.joinPath ? { joinPath: e.joinPath } : {}),
@@ -1155,6 +1191,7 @@ export function buildCatalog(input: CatalogInput): Catalog {
               hasNode: (kind, sourceKey, name) =>
                  nodes.has(nodeKeyOf(kind, sourceKey, name)),
               cap: input.unservedCopies!,
+              droppedSources: input.droppedSources,
            })
          : { added: [], capped: 0, walkCapped: 0 };
    for (const { entity, sourceKey } of unserved.added) {
@@ -1583,6 +1620,7 @@ export async function catalogInputOf(
       entities: pkgIndex.directEntities,
       topology: pkgIndex.topology,
       gatedByContext,
+      droppedSources: pkgIndex.droppedSources,
       models,
    };
 }

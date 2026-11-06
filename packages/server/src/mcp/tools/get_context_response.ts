@@ -94,6 +94,8 @@ interface SourceCardInfo {
     */
    summary?: string;
    docs?: string;
+   /** "dbmeta" when `docs` is the database's table description. */
+   docs_source?: "dbmeta";
    givens?: SourceContextGiven[];
    accessFilter?: SourceContextAuthorize[];
    /** The `#(authorize)` locks — see `SourceContextEntry.authorize`. */
@@ -116,6 +118,8 @@ interface SourceCardEntity {
    entity_type: string;
    relevance?: number;
    description?: string;
+   /** "dbmeta" when `description` is the database's column description. */
+   description_source?: "dbmeta";
    data_type?: string;
    /**
     * Publisher extension. The data classes the field carries, sorted, as the
@@ -237,6 +241,9 @@ export function toSourceResults(
                   ? { summary: stored.summary }
                   : {}),
                ...(ctx?.doc ? { docs: ctx.doc } : {}),
+               ...(ctx?.doc && ctx.docSource
+                  ? { docs_source: ctx.docSource }
+                  : {}),
                ...(ctx?.givens ? { givens: ctx.givens } : {}),
                ...(ctx?.accessFilter ? { accessFilter: ctx.accessFilter } : {}),
                ...(ctx?.authorize ? { authorize: ctx.authorize } : {}),
@@ -257,7 +264,11 @@ export function toSourceResults(
          // its full (untruncated) doc supersedes the truncated context copy.
          const relevance = foldRelevance(entry.relevance, r);
          if (relevance !== undefined) entry.relevance = relevance;
-         if (r.doc) entry.source_info.docs = r.doc;
+         if (r.doc) {
+            entry.source_info.docs = r.doc;
+            if (r.docSource) entry.source_info.docs_source = r.docSource;
+            else delete entry.source_info.docs_source;
+         }
          continue;
       }
       const entity: SourceCardEntity = {
@@ -266,6 +277,7 @@ export function toSourceResults(
          entity_id: entityId(r.kind, r.source, r.name),
          ...(r.score !== undefined ? { relevance: r.score } : {}),
          ...(r.doc ? { description: r.doc } : {}),
+         ...(r.doc && r.docSource ? { description_source: r.docSource } : {}),
          ...(r.dataType ? { data_type: r.dataType } : {}),
          ...(r.classifications ? { classifications: r.classifications } : {}),
          ...(r.classificationInferred ? { classification_inferred: true } : {}),
@@ -403,6 +415,7 @@ export function projectEntity(
       modelPath: e.modelPath,
       doc: e.doc,
       ...(e.embedDoc ? { embedDoc: e.embedDoc } : {}),
+      ...(e.docSource ? { docSource: e.docSource } : {}),
       ...(e.relationship ? { relationship: e.relationship } : {}),
       ...(e.aliases ? { aliases: e.aliases } : {}),
       ...(e.joinPath ? { joinPath: e.joinPath } : {}),
