@@ -2476,6 +2476,45 @@ export class Environment {
       );
    }
 
+   /**
+    * Load a package from `downloader`'s tree exactly as {@link installPackage}
+    * would, run `validate` on it, and discard it: the served package, its lock,
+    * its status and the package map are never touched, so nothing becomes
+    * readable and no post-load work starts. Returns the loaded package for the
+    * caller to describe; it serves nothing. Refused like an install under
+    * memory backpressure, since it holds a whole load.
+    */
+   public async dryRunInstall(
+      packageName: string,
+      downloader: (stagingPath: string) => Promise<void>,
+      validate?: (pkg: Package) => string | undefined,
+   ): Promise<Package> {
+      assertSafePackageName(packageName);
+      this.assertCanAdmitNewPackage(packageName, "dry-run a package", false);
+      const stagingPath = this.allocateStagingPath(packageName);
+      await fs.promises.mkdir(path.dirname(stagingPath), { recursive: true });
+      try {
+         await downloader(stagingPath);
+         const pkg = await Package.create(
+            this.environmentName,
+            packageName,
+            stagingPath,
+            () => this.malloyConfig.malloyConfig,
+            true,
+         );
+         this.attachDestinationServeConfig(pkg);
+         const validationMsg = validate?.(pkg);
+         if (validationMsg) {
+            throw new BadRequestError(validationMsg);
+         }
+         return pkg;
+      } finally {
+         await fs.promises
+            .rm(stagingPath, { recursive: true, force: true })
+            .catch(() => {});
+      }
+   }
+
    private async _installPackageTracked(
       packageName: string,
       downloader: (stagingPath: string) => Promise<void>,

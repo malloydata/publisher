@@ -1482,6 +1482,17 @@ paths:
         container for models, notebooks, embedded databases, and other resources. The package
         will be initialized with the provided metadata and can immediately accept content.
 
+        ## Dry run
+
+        With `?dryRun=true` the request needs a `location`. The tree there is downloaded and
+        loaded, and the publish checks run, exactly as a publish would run them, and then it is
+        discarded: nothing is installed, served or listed, the package already served under the
+        name (if any) is untouched, and no version is recorded. The answer is what a publish
+        would answer for the tree itself: the same 400 or 424 refusal, or 200 with the package
+        as it would load, its `warnings` included. Version lifecycle checks (a version that
+        already exists, `latest`) are not part of it. A frozen configuration does not refuse
+        a dry run, since it changes nothing; memory backpressure does, as it refuses a publish.
+
         ## Versioned publish
 
         Package versioning is a server setting, `PUBLISHER_PACKAGE_VERSIONING` (`off` by
@@ -1532,6 +1543,14 @@ paths:
           required: true
           schema:
             $ref: "#/components/schemas/IdentifierPattern"
+        - name: dryRun
+          in: query
+          required: false
+          description: >-
+            Load and check the package at `location` as a publish would, and install
+            nothing. See "Dry run" above.
+          schema:
+            type: boolean
       requestBody:
         required: true
         content:

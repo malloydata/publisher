@@ -21,6 +21,10 @@ Give the heading a title — `## [Unreleased] — what changed`, with an em dash
 
 Two consequences worth knowing. A section merged to `main` ships in the **next** release, whenever that is, so do not write one for work that has not landed. And a heading already stamped with a version is history: a follow-up that changes that behaviour opens a **new** `[Unreleased]` section referencing the shipped version by number, rather than editing the old one.
 
+## [Unreleased] — `POST …/packages?dryRun=true` loads and checks a package without installing it
+
+`?dryRun=true` on a publish loads the tree at `location` and runs the publish checks exactly as a publish would, then discards it. The answer is what a publish would answer for that tree: the same 400 or 424 refusal, or 200 with the package as it would load, `warnings` included. Nothing is installed, served or listed, and the package already served under the name is untouched, so a CI gate can ask "would this publish?" of a branch head without exposing its content. Version lifecycle checks (an existing version, `latest`) are not part of it. A frozen configuration does not refuse a dry run; memory backpressure does, as for a publish. `publisher_package_dry_run_duration{outcome}` times each one (`loaded`, `refused`, `failed`).
+
 ## [Unreleased] — get_context lists environments and packages, so an agent can find data with it alone
 
 `get_context` no longer requires `search_targets` or `scopes`. A call without targets lists, one level at a time, in the shapes the hosted retrieval API uses:

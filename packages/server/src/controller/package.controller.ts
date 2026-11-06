@@ -23,6 +23,7 @@ import { EnvironmentStore } from "../service/environment_store";
 import type { Environment } from "../service/environment";
 import type { Package } from "../service/package";
 import { formatPublishRejections } from "../service/publish_checks";
+import { recordPackageDryRun } from "../package_load_metrics";
 import type { VersionService } from "../service/versions/version_service";
 import { versionManifestLocation } from "./manifest_location";
 import { changedFields } from "./versioned_patch";
@@ -297,6 +298,64 @@ export class PackageController {
       }
       const _package = await environment.getPackage(packageName, true);
       return { metadata: _package.getPackageMetadata(), mode: "in-place" };
+   }
+
+   /**
+    * `POST …/packages?dryRun=true`: load the tree at `body.location` and run
+    * the publish checks exactly as a publish would, answering the same
+    * refusal (400, 424) or the package as it would load, warnings included,
+    * and install nothing. Nothing is served or readable, and a frozen config
+    * does not refuse it, since it changes nothing. Version lifecycle checks
+    * (an existing version, `latest`) are not part of it: it judges the tree.
+    */
+   async dryRunPackage(
+      environmentName: string,
+      body: ApiPackage,
+   ): Promise<ApiPackage> {
+      if (!body.name) {
+         throw new BadRequestError("Package name is required");
+      }
+      const bodyLocation: unknown = body.location;
+      if (typeof bodyLocation !== "string" || bodyLocation.length === 0) {
+         throw new BadRequestError(
+            "A dry run needs `location`: the tree it loads.",
+         );
+      }
+      const packageName = body.name;
+      const environment = await this.environmentStore.getEnvironment(
+         environmentName,
+         false,
+      );
+      const started = performance.now();
+      let outcome = "loaded";
+      try {
+         const pkg = await environment.dryRunInstall(
+            packageName,
+            (stagingPath) =>
+               this.downloadInto(
+                  environmentName,
+                  packageName,
+                  bodyLocation,
+                  stagingPath,
+               ),
+            (loaded) => formatPublishRejections(loaded),
+         );
+         return pkg.getPackageMetadata();
+      } catch (error) {
+         outcome =
+            internalErrorToHttpError(error as Error).status < 500
+               ? "refused"
+               : "failed";
+         throw error;
+      } finally {
+         recordPackageDryRun(outcome, performance.now() - started);
+         logger.info("Package dry run", {
+            environmentName,
+            packageName,
+            outcome,
+            durationMs: Math.round(performance.now() - started),
+         });
+      }
    }
 
    async addPackage(environmentName: string, body: ApiPackage) {

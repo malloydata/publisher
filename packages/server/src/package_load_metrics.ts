@@ -136,3 +136,14 @@ export function recordPackageLoadPhaseDurations(
 export function resetPackageLoadMetricsForTesting(): void {
    resetInstrumentsForTesting();
 }
+
+const dryRunDuration = lazyHistogram(
+   "publisher_package_dry_run_duration",
+   "One `POST …/packages?dryRun=true`: download, load and publish checks, with nothing installed. Label: outcome (loaded = the package would publish; refused = the publish would answer 4xx; failed = a server-side failure).",
+   { buckets: LOAD_DURATION_BUCKETS_MS },
+);
+
+/** Record one dry-run publish by how it ended. */
+export function recordPackageDryRun(outcome: string, durationMs: number): void {
+   dryRunDuration().record(durationMs, { outcome });
+}
