@@ -103,7 +103,8 @@ class FakeServer(c.Server):
                         "unclassified": sum(1 for f in s["fields"] if not f["classifications"])})
         return {"sources": out, "secureGivens": self._gov.get("secureGivens", []),
                 "fieldsError": self._gov.get("fieldsError"),
-                "downgrades": self._gov.get("downgrades", [])}
+                "downgrades": self._gov.get("downgrades", []),
+                "bypasses": self._gov.get("bypasses", [])}
 
     def status(self):
         errs = [{**e, "environment": "env", "package": "pkg"} for e in self.load_errors]
@@ -224,6 +225,7 @@ class ChecksTest(unittest.TestCase):
         tmp = tempfile.TemporaryDirectory()
         self.addCleanup(tmp.cleanup)
         (pathlib.Path(tmp.name) / "base.malloy").write_text("#(authorize) false\nsource: base is duckdb.table('x')\n")
+        (pathlib.Path(tmp.name) / "publisher.json").write_text('{"name": "pkg"}')
         server.package_dir = tmp.name
         r = run(server, [
             {"id": "CL-01", "checks": ["coverage"]},
@@ -297,6 +299,7 @@ class ChecksTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as d:
             root = pathlib.Path(d)
             (root / "base.malloy").write_text("#(authorize) false\nsource: base is duckdb.table('x')\n")
+            (root / "publisher.json").write_text('{"name": "pkg"}')
             (root / "core.malloy").write_text("source: scratch is base extend {}\n")
             # A domain is defined in one file and re-exported by another: published.
             (root / "domains.malloy").write_text("source: chart is base extend {}\n")
@@ -330,6 +333,29 @@ class ChecksTest(unittest.TestCase):
         self.assertEqual([x["status"] for x in r["controls"]], ["fail", "pass", "fail"])
         self.assertTrue(r["stale"])
         self.assertIn("still serving the model it compiled before", c.report_md(r))
+
+    def test_a_join_bypass_warning_on_a_served_package_fails_loads_join_and_nothing_else(self):
+        gov = fixture()
+        gov["bypasses"] = [{"code": "join-bypass", "subject": "billing",
+                            "message": "source billing (index.malloy) joins patient, whose gate reads $ROLES, "
+                                       "and the join bypasses the lock on patient."}]
+        server = FakeServer(gov)
+        r = run(server, [{"id": "AC-04", "checks": ["loads:ceiling"]},
+                         {"id": "AC-05", "checks": ["loads:join"]},
+                         {"id": "AC-06", "checks": ["loads"]},
+                         {"id": "AC-07", "checks": ["loads:research"]},
+                         {"id": "AU-03", "checks": ["refusals"]}])
+        self.assertEqual([x["status"] for x in r["controls"]], ["pass", "fail", "fail", "pass", "pass"])
+        f = r["controls"][1]["findings"]
+        self.assertEqual(f[0]["status"], "pass")
+        self.assertEqual((f[1]["status"], f[1]["kind"], f[1]["domain"]), ("fail", "join", "billing"))
+        self.assertIn("bypasses the lock", f[1]["evidence"])
+        self.assertFalse(r["stale"])
+        self.assertNotIn("was refused at load", r["controls"][4]["findings"][0]["text"])
+
+    def test_a_clean_package_loads(self):
+        r = run(FakeServer(fixture()), [{"id": "AC-05", "checks": ["loads:join"]}, {"id": "AC-06", "checks": ["loads"]}])
+        self.assertEqual([x["status"] for x in r["controls"]], ["pass", "pass"])
 
     def test_an_expected_domain_the_package_does_not_publish_fails(self):
         server = FakeServer(fixture(), access={("chart", "clinical"): 1, ("research", "researcher"): 1})
@@ -374,6 +400,7 @@ class ChecksTest(unittest.TestCase):
 
 
 def package_dir(files):
+    files = {"publisher.json": '{"name": "pkg"}', **files}
     tmp = tempfile.TemporaryDirectory()
     for name, text in files.items():
         (pathlib.Path(tmp.name) / name).write_text(text)
@@ -386,8 +413,11 @@ SURFACE_404 = (404, "Query target is not queryable.")
 class UncheckedIsNotPassedTest(unittest.TestCase):
     """What the server answered with neither data nor a refusal is not a pass."""
 
-    def locked(self, statuses, scope=""):
-        tmp = package_dir({"base.malloy": "#(authorize) false\nsource: base is duckdb.table('x')\n"})
+    def locked(self, statuses, scope="", manifest='{"name": "pkg"}'):
+        tmp = package_dir({"base.malloy": "#(authorize) false\nsource: base is duckdb.table('x')\n",
+                           "publisher.json": manifest or ""})
+        if manifest is None:
+            (pathlib.Path(tmp.name) / "publisher.json").unlink()
         self.addCleanup(tmp.cleanup)
         server = FakeServer(fixture(), statuses=statuses)
         server.package_dir = tmp.name
@@ -406,10 +436,15 @@ class UncheckedIsNotPassedTest(unittest.TestCase):
     def test_a_404_that_is_not_the_surface_refusal_is_review(self):
         self.assertEqual(self.locked({("base", "clinical"): (404, "Some other 404")})["status"], "review")
 
-    def test_a_locked_probe_through_a_model_path_the_server_does_not_have_is_review(self):
-        ctl = self.locked({("base", "clinical"): (404, 'No queryable model "base.malloy".')})
+    def test_a_locked_probe_of_a_model_the_surface_hides_passes(self):
+        self.assertEqual(
+            self.locked({("base", "clinical"): (404, 'No queryable model "base.malloy".')})["status"], "pass")
+
+    def test_a_package_dir_that_is_not_this_package_is_review(self):
+        hidden = {("base", "clinical"): (404, 'No queryable model "base.malloy".')}
+        ctl = self.locked(hidden, manifest=None)
         self.assertEqual(ctl["status"], "review")
-        self.assertIn("404", ctl["findings"][0]["evidence"])
+        self.assertIn("--package-dir", ctl["findings"][0]["evidence"])
 
     def test_a_locked_probe_hidden_by_the_surface_still_passes_beside_a_wrong_model_path(self):
         self.assertEqual(self.locked({("base", "clinical"): (404, 'No queryable source "base".')})["status"], "pass")

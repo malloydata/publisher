@@ -185,7 +185,7 @@
       "checks": [
         "loads:join"
       ],
-      "why": "Publisher refuses to load a package whose published source joins a gated source it does not scope, so a package that loads satisfies this."
+      "why": "Publisher loads a package whose published source joins a gated source it does not scope, with a join-bypass warning; this review fails that warning, so a package that passes satisfies this."
     },
     {
       "id": "MN-01",
@@ -297,7 +297,7 @@
       "checks": [
         "refusals"
       ],
-      "why": "The load refuses a #(carries) leak and, in a package that classifies anything, a join bypass; this review, run in CI, refuses the rest."
+      "why": "The load refuses a #(carries) leak; a join bypass is a load warning that this review, run in CI, fails, along with the rest."
     }
   ]
 }

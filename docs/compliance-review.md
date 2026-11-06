@@ -19,11 +19,12 @@ SPDX-License-Identifier: MIT
 > [the operating model](security-posture.md#operating-model-a-microservice-behind-your-gateway).
 
 A policy says who may read which data. A package enforces it with gates on its analytical domains,
-a class on every field, and a ceiling on what each domain carries. Some of that Publisher refuses at
-load: a domain exposing a class its `#(carries)` omits, a gate on a given the caller can set, a join
-around a gate. The rest is a review: does each role get what the policy says, and do the values
-match their declared classes? The review is a script, so it runs in CI and fails the change that
-breaks a control.
+a class on every field, and a ceiling on what each domain carries. Publisher refuses one thing at
+load: a domain exposing a class its `#(carries)` omits. It warns on a join that reaches a stricter
+gate than the entry's, and the server refuses that in no package. The rest is a review: is every
+warning resolved, does each role get what the policy says, and do the values match their declared
+classes? The review is a script, so it runs in CI and fails the change that breaks a control, and
+for a join bypass it is the hard stop.
 
 ## The pieces
 
@@ -35,7 +36,7 @@ breaks a control.
 | `compliance.py check` | Runs the register against the served package and writes a report | Ships in the skill |
 
 [`examples/clinical-records`](../examples/clinical-records) has all four for a HIPAA minimum-necessary
-policy over Synthea data, plus five changes that each break a control
+policy over Synthea data, plus six changes that each break a control
 ([`violations/`](../examples/clinical-records/violations)).
 
 ## What the check does
@@ -45,7 +46,7 @@ It reads what the served package publishes from three places: the package's
 (`GET …/packages/{pkg}/classification`: each domain's `#(carries)` and its fields by class), the
 model read (each domain's gates, and which
 givens are `#(secure)`), and `get_context` over the MCP endpoint (each published field with its
-classes). It reads `GET /api/v0/status` for load refusals. Then:
+classes). It reads `GET /api/v0/status` for load refusals and the package's `join-bypass` warnings. Then:
 
 - **Structure.** Every published field is classified; every domain is gated, on `#(secure)` givens
   only; every domain declares `#(carries)` and serves nothing beyond it or forbidden by the
@@ -72,8 +73,10 @@ classes). It reads `GET /api/v0/status` for load refusals. Then:
 - **Scopes.** A finding's scope in the register must name a published domain, a source the
   package's files declare, or a refusal kind. A scope that names none of them fails as an unknown
   scope, so a typo cannot silence a finding.
-- **Load refusals.** A refusal is reported as the control it breaks. When the server keeps serving
-  an earlier model, the report says so at the top.
+- **Load refusals and join bypasses.** A refusal is reported as the control it breaks. When the
+  server keeps serving an earlier model, the report says so at the top. A `join-bypass` warning
+  on a served package fails the control that names `loads:join`, since the server only warns and
+  this review is what stops it.
 
 No query selects a row, and the report holds only counts. The skill's `reference/checks.md` lists
 every check and threshold.

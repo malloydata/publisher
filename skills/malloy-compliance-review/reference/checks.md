@@ -13,7 +13,7 @@ status. The rest are aggregate queries run as the register's personas. None read
 | Check | Fails when | Reads |
 | --- | --- | --- |
 | `inventory` | The classification summary lists no source, or `get_context` could not list the published fields | classification summary, `get_context` |
-| `loads` | The package did not load, or serves a stale model because its latest files were refused. One finding per refusal, tagged with the domain and kind (`ceiling`, `join`) | `/api/v0/status` |
+| `loads` | The package did not load, serves a stale model because its latest files were refused, or loads with a `join-bypass` warning (a join that reaches a stricter gate than the entry's). One finding per refusal or warning, tagged with the domain and kind (`ceiling`, `join`); a warning is always kind `join` | `/api/v0/status`, the package read's `warnings` |
 | `refusals` | Never fails on a refusal: a refused change is evidence that a violating change is not deployed | `/api/v0/status` |
 | `coverage` | A published field has no class. A field that declares a lower class than the fields it reads (a `classification-downgrade` warning) needs review | classification summary |
 | `gated` | A published domain has neither `#(authorize)` nor a row filter | model read |
@@ -45,8 +45,10 @@ declared above.
 
 A probe is **refused** when the server answers 403, or 404 with the query boundary's own refusal
 (`Query target is not queryable.` or `No queryable ...`). Any other non-2xx (a 400 from a typo, a 401,
-a 404 for a wrong model path) means the probe never reached the gate, so it needs review rather than
-counting as a refusal.
+a 404 for a domain's model path that is not served) means the probe never reached the gate, so it needs
+review rather than counting as a refusal. `locked_bases` probes models the package keeps off its surface,
+which the server answers like a missing one, so it runs only when `--package-dir` holds a `publisher.json`,
+and is review otherwise.
 
 ## Scoping
 

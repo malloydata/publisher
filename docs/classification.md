@@ -117,10 +117,15 @@ entry point, who may enter and what they may see, sit on the same object and can
 that extends another and declares none inherits the base's list, the way it inherits a gate; its
 own declaration replaces it.
 
-Declaring `#(carries)` or `#(classification)` anywhere in a package also makes a join past a
-stricter gate refuse the load rather than warn. A gate governs only its own entry point, but these
-annotations claim what an entry point may expose, and such a join would break that claim (see
-[Gates are edge controls](authorize.md#gates-are-edge-controls)).
+**What refuses and what warns.** These two annotations add to a package and change nothing about
+the ones already there. Only `#(carries)` refuses, and only for what a query or a source can reach:
+a leak from a carried source, or a read of one that Publisher cannot complete. `#(classification)`
+labels and warns (`classification-malformed`, `classification-downgrade`,
+`classification-coverage`). `#(authorize)`, `#(access_filter)` and givens load exactly as in 0.11.2,
+with one added `join-bypass` warning when an author join reaches a stricter gate than the entry
+source's (see [Gates are edge controls](authorize.md#gates-are-edge-controls)). Publisher refuses
+a join bypass in no package, including one that declares `#(carries)`; the hard stop is a
+[compliance review](compliance-review.md) run in CI, which fails on each `join-bypass` warning.
 
 **A leak refuses the package load.** When a dimension, measure or view reachable from a
 `#(carries)` source, its own, inherited, inferred, or reached through a join, carries any class not
@@ -242,9 +247,9 @@ source research carries [none, phi.clinical]; this query reads x, which is class
   derives from `research.patient.ssn` is held to `research`'s list, however it is renamed. A
   source that carries nothing is held to the lists of the carried sources it joins at load too.
   When a struct on that path cannot be read, or a query's shape cannot (an `index:`), the query is
-  refused rather than assumed clean, whatever it enters, once anything the model reaches declares
-  a `#(carries)`, a source it imports, joins or composes included; a model that reaches none is not
-  checked.
+  refused rather than assumed clean when it can reach a `#(carries)`, through a source it enters,
+  imports, joins or composes. A query that provably reaches none is not checked, whatever else the
+  model carries; a name Publisher cannot resolve counts as reaching one.
 - Every stage of a pipeline is read: a later stage's own `extend:` (a join to a source, a dimension)
   is held to the list like the first stage's, against what the stage before it returned. A
   `compose(…)` source is held to the ceiling of the member Malloy resolved for the query as well as
@@ -311,7 +316,7 @@ Reads `#(carries)` does not yet hold to the list:
 
 The ceiling also refuses shapes it could serve:
 
-- an `index:` query, in any model that reaches a `#(carries)`, even on a source with no ceiling;
+- an `index:` query that can reach a `#(carries)`, even on a source with no ceiling of its own;
 - an output Publisher cannot follow to what it reads, such as a `nest:` with stages of its own,
   whether or not it declares a class. Flatten the nest into one stage, or move it out of the source;
 - a later `->` stage whose `extend:` re-declares a name the source or an earlier stage already has,

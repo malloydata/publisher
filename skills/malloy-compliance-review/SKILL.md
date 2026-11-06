@@ -24,9 +24,10 @@ The review has two halves, and they are kept apart on purpose:
   served. It changes nothing, reads only aggregates, and exits 1 when a control fails (3 when nothing failed but something could not be checked), so the same
   command gates every change in CI.
 
-What Publisher already refuses at load (a domain exposing a class its `#(carries)` omits, a gate
-on a given the caller can set, a join that reaches a gated source around its gate) the check
-reports as the control it breaks. It does not re-derive them.
+What Publisher refuses at load (a domain exposing a class its `#(carries)` omits) the check reports
+as the control it breaks. A join that reaches a gated source around its gate is only a `join-bypass`
+warning on the server, in every package, so the check fails it: this review is the hard stop. It
+does not re-derive either.
 
 ## Before you start
 
@@ -93,7 +94,7 @@ Read `review/report.md`. `reference/report.md` explains each section. For each c
 - **FAILS**: name the domain and field from the finding, the requirement it breaks, and the
   smallest change to the model that would fix it. A failure the server refused at load (the report
   says the package is serving a stale model) is already contained: the change was not deployed.
-  Say both.
+  Say both. A `join-bypass` failure is not contained: the server serves that package with a warning.
 - **Needs review**: a check that could not decide (free text on a de-identified domain, a probe
   the server neither answered nor refused, a cap on a field that was not profiled, a field whose
   declared class is lower than what its expression reads). Look at the evidence and say what you concluded and why; if it needs the

@@ -141,6 +141,8 @@ class Server:
         summary = self.classification_summary(meta)
         downgrades = [w for w in meta.get("warnings") or []
                       if isinstance(w, dict) and w.get("code") == "classification-downgrade"]
+        bypasses = [w for w in meta.get("warnings") or []
+                    if isinstance(w, dict) and w.get("code") == "join-bypass"]
         reads: dict[str, Any] = {}
         try:
             fields = self.context_fields()
@@ -171,7 +173,7 @@ class Server:
                 "fields": fields.get(d["name"], []),
             })
         return {"sources": sources, "secureGivens": sorted(secure_all),
-                "fieldsError": fields_error, "downgrades": downgrades}
+                "fieldsError": fields_error, "downgrades": downgrades, "bypasses": bypasses}
 
     def status(self) -> dict[str, Any]:
         with urllib.request.urlopen(f"{self.base}/api/v0/status", timeout=60) as r:
@@ -424,6 +426,12 @@ def check_locked(gov, register, ctx):
     every role the register names. Read from the package's own files, run
     from its directory, and probed through each file's own model path."""
     server: Server = ctx["server"]
+    root = pathlib.Path(server.package_dir).resolve()
+    # The server answers a hidden model and a missing one alike, so only a package directory makes its 404 a refusal.
+    if not (root / "publisher.json").is_file():
+        return [finding("", "review", "no unpublished source was probed",
+                        f"--package-dir {root} holds no publisher.json, so it is not a package; "
+                        "run from the package directory or pass --package-dir")]
     published_names = {s["name"] for s in published(gov)}
     who = everyone(register)
     out, probed = [], 0
@@ -435,7 +443,7 @@ def check_locked(gov, register, ctx):
         if rows is not None:
             out.append(finding("", "fail", f"{name} ({rel}) answered a caller holding every role",
                                f"{rows[0].get('n')} rows; an unpublished source should refuse everyone", name))
-        elif not refused(status, msg, rel):
+        elif not refused(status, msg):
             out.append(finding("", "review", f"{name} ({rel}) was not probed: the server neither answered nor refused",
                                f"{status}: {msg}", name))
     if not probed:
@@ -597,7 +605,7 @@ def check_values(gov, register, ctx):
 
 
 def check_loads(gov, register, ctx):
-    """The package loaded, and is not serving a model older than its files."""
+    """The package loaded, is not serving a model older than its files, and carries no join-bypass warning."""
     server: Server = ctx["server"]
     status = server.status()
     errs = [e for e in status.get("loadErrors") or []
@@ -621,8 +629,17 @@ def check_loads(gov, register, ctx):
             f["kind"] = kind
             out.append(f)
         return out or [finding("", "fail", f"{server.package} {state}")]
-    return [finding("", "pass", "the package loads with every load-time refusal satisfied",
-                    "no load error, and the served model is the one on disk")]
+    out = [finding("", "pass", "the package loads",
+                   "no load error, and the served model is the one on disk")]
+    # The server only warns on a join bypass; this review is what refuses it.
+    for w in (gov or {}).get("bypasses", []):
+        msg = w.get("message") or ""
+        m = re.match(r"source (\S+) \(", msg)
+        f = finding("", "fail", f"{server.package} serves a join that bypasses a gate",
+                    msg[:400], m.group(1) if m else "")
+        f["kind"] = "join"
+        out.append(f)
+    return out
 
 
 def check_refusals(gov, register, ctx):
@@ -630,6 +647,7 @@ def check_refusals(gov, register, ctx):
     A refused, stale package is evidence this holds; the control the change
     breaks is the one that fails."""
     loads = check_loads(gov, register, ctx)
+    # A join-bypass finding rides behind the pass finding, so only the first says whether the load failed.
     if loads[0]["status"] == "pass":
         if ctx.get("unloaded"):
             return [{**finding("", "review", f"not checked: {ctx['server'].package} is not being served"),
