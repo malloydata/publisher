@@ -35,7 +35,7 @@ Two consequences worth knowing. A section merged to `main` ships in the **next**
 - **Bounds.** At most 500 files and 8 MiB of text per request; past either is a 413. A path that is absolute, has a `.` or `..` segment or a backslash, names a file other than a model or notebook, or appears twice is a 400. Data files and `publisher.json` are read from the package as published. The compile route accepts a request body up to twice the byte bound plus 1 MiB, rather than the server's usual 1 MiB.
 - **Telemetry.** `publisher_request_overlay_total{outcome}` counts compile requests that carried an overlay (`accepted`, `refused_entry`, `refused_bounds`).
 
-## [Unreleased] — Settings are read once, from one registry, and bad values fail startup
+## [0.12.2] — Settings are read once, from one registry, and bad values fail startup
 
 Every Publisher setting is now read once at startup, through one registry, as step 1 of the configuration design ([docs/configuration-design.md](docs/configuration-design.md)) lays out. The names, the defaults and the precedence are today's, and no value that works changes meaning. These are the changes:
 
@@ -55,7 +55,7 @@ Every Publisher setting is now read once at startup, through one registry, as st
 - **Booleans keep their meaning, and the spellings that would change it are warned about.** `INITIALIZE_STORAGE`, `PUBLISHER_USE_BUNDLED_DEFAULT` and `PUBLISHER_ALLOW_PROXY_CONNECTIONS` are on only for exactly `true`. `DISABLE_RESPONSE_LOGGING` is on only for `true` or `1`. `"frozenConfig": "false"` freezes the server. Each of these still means what it did, and startup now warns about any value another boolean setting would read differently (`INITIALIZE_STORAGE=1`, `PUBLISHER_ALLOW_PROXY_CONNECTIONS=yes`, `"frozenConfig": "false"`). A later release refuses those values, so write `true` or `false`. A value no boolean reads (`enabled`) fails startup now.
 - **Startup warns about what used to be ignored.** That covers an unknown key in publisher.config.json (naming the nearest known key, so `adminApiEnable` points at `adminApiEnabled`), an unknown flag, a flag given without its value, and an invalid `LOG_LEVEL`, which still falls back to `debug`.
 
-## [Unreleased] — The model viewer says when it can't tell whether a source reads a given, names a run's givens as its controls do, and lists a givens-only model's givens
+## [0.12.2] — The model viewer says when it can't tell whether a source reads a given, names a run's givens as its controls do, and lists a givens-only model's givens
 
 On a server with `PUBLISHER_MODEL_PAGE=viewer`:
 
@@ -63,7 +63,7 @@ On a server with `PUBLISHER_MODEL_PAGE=viewer`:
 - **Plain words.** A run's card names the values it ran with the way the Givens controls word them (`Ordered since: Jan 1, 2023`, `Category: All`), not as Malloy literals (`SINCE = @2023-01-01`, `CATEGORY = f''`), and in full: every picked value, never cut to a button's width. A missing given is named by its label.
 - **A givens-only model** lists its givens (name, label, type, default, description) under "This model defines no sources or queries.", rather than showing nothing, and says which of them it imports rather than declares.
 
-## [Unreleased] — `PUBLISHER_MODEL_PAGE=viewer` takes the Explorer out of the Console
+## [0.12.2] — `PUBLISHER_MODEL_PAGE=viewer` takes the Explorer out of the Console
 
 The Console's model page embeds the Malloy Explorer, which turns a structured query back into Malloy text with `ASTQuery.toMalloy()`, and `@malloydata/malloy-interfaces` writes a string value into that text unescaped: its `escapeString` is still a TODO. A value holding a double quote therefore ends the string early. Drilling into a result cell holding `27" Monitor` sends `drill: name = "27" Monitor"`, which fails to compile, and drilling into a cell holding `x" or "a" = "a` sends a filter that matches every row. Nobody has to type the quote: it only has to be in the data. The Explorer's filter box is not affected, because a typed filter is a filter expression, which upstream quotes correctly. The server bounds all of it: caller text compiles in restricted mode and the `#(authorize)` gates apply to whatever runs, so no query reaches data its caller could not already query.
 
@@ -73,7 +73,7 @@ A new server setting, `PUBLISHER_MODEL_PAGE`, picks the model page: `explorer`, 
 
 **SDK.** `Model` shows the page the server names, and nothing until `/status` answers, so a `viewer` server never flashes the Explorer. That includes a retry paused offline or in a hidden tab: `useServer().isLoadingStatus` now stays true until `/status` has answered or failed. `/status` is retried, and when it still cannot be read the Console shows the viewer, the page that writes no value into Malloy: a deployment that chose `viewer` never gets the Explorer back from one failed request. It is cached per server, so two `ServerProvider`s on different servers each read their own. `useServer()` gains `modelPage`, and the type `ModelPage` is exported. Every export stays, the Explorer's among them. `ModelExplorer`, `ModelExplorerDialog` and `SourcesExplorer` ignore the setting, so a host that draws one checks `modelPage` first. ESLint refuses `@malloydata/malloy-explorer`, `@malloydata/malloy-query-builder`, and `queryToMalloy` and `filterToMalloy` from `@malloydata/malloy-interfaces`, in the SDK and the Console, outside the Explorer's own files, and any reach for a `toMalloy` member. Only the pages that check the setting may import the SDK's Explorer modules or its query builder's loader.
 
-## [Unreleased] — With `PUBLISHER_MODEL_PAGE=viewer`, the model page is the model viewer, ported from the Credible app
+## [0.12.2] — With `PUBLISHER_MODEL_PAGE=viewer`, the model page is the model viewer, ported from the Credible app
 
 On a server started with `PUBLISHER_MODEL_PAGE=viewer`, opening a `.malloy` file in the Console shows one source at a time, picked from an "N sources" pill beside its name, with the model's and the source's docs and its access rules under it. Then, as page sections: the givens the source reads, set once for every run below them, a picker reading its options only when it is opened; its views and the model's named queries, each of which runs when it is opened and never on render, with its Malloy one click over; its measures, calculations, dimensions and joins, each opening to its Malloy, read from the model file. A dimension tagged `#(index)` or `#(index_values)` lists its most common values, from one capped `group_by` query. A join opens to the joined source's fields. Nothing is sent until a reader opens a row or a picker. The source and the given values are in the address (`?source=`, `?REGION=West`), so a link, and Copy link, opens on what the page was running with; a link that carried given values for the Explorer page still applies them. The default, `explorer`, keeps the Explorer page as it was.
 
@@ -85,7 +85,7 @@ It is the Credible app's model viewer, moved into the SDK so the Console and the
 
 **Releasing.** This adds a server setting and a new SDK component with its own API, so cut it as a minor release, not the default patch.
 
-## [Unreleased] — A "Contains" dimension filter matches the text it was given, and a filter given keeps its escapes
+## [0.12.2] — A "Contains" dimension filter matches the text it was given, and a filter given keeps its escapes
 
 The SDK writes a few filters as Malloy text itself, and two of them wrote values the filter grammar then misread. A "Contains" dimension filter (`DimensionFilter`, `useDimensionFilters`, `useDimensionFiltersQuery`, `generateFilterClause`, and the other dimensions' value lists `useDimensionalFilterRangeData` reads under it) spliced its value into `f'%…%'`, where `,` separates alternatives and `%` and `_` are wildcards: "a,b" matched values ending in `a` or starting with `b` and not "a,b" itself, "50%" also matched "500", and "x_y" also matched "xzy". It is now printed by `@malloydata/malloy-filter`, so it matches exactly the text typed. And `malloyLiteral` doubled every backslash in a `filter<…>` value, which undid the filter's own escapes: a multi-pick holding "a,b", carried as `a\,b`, ran as "a\" or "b" when a report or document applied it as a literal. It now hands the value through unchanged and escapes only a bare quote.
 
