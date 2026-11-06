@@ -501,17 +501,31 @@ export function classificationWarnings(
       (s) => !s.deniedToAll,
    );
    const warnings: ApiPackageWarning[] = [];
+   // One finding per source, however many of its fields are malformed: the
+   // warnings ride every package response and `/status` entry, so their
+   // count must not grow with a package's field count.
    for (const s of sources) {
-      for (const [path, c] of s.fields) {
-         if (!c.malformed) continue;
-         warnings.push({
-            model: s.modelPath,
-            subject: s.source,
-            code: CLASSIFICATION_MALFORMED,
-            severity: "warn",
-            message: `Field ${path} of source ${s.source} ${c.malformed}.`,
-         });
-      }
+      const malformed = s.fields
+         .filter(([, c]) => c.malformed)
+         .map(
+            ([path, c]) =>
+               `Field ${path} of source ${s.source} ${c.malformed}.`,
+         );
+      if (malformed.length === 0) continue;
+      const more = malformed.length - MAX_NAMED_FIELDS;
+      warnings.push({
+         model: s.modelPath,
+         subject: s.source,
+         code: CLASSIFICATION_MALFORMED,
+         severity: "warn",
+         message:
+            malformed.length === 1
+               ? malformed[0]
+               : `Source ${s.source} has ${malformed.length} malformed ` +
+                 `#(classification) notes. ` +
+                 malformed.slice(0, MAX_NAMED_FIELDS).join(" ") +
+                 (more > 0 ? ` (+${more} more)` : ""),
+      });
    }
    const inForce = sources.some((s) =>
       s.fields.some(([, c]) => c.classifications.length > 0),

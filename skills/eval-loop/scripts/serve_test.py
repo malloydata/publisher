@@ -163,10 +163,24 @@ class WarmRetrievalSeparatesFailureFromAbsence(unittest.TestCase):
             def read(self):
                 return json.dumps(self.payload).encode()
 
+        # Each scripted outcome is a package-resource payload or an error. A
+        # payload carrying `embeddingIndex` is served the way a current server
+        # serves it, from `GET …/embedding-index`; one without it is an older
+        # server, whose `/embedding-index` 404s and whose package resource
+        # answers instead.
+        pending = []
+
         def urlopen(req, timeout=None):
-            r = next(it)
+            url = req if isinstance(req, str) else req.full_url
+            r = pending.pop() if pending else next(it)
             if isinstance(r, Exception):
                 raise r
+            if url.endswith("/embedding-index"):
+                if "embeddingIndex" in r:
+                    return Resp(r["embeddingIndex"])
+                pending.append(r)
+                raise serve.urllib.error.HTTPError(url, 404, "Not Found",
+                                                   None, None)
             return Resp(r)
 
         with mock.patch.object(serve, "_mcp_call", lambda *a, **k: None), \

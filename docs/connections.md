@@ -438,7 +438,8 @@ applies `statementTimeoutMilliseconds`, the same way; its `sslmode` is described
   `#@ persist` build and a federated `storage=` build run on sessions that carry it, so size it
   for the longest build, not only for interactive queries.
 
-Neither setting is applied to a DuckLake catalog connection.
+A DuckLake catalog connection given as fields applies `sslmode` (when unset, the deployment
+`PGSSLMODE` applies) but not `statementTimeoutMilliseconds`.
 
 #### Effect on persisted sources
 

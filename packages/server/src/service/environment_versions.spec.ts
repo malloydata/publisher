@@ -616,3 +616,68 @@ describe("Environment loading: races, listings and bookkeeping", () => {
       );
    });
 });
+
+describe("a version's serving state", () => {
+   it("describes the latest by default and a named version, archived ones included, without loading", async () => {
+      const env = await newEnvironment();
+      await publish(env, source("1.0.0", 1));
+      await publish(env, source("2.0.0", 2));
+      await repo.setVersionArchiveStatus(ENV_ID, PKG, "1.0.0", "archive");
+
+      const latest = await env.describeServingState(PKG);
+      expect(latest).toMatchObject({
+         name: PKG,
+         versionId: "2.0.0",
+         loaded: true,
+         archiveStatus: "unarchive",
+         status: { serving: true, loading: false },
+      });
+      expect(latest.servedRevision).toBeString();
+      expect(latest.sourceContentSha).toBeString();
+
+      // Read, not refused: the state of an archived version is still a fact.
+      const archived = await env.describeServingState(PKG, "1.0.0");
+      expect(archived).toMatchObject({
+         versionId: "1.0.0",
+         archiveStatus: "archive",
+      });
+
+      expect(await refusal(env.describeServingState(PKG, "3.0.0"))).toEqual({
+         status: 404,
+         reason: "VERSION_NOT_FOUND",
+      });
+      expect(await refusal(env.describeServingState(PKG, "two"))).toEqual({
+         status: 400,
+         reason: "VERSION_ID_INVALID",
+      });
+   });
+
+   it("lists each version's /status entry slim while inline fields are off", async () => {
+      const env = await newEnvironment();
+      await publish(env, source("1.0.0", 1));
+      const previous = process.env.PUBLISHER_PACKAGE_INLINE_FIELDS;
+      process.env.PUBLISHER_PACKAGE_INLINE_FIELDS = "off";
+      try {
+         const [entry] = (await env.listVersionEntries()).get(PKG)!;
+         expect(Object.keys(entry).sort()).toEqual(
+            [
+               "archiveStatus",
+               "boundManifestUri",
+               "latestVersion",
+               "loaded",
+               "manifestBindingStatus",
+               "name",
+               "resource",
+               "status",
+               "versionId",
+            ].sort(),
+         );
+      } finally {
+         if (previous === undefined) {
+            delete process.env.PUBLISHER_PACKAGE_INLINE_FIELDS;
+         } else {
+            process.env.PUBLISHER_PACKAGE_INLINE_FIELDS = previous;
+         }
+      }
+   });
+});

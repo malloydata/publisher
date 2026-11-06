@@ -63,7 +63,7 @@ async function getRecorded(path, sections, describe) {
 }
 
 /**
- * The published domains: the package read's classification summary (each
+ * The published domains: the package's classification summary (each
  * domain's #(carries) and its fields by class), and the model read of each
  * domain's file (its gates, which givens are #(secure), its fields' declared
  * classes).
@@ -72,12 +72,11 @@ async function loadDomains() {
   const { environment, package: pkg } = window.Publisher.context;
   const base = `/api/v0/environments/${encodeURIComponent(environment)}/packages/${encodeURIComponent(pkg)}`;
   const sections = ["matrix", "controls"];
-  const meta = await getRecorded(base, sections, (b) =>
-    b.classification
-      ? `classification for ${b.classification.sources.length} domains`
+  const summary = await getRecorded(`${base}/classification`, sections, (b) =>
+    b.sources.length > 0
+      ? `classification for ${b.sources.length} domains`
       : "no classification summary",
   );
-  const summary = meta.classification ?? { sources: [] };
   const reads = {};
   for (const modelPath of new Set(summary.sources.map((x) => x.modelPath))) {
     reads[modelPath] = await getRecorded(
@@ -720,7 +719,7 @@ async function startScorecard() {
   renderSource(
     "src-matrix",
     "matrix",
-    "Two reads of the served model. The package read's classification summary gives each domain's #(carries) and how many of its fields carry each class, inherited classes included; the model read gives each domain's #(authorize) and #(access_filter) gates, which givens are #(secure), and each field's declared #(classification). The first three verdicts above come from these too. Open a domain for its annotations as written.",
+    "Two reads of the served model. The package's classification summary gives each domain's #(carries) and how many of its fields carry each class, inherited classes included; the model read gives each domain's #(authorize) and #(access_filter) gates, which givens are #(secure), and each field's declared #(classification). The first three verdicts above come from these too. Open a domain for its annotations as written.",
   );
   await renderAccess();
   renderSource(

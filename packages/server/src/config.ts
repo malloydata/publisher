@@ -1447,6 +1447,36 @@ function parseModeSetting<T extends string>(
 }
 
 /**
+ * `PUBLISHER_PACKAGE_INLINE_FIELDS`: `on` (the default) or `off`. A TRANSITION
+ * flag. On, a package response still carries the fields that moved off
+ * `Package` (`buildPlan`, `agents`, `secureGivens`, `embeddingIndex`, the
+ * manifest-binding and serving fields), marked deprecated, as it did before
+ * they moved. Off, it carries only the package's own fields, and each moved
+ * field is read where it now lives: `GET …/build-plan`, `…/agents`,
+ * `…/entities`, `…/embedding-index`, or the package's entry in `GET /status`. A later
+ * release turns it off by default, and the one after removes it with the
+ * fields.
+ */
+export type PackageInlineFieldsMode = "off" | "on";
+
+const PACKAGE_INLINE_FIELDS_MODES: readonly PackageInlineFieldsMode[] = [
+   "off",
+   "on",
+];
+
+/**
+ * Whether a package response carries the moved fields inline
+ * (`PUBLISHER_PACKAGE_INLINE_FIELDS`; on when unset). Read at call time, so a
+ * test can switch it; a value outside on/off throws.
+ */
+export const isPackageInlineFieldsEnabled = (): boolean =>
+   (parseModeSetting(
+      process.env.PUBLISHER_PACKAGE_INLINE_FIELDS,
+      "PUBLISHER_PACKAGE_INLINE_FIELDS",
+      PACKAGE_INLINE_FIELDS_MODES,
+   ) ?? "on") === "on";
+
+/**
  * Whether a publish from a location publishes versions
  * (`PUBLISHER_PACKAGE_VERSIONING=on`; off when unset). Read at call time, so a
  * test can switch it; a value outside on/off throws, and it is read at startup

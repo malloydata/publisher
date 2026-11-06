@@ -12,7 +12,7 @@ SPDX-License-Identifier: MIT
 | LookML Mechanism | Semantics | Strength |
 |---|---|---|
 | `hidden: yes` | Hidden from Explore field picker, but still queryable via URL/API | Cosmetic: UI decluttering |
-| `fields` (explore-level) | Excluded from an explore's available field pool. Not queryable. Can use `ALL_FIELDS*` with `-field` exclusions. | Structural: field genuinely inaccessible |
+| `fields` (explore-level) | Excluded from an explore's available field pool. Not queryable. Can use `ALL_FIELDS*` with `-field` exclusions. | Curation or restriction: ask which (see below) |
 | `fields` (join-level) | Restricts which fields from a joined view enter the explore. Include-list only. | Structural: field never enters the pool |
 | `fields_hidden_by_default: yes` | All view fields hidden unless individually opted in with `hidden: no` | Cosmetic: bulk hide |
 | `required_access_grants` | User-attribute-based restriction. True security mechanism. | Security: access controlled |
@@ -26,14 +26,14 @@ For each hidden/excluded field, determine the **reason** and map to the correct 
 | **Intermediate calculation** | `hidden: yes` + referenced by other fields via `${field}` | `# hidden` tag: keep accessible, hide from display |
 | **Join key / FK** | `hidden: yes` + used in `sql_on:` conditions | Keep public, no `#(doc)`: needed for joins |
 | **UI clutter** | `hidden: yes` + not referenced elsewhere | Assess: if truly unused, `internal:` candidate; if just verbose, `# hidden` |
-| **Explore-scoped exclusion** | Excluded via `fields` parameter | `internal:` candidate: field was structurally inaccessible |
+| **Explore-scoped exclusion** | Excluded via `fields` parameter | Ask the user why. For tidiness: `internal:`. To keep the data from users: `private:` |
 | **Bulk hidden** | `fields_hidden_by_default: yes` on view | Treat each field individually based on its role |
 | **Access-restricted** | `required_access_grants` | `private:` candidate: flag for user decision |
 | **Not hidden** | No visibility restriction | Public + `#(doc)` candidate |
 
 ## Key Distinction
 
-LookML `hidden: yes` ≈ Malloy `# hidden` (cosmetic). LookML `fields` exclusion ≈ Malloy `internal:` (structural).
+LookML `hidden: yes` ≈ Malloy `# hidden` (cosmetic). LookML `fields` exclusion maps to `internal:` only when it was for tidiness. `internal:` takes a field off the list, but a caller's query can still read it through its own `extend` or `include`. If the exclusion was meant to keep data from users, use `private:`.
 
 **Do NOT map `hidden: yes` directly to `internal:`.** That over-restricts fields that may be needed as intermediate calculations or join keys.
 
