@@ -48,6 +48,29 @@ describe("columnsOfSchema", () => {
          { name: "tags", type: "array" },
       ]);
    });
+
+   it("leaves out a member whose name is not a plain identifier, and everything under it", () => {
+      const columns = columnsOfSchema([
+         { name: "my col", type: "string" },
+         {
+            name: "odd",
+            type: "record",
+            fields: [
+               { name: "ok", type: "number" },
+               { name: "a.b", type: "number" },
+               { name: "two words", type: "number" },
+               {
+                  name: "x y",
+                  type: "record",
+                  fields: [{ name: "z", type: "number" }],
+               },
+            ],
+         },
+      ]);
+      // `odd.a.b` would read as a nested record. A top-level column is the
+      // database's own name, so it stays.
+      expect(columns.map((c) => c.name)).toEqual(["my col", "odd", "odd.ok"]);
+   });
 });
 
 describe("a DuckDB schema with STRUCT columns", () => {

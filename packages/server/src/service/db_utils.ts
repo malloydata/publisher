@@ -47,13 +47,22 @@ interface SchemaField {
 const MAX_RECORD_DEPTH = 4;
 
 /**
+ * A member name a dotted column name can carry as written. A STRUCT key can
+ * hold a dot or a space (`{'a.b': 1}`): joined raw, `delivery.a.b` would read
+ * as a nested record and does not compile without backticks.
+ */
+const PLAIN_MEMBER_NAME = /^[A-Za-z_][A-Za-z0-9_]*$/;
+
+/**
  * A table's columns from its Malloy schema: every top-level column, and after
  * each record column (a BigQuery RECORD, a DuckDB STRUCT, a Trino ROW) its
  * members under dotted names (`delivery.city`), nested records included. A
  * repeated record (an array of records) keeps its type, `array`, and its
  * members follow it the same way (`lines.sku`): a member under an `array`
  * column has one value per element, not per row. An array of plain values
- * has no members to list.
+ * has no members to list. A member whose name is not a plain identifier
+ * (PLAIN_MEMBER_NAME) is not listed, nor anything under it; a top-level
+ * column is always listed, as the database names it.
  */
 export function columnsOfSchema(
    fields: readonly SchemaField[] | undefined,
@@ -63,6 +72,7 @@ export function columnsOfSchema(
    const out: ApiColumn[] = [];
    for (const field of fields ?? []) {
       if (!field.name) continue;
+      if (prefix && !PLAIN_MEMBER_NAME.test(field.name)) continue;
       const name = `${prefix}${field.name}`;
       out.push({ name, type: field.type });
       const nested =
