@@ -3,7 +3,7 @@
 
 /**
  * A PATCH that makes a hidden source queryable is refused over HTTP when that
- * source joins a locked one without a gate of its own, and the package keeps
+ * source exposes a field beyond its `#(carries)`, and the package keeps
  * serving its old metadata.
  */
 
@@ -18,7 +18,7 @@ const ENV_NAME = "patch-regate-env";
 const PACKAGE_NAME = "patch-regate-test";
 const fixtureDir = path.resolve(__dirname, "../../fixtures/patch-regate-test");
 
-describe("a PATCH over a hidden join bypass", () => {
+describe("a PATCH over a hidden #(carries) leak", () => {
    let env: (RestE2EEnv & { stop(): Promise<void> }) | null = null;
    let baseUrl: string;
 

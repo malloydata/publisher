@@ -1,5 +1,5 @@
 {
    "name": "patch-regate-test",
-   "description": "A package whose hidden source joins a locked one.",
+   "description": "A package whose hidden source exposes a field beyond its #(carries).",
    "explores": ["index.malloy"]
 }

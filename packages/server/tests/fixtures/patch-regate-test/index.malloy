@@ -1,4 +1,3 @@
 source: open is duckdb.sql("select 1 as id, 'org-a' as org") extend {
-   #(classification) "none"
    dimension: key is id
 }

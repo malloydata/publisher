@@ -1,6 +1,5 @@
-#(authorize) false
-source: vault is duckdb.sql("select 1 as id, 'org-a' as org")
-
+#(carries) ["none"]
 source: leaky is duckdb.sql("select 1 as id") extend {
-   join_one: locked is vault on locked.id = id
+   #(classification) "phi.direct_identifier"
+   dimension: key is id
 }
