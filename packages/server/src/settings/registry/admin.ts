@@ -23,7 +23,7 @@ export const admin = [
       // Not host: moving the main API onto every interface must not expose
       // the admin operations with it.
       default: "127.0.0.1",
-      description: "Host the admin API binds to; host does not move it.",
+      description: "Host the admin API binds to; {host} does not move it.",
       notes: "Host binding for the admin API. Deliberately not moved by `PUBLISHER_HOST`: putting the main API on every interface does not expose the admin operations. Widen it only inside the network the orchestrator calls from, never behind a public ingress.",
       aliases: { env: ["PUBLISHER_ADMIN_HOST"], flags: ["--admin_host"] },
    }),
@@ -49,6 +49,8 @@ export const admin = [
       key: "admin.storage.keyId",
       type: string(),
       description: "Access key id (s3) or HMAC key id (gcs).",
+      // Not a secret (the design gives it a flag), but kept out of the log.
+      masked: true,
       aliases: { env: ["PUBLISHER_ADMIN_STORAGE_KEY_ID"] },
    }),
    setting({

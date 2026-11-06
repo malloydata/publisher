@@ -96,7 +96,7 @@ Each setting may be given as:
 
 The variable and flag names are derived from the key and are never chosen by hand. Precedence is the
 same for every setting: **flag, then variable, then file, then default.** Startup logs one line naming
-each setting that is not at its default and where its value came from, with secrets shown as
+each setting a flag, a variable or the file gave and where its value came from, with secrets shown as
 `(set)`.
 
 Three kinds of setting are exceptions, and the registry marks them:

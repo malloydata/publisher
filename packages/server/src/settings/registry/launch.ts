@@ -22,7 +22,7 @@ export const launch = [
       type: string(),
       kind: "launch",
       description:
-         "Path to publisher.config.json; default <root>/publisher.config.json.",
+         "Path to publisher.config.json; default: the one in the server root.",
       notes: "Path to the `publisher.config.json` to read, instead of the one in the server root. A path that does not exist is reported at startup, and the server starts with no environments.",
       aliases: { env: ["PUBLISHER_CONFIG_PATH"], flags: ["--config"] },
    }),
@@ -35,7 +35,7 @@ export const launch = [
          resolving.env("NODE_ENV") !== "test",
       kind: "launch",
       description:
-         "Serve the bundled sample config when the server root has none; on when neither root nor config is given.",
+         "Serve the bundled sample config when the server root has none; on when neither {root} nor {config} is given.",
       notes: "Set to `true` to fall back to the sample config bundled inside the installed package when neither `--config` is passed nor a `publisher.config.json` exists at the server root. The server sets this itself on a zero-flag start (so a bare `npx @malloy-publisher/server` boots the samples); passing `--config` or `--server_root` leaves it unset. Because the bundled config lives inside the install, relative package locations resolve against the server root in this mode rather than the config's directory.",
       defaultText: "on unless `root` or `config` is given; never in tests",
       aliases: {

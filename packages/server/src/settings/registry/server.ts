@@ -58,7 +58,7 @@ export const server = [
       type: string(),
       default: "0.0.0.0",
       description:
-         "Host the REST API binds to, and MCP too unless mcp.host is given.",
+         "Host the REST API binds to, and MCP too unless {mcp.host} is given.",
       notes: "Host binding for the REST server, and the fallback for the MCP server. Set `127.0.0.1` to keep both loopback-only.",
       aliases: { env: ["PUBLISHER_HOST"], flags: ["--host"] },
    }),

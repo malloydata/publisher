@@ -8,9 +8,13 @@ import { BooleanType, IntegerType, ListType, NumberType } from "./types";
 
 /**
  * What the registry generates: the settings table of docs/configuration.md,
- * `--help`, and the startup line naming each setting not at its default. Each
- * is built from the entries alone, so none can drift from what the server
- * reads; reference.spec.ts fails if the checked-in table does.
+ * `--help`, and the startup line naming each setting given. Each is built from
+ * the entries alone, so none can drift from what the server reads;
+ * reference.spec.ts fails if the checked-in table does.
+ *
+ * A description or default text names another setting as `{key}`, which the
+ * table shows as the key and `--help` as the flag that sets it, so neither
+ * reads in the other's terms.
  */
 
 /** Settings a variable or flag can give; the structured ones are file-only. */
@@ -39,7 +43,7 @@ export function settingsReferenceTable(): string {
          cell(flagSpecs(entry).map(code).join(", ")),
          cell(deprecated.join(", ")),
          cell(defaultText(entry, "markdown")),
-         cell(entry.notes ?? entry.description),
+         cell(withReferences(entry.notes ?? entry.description, "markdown")),
       ].join(" | ");
    });
    return [
@@ -75,7 +79,7 @@ export function helpText(): string {
       const was = namesOf(entry)
          .flags.filter(({ old }) => old)
          .map(({ name }) => name);
-      const text = `${entry.description}${fallback ? ` (default: ${fallback})` : ""}${was.length > 0 ? ` (was ${was.join(", ")})` : ""}`;
+      const text = `${withReferences(entry.description, "text")}${fallback ? ` (default: ${fallback})` : ""}${was.length > 0 ? ` (was ${was.join(", ")})` : ""}`;
       return spec.length < width
          ? `  ${spec.padEnd(width)}${text}`
          : `  ${spec}\n  ${"".padEnd(width)}${text}`;
@@ -95,8 +99,9 @@ export function helpText(): string {
 
 /**
  * One line naming each setting a flag, variable or the file gave, and where it
- * came from. A secret shows as `(set)`, and a structured setting by its source
- * alone.
+ * came from, whether or not the value given is the default. A secret, or a
+ * value too close to one (`masked`), shows as `(set)`; a URL's user and
+ * password show as `***`; and a structured setting shows by its source alone.
  */
 export function settingsLine(settings: Settings): string {
    const given = REGISTRY.filter((entry) =>
@@ -107,9 +112,12 @@ export function settingsLine(settings: Settings): string {
       if (entry.kind === "structured") return `${entry.key} from ${from}`;
       let shown: string;
       try {
-         shown = entry.secret
-            ? "(set)"
-            : JSON.stringify(settings.get(key) as unknown);
+         shown =
+            entry.secret || entry.masked
+               ? "(set)"
+               : withoutUrlCredentials(
+                    JSON.stringify(settings.get(key) as unknown),
+                 );
       } catch {
          shown = "(invalid)";
       }
@@ -117,7 +125,30 @@ export function settingsLine(settings: Settings): string {
    });
    return given.length === 0
       ? "Settings: every setting is at its default."
-      : `Settings not at their defaults: ${given.join(", ")}`;
+      : `Settings given: ${given.join(", ")}`;
+}
+
+/** `https://user:pass@host` -> `https://***@host`, anywhere in `text`. */
+function withoutUrlCredentials(text: string): string {
+   return text.replace(/\b([a-z][a-z0-9+.-]*:\/\/)[^\s"/@]+@/gi, "$1***@");
+}
+
+/**
+ * `text` with each `{key}` naming a registered setting written for `style`:
+ * the key in the table, and in `--help` the derived flag that sets it (its
+ * derived variable, where it has no flag).
+ */
+function withReferences(text: string, style: "markdown" | "text"): string {
+   return text.replace(/\{([a-zA-Z][a-zA-Z.]*)\}/g, (whole, key: string) => {
+      const entry = REGISTRY.find((candidate) => candidate.key === key);
+      if (!entry) return whole;
+      if (style === "markdown") return code(key);
+      const names = namesOf(entry);
+      const named =
+         names.flags.find(({ old }) => !old) ??
+         names.env.find(({ old }) => !old);
+      return named?.name ?? key;
+   });
 }
 
 /** `--port <n>`, or a boolean's switches: `--serving-api-enabled`, `--no-...`. */
@@ -144,10 +175,13 @@ function defaultText(
    entry: RegisteredSetting,
    style: "markdown" | "text",
 ): string {
+   // A row's names are the derived ones, which say what the key says, so the
+   // key's default reads the right way round even where a deprecated name is
+   // negated (`PUBLISHER_NO_MCP_CONFIG`).
    if (entry.defaultText !== undefined) {
       return style === "markdown"
-         ? entry.defaultText
-         : entry.defaultText.replace(/[`_]/g, "");
+         ? withReferences(entry.defaultText, style)
+         : withReferences(entry.defaultText.replace(/[`_]/g, ""), style);
    }
    const fallback = entry.default;
    if (fallback === undefined) return style === "markdown" ? "_unset_" : "";

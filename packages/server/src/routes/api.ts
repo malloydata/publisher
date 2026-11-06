@@ -543,7 +543,15 @@ function registerPackageRoutes(
    );
    app.post(
       `${env}/packages`,
-      apiRoute(async (req) => {
+      apiRoute(async (req, res) => {
+         const dryRun = booleanParamOr400(req, res, "dryRun");
+         if (dryRun === undefined) return undefined;
+         if (dryRun) {
+            return packageController.dryRunPackage(
+               req.params.environmentName,
+               req.body,
+            );
+         }
          const added = await packageController.addPackage(
             req.params.environmentName,
             req.body,
@@ -886,6 +894,7 @@ function registerQueryRoutes(
             // compileSource rejects an invalid scope with a 400.
             req.body.scope ?? "append",
             req.query.versionId,
+            req.body.files,
          ),
       ),
    );
