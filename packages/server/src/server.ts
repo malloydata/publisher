@@ -44,6 +44,10 @@ for (const warning of loaded.warnings) {
    logger.warn(warning.message);
 }
 
+// One line naming each setting given and where it came from; secrets show as (set).
+const { settingsLine } = await import("./settings/reference");
+logger.info(settingsLine(loaded));
+
 // Checked before either server's module loads, so a contradiction fails startup
 // before anything binds or opens storage. Imported here, after the version check,
 // because config.ts brings the logger and the rest of the application with it.

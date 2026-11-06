@@ -5,8 +5,9 @@ SPDX-License-Identifier: MIT
 
 # Design: one configuration model
 
-**Status: proposed.** Nothing here is built. The user-facing reference is
-[configuration.md](configuration.md), which this design would generate rather than hand-maintain.
+**Status: step 1 of the [migration](#migration) is built.** Publisher reads its settings through the
+registry, and the user-facing reference, [configuration.md](configuration.md), is generated from it.
+Steps 2 and 3 are proposed. "Today" in the rest of this design means before step 1.
 The decisions are under [Decisions](#decisions), and the questions still open under
 [Open questions](#open-questions).
 
@@ -95,7 +96,7 @@ Each setting may be given as:
 
 The variable and flag names are derived from the key and are never chosen by hand. Precedence is the
 same for every setting: **flag, then variable, then file, then default.** Startup logs one line naming
-each setting that is not at its default and where its value came from, with secrets shown as
+each setting a flag, a variable or the file gave and where its value came from, with secrets shown as
 `(set)`.
 
 Three kinds of setting are exceptions, and the registry marks them:
@@ -324,12 +325,12 @@ does, so it never needs an alias.
    exact-`true` boolean, the `retrieval.embedding` keys winning over their variables, `--watch-env`
    adding to `PUBLISHER_WATCH`, only the flags turning `useBundledDefault` off) is recorded in the
    registry next to the alias or default it belongs to, so the later step removes it from one place.
-   Some settings are exceptions to "behavior unchanged". Today they accept values of more than one
-   type, and the registry gives each setting a single type (a boolean, an integer, an enum), so a value
-   of any other type fails startup from this step. For example, `MCP_PORT` takes a port number, `0` for
-   an ephemeral port, or, under Bun, any non-numeric string, which also binds an ephemeral port.
-   Registered as an integer, the non-numeric form fails startup. The release notes name each exception.
-   Ships alone.
+   Some settings are exceptions to "behavior unchanged". Before this step they accepted values of more
+   than one type, and the registry gives each setting a single type (a boolean, an integer, an enum), so
+   a value of any other type fails startup from this step. For example, `MCP_PORT` took a port number,
+   `0` for an ephemeral port, or, under Bun, any non-numeric string, which also bound an ephemeral
+   port. Registered as an integer, the non-numeric form now fails startup. The release notes name each
+   exception. Ships alone.
 2. **The new names.** The derived variables and flags become the names, today's become aliases, and
    each alias in use logs one deprecation warning at startup and counts in
    `publisher_deprecated_usage_total{feature="config:<old name>"}`. Precedence becomes flag, variable,
