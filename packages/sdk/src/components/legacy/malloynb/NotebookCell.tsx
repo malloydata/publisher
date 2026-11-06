@@ -27,6 +27,7 @@ import { AppDialog } from "../../AppDialog";
 import { highlight } from "../../highlighter";
 import { ModelExplorerDialog } from "../../Model/ModelExplorerDialog";
 import { FloatingIconButton } from "../../FloatingIconButton";
+import { useServer } from "../../ServerProvider";
 import { Prose } from "../../Prose";
 import type { NavigationClick } from "../../click_helper";
 import { useDrill, type DrillNavigation } from "../../drill";
@@ -114,6 +115,11 @@ export function NotebookCell({
       React.useState<string>();
    const [sourcesDialogOpen, setSourcesDialogOpen] =
       React.useState<boolean>(false);
+   // The "Data sources" dialog is the Malloy Explorer, which a server with
+   // `PUBLISHER_MODEL_PAGE=viewer` takes out of the Console; it waits on
+   // `/status` so such a server never offers it.
+   const { modelPage, isLoadingStatus } = useServer();
+   const explorerAllowed = !isLoadingStatus && modelPage !== "viewer";
 
    const [copyMessage, setCopyMessage] = useState("");
 
@@ -342,7 +348,7 @@ export function NotebookCell({
                               }}
                            />
                         )}
-                        {hasValidImport && (
+                        {hasValidImport && explorerAllowed && (
                            <FloatingIconButton
                               aria-label="Data sources"
                               sx={{ flexShrink: 0 }}
@@ -358,7 +364,7 @@ export function NotebookCell({
 
             {/* Data Sources Dialog */}
             <ModelExplorerDialog
-               open={sourcesDialogOpen}
+               open={sourcesDialogOpen && explorerAllowed}
                onClose={() => setSourcesDialogOpen(false)}
                title="Data Sources"
                hasValidImport={hasValidImport}

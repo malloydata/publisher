@@ -27,7 +27,7 @@ export function malloyLiteral(
            : type;
    switch (scalar) {
       case "filter":
-         return `f${quote(String(value))}`;
+         return malloyFilterLiteral(String(value));
       case "string":
          return quote(String(value));
       case "number": {
@@ -66,6 +66,30 @@ function inferredType(value: unknown): string | undefined {
    return undefined;
 }
 
+/**
+ * Filter text as a Malloy filter literal: `f'…'`.
+ *
+ * Malloy hands the text between the quotes to the filter parser as written, so
+ * the filter grammar's own escapes (`\,` for a comma that is part of a value,
+ * `\%` for a percent sign) have to reach it untouched. Only a quote the text
+ * leaves bare is escaped, and a lone trailing backslash is doubled so it cannot
+ * swallow the closing quote. Escaping filter text the way a string literal is
+ * escaped doubles every backslash, and `a\,b`, the one value "a,b", runs as
+ * "a\" or "b".
+ */
+export function malloyFilterLiteral(filter: string): string {
+   let body = "";
+   for (let i = 0; i < filter.length; i++) {
+      const char = filter[i];
+      if (char === "\\") {
+         body += i + 1 < filter.length ? char + filter[++i] : "\\\\";
+      } else {
+         body += char === "'" ? "\\'" : char;
+      }
+   }
+   return `f'${body}'`;
+}
+
 /** `2024-01-31` out of a Date (UTC) or an ISO-ish string, else undefined. */
 function datePart(value: unknown): string | undefined {
    if (value instanceof Date)
@@ -75,7 +99,18 @@ function datePart(value: unknown): string | undefined {
    return /^(\d{4}-\d{2}-\d{2})/.exec(String(value))?.[1];
 }
 
-/** A filter value as a Malloy literal; unlike `malloyLiteral`, a Date is spelled as a local-time day. */
+/** An ISO date or timestamp, the only text a Malloy `@` literal is written from. */
+const ISO_DATE_OR_TIMESTAMP =
+   /^\d{4}-\d{2}-\d{2}(?:[ T]\d{2}:\d{2}(?::\d{2}(?:\.\d+)?)?)?$/;
+
+/**
+ * A filter value as a Malloy literal; unlike `malloyLiteral`, a Date is spelled
+ * as a local-time day. A string is a quoted string, whatever it holds, except
+ * where `isDate` says the dimension is a date and the string is an ISO date or
+ * timestamp, which is written as a date literal (`@2024-01-31`). Any other
+ * string stays quoted with `isDate` too: written after `@` unquoted, a value
+ * like `2024-01-31 or true` became Malloy.
+ */
 export function formatMalloyValue(
    value: string | number | boolean | Date | null | undefined,
    isDate: boolean = false,
@@ -84,11 +119,15 @@ export function formatMalloyValue(
       return "null";
    }
 
-   if (isDate) {
-      if (value instanceof Date) {
-         return `@${value.getFullYear()}-${String(value.getMonth() + 1).padStart(2, "0")}-${String(value.getDate()).padStart(2, "0")}`;
-      }
-      // A string is assumed to already be ISO.
+   if (value instanceof Date) {
+      return `@${value.getFullYear()}-${String(value.getMonth() + 1).padStart(2, "0")}-${String(value.getDate()).padStart(2, "0")}`;
+   }
+
+   if (
+      isDate &&
+      typeof value === "string" &&
+      ISO_DATE_OR_TIMESTAMP.test(value)
+   ) {
       return `@${value}`;
    }
 
@@ -100,9 +139,5 @@ export function formatMalloyValue(
       return String(value);
    }
 
-   if (typeof value === "boolean") {
-      return value ? "true" : "false";
-   }
-
-   return String(value);
+   return value ? "true" : "false";
 }

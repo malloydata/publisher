@@ -1753,6 +1753,37 @@ describe("EnvironmentStore Service", () => {
       expect(status.initError).toBeUndefined();
    });
 
+   describe("modelPage", () => {
+      const saved = process.env.PUBLISHER_MODEL_PAGE;
+      afterEach(() => {
+         if (saved === undefined) delete process.env.PUBLISHER_MODEL_PAGE;
+         else process.env.PUBLISHER_MODEL_PAGE = saved;
+      });
+
+      it("reports the model page the Console shows, the Explorer by default", async () => {
+         await environmentStore.finishedInitialization;
+         delete process.env.PUBLISHER_MODEL_PAGE;
+         expect((await environmentStore.getStatus()).modelPage).toBe(
+            "explorer",
+         );
+         process.env.PUBLISHER_MODEL_PAGE = "viewer";
+         expect((await environmentStore.getStatus()).modelPage).toBe("viewer");
+      });
+
+      it("fails initialization on a value outside its set, and leaves modelPage absent", async () => {
+         // As above: let the beforeEach store finish before making another.
+         await environmentStore.finishedInitialization;
+         process.env.PUBLISHER_MODEL_PAGE = "both";
+         const badPage = new EnvironmentStore(serverRootPath);
+         await badPage.finishedInitialization;
+         const status = await badPage.getStatus();
+         expect(status.initError).toContain(
+            'PUBLISHER_MODEL_PAGE must be one of explorer | viewer (got "both")',
+         );
+         expect(status.modelPage).toBeUndefined();
+      });
+   });
+
    it("should handle invalid field names in publisher config without crashing", async () => {
       // Create publisher config with invalid field names (ramen instead of name, papa instead of packages)
       const publisherConfigPath = path.join(

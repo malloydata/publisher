@@ -15,6 +15,7 @@ import { components } from "../api";
 import {
    getProcessedPublisherConfig,
    getPublisherConfigDir,
+   getModelPageMode,
    getUnresolvedPublisherConfigPath,
    getVersionPromotionMode,
    isVersioningEnabled,
@@ -867,11 +868,12 @@ export class EnvironmentStore {
       try {
          await this.storageManager.initialize(reInit);
 
-         // Read both versioning settings now, so a value outside the set fails
-         // initialization naming the setting, rather than surfacing at the first
-         // publish that reads it.
+         // Read both versioning settings and the model page now, so a value
+         // outside the set fails initialization naming the setting, rather
+         // than surfacing at the first publish or /status that reads it.
          isVersioningEnabled();
          getVersionPromotionMode(this.serverRootPath);
+         getModelPageMode();
 
          this.publisherConfigIsFrozen = isPublisherConfigFrozen(
             this.serverRootPath,
@@ -1678,6 +1680,7 @@ export class EnvironmentStore {
          version: string;
          packageVersioning?: components["schemas"]["ServerStatus"]["packageVersioning"];
          versionPromotion?: components["schemas"]["ServerStatus"]["versionPromotion"];
+         modelPage?: components["schemas"]["ServerStatus"]["modelPage"];
          emptyReason?: string;
          initError?: string;
          loadErrors?: LoadError[];
@@ -1696,6 +1699,13 @@ export class EnvironmentStore {
       // A malformed value failed initialization, which this reports.
       try {
          status.versionPromotion = getVersionPromotionMode(this.serverRootPath);
+      } catch {
+         // Left absent.
+      }
+      // The Console's model page. Absent, as from a server that predates the
+      // setting, reads as "explorer".
+      try {
+         status.modelPage = getModelPageMode();
       } catch {
          // Left absent.
       }
