@@ -16,6 +16,7 @@ import {
    normalizeModelPath,
    README_NAME,
    PACKAGE_INSTALL_RECORDS_DIR,
+   MAX_CONCURRENT_DRY_RUNS,
 } from "../constants";
 import {
    BadRequestError,
@@ -29,6 +30,7 @@ import {
    WriteRollbackFailedError,
    WriteRolledBackError,
    WriteVerifyError,
+   DryRunCapacityError,
    PackageAdmissionRefusedError,
 } from "../errors";
 import { getPersistStorageMode, isPackageInlineFieldsEnabled } from "../config";
@@ -72,6 +74,7 @@ import {
    type CompileScope,
    type TaggedLogMessage,
 } from "./compile_source";
+import { type OverlayFile } from "./request_overlay";
 import { destinationSchemaOf } from "./storage_table_path";
 
 export {
@@ -85,7 +88,7 @@ import {
    VersionRegistry,
    VersionService,
 } from "./versions/version_service";
-import { VersionStore } from "./versions/version_store";
+import { readManifestVersion, VersionStore } from "./versions/version_store";
 import {
    ownedVersionOf,
    ServingReader,
@@ -617,6 +620,7 @@ export class Environment {
       givens?: Record<string, GivenValue>,
       scope: CompileScope = "append",
       versionId?: unknown,
+      overlay?: readonly OverlayFile[],
    ): Promise<{
       problems: TaggedLogMessage[];
       sql?: string;
@@ -650,6 +654,7 @@ export class Environment {
          givens,
          scope,
          versionId,
+         overlay,
       );
    }
 
@@ -1533,7 +1538,9 @@ export class Environment {
 
    /**
     * Best-effort sweep of `.staging/` and `.retired/` left by a previous run.
-    * Safe at startup: only `installPackage` / `deletePackage` use them.
+    * Safe at startup only: `installPackage`, `deletePackage`, a dry run and the
+    * version store write there while serving, so a sweep while serving would
+    * delete a tree mid-load.
     * Static so the path derives from the validated argument rather than
     * `this`, whose fields CodeQL's path-injection query treats as tainted.
     */
@@ -2611,12 +2618,99 @@ export class Environment {
       );
    }
 
-   private async _installPackageTracked(
+   /**
+    * Load the tree `downloader` writes as `packageName` and run the publish
+    * checks on it, exactly as a publish of it would, then discard it: nothing
+    * is installed, swapped or recorded, and the package already served under
+    * the name is untouched. Returns what `describe` reads from the loaded
+    * package, before its connections are released.
+    *
+    * `readVersion` (versioning on) also reads the version the tree's
+    * publisher.json declares, refusing a missing or invalid one with the
+    * publish's own 400; `describe` receives it. Version lifecycle checks (an
+    * existing version, `latest`) are not part of it.
+    */
+   public async dryRunInstall<T>(
       packageName: string,
       downloader: (stagingPath: string) => Promise<void>,
-      validate: ((pkg: Package) => string | undefined) | undefined,
-      options: { update?: ApiPackage },
-   ): Promise<Package> {
+      options: {
+         validate?: (pkg: Package) => string | undefined;
+         readVersion: boolean;
+         describe: (pkg: Package, versionId: string | undefined) => T;
+      },
+   ): Promise<T> {
+      assertSafePackageName(packageName);
+      this.assertCanAdmitNewPackage(packageName, "dry-run a package", false);
+      if (Environment.dryRunsInFlight >= MAX_CONCURRENT_DRY_RUNS) {
+         throw new DryRunCapacityError(
+            `This server is already running ${MAX_CONCURRENT_DRY_RUNS} dry-run publishes, as many as it runs at once; retry shortly or ask another server.`,
+         );
+      }
+      Environment.dryRunsInFlight++;
+      try {
+         return await this.dryRunInstallAdmitted(
+            packageName,
+            downloader,
+            options,
+         );
+      } finally {
+         Environment.dryRunsInFlight--;
+      }
+   }
+
+   /**
+    * Dry runs running on this server, across environments: each holds a whole
+    * download and load, so they are capped together.
+    */
+   private static dryRunsInFlight = 0;
+
+   private async dryRunInstallAdmitted<T>(
+      packageName: string,
+      downloader: (stagingPath: string) => Promise<void>,
+      options: {
+         validate?: (pkg: Package) => string | undefined;
+         readVersion: boolean;
+         describe: (pkg: Package, versionId: string | undefined) => T;
+      },
+   ): Promise<T> {
+      const stagingPath = await this.stageDownload(packageName, downloader);
+      try {
+         // Admitted again before the load: the download can be long, and
+         // memory may have filled meanwhile.
+         this.assertCanAdmitNewPackage(packageName, "dry-run a package", false);
+         const versionId = options.readVersion
+            ? (await readManifestVersion(stagingPath)).versionId
+            : undefined;
+         const pkg = await this.loadStagedTree(
+            packageName,
+            stagingPath,
+            options.validate,
+            { dryRun: true },
+         );
+         try {
+            return options.describe(pkg, versionId);
+         } finally {
+            // Never served, so nothing is in flight on its connections.
+            await Environment.releasePackageConnections(
+               pkg,
+               `dry run of ${packageName}`,
+            );
+         }
+      } finally {
+         await fs.promises
+            .rm(stagingPath, { recursive: true, force: true })
+            .catch(() => {});
+      }
+   }
+
+   /**
+    * A fresh staging folder holding what `downloader` wrote. A failed download
+    * removes the folder and rethrows.
+    */
+   private async stageDownload(
+      packageName: string,
+      downloader: (stagingPath: string) => Promise<void>,
+   ): Promise<string> {
       const stagingPath = this.allocateStagingPath(packageName);
       await fs.promises.mkdir(path.dirname(stagingPath), { recursive: true });
 
@@ -2639,6 +2733,65 @@ export class Environment {
          packageName,
          durationMs: performance.now() - downloadStartedAt,
       });
+      return stagingPath;
+   }
+
+   /**
+    * Load the freshly staged tree at `treePath` as `packageName` and run the
+    * publish checks on it: the one load a publish and a dry run share, so they
+    * cannot drift. A load `validate` refuses has its connections released
+    * before the refusal is thrown, since no caller ever holds it.
+    */
+   private async loadStagedTree(
+      packageName: string,
+      treePath: string,
+      validate: ((pkg: Package) => string | undefined) | undefined,
+      options: { dryRun: boolean },
+   ): Promise<Package> {
+      const pkg = await Package.create(
+         this.environmentName,
+         packageName,
+         treePath,
+         () => this.malloyConfig.malloyConfig,
+         // Freshly staged, so a failed load's half-built tree is ours to
+         // remove.
+         true,
+         { dryRun: options.dryRun },
+      );
+      this.attachDestinationServeConfig(pkg);
+      // Publish, update and dry run only (reload passes no validator).
+      const validationMsg = validate?.(pkg);
+      if (validationMsg) {
+         await Environment.releasePackageConnections(
+            pkg,
+            `refused load of ${packageName}`,
+         );
+         throw new BadRequestError(validationMsg);
+      }
+      return pkg;
+   }
+
+   /** Close a package's own connections now; for a package nothing serves. */
+   private static async releasePackageConnections(
+      pkg: Package,
+      label: string,
+   ): Promise<void> {
+      try {
+         await pkg.getMalloyConfig().shutdown("close");
+      } catch (error) {
+         logger.error(`Error releasing the connections of ${label}`, {
+            error,
+         });
+      }
+   }
+
+   private async _installPackageTracked(
+      packageName: string,
+      downloader: (stagingPath: string) => Promise<void>,
+      validate: ((pkg: Package) => string | undefined) | undefined,
+      options: { update?: ApiPackage },
+   ): Promise<Package> {
+      const stagingPath = await this.stageDownload(packageName, downloader);
 
       return this.withPackageLock(packageName, async () => {
          try {
@@ -2686,22 +2839,13 @@ export class Environment {
             await fs.promises.rename(stagingPath, canonicalPath);
 
             this.setPackageStatus(packageName, PackageStatus.LOADING);
-            newPackage = await Package.create(
-               this.environmentName,
+            // A refusal is thrown inside the try so the swap rolls back.
+            newPackage = await this.loadStagedTree(
                packageName,
                canonicalPath,
-               () => this.malloyConfig.malloyConfig,
-               // Freshly staged, so a failed load's half-built tree is ours to
-               // remove.
-               true,
+               validate,
+               { dryRun: false },
             );
-            this.attachDestinationServeConfig(newPackage);
-            // Publish/update only (reload passes no validator). Thrown inside
-            // the try so the swap rolls back.
-            const validationMsg = validate?.(newPackage);
-            if (validationMsg) {
-               throw new BadRequestError(validationMsg);
-            }
             logger.debug("install.phase2.committed", {
                environmentName: this.environmentName,
                packageName,
