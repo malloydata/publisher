@@ -9,10 +9,12 @@
  * installed, listed or swapped in for the package already served.
  */
 
-import { afterAll, beforeAll, describe, expect, it } from "bun:test";
+import { afterAll, beforeAll, describe, expect, it, spyOn } from "bun:test";
 import * as fs from "fs";
 import * as os from "os";
 import * as path from "path";
+import { logger } from "../../../src/logger";
+import { Package } from "../../../src/service/package";
 import { startRestE2E } from "../../harness/rest_e2e";
 
 const ENV_NAME = "package-dry-run-env";
@@ -93,6 +95,8 @@ describe("a dry-run publish", () => {
       const { status, json } = await post("fresh", location, true);
       expect(status).toBe(200);
       expect(json.name).toBe("fresh");
+      expect(json.location).toBe(location);
+      expect(json.latestVersion).toBeUndefined();
       expect(await listed()).not.toContain("fresh");
       expect(
          (await get(`/environments/${ENV_NAME}/packages/fresh`)).status,
@@ -148,4 +152,128 @@ describe("a dry-run publish", () => {
       );
       expect(res.status).toBe(400);
    }, 30_000);
+
+   /**
+    * Counts `shutdown("close")` on every package's connections while `run`
+    * runs: a dry run's package is never served, so it must close its own.
+    */
+   const closesDuring = async (run: () => Promise<unknown>) => {
+      let closed = 0;
+      const original = Package.prototype.getMalloyConfig;
+      const spy = spyOn(
+         Package.prototype,
+         "getMalloyConfig",
+      ).mockImplementation(function (this: Package) {
+         const config = original.call(this);
+         const shutdown = config.shutdown.bind(config);
+         config.shutdown = async (...args: Parameters<typeof shutdown>) => {
+            if (args[0] === "close") closed++;
+            return shutdown(...args);
+         };
+         return config;
+      });
+      try {
+         await run();
+      } finally {
+         spy.mockRestore();
+      }
+      return closed;
+   };
+
+   it("closes the connections of the package it loaded", async () => {
+      const location = writePackage("closes", {
+         "orders.malloy": `source: orders is ${ROWS}\n`,
+      });
+      const closed = await closesDuring(async () =>
+         expect((await post("closes", location, true)).status).toBe(200),
+      );
+      expect(closed).toBeGreaterThanOrEqual(1);
+   }, 60_000);
+
+   it("closes the connections of a load the publish checks refuse", async () => {
+      const dir = writePackage("refused", {
+         "orders.malloy": `source: orders is ${ROWS}\n`,
+      });
+      fs.writeFileSync(
+         path.join(dir, "publisher.json"),
+         JSON.stringify({ name: "refused", explores: ["missing.malloy"] }),
+      );
+      const closed = await closesDuring(async () =>
+         expect((await post("refused", dir, true)).status).toBe(400),
+      );
+      expect(closed).toBeGreaterThanOrEqual(1);
+   }, 60_000);
+
+   it("is not counted or logged as a load of the package it names", async () => {
+      const histogram = (
+         Package as unknown as {
+            packageLoadHistogram: { record: (...args: unknown[]) => void };
+         }
+      ).packageLoadHistogram;
+      const recorded = spyOn(histogram, "record");
+      const errorLog = spyOn(logger, "error");
+      try {
+         const ok = writePackage("quiet", {
+            "orders.malloy": `source: orders is ${ROWS}\n`,
+         });
+         expect((await post("quiet", ok, true)).status).toBe(200);
+         const broken = writePackage("quiet", {
+            "orders.malloy": `source: orders is ${ROWS} extend { dimension: x is nope }\n`,
+         });
+         const refused = (await post("quiet", broken, true)).status;
+         expect(refused).toBeGreaterThanOrEqual(400);
+         expect(refused).toBeLessThan(500);
+         const named = recorded.mock.calls.filter(
+            (call) =>
+               (call[1] as { malloy_package_name?: string })
+                  ?.malloy_package_name === "quiet",
+         );
+         expect(named).toEqual([]);
+         const loadErrors = errorLog.mock.calls.filter((call) =>
+            String(call[0]).includes("Error loading package quiet"),
+         );
+         expect(loadErrors).toEqual([]);
+      } finally {
+         recorded.mockRestore();
+         errorLog.mockRestore();
+      }
+   }, 60_000);
+
+   describe("with package versioning on", () => {
+      const FLAG = "PUBLISHER_PACKAGE_VERSIONING";
+      const saved = process.env[FLAG];
+      beforeAll(() => {
+         process.env[FLAG] = "on";
+      });
+      afterAll(() => {
+         if (saved === undefined) delete process.env[FLAG];
+         else process.env[FLAG] = saved;
+      });
+
+      it("refuses a tree whose publisher.json declares no version, as a versioned publish does", async () => {
+         const location = writePackage("unversioned", {
+            "orders.malloy": `source: orders is ${ROWS}\n`,
+         });
+         const dry = await post("unversioned", location, true);
+         expect(dry.status).toBe(400);
+         expect(dry.json.reason).toBe("MANIFEST_VERSION_MISSING");
+         const real = await post("unversioned", location, false);
+         expect(real.status).toBe(dry.status);
+         expect(real.json.reason).toBe(dry.json.reason);
+      }, 60_000);
+
+      it("names the version the tree would publish as, and publishes nothing", async () => {
+         const dir = writePackage("versioned", {
+            "orders.malloy": `source: orders is ${ROWS}\n`,
+         });
+         fs.writeFileSync(
+            path.join(dir, "publisher.json"),
+            JSON.stringify({ name: "versioned", version: "1.2.0" }),
+         );
+         const { status, json } = await post("versioned", dir, true);
+         expect(status).toBe(200);
+         expect(json.versionId).toBe("1.2.0");
+         expect(await listed()).not.toContain("versioned");
+      }, 60_000);
+   });
 });

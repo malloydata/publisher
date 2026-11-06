@@ -28,7 +28,10 @@ import { EnvironmentStore } from "../service/environment_store";
 import type { Environment } from "../service/environment";
 import type { Package } from "../service/package";
 import { formatPublishRejections } from "../service/publish_checks";
-import { recordPackageDryRun } from "../package_load_metrics";
+import {
+   type PackageDryRunOutcome,
+   recordPackageDryRun,
+} from "../package_load_metrics";
 import type { VersionService } from "../service/versions/version_service";
 import { versionManifestLocation } from "./manifest_location";
 import { changedFields } from "./versioned_patch";
@@ -467,10 +470,22 @@ export class PackageController {
     * does not refuse it, since it changes nothing. Version lifecycle checks
     * (an existing version, `latest`) are not part of it: it judges the tree.
     */
+   /**
+    * `POST …/packages?dryRun=true`: what a publish of the tree at `location`
+    * would answer, with nothing installed. A 200 is the package as it would
+    * load, with the `location` it came from and, with versioning on, the
+    * `versionId` it would publish as. It carries no `latestVersion` or
+    * `status`: those describe the package being served, which a dry run does
+    * not change. Refused on a frozen server like a publish, since it still
+    * downloads and loads the caller's content.
+    */
    async dryRunPackage(
       environmentName: string,
       body: ApiPackage,
    ): Promise<ApiPackage> {
+      if (this.environmentStore.publisherConfigIsFrozen) {
+         throw new FrozenConfigError();
+      }
       if (!body.name) {
          throw new BadRequestError("Package name is required");
       }
@@ -486,9 +501,9 @@ export class PackageController {
          false,
       );
       const started = performance.now();
-      let outcome = "loaded";
+      let outcome: PackageDryRunOutcome = "loaded";
       try {
-         const pkg = await environment.dryRunInstall(
+         return await environment.dryRunInstall(
             packageName,
             (stagingPath) =>
                this.downloadInto(
@@ -497,14 +512,21 @@ export class PackageController {
                   bodyLocation,
                   stagingPath,
                ),
-            (loaded) => formatPublishRejections(loaded),
+            {
+               validate: (loaded) => formatPublishRejections(loaded),
+               // A versioned publish refuses a tree with no valid version.
+               readVersion: Boolean(
+                  environment.getVersionService() && isVersioningEnabled(),
+               ),
+               describe: (pkg, versionId) => ({
+                  ...pkg.getPackageMetadata(),
+                  location: bodyLocation,
+                  ...(versionId !== undefined && { versionId }),
+               }),
+            },
          );
-         return pkg.getPackageMetadata();
       } catch (error) {
-         outcome =
-            internalErrorToHttpError(error as Error).status < 500
-               ? "refused"
-               : "failed";
+         outcome = dryRunOutcome(error);
          throw error;
       } finally {
          recordPackageDryRun(outcome, performance.now() - started);
@@ -906,4 +928,17 @@ export class PackageController {
          targetPath,
       );
    }
+}
+
+/**
+ * How a failed dry run ended. Classified without logging: the route logs the
+ * error once when it answers.
+ */
+function dryRunOutcome(error: unknown): PackageDryRunOutcome {
+   if (error instanceof PackageAdmissionRefusedError) {
+      return "backpressure";
+   }
+   return internalErrorToHttpError(error as Error, { log: false }).status < 500
+      ? "refused"
+      : "failed";
 }

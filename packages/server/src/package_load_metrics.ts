@@ -174,13 +174,28 @@ export function resetPackageLoadMetricsForTesting(): void {
    resetInstrumentsForTesting();
 }
 
+/**
+ * How a dry-run publish ended: `loaded`, the package would publish; `refused`,
+ * the publish would answer 4xx; `backpressure`, memory pressure refused to load
+ * it (503), which says nothing about the package; `failed`, any other
+ * server-side failure.
+ */
+export type PackageDryRunOutcome =
+   | "loaded"
+   | "refused"
+   | "backpressure"
+   | "failed";
+
 const dryRunDuration = lazyHistogram(
    "publisher_package_dry_run_duration",
-   "One `POST …/packages?dryRun=true`: download, load and publish checks, with nothing installed. Label: outcome (loaded = the package would publish; refused = the publish would answer 4xx; failed = a server-side failure).",
+   "One `POST …/packages?dryRun=true`: download, load and publish checks, with nothing installed. Label: outcome (loaded = the package would publish; refused = the publish would answer 4xx; backpressure = memory pressure refused the load; failed = any other server-side failure).",
    { buckets: LOAD_DURATION_BUCKETS_MS },
 );
 
 /** Record one dry-run publish by how it ended. */
-export function recordPackageDryRun(outcome: string, durationMs: number): void {
+export function recordPackageDryRun(
+   outcome: PackageDryRunOutcome,
+   durationMs: number,
+): void {
    dryRunDuration().record(durationMs, { outcome });
 }

@@ -1487,11 +1487,17 @@ paths:
         With `?dryRun=true` the request needs a `location`. The tree there is downloaded and
         loaded, and the publish checks run, exactly as a publish would run them, and then it is
         discarded: nothing is installed, served or listed, the package already served under the
-        name (if any) is untouched, and no version is recorded. The answer is what a publish
-        would answer for the tree itself: the same 400 or 424 refusal, or 200 with the package
-        as it would load, its `warnings` included. Version lifecycle checks (a version that
-        already exists, `latest`) are not part of it. A frozen configuration does not refuse
-        a dry run, since it changes nothing; memory backpressure does, as it refuses a publish.
+        name (if any) is untouched, no version is recorded, and the load's connections are
+        closed. The answer is what a publish would answer for the tree itself: the same 400 or
+        424 refusal, or 200 with the package as it would load, its `warnings` included, plus the
+        `location` it was loaded from. With package versioning on, the tree's `publisher.json`
+        must declare a valid version, as a versioned publish requires (400
+        `MANIFEST_VERSION_MISSING` or `MANIFEST_VERSION_INVALID`), and the 200 names it as
+        `versionId`. Version lifecycle checks (a version that already exists, `latest`) are not
+        part of it, and the 200 carries no `latestVersion` or `status`, which describe the
+        package being served. A frozen configuration refuses a dry run as it refuses a publish,
+        since the server still downloads and loads the caller's content; so does memory
+        backpressure (503).
 
         ## Versioned publish
 
