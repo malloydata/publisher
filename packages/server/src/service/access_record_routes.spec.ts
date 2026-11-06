@@ -187,6 +187,30 @@ describe("REST query writes exactly one record", () => {
       await expect(rest(storeOf(HUNG))).rejects.toThrow();
       expect(records()).toMatchObject([{ outcome: "error", status: 504 }]);
    });
+
+   it("on the legacy model query route, carrying the caller and trace the request named", async () => {
+      await withAuthorizeModel(MODEL, async ({ model }) => {
+         const app = buildRouteApp({
+            queryController: new QueryController(storeOf(model)),
+         });
+         await request(app)
+            .post("/api/v0/projects/env/packages/pkg/models/m.malloy/query")
+            .send({ query: "run: open_src -> { aggregate: n }" })
+            .set({
+               "x-publisher-caller": "alice@example.com",
+               traceparent:
+                  "00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-01",
+            })
+            .expect(200);
+         expect(records()).toMatchObject([
+            {
+               outcome: "ok",
+               caller: "alice@example.com",
+               traceId: "0af7651916cd43dd8448eb211c80319c",
+            },
+         ]);
+      });
+   });
 });
 
 /** The MCP execute_query handler over a store, as the SDK would call it. */
