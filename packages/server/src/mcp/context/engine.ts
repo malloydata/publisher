@@ -44,10 +44,15 @@ import {
    type ResolvedRequest,
    type ResultEntity,
 } from "../tools/get_context_types";
-import { alsoLikelyFields } from "./also_likely";
+import { alsoLikelyFields, type AlsoLikelyField } from "./also_likely";
 import { dateRangeFields } from "./date_range";
 import type { CatalogNode } from "./catalog";
-import { fcjJudgeChat, fcjStateOf, kickFcjBuild } from "./engine_state";
+import {
+   fcjJudgeChat,
+   fcjStateOf,
+   kickFcjBuild,
+   type FcjState,
+} from "./engine_state";
 import {
    find,
    KINDS_BY_FIND_TARGET,
@@ -357,37 +362,7 @@ async function runFcjSearch(
       packageName: request.packageName,
       pkg,
    });
-   if (!state || state.status !== "ready") {
-      if (state?.status === "error") {
-         return jsonToolError(
-            uri,
-            {
-               message: `The fcj search index for this package could not be built: ${state.message}`,
-               suggestions: [
-                  "Ask again in a minute; the build is retried by the next question after a short cool-down.",
-                  "The operator should read the server log.",
-               ],
-            },
-            {
-               sources: [],
-               retrieval: "error",
-               retrieval_reason: "unavailable",
-            },
-         );
-      }
-      return jsonResource(uri, {
-         sources: [],
-         ranking: "relevance" as const,
-         total_available: 0,
-         returned: 0,
-         retrieval: "indexing",
-         ...skillsFor({ pkgIndex }),
-         warnings: [
-            ...args.warnings,
-            "This package's search index is still being built, so there are no results yet. Nothing is wrong: ask the same question again in a few seconds. A request with no search_text (a listing) works now.",
-         ],
-      });
-   }
+   if (state?.status !== "ready") return unreadyAnswer(args, state);
    const index = state.index;
    const held = heldResults;
    const key = resultKey(request);
@@ -496,92 +471,19 @@ async function runFcjSearch(
    });
 
    // Stage 3.
-   started = performance.now();
-   const meter = new LlmMeter(activeLlmSettings()?.maxCallsPerRequest ?? null);
-   let chat: ChatModel | null = null;
-   if (settings.judge !== false && activeLlmSettings()) {
-      try {
-         chat = fcjJudgeChat(settings.judgeLlm);
-      } catch (error) {
-         logger.warn("[get_context fcj] The judge model could not be built", {
-            error: error instanceof Error ? error.message : String(error),
-         });
-         return judgeFailure(uri, error, stages);
-      }
-   }
-   let verdicts: JudgeVerdict[];
-   const used = meter.snapshot();
-   if (chat && connectedAll.clusters.length > 0) {
-      try {
-         verdicts = await judge({
-            index,
-            clusters: connectedAll.clusters,
-            targets: searched,
-            chat: meter.wrap(chat),
-            ...(pkg.getRetrievalSettings?.()?.prompts.judge
-               ? {
-                    instructions:
-                       pkg.getRetrievalSettings().prompts.judge!.text,
-                 }
-               : {}),
-            concurrency: Math.max(1, activeLlmSettings()?.concurrency ?? 1),
-            listRoutes: settings.listRoutes,
-            // Only a request with a list target reads the split rules, so
-            // every other request's judge prompt is the same text as before.
-            splitRules: split !== undefined,
-            itemPicks: settings.splitItemPicks,
-            readingsRule: settings.readingsRule,
-            ...(args.signal ? { signal: args.signal } : {}),
-         });
-      } catch (error) {
-         logger.warn("[get_context fcj] The judge failed", {
-            error: error instanceof Error ? error.message : String(error),
-         });
-         return judgeFailure(uri, error, stages);
-      }
-      verdicts = dropBesideRoutes(
-         verdicts,
-         settings.dropRoutesAt,
-         (key) => optionId(index.catalog, key),
-         new Set(
-            foundAll.flatMap((r) =>
-               r.candidates
-                  .map((c) => index.catalog.nodes.get(c.key)?.id)
-                  .filter((id): id is string => id !== undefined),
-            ),
-         ),
-      );
-      verdicts = dropTwins(verdicts, settings.twinRule, (key) =>
-         index.catalog.nodes.get(key),
-      );
-      if (split) {
-         verdicts = capItemPicks(split, verdicts, settings.splitItemPicks);
-      }
-      const now = meter.snapshot();
-      stages.push({
-         name: "judge",
-         status: "ran",
-         ms: Math.round(performance.now() - started),
-         in: connectedAll.clusters.length,
-         out: verdicts.reduce((n, v) => n + v.picks.length, 0),
-         llm_calls: now.calls - used.calls,
-         tokens: {
-            input: now.inputTokens - used.inputTokens,
-            output: now.outputTokens - used.outputTokens,
-         },
-      });
-   } else {
-      verdicts = unjudged(connectedAll, searched);
-      stages.push({
-         name: "judge",
-         status: "skipped",
-         ms: 0,
-         in: connectedAll.clusters.length,
-         out: verdicts.reduce((n, v) => n + v.picks.length, 0),
-         llm_calls: 0,
-         tokens: { input: 0, output: 0 },
-      });
-   }
+   const judged = await judgeStage({
+      args,
+      index,
+      settings,
+      searched,
+      split,
+      foundAll,
+      connectedAll,
+      stages,
+   });
+   if ("failure" in judged) return judged.failure;
+   const { chat } = judged;
+   let verdicts = judged.verdicts;
 
    // A split target's items fold back into it: respond and the response see
    // only the caller's targets.
@@ -591,9 +493,11 @@ async function runFcjSearch(
 
    // "Also likely" fields: after the judge only, since they read its picks
    // and its notes.
-   const judged = stages.some((s) => s.name === "judge" && s.status === "ran");
+   const judgeRan = stages.some(
+      (s) => s.name === "judge" && s.status === "ran",
+   );
    const alsoLikely =
-      judged && alsoLikelyOn(settings)
+      judgeRan && alsoLikelyOn(settings)
          ? alsoLikelyFields({
               index,
               found,
@@ -606,7 +510,7 @@ async function runFcjSearch(
    // The "date or time range" rule: after the judge and "also likely",
    // since it reads which measures came back.
    const dateRange =
-      judged && settings.dateRange
+      judgeRan && settings.dateRange
          ? dateRangeFields({
               index,
               texts: targets.map((t) => t.text),
@@ -671,75 +575,267 @@ async function runFcjSearch(
       ...(traceMode === "full"
          ? {
               full: {
-                 fcj: {
-                    find: findTrace(index, found),
-                    ...(split
-                       ? {
-                            split: splitTrace(
-                               split,
-                               foundAll,
-                               itemVerdicts,
-                               (k) => optionId(index.catalog, k),
-                            ),
-                         }
-                       : {}),
-                    connect: connectTrace(index, connected),
-                    ...(chat
-                       ? { judge_model: `${chat.provider}/${chat.model}` }
-                       : {}),
-                    judge: verdicts.map((v) => ({
-                       cluster: v.cluster,
-                       picks: v.picks.map((p) => ({
-                          target_index: p.target,
-                          // A picked route has the id it has on the joining source.
-                          ids: p.keys.map((k) => optionId(index.catalog, k)),
-                          ...(p.reason ? { reason: p.reason } : {}),
-                          ...(p.droppedRoutes
-                             ? {
-                                  dropped_routes: p.droppedRoutes.map((k) =>
-                                     optionId(index.catalog, k),
-                                  ),
-                               }
-                             : {}),
-                          ...(p.best
-                             ? { best: optionId(index.catalog, p.best) }
-                             : {}),
-                          ...(p.readings ? { readings: true } : {}),
-                          ...(p.droppedTwins
-                             ? {
-                                  dropped_twins: p.droppedTwins.map((k) =>
-                                     optionId(index.catalog, k),
-                                  ),
-                               }
-                             : {}),
-                       })),
-                       caveats: v.caveats,
-                       ...(v.routeOptions !== undefined
-                          ? { route_options: v.routeOptions }
-                          : {}),
-                       ...(v.jsonRepaired ? { json_repaired: true } : {}),
-                    })),
-                    also_likely: alsoLikely.map((a) => ({
-                       id: a.id,
-                       rule: a.rule,
-                       ...(a.of ? { of: a.of } : {}),
-                       reason: a.reason,
-                    })),
-                    // Fields the "date or time range" rule added (dateRange).
-                    ...(settings.dateRange
-                       ? {
-                            date_range: dateRange.map((a) => ({
-                               id: a.id,
-                               of: a.of,
-                               reason: a.reason,
-                            })),
-                         }
-                       : {}),
-                 },
+                 fcj: fullTrace({
+                    index,
+                    found,
+                    foundAll,
+                    split,
+                    itemVerdicts,
+                    connected,
+                    chat,
+                    verdicts,
+                    alsoLikely,
+                    dateRange,
+                    settings,
+                 }),
               },
            }
          : {}),
    });
+}
+
+/** The answer while the index is not ready: an error after a failed build, otherwise "indexing". */
+function unreadyAnswer(
+   args: FcjQueryArgs,
+   state: FcjState | undefined,
+): ReturnType<typeof jsonResource> {
+   if (state?.status === "error") {
+      return jsonToolError(
+         args.uri,
+         {
+            message: `The fcj search index for this package could not be built: ${state.message}`,
+            suggestions: [
+               "Ask again in a minute; the build is retried by the next question after a short cool-down.",
+               "The operator should read the server log.",
+            ],
+         },
+         {
+            sources: [],
+            retrieval: "error",
+            retrieval_reason: "unavailable",
+         },
+      );
+   }
+   return jsonResource(args.uri, {
+      sources: [],
+      ranking: "relevance" as const,
+      total_available: 0,
+      returned: 0,
+      retrieval: "indexing",
+      ...skillsFor({ pkgIndex: args.pkgIndex }),
+      warnings: [
+         ...args.warnings,
+         "This package's search index is still being built, so there are no results yet. Nothing is wrong: ask the same question again in a few seconds. A request with no search_text (a listing) works now.",
+      ],
+   });
+}
+
+/**
+ * Stage 3: the judge picks from each cluster, then the route, twin and item
+ * caps apply. Skipped, keeping every candidate, with no LLM, with the judge
+ * off, or with no cluster. Pushes its stage row. A judge model that cannot be
+ * built, or a judge that fails, is the request's answer (`failure`).
+ */
+async function judgeStage(stage: {
+   args: FcjQueryArgs;
+   index: FcjIndex;
+   settings: ReturnType<typeof fcjSettingsOf>;
+   searched: FindTarget[];
+   split: SplitPlan | undefined;
+   foundAll: FindResult[];
+   connectedAll: ConnectResult;
+   stages: StageRow[];
+}): Promise<
+   | { verdicts: JudgeVerdict[]; chat: ChatModel | null }
+   | { failure: ReturnType<typeof jsonResource> }
+> {
+   const {
+      args,
+      index,
+      settings,
+      searched,
+      split,
+      foundAll,
+      connectedAll,
+      stages,
+   } = stage;
+   const { uri } = args;
+   const pkg = args.pkgIndex.pkg;
+   const started = performance.now();
+   const meter = new LlmMeter(activeLlmSettings()?.maxCallsPerRequest ?? null);
+   let chat: ChatModel | null = null;
+   if (settings.judge !== false && activeLlmSettings()) {
+      try {
+         chat = fcjJudgeChat(settings.judgeLlm);
+      } catch (error) {
+         logger.warn("[get_context fcj] The judge model could not be built", {
+            error: error instanceof Error ? error.message : String(error),
+         });
+         return { failure: judgeFailure(uri, error, stages) };
+      }
+   }
+   let verdicts: JudgeVerdict[];
+   const used = meter.snapshot();
+   if (chat && connectedAll.clusters.length > 0) {
+      try {
+         verdicts = await judge({
+            index,
+            clusters: connectedAll.clusters,
+            targets: searched,
+            chat: meter.wrap(chat),
+            ...(pkg.getRetrievalSettings?.()?.prompts.judge
+               ? {
+                    instructions:
+                       pkg.getRetrievalSettings().prompts.judge!.text,
+                 }
+               : {}),
+            concurrency: Math.max(1, activeLlmSettings()?.concurrency ?? 1),
+            listRoutes: settings.listRoutes,
+            // Only a request with a list target reads the split rules, so
+            // every other request's judge prompt is the same text as before.
+            splitRules: split !== undefined,
+            itemPicks: settings.splitItemPicks,
+            readingsRule: settings.readingsRule,
+            ...(args.signal ? { signal: args.signal } : {}),
+         });
+      } catch (error) {
+         logger.warn("[get_context fcj] The judge failed", {
+            error: error instanceof Error ? error.message : String(error),
+         });
+         return { failure: judgeFailure(uri, error, stages) };
+      }
+      verdicts = dropBesideRoutes(
+         verdicts,
+         settings.dropRoutesAt,
+         (key) => optionId(index.catalog, key),
+         new Set(
+            foundAll.flatMap((r) =>
+               r.candidates
+                  .map((c) => index.catalog.nodes.get(c.key)?.id)
+                  .filter((id): id is string => id !== undefined),
+            ),
+         ),
+      );
+      verdicts = dropTwins(verdicts, settings.twinRule, (key) =>
+         index.catalog.nodes.get(key),
+      );
+      if (split) {
+         verdicts = capItemPicks(split, verdicts, settings.splitItemPicks);
+      }
+      const now = meter.snapshot();
+      stages.push({
+         name: "judge",
+         status: "ran",
+         ms: Math.round(performance.now() - started),
+         in: connectedAll.clusters.length,
+         out: verdicts.reduce((n, v) => n + v.picks.length, 0),
+         llm_calls: now.calls - used.calls,
+         tokens: {
+            input: now.inputTokens - used.inputTokens,
+            output: now.outputTokens - used.outputTokens,
+         },
+      });
+   } else {
+      verdicts = unjudged(connectedAll, searched);
+      stages.push({
+         name: "judge",
+         status: "skipped",
+         ms: 0,
+         in: connectedAll.clusters.length,
+         out: verdicts.reduce((n, v) => n + v.picks.length, 0),
+         llm_calls: 0,
+         tokens: { input: 0, output: 0 },
+      });
+   }
+
+   return { verdicts, chat };
+}
+
+/** The `full` trace's `fcj` block: what each stage kept. */
+function fullTrace(t: {
+   index: FcjIndex;
+   found: FindResult[];
+   foundAll: FindResult[];
+   split: SplitPlan | undefined;
+   itemVerdicts: JudgeVerdict[];
+   connected: ConnectResult;
+   chat: ChatModel | null;
+   verdicts: JudgeVerdict[];
+   alsoLikely: AlsoLikelyField[];
+   dateRange: AlsoLikelyField[];
+   settings: ReturnType<typeof fcjSettingsOf>;
+}) {
+   const {
+      index,
+      found,
+      foundAll,
+      split,
+      itemVerdicts,
+      connected,
+      chat,
+      verdicts,
+      alsoLikely,
+      dateRange,
+      settings,
+   } = t;
+   return {
+      find: findTrace(index, found),
+      ...(split
+         ? {
+              split: splitTrace(split, foundAll, itemVerdicts, (k) =>
+                 optionId(index.catalog, k),
+              ),
+           }
+         : {}),
+      connect: connectTrace(index, connected),
+      ...(chat ? { judge_model: `${chat.provider}/${chat.model}` } : {}),
+      judge: verdicts.map((v) => ({
+         cluster: v.cluster,
+         picks: v.picks.map((p) => ({
+            target_index: p.target,
+            // A picked route has the id it has on the joining source.
+            ids: p.keys.map((k) => optionId(index.catalog, k)),
+            ...(p.reason ? { reason: p.reason } : {}),
+            ...(p.droppedRoutes
+               ? {
+                    dropped_routes: p.droppedRoutes.map((k) =>
+                       optionId(index.catalog, k),
+                    ),
+                 }
+               : {}),
+            ...(p.best ? { best: optionId(index.catalog, p.best) } : {}),
+            ...(p.readings ? { readings: true } : {}),
+            ...(p.droppedTwins
+               ? {
+                    dropped_twins: p.droppedTwins.map((k) =>
+                       optionId(index.catalog, k),
+                    ),
+                 }
+               : {}),
+         })),
+         caveats: v.caveats,
+         ...(v.routeOptions !== undefined
+            ? { route_options: v.routeOptions }
+            : {}),
+         ...(v.jsonRepaired ? { json_repaired: true } : {}),
+      })),
+      also_likely: alsoLikely.map((a) => ({
+         id: a.id,
+         rule: a.rule,
+         ...(a.of ? { of: a.of } : {}),
+         reason: a.reason,
+      })),
+      // Fields the "date or time range" rule added (dateRange).
+      ...(settings.dateRange
+         ? {
+              date_range: dateRange.map((a) => ({
+                 id: a.id,
+                 of: a.of,
+                 reason: a.reason,
+              })),
+           }
+         : {}),
+   };
 }
 
 /**
