@@ -5,7 +5,11 @@ import react from "@vitejs/plugin-react";
 import path from "path";
 import { defineConfig } from "vite";
 
-export default ({ mode }) => {
+/**
+ * How the Console resolves the SDK: its sources in development, its built
+ * `dist` otherwise. Shared with `vite.mcp-app.config.ts`.
+ */
+export function sdkResolve(mode: string) {
    const isDev = mode === "development";
    // In Dev, Resolve the SDK locally as src, not /dist so it can hot reload
    // But for CSS files, we need to point to dist since they're only generated during build
@@ -40,6 +44,12 @@ export default ({ mode }) => {
               path.resolve(__dirname, "../sdk/dist/index.es.js"),
       },
    };
+   return resolve;
+}
+
+export default ({ mode }) => {
+   const isDev = mode === "development";
+   const resolve = sdkResolve(mode);
 
    // Disable chunking entirely to avoid initialization order issues
    const manualChunks = undefined;

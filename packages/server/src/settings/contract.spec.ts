@@ -825,6 +825,27 @@ export const CONTRACT: Record<string, Case[]> = {
          expect: fails("Failed to parse"),
       },
    ],
+   "mcp.appOrigin": [
+      {
+         name: "unset is localhost on the REST port",
+         expect: value("http://localhost:4000"),
+      },
+      {
+         name: "follows PUBLISHER_PORT",
+         env: { PUBLISHER_PORT: "4100" },
+         expect: value("http://localhost:4100"),
+      },
+      {
+         name: "MCP_APP_ORIGIN",
+         env: { MCP_APP_ORIGIN: "https://publisher.example.com" },
+         expect: value("https://publisher.example.com"),
+      },
+      {
+         name: "a path is cut to the origin",
+         env: { MCP_APP_ORIGIN: "https://publisher.example.com/base/" },
+         expect: value("https://publisher.example.com"),
+      },
+   ],
    "mcp.trace": [
       { name: "unset", expect: value(false) },
       {

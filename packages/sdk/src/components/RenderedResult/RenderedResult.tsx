@@ -121,6 +121,25 @@ interface RenderedResultProps {
 
 const FILL_ATTR = "data-publisher-fill";
 
+/**
+ * Whether this page may compile code from strings. Vega compiles each chart's
+ * expressions with `new Function`, which a Content-Security-Policy without
+ * `'unsafe-eval'` refuses: an MCP App panel's host is one such page. There the
+ * renderer is told to use Vega's interpreter instead, which evaluates the same
+ * expressions without compiling them. Asked once; elsewhere nothing changes.
+ */
+let evalAllowed: boolean | undefined;
+export function pageAllowsEval(): boolean {
+   if (evalAllowed === undefined) {
+      try {
+         evalAllowed = new Function("return true")() === true;
+      } catch {
+         evalAllowed = false;
+      }
+   }
+   return evalAllowed;
+}
+
 const createRenderer = async (
    theme: ResolvedTheme,
    onClick?: DrillBinding["onClick"],
@@ -137,6 +156,8 @@ const createRenderer = async (
       // which it reports only with `enableDrill` set; see `drillClickRelay`.
       ...(onDrill ? { onDrill, tableConfig: { enableDrill: true } } : {}),
       vegaConfigOverride: buildVegaThemeOverride(theme),
+      // Charts under a CSP that refuses eval; see `pageAllowsEval`.
+      ...(pageAllowsEval() ? {} : { useVegaInterpreter: true }),
       // Pass the explicit theme so table chrome and dashboard tiles
       // pick up the operator's colours directly. Without this the
       // renderer's own inline style writes `--malloy-render--*` values

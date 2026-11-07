@@ -20,6 +20,12 @@ function fakeServer() {
             args[args.length - 1] as (...a: unknown[]) => unknown,
          );
       },
+      registerTool: (...args: unknown[]) => {
+         handlers.set(
+            args[0] as string,
+            args[args.length - 1] as (...a: unknown[]) => unknown,
+         );
+      },
    };
    instrumentTools(server as unknown as McpServer);
    return { server, handlers };
@@ -58,6 +64,20 @@ describe("MCP tool telemetry", () => {
          expect(duration.count).toBe(1);
       },
    );
+
+   it("records a tool registered with registerTool, as the MCP Apps tools are", async () => {
+      const { server, handlers } = fakeServer();
+      server.registerTool("show_report", { description: "d" }, async () => ({
+         content: [],
+      }));
+      await handlers.get("show_report")!();
+      expect(
+         await harness.collectCounter("publisher_mcp_tool_calls_total", {
+            tool: "show_report",
+            outcome: "ok",
+         }),
+      ).toBe(1);
+   });
 
    it("records a throwing handler as an exception and rethrows", async () => {
       const { server, handlers } = fakeServer();

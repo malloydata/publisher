@@ -34,31 +34,42 @@ function outcomeOf(result: unknown): ToolOutcome {
 /**
  * Wrap every tool registered on `server` from here on, so each call records
  * one counter increment, one duration, and one exit log line, whatever the
- * tool. The handler is always the registration's last argument.
+ * tool. Both registration forms are wrapped: `tool()` and `registerTool()`
+ * (which the MCP Apps tools use, for their `_meta`). Neither calls the other,
+ * so a call is counted once. The handler is always the registration's last
+ * argument.
  */
 export function instrumentTools(server: McpServer): void {
-   const register = server.tool.bind(server) as (...args: unknown[]) => unknown;
-   (server as { tool: unknown }).tool = (...args: unknown[]) => {
-      const tool = String(args[0]);
-      const handler = args[args.length - 1] as Handler;
-      args[args.length - 1] = async (...callArgs: unknown[]) => {
-         const start = performance.now();
-         let outcome: ToolOutcome = "exception";
-         try {
-            const result = await handler(...callArgs);
-            outcome = outcomeOf(result);
-            return result;
-         } finally {
-            const durationMs = performance.now() - start;
-            toolCalls().add(1, { tool, outcome });
-            toolDuration().record(durationMs, { tool, outcome });
-            logger.info("MCP tool call", {
-               tool,
-               outcome,
-               durationMs: Math.round(durationMs),
-            });
-         }
+   for (const method of ["tool", "registerTool"] as const) {
+      const original = server[method] as
+         | ((...args: unknown[]) => unknown)
+         | undefined;
+      if (typeof original !== "function") continue;
+      const register = original.bind(server);
+      (server as unknown as Record<string, unknown>)[method] = (
+         ...args: unknown[]
+      ) => {
+         const tool = String(args[0]);
+         const handler = args[args.length - 1] as Handler;
+         args[args.length - 1] = async (...callArgs: unknown[]) => {
+            const start = performance.now();
+            let outcome: ToolOutcome = "exception";
+            try {
+               const result = await handler(...callArgs);
+               outcome = outcomeOf(result);
+               return result;
+            } finally {
+               const durationMs = performance.now() - start;
+               toolCalls().add(1, { tool, outcome });
+               toolDuration().record(durationMs, { tool, outcome });
+               logger.info("MCP tool call", {
+                  tool,
+                  outcome,
+                  durationMs: Math.round(durationMs),
+               });
+            }
+         };
+         return register(...args);
       };
-      return register(...args);
-   };
+   }
 }
