@@ -9,7 +9,6 @@ import type { FixedConnectionMap, PersistSource } from "@malloydata/malloy";
 import { beforeAll, describe, expect, it } from "bun:test";
 import { deriveAnnotationFields } from "./build_plan";
 import {
-   declaresIncremental,
    resolveIncrementalDeclaration,
    type IncrementalDeclaration,
 } from "./incremental_declaration";
@@ -237,9 +236,9 @@ source: child is mz extend { }`,
          );
          expect(declaration.incremental).toBe(false);
          expect(declaration.declaredWatermark).toBe(false);
+         expect(declaration.declaredMergeKey).toBe(false);
          expect(declaration.watermark).toBeUndefined();
          expect(declaration.strategy).toBeUndefined();
-         expect(declaresIncremental(declaration)).toBe(false);
       });
    });
 
@@ -335,7 +334,6 @@ source: child is mz extend { }`,
          expect(declaration.incremental).toBe(false);
          expect(declaration.strategy).toBeUndefined();
          expect(declaration.malformed).toEqual([]);
-         expect(declaresIncremental(declaration)).toBe(false);
       });
 
       it('is inert for an explicit refresh="full"', async () => {
@@ -343,7 +341,6 @@ source: child is mz extend { }`,
             `${RAW}#@ persist name="t" refresh="full"\n${ROLLUP}`,
          );
          expect(declaration.incremental).toBe(false);
-         expect(declaresIncremental(declaration)).toBe(false);
       });
    });
 });
