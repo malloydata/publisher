@@ -832,33 +832,31 @@ function registerQueryRoutes(
                | undefined;
             const bypassFilters =
                req.body.bypassFilters === true ? true : undefined;
-            const result = await queryController.getQuery(
-               req.params.environmentName,
-               req.params.packageName,
-               wildcardParam(req),
-               req.body.sourceName as string,
-               req.body.queryName as string,
-               req.body.query as string,
-               req.body.compactJson === true,
+            const result = await queryController.getQuery({
+               environmentName: req.params.environmentName,
+               packageName: req.params.packageName,
+               modelPath: wildcardParam(req),
+               sourceName: req.body.sourceName,
+               queryName: req.body.queryName,
+               query: req.body.query,
+               compactJson: req.body.compactJson === true,
                filterParams,
                bypassFilters,
-               req.body.givens as Record<string, GivenValue> | undefined,
-               {
-                  queryMetadata: req.body?.queryMetadata,
-                  queryClass: req.body?.queryClass,
-                  versionId: queryVersionIdOf(req),
-               },
+               givens: req.body.givens,
+               queryMetadata: req.body?.queryMetadata,
+               queryClass: req.body?.queryClass,
+               versionId: queryVersionIdOf(req),
                // Disables the author's `#(authorize)` gates. From a header, never
                // the body, and nothing here bounds who may send it: the
                // deployment must strip it at its edge. See
                // docs/authorize-bypass-deployment.md.
-               readBypassAuthorize(req),
+               bypassAuthorize: readBypassAuthorize(req),
                includeHiddenFilesAndSources,
-               disconnected.signal,
+               clientSignal: disconnected.signal,
                // For the access record: who the gateway says is asking, and the
                // trace this request belongs to. See docs/access-record.md.
-               accessIdentityOf(req.headers),
-            );
+               identity: accessIdentityOf(req.headers),
+            });
             setFilterDeprecationHeaders(res, { filterParams, bypassFilters });
             res.status(200).json(result);
          } catch (error) {

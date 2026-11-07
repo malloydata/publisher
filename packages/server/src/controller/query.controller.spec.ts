@@ -11,7 +11,7 @@ import {
    loadTempPackage,
    type LoadedTempPackage,
 } from "../test_helpers/temp_package";
-import { QueryController } from "./query.controller";
+import { QueryController, type QueryRequest } from "./query.controller";
 
 /**
  * Real Malloy results, so the render-tag validator reads what a model really
@@ -92,34 +92,18 @@ function controllerWith({
    };
 }
 
-/** getQuery with only the arguments a case varies; the rest left default. */
-function run(
-   controller: QueryController,
-   opts: {
-      compactJson?: boolean;
-      metadata?: Parameters<QueryController["getQuery"]>[10];
-      bypassAuthorize?: boolean;
-      includeHidden?: boolean;
-      signal?: AbortSignal;
-   } = {},
-) {
-   return controller.getQuery(
-      "env",
-      "pkg",
-      "m.malloy",
-      "s",
-      "",
-      "run: s -> { group_by: a }",
-      opts.compactJson,
-      undefined,
-      undefined,
-      undefined,
-      opts.metadata,
-      opts.bypassAuthorize,
-      opts.includeHidden,
-      opts.signal,
-      {},
-   );
+/** getQuery with only the fields a case varies; the rest left default. */
+function run(controller: QueryController, opts: Partial<QueryRequest> = {}) {
+   return controller.getQuery({
+      environmentName: "env",
+      packageName: "pkg",
+      modelPath: "m.malloy",
+      sourceName: "s",
+      queryName: "",
+      query: "run: s -> { group_by: a }",
+      identity: {},
+      ...opts,
+   });
 }
 
 describe("QueryController.getQuery", () => {
@@ -131,7 +115,7 @@ describe("QueryController.getQuery", () => {
       "refuses %s with a 400, before touching the environment",
       async (_, metadata) => {
          const { controller, getEnvironment } = controllerWith();
-         await expect(run(controller, { metadata })).rejects.toBeInstanceOf(
+         await expect(run(controller, metadata)).rejects.toBeInstanceOf(
             BadRequestError,
          );
          expect(getEnvironment.called).toBe(false);
@@ -166,8 +150,9 @@ describe("QueryController.getQuery", () => {
       await run(controller, {
          compactJson: true,
          bypassAuthorize: true,
-         includeHidden: true,
-         metadata: { queryMetadata: { team: "x" }, queryClass: "interactive" },
+         includeHiddenFilesAndSources: true,
+         queryMetadata: { team: "x" },
+         queryClass: "interactive",
       });
       await run(controller);
       const [compact, full] = getQueryResults.getCalls().map((c) => c.args);
@@ -190,7 +175,7 @@ describe("QueryController.getQuery", () => {
          client.abort("client gone");
          return { result: plain, serializedResult: "S" };
       });
-      await run(controller, { signal: client.signal });
+      await run(controller, { clientSignal: client.signal });
       expect(seen?.aborted).toBe(true);
       expect(seen?.reason).toBe("client gone");
    });

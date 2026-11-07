@@ -33,7 +33,11 @@ import { BadRequestError } from "./errors";
 import { logger, redactSensitive } from "./logger";
 import { accessIdentityOf } from "./service/access_record";
 import { notebookCellHandlers } from "./routes/deprecated";
-import { apiRoute, recordGateRefusal } from "./routes/json_route";
+import {
+   apiRoute,
+   recordGateRefusal,
+   wildcardParam,
+} from "./routes/json_route";
 import { queryConcurrency } from "./query_concurrency";
 import { normalizeQueryArray } from "./query_param_utils";
 import {
@@ -489,7 +493,7 @@ export function registerLegacyRoutes(
    app.get(
       `${LEGACY_API_PREFIX}/projects/:projectName/packages/:packageName/models/*?`,
       apiRoute(async (req) => {
-         const modelPath = (req.params as Record<string, string>)["0"];
+         const modelPath = wildcardParam(req);
          return modelController.getModel(
             req.params.projectName,
             req.params.packageName,
@@ -506,32 +510,25 @@ export function registerLegacyRoutes(
       `${LEGACY_API_PREFIX}/projects/:projectName/packages/:packageName/models/*?/query`,
       queryConcurrency(),
       apiRoute(async (req) => {
-         const modelPath = (req.params as Record<string, string>)["0"];
-         return queryController.getQuery(
-            req.params.projectName,
-            req.params.packageName,
-            modelPath,
-            req.body.sourceName as string,
-            req.body.queryName as string,
-            req.body.query as string,
-            req.body.compactJson === true,
-            (req.body.filterParams ?? req.body.sourceFilters) as
-               | Record<string, string | string[]>
-               | undefined,
-            req.body.bypassFilters === true ? true : undefined,
-            undefined,
-            { versionId: queryVersionIdOf(req) },
-            undefined,
-            undefined,
-            undefined,
-            accessIdentityOf(req.headers),
-         );
+         return queryController.getQuery({
+            environmentName: req.params.projectName,
+            packageName: req.params.packageName,
+            modelPath: wildcardParam(req),
+            sourceName: req.body.sourceName,
+            queryName: req.body.queryName,
+            query: req.body.query,
+            compactJson: req.body.compactJson === true,
+            filterParams: req.body.filterParams ?? req.body.sourceFilters,
+            bypassFilters: req.body.bypassFilters === true ? true : undefined,
+            versionId: queryVersionIdOf(req),
+            identity: accessIdentityOf(req.headers),
+         });
       }),
       recordGateRefusal((req, error) =>
          queryController.recordRefusal(
             req.params.projectName,
             req.params.packageName,
-            (req.params as Record<string, string>)["0"],
+            wildcardParam(req),
             req.body ?? {},
             accessIdentityOf(req.headers),
             error,
@@ -578,7 +575,7 @@ export function registerLegacyRoutes(
    app.get(
       `${LEGACY_API_PREFIX}/projects/:projectName/packages/:packageName/notebooks/*?`,
       apiRoute(async (req) => {
-         const notebookPath = (req.params as Record<string, string>)["0"];
+         const notebookPath = wildcardParam(req);
          return legacyReportController.getNotebook(
             req.params.projectName,
             req.params.packageName,

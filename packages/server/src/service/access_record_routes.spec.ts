@@ -107,23 +107,21 @@ function rest(
       signal?: AbortSignal;
    } = {},
 ) {
-   return new QueryController(store).getQuery(
-      "env",
-      "pkg",
-      opts.modelPath ?? "m.malloy",
-      "",
-      "",
-      opts.query ?? "run: open_src -> { aggregate: n }",
-      true,
-      {},
-      undefined,
-      opts.givens,
-      undefined,
-      false,
-      false,
-      opts.signal,
-      { caller: "alice@example.com" },
-   );
+   return new QueryController(store).getQuery({
+      environmentName: "env",
+      packageName: "pkg",
+      modelPath: opts.modelPath ?? "m.malloy",
+      sourceName: "",
+      queryName: "",
+      query: opts.query ?? "run: open_src -> { aggregate: n }",
+      compactJson: true,
+      filterParams: {},
+      givens: opts.givens,
+      bypassAuthorize: false,
+      includeHiddenFilesAndSources: false,
+      clientSignal: opts.signal,
+      identity: { caller: "alice@example.com" },
+   });
 }
 
 describe("REST query writes exactly one record", () => {

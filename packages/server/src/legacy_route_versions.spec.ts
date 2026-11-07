@@ -132,7 +132,7 @@ describe("legacy /projects routes and versionId", () => {
          .post(path)
          .send({ query: "run: x -> y", ...extra });
       expect(res.status).toBe(200);
-      expect((calls.getQuery?.[10] as Versioned).versionId).toBe("1.2.0");
+      expect((calls.getQuery?.[0] as Versioned).versionId).toBe("1.2.0");
    });
 
    it("refuses a query whose body and URL name different versions", async () => {
