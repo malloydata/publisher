@@ -1,18 +1,14 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
-// Lives under `tests/unit/` (not `src/`) on purpose: it builds a real
-// EnvironmentStore over the real StorageManager, which sibling specs under
-// `src/` replace with `mock.module(...)` (see environment_store_version_cleanup.spec.ts).
-
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import * as fs from "fs";
 import * as os from "os";
 import * as path from "path";
-import type { Environment } from "../../../src/service/environment";
-import { EnvironmentStore } from "../../../src/service/environment_store";
-import { installSettings } from "../../../src/test_helpers/settings_env";
-import type { VersionService } from "../../../src/service/versions/version_service";
+import type { Environment } from "./environment";
+import { EnvironmentStore } from "./environment_store";
+import { installSettings } from "../test_helpers/settings_env";
+import type { VersionService } from "./versions/version_service";
 
 /**
  * A publish of a version is a load in flight from its download until it

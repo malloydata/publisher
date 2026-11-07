@@ -14,7 +14,7 @@ import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import fs from "fs/promises";
 import os from "os";
 import path from "path";
-import { DuckDBConnection } from "../../../src/storage/duckdb/DuckDBConnection";
+import { DuckDBConnection } from "./DuckDBConnection";
 
 describe("DuckDBConnection (storage DAO over @duckdb/node-api)", () => {
    let dbDir: string;

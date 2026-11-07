@@ -15,8 +15,8 @@ import {
 import fs from "fs/promises";
 import os from "os";
 import path from "path";
-import type { components } from "../../../src/api";
-import { createEnvironmentConnections } from "../../../src/service/connection";
+import type { components } from "../../src/api";
+import { createEnvironmentConnections } from "../../src/service/connection";
 
 type ApiConnection = components["schemas"]["Connection"];
 
