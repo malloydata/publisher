@@ -13,10 +13,12 @@ import {
 import { logger } from "./logger";
 import { defaultOpenAiBaseUrl } from "./providers/openai_compatible";
 import {
+   describeSource,
    referencedVariable,
    REGISTRY,
    settings,
    Settings,
+   type SettingKey,
    type SettingValue,
 } from "./settings";
 import type {
@@ -468,13 +470,7 @@ function embeddingValue<K extends EmbeddingFileKey>(
 function googleEmbeddingValue<K extends EmbeddingFileKey>(
    key: K,
 ): SettingValue<K> | undefined {
-   const source = settings.source(key);
-   const old =
-      source.kind === "env" &&
-      REGISTRY.find((entry) => entry.key === key)?.aliases.env?.includes(
-         source.name,
-      );
-   if (!old) return settings.get(key);
+   if (!fromOldVariable(key)) return settings.get(key);
    const file = settings
       .shadowed(key)
       .find((shadowed) => shadowed.source.kind === "file");
@@ -1069,7 +1065,10 @@ export const getPublisherConfig = (serverRoot: string): PublisherConfig => {
             `--config path not found: ${explicitPath}. Using default empty config.`,
          );
       }
-      return { environments: [] };
+      // With no file, the retrieval block can still come from flags and
+      // variables.
+      const retrieval = retrievalInForce(undefined);
+      return { ...(retrieval ? { retrieval } : {}), environments: [] };
    }
    const publisherConfigPath = resolved.path;
    if (resolved.isBundledDefault) {
@@ -1142,7 +1141,7 @@ export const getPublisherConfig = (serverRoot: string): PublisherConfig => {
       "publisher.config.json",
    );
 
-   const retrieval = parseRetrievalConfig(
+   const retrieval = retrievalInForce(
       processedConfig && typeof processedConfig === "object"
          ? (processedConfig as { retrieval?: unknown }).retrieval
          : undefined,
@@ -1222,6 +1221,160 @@ export const getSemanticIndexMaxEntities = (serverRoot: string): number => {
       throw error;
    }
 };
+
+/** The `retrieval` block's leaves that the block's parser reads; not its secrets. */
+const RETRIEVAL_LEAVES = REGISTRY.filter(
+   (entry) =>
+      entry.key.startsWith("retrieval.") &&
+      entry.kind !== "structured" &&
+      !entry.secret,
+);
+
+/** Whether a setting's value came from one of today's variables, not its derived one. */
+function fromOldVariable(key: SettingKey): boolean {
+   const source = settings.source(key);
+   return (
+      source.kind === "env" &&
+      (REGISTRY.find((entry) => entry.key === key)?.aliases.env ?? []).includes(
+         source.name,
+      )
+   );
+}
+
+/** The leaves a Google or Vertex embedding provider takes from the file or a current name only. */
+const OPENAI_COMPATIBLE_LEAVES: readonly string[] = [
+   "retrieval.embedding.model",
+   "retrieval.embedding.baseUrl",
+   "retrieval.embedding.dimensions",
+];
+
+/**
+ * The `retrieval` block as one object from every source: the file's block,
+ * with each leaf a flag or variable gives laid over it, by the one precedence.
+ * A leaf that is null in the file is unset, as for every setting. A Google or
+ * Vertex embedding provider takes no leaf from `EMBEDDING_MODEL`,
+ * `EMBEDDING_API_BASE` or `EMBEDDING_DIMENSIONS` (see
+ * {@link googleEmbeddingValue}); those are returned as `ignored`. A section
+ * left empty, and a block left empty, are absent, so the example config's
+ * block of unset leaves is no block. Undefined when neither the file nor a
+ * flag or variable gives any of it.
+ */
+export function assembleRetrieval(file: unknown): {
+   block: unknown;
+   ignored: ReadonlySet<string>;
+} {
+   const ignored = new Set<string>();
+   // Not an object: the parser says so, naming the file's value.
+   if (file !== undefined && file !== null && !isPlainObject(file)) {
+      return { block: file, ignored };
+   }
+   const block = (file ? structuredClone(file) : {}) as Record<string, unknown>;
+   // Every leaf, the keys included: null is unset for each.
+   for (const leaf of REGISTRY.filter(
+      (entry) =>
+         entry.key.startsWith("retrieval.") && entry.kind !== "structured",
+   )) {
+      const pathInBlock = leaf.key.split(".").slice(1);
+      const parent = nodeAt(block, pathInBlock.slice(0, -1));
+      const last = pathInBlock[pathInBlock.length - 1];
+      if (parent && parent[last] === null) delete parent[last];
+   }
+   for (const [section, value] of Object.entries(block)) {
+      if (isPlainObject(value) && Object.keys(value).length === 0) {
+         delete block[section];
+      }
+   }
+   let overlaid = false;
+   // The provider first: it decides which variables the others may come from.
+   const ordered = [...RETRIEVAL_LEAVES].sort(
+      (a, b) =>
+         Number(!a.key.endsWith(".provider")) -
+         Number(!b.key.endsWith(".provider")),
+   );
+   for (const leaf of ordered) {
+      const key = leaf.key as SettingKey;
+      const kind = settings.source(key).kind;
+      if (kind !== "flag" && kind !== "env") continue;
+      const pathInBlock = leaf.key.split(".").slice(1);
+      if (OPENAI_COMPATIBLE_LEAVES.includes(leaf.key) && fromOldVariable(key)) {
+         const provider = nodeAt(block, ["embedding"])?.provider;
+         if (provider === "google" || provider === "vertex") {
+            ignored.add(leaf.key);
+            continue;
+         }
+      }
+      const parent = nodeAt(block, pathInBlock.slice(0, -1), true);
+      // A section the file holds as something other than an object is the
+      // parser's to refuse, with the file's value.
+      if (!parent) continue;
+      parent[pathInBlock[pathInBlock.length - 1]] = settings.get(key);
+      overlaid = true;
+   }
+   if (!overlaid && Object.keys(block).length === 0) {
+      return { block: undefined, ignored };
+   }
+   return { block, ignored };
+}
+
+/**
+ * The validated `retrieval` block in force, assembled by
+ * {@link assembleRetrieval}. A failure names, after the parser's message, the
+ * source of each field given in the section it cites, so a variable that
+ * switched `provider` is found beside the file's other fields.
+ */
+function retrievalInForce(file: unknown): RetrievalConfig | undefined {
+   const { block, ignored } = assembleRetrieval(file);
+   try {
+      return parseRetrievalConfig(block);
+   } catch (error) {
+      if (!(error instanceof Error)) throw error;
+      const sections = new Set(
+         [...error.message.matchAll(/\bretrieval\.([a-zA-Z]+)/g)].map(
+            (match) => `retrieval.${match[1]}.`,
+         ),
+      );
+      const given = RETRIEVAL_LEAVES.filter(
+         (leaf) =>
+            [...sections].some((section) => leaf.key.startsWith(section)) &&
+            settings.isSet(leaf.key as SettingKey),
+      ).map((leaf) => {
+         const from = describeSource(settings.source(leaf.key as SettingKey));
+         return ignored.has(leaf.key)
+            ? `${leaf.key} from ${from}, which a google or vertex provider does not read`
+            : `${leaf.key} from ${from}`;
+      });
+      if (given.length === 0) throw error;
+      throw new Error(`${error.message} Given: ${given.join("; ")}.`);
+   }
+}
+
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+   return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+/**
+ * The object at `pathInBlock` under `block`; with `create`, made where it is
+ * missing. Undefined where something other than an object is in the way.
+ */
+function nodeAt(
+   block: Record<string, unknown>,
+   pathInBlock: readonly string[],
+   create = false,
+): Record<string, unknown> | undefined {
+   let node = block;
+   for (const part of pathInBlock) {
+      const next = node[part];
+      if (next === undefined || next === null) {
+         if (!create) return undefined;
+         node[part] = {};
+         node = node[part] as Record<string, unknown>;
+         continue;
+      }
+      if (!isPlainObject(next)) return undefined;
+      node = next;
+   }
+   return node;
+}
 
 /**
  * The validated `retrieval` block of publisher.config.json, or undefined when
