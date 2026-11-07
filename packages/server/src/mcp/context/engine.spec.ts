@@ -459,6 +459,55 @@ describe("fcj request deadline", () => {
          _clearChatModelForTests();
       }
    });
+
+   it("stops the search when the client cancels the call", async () => {
+      const reply = JSON.stringify({ picks: [], caveats: [] });
+      const base = scriptedChat(() => reply).model;
+      let judgeSignal: AbortSignal | undefined;
+      const hanging: ChatModel = {
+         ...base,
+         complete: (req) => base.complete(req),
+         completeJson: (req) => {
+            if (!req.prompt.includes("<targets>"))
+               return base.completeJson(req);
+            judgeSignal = req.signal;
+            return new Promise((_resolve, reject) =>
+               req.signal?.addEventListener("abort", () =>
+                  reject(req.signal?.reason),
+               ),
+            );
+         },
+      };
+      _setChatModelForTests(hanging);
+      try {
+         const { pkg } = await compileFcjFixture();
+         const handler = harness.handlerFor(pkg);
+         const request = {
+            search_targets: [
+               { target_type: "measure", search_text: "number of flights" },
+            ],
+            scopes,
+         };
+         // A hanging judge holds a built index's answer until the deadline.
+         _setFcjDeadlineForTests(200);
+         await pollUntilBuilt(handler, request);
+         _setFcjDeadlineForTests(undefined);
+         judgeSignal = undefined;
+         const client = new AbortController();
+         const call = callPayload(handler, request, { signal: client.signal });
+         await pollUntil(() => judgeSignal !== undefined);
+         client.abort();
+         const { payload } = await call;
+         expect(judgeSignal?.aborted).toBe(true);
+         expect(payload.unresolved_targets).toHaveLength(1);
+         expect(payload.warnings.at(-1)).toBe(
+            "The call was cancelled before the search finished, so no target was answered.",
+         );
+      } finally {
+         _setFcjDeadlineForTests(undefined);
+         _clearChatModelForTests();
+      }
+   });
 });
 
 /** Ask until the index is built, whatever the first answers say. */

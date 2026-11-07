@@ -244,6 +244,7 @@ async function runContextQuery(
    traceMode: TraceMode = "none",
    withPackageInfo = false,
    identity?: AccessIdentity,
+   clientSignal?: AbortSignal,
 ): Promise<ReturnType<typeof jsonResource>> {
    const { environmentName, packageName, sourceName } = resolved;
    logger.debug("[MCP Tool getContext] Retrieving context", {
@@ -356,6 +357,7 @@ async function runContextQuery(
       warnings: ctx.warnings,
       traceMode,
       ...(identity ? { identity } : {}),
+      ...(clientSignal ? { clientSignal } : {}),
    });
 }
 
@@ -418,6 +420,7 @@ export function registerGetContextTool(
             traceModeOf(extra),
             level.withPackageInfo === true,
             accessIdentityOf(extra?.requestInfo?.headers),
+            extra?.signal,
          );
       },
    );

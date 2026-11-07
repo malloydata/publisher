@@ -251,8 +251,10 @@ export function _setFcjDeadlineForTests(ms: number | undefined): void {
 }
 
 type FcjQueryArgs = {
-   /** Aborted when the deadline passes; set by runFcjQuery. */
+   /** Aborted when the deadline passes or the client cancels; set by runFcjQuery. */
    signal?: AbortSignal;
+   /** Aborted when the MCP client cancels the call. */
+   clientSignal?: AbortSignal;
    request: ResolvedRequest;
    environmentStore: EnvironmentStore;
    pkgIndex: PackageIndex;
@@ -267,10 +269,11 @@ type FcjQueryArgs = {
  * Answer a ranked request within {@link FCJ_REQUEST_DEADLINE_MS}. A search
  * that runs out of time answers every target as unresolved, with a warning
  * naming the narrower scope to retry with; it never falls back to a cheaper
- * search. At the deadline the search is aborted: its judge calls are
- * cancelled and no gated value lookup starts, so a client's retry does not
- * queue behind work nobody will read. (The embedding of the search text and
- * a lookup already running finish on their own.)
+ * search. At the deadline, or when the client cancels the call, the search is
+ * aborted: its judge calls are cancelled and no gated value lookup starts, so
+ * a client's retry does not queue behind work nobody will read. (The
+ * embedding of the search text and a lookup already running finish on their
+ * own.)
  */
 export async function runFcjQuery(
    args: FcjQueryArgs,
@@ -278,19 +281,46 @@ export async function runFcjQuery(
    const ms = deadlineForTests ?? FCJ_REQUEST_DEADLINE_MS;
    const controller = new AbortController();
    const search = runFcjSearch({ ...args, signal: controller.signal });
-   // Past the deadline nobody awaits it; a later failure is not unhandled.
+   // Once it is abandoned nobody awaits it; a later failure is not unhandled.
    search.catch(() => undefined);
    let timer: ReturnType<typeof setTimeout> | undefined;
    const late = new Promise<"late">((resolve) => {
       timer = setTimeout(() => resolve("late"), ms);
    });
+   const client = args.clientSignal;
+   let onCancel: (() => void) | undefined;
+   const cancelled = new Promise<"cancelled">((resolve) => {
+      onCancel = () => resolve("cancelled");
+      if (client?.aborted) onCancel();
+      else client?.addEventListener("abort", onCancel, { once: true });
+   });
+   let out: Awaited<typeof search> | "late" | "cancelled";
    try {
-      const out = await Promise.race([search, late]);
-      if (out !== "late") return out;
+      out = await Promise.race([search, late, cancelled]);
+      if (out !== "late" && out !== "cancelled") return out;
    } finally {
       clearTimeout(timer);
+      if (onCancel) client?.removeEventListener("abort", onCancel);
+   }
+   if (out === "cancelled") {
+      controller.abort(new Error("the get_context call was cancelled"));
+      return unansweredResult(
+         args,
+         "The call was cancelled before the search finished, so no target was answered.",
+      );
    }
    controller.abort(new Error("the get_context search ran out of time"));
+   return unansweredResult(
+      args,
+      `The search ran out of time after ${ms / 1000} seconds, so no target was answered. Search again with a narrower scope: name the source in scopes[].source, and for a value its field in scopes[].entity_name, or send fewer targets.`,
+   );
+}
+
+/** Every target answered as unresolved, with `warning` saying why. */
+function unansweredResult(
+   args: FcjQueryArgs,
+   warning: string,
+): ReturnType<typeof jsonResource> {
    const state = fcjStateOf(args.pkgIndex.pkg);
    const index = state?.status === "ready" ? state.index : undefined;
    return jsonResource(args.uri, {
@@ -309,10 +339,7 @@ export async function runFcjQuery(
          search_text: t.text,
       })),
       ...skillsFor({ pkgIndex: args.pkgIndex }),
-      warnings: [
-         ...args.warnings,
-         `The search ran out of time after ${ms / 1000} seconds, so no target was answered. Search again with a narrower scope: name the source in scopes[].source, and for a value its field in scopes[].entity_name, or send fewer targets.`,
-      ],
+      warnings: [...args.warnings, warning],
    });
 }
 
