@@ -2,6 +2,11 @@
 // SPDX-License-Identifier: MIT
 
 import { externalEnv, settings } from "./settings";
+import {
+   isSpanContextValid,
+   trace,
+   type SpanContext,
+} from "@opentelemetry/api";
 import { AxiosError } from "axios";
 import { RequestHandler } from "express";
 import winston from "winston";
@@ -130,45 +135,65 @@ export function traceIdOf(req: {
    );
 }
 
+const PROBE_PATHS: ReadonlySet<string> = new Set([
+   "/health",
+   "/health/liveness",
+   "/health/readiness",
+   "/metrics",
+]);
+
+/** A health probe or metrics scrape: left out of the access log and request metrics, which they would drown. */
+export function isProbePath(path: string): boolean {
+   return PROBE_PATHS.has(path);
+}
+
+/**
+ * The trace a request runs in: its span's (the HTTP instrumentation's, which
+ * continues an incoming `traceparent`), else the header's own.
+ */
+function requestTraceId(
+   req: Parameters<typeof traceIdOf>[0],
+   spanContext: SpanContext | undefined,
+): string | undefined {
+   return spanContext && isSpanContextValid(spanContext)
+      ? spanContext.traceId
+      : traceIdOf(req);
+}
+
 export const loggerMiddleware: RequestHandler = (req, res, next) => {
    const startTime = performance.now();
+   // Read now: the span is active while the request is dispatched, not
+   // necessarily when `finish` fires.
+   const spanContext = trace.getActiveSpan()?.spanContext();
    const resJson = res.json;
    res.json = (body: unknown) => {
       res.locals.body = body;
       return resJson.call(res, body);
    };
    res.on("finish", () => {
-      const endTime = performance.now();
-      const durationMs = endTime - startTime;
-
-      const traceparent = req.headers["traceparent"] as string | undefined;
-      const traceId = extractTraceIdFromTraceparent(traceparent);
-
+      if (isProbePath(req.url)) return;
+      const durationMs = performance.now() - startTime;
       const logMetadata: Record<string, unknown> = {
          statusCode: res.statusCode,
+         durationMs: Math.round(durationMs * 100) / 100,
+         // The same, formatted; kept for readers of the older field.
          duration: formatDuration(durationMs),
-         payload: redactSensitive(req.body),
          params: req.params,
          query: req.query,
       };
-
+      // Redaction is by key name only, so a body's query text and given
+      // values pass through: kept to debug.
+      if (logger.isDebugEnabled()) {
+         logMetadata.payload = redactSensitive(req.body);
+      }
       if (!DISABLE_RESPONSE_LOGGING) {
          logMetadata.response = redactSensitive(res.locals.body);
       }
-
+      const traceId = requestTraceId(req, spanContext);
       if (traceId) {
          logMetadata.traceId = traceId;
       }
-
-      // Probes and scrapes would drown the log.
-      if (
-         req.url !== "/metrics" &&
-         req.url !== "/health" &&
-         req.url !== "/health/liveness" &&
-         req.url !== "/health/readiness"
-      ) {
-         logger.info(`${req.method} ${req.url}`, logMetadata);
-      }
+      logger.info(`${req.method} ${req.url}`, logMetadata);
    });
    next();
 };

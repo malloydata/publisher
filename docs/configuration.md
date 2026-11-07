@@ -734,6 +734,38 @@ With `OTEL_EXPORTER_OTLP_ENDPOINT` set, queries are traced as a `publisher.query
 model path, the tier it was served from) with `publisher.query.execute` beneath it, and compiles as
 `publisher.compile`. They nest under the HTTP spans auto-instrumentation creates.
 
+### HTTP requests
+
+Every request is measured twice, by two different series that are easy to confuse:
+
+- `http_server_request_duration_ms{http.method,http.route,http.status_code}`, a histogram in
+  milliseconds with buckets up to 60 s, and `http_server_requests_total` with the same labels.
+  Publisher records these itself. `http.route` is the Express route the request matched, never
+  its raw path; a request that matched none (a static file, a Console page, a 404) is
+  `unmatched`. Health probes and `/metrics` are left out. Build dashboards and alerts on these.
+- `http_server_request_duration`, a histogram in **seconds** from OpenTelemetry's HTTP
+  instrumentation, with semantic-convention labels (`http_request_method`,
+  `http_response_status_code`, `http_route`) and OpenTelemetry's buckets, which stop at 10 s. It is
+  there for tooling that expects the standard name, and only where that instrumentation can hook
+  the server: under Node (`npx`). Under Bun (`npm start`, the Docker image) it never appears, and
+  neither does the HTTP span the traces above nest under.
+
+### The access log
+
+Each request other than a probe or a scrape writes one line at `info`, its message the method and
+URL. Its fields:
+
+| Field        | Meaning                                                                                                                                                                |
+| ------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `statusCode` | The response status.                                                                                                                                                   |
+| `durationMs` | Time to the response's last byte, in milliseconds, as a number.                                                                                                        |
+| `duration`   | The same, formatted (`12.34ms`, `1.23s`). Kept for existing readers; query on `durationMs`.                                                                            |
+| `params`     | The route parameters.                                                                                                                                                  |
+| `query`      | The query-string parameters.                                                                                                                                           |
+| `traceId`    | The request's trace: the HTTP span's, which continues an incoming `traceparent`, else the `traceparent` header's own. Absent when there is neither.                    |
+| `payload`    | The request body, **only when `LOG_LEVEL` is `debug`** (the default) or `silly`. Credential fields are masked by key name; query text and given values are not, so a production log at `info` leaves the body out. |
+| `response`   | The response body, unless response-body logging is turned off (`DISABLE_RESPONSE_LOGGING`). Masked the same way.                                                       |
+
 ## Report and deprecation metrics
 
 Under the same `publisher` meter. Labels are bounded enumerations; none is a package name or a path.
