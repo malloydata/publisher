@@ -427,8 +427,22 @@ describe("getModelForQuery setup failures", () => {
    });
 
    it.each([
-      ["an off-surface model", new OffSurfaceError("off surface")],
-      ["an unusable manifest", new PackageManifestError("bad manifest")],
+      ["an off-surface model", new OffSurfaceError("off surface"), "curation"],
+      [
+         "an unusable manifest",
+         new PackageManifestError("bad manifest"),
+         "publisher.json is invalid",
+      ],
+   ])(
+      "answers %s with its own guidance, not as an internal fault",
+      async (_label, error, guidance) => {
+         const details = await failWith(error);
+         expect(details.message).toBe(error.message);
+         expect(details.suggestions.join(" ")).toContain(guidance);
+      },
+   );
+
+   it.each([
       ["a connection failure", new ConnectionFailedError("host down")],
       ["a malformed argument", new InvalidArgumentError("bad arg")],
       ["a query-boundary denial", new NotQueryableError("not queryable")],

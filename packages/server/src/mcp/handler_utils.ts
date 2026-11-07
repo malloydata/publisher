@@ -292,8 +292,8 @@ export async function getModelForQuery(
 
 /**
  * What a setup failure that is the caller's to act on names, by class. Any
- * other class (an unusable manifest, a connection fault, an off-surface model)
- * is undefined: reported as an internal setup fault, not classified.
+ * other class (a connection fault, a malformed argument) is undefined:
+ * reported as an internal setup fault, not classified.
  */
 function setupIdentifier(
    error: unknown,
@@ -311,8 +311,14 @@ function setupIdentifier(
    ) {
       return `package '${packageName}' in environment '${environmentName}'`;
    }
-   if (error instanceof ModelNotFoundError) {
+   if (
+      error instanceof ModelNotFoundError ||
+      error instanceof OffSurfaceError
+   ) {
       return `model '${modelPath}' in package '${packageName}' for environment '${environmentName}'`;
+   }
+   if (error instanceof PackageManifestError) {
+      return `package '${packageName}' in environment '${environmentName}'`;
    }
    if (
       error instanceof ModelCompilationError ||
