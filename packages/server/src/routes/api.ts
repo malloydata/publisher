@@ -54,6 +54,7 @@ import type { ThemeStore } from "../service/theme_store";
 import { registerDeprecatedRoutes } from "./deprecated";
 import {
    apiRoute,
+   legacyErrorBody,
    logRefusal,
    recordGateRefusal,
    sendRouteError,
@@ -164,20 +165,25 @@ function registerWatchModeRoutes(
    { environmentStore, watchModeController }: ApiControllers,
 ): void {
    // Deprecated here: the admin API serves watch mode, an operator's control.
+   // These keep their `{ error }` failure body and empty success body.
+   const watchRoute = (run: (req: express.Request) => Promise<unknown>) =>
+      apiRoute(run, { errorBody: legacyErrorBody });
    app.get(
       `${apiPrefix}/watch-mode/status`,
       markDeprecated,
-      watchModeController.getWatchStatus,
+      watchRoute(async () => watchModeController.current()),
    );
    app.post(
       `${apiPrefix}/watch-mode/start`,
       markDeprecated,
-      watchModeController.startWatching,
+      watchRoute(async (req) => {
+         await watchModeController.watch(req.body.environmentName ?? "");
+      }),
    );
    app.post(
       `${apiPrefix}/watch-mode/stop`,
       markDeprecated,
-      watchModeController.stopWatchMode,
+      watchRoute(() => watchModeController.unwatch()),
    );
 
    // Live-reload SSE for in-package HTML dashboards. It never starts watch

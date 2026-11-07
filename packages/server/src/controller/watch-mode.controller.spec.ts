@@ -6,12 +6,14 @@
  * kept until the routes are removed (the admin API serves watch mode now).
  */
 
-import { afterAll, describe, expect, it } from "bun:test";
+import { afterAll, describe, expect, it, spyOn } from "bun:test";
 import fs from "fs";
 import os from "os";
 import path from "path";
 import request from "supertest";
+import { logger } from "../logger";
 import type { EnvironmentStore } from "../service/environment_store";
+import { linesMentioning } from "../test_helpers/log_lines";
 import { API_PREFIX, buildRouteApp } from "../test_helpers/route_app";
 import { WatchModeController } from "./watch-mode.controller";
 
@@ -65,5 +67,41 @@ describe("deprecated watch-mode routes", () => {
          `${API_PREFIX}/watch-mode/stop`,
       );
       expect(res.status).toBe(200);
+   });
+
+   it("answer a stop that fails with 500 { error } rather than hang", async () => {
+      const { controller, app } = setup();
+      controller.watcher = {
+         close: async () => {
+            throw new Error("watch-stop-marker");
+         },
+      } as unknown as WatchModeController["watcher"];
+      const error = spyOn(logger, "error");
+      try {
+         const res = await request(app)
+            .post(`${API_PREFIX}/watch-mode/stop`)
+            .timeout(5000);
+         expect(res.status).toBe(500);
+         expect(Object.keys(res.body)).toEqual(["error"]);
+         expect(res.text).not.toContain("watch-stop-marker");
+         expect(linesMentioning(error, "watch-stop-marker")).toHaveLength(1);
+      } finally {
+         error.mockRestore();
+      }
+   });
+
+   it("log a refused start once, as a refusal", async () => {
+      const warn = spyOn(logger, "warn");
+      const error = spyOn(logger, "error");
+      try {
+         await request(setup().app)
+            .post(`${API_PREFIX}/watch-mode/start`)
+            .send({ environmentName: "watch-refusal-marker" });
+         expect(linesMentioning(warn, "watch-refusal-marker")).toHaveLength(1);
+         expect(linesMentioning(error, "watch-refusal-marker")).toEqual([]);
+      } finally {
+         warn.mockRestore();
+         error.mockRestore();
+      }
    });
 });
