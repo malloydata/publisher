@@ -14,7 +14,7 @@ import {
    BuildInstruction,
    LedgerEntry,
    MaterializationStatus,
-} from "../storage/DatabaseInterface";
+} from "./materialization/types";
 import { DuplicateActiveMaterializationError } from "../storage/duckdb/MaterializationRepository";
 import {
    makeBuildPlan,

@@ -6,7 +6,7 @@ import { describe, expect, it } from "bun:test";
 import type {
    FreshnessAwareManifestEntry,
    FreshnessManifest,
-} from "../storage/DatabaseInterface";
+} from "./materialization/types";
 import { evaluateManifestFreshness, filterFreshManifest } from "./freshness";
 
 // A fixed "now" so age math is deterministic.

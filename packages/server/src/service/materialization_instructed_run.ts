@@ -12,7 +12,7 @@ import type {
    BuildInstruction,
    ManifestEntry,
    SourceFailure,
-} from "../storage/DatabaseInterface";
+} from "./materialization/types";
 import { errMessage } from "../utils";
 import { getPersistCollisionEnforce, getPersistStorageMode } from "../config";
 import { redactPgSecrets } from "../pg_helpers";

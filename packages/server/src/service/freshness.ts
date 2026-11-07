@@ -22,7 +22,7 @@ import {
    BuildManifest,
    FreshnessAwareManifestEntry,
    FreshnessManifest,
-} from "../storage/DatabaseInterface";
+} from "./materialization/types";
 
 /**
  * What to do with a single manifest entry at query time.

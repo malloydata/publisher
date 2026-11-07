@@ -11,7 +11,7 @@ import {
    FreshnessManifest,
    isLegacyFailedEntry,
    ManifestEntry,
-} from "../storage/DatabaseInterface";
+} from "./materialization/types";
 
 type WireBuildManifest = components["schemas"]["BuildManifest"];
 

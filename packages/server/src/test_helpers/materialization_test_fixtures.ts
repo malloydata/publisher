@@ -2,11 +2,8 @@
 // SPDX-License-Identifier: MIT
 
 import type { PersistSource } from "@malloydata/malloy";
-import {
-   BuildInstruction,
-   BuildPlan,
-   Materialization,
-} from "../storage/DatabaseInterface";
+import { Materialization } from "../storage/DatabaseInterface";
+import { BuildInstruction, BuildPlan } from "../service/materialization/types";
 import { CompiledBuildPlan } from "../service/build_plan";
 
 /**
