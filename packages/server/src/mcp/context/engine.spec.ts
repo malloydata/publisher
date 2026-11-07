@@ -463,14 +463,14 @@ describe("fcj request deadline", () => {
    it("stops the search when the client cancels the call", async () => {
       const reply = JSON.stringify({ picks: [], caveats: [] });
       const base = scriptedChat(() => reply).model;
-      let judgeSignal: AbortSignal | undefined;
+      const judgeSignals: AbortSignal[] = [];
       const hanging: ChatModel = {
          ...base,
          complete: (req) => base.complete(req),
          completeJson: (req) => {
             if (!req.prompt.includes("<targets>"))
                return base.completeJson(req);
-            judgeSignal = req.signal;
+            if (req.signal) judgeSignals.push(req.signal);
             return new Promise((_resolve, reject) =>
                req.signal?.addEventListener("abort", () =>
                   reject(req.signal?.reason),
@@ -492,13 +492,13 @@ describe("fcj request deadline", () => {
          _setFcjDeadlineForTests(200);
          await pollUntilBuilt(handler, request);
          _setFcjDeadlineForTests(undefined);
-         judgeSignal = undefined;
+         const before = judgeSignals.length;
          const client = new AbortController();
          const call = callPayload(handler, request, { signal: client.signal });
-         await pollUntil(() => judgeSignal !== undefined);
+         await pollUntil(() => judgeSignals.length > before);
          client.abort();
          const { payload } = await call;
-         expect(judgeSignal?.aborted).toBe(true);
+         expect(judgeSignals.at(-1)?.aborted).toBe(true);
          expect(payload.unresolved_targets).toHaveLength(1);
          expect(payload.warnings.at(-1)).toBe(
             "The call was cancelled before the search finished, so no target was answered.",
