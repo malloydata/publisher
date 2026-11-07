@@ -95,7 +95,7 @@ import {
    type ServedReportManifest,
    type ReportModelFacts,
 } from "./report_manifest";
-import { isReportEligiblePath, type ReportLayout } from "./report";
+import { isReportEligiblePath } from "./report";
 import {
    docNotesAboveArtifact,
    isNotebookReaderError,
@@ -298,6 +298,11 @@ function denyUnlessAdmitted(
 }
 
 export type { ModelQueryMetadataInput } from "./query_metadata";
+import {
+   ModelPolicy,
+   type OffSurfaceContext,
+   type QueryBoundaryPolicy,
+} from "./model_policy";
 
 type ApiCompiledModel = components["schemas"]["CompiledModel"];
 type ApiNotebookCell = components["schemas"]["NotebookCell"];
@@ -317,13 +322,8 @@ const MALLOY_VERSION = (
    }
 ).version;
 
-/** The package's published surface, as an explained refusal describes it:
- *  `indexModel` when the package is curated by its root index.malloy rather
- *  than an explicit "explores" list, and the surface files either way. */
-export interface OffSurfaceContext {
-   indexModel: boolean;
-   files: readonly string[];
-}
+export type { OffSurfaceContext, QueryBoundaryPolicy } from "./model_policy";
+export { ModelPolicy, PackageModelPolicy } from "./model_policy";
 
 /**
  * How a query's answer was ultimately produced, once it reached the storage
@@ -429,6 +429,19 @@ export interface ModelState {
    /** Precomputed `modelInfoOf(modelDef)` from the package-load worker;
     *  derived here when omitted. */
    modelInfo?: Malloy.ModelInfo;
+   /**
+    * Who decides this model's curation, query boundary, sibling resolution and
+    * freshness. A Package always passes its {@link PackageModelPolicy} view;
+    * omitted means {@link ModelPolicy.standalone}, which is what a Model built
+    * directly (outside any Package) has always meant.
+    */
+   policy?: ModelPolicy;
+   /**
+    * The runtime that produced {@link modelMaterializer}, retained so a
+    * row-level gate can graft (see {@link Model.gateRuntime}). Absent: every
+    * row-level gate denies.
+    */
+   gateRuntime?: HydrationRuntime;
 }
 
 export class Model {
@@ -537,56 +550,53 @@ export class Model {
     *  model, own or inherited (the walk {@link assertAuthorizedForAllSources}
     *  runs). Computed at construction for {@link filterGivensToModelSurface}. */
    private authorizeReferencedGivenNames: Set<string> = new Set();
-   /** Whether discovery accessors curate to the `export {}` closure. Pushed
-    *  down by the owning Package (see Package.applyDiscoveryPolicyToModels):
-    *  true only when the package declares `explores` in publisher.json. */
-   private discoveryCurationEnabled = false;
+   /**
+    * Curation, query boundary, sibling resolution and freshness, decided by
+    * this model's owner and fixed at construction (see {@link ModelPolicy}).
+    * A Package's policy is a live view the Package fills; a standalone one
+    * is uncurated, admits every declared name and serves live.
+    */
+   private readonly policy: ModelPolicy;
+   /** {@link buildDerivationBaseMap} over the boundary's `derivationText`,
+    *  memoized per boundary object rather than computed per query. */
+   private derivationBasesMemo?: {
+      boundary: QueryBoundaryPolicy;
+      bases: Map<string, Set<string>> | undefined;
+   };
+   /** Whether discovery accessors curate to the `export {}` closure: true
+    *  only when the owning package declares `explores` in publisher.json. */
+   private get discoveryCurationEnabled(): boolean {
+      return this.policy.discoveryCurationEnabled();
+   }
    /**
     * Resolves the `ModelDef` the owning Package independently compiled for
-    * the file a `file://` URL names — pushed down by
-    * `Package.applySiblingModelResolverToModels`. `undefined` outside a
-    * Package, which is safe: every guard treats "unresolvable" as deny. See
+    * the file a `file://` URL names. `undefined` outside a Package, which is
+    * safe: every guard treats "unresolvable" as deny. See
     * `SiblingModelDefResolver` in `./filter_binding_guard` for why it exists.
     */
-   private siblingModelDefResolver: SiblingModelDefResolver | undefined;
-   /** Per-package query-boundary policy, pushed down by the owning Package
-    *  (see `Package.applyQueryBoundaryToModels`). Defaults are inert so a
-    *  Model outside a Package, or before the policy lands, never denies. */
-   private queryBoundary: {
-      mode: "declared" | "all";
-      exploresDeclared: boolean;
-      isQueryEntryPoint: boolean;
-      /** The PACKAGE-wide export closure (union over explores-listed models),
-       *  keyed name -> DEFINITION IDENTITIES ({@link definitionIdentity}), never
-       *  the bare name: a name is admitted only when THIS model resolves it to
-       *  the very definition a listed model exported, so a same-named source in
-       *  another file is not admitted by the collision. Absent when inert. */
-      packageCuratedSources?: ReadonlyMap<string, ReadonlySet<string>>;
-      packageCuratedQueries?: ReadonlyMap<string, ReadonlySet<string>>;
-      /** Which files are the surface, for an explained refusal
-       *  ({@link notQueryable}). */
-      offSurface?: OffSurfaceContext;
-      /** This file is a served report with this layout: an entry point that,
-       *  like a `.malloynb`, admits nothing of its own, since a grid report's
-       *  tiles and a linear report's cells read only the package surface. A
-       *  linear report keeps `modelType` "model". */
-      layout?: ReportLayout;
-      /** The served report's own compiled file text, so a source it declares
-       *  on top of a surface source (`source: big is orders extend {...}`) can
-       *  be proven to derive from it. Author text, not caller text. */
-      derivationText?: string;
-   } = { mode: "all", exploresDeclared: false, isQueryEntryPoint: true };
+   private get siblingModelDefResolver(): SiblingModelDefResolver | undefined {
+      return this.policy.siblingModelDefResolver();
+   }
+   /** The query boundary this file enforces; see {@link QueryBoundaryPolicy}. */
+   private get queryBoundary(): QueryBoundaryPolicy {
+      return this.policy.queryBoundary();
+   }
    /** {@link buildDerivationBaseMap} over `queryBoundary.derivationText`,
-    *  computed once per policy rather than per query. */
-   private fileDerivationBases?: Map<string, Set<string>>;
-   /** Per-query freshness resolver, pushed down by the owning Package (see
-    *  Package.wireFreshnessResolvers): the freshness-filtered build manifest,
-    *  passed as Malloy's per-query `buildManifest` override so a persist source
-    *  routes to its table only within its freshness window. Undefined means no
-    *  override. */
-   private freshnessResolver?: () => BuildManifest["entries"] | undefined;
-   /** See {@link setPreaggregateEntityIdResolver}. */
-   private preaggregateEntityIdResolver?: () => ReadonlySet<string>;
+    *  computed once per boundary rather than per query. */
+   private get fileDerivationBases(): Map<string, Set<string>> | undefined {
+      const boundary = this.queryBoundary;
+      if (this.derivationBasesMemo?.boundary !== boundary) {
+         this.derivationBasesMemo = {
+            boundary,
+            bases: boundary.derivationText
+               ? buildDerivationBaseMap(
+                    stripMalloyCommentsAndLiterals(boundary.derivationText),
+                 )
+               : undefined,
+         };
+      }
+      return this.derivationBasesMemo.bases;
+   }
    /** Entry-point gates per declared source name — see
     *  {@link computeEntryPointGatesBySource}. The one answer that
     *  `sources[].authorize`, {@link getAuthorize} and the early gate all read. */
@@ -594,15 +604,15 @@ export class Model {
    /**
     * The runtime that produced this model, retained ONLY so a row-level gate
     * can be enforced by grafting its condition onto a copied `ModelDef` (see
-    * `buildGraftedMaterializer`). Set by `setGateRuntime` from `Model.create`
-    * and `fromSerialized`; without it `authorizeAndBindRunnable` denies any
-    * row-level gate (fail closed).
+    * `buildGraftedMaterializer`). Passed at construction (`ModelState.gateRuntime`)
+    * by `Model.create` and `fromSerialized`; without it `authorizeAndBindRunnable`
+    * denies any row-level gate (fail closed).
     *
     * Held explicitly rather than read off `ModelMaterializer`'s `protected
     * runtime`: a Malloy rename of that field would silently turn every
     * row-level gate into a fleet-wide deny.
     */
-   private gateRuntime: HydrationRuntime | undefined;
+   private readonly gateRuntime: HydrationRuntime | undefined;
    /**
     * This model's {@link GateClassificationDeps}, built once (lazily, so
     * `this.givens` is settled) and held for the instance's life: a reload
@@ -655,6 +665,8 @@ export class Model {
       this.compilationError = state.compilationError;
       this.filterMap = state.filterMap ?? new Map();
       this.givens = state.givens;
+      this.policy = state.policy ?? ModelPolicy.standalone();
+      this.gateRuntime = state.gateRuntime;
       this.notebookCellDeclaredGivens = declaredGivensPerCell(
          this.runnableNotebookCells ?? [],
       );
@@ -749,15 +761,6 @@ export class Model {
    /** The parsed filter definitions for a source; empty when none. */
    public getFilters(sourceName: string): FilterDefinition[] {
       return this.filterMap.get(sourceName) ?? [];
-   }
-
-   /**
-    * Retain the runtime a row-level `#(access_filter)` gate grafts through — see
-    * {@link gateRuntime}. A setter rather than a constructor parameter because
-    * only the compiled-model path needs it.
-    */
-   private setGateRuntime(runtime: HydrationRuntime): void {
-      this.gateRuntime = runtime;
    }
 
    /**
@@ -3612,6 +3615,9 @@ export class Model {
     * Compile a single model in-process (test fixtures and ad-hoc callers).
     * Production package loads go through the worker pool and
     * {@link Model.fromSerialized} instead.
+    *
+    * `options.policy` defaults to {@link ModelPolicy.standalone}: a model
+    * compiled on its own belongs to no Package, so nothing curates it.
     */
    public static async create(
       packageName: string,
@@ -3622,8 +3628,10 @@ export class Model {
          buildManifest?: BuildManifest["entries"];
          /** Files read instead of the package's, by `file://` URL (see `createModelRuntime`). */
          overlay?: ReadonlyMap<string, string>;
+         policy?: ModelPolicy;
       },
    ): Promise<Model> {
+      const policy = options?.policy ?? ModelPolicy.standalone();
       // getModelRuntime might throw a ModelNotFoundError. It's the callers responsibility
       // to pass a valid model path or handle the error.
       const {
@@ -3689,10 +3697,11 @@ export class Model {
             runnableNotebookCells,
             filterMap,
             givens,
+            policy,
+            // Cast: `_loadModelFromModelDef` is internal and undeclared on the
+            // public `Runtime` type.
+            gateRuntime: runtime as HydrationRuntime,
          });
-         // Cast: `_loadModelFromModelDef` is internal and undeclared on the
-         // public `Runtime` type.
-         model.setGateRuntime(runtime as HydrationRuntime);
          model.compiledSourceText = compiledTextFor(modelURL);
          return model;
       } catch (thrown) {
@@ -3717,6 +3726,7 @@ export class Model {
             dataStyles,
             modelType,
             compilationError: computedError as Error,
+            policy,
          });
       }
    }
@@ -3733,7 +3743,9 @@ export class Model {
       _packagePath: string,
       malloyConfig: ModelConnectionInput,
       data: SerializedModel,
-      options?: {
+      options: {
+         /** The owning Package's view for this model, or an explicit standalone one. */
+         policy: ModelPolicy;
          buildManifest?: BuildManifest["entries"];
          // A package compile hydrates every model on every call, for a package
          // that already logged these warnings when it loaded.
@@ -3755,7 +3767,7 @@ export class Model {
          : undefined;
 
       // Non-fatal `#(authorize)` findings from the worker, which has no logger.
-      for (const warning of options?.skipAuthorizeWarningLog
+      for (const warning of options.skipAuthorizeWarningLog
          ? []
          : (data.authorizeWarnings ?? [])) {
          logger.warn(warning, { packageName, modelPath: data.modelPath });
@@ -3780,13 +3792,11 @@ export class Model {
             filterMap,
             givens,
             modelInfo,
+            policy: options.policy,
          });
       }
 
-      const runtime = makeHydrationRuntime(
-         malloyConfig,
-         options?.buildManifest,
-      );
+      const runtime = makeHydrationRuntime(malloyConfig, options.buildManifest);
       const modelMaterializer = runtime._loadModelFromModelDef(modelDef);
       const runnableNotebookCells =
          data.modelType === "notebook"
@@ -3807,13 +3817,14 @@ export class Model {
          filterMap,
          givens,
          modelInfo,
+         policy: options.policy,
+         // `malloyConfig` is deliberately not captured for serve shapes: that
+         // would put a storage destination in reach of the author's namespace
+         // (see Package.setServeDestinationConfig). The gate runtime must be
+         // the SAME one that hydrated `modelMaterializer`, so grafts share this
+         // model's given identities.
+         gateRuntime: runtime,
       });
-      // `malloyConfig` is deliberately not captured for serve shapes: that
-      // would put a storage destination in reach of the author's namespace
-      // (see Package.setServeDestinationConfig). The gate runtime must be the
-      // SAME one that hydrated `modelMaterializer`, so grafts share this
-      // model's given identities.
-      model.setGateRuntime(runtime);
       // Paired with `modelDef` above: the coordinates in that IR index this
       // text and no other revision of the file.
       model.compiledSourceText = data.modelSourceText;
@@ -3875,10 +3886,14 @@ export class Model {
       modelPath: string,
       modelType: ModelType,
       error: Error,
-      // The text that failed, when it is not the file on disk: a package
-      // compile's what-if replacement. Without it, a reader of this model's
-      // text judges the saved file instead of the edit.
-      sourceText?: string,
+      options: {
+         /** The owning Package's view for this model. */
+         policy: ModelPolicy;
+         // The text that failed, when it is not the file on disk: a package
+         // compile's what-if replacement. Without it, a reader of this model's
+         // text judges the saved file instead of the edit.
+         sourceText?: string;
+      },
    ): Model {
       const model = new Model({
          packageName,
@@ -3886,8 +3901,9 @@ export class Model {
          dataStyles: {} as DataStyles,
          modelType,
          compilationError: error,
+         policy: options.policy,
       });
-      model.compiledSourceText = sourceText;
+      model.compiledSourceText = options.sourceText;
       return model;
    }
 
@@ -3979,41 +3995,14 @@ export class Model {
       );
    }
 
-   /** Set by the owning Package; see {@link curateForDiscovery}. */
-   public setDiscoveryCuration(enabled: boolean): void {
-      this.discoveryCurationEnabled = enabled;
-   }
-
-   /**
-    * Set by the owning Package; see {@link freshnessResolver}.
-    */
-   public setFreshnessResolver(
-      resolver: () => BuildManifest["entries"] | undefined,
-   ): void {
-      this.freshnessResolver = resolver;
-   }
-
    /**
     * The freshness-filtered build manifest for this query, or undefined (no
     * override; serves live). Evaluated per call so a table that crosses its
     * window is gated on the very next query.
     */
    private resolveFreshBuildManifest(): BuildManifest | undefined {
-      const entries = this.freshnessResolver?.();
+      const entries = this.policy.freshBuildManifestEntries();
       return entries ? { entries, strict: false } : undefined;
-   }
-
-   /**
-    * Set by the owning Package (see Package.wireFreshnessResolvers). Supplies the
-    * `sourceEntityId`s of the rollups pre-aggregation synthesized, which
-    * {@link withoutPreaggregateEntries} strips from the manifest. A resolver
-    * rather than a value because the build plan it reads is computed AFTER the
-    * models are wired.
-    */
-   public setPreaggregateEntityIdResolver(
-      resolver: () => ReadonlySet<string>,
-   ): void {
-      this.preaggregateEntityIdResolver = resolver;
    }
 
    /**
@@ -4027,7 +4016,9 @@ export class Model {
       manifest: BuildManifest | undefined,
    ): BuildManifest | undefined {
       if (!manifest) return undefined;
-      const preaggregateIds = this.preaggregateEntityIdResolver?.();
+      // The `sourceEntityId`s of the rollups pre-aggregation synthesized
+      // (read per query: the build plan is computed after the models load).
+      const preaggregateIds = this.policy.preaggregateEntityIds();
       if (!preaggregateIds || preaggregateIds.size === 0) return manifest;
       const entries = Object.fromEntries(
          Object.entries(manifest.entries).filter(
@@ -4212,25 +4203,6 @@ export class Model {
       );
    }
 
-   /** Set by the owning Package; see {@link assertQueryBoundaryEarly}. */
-   public setQueryBoundary(policy: {
-      mode: "declared" | "all";
-      exploresDeclared: boolean;
-      isQueryEntryPoint: boolean;
-      packageCuratedSources?: ReadonlyMap<string, ReadonlySet<string>>;
-      packageCuratedQueries?: ReadonlyMap<string, ReadonlySet<string>>;
-      offSurface?: OffSurfaceContext;
-      layout?: ReportLayout;
-      derivationText?: string;
-   }): void {
-      this.queryBoundary = policy;
-      this.fileDerivationBases = policy.derivationText
-         ? buildDerivationBaseMap(
-              stripMalloyCommentsAndLiterals(policy.derivationText),
-           )
-         : undefined;
-   }
-
    /**
     * File-level half of the query boundary: refuse a file that is not an
     * entry point. Inert when there is no surface or under `"all"`. Notebooks
@@ -4250,13 +4222,6 @@ export class Model {
             "model",
          );
       }
-   }
-
-   /** Set by the owning Package; see {@link siblingModelDefResolver}. */
-   public setSiblingModelDefResolver(
-      resolver: SiblingModelDefResolver | undefined,
-   ): void {
-      this.siblingModelDefResolver = resolver;
    }
 
    /**

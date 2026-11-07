@@ -10,7 +10,7 @@ import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import * as fs from "fs";
 import * as os from "os";
 import * as path from "path";
-import { Model } from "../../src/service/model";
+import { Model, ModelPolicy } from "../../src/service/model";
 import { Package } from "../../src/service/package";
 import {
    artifactNoteLine,
@@ -558,14 +558,18 @@ describe("served notebooks (worker path)", () => {
             tempDir,
             "notebooks/nb.malloy",
             malloyConfig,
+            {
+               policy: ModelPolicy.fixed({
+                  queryBoundary: {
+                     mode: "all",
+                     exploresDeclared: false,
+                     isQueryEntryPoint: true,
+                     layout: "linear",
+                  },
+               }),
+            },
          );
          expect(model.getCompiledSourceText()).toBe(text);
-         model.setQueryBoundary({
-            mode: "all",
-            exploresDeclared: false,
-            isQueryEntryPoint: true,
-            layout: "linear",
-         });
          expect(await model.getNotebook()).toMatchObject({
             format: "malloy",
             notebookCells: [],

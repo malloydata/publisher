@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 import { describe, expect, it } from "bun:test";
-import { Model } from "../service/model";
+import { Model, ModelPolicy } from "../service/model";
 import { PACKAGE_LOAD_PROTOCOL_VERSION } from "./protocol";
 import {
    checkLoadPackageResult,
@@ -202,6 +202,7 @@ describe("Model.fromSerialized: decode check", () => {
          "/unused",
          {} as never,
          data as Parameters<typeof Model.fromSerialized>[3],
+         { policy: ModelPolicy.standalone() },
       );
 
    it("hydrates a well-formed model with no modelDef as before", () => {
