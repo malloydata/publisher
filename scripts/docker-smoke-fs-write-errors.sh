@@ -225,7 +225,7 @@ write_config() {
 mkdir -p "$work/src"
 for name in seed "$PKG"; do
    mkdir -p "$work/src/$name"
-   printf '{"name":"%s","description":"one-model DuckDB package"}' "$name" \
+   printf '{"name":"%s","version":"1.0.0","description":"one-model DuckDB package"}' "$name" \
       >"$work/src/$name/publisher.json"
    printf 'source: s is duckdb.sql("SELECT 1 AS x")\n' >"$work/src/$name/model.malloy"
 done
@@ -317,8 +317,9 @@ as_root -v "$DATA_VOLUME:/publisher/publisher_data" "$IMAGE" \
 start s2 -v "$DATA_VOLUME:/publisher/publisher_data" -v "$PACKAGES_MOUNT" \
    -v "$work/seed.json:/publisher/publisher.config.json:ro"
 wait_serving s2
-assert_names "S2 GET /environments/$ENV_NAME/packages/seed/models" 'EACCES|permission denied' \
-   "$(curl -s "http://localhost:${port}/api/v0/environments/${ENV_NAME}/packages/seed/models")"
+# The package is published at boot, into a folder of the environment's that
+# the server cannot make: it fails to load, and /status says why.
+assert_in_load_errors S2 seed 'EACCES|permission denied'
 
 echo "S6: a read-only root filesystem"
 start s6 --read-only --tmpfs /tmp

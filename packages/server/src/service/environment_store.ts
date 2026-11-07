@@ -672,14 +672,30 @@ export class EnvironmentStore {
          `.publish_${crypto.randomBytes(8).toString("hex")}`,
       );
       try {
-         const { mountErrors } = await this.loadEnvironmentIntoDisk(
-            environmentName,
-            packages,
-            stagingRoot,
-         );
+         let mountErrors: ReadonlyMap<string, string>;
+         try {
+            ({ mountErrors } = await this.loadEnvironmentIntoDisk(
+               environmentName,
+               packages,
+               stagingRoot,
+            ));
+         } catch (error) {
+            // Nothing could be staged (the environment's folder refused the
+            // staging folder, say): each package is a load error, as a
+            // location that does not mount is, and the environment serves.
+            const failed = new Map<string, string>();
+            this.recordMountFailure(
+               error,
+               stagingRoot,
+               packages.flatMap((p) => (p.name ? [p.name] : [])),
+               failed,
+            );
+            mountErrors = failed;
+         }
          for (const configured of packages) {
-            // loadEnvironmentIntoDisk refuses a package with no name or location.
-            const packageName = configured.name as string;
+            // A package with no name has nothing to record a load error under.
+            if (!configured.name) continue;
+            const packageName = configured.name;
             const configuredLocation = configured.location as string;
             const mountError = mountErrors.get(packageName);
             if (mountError !== undefined) {
