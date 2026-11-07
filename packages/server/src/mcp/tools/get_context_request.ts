@@ -37,7 +37,7 @@ const DEFAULT_RANKED_LIMIT = 20;
  * `retrieval.dimensionValues.enabled: false` it is accepted and answered with
  * a warning.
  */
-export const SEARCH_TARGET_TYPES = [
+const SEARCH_TARGET_TYPES = [
    "source",
    "dimension",
    "measure",

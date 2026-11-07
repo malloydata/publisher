@@ -37,7 +37,7 @@ import {
    type PackageIndex,
 } from "../tools/get_context_types";
 
-export type NodeKind = Entity["kind"];
+type NodeKind = Entity["kind"];
 
 /** One searchable thing in the catalog. */
 export interface CatalogNode {
@@ -130,9 +130,9 @@ export interface CatalogSource {
    fields: string[];
 }
 
-export type EdgeKind = "contains" | "joins" | "extends" | "depends" | "uses";
+type EdgeKind = "contains" | "joins" | "extends" | "depends" | "uses";
 
-export interface CatalogEdge {
+interface CatalogEdge {
    kind: EdgeKind;
    from: string;
    to: string;
@@ -214,14 +214,14 @@ export interface Catalog {
 }
 
 /** The part of a compiled model the catalog reads. */
-export interface CatalogModel {
+interface CatalogModel {
    modelPath: string;
    modelDef?: ModelDef;
    /** The model's SourceInfo list, for `#(index)` tags and view outputs. */
    sourceInfos: readonly unknown[];
 }
 
-export interface CatalogInput {
+interface CatalogInput {
    /** The entity index's direct entities: no joined copy assembly would rebuild. */
    entities: readonly Entity[];
    topology: JoinTopology;
@@ -682,7 +682,7 @@ function agentHiddenFiles(
  * never changes which rows a source's measures aggregate). Anything unread
  * or unclear answers false: two sources are kept apart when in doubt.
  */
-export function sameRows(
+function sameRows(
    child: CompiledSource | undefined,
    parent: CompiledSource | undefined,
    childOwnNotes: readonly string[],
@@ -763,7 +763,7 @@ function compiledFanout(
 }
 
 /** The catalog key of a source: its name and the file that defines it. */
-export function sourceKeyOf(name: string, definedIn: string): string {
+function sourceKeyOf(name: string, definedIn: string): string {
    return `${name}@${definedIn}`;
 }
 

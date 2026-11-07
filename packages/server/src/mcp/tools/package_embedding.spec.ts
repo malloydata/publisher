@@ -114,7 +114,7 @@ describe("getPackageEmbeddingStatus", () => {
          ),
       );
       // No build has started for this package instance, so the engine reports
-      // it as indexing; the counts are zero because no per-entity index is kept.
+      // it as indexing with nothing embedded yet.
       const status = await getPackageEmbeddingStatus(
          storeHolding("fresh"),
          "env",

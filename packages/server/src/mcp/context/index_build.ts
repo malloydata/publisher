@@ -69,10 +69,15 @@ import {
    type IndexValueFetcher,
    type ValueBuildReport,
 } from "./values_index";
-import { syncVectors, type Facet, type VectorRow } from "./vectors";
+import {
+   syncVectors,
+   type Facet,
+   type VectorProgress,
+   type VectorRow,
+} from "./vectors";
 
 /** What the build did, for the load log and the index-status endpoint. */
-export interface FcjBuildReport {
+interface FcjBuildReport {
    catalog: CatalogReport;
    summaries: { stored: number; sources: number };
    docParts: {
@@ -136,7 +141,7 @@ export interface FcjIndex {
 }
 
 /** The model-facing steps, resolved by the caller from the package and the operator's LLM. */
-export interface FcjLlm {
+interface FcjLlm {
    chat: ChatModel;
    concurrency: number;
    maxCallsPerSync: number;
@@ -151,7 +156,7 @@ export interface FcjLlm {
  * are absent. Stored values are data, so the build passes `storedValues` only
  * under the `full` egress preset; a doc's list is model text and always shown.
  */
-export function questionLineValues(
+function questionLineValues(
    index: ValueIndex,
    parts: ReadonlyMap<string, DocParts>,
    storedValues = true,
@@ -183,7 +188,7 @@ export function questionLineValues(
 }
 
 /** The text a node's `values` facet embeds, from the list its doc gives. */
-export function valuesFacetText(node: CatalogNode, values: readonly string[]) {
+function valuesFacetText(node: CatalogNode, values: readonly string[]) {
    return `${humanizeName(node.name) || node.name} values: ${values.join(", ")}`;
 }
 
@@ -214,6 +219,8 @@ export async function buildFcjIndex(args: {
     */
    previousValues?: { index: ValueIndex; report: ValueBuildReport };
    shouldStop?: () => boolean;
+   /** Progress of the entity vectors step (not the value vectors). */
+   onVectorProgress?: (progress: VectorProgress) => void;
 }): Promise<FcjIndex> {
    const started = Date.now();
    const { db, environmentName, packageName, settings } = args;
@@ -420,6 +427,9 @@ export async function buildFcjIndex(args: {
          packageName,
          rows,
          ...(args.shouldStop ? { shouldStop: args.shouldStop } : {}),
+         ...(args.onVectorProgress
+            ? { onProgress: args.onVectorProgress }
+            : {}),
       });
       vectors = out.vectors;
       vectorReport = {
@@ -524,7 +534,7 @@ export async function buildFcjIndex(args: {
 }
 
 /** Embed the value index's distinct values into `value_embeddings` and attach them. */
-export async function embedValues(args: {
+async function embedValues(args: {
    db: DuckDBConnection;
    provider: EmbeddingModel | null;
    environmentName: string;

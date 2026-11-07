@@ -43,7 +43,7 @@ const MAX_HELD_CHARS = 16_000_000;
 /** A description is never shortened below this many characters. */
 const TRIM_FLOOR_CHARS = 200;
 
-export interface FcjPage {
+interface FcjPage {
    cards: SourceCard[];
    /** Where the next page starts; absent on the last page. */
    nextOffset?: number;

@@ -29,7 +29,7 @@ import type { JudgeVerdict } from "./judge";
 import { parseRouteKey } from "./routes";
 
 /** Most date or time fields added per source. */
-export const DATE_RANGE_FIELDS_PER_SOURCE = 2;
+const DATE_RANGE_FIELDS_PER_SOURCE = 2;
 
 const MONTHS =
    "january|february|march|april|june|july|august|september|october|november|december";
@@ -65,7 +65,7 @@ const DATE_NAME = /(^|_)(date|month|week|quarter|year|day|time|period)$/i;
 const PLAIN_DATE_NAME = /(^|_)(date|month)$/i;
 
 /** Whether a node is a date or time field: a dimension of a date type, or one whose name reads as a date. */
-export function isDateOrTimeField(node: CatalogNode): boolean {
+function isDateOrTimeField(node: CatalogNode): boolean {
    return (
       node.kind === "dimension" &&
       (DATE_TYPES.has(node.dataType ?? "") || DATE_NAME.test(node.name))

@@ -775,3 +775,45 @@ describe("execute_query on a package with published versions", () => {
       },
    );
 });
+
+describe("execute_query cancellation", () => {
+   it("aborts the running query when the MCP client cancels the call", async () => {
+      let querySignal: AbortSignal | undefined;
+      // Settles only when its signal aborts, as a driver does.
+      const store = storeWhoseQueryThrows(undefined);
+      const getEnvironment = store.getEnvironment!;
+      store.getEnvironment = async (...a) => {
+         const environment = (await getEnvironment(...a)) as never as {
+            getPackage: () => Promise<{ getModel: () => object }>;
+         };
+         const pkg = await environment.getPackage();
+         return {
+            ...environment,
+            getPackage: async () => ({
+               ...pkg,
+               getModel: () => ({
+                  ...pkg.getModel(),
+                  getQueryResults: (...queryArgs: unknown[]) =>
+                     new Promise((_resolve, reject) => {
+                        querySignal = queryArgs[7] as AbortSignal;
+                        querySignal.addEventListener("abort", () =>
+                           reject(new Error("query cancelled")),
+                        );
+                     }),
+               }),
+            }),
+         } as never;
+      };
+      const handler = captureHandler(store) as unknown as (
+         params: Record<string, unknown>,
+         extra: { signal: AbortSignal },
+      ) => Promise<{ isError?: boolean }>;
+      const client = new AbortController();
+      const call = handler(args, { signal: client.signal });
+      while (!querySignal) await new Promise((r) => setTimeout(r, 1));
+      expect(querySignal.aborted).toBe(false);
+      client.abort();
+      expect(querySignal.aborted).toBe(true);
+      expect((await call).isError).toBe(true);
+   });
+});

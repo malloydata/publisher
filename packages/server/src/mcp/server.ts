@@ -19,9 +19,8 @@ import { registerSearchDatabaseSchemaTool } from "./tools/search_database_schema
 import { registerGetStatusTool } from "./tools/get_status_tool";
 import { BUNDLED_SKILLS } from "./skills/package_skills";
 import { SERVER_VERSION } from "../version";
-import { instrumentTools } from "./tool_telemetry";
 
-export const testServerInfo = {
+const testServerInfo = {
    name: "malloy-publisher-mcp-server",
    version: SERVER_VERSION,
    displayName: "Malloy Publisher MCP Server",
@@ -51,7 +50,6 @@ export function initializeMcpServer(
    const mcpServer = new McpServer(testServerInfo, {
       instructions: MCP_INSTRUCTIONS,
    });
-   instrumentTools(mcpServer);
 
    registerExecuteQueryTool(mcpServer, environmentStore);
    registerGetContextTool(mcpServer, environmentStore);
@@ -70,14 +68,18 @@ export function initializeMcpServer(
    // files. Note: MCP prompts are on-demand, so always-on "prevention" skills
    // become on-demand here; see docs/agent-skills/design-principles.md.
    for (const skill of BUNDLED_SKILLS) {
-      mcpServer.prompt(skill.name, skill.description, () => ({
-         messages: [
-            {
-               role: "user" as const,
-               content: { type: "text" as const, text: skill.body },
-            },
-         ],
-      }));
+      mcpServer.registerPrompt(
+         skill.name,
+         { description: skill.description },
+         () => ({
+            messages: [
+               {
+                  role: "user" as const,
+                  content: { type: "text" as const, text: skill.body },
+               },
+            ],
+         }),
+      );
    }
 
    return mcpServer;

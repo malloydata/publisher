@@ -36,7 +36,7 @@ export function unquote(s: string): string {
  * trim. The header is for the file; the agent reading the prompt should not
  * see it as the first line.
  */
-export function stripLicenseHeader(body: string): string {
+function stripLicenseHeader(body: string): string {
    return body
       .replace(/^\s*<!--[\s\S]*?SPDX-License-Identifier:[\s\S]*?-->/, "")
       .trim();
@@ -69,7 +69,7 @@ export function isCredible(dirName: string): boolean {
 const REFERENCE_DIR = "reference";
 
 /** Prompt name for one reference file: `<skill>/<file stem>`. */
-export function referenceName(skillName: string, file: string): string {
+function referenceName(skillName: string, file: string): string {
    return `${skillName}/${path.basename(file, ".md")}`;
 }
 

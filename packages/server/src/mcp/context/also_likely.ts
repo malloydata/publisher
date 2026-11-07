@@ -258,7 +258,7 @@ export function sentencesOf(text: string): string[] {
 }
 
 /** Whether a sentence says something is missing or was not found. */
-export function isAbsenceSentence(sentence: string): boolean {
+function isAbsenceSentence(sentence: string): boolean {
    return /\b(not (available|found|present|included|provided|listed|exist\w*|contain\w*|have|has|include\w*)|no (\w+ ){0,3}(field|fields|data|column|columns|dimension|dimensions|measure|measures|name|names|domain)\b|does not|do not|doesn't|don't|cannot|can't|unavailable|missing|absent|lacks?|only an? (id|identifier))/i.test(
       sentence,
    );

@@ -25,13 +25,13 @@ export const BUNDLED_SKILLS = (skillsBundle as { skills: SkillEntry[] }).skills;
 export const PACKAGE_SKILLS_DIR = "skills";
 
 /** Where a skill came from, once the bundled and package sets are resolved. */
-export type SkillOrigin = "bundled" | "package";
+type SkillOrigin = "bundled" | "package";
 
 export interface ResolvedSkill extends SkillEntry {
    origin: SkillOrigin;
 }
 
-export interface PackageSkills {
+interface PackageSkills {
    skills: SkillEntry[];
    /**
     * Every file read, package-relative path and raw text, so the caller can
@@ -63,7 +63,7 @@ export const PACKAGE_SKILL_FILE_MAX_BYTES = 256 * 1024;
  * skill's real `assets/` directory, the file itself may not be a link, and its
  * bytes must be UTF-8 text without a NUL.
  */
-export function readFileInside(
+function readFileInside(
    realRoot: string,
    file: string,
    maxBytes: number,
@@ -276,11 +276,11 @@ export const PACKAGE_AGENT_TEXT_MAX_BYTES = 16 * 1024;
 export const PACKAGE_AGENT_SKILLS_MAX_BYTES = 256 * 1024;
 
 /** An asset of this size or more is refused; the draft store refuses a 1 MiB file. */
-export const PACKAGE_ASSET_FILE_MAX_BYTES = 1024 * 1024;
-export const PACKAGE_AGENT_ASSETS_MAX_BYTES = 4 * 1024 * 1024;
-export const PACKAGE_AGENT_ASSETS_MAX_FILES = 200;
+const PACKAGE_ASSET_FILE_MAX_BYTES = 1024 * 1024;
+const PACKAGE_AGENT_ASSETS_MAX_BYTES = 4 * 1024 * 1024;
+const PACKAGE_AGENT_ASSETS_MAX_FILES = 200;
 /** Counted once per package path, however many agents share the skill. */
-export const PACKAGE_ASSETS_MAX_BYTES = 8 * 1024 * 1024;
+const PACKAGE_ASSETS_MAX_BYTES = 8 * 1024 * 1024;
 const ASSET_PATH_MAX_CHARS = 200;
 const ASSET_MAX_DEPTH = 8;
 const ASSET_MAX_ENTRIES = 1000;
@@ -289,7 +289,7 @@ const ASSET_WARNINGS_MAX = 20;
 const ASSET_SEGMENT = /^[A-Za-z0-9_][A-Za-z0-9._-]*$/;
 
 /** One listed asset: its path is `<skill>/assets/...`, relative to the agent's skill roots. */
-export interface PackageAgentAsset {
+interface PackageAgentAsset {
    relative_filepath: string;
    bytes: number;
    sha256: string;
@@ -310,15 +310,13 @@ type AssetRead =
    | { text: string; sha256: string }
    | { problem: string; link?: true };
 
-export interface PackageAgentSchedule {
+interface PackageAgentSchedule {
    cron: string;
    task: string;
    taskContent: string;
 }
 
-export type PackageAgentBudget = Partial<
-   Record<(typeof BUDGET_KEYS)[number], number>
->;
+type PackageAgentBudget = Partial<Record<(typeof BUDGET_KEYS)[number], number>>;
 
 /** One agent as the manifest declares it, resolved to what a caller adopts. */
 export interface PackageAgent {
@@ -340,7 +338,7 @@ export interface PackageAgent {
    definitionSha: string;
 }
 
-export interface PackageAgents {
+interface PackageAgents {
    agents: Map<string, PackageAgent>;
    /** Package-relative paths of every file a served agent read, for the content hash. */
    paths: string[];

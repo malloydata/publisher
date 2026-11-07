@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+import { registerTool } from "../register_tool";
 import { EnvironmentStore } from "../../service/environment_store";
 import { InvalidArgumentError } from "../../errors";
 import { buildMalloyUri } from "../handler_utils";
@@ -243,6 +244,7 @@ async function runContextQuery(
    traceMode: TraceMode = "none",
    withPackageInfo = false,
    identity?: AccessIdentity,
+   clientSignal?: AbortSignal,
 ): Promise<ReturnType<typeof jsonResource>> {
    const { environmentName, packageName, sourceName } = resolved;
    logger.debug("[MCP Tool getContext] Retrieving context", {
@@ -355,6 +357,7 @@ async function runContextQuery(
       warnings: ctx.warnings,
       traceMode,
       ...(identity ? { identity } : {}),
+      ...(clientSignal ? { clientSignal } : {}),
    });
 }
 
@@ -364,7 +367,7 @@ async function runContextQuery(
  * header and not a tool argument so an agent never sees it and a tuning run
  * can set it from the client.
  */
-export const TRACE_HEADER = "x-publisher-retrieval-trace";
+const TRACE_HEADER = "x-publisher-retrieval-trace";
 
 /**
  * The trace the request asked for. `summary` is the block of stage rows;
@@ -380,7 +383,8 @@ export function registerGetContextTool(
    mcpServer: McpServer,
    environmentStore: EnvironmentStore,
 ): void {
-   mcpServer.tool(
+   registerTool(
+      mcpServer,
       "get_context",
       GET_CONTEXT_DESCRIPTION,
       convergedContextShape,
@@ -416,6 +420,7 @@ export function registerGetContextTool(
             traceModeOf(extra),
             level.withPackageInfo === true,
             accessIdentityOf(extra?.requestInfo?.headers),
+            extra?.signal,
          );
       },
    );
