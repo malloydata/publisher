@@ -186,6 +186,149 @@ const LEGACY_MALLOYNB_IMPORT = {
       "legacy/malloynb is the deprecated .malloynb renderer: only legacy/ may import it. A .malloy report is tiles, drawn by DashboardView.",
 };
 
+// ---------------------------------------------------------------------------
+// Import direction (docs: the architecture refactor's dependency rule).
+//
+//   R1  service/** (domain) and retrieval/** never import mcp/**,
+//       controller/** or routes/** -- not even for a type.
+//   R2  mcp/** never imports a VALUE from controller/**: a tool receives the
+//       use-case instance it calls, it does not construct one. `import type`
+//       (or an import whose every specifier is `type`) is allowed.
+//   R3  service/governance/** never imports service/model.ts.
+//
+// A local rule rather than `no-restricted-imports`: the core rule matches the
+// specifier text, so `../mcp/x` and `../../mcp/x` need a pattern per directory
+// depth, it cannot except one file pair without exempting the whole file, and
+// it does not see `import()` or `import("x").T`. eslint-plugin-import (and its
+// `no-restricted-paths`) is not a dependency. This rule resolves each relative
+// specifier against the importing file, so it judges the module, not the text.
+// Specs and test helpers are exempt (see the block that enables it, below).
+//
+// IMPORT_DIRECTION_ALLOWLIST is today's violations, one entry per file pair
+// ("<importer, src-relative, with extension> -> <imported module, src-relative,
+// no extension>"), each tagged with the slice of the architecture plan that
+// removes it. It must shrink to empty. src/import_direction.spec.ts fails when
+// an entry is stale (the import is gone: delete the entry) and when the tree
+// has a violation the list does not name (fix the import; do not add it).
+// ---------------------------------------------------------------------------
+const SERVER_SRC = path.join(__dirname, "src");
+const IMPORT_DIRECTION_RULES = [
+   {
+      id: "R1",
+      from: (f) => /^(service|retrieval)\//.test(f),
+      to: (m) => /^(mcp|controller|routes)(\/|$)/.test(m),
+      allowTypeImports: false,
+      message:
+         "the domain (service/**, retrieval/**) must not depend on an adapter (mcp/**, controller/**, routes/**)",
+   },
+   {
+      id: "R2",
+      from: (f) => /^mcp\//.test(f),
+      to: (m) => /^controller(\/|$)/.test(m),
+      allowTypeImports: true,
+      message:
+         "an MCP tool must not construct a controller: take the use-case instance from the composition root (initializeMcpServer) and import only its type",
+   },
+   {
+      id: "R3",
+      from: (f) => /^service\/governance\//.test(f),
+      to: (m) => m === "service/model",
+      allowTypeImports: false,
+      message: "governance/** must not depend on service/model.ts",
+   },
+];
+export const IMPORT_DIRECTION_ALLOWLIST = {
+   // R1. U2 adds packageDeleted/environmentDeleted to EnvironmentHooks and
+   // wires the embedding deletes from main_server.ts instead.
+   "service/environment_store.ts -> mcp/tools/embedding_index": "U2",
+   // R1. U2 moves mcp/skills/{package_skills,build_skills_bundle} to
+   // service/skills/.
+   "service/package.ts -> mcp/skills/build_skills_bundle": "U2",
+   "service/package.ts -> mcp/skills/package_skills": "U2",
+   // R2. U3 passes the controller instances into initializeMcpServer.
+   "mcp/tools/compile_tool.ts -> controller/compile.controller": "U3",
+   "mcp/tools/reload_package_tool.ts -> controller/package.controller": "U3",
+   "mcp/tools/search_database_schema_tool.ts -> controller/connection.controller":
+      "U3",
+};
+
+const toPosix = (p) => p.split(path.sep).join("/");
+const importDirectionRule = {
+   meta: {
+      type: "problem",
+      docs: { description: "Enforce the server's layer import direction" },
+      schema: [
+         {
+            type: "object",
+            properties: { allow: { type: "object" } },
+            additionalProperties: false,
+         },
+      ],
+   },
+   create(context) {
+      const allow = context.options[0]?.allow ?? {};
+      const filename = context.filename ?? context.getFilename();
+      const from = toPosix(path.relative(SERVER_SRC, filename));
+      if (from.startsWith("..") || path.isAbsolute(from)) return {};
+      const rules = IMPORT_DIRECTION_RULES.filter((r) => r.from(from));
+      if (rules.length === 0) return {};
+      const check = (node, specifier, typeOnly) => {
+         if (typeof specifier !== "string" || !specifier.startsWith("."))
+            return;
+         const target = path.posix
+            .normalize(path.posix.join(path.posix.dirname(from), specifier))
+            .replace(/\.(ts|js|mjs|cjs)$/, "")
+            .replace(/\/index$/, "");
+         for (const r of rules) {
+            if (!r.to(target)) continue;
+            if (typeOnly && r.allowTypeImports) continue;
+            const key = `${from} -> ${target}`;
+            if (Object.hasOwn(allow, key)) continue;
+            context.report({
+               node,
+               message: `Import direction ${r.id}: ${r.message}. (${key})`,
+            });
+         }
+      };
+      const allTypeSpecifiers = (node, kindKey) =>
+         node[kindKey] === "type" ||
+         (node.specifiers.length > 0 &&
+            node.specifiers.every((s) => s[kindKey] === "type"));
+      return {
+         ImportDeclaration(node) {
+            check(
+               node,
+               node.source.value,
+               allTypeSpecifiers(node, "importKind"),
+            );
+         },
+         ExportNamedDeclaration(node) {
+            if (node.source)
+               check(
+                  node,
+                  node.source.value,
+                  allTypeSpecifiers(node, "exportKind"),
+               );
+         },
+         ExportAllDeclaration(node) {
+            check(node, node.source.value, node.exportKind === "type");
+         },
+         ImportExpression(node) {
+            if (node.source.type === "Literal")
+               check(node, node.source.value, false);
+         },
+         TSImportType(node) {
+            const arg = node.argument;
+            const lit = arg?.type === "TSLiteralType" ? arg.literal : arg;
+            if (lit?.type === "Literal") check(node, lit.value, true);
+         },
+      };
+   },
+};
+const publisherPlugin = {
+   rules: { "import-direction": importDirectionRule },
+};
+
 export default [
    {
       ignores: [
@@ -327,6 +470,23 @@ export default [
                   ...UNESCAPED_MALLOY_IMPORTS_BUT_STYLESHEET.patterns,
                ],
             },
+         ],
+      },
+   },
+   {
+      // The layer import direction (see IMPORT_DIRECTION_RULES). Specs and
+      // test helpers wire layers together on purpose and are exempt.
+      files: ["src/**/*.ts"],
+      ignores: [
+         "src/**/*.spec.ts",
+         "src/test_helpers/**",
+         "src/package_load/test_fixtures/**",
+      ],
+      plugins: { publisher: publisherPlugin },
+      rules: {
+         "publisher/import-direction": [
+            "error",
+            { allow: IMPORT_DIRECTION_ALLOWLIST },
          ],
       },
    },
