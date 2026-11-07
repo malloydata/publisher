@@ -36,6 +36,7 @@ import {
 import type { VersionService } from "../service/versions/version_service";
 import { versionManifestLocation } from "./manifest_location";
 import { changedFields } from "./versioned_patch";
+import { loadedPackage } from "./loaded_package";
 
 type ApiPackage = components["schemas"]["Package"];
 type ApiModelEntities = components["schemas"]["ModelEntities"];
@@ -225,13 +226,17 @@ export class PackageController {
    }
 
    /** The loaded package `versionId` names, for a sub-resource read. */
-   private async loadedPackage(
+   private loadedPackage(
       environmentName: string,
       packageName: string,
       versionId?: unknown,
    ) {
-      const environment = await this.environment(environmentName);
-      return environment.getPackage(packageName, false, { versionId });
+      return loadedPackage(
+         this.environmentStore,
+         environmentName,
+         packageName,
+         versionId,
+      );
    }
 
    /**

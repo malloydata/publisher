@@ -56,7 +56,11 @@ describe("ReportController read routes", () => {
          "env",
          false,
       ]);
-      expect(environment.getPackage.firstCall.args).toEqual(["pkg", false]);
+      expect(environment.getPackage.firstCall.args).toEqual([
+         "pkg",
+         false,
+         { versionId: undefined },
+      ]);
    });
 
    it("serves one report by its path", async () => {

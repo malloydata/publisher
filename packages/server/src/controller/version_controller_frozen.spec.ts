@@ -6,7 +6,8 @@ import express from "express";
 import request from "supertest";
 import type { EnvironmentStore } from "../service/environment_store";
 import type { Version } from "../storage/DatabaseInterface";
-import { registerVersionRoutes, VersionController } from "./version.controller";
+import { registerVersionRoutes } from "../routes/versions";
+import { VersionController } from "./version.controller";
 
 // A frozen config (`frozenConfig: true` in publisher.config.json) refuses
 // every write to a package's version lifecycle with 403, before the version

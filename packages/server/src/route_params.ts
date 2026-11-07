@@ -6,19 +6,16 @@
  * import-free), shared so the modern and legacy route sets cannot drift.
  */
 
-import type { Request, Response } from "express";
-import {
-   BadRequestError,
-   internalErrorToHttpError,
-   PackageVersionError,
-} from "./errors";
+import type { Request } from "express";
+import { BadRequestError, PackageVersionError } from "./errors";
 import { invalidBooleanMessage, parseBooleanParam } from "./query_param_utils";
 import { LATEST_VERSION_ALIAS } from "./service/versions/version_service";
 
 /**
  * Read a boolean query param, keeping absent distinct from `false`, and throw
- * a {@link BadRequestError} for an unusable value, for a route that records
- * its refusals before answering them.
+ * a {@link BadRequestError} for an unusable value. Only for params that need
+ * the distinction, such as `bypass_filters`, whose Deprecation header fires on
+ * `!== undefined`; otherwise use {@link booleanParam}.
  */
 export function optionalBooleanParam(
    req: Pick<Request, "query" | "path" | "method">,
@@ -34,38 +31,12 @@ export function optionalBooleanParam(
    return raw === undefined ? undefined : parsed.value;
 }
 
-/**
- * Read a boolean query param, keeping absent distinct from `false`, and answer
- * 400 for an unusable value. Only for params that need the distinction, such
- * as `bypass_filters`, whose Deprecation header fires on `!== undefined`;
- * otherwise use {@link booleanParamOr400}.
- */
-export function optionalBooleanParamOr400(
+/** Read a boolean query param (absent is `false`); throw a 400 for an unusable value. */
+export function booleanParam(
    req: Pick<Request, "query" | "path" | "method">,
-   res: Response,
    name: string,
-): { ok: true; value: boolean | undefined } | { ok: false } {
-   try {
-      return { ok: true, value: optionalBooleanParam(req, name) };
-   } catch (error) {
-      const { json, status } = internalErrorToHttpError(error as Error);
-      res.status(status).json(json);
-      return { ok: false };
-   }
-}
-
-/**
- * Read a boolean query param (absent is `false`). Returns `undefined` only
- * after writing a 400, so the caller just returns:
- * `const v = booleanParamOr400(req, res, "reload"); if (v === undefined) return;`.
- */
-export function booleanParamOr400(
-   req: Pick<Request, "query" | "path" | "method">,
-   res: Response,
-   name: string,
-): boolean | undefined {
-   const outcome = optionalBooleanParamOr400(req, res, name);
-   return outcome.ok ? (outcome.value ?? false) : undefined;
+): boolean {
+   return optionalBooleanParam(req, name) ?? false;
 }
 
 /**
@@ -73,17 +44,15 @@ export function booleanParamOr400(
  * single-resource route that honors it. Ignoring it would answer 200 with the
  * list, which reads as a reload that worked.
  */
-export function setCollectionReloadError(
-   res: Response,
+export function assertNoCollectionReload(
+   req: Pick<Request, "query">,
    perResourceRoute: string,
 ): void {
-   const { json, status } = internalErrorToHttpError(
-      new BadRequestError(
-         `Reload recompiles one named resource, and this endpoint lists them. ` +
-            `Use GET ${perResourceRoute}?reload=true instead.`,
-      ),
+   if (req.query.reload === undefined) return;
+   throw new BadRequestError(
+      `Reload recompiles one named resource, and this endpoint lists them. ` +
+         `Use GET ${perResourceRoute}?reload=true instead.`,
    );
-   res.status(status).json(json);
 }
 
 /**
