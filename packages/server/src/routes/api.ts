@@ -11,23 +11,9 @@
 import type { GivenValue } from "@malloydata/malloy";
 import type express from "express";
 import { readBypassAuthorize } from "../authorize_bypass_header";
+import type { AppServices } from "../app_services";
 import { accessIdentityOf } from "../service/access_record";
-import type { CompileController } from "../controller/compile.controller";
-import type { ConnectionController } from "../controller/connection.controller";
-import type { DatabaseController } from "../controller/database.controller";
-import type { MaterializationController } from "../controller/materialization.controller";
-import type { ModelController } from "../controller/model.controller";
-import {
-   setPackagePatchDeprecationHeaders,
-   type PackageController,
-} from "../controller/package.controller";
-import type { QueryController } from "../controller/query.controller";
-import type { ReportController } from "../controller/report.controller";
-import type { SkillController } from "../controller/skill.controller";
-import type { StorageDestinationController } from "../controller/storage_destination.controller";
-import type { ThemeController } from "../controller/theme.controller";
-import type { VersionController } from "../controller/version.controller";
-import type { WatchModeController } from "../controller/watch-mode.controller";
+import { setPackagePatchDeprecationHeaders } from "../controller/package.controller";
 import { BadRequestError, ServiceUnavailableError } from "../errors";
 import { setFilterDeprecationHeaders } from "../filter_deprecation";
 import { logger, redactSensitive } from "../logger";
@@ -46,8 +32,6 @@ import {
    assertNoCollectionReload,
 } from "../route_params";
 import { processStorageDestinationsOrThrow } from "../service/connection_config";
-import type { EnvironmentStore } from "../service/environment_store";
-import type { ThemeStore } from "../service/theme_store";
 import { registerDeprecatedRoutes } from "./deprecated";
 import {
    apiRoute,
@@ -62,24 +46,6 @@ import { registerStorageDestinationRoutes } from "./storage_destinations";
 import { reportWriteRoute } from "./report_write";
 import { registerVersionRoutes } from "./versions";
 
-export interface ApiControllers {
-   environmentStore: EnvironmentStore;
-   themeStore: ThemeStore;
-   themeController: ThemeController;
-   watchModeController: WatchModeController;
-   connectionController: ConnectionController;
-   packageController: PackageController;
-   modelController: ModelController;
-   skillController: SkillController;
-   reportController: ReportController;
-   databaseController: DatabaseController;
-   queryController: QueryController;
-   compileController: CompileController;
-   materializationController: MaterializationController;
-   storageDestinationController: StorageDestinationController;
-   versionController: VersionController;
-}
-
 // Caps long-lived SSE streams so they cannot exhaust sockets or memory.
 // Generous: legitimate use is one stream per open dashboard tab.
 const MAX_SSE_CONNECTIONS = 1000;
@@ -87,7 +53,7 @@ const MAX_SSE_CONNECTIONS = 1000;
 export function registerApiRoutes(
    app: express.Express,
    apiPrefix: string,
-   c: ApiControllers,
+   c: AppServices,
 ): void {
    const env = `${apiPrefix}/environments/:environmentName`;
    const pkg = `${env}/packages/:packageName`;
@@ -110,7 +76,7 @@ export function registerApiRoutes(
 function registerStatusAndThemeRoutes(
    app: express.Express,
    apiPrefix: string,
-   { environmentStore, themeStore, themeController }: ApiControllers,
+   { environmentStore, themeStore, themeController }: AppServices,
 ): void {
    app.get(
       `${apiPrefix}/status`,
@@ -160,7 +126,7 @@ function registerWatchModeRoutes(
    app: express.Express,
    apiPrefix: string,
    pkg: string,
-   { environmentStore, watchModeController }: ApiControllers,
+   { environmentStore, watchModeController }: AppServices,
 ): void {
    // Deprecated here: the admin API serves watch mode, an operator's control.
    // These keep their `{ error }` failure body and empty success body.
@@ -252,7 +218,7 @@ function registerEnvironmentRoutes(
    app: express.Express,
    apiPrefix: string,
    env: string,
-   { environmentStore }: ApiControllers,
+   { environmentStore }: AppServices,
 ): void {
    app.get(
       `${apiPrefix}/environments`,
@@ -316,7 +282,7 @@ function registerConnectionRoutes(
    apiPrefix: string,
    env: string,
    pkg: string,
-   { connectionController }: ApiControllers,
+   { connectionController }: AppServices,
 ): void {
    const conn = `${env}/connections/:connectionName`;
    const pkgConn = `${pkg}/connections/:connectionName`;
@@ -512,7 +478,7 @@ function registerPackageRoutes(
    apiPrefix: string,
    env: string,
    pkg: string,
-   c: ApiControllers,
+   c: AppServices,
 ): void {
    const {
       packageController,
@@ -786,7 +752,7 @@ function registerPackageRoutes(
 function registerQueryRoutes(
    app: express.Express,
    pkg: string,
-   { queryController, databaseController, compileController }: ApiControllers,
+   { queryController, databaseController, compileController }: AppServices,
 ): void {
    const recordRefusal = (req: express.Request, error: Error) =>
       queryController.recordRefusal(
@@ -908,7 +874,7 @@ function registerQueryRoutes(
 function registerMaterializationRoutes(
    app: express.Express,
    pkg: string,
-   { materializationController }: ApiControllers,
+   { materializationController }: AppServices,
 ): void {
    // Package-scoped: a materialization is a run of one package's persist
    // sources and cannot exist without a package.

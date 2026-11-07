@@ -5,8 +5,7 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod/v3";
 import type { GivenValue } from "@malloydata/malloy";
 import { logger } from "../../logger";
-import { EnvironmentStore } from "../../service/environment_store";
-import { CompileController } from "../../controller/compile.controller";
+import type { CompileController } from "../../controller/compile.controller";
 import { buildMalloyUri } from "../handler_utils";
 import { registerGuardedTool } from "../register_tool";
 import {
@@ -108,10 +107,8 @@ export function formatDiagnosticsText(
  */
 export function registerCompileTool(
    mcpServer: McpServer,
-   environmentStore: EnvironmentStore,
+   compileController: CompileController,
 ): void {
-   const compileController = new CompileController(environmentStore);
-
    registerGuardedTool(mcpServer, {
       name: "compile_model",
       description: COMPILE_DESCRIPTION,

@@ -11,12 +11,12 @@
 
 import type express from "express";
 import { queryConcurrencyMiddleware } from "../query_concurrency";
-import type { ApiControllers } from "../routes/api";
+import type { AppServices } from "../app_services";
 import { createMainApp } from "../routes/main_app";
 
 export { API_PREFIX } from "../routes/main_app";
 
-type Stubs = { [K in keyof ApiControllers]?: Partial<ApiControllers[K]> };
+type Stubs = { [K in keyof AppServices]?: Partial<AppServices[K]> };
 
 /** A controller whose every method, when called, names what the test forgot. */
 function unstubbed(name: string): object {
@@ -33,8 +33,8 @@ function unstubbed(name: string): object {
    );
 }
 
-function controllers(stubs: Stubs): ApiControllers {
-   const names: (keyof ApiControllers)[] = [
+function controllers(stubs: Stubs): AppServices {
+   const names: (keyof AppServices)[] = [
       "environmentStore",
       "themeStore",
       "themeController",
@@ -53,7 +53,7 @@ function controllers(stubs: Stubs): ApiControllers {
    ];
    return Object.fromEntries(
       names.map((name) => [name, stubs[name] ?? unstubbed(name)]),
-   ) as unknown as ApiControllers;
+   ) as unknown as AppServices;
 }
 
 /** The main app as main_server.ts builds it, over the controllers given. */

@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
-import { EnvironmentStore } from "../service/environment_store";
+import type { McpServices } from "../app_services";
 
 import { registerCompileTool } from "./tools/compile_tool";
 import { registerDocsSearchTool } from "./tools/docs_search_tool";
@@ -44,9 +44,17 @@ Task-specific guidance is served two ways. As prompts you can fetch by name: mal
 
 Results and any charts render in the Publisher web UI on the REST port (4000 by default).`;
 
-export function initializeMcpServer(
-   environmentStore: EnvironmentStore,
-): McpServer {
+/**
+ * Builds one MCP server over the services the composition root built. The
+ * tools call those shared instances; none constructs its own controller.
+ */
+export function initializeMcpServer(services: McpServices): McpServer {
+   const {
+      environmentStore,
+      compileController,
+      packageController,
+      connectionController,
+   } = services;
    const mcpServer = new McpServer(testServerInfo, {
       instructions: MCP_INSTRUCTIONS,
    });
@@ -55,9 +63,13 @@ export function initializeMcpServer(
    registerGetContextTool(mcpServer, environmentStore);
    registerListPackagesTool(mcpServer, environmentStore);
    registerDocsSearchTool(mcpServer, environmentStore);
-   registerCompileTool(mcpServer, environmentStore);
-   registerReloadPackageTool(mcpServer, environmentStore);
-   registerSearchDatabaseSchemaTool(mcpServer, environmentStore);
+   registerCompileTool(mcpServer, compileController);
+   registerReloadPackageTool(mcpServer, packageController);
+   registerSearchDatabaseSchemaTool(
+      mcpServer,
+      environmentStore,
+      connectionController,
+   );
    registerGetStatusTool(mcpServer, environmentStore);
    registerGetSkillTool(mcpServer, environmentStore, BUNDLED_SKILLS);
    registerGetAgentTool(mcpServer, environmentStore);

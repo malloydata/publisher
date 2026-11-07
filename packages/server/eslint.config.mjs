@@ -245,11 +245,6 @@ export const IMPORT_DIRECTION_ALLOWLIST = {
    // service/skills/.
    "service/package.ts -> mcp/skills/build_skills_bundle": "U2",
    "service/package.ts -> mcp/skills/package_skills": "U2",
-   // R2. U3 passes the controller instances into initializeMcpServer.
-   "mcp/tools/compile_tool.ts -> controller/compile.controller": "U3",
-   "mcp/tools/reload_package_tool.ts -> controller/package.controller": "U3",
-   "mcp/tools/search_database_schema_tool.ts -> controller/connection.controller":
-      "U3",
 };
 
 const toPosix = (p) => p.split(path.sep).join("/");
