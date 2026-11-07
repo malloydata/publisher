@@ -35,9 +35,9 @@ import { PROVIDER_FAILURE_COOLDOWN_MS } from "../shared";
 import { embeddingSyncQueue } from "./embedding_sync_queue";
 import { SyncRequestBudget } from "../llm/llm_calls";
 import { getPackageIndex } from "../model/package_entities";
-import { resolveSourceSummarySettings } from "./source_summary_settings";
 import {
    currentSummaryHashes,
+   resolveSourceSummarySettings,
    loadSourceSummaries,
    resolveSourceSummaries,
 } from "./source_summaries";

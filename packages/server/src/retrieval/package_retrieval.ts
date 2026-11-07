@@ -82,7 +82,7 @@ export interface PackagePrompt {
    hash: string;
 }
 
-export interface SourceSummarySettings {
+export interface SourceSummaryConfig {
    enabled: StageEnabled;
 }
 
@@ -339,7 +339,7 @@ export interface PackageRetrievalSettings {
     * search index build writes each source's summary, so it runs only on a
     * server that has an LLM.
     */
-   sourceSummary?: SourceSummarySettings;
+   sourceSummary?: SourceSummaryConfig;
    prompts: { [K in PromptKey]?: PackagePrompt };
 }
 
@@ -348,9 +348,9 @@ export const DEFAULT_PACKAGE_RETRIEVAL: PackageRetrievalSettings = {
 };
 
 /** The source-summary settings in force: the package's, or the defaults. */
-export function sourceSummarySettingsOf(
+export function sourceSummaryConfigOf(
    retrieval: PackageRetrievalSettings,
-): SourceSummarySettings {
+): SourceSummaryConfig {
    return retrieval.sourceSummary ?? { enabled: "auto" };
 }
 
@@ -434,7 +434,7 @@ function parseEnabled(value: unknown, key: string): StageEnabled {
    );
 }
 
-function parseSourceSummary(raw: unknown): SourceSummarySettings {
+function parseSourceSummary(raw: unknown): SourceSummaryConfig {
    const obj = objectBlock(
       raw,
       "retrieval.sourceSummary",
@@ -600,7 +600,7 @@ function parseFcj(raw: unknown): FcjSettings {
  */
 export function parsePackageRetrieval(raw: unknown): {
    fcj?: FcjSettings;
-   sourceSummary?: SourceSummarySettings;
+   sourceSummary?: SourceSummaryConfig;
    promptPaths: { [K in PromptKey]?: string };
 } {
    if (raw === undefined || raw === null) {

@@ -47,8 +47,8 @@ import {
    SourceSummaryStageError,
    loadSourceSummaries,
    resolveSourceSummaries,
+   resolveSourceSummarySettings,
 } from "./source_summaries";
-import { resolveSourceSummarySettings } from "./source_summary_settings";
 
 let tempDir: string;
 let db: DuckDBConnection;
