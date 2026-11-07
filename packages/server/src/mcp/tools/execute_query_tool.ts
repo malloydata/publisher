@@ -242,6 +242,8 @@ export function registerExecuteQueryTool(
                            includeHiddenFilesAndSources,
                         ),
                      getQueryTimeoutMs(),
+                     // A cancelled call stops the query at the driver.
+                     extra?.signal,
                   );
                   recordDeprecatedFilterUsage({ filterParams });
 
