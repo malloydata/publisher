@@ -40,7 +40,7 @@ export function optionalBooleanParam(
  * as `bypass_filters`, whose Deprecation header fires on `!== undefined`;
  * otherwise use {@link booleanParamOr400}.
  */
-export function optionalBooleanParamOr400(
+function optionalBooleanParamOr400(
    req: Pick<Request, "query" | "path" | "method">,
    res: Response,
    name: string,

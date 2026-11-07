@@ -54,15 +54,6 @@ export function logRefusal(
 }
 
 /**
- * {@link apiRoute} for a read route. Its handler reads `versionId` itself
- * (omitted, empty or `latest` means the package's `latest`), so a version a
- * request names is never ignored.
- */
-export function jsonRoute(handler: RouteHandler): express.RequestHandler {
-   return apiRoute(handler);
-}
-
-/**
  * Answer a route's thrown error with its mapped status, and log it once: a 4xx
  * through `refused` (the caller's, so at `warn`), a 5xx at `error` — by the
  * mapping when it logs that class itself, here otherwise (a 503 or 504, say).

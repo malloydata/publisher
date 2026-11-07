@@ -2,8 +2,8 @@
 // SPDX-License-Identifier: MIT
 
 /**
- * The `/api/v0` route table. Every JSON route goes through {@link apiRoute} or
- * {@link jsonRoute}, which map a thrown error to its status and log it once:
+ * The `/api/v0` route table. Every JSON route goes through {@link apiRoute},
+ * which maps a thrown error to its status and logs it once:
  * a 4xx at `warn`, a 5xx at `error`. Registration order matters where paths
  * overlap (the `models/*?` routes), so keep it.
  */
@@ -54,7 +54,6 @@ import type { ThemeStore } from "../service/theme_store";
 import { registerDeprecatedRoutes } from "./deprecated";
 import {
    apiRoute,
-   jsonRoute,
    logRefusal,
    recordGateRefusal,
    sendRouteError,
@@ -532,7 +531,7 @@ function registerPackageRoutes(
 
    app.get(
       `${env}/packages`,
-      jsonRoute((req, res) => {
+      apiRoute((req, res) => {
          assertListingTakesNoVersionId(req.query.versionId);
          if (req.query.reload !== undefined) {
             setCollectionReloadError(
@@ -573,7 +572,7 @@ function registerPackageRoutes(
    registerVersionRoutes(app, pkg, versionController);
    app.get(
       pkg,
-      jsonRoute((req, res) => {
+      apiRoute((req, res) => {
          const reload = booleanParamOr400(req, res, "reload");
          if (reload === undefined) return;
          return packageController.getPackage(
@@ -608,7 +607,7 @@ function registerPackageRoutes(
 
    app.get(
       `${pkg}/models`,
-      jsonRoute((req, res) => {
+      apiRoute((req, res) => {
          const includeHiddenFilesAndSources = booleanParamOr400(
             req,
             res,
@@ -624,7 +623,7 @@ function registerPackageRoutes(
    );
    app.get(
       `${pkg}/models/*?`,
-      jsonRoute((req, res) => {
+      apiRoute((req, res) => {
          const includeHiddenFilesAndSources = booleanParamOr400(
             req,
             res,
@@ -698,7 +697,7 @@ function registerPackageRoutes(
    ];
    app.get(
       `${pkg}/entities`,
-      jsonRoute((req, res) => {
+      apiRoute((req, res) => {
          const includeHiddenFilesAndSources = booleanParamOr400(
             req,
             res,
@@ -778,7 +777,7 @@ function registerPackageRoutes(
    app.get(
       `${pkg}/reports`,
       timeReportRead("list"),
-      jsonRoute((req) =>
+      apiRoute((req) =>
          reportController.listReports(
             req.params.environmentName,
             req.params.packageName,
@@ -789,7 +788,7 @@ function registerPackageRoutes(
    app.get(
       `${pkg}/reports/*`,
       timeReportRead("get"),
-      jsonRoute((req) =>
+      apiRoute((req) =>
          reportController.getReport(
             req.params.environmentName,
             req.params.packageName,
@@ -895,7 +894,7 @@ function registerQueryRoutes(
 
    app.get(
       `${pkg}/databases`,
-      jsonRoute((req) =>
+      apiRoute((req) =>
          databaseController.listDatabases(
             req.params.environmentName,
             req.params.packageName,

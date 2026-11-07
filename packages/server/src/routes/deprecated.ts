@@ -19,7 +19,7 @@ import { queryConcurrency } from "../query_concurrency";
 import { optionalBooleanParam } from "../route_params";
 import { accessIdentityOf } from "../service/access_record";
 import type { EnvironmentStore } from "../service/environment_store";
-import { jsonRoute, recordGateRefusal, wildcardParam } from "./json_route";
+import { apiRoute, recordGateRefusal, wildcardParam } from "./json_route";
 
 /** Parse a JSON query parameter, or say why it is refused. */
 function jsonParam<T>(
@@ -53,7 +53,7 @@ export function registerDeprecatedRoutes(
 
    app.get(
       `${pkg}/dashboards`,
-      jsonRoute((req) =>
+      apiRoute((req) =>
          controller.listDashboards(
             req.params.environmentName,
             req.params.packageName,
@@ -64,7 +64,7 @@ export function registerDeprecatedRoutes(
 
    app.get(
       `${pkg}/dashboards/:dashboardName`,
-      jsonRoute((req) =>
+      apiRoute((req) =>
          controller.getDashboard(
             req.params.environmentName,
             req.params.packageName,
@@ -76,7 +76,7 @@ export function registerDeprecatedRoutes(
 
    app.get(
       `${pkg}/notebooks`,
-      jsonRoute((req) =>
+      apiRoute((req) =>
          controller.listNotebooks(
             req.params.environmentName,
             req.params.packageName,
@@ -93,7 +93,7 @@ export function registerDeprecatedRoutes(
    app.get(
       `${pkg}/notebooks/*/cells/:cellIndex`,
       queryConcurrency(),
-      jsonRoute(async (req, res) => {
+      apiRoute(async (req, res) => {
          // Answers the 400 after recording it: no controller method has run to.
          const refuse = async (
             message: string,
@@ -144,7 +144,7 @@ export function registerDeprecatedRoutes(
 
    app.get(
       `${pkg}/notebooks/*?`,
-      jsonRoute((req) =>
+      apiRoute((req) =>
          controller.getNotebook(
             req.params.environmentName,
             req.params.packageName,

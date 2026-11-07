@@ -16,7 +16,6 @@
  *   the `environments`-keyed payload.
  */
 
-import bodyParser from "body-parser";
 import type { Express, Request } from "express";
 import { ParsedQs } from "qs";
 import { CompileController } from "./controller/compile.controller";
@@ -100,9 +99,6 @@ export function registerLegacyRoutes(
          accessIdentityOf(req.headers),
          error,
       );
-
-   // body-parser is inherited from the main app.
-   void bodyParser; // keep the import; helper file reference for clarity
 
    // ── projects (== environments) ──────────────────────────────────────────
    app.get(
