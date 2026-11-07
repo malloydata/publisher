@@ -30,21 +30,23 @@ import {
    recordStorageBuildFailure,
 } from "../materialization_metrics";
 import {
+   Materialization,
+   MaterializationUpdate,
+   ResourceRepository,
+} from "../storage/DatabaseInterface";
+import {
    BuildInstruction,
    BuildManifestResult,
    BuildPlan,
    FreshnessManifest,
    isLegacyFailedEntry,
    LedgerEntry,
-   Materialization,
    MaterializationStatus,
-   MaterializationUpdate,
    ManifestEntry,
    ManifestReference,
    RefusedSource,
-   ResourceRepository,
    SourceFailure,
-} from "../storage/DatabaseInterface";
+} from "./materialization/types";
 import { DuplicateActiveMaterializationError } from "../storage/duckdb/MaterializationRepository";
 import { errMessage } from "../utils";
 import {

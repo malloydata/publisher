@@ -6,6 +6,7 @@
 // variable: a spec that replaces `process.env` would hide it from workers.)
 import * as fs from "node:fs";
 import { parentPort, threadId } from "node:worker_threads";
+import { PACKAGE_LOAD_PROTOCOL_VERSION } from "../protocol";
 import { failsFirstStartMarker } from "./fails_first_start_marker";
 
 const port = parentPort;
@@ -27,6 +28,7 @@ if (!fs.existsSync(marker)) {
       port.postMessage({
          type: "load-package-result",
          requestId: message.requestId,
+         protocolVersion: PACKAGE_LOAD_PROTOCOL_VERSION,
          packageMetadata: { name: `thread-${threadId}` },
          models: [],
          loadDurationMs: 1,

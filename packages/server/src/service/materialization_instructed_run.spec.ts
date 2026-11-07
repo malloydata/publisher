@@ -6,7 +6,7 @@ import { Manifest } from "@malloydata/malloy";
 import { beforeEach, describe, expect, it } from "bun:test";
 import * as sinon from "sinon";
 import { MaterializationEligibilityError, BadRequestError } from "../errors";
-import { BuildInstruction } from "../storage/DatabaseInterface";
+import { BuildInstruction } from "./materialization/types";
 import {
    compiledWith,
    fakeSource,

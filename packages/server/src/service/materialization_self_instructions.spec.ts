@@ -3,7 +3,7 @@
 
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import { MaterializationEligibilityError } from "../errors";
-import { BuildInstruction } from "../storage/DatabaseInterface";
+import { BuildInstruction } from "./materialization/types";
 import {
    compiledWith,
    fakeSource,

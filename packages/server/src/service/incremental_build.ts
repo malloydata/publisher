@@ -9,13 +9,15 @@ import {
    recordSourceBuildDuration,
 } from "../materialization_metrics";
 import type {
-   BuildInstruction,
    IncrementalLedgerEntry,
+   LedgerTableIdentity,
+} from "../storage/DatabaseInterface";
+import type {
+   BuildInstruction,
    IncrementalStrategy,
    LedgerEntry,
-   LedgerTableIdentity,
    ManifestEntry,
-} from "../storage/DatabaseInterface";
+} from "./materialization/types";
 import {
    collectIncrementalDeclarations,
    CompiledBuildPlan,
