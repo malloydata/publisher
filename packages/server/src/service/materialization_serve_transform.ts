@@ -1206,7 +1206,10 @@ export function reachedPersistedSources(
       follow(base, label);
       // An extension's `query` is its base's, copied; the base is walked above.
       if (typeof def.extends !== "string") {
-         for (const { ref } of pipelineReferences(def.query?.pipeline) ?? []) {
+         const refs = pipelineReferences(def.query?.pipeline);
+         // A pipeline too deep to walk may reach anything, so it counts as
+         // reaching a leaf with no identity: raw, never "nothing".
+         for (const { ref } of refs ?? [{ ref: undefined }]) {
             follow(ref, label);
          }
       }
