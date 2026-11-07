@@ -15,7 +15,7 @@ import { createHash } from "crypto";
 export const ONE_LINE_SUMMARY_MAX_CHARS = 120;
 
 /** Shown in place of the documentation when the source has none. */
-export const NO_SOURCE_DOCS = "No source docs.";
+const NO_SOURCE_DOCS = "No source docs.";
 
 /**
  * The one-line summary a source with no documentation must get: nothing in the
@@ -42,7 +42,7 @@ const REPLY_FORMAT = `Reply with one JSON object and nothing else:
 {"summary": "<prose>", "one_line_summary": "<one sentence>"}`;
 
 /** What the model is shown for one source. Nothing else leaves the server. */
-export interface SourceSummaryPromptInput {
+interface SourceSummaryPromptInput {
    source: string;
    /** The source's doc text (see docOnlyText), flattened to one line; empty when it has none. */
    doc: string;

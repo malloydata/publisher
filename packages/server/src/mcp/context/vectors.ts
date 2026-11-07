@@ -43,7 +43,7 @@ export interface Facet {
    vec: Float32Array;
 }
 
-export interface VectorSyncOutcome {
+interface VectorSyncOutcome {
    vectors: Map<string, Facet[]>;
    rows: number;
    embedded: number;
@@ -106,7 +106,7 @@ export interface VectorProgress {
 }
 
 /** The tables the sync writes; both have the same columns (schema.ts). */
-export type VectorTable = "catalog_embeddings" | "value_embeddings";
+type VectorTable = "catalog_embeddings" | "value_embeddings";
 
 export async function syncVectors(args: {
    db: DuckDBConnection;

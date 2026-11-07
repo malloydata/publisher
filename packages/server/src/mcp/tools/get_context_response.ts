@@ -52,7 +52,7 @@ function encodeIdSegment(segment: string): string {
  * outright; any other scored row raises it. Shared with toSourceResults so a
  * card and its wire form cannot disagree.
  */
-export function foldRelevance(
+function foldRelevance(
    current: number | undefined,
    row: ResultEntity,
 ): number | undefined {

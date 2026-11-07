@@ -57,7 +57,7 @@ import type { ValueMatch } from "./values_index";
 import type { FcjIndex } from "./index_build";
 
 /** One numbered line the judge may pick. */
-export interface JudgeOption {
+interface JudgeOption {
    number: number;
    key: string;
    /** Targets it is listed under; an extra is listed under none. */
@@ -188,14 +188,14 @@ const JUDGE_DOC_MAX_CHARS = 1_500;
 
 /** Most join paths shown between two peers, and most routes shown per field. */
 export const PATHS_SHOWN = 5;
-export const ROUTES_SHOWN = 8;
+const ROUTES_SHOWN = 8;
 
 /**
  * In routes mode (`joinedCopies: "routes"`), how the other listed sources
  * reach a field: `reachable from orders through customer.region or from
  * shipments through order.customer.region`, shortest first.
  */
-export function routesLine(
+function routesLine(
    index: FcjIndex,
    node: CatalogNode,
    listed: ReadonlySet<string>,
@@ -400,7 +400,7 @@ const JUDGE_SOURCE_DOC_MAX_CHARS = 300;
  * when the source's line already shows it: the stored summary is that same
  * text, or there is no summary and the line shows the whole doc.
  */
-export function sourceDocStart(
+function sourceDocStart(
    index: FcjIndex,
    key: string,
    max = JUDGE_SOURCE_DOC_MAX_CHARS,

@@ -8,7 +8,7 @@ import { postJson } from "./http";
 import type { ChatResult, FetchFn } from "./types";
 
 export const GEMINI_BASE_URL = "https://generativelanguage.googleapis.com";
-export const GEMINI_API_VERSION = "v1beta";
+const GEMINI_API_VERSION = "v1beta";
 /**
  * Texts per `batchEmbedContents` request: the Gemini API's documented limit
  * of 100 requests per batch.

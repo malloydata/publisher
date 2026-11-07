@@ -38,11 +38,10 @@ import { settings } from "../../settings";
 import type { ChatModel } from "../../providers/types";
 import { LlmMeter } from "../tools/get_context_llm";
 import { jsonResource, jsonToolError } from "../tool_response";
-import { projectEntity, skillsFor } from "../tools/get_context_response";
+import { skillsFor } from "../tools/get_context_response";
 import {
    type PackageIndex,
    type ResolvedRequest,
-   type ResultEntity,
 } from "../tools/get_context_types";
 import { alsoLikelyFields, type AlsoLikelyField } from "./also_likely";
 import { dateRangeFields } from "./date_range";
@@ -106,8 +105,6 @@ export type TraceMode = "none" | "summary" | "full";
  * `PUBLISHER_MCP_TRACE=retrieval` writes each ranked call's stage summary to
  * the server log, one line per call, and adds nothing to any response.
  */
-export const TRACE_ENV = "PUBLISHER_MCP_TRACE";
-
 function traceToLog(): boolean {
    return settings.get("mcp.trace") === "retrieval";
 }
@@ -124,7 +121,7 @@ interface StageRow {
 }
 
 /** The targets the engine works on, from the resolved request, in the caller's order. */
-export function findTargetsOf(request: ResolvedRequest): FindTarget[] {
+function findTargetsOf(request: ResolvedRequest): FindTarget[] {
    const targets: FindTarget[] = [
       ...request.searches.map((s) => ({
          index: s.targetIndex,
@@ -196,25 +193,6 @@ async function embedTargets(
    return queries;
 }
 
-/** A node as the card builder wants it, under one of its model paths. */
-export function resultRowOf(
-   node: CatalogNode,
-   request: ResolvedRequest,
-   score: number | undefined,
-   targetScores?: Map<number, number>,
-): ResultEntity {
-   const entity =
-      node.entities.find((e) => e.modelPath === request.modelPath) ??
-      node.entities[0];
-   return {
-      ...projectEntity(entity, request.environmentName, request.packageName),
-      ...(score !== undefined
-         ? { score: Math.round(score * 10_000) / 10_000, rawScore: score }
-         : {}),
-      ...(targetScores ? { targetScores } : {}),
-   };
-}
-
 /** The find stage's part of the full trace. */
 export function findTrace(index: FcjIndex, results: readonly FindResult[]) {
    return results.map((r) => ({
@@ -248,7 +226,7 @@ export function findTrace(index: FcjIndex, results: readonly FindResult[]) {
 }
 
 /** How long one `get_context` search may run before its targets are answered as unresolved. */
-export const FCJ_REQUEST_DEADLINE_MS = 90_000;
+const FCJ_REQUEST_DEADLINE_MS = 90_000;
 let deadlineForTests: number | undefined;
 /** Tests only: a shorter deadline (undefined restores the default). */
 export function _setFcjDeadlineForTests(ms: number | undefined): void {
@@ -983,7 +961,7 @@ export function gatedValueWarning(
 }
 
 /** Candidates a cluster returns per covered target when no judge picks. */
-export function unjudgedPicks(type: FindTarget["type"] | undefined): number {
+function unjudgedPicks(type: FindTarget["type"] | undefined): number {
    if (type === "measure") return 2;
    if (type === "dimension") return 5;
    return 3;
@@ -1034,7 +1012,7 @@ function judgeFailure(uri: string, error: unknown, stages: StageRow[]) {
 }
 
 /** The connect stage's part of the full trace. */
-export function connectTrace(index: FcjIndex, connected: ConnectResult) {
+function connectTrace(index: FcjIndex, connected: ConnectResult) {
    const describe = (key: string) => {
       const node = index.catalog.nodes.get(key)!;
       // A folded copy shown in a cluster is also the field it copies.

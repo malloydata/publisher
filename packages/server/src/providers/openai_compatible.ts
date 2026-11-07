@@ -7,8 +7,8 @@ import { tokenCount, type RawChat, type RawChatRequest } from "./chat_model";
 import { isVector, type EmbedChunkFn } from "./embedding_http";
 import type { ChatResult, FetchFn, ProviderName } from "./types";
 
-export const OPENAI_BASE_URL = "https://api.openai.com/v1";
-export const OLLAMA_BASE_URL = "http://localhost:11434/v1";
+const OPENAI_BASE_URL = "https://api.openai.com/v1";
+const OLLAMA_BASE_URL = "http://localhost:11434/v1";
 
 /**
  * Tokens added to OpenAI's `max_completion_tokens`. OpenAI's reasoning models
@@ -35,10 +35,7 @@ export function defaultOpenAiBaseUrl(
  * OpenAI only: a compatible server (Ollama, vLLM, a gateway) takes the field
  * whatever the model is called.
  */
-export function rejectsTemperature(
-   provider: ProviderName,
-   model: string,
-): boolean {
+function rejectsTemperature(provider: ProviderName, model: string): boolean {
    if (provider !== "openai") return false;
    const name = model.toLowerCase().replace(/^.*\//, "");
    if (/^gpt-5.*-chat/.test(name)) return false;

@@ -9,7 +9,7 @@ import {
 import type { LlmFailureReason } from "../llm_metrics";
 import type { FetchFn } from "./types";
 
-export interface PostJsonArgs {
+interface PostJsonArgs {
    fetchFn: FetchFn;
    url: string;
    headers: Record<string, string>;

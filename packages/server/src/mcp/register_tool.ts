@@ -15,7 +15,7 @@ import { classifyToolError } from "./handler_utils";
 import type { RequestExtra } from "./request_extra";
 import { jsonToolError, type ToolResult } from "./tool_response";
 
-export type ToolOutcome = "ok" | "error" | "exception";
+type ToolOutcome = "ok" | "error" | "exception";
 
 const toolCalls = lazyCounter(
    "publisher_mcp_tool_calls_total",
@@ -29,7 +29,7 @@ const toolDuration = lazyHistogram(
 
 type Params<Shape extends z.ZodRawShape> = z.infer<z.ZodObject<Shape>>;
 
-export type ToolHandler<Shape extends z.ZodRawShape> = (
+type ToolHandler<Shape extends z.ZodRawShape> = (
    params: Params<Shape>,
    extra: RequestExtra,
 ) => Promise<ToolResult>;
@@ -88,7 +88,7 @@ export function registerTool<Shape extends z.ZodRawShape>(
 }
 
 /** A tool whose every failure becomes a classified isError answer. */
-export interface GuardedTool<Shape extends z.ZodRawShape> {
+interface GuardedTool<Shape extends z.ZodRawShape> {
    name: string;
    description: string;
    inputSchema: Shape;

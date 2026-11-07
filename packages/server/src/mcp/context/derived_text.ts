@@ -35,7 +35,7 @@ import { nodeKeyOf, type Catalog, type CatalogNode } from "./catalog";
 export const DERIVED_TEXT_MAX_WORDS = 120;
 
 /** What the text of a node may draw on besides the catalog. */
-export interface DerivedTextContext {
+interface DerivedTextContext {
    catalog: Catalog;
    /** The "what it is" part of a node's doc; the whole doc when not split. */
    whatOf: (node: CatalogNode) => string;
@@ -60,7 +60,7 @@ function trimEnd(text: string): string {
 }
 
 /** Cut a text to at most `max` words. */
-export function capWords(text: string, max: number): string {
+function capWords(text: string, max: number): string {
    const parts = text.split(/\s+/).filter(Boolean);
    return parts.length <= max ? parts.join(" ") : parts.slice(0, max).join(" ");
 }

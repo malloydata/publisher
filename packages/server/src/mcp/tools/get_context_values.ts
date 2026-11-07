@@ -32,14 +32,14 @@ import type { ErrorDetails } from "../error_messages";
 import { getModelForQuery } from "../handler_utils";
 
 /** What one lookup query returns. */
-export interface DistinctValues {
+interface DistinctValues {
    values: string[];
    /** More distinct values exist than were read. */
    truncated: boolean;
 }
 
 /** One lookup query. A seam so a test can stand in for the warehouse. */
-export interface ValueFetchRequest {
+interface ValueFetchRequest {
    environmentStore: EnvironmentStore;
    environmentName: string;
    packageName: string;
@@ -73,7 +73,7 @@ export function usableValue(raw: unknown): string | undefined {
 }
 
 /** One read of a dimension's distinct values: the query and how it is run. */
-export interface DistinctValueQuery {
+interface DistinctValueQuery {
    environmentStore: EnvironmentStore;
    environmentName: string;
    packageName: string;

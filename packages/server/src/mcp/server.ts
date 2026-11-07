@@ -20,7 +20,7 @@ import { registerGetStatusTool } from "./tools/get_status_tool";
 import { BUNDLED_SKILLS } from "./skills/package_skills";
 import { SERVER_VERSION } from "../version";
 
-export const testServerInfo = {
+const testServerInfo = {
    name: "malloy-publisher-mcp-server",
    version: SERVER_VERSION,
    displayName: "Malloy Publisher MCP Server",

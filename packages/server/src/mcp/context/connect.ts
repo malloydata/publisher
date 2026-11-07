@@ -53,7 +53,7 @@ import {
 import type { FcjIndex } from "./index_build";
 import { ReachCache, type ReachEntry } from "./reach";
 
-export type ConnectSettings = Pick<
+type ConnectSettings = Pick<
    FcjSettings,
    | "hopDiscount"
    | "coverFraction"
@@ -70,7 +70,7 @@ export type ConnectSettings = Pick<
 >;
 
 /** A source's case for being a home. */
-export interface SourceScore {
+interface SourceScore {
    source: string;
    score: number;
    /** Targets it covers, by index, ascending. */
@@ -97,7 +97,7 @@ export interface ClusterCandidate {
    union?: "close" | "keyword" | "close+keyword";
 }
 
-export interface ClusterExtra {
+interface ClusterExtra {
    key: string;
    reason: string;
 }
@@ -159,7 +159,7 @@ export interface ConnectResult {
  * goes to the parent that defines them, and an extension wins only when its
  * own fields count.
  */
-export const INHERIT_DISCOUNT = 0.99;
+const INHERIT_DISCOUNT = 0.99;
 
 /**
  * The sources that hold a node, with the factor each gets: its owner at 1,
@@ -210,7 +210,7 @@ function reachersOf(
  * Score every source against the targets' candidates. Pure. `admitSource`
  * keeps a request's scope: a source outside it is never a home.
  */
-export function scoreSources(
+function scoreSources(
    index: FcjIndex,
    found: readonly FindResult[],
    settings: ConnectSettings,
@@ -345,7 +345,7 @@ function twinsOf(
 }
 
 /** Pick the clusters: greedy set cover over the scored sources. Pure. */
-export function selectClusters(
+function selectClusters(
    index: FcjIndex,
    found: readonly FindResult[],
    scores: readonly SourceScore[],

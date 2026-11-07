@@ -15,7 +15,7 @@ export class LlmJsonError extends Error {
  * text, the body of a code fence, then the span from the first `{` or `[` to
  * the last matching `}` or `]`. Throws with the parse error when none parses.
  */
-export function extractJson(text: string): unknown {
+function extractJson(text: string): unknown {
    const trimmed = text.trim();
    const candidates: string[] = [trimmed];
    const fence = /```(?:json)?\s*([\s\S]*?)```/i.exec(trimmed);

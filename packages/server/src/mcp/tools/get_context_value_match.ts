@@ -19,10 +19,10 @@
 export const VALUE_MATCH_FLOOR = 0.55;
 
 /** Most values one dimension returns for one search target. */
-export const MAX_VALUES_PER_DIMENSION_HIT = 10;
+const MAX_VALUES_PER_DIMENSION_HIT = 10;
 
 /** One dimension's value that matched a phrase. */
-export interface ValueHit {
+interface ValueHit {
    value: string;
    score: number;
 }
@@ -129,7 +129,7 @@ export function scoreValue(phrase: string, value: string): number {
 }
 
 /** Stable order: score high to low, then shorter value, then code-unit order. */
-export function compareHits(a: ValueHit, b: ValueHit): number {
+function compareHits(a: ValueHit, b: ValueHit): number {
    return (
       b.score - a.score ||
       a.value.length - b.value.length ||

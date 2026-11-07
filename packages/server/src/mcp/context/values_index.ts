@@ -54,7 +54,7 @@ import type { DocParts } from "./doc_parts";
 import { dot } from "./vectors";
 
 /** One stored value of one dimension. */
-export interface IndexedValue {
+interface IndexedValue {
    value: string;
    normalized: string;
    /** Rows holding the value; 0 for a value a doc lists. */
@@ -65,7 +65,7 @@ export interface IndexedValue {
 }
 
 /** What one data read returns, most frequent first. */
-export interface CountedValues {
+interface CountedValues {
    values: Array<{ value: string; count: number }>;
    /** More distinct values exist than were read. */
    truncated: boolean;
@@ -89,7 +89,7 @@ export type IndexValueFetcher = (
 ) => Promise<CountedValues>;
 
 /** One read at load. Generous: it runs once per load, not per question. */
-export const VALUE_READ_TIMEOUT_MS = 60_000;
+const VALUE_READ_TIMEOUT_MS = 60_000;
 
 /**
  * The most time one build spends reading values, across all of a package's
@@ -98,7 +98,7 @@ export const VALUE_READ_TIMEOUT_MS = 60_000;
  * Dimensions not reached are reported as failed, so the next build (after a
  * cool-down) reads them, and only them.
  */
-export const VALUE_READ_BUDGET_MS = 300_000;
+const VALUE_READ_BUDGET_MS = 300_000;
 
 /**
  * The read: the `limit` most frequent non-null values of one dimension,
@@ -131,7 +131,7 @@ export interface ValueMatch {
 }
 
 /** A dimension a phrase nominated, with the values that did it. */
-export interface ValueNomination {
+interface ValueNomination {
    dimension: string;
    /** Best match score divided by how many dimensions store that value. */
    score: number;
@@ -162,11 +162,11 @@ const NGRAM_MIN_OVERLAP = 0.5;
 export const MEANING_FLOOR = 0.5;
 /** The floor for a phrase of at most MEANING_SHORT_CHARS letters and digits. */
 export const MEANING_SHORT_FLOOR = 0.7;
-export const MEANING_SHORT_CHARS = 3;
+const MEANING_SHORT_CHARS = 3;
 /** A value more than this below the phrase's best value does not match. */
 export const MEANING_MARGIN = 0.15;
 /** Most distinct values one phrase matches by meaning. */
-export const MEANING_MAX_VALUES = 20;
+const MEANING_MAX_VALUES = 20;
 
 /** The vectors of the distinct value strings, packed row by row. */
 interface MeaningVectors {
@@ -495,7 +495,7 @@ export interface ValueBuildReport {
 }
 
 /** A read that failed for a reason that clears on its own, so it is worth reading again. */
-export function isTransientReadFailure(error: unknown): boolean {
+function isTransientReadFailure(error: unknown): boolean {
    return (
       error instanceof ServiceUnavailableError ||
       error instanceof QueryTimeoutError

@@ -72,7 +72,7 @@ import { parseRouteKey, routesFrom } from "./routes";
 const GATED_LOOKUP_LIMIT = 2_000;
 const GATED_LOOKUP_TIMEOUT_MS = 8_000;
 
-export interface FcjAnswer {
+interface FcjAnswer {
    /** Every card, in the order its first pick came. */
    sources: SourceCard[];
    clusters: unknown[];
@@ -82,7 +82,7 @@ export interface FcjAnswer {
 }
 
 /** The model path a source's card is built under: the request's, else the defining file's. */
-export function cardModelPath(
+function cardModelPath(
    source: CatalogSource,
    request: Pick<ResolvedRequest, "modelPath">,
 ): string {
@@ -577,7 +577,7 @@ function unique<T>(xs: readonly T[]): T[] {
 }
 
 /** One query a list's picks allow: a source to query from and the picked sources it combines. */
-export interface QueryGroup {
+interface QueryGroup {
    root: string;
    /** The picked sources, the root first when it is picked, each with its join paths from the root (`[[]]` for the root). */
    members: Array<{ source: string; paths: string[][] }>;

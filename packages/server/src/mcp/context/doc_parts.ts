@@ -42,7 +42,7 @@ export interface DocParts {
 }
 
 /** Docs per LLM call. */
-export const DOC_PARTS_BATCH_SIZE = 10;
+const DOC_PARTS_BATCH_SIZE = 10;
 
 /** Most values a doc's list may seed. */
 const MAX_DOC_VALUES = 50;
@@ -126,7 +126,7 @@ export function splitDocByRules(doc: string): DocParts {
 }
 
 /** Whether a doc is worth splitting at all: more than one sentence. */
-export function needsSplit(doc: string): boolean {
+function needsSplit(doc: string): boolean {
    return sentencesOf(doc).length > 1;
 }
 
@@ -142,7 +142,7 @@ Copy text; do not paraphrase or add anything. Every sentence of a doc goes into 
 
 const DOC_PARTS_REPLY = `Reply with one JSON object {"results": [...]} and nothing else. Each element is {"index": <doc number>, "what": "...", "values": [...], "rules": [...], "examples": [...]}.`;
 
-export function renderDocPartsPrompt(lines: readonly string[]): string {
+function renderDocPartsPrompt(lines: readonly string[]): string {
    return [
       "<docs>",
       ...lines.map((l, i) => `[${i + 1}] ${l}`),
@@ -173,7 +173,7 @@ function validateDocParts(
 }
 
 /** What the doc-parts step did, for the build report. */
-export interface DocPartsOutcome {
+interface DocPartsOutcome {
    parts: Map<string, DocParts>;
    /** Docs with more than one sentence. */
    longDocs: number;

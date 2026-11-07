@@ -5,7 +5,7 @@ import { EnvironmentStore } from "../../service/environment_store";
 import { logger } from "../../logger";
 
 /** One package as the catalog reports it. */
-export interface CatalogPackage {
+interface CatalogPackage {
    name: string;
    description?: string;
    /**

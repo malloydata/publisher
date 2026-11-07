@@ -77,7 +77,7 @@ import {
 } from "./vectors";
 
 /** What the build did, for the load log and the index-status endpoint. */
-export interface FcjBuildReport {
+interface FcjBuildReport {
    catalog: CatalogReport;
    summaries: { stored: number; sources: number };
    docParts: {
@@ -141,7 +141,7 @@ export interface FcjIndex {
 }
 
 /** The model-facing steps, resolved by the caller from the package and the operator's LLM. */
-export interface FcjLlm {
+interface FcjLlm {
    chat: ChatModel;
    concurrency: number;
    maxCallsPerSync: number;
@@ -156,7 +156,7 @@ export interface FcjLlm {
  * are absent. Stored values are data, so the build passes `storedValues` only
  * under the `full` egress preset; a doc's list is model text and always shown.
  */
-export function questionLineValues(
+function questionLineValues(
    index: ValueIndex,
    parts: ReadonlyMap<string, DocParts>,
    storedValues = true,
@@ -188,7 +188,7 @@ export function questionLineValues(
 }
 
 /** The text a node's `values` facet embeds, from the list its doc gives. */
-export function valuesFacetText(node: CatalogNode, values: readonly string[]) {
+function valuesFacetText(node: CatalogNode, values: readonly string[]) {
    return `${humanizeName(node.name) || node.name} values: ${values.join(", ")}`;
 }
 
@@ -534,7 +534,7 @@ export async function buildFcjIndex(args: {
 }
 
 /** Embed the value index's distinct values into `value_embeddings` and attach them. */
-export async function embedValues(args: {
+async function embedValues(args: {
    db: DuckDBConnection;
    provider: EmbeddingModel | null;
    environmentName: string;

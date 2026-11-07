@@ -26,14 +26,14 @@ import {
    type SyncRequestBudget,
 } from "../tools/get_context_llm";
 
-export type LlmCacheTable = "doc_parts" | "node_questions";
+type LlmCacheTable = "doc_parts" | "node_questions";
 
 export function sha256(text: string): string {
    return createHash("sha256").update(text).digest("hex");
 }
 
 /** One item a step may send. */
-export interface CacheItem {
+interface CacheItem {
    /** Stable key of the item within the package. */
    key: string;
    /** Hash of everything the model is shown for this item. */

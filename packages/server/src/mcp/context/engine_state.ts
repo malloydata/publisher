@@ -87,7 +87,7 @@ export function fcjStateOf(pkg: Package): FcjState | undefined {
 }
 
 /** The chat model the index-time steps and the judge use, or null when the LLM is off. */
-export function fcjChat(): ChatModel | null {
+function fcjChat(): ChatModel | null {
    try {
       return getChatModel();
    } catch (error) {

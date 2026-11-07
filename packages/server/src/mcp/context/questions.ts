@@ -19,10 +19,7 @@
 import type { ChatModel } from "../../providers/types";
 import type { DuckDBConnection } from "../../storage/duckdb/DuckDBConnection";
 import type { SyncRequestBudget } from "../tools/get_context_llm";
-import {
-   DEFAULT_QUESTIONS_PER_NODE,
-   questionsInstructions,
-} from "../../prompts/questions";
+import { DEFAULT_QUESTIONS_PER_NODE } from "../../prompts/questions";
 import type { CatalogNode } from "./catalog";
 import {
    generateCached,
@@ -36,7 +33,7 @@ import {
 export const QUESTIONS_PER_NODE = DEFAULT_QUESTIONS_PER_NODE;
 
 /** Nodes per LLM call. */
-export const QUESTIONS_BATCH_SIZE = 15;
+const QUESTIONS_BATCH_SIZE = 15;
 
 /** The node kinds that get questions. */
 export function wantsQuestions(node: CatalogNode): boolean {
@@ -48,16 +45,12 @@ export function wantsQuestions(node: CatalogNode): boolean {
    );
 }
 
-/** The `questions` variant at three per node; prompts/questions.ts has the others. */
-export const DEFAULT_QUESTIONS_INSTRUCTIONS =
-   questionsInstructions("questions");
-
 function questionsReply(perNode: number): string {
    const slots = Array.from({ length: perNode }, () => '"..."').join(", ");
    return `Reply with one JSON object {"results": [...]} and nothing else. Each element is {"index": <field number>, "questions": [${slots}]}.`;
 }
 
-export function renderQuestionsPrompt(
+function renderQuestionsPrompt(
    lines: readonly string[],
    perNode: number = QUESTIONS_PER_NODE,
 ): string {
@@ -96,7 +89,7 @@ export const QUESTION_LINE_MAX_VALUES = 8;
  * values when the variant uses them and the node has any. With no values the
  * line is what it has always been, so the default variant's rows stay cached.
  */
-export function questionLine(
+function questionLine(
    node: CatalogNode,
    derived: string,
    values: readonly string[] = [],

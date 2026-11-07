@@ -39,7 +39,7 @@ import {
  */
 
 /** A column as introspection returns it. `type` is absent on some dialects. */
-export interface SchemaColumn {
+interface SchemaColumn {
    name: string;
    type?: string;
 }
@@ -59,7 +59,7 @@ export interface SchemaTableEntity {
    columns: SchemaColumn[];
 }
 
-export interface RankedTable extends SchemaTableEntity {
+interface RankedTable extends SchemaTableEntity {
    /** Lexical BM25 score, or cosine similarity when ranked semantically. */
    score: number;
 }
@@ -70,7 +70,7 @@ export type RankingMode = "lexical" | "semantic";
  * Ranked hits, plus how many tables matched BEFORE the limit was applied, so
  * an agent can tell "matched 60, returned 20" from "matched exactly 20".
  */
-export interface RankedResult {
+interface RankedResult {
    hits: RankedTable[];
    matched: number;
    /**

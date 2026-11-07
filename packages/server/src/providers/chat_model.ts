@@ -69,7 +69,7 @@ function addUsage(a: ChatUsage, b: ChatUsage): ChatUsage {
    };
 }
 
-export interface ChatModelOptions {
+interface ChatModelOptions {
    timeoutMs: number;
    retry?: RetryPolicy;
    cooldown?: FailureCooldown;

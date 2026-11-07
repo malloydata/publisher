@@ -367,7 +367,7 @@ async function runContextQuery(
  * header and not a tool argument so an agent never sees it and a tuning run
  * can set it from the client.
  */
-export const TRACE_HEADER = "x-publisher-retrieval-trace";
+const TRACE_HEADER = "x-publisher-retrieval-trace";
 
 /**
  * The trace the request asked for. `summary` is the block of stage rows;

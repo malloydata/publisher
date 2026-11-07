@@ -117,7 +117,7 @@ export class SyncRequestBudget {
    }
 }
 
-export interface LlmUsage {
+interface LlmUsage {
    /** HTTP requests sent to the vendor, retries and JSON repairs included. */
    calls: number;
    inputTokens: number;

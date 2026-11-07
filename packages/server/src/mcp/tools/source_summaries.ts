@@ -344,7 +344,7 @@ function renderSourceFields(
 }
 
 /** What one source's summary is made from. */
-export interface SourceSummaryInput {
+interface SourceSummaryInput {
    source: string;
    modelPath: string;
    /** True when the source has doc text. */
@@ -497,7 +497,7 @@ export function countSummarizableSources(
 // Validation
 // ---------------------------------------------------------------------------
 
-export interface GeneratedSummary {
+interface GeneratedSummary {
    summary: string;
    oneLineSummary: string;
 }
@@ -694,7 +694,7 @@ export async function loadSourceSummaries(
 // Generation
 // ---------------------------------------------------------------------------
 
-export interface SourceSummaryProgress {
+interface SourceSummaryProgress {
    /** Sources that get a summary and have a current one stored. */
    done: number;
    /** Sources that get a summary. */
@@ -703,7 +703,7 @@ export interface SourceSummaryProgress {
    capped: boolean;
 }
 
-export interface SourceSummaryOutcome {
+interface SourceSummaryOutcome {
    progress: SourceSummaryProgress;
    /** Chat calls made, counted against the sync's `maxCallsPerSync`. */
    calls: number;

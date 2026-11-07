@@ -28,9 +28,9 @@ import type { JudgeVerdict } from "./judge";
 import { MAX_ITEMS, splitBundle } from "./split";
 
 /** Candidate slots a list's items share in the judge's input, on top of the whole phrase's listTopK. */
-export const ITEM_SLOTS = 45;
+const ITEM_SLOTS = 45;
 /** Fewest candidates an item's list is cut to. */
-export const MIN_ITEM_LIST = 5;
+const MIN_ITEM_LIST = 5;
 
 /** Index of item `j` of the target at `index`: past any caller index, never colliding. */
 export function itemIndex(index: number, j: number): number {
@@ -38,7 +38,7 @@ export function itemIndex(index: number, j: number): number {
 }
 
 /** How many candidates each of `items` items shows the judge. */
-export function itemListCap(items: number, listTopK: number): number {
+function itemListCap(items: number, listTopK: number): number {
    return Math.min(
       listTopK,
       Math.max(MIN_ITEM_LIST, Math.floor(ITEM_SLOTS / items)),
