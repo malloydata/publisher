@@ -47,6 +47,10 @@ import { setRetrievalConfig } from "./retrieval_config";
 import { checkHeapConfiguration } from "./heap_check";
 import { startPackageEmbeddingSync } from "./mcp/tools/package_embedding";
 import {
+   deleteEnvironmentEmbeddings,
+   deletePackageEmbeddings,
+} from "./mcp/tools/embedding_index";
+import {
    addCommand,
    ensureMcpConfig,
    logMcpConfigOutcome,
@@ -211,6 +215,20 @@ observePackageStates(environmentStore);
 // the value index of #(index) dimensions, and skips only the vectors.
 environmentStore.setPackageLoadedHook((environmentName, pkg) =>
    startPackageEmbeddingSync(environmentStore, environmentName, pkg),
+);
+// A deleted package or environment takes what retrieval derived from it along.
+environmentStore.setPackageDeletedHook((environmentName, packageName) =>
+   deletePackageEmbeddings(
+      environmentStore.storageManager.getDuckDbConnection(),
+      environmentName,
+      packageName,
+   ),
+);
+environmentStore.setEnvironmentDeletedHook((environmentName) =>
+   deleteEnvironmentEmbeddings(
+      environmentStore.storageManager.getDuckDbConnection(),
+      environmentName,
+   ),
 );
 const packageController = new PackageController(environmentStore);
 const reportController = new ReportController(environmentStore);

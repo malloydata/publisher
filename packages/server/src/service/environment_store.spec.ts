@@ -19,6 +19,10 @@ import { TEMP_DIR_PATH } from "../constants";
 import { BadRequestError, EnvironmentNotFoundError } from "../errors";
 import { withSettings, type SettingsInput } from "../test_helpers/settings_env";
 import { stubStorageManager } from "../test_helpers/storage_manager_stub";
+import {
+   deleteEnvironmentEmbeddings,
+   deletePackageEmbeddings,
+} from "../mcp/tools/embedding_index";
 import { Environment, PackageStatus } from "./environment";
 import {
    CloneProgressReporter,
@@ -2988,6 +2992,25 @@ describe("parseGitHubUrl", () => {
 describe("EnvironmentStore embeddings cleanup wiring", () => {
    const serverRootPath = path.join(TEMP_DIR_PATH, "cleanup-wiring-tests");
 
+   /** A store with the deletion hooks main_server installs. */
+   function storeWithCleanupHooks(): EnvironmentStore {
+      const store = new EnvironmentStore(serverRootPath, { storageManager });
+      store.setPackageDeletedHook((environmentName, packageName) =>
+         deletePackageEmbeddings(
+            store.storageManager.getDuckDbConnection(),
+            environmentName,
+            packageName,
+         ),
+      );
+      store.setEnvironmentDeletedHook((environmentName) =>
+         deleteEnvironmentEmbeddings(
+            store.storageManager.getDuckDbConnection(),
+            environmentName,
+         ),
+      );
+      return store;
+   }
+
    beforeEach(() => {
       if (existsSync(serverRootPath)) {
          rmSync(serverRootPath, { recursive: true, force: true });
@@ -3008,7 +3031,7 @@ describe("EnvironmentStore embeddings cleanup wiring", () => {
    });
 
    it("deletePackageFromDatabase fires cleanup without awaiting it, even with no metadata row", async () => {
-      const store = new EnvironmentStore(serverRootPath, { storageManager });
+      const store = storeWithCleanupHooks();
       await store.finishedInitialization;
 
       // The cleanup's SQL never resolves: were the store awaiting it,
@@ -3027,7 +3050,7 @@ describe("EnvironmentStore embeddings cleanup wiring", () => {
    });
 
    it("deleteEnvironmentFromDatabase fires the env-wide cleanup without awaiting it", async () => {
-      const store = new EnvironmentStore(serverRootPath, { storageManager });
+      const store = storeWithCleanupHooks();
       await store.finishedInitialization;
 
       embeddingCleanupBlocks = true;
