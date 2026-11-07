@@ -6,11 +6,7 @@
 // which APIs the config enables. The admin listener starts here too when the
 // config leaves `adminApiEnabled` on and its port is set.
 import type { AddressInfo } from "net";
-import express from "express";
-import bodyParser from "body-parser";
-import cors from "cors";
 import * as http from "http";
-import { createProxyMiddleware } from "http-proxy-middleware";
 import * as path from "path";
 import { fileURLToPath } from "url";
 import { CompileController } from "./controller/compile.controller";
@@ -26,21 +22,10 @@ import { StorageDestinationController } from "./controller/storage_destination.c
 import { ThemeController } from "./controller/theme.controller";
 import { VersionController } from "./controller/version.controller";
 import { WatchModeController } from "./controller/watch-mode.controller";
-import {
-   drainingGuard,
-   registerHealthEndpoints,
-   registerSignalHandlers,
-} from "./health";
+import { registerSignalHandlers } from "./health";
 import "./instrumentation";
-import {
-   getPrometheusMetricsHandler,
-   httpMetricsMiddleware,
-} from "./instrumentation";
-import {
-   legacyPackageNameBodyMiddleware,
-   legacyPackageNameMiddleware,
-} from "./legacy_package_name";
-import { logger, loggerMiddleware } from "./logger";
+import { getPrometheusMetricsHandler } from "./instrumentation";
+import { logger } from "./logger";
 import {
    assertDuckDBResourceConfig,
    getDuckDBMemoryLimit,
@@ -72,28 +57,17 @@ import {
    resolveClientHost,
 } from "./mcp_config";
 import { observePackageStates } from "./package_state_metrics";
-import { registerLegacyRoutes } from "./server-old";
 import { EnvironmentStore } from "./service/environment_store";
 import { MaterializationScheduler } from "./service/materialization_scheduler";
 import { MaterializationService } from "./service/materialization_service";
 import { PackageMemoryGovernor } from "./service/package_memory_governor";
 import { ThemeStore } from "./service/theme_store";
-import { registerApiRoutes } from "./routes/api";
-import { unhandledErrorMiddleware } from "./routes/json_route";
-import {
-   registerDataAppListRoute,
-   registerDataAppStaticRoutes,
-} from "./routes/data_apps";
 import { createAdminApp } from "./routes/admin";
 import { CatalogAdmin, catalogAdminConfig } from "./service/catalog_admin";
+import { createMainApp } from "./routes/main_app";
 import { createMcpApp } from "./routes/mcp";
-import { registerSpaFallback } from "./routes/spa";
-import { rateLimitMiddleware } from "./rate_limit";
-import { frameAncestorsMiddleware } from "./frame_ancestors";
 import { externalEnv, settings } from "./settings";
 import { acceptBundledExperimentalDialects } from "./service/experimental_dialects";
-import { isOverlayRoute } from "./service/request_overlay";
-import { MAX_OVERLAY_BYTES } from "./constants";
 
 // These getters throw on an invalid value. Read once at boot so a typo fails
 // startup instead of later requests: package metadata, publishes, and (for the
@@ -137,21 +111,8 @@ const SHUTDOWN_GRACEFUL_CLOSE_TIMEOUT_SECONDS = settings.get(
 const __filename_esm = fileURLToPath(import.meta.url);
 const ROOT = path.join(path.dirname(__filename_esm), "app");
 const SERVER_ROOT = path.resolve(process.cwd(), settings.get("root"));
-const API_PREFIX = "/api/v0";
 const isDevelopment = externalEnv("NODE_ENV") === "development";
 
-export const app = express();
-app.use(loggerMiddleware);
-app.use(httpMetricsMiddleware);
-// Ahead of every early-answering middleware (the rate limiter's 429 included),
-// so the frame-ancestors policy is on every response.
-app.use(frameAncestorsMiddleware(settings.get("frameAncestors")));
-// Health probes come before every middleware they do not need, such as
-// static-file serving, which would stat the filesystem first.
-registerHealthEndpoints(app);
-// Opt-in (`rateLimit`) and mounted before every route; probes and /metrics
-// are exempt inside the middleware.
-app.use(rateLimitMiddleware(settings.get("rateLimit")));
 // Advisory only: warns when --max-old-space-size looks low for the default
 // row/byte caps, so operators check that before chasing OOMKills.
 checkHeapConfiguration();
@@ -322,107 +283,48 @@ const themeController = new ThemeController(themeStore);
 
 export const mcpApp = createMcpApp(environmentStore);
 
-// Before every package route, the data-app static routes included: a package
-// version named in a combined package name (see legacy_package_name).
-app.use(legacyPackageNameMiddleware());
-
-// The data-app static routes come before the SPA catch-all and (in dev) the
-// Vite proxy.
-registerDataAppStaticRoutes(
-   app,
-   environmentStore,
-   path.join(path.dirname(__filename_esm), "runtime", "publisher.js"),
-);
-
-// In development the Console is proxied to the Vite dev server instead.
-if (!isDevelopment) {
-   app.use("/", express.static(ROOT));
-   app.use("/api-doc.html", express.static(path.join(ROOT, "api-doc.html")));
-} else {
-   app.use(`${API_PREFIX}`, loggerMiddleware);
-   app.use(
-      createProxyMiddleware({
-         target: "http://localhost:5173",
-         changeOrigin: true,
-         ws: true,
-         pathFilter: (path) =>
-            !path.startsWith("/api/") &&
-            !path.startsWith("/metrics") &&
-            !path.startsWith("/health"),
-      }),
-   );
+function prometheusMetricsHandler() {
+   try {
+      const handler = getPrometheusMetricsHandler();
+      logger.info("Prometheus metrics endpoint registered at /metrics");
+      return handler;
+   } catch (error) {
+      logger.warn("Failed to register Prometheus metrics endpoint", { error });
+      return undefined;
+   }
 }
 
-app.use(
-   cors({
-      origin: "http://localhost:5173",
-      credentials: true,
-   }),
-);
-
-// Compile takes a `files` overlay of up to MAX_OVERLAY_BYTES of text,
-// which JSON escaping can grow, so it parses a larger body; the
-// overlay's own bounds answer 413 past that. Parsed once: the general parser
-// below skips a body already read.
-const overlayBodyParser = bodyParser.json({
-   limit: 2 * MAX_OVERLAY_BYTES + 1024 * 1024,
+export const app = createMainApp({
+   controllers: {
+      environmentStore,
+      themeStore,
+      themeController,
+      watchModeController,
+      connectionController,
+      packageController,
+      modelController,
+      skillController,
+      reportController,
+      databaseController,
+      queryController,
+      compileController,
+      materializationController,
+      storageDestinationController,
+      versionController,
+   },
+   dataAppRuntimePath: path.join(
+      path.dirname(__filename_esm),
+      "runtime",
+      "publisher.js",
+   ),
+   // In development the Console is proxied to the Vite dev server instead.
+   consoleRoot: isDevelopment ? undefined : ROOT,
+   proxyConsoleToDevServer: isDevelopment,
+   frameAncestors: settings.get("frameAncestors"),
+   // Opt-in (`rateLimit`).
+   rateLimitPerMinute: settings.get("rateLimit"),
+   metricsHandler: prometheusMetricsHandler(),
 });
-app.use((req, res, next) =>
-   isOverlayRoute(req.path) ? overlayBodyParser(req, res, next) : next(),
-);
-app.use(bodyParser.json({ limit: "1mb" }));
-app.use(legacyPackageNameBodyMiddleware());
-
-try {
-   const metricsHandler = getPrometheusMetricsHandler();
-   app.get("/metrics", metricsHandler);
-   logger.info("Prometheus metrics endpoint registered at /metrics");
-} catch (error) {
-   logger.warn("Failed to register Prometheus metrics endpoint", { error });
-}
-
-// After the health endpoints, before every other route.
-app.use(drainingGuard);
-
-// Registered after CORS, the body parser and the draining guard, so
-// cross-origin SDK consumers and authenticated requests both work.
-registerDataAppListRoute(app, API_PREFIX, environmentStore);
-
-registerApiRoutes(app, API_PREFIX, {
-   environmentStore,
-   themeStore,
-   themeController,
-   watchModeController,
-   connectionController,
-   packageController,
-   modelController,
-   skillController,
-   reportController,
-   databaseController,
-   queryController,
-   compileController,
-   materializationController,
-   storageDestinationController,
-   versionController,
-});
-
-// Legacy `/projects/...` aliases; must precede the SPA catch-all.
-registerLegacyRoutes(app, {
-   environmentStore,
-   connectionController,
-   modelController,
-   packageController,
-   databaseController,
-   queryController,
-   compileController,
-   materializationController,
-});
-
-if (!isDevelopment) {
-   registerSpaFallback(app, API_PREFIX, ROOT, environmentStore);
-}
-
-app.use(unhandledErrorMiddleware);
 
 // Constructed eagerly so a misconfigured PACKAGE_LOAD_WORKERS (e.g. 0) fails
 // the boot rather than the first package load, possibly hours later.
