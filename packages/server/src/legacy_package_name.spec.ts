@@ -129,8 +129,11 @@ describe("routes reached with a combined package name", () => {
          .post(`${ENV}/packages/sales___1.0.0/models/flights.malloy/query`)
          .send({ query: "run: flights -> by_carrier", versionId: null })
          .expect(200);
-      expect(calls[0].slice(0, 2)).toEqual(["acme", "sales"]);
-      expect(calls[0][10]).toMatchObject({ versionId: "1.0.0" });
+      expect(calls[0][0]).toMatchObject({
+         environmentName: "acme",
+         packageName: "sales",
+      });
+      expect(calls[0][0]).toMatchObject({ versionId: "1.0.0" });
    });
 
    it("builds that version when the body names none", async () => {
@@ -261,8 +264,11 @@ describe("the legacy /projects routes reached with a combined package name", () 
          .post(`${PROJECT}/packages/sales___1.0.0/models/flights.malloy/query`)
          .send({ query: "run: flights -> by_carrier" })
          .expect(200);
-      expect(calls[0].slice(0, 2)).toEqual(["acme", "sales"]);
-      expect(calls[0][10]).toMatchObject({
+      expect(calls[0][0]).toMatchObject({
+         environmentName: "acme",
+         packageName: "sales",
+      });
+      expect(calls[0][0]).toMatchObject({
          versionId: "1.0.0",
       });
    });

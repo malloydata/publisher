@@ -10,8 +10,8 @@ import {
    getActiveQueryCount,
    queryConcurrencyMiddleware,
    resetActiveQueryCountForTesting,
-   resetQueryConcurrencyTelemetryForTesting,
 } from "./query_concurrency";
+import { resetInstrumentsForTesting } from "./telemetry";
 import {
    startMetricsHarness,
    type MetricsHarness,
@@ -225,12 +225,12 @@ describe("queryConcurrencyMiddleware", () => {
       beforeEach(async () => {
          harness = await startMetricsHarness();
          resetActiveQueryCountForTesting();
-         resetQueryConcurrencyTelemetryForTesting();
+         resetInstrumentsForTesting();
       });
       afterEach(async () => {
          restoreCap();
          resetActiveQueryCountForTesting();
-         resetQueryConcurrencyTelemetryForTesting();
+         resetInstrumentsForTesting();
          await harness.shutdown();
       });
 

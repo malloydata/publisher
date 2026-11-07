@@ -64,7 +64,7 @@ export function terms(text: string): string[] {
       .map(stem);
 }
 
-export interface KeywordHit {
+interface KeywordHit {
    key: string;
    score: number;
 }

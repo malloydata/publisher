@@ -7,7 +7,8 @@ import { ConnectionController } from "../../controller/connection.controller";
 import { EnvironmentStore } from "../../service/environment_store";
 import { schemaEmbeddingEnabled } from "../../config";
 import { getEmbeddingProvider } from "../../service/embedding_provider";
-import { buildMalloyUri, classifyToolError } from "../handler_utils";
+import { buildMalloyUri } from "../handler_utils";
+import { registerGuardedTool } from "../register_tool";
 import { jsonResource, jsonToolError } from "../tool_response";
 import { logger } from "../../logger";
 import { RankingMode, SchemaTableEntity, rankTables } from "./schema_index";
@@ -303,17 +304,32 @@ Then paste that table's malloySource verbatim, e.g. source: \`orders\` is \`ware
 export function registerSearchDatabaseSchemaTool(
    mcpServer: McpServer,
    environmentStore: EnvironmentStore,
+   connectionController = new ConnectionController(environmentStore),
 ): void {
-   const deps: TierDeps = {
-      environmentStore,
-      connectionController: new ConnectionController(environmentStore),
-   };
+   const deps: TierDeps = { environmentStore, connectionController };
 
-   mcpServer.tool(
-      "search_database_schema",
-      SEARCH_DATABASE_SCHEMA_DESCRIPTION,
-      searchDatabaseSchemaShape,
-      async (params: SearchDatabaseSchemaParams) => {
+   registerGuardedTool(mcpServer, {
+      name: "search_database_schema",
+      description: SEARCH_DATABASE_SCHEMA_DESCRIPTION,
+      inputSchema: searchDatabaseSchemaShape,
+      op: "searchDatabaseSchema",
+      failed: "search failed",
+      uri: ({ environmentName, packageName }) =>
+         buildMalloyUri(
+            { environment: environmentName, package: packageName },
+            "search-database-schema",
+         ),
+      identifier: ({ environmentName, connectionName, schemaName }) =>
+         [environmentName, connectionName, schemaName]
+            .filter(Boolean)
+            .join("/"),
+      logFields: ({ environmentName, connectionName, schemaName }) => ({
+         environmentName,
+         connectionName,
+         schemaName,
+      }),
+      errorPayload: { tables: [] },
+      run: async (params: SearchDatabaseSchemaParams, uri) => {
          const {
             environmentName,
             connectionName,
@@ -324,13 +340,6 @@ export function registerSearchDatabaseSchemaTool(
             limit,
             offset,
          } = params;
-         const uri = buildMalloyUri(
-            {
-               environment: environmentName,
-               package: packageName,
-            },
-            "search-database-schema",
-         );
 
          logger.debug("[MCP Tool searchDatabaseSchema] Searching schema", {
             environmentName,
@@ -343,51 +352,34 @@ export function registerSearchDatabaseSchemaTool(
             offset,
          });
 
-         try {
-            const tier = resolveTier(params);
-            const warnings = ignoredArgsWarning(params, tier.tier);
-            switch (tier.tier) {
-               case "environments":
-                  return await listEnvironmentsTier(deps, uri, warnings);
-               case "connections":
-                  return await listConnectionsTier(deps, uri, tier, warnings);
-               case "schemas":
-                  return await listSchemasTier(
-                     deps,
-                     uri,
-                     tier,
-                     packageName,
-                     warnings,
-                  );
-               case "table":
-                  return await describeTableTier(
-                     deps,
-                     uri,
-                     tier,
-                     packageName,
-                     warnings,
-                  );
-               case "tables":
-                  return await listTablesTier(
-                     deps,
-                     uri,
-                     tier,
-                     params,
-                     warnings,
-                  );
-            }
-         } catch (error) {
-            const identifier = [environmentName, connectionName, schemaName]
-               .filter(Boolean)
-               .join("/");
-            return jsonToolError(
-               uri,
-               classifyToolError("searchDatabaseSchema", identifier, error),
-               { tables: [] },
-            );
+         const tier = resolveTier(params);
+         const warnings = ignoredArgsWarning(params, tier.tier);
+         switch (tier.tier) {
+            case "environments":
+               return await listEnvironmentsTier(deps, uri, warnings);
+            case "connections":
+               return await listConnectionsTier(deps, uri, tier, warnings);
+            case "schemas":
+               return await listSchemasTier(
+                  deps,
+                  uri,
+                  tier,
+                  packageName,
+                  warnings,
+               );
+            case "table":
+               return await describeTableTier(
+                  deps,
+                  uri,
+                  tier,
+                  packageName,
+                  warnings,
+               );
+            case "tables":
+               return await listTablesTier(deps, uri, tier, params, warnings);
          }
       },
-   );
+   });
 }
 
 /** What the tiers that reach a store or a warehouse need. */

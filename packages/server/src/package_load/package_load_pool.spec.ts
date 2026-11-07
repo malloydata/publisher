@@ -40,6 +40,7 @@ import {
 } from "./package_load_pool";
 import { failsFirstStartMarker } from "./test_fixtures/fails_first_start_marker";
 import { installSettings, withSettings } from "../test_helpers/settings_env";
+import { writeTempPackage } from "../test_helpers/temp_package";
 
 // ──────────────────────────────────────────────────────────────────────
 // getPackageLoadWorkerCount — env var parsing
@@ -275,11 +276,7 @@ describe("PackageLoadPool (real worker)", () => {
 describe("PackageLoadPool (main-thread work budget)", () => {
    let tempDir: string;
    beforeEach(() => {
-      tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "publisher-budget-"));
-      fs.writeFileSync(
-         path.join(tempDir, "publisher.json"),
-         JSON.stringify({ name: "pkg" }),
-      );
+      tempDir = writeTempPackage({}, { prefix: "publisher-budget-" }).dir;
       fs.writeFileSync(
          path.join(tempDir, "orders.malloy"),
          `##! experimental { persistence composite_sources }
@@ -357,11 +354,7 @@ source: by_category_table is orders -> by_category
 describe("PackageLoadPool (work for the main thread)", () => {
    let tempDir: string;
    beforeEach(() => {
-      tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "publisher-prep-"));
-      fs.writeFileSync(
-         path.join(tempDir, "publisher.json"),
-         JSON.stringify({ name: "pkg" }),
-      );
+      tempDir = writeTempPackage({}, { prefix: "publisher-prep-" }).dir;
    });
    afterEach(() => {
       fs.rmSync(tempDir, { recursive: true, force: true });

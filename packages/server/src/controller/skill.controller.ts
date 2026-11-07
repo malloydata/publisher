@@ -6,7 +6,7 @@ import { AgentNotFoundError, SkillNotFoundError } from "../errors";
 import { type SkillEntry } from "../mcp/skills/build_skills_bundle";
 import { BUNDLED_SKILLS, resolveSkills } from "../mcp/skills/package_skills";
 import { EnvironmentStore } from "../service/environment_store";
-import { versionOptions } from "./report.controller";
+import { loadedPackage } from "./loaded_package";
 
 type ApiAgent = components["schemas"]["Agent"];
 type ApiAgentSummary = components["schemas"]["AgentSummary"];
@@ -28,19 +28,16 @@ export class SkillController {
       this.environmentStore = environmentStore;
    }
 
-   private async packageOf(
+   private packageOf(
       environmentName: string,
       packageName: string,
       versionId: unknown,
    ) {
-      const environment = await this.environmentStore.getEnvironment(
+      return loadedPackage(
+         this.environmentStore,
          environmentName,
-         false,
-      );
-      return environment.getPackage(
          packageName,
-         false,
-         ...versionOptions(versionId),
+         versionId,
       );
    }
 

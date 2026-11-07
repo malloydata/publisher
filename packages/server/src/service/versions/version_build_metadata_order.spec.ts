@@ -12,6 +12,7 @@ import type { ResourceRepository } from "../../storage/DatabaseInterface";
 import { initializeSchema } from "../../storage/duckdb/schema";
 import { VersionHost, VersionService } from "./version_service";
 import { VersionStore } from "./version_store";
+import { writePackageFiles } from "../../test_helpers/temp_package";
 
 // Two versions that differ only in build metadata (`1.0.0+a`, `1.0.0+b`) share
 // semver precedence, so neither is higher: the later PUBLISH is ordered first
@@ -78,12 +79,13 @@ async function publish(
    promotion: "on-publish" | "explicit" = "on-publish",
 ) {
    const dir = path.join(root, "src", versionId);
-   fs.mkdirSync(dir, { recursive: true });
-   fs.writeFileSync(
-      path.join(dir, "publisher.json"),
-      JSON.stringify({ name: PKG, version: versionId }),
+   writePackageFiles(
+      dir,
+      {
+         "model.malloy": `// ${versionId}`,
+      },
+      { manifest: { name: PKG, version: versionId } },
    );
-   fs.writeFileSync(path.join(dir, "model.malloy"), `// ${versionId}`);
    const result = await svc.publish(
       PKG,
       async (staging) => {

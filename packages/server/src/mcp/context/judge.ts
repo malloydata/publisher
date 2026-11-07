@@ -57,7 +57,7 @@ import type { ValueMatch } from "./values_index";
 import type { FcjIndex } from "./index_build";
 
 /** One numbered line the judge may pick. */
-export interface JudgeOption {
+interface JudgeOption {
    number: number;
    key: string;
    /** Targets it is listed under; an extra is listed under none. */
@@ -188,14 +188,14 @@ const JUDGE_DOC_MAX_CHARS = 1_500;
 
 /** Most join paths shown between two peers, and most routes shown per field. */
 export const PATHS_SHOWN = 5;
-export const ROUTES_SHOWN = 8;
+const ROUTES_SHOWN = 8;
 
 /**
  * In routes mode (`joinedCopies: "routes"`), how the other listed sources
  * reach a field: `reachable from orders through customer.region or from
  * shipments through order.customer.region`, shortest first.
  */
-export function routesLine(
+function routesLine(
    index: FcjIndex,
    node: CatalogNode,
    listed: ReadonlySet<string>,
@@ -389,21 +389,21 @@ function sourceLine(index: FcjIndex, key: string): string {
 }
 
 /** Longest start of a source's own doc the judge is shown beside it. */
-export const SOURCE_DOC_MAX_CHARS = 300;
+const JUDGE_SOURCE_DOC_MAX_CHARS = 300;
 
 /**
  * The start of a source's own doc, in its author's words: its first
- * sentences up to SOURCE_DOC_MAX_CHARS. This is where an author says which
+ * sentences up to JUDGE_SOURCE_DOC_MAX_CHARS. This is where an author says which
  * rows a source holds ("all channels combined", "for per-store use ..."),
  * which a generated summary can drop and an inherited field's doc never
  * says. Undefined when the source has no doc, or (unless asked otherwise)
  * when the source's line already shows it: the stored summary is that same
  * text, or there is no summary and the line shows the whole doc.
  */
-export function sourceDocStart(
+function sourceDocStart(
    index: FcjIndex,
    key: string,
-   max = SOURCE_DOC_MAX_CHARS,
+   max = JUDGE_SOURCE_DOC_MAX_CHARS,
    /** False beside a twin's fields: shown there even when the summary says the same. */
    unlessSummary = true,
 ): string | undefined {

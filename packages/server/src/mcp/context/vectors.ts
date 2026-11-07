@@ -43,7 +43,7 @@ export interface Facet {
    vec: Float32Array;
 }
 
-export interface VectorSyncOutcome {
+interface VectorSyncOutcome {
    vectors: Map<string, Facet[]>;
    rows: number;
    embedded: number;
@@ -79,6 +79,8 @@ interface StoredRow {
    content_hash: string;
    embedding_model: string;
    embedding: number[] | string;
+   /** `updated_at` as epoch milliseconds. */
+   updated_ms: number;
 }
 
 function parseVector(v: number[] | string): number[] {
@@ -94,8 +96,19 @@ export class VectorSyncError extends Error {
    }
 }
 
+/**
+ * How far a sync has got: rows (and the entities they belong to) that hold a
+ * usable vector, of those the package wants.
+ */
+export interface VectorProgress {
+   totalRows: number;
+   embeddedRows: number;
+   totalEntities: number;
+   embeddedEntities: number;
+}
+
 /** The tables the sync writes; both have the same columns (schema.ts). */
-export type VectorTable = "catalog_embeddings" | "value_embeddings";
+type VectorTable = "catalog_embeddings" | "value_embeddings";
 
 export async function syncVectors(args: {
    db: DuckDBConnection;
@@ -106,6 +119,12 @@ export async function syncVectors(args: {
    /** Default `catalog_embeddings`. */
    table?: VectorTable;
    shouldStop?: () => boolean;
+   /**
+    * Called once the reusable rows are known, and after each stored batch,
+    * with when a vector the package keeps was last written (undefined while
+    * it keeps none).
+    */
+   onProgress?: (progress: VectorProgress, lastWrittenAt?: number) => void;
 }): Promise<VectorSyncOutcome> {
    const { db, provider, environmentName, packageName } = args;
    const table: VectorTable = args.table ?? "catalog_embeddings";
@@ -127,7 +146,8 @@ export async function syncVectors(args: {
       });
    }
    const stored = await db.all<StoredRow>(
-      `SELECT node_key, facet, content_hash, embedding_model, embedding
+      `SELECT node_key, facet, content_hash, embedding_model, embedding,
+              CAST(epoch_ms(updated_at) AS DOUBLE) AS updated_ms
        FROM ${table} WHERE environment_name = ? AND package_name = ?`,
       [environmentName, packageName],
    );
@@ -139,6 +159,7 @@ export async function syncVectors(args: {
    };
    let reused = 0;
    let deleted = 0;
+   let lastWrittenAt: number | undefined;
    const kept = new Set<string>();
    let dims = 0;
    for (const row of stored) {
@@ -155,6 +176,10 @@ export async function syncVectors(args: {
             add(row.node_key, row.facet, v);
             kept.add(key);
             reused += 1;
+            lastWrittenAt = Math.max(
+               lastWrittenAt ?? 0,
+               Number(row.updated_ms),
+            );
             continue;
          }
       }
@@ -168,6 +193,18 @@ export async function syncVectors(args: {
    }
    const toEmbed = [...wanted.entries()].filter(([k]) => !kept.has(k));
    let embedded = 0;
+   const totalEntities = new Set([...wanted.values()].map((r) => r.node)).size;
+   const progress = () =>
+      args.onProgress?.(
+         {
+            totalRows: wanted.size,
+            embeddedRows: reused + embedded,
+            totalEntities,
+            embeddedEntities: vectors.size,
+         },
+         lastWrittenAt,
+      );
+   progress();
    let chars = 0;
    const batchSize = Math.max(1, Math.min(provider.maxBatch, 256));
    for (let i = 0; i < toEmbed.length; i += batchSize) {
@@ -221,6 +258,8 @@ export async function syncVectors(args: {
          params,
       );
       embedded += batch.length;
+      lastWrittenAt = Date.parse(now);
+      progress();
    }
    return {
       vectors,

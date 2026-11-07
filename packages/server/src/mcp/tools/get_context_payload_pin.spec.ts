@@ -125,7 +125,7 @@ type Handler = (params: Record<string, unknown>) => Promise<{
 function captureHandler(store: Partial<EnvironmentStore>): Handler {
    let handler: Handler | undefined;
    const fakeServer = {
-      tool: (name: string, _d: string, _s: unknown, h: Handler) => {
+      registerTool: (name: string, _config: unknown, h: Handler) => {
          if (name === "get_context") handler = h;
       },
    };

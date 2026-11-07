@@ -278,11 +278,11 @@ export interface FcjJudgeLlm {
    model: string;
 }
 
-export const FCJ_CONNECT_MODES = ["clusters", "list"] as const;
+const FCJ_CONNECT_MODES = ["clusters", "list"] as const;
 export type FcjConnect = (typeof FCJ_CONNECT_MODES)[number];
-export const FCJ_ALSO_LIKELY = ["auto", true, false] as const;
+const FCJ_ALSO_LIKELY = ["auto", true, false] as const;
 export type FcjAlsoLikely = (typeof FCJ_ALSO_LIKELY)[number];
-export const FCJ_JOINED_COPIES = ["indexed", "routes"] as const;
+const FCJ_JOINED_COPIES = ["indexed", "routes"] as const;
 export type FcjJoinedCopies = (typeof FCJ_JOINED_COPIES)[number];
 
 /** Whether the "also likely" fields are added under these settings. */

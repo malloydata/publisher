@@ -49,7 +49,7 @@ export const MAX_ITEMS = 8;
 const MAX_PART_WORDS = 3;
 
 /** Most words in one item of a list; a longer item means the text is a sentence, not a list. */
-export const MAX_ITEM_WORDS = 8;
+const MAX_ITEM_WORDS = 8;
 
 /** First words of a question or an instruction: a sentence whose commas set off clauses, not items. */
 const SENTENCE_START =

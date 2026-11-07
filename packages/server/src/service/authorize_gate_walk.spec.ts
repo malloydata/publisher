@@ -59,23 +59,15 @@ function tableSource(name: string, extra: object = {}): SourceDef {
 
 /** A Model wrapping `modelDef`, with the private gate walk reachable. */
 function walkerFor(modelDef: ModelDef): GateWalker {
-   const model = new Model(
-      "test-pkg",
-      "synthetic.malloy",
-      {},
-      "model",
-      undefined,
+   const model = new Model({
+      packageName: "test-pkg",
+      modelPath: "synthetic.malloy",
+      dataStyles: {},
+      modelType: "model",
       modelDef,
-      undefined,
-      undefined,
-      undefined,
-      undefined,
-      undefined,
-      undefined,
-      undefined,
       // Supplied so the constructor does not derive it from this partial def.
-      {} as never,
-   );
+      modelInfo: {} as never,
+   });
    return model as unknown as GateWalker;
 }
 

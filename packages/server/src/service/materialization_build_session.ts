@@ -1726,7 +1726,7 @@ async function dropStranded(
    try {
       await session.runSQL(`DROP TABLE IF EXISTS ${quotedTablePath}`);
    } catch (dropErr) {
-      logger.warn(
+      logger.error(
          "Failed to drop a storage table stranded by a failed build " +
             "(physical leak)",
          {

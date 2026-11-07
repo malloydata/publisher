@@ -17,13 +17,13 @@ import {
    it,
 } from "bun:test";
 import * as fs from "fs";
-import * as os from "os";
 import * as path from "path";
 import {
    PackageLoadPool,
    __setPackageLoadPoolForTests,
 } from "../package_load/package_load_pool";
 import { Package } from "./package";
+import { writeTempPackage } from "../test_helpers/temp_package";
 
 const MODEL = `##! experimental.givens
 
@@ -65,12 +65,13 @@ describe("dashboard lint: suggest over a joined dimension", () => {
    });
 
    beforeEach(() => {
-      tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "publisher-joinlint-"));
-      fs.writeFileSync(
-         path.join(tempDir, "publisher.json"),
-         JSON.stringify({ name: "pkg", description: "test package" }),
-      );
-      fs.writeFileSync(path.join(tempDir, "model.malloy"), MODEL);
+      tempDir = writeTempPackage(
+         { "model.malloy": MODEL },
+         {
+            prefix: "publisher-joinlint-",
+            manifest: { name: "pkg", description: "test package" },
+         },
+      ).dir;
       fs.mkdirSync(path.join(tempDir, "dashboards"));
    });
 

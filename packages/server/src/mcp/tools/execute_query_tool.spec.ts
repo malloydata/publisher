@@ -1,12 +1,13 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
-import { afterAll, beforeAll, describe, expect, it } from "bun:test";
+import { afterAll, beforeAll, describe, expect, it, spyOn } from "bun:test";
 import * as fs from "fs";
 import * as os from "os";
 import * as path from "path";
 import { MalloyError } from "@malloydata/malloy";
 import { isMcpIncludeHiddenFilesAndSources } from "../../config";
+import { logger } from "../../logger";
 import { registerExecuteQueryTool } from "./execute_query_tool";
 import {
    PackageLoadPool,
@@ -25,7 +26,7 @@ import {
    ServiceUnavailableError,
 } from "../../errors";
 
-// Capture the handler registerExecuteQueryTool passes to McpServer.tool, so it
+// Capture the handler registerExecuteQueryTool passes to McpServer.registerTool, so it
 // can be exercised against a mocked EnvironmentStore. Mirrors the pattern in
 // compile_tool.spec.ts and reload_package_tool.spec.ts.
 type Handler = (params: Record<string, unknown>) => Promise<{
@@ -71,10 +72,9 @@ function captureTool(
    let handler: Handler | undefined;
    let shape: Record<string, unknown> | undefined;
    const fakeServer = {
-      tool: (
+      registerTool: (
          _name: string,
-         _desc: string,
-         s: Record<string, unknown>,
+         { inputSchema: s }: { inputSchema: Record<string, unknown> },
          h: Handler,
       ) => {
          shape = s;
@@ -728,7 +728,11 @@ describe("execute_query on a package with published versions", () => {
    it("queries the package's latest, naming no version", async () => {
       const { store, asked } = versionedStore({ versionId: "1.2.0" });
       expect((await captureHandler(store)(args)).isError).not.toBe(true);
-      expect(asked()).toEqual([undefined]);
+      expect(
+         asked().map(
+            (o) => (o as { versionId?: unknown } | undefined)?.versionId,
+         ),
+      ).toEqual([undefined]);
    });
 
    it("answers a package with no latest yet with its own message, not an internal error", async () => {
@@ -774,4 +778,60 @@ describe("execute_query on a package with published versions", () => {
          expect(suggestions).not.toContain(never);
       },
    );
+});
+
+describe("execute_query cancellation", () => {
+   it("aborts the running query when the MCP client cancels the call", async () => {
+      let querySignal: AbortSignal | undefined;
+      // Settles only when its signal aborts, as a driver does.
+      const store = storeWhoseQueryThrows(undefined);
+      const getEnvironment = store.getEnvironment!;
+      store.getEnvironment = async (...a) => {
+         const environment = (await getEnvironment(...a)) as never as {
+            getPackage: () => Promise<{ getModel: () => object }>;
+         };
+         const pkg = await environment.getPackage();
+         return {
+            ...environment,
+            getPackage: async () => ({
+               ...pkg,
+               getModel: () => ({
+                  ...pkg.getModel(),
+                  getQueryResults: (...queryArgs: unknown[]) =>
+                     new Promise((_resolve, reject) => {
+                        querySignal = queryArgs[7] as AbortSignal;
+                        querySignal.addEventListener("abort", () =>
+                           reject(new Error("query cancelled")),
+                        );
+                     }),
+               }),
+            }),
+         } as never;
+      };
+      const handler = captureHandler(store) as unknown as (
+         params: Record<string, unknown>,
+         extra: { signal: AbortSignal },
+      ) => Promise<{ isError?: boolean }>;
+      const client = new AbortController();
+      const errors = spyOn(logger, "error");
+      try {
+         const call = handler(args, { signal: client.signal });
+         while (!querySignal) await new Promise((r) => setTimeout(r, 1));
+         expect(querySignal.aborted).toBe(false);
+         client.abort();
+         expect(querySignal.aborted).toBe(true);
+         const answer = (await call) as {
+            isError?: boolean;
+            content?: { text?: string }[];
+         };
+         expect(answer.isError).toBe(true);
+         expect(JSON.stringify(answer.content)).toContain(
+            "cancelled before the query finished",
+         );
+         // A cancel is the client's choice, not a server error.
+         expect(errors).not.toHaveBeenCalled();
+      } finally {
+         errors.mockRestore();
+      }
+   });
 });

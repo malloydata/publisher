@@ -77,9 +77,9 @@ export function entityRowKey(
 
 /**
  * What a package's search index is currently doing, as the REST Package
- * resource reports it (`embeddingIndex`). The row and entity counts are
- * always zero: the engine keeps no per-entity index to count, and the REST
- * contract still carries them.
+ * resource reports it (`embeddingIndex`). The counts are the engine's entity
+ * vectors (`catalog_embeddings`): while it builds, `embeddedRows` rises
+ * toward `totalRows`.
  */
 export interface EmbeddingIndexStatus {
    /**
@@ -94,6 +94,8 @@ export interface EmbeddingIndexStatus {
    embeddedRows: number;
    totalEntities: number;
    embeddedEntities: number;
+   /** Most recent write to the package's vectors (ISO 8601); absent before any. */
+   lastSyncedAt?: string;
    /** The engine's own state: its build status and, once built, its build report. */
    fcj?: Record<string, unknown>;
 }

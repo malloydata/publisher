@@ -360,6 +360,21 @@ export function errnoWireFields(
 }
 
 /**
+ * The 4xx status of a request body body-parser refused (too large, malformed
+ * JSON, unsupported charset). Its errors are http-errors, not this module's
+ * classes: they carry a `type` such as `entity.too.large`, a `status`, and
+ * `expose: true` for a message safe to return.
+ */
+function bodyParserClientStatus(error: Error): number | undefined {
+   const e = error as { type?: unknown; status?: unknown; expose?: unknown };
+   if (typeof e.type !== "string" || e.expose !== true) return undefined;
+   const status = e.status;
+   return typeof status === "number" && status >= 400 && status < 500
+      ? status
+      : undefined;
+}
+
+/**
  * Map an error to the HTTP response it answers with. `log: false` classifies
  * without logging, for a caller that only needs the status and leaves the
  * response, and its log line, to the route handler. `onLogged` is called when
@@ -494,6 +509,8 @@ export function internalErrorToHttpError(
       // A feature the server does not have (e.g. `versionId`) is not an
       // internal failure; the OpenAPI spec documents 501 on those routes.
       return httpError(501, error.message);
+   } else if (bodyParserClientStatus(error) !== undefined) {
+      return httpError(bodyParserClientStatus(error)!, error.message);
    } else {
       logInternal("Unhandled internal error", error);
       return httpError(500, GENERIC_INTERNAL_MESSAGE);

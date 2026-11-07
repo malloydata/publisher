@@ -95,27 +95,20 @@ async function buildModel(): Promise<Model> {
    const compiled = await mm.getModel();
    // eslint-disable-next-line @typescript-eslint/no-explicit-any
    const modelDef = (compiled as any)._modelDef;
-   const model = new Model(
-      "pkg",
-      "m.malloy",
-      {},
-      "model",
+   const model = new Model({
+      packageName: "pkg",
+      modelPath: "m.malloy",
+      dataStyles: {},
+      modelType: "model",
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      mm as any,
+      modelMaterializer: mm as any,
       modelDef,
-      undefined,
-      undefined,
-      undefined,
-      undefined,
-      undefined,
-      undefined,
       // The given surface, as a package load derives it. Not incidental setup:
       // it is what the serve shape declares, so a Model built without it cannot
       // route a given-scoped source at all.
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      Array.from(compiled.givens.values()).map(malloyGivenToApi as any) as any,
-      modelDefToModelInfo(modelDef),
-   );
+      givens: Array.from(compiled.givens.values()).map(malloyGivenToApi),
+      modelInfo: modelDefToModelInfo(modelDef),
+   });
    const serveConfig = new MalloyConfig({ connections: {} });
    serveConfig.wrapConnections(() => new FixedConnectionMap(connMap, "duckdb"));
    model.setServeDestinationConfig(() => serveConfig);

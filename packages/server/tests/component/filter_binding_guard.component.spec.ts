@@ -291,24 +291,18 @@ async function buildGatedModel(
    ) as unknown as MalloyGiven[];
    const givens =
       malloyGivens.length > 0 ? malloyGivens.map(malloyGivenToApi) : undefined;
-   const model = new Model(
-      "test-pkg",
+   const model = new Model({
+      packageName: "test-pkg",
       modelPath,
-      {},
-      "model",
+      dataStyles: {},
+      modelType: "model",
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      mm as any,
+      modelMaterializer: mm as any,
       modelDef,
-      undefined,
-      undefined,
-      undefined,
-      undefined,
-      undefined,
-      undefined,
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      givens as any,
+      givens: givens as any,
       modelInfo,
-   );
+   });
    (model as unknown as { setGateRuntime(r: Runtime): void }).setGateRuntime(
       runtime,
    );

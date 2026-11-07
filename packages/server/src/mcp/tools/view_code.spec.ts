@@ -214,7 +214,7 @@ describe("a view's definition on the card", () => {
          | undefined;
       registerGetContextTool(
          {
-            tool: (_n: string, _d: string, _s: unknown, h: typeof handler) => {
+            registerTool: (_n: string, _config: unknown, h: typeof handler) => {
                handler = h;
             },
          } as never,

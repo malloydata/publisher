@@ -6,7 +6,11 @@ import { MaterializationEligibilityError } from "../errors";
 import { recordEligibilityRefused } from "../materialization_metrics";
 import type { AnnotationNote } from "./annotations";
 import { parseAuthorizeAnnotation } from "./authorize";
-import { deriveColumns, type PersistSourceGateOutcome } from "./build_plan";
+import {
+   deriveAnnotationFields,
+   deriveColumns,
+   type PersistSourceGateOutcome,
+} from "./build_plan";
 import {
    buildSubstitutesAGiven,
    classifyDynamicTerms,
@@ -489,6 +493,14 @@ function isAuthorizeAnnotation(text: string): boolean {
    }
 }
 
+/** A note entry's text: entries are strings or `{ text }`; anything else has none. */
+function noteText(note: unknown): string | undefined {
+   if (typeof note === "string") return note;
+   if (note === null || typeof note !== "object") return undefined;
+   const text = (note as { text?: unknown }).text;
+   return typeof text === "string" ? text : undefined;
+}
+
 function walkForAuthorize(
    node: unknown,
    seen: WeakSet<object>,
@@ -516,14 +528,7 @@ function walkForAuthorize(
       const arr = record[key];
       if (!Array.isArray(arr)) continue;
       for (const n of arr) {
-         const text =
-            typeof n === "string"
-               ? n
-               : n &&
-                   typeof n === "object" &&
-                   typeof (n as { text?: unknown }).text === "string"
-                 ? (n as { text: string }).text
-                 : undefined;
+         const text = noteText(n);
          if (text !== undefined && isAuthorizeAnnotation(text)) return true;
       }
    }
@@ -609,14 +614,7 @@ function walkForAuthorizeNotes(
       const arr = record[key];
       if (!Array.isArray(arr)) continue;
       for (const n of arr) {
-         const text =
-            typeof n === "string"
-               ? n
-               : n &&
-                   typeof n === "object" &&
-                   typeof (n as { text?: unknown }).text === "string"
-                 ? (n as { text: string }).text
-                 : undefined;
+         const text = noteText(n);
          // Strings are excluded: Set membership is by value for a string, so
          // two gates sharing text could make a join-only gate read attributed.
          if (
@@ -632,4 +630,39 @@ function walkForAuthorizeNotes(
    for (const value of Object.values(record)) {
       walkForAuthorizeNotes(value, seen, depth + 1, found, crossJoins);
    }
+}
+
+/** What {@link assertTierEligible} reads from a compiled plan. */
+export interface TierGateInputs {
+   preaggregatePlans?: Readonly<Record<string, unknown>>;
+   sourceGateOutcomes?: Readonly<Record<string, PersistSourceGateOutcome>>;
+}
+
+/**
+ * The eligibility gate for the tier a source builds into: the storage-destination
+ * gate ({@link assertMaterializationEligible}) when it is written to a storage
+ * destination, else the colocated authorize gate
+ * ({@link assertColocatedPersistNotAuthorizeGated}), naming `#@ preaggregate`
+ * for a rollup. Running the storage gate on a colocated source would misreport
+ * a buildable one as refused.
+ *
+ * @throws {MaterializationEligibilityError} when the source is refused.
+ */
+export function assertTierEligible(
+   source: PersistSource,
+   storage: boolean,
+   plan: TierGateInputs | undefined,
+   annotationFields: Record<string, string> = deriveAnnotationFields(source),
+): void {
+   if (storage) {
+      assertMaterializationEligible(source, annotationFields);
+      return;
+   }
+   assertColocatedPersistNotAuthorizeGated(
+      source,
+      source.name,
+      plan?.preaggregatePlans?.[source.sourceID] ? "preaggregate" : "persist",
+      plan?.sourceGateOutcomes?.[source.sourceID],
+      annotationFields,
+   );
 }

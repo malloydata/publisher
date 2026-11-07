@@ -2166,6 +2166,45 @@ describe("reachedPersistedSources", () => {
          reachedPersistedSources(c, "monthly", persistedIn("daily", "monthly")),
       ).toMatchObject({ persisted: [], raw: true });
    });
+
+   it("follows the sources a query pipeline joins, not only its base", () => {
+      const c = modelCtx({
+         orders: tableDef("orders"),
+         regions: tableDef("regions"),
+         daily: persistedDef("daily", "orders"),
+         wide: queryDef("wide", "daily", ["regions"]),
+         monthly: persistedDef("monthly", "wide"),
+      });
+      expect(
+         reachedPersistedSources(c, "monthly", persistedIn("daily", "monthly")),
+      ).toMatchObject({
+         persisted: [stop("daily")],
+         raw: true,
+         rawLeaves: ["regions"],
+         rawVia: ["wide"],
+      });
+   });
+
+   it("treats a pipeline nested too deeply to walk as reaching raw", () => {
+      let nested: unknown = { join: "one", sourceID: modelId("daily") };
+      for (let i = 0; i < 250; i++) nested = { inner: nested };
+      const c = modelCtx({
+         orders: tableDef("orders"),
+         daily: persistedDef("daily", "orders"),
+         wide: {
+            ...queryDef("wide", "daily"),
+            query: { structRef: modelId("daily"), pipeline: [nested] },
+         },
+         monthly: persistedDef("monthly", "wide"),
+      });
+      expect(
+         reachedPersistedSources(c, "monthly", persistedIn("daily", "monthly")),
+      ).toMatchObject({
+         raw: true,
+         rawLeaves: ["(unnamed)"],
+         rawVia: ["wide"],
+      });
+   });
 });
 
 describe("missingPersistedTables", () => {

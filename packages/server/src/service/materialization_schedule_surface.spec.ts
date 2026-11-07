@@ -7,6 +7,7 @@ import * as os from "os";
 import * as path from "path";
 
 import { Environment } from "./environment";
+import { writePackageFiles } from "../test_helpers/temp_package";
 
 /**
  * The publisher must surface a non-null `materialization` object on a loaded
@@ -28,12 +29,13 @@ describe("materialization schedule surfacing", () => {
       manifest: Record<string, unknown>,
    ): Promise<void> {
       const dir = path.join(envPath, "pkg");
-      await fs.mkdir(dir, { recursive: true });
-      await fs.writeFile(
-         path.join(dir, "publisher.json"),
-         JSON.stringify({ name: "pkg", description: "fixture", ...manifest }),
+      writePackageFiles(
+         dir,
+         {
+            "model.malloy": MODEL,
+         },
+         { manifest: { name: "pkg", description: "fixture", ...manifest } },
       );
-      await fs.writeFile(path.join(dir, "model.malloy"), MODEL);
    }
 
    beforeEach(async () => {
@@ -490,23 +492,27 @@ describe("materialization schedule surfacing", () => {
                Array.from({ length: 6 }, (_, i) => [`${prefix}${i}`, "v"]),
             );
          const dir = path.join(envPath, "pkg");
-         await fs.mkdir(dir, { recursive: true });
-         await fs.writeFile(
-            path.join(dir, "publisher.json"),
-            JSON.stringify({
-               name: "pkg",
-               description: "fixture",
-               queryMetadata: six("p"),
-            }),
-         );
-         // Six more at the model file, and no `#@` on the source at all.
-         await fs.writeFile(
-            path.join(dir, "model.malloy"),
-            Object.entries(six("m"))
-               .map(([name, value]) => `## queryMetadata.${name}="${value}"`)
-               .join("\n") +
-               "\n" +
-               MODEL,
+         writePackageFiles(
+            dir,
+            {
+               // Six more at the model file, and no `#@` on the source at all.
+               "model.malloy":
+                  Object.entries(six("m"))
+                     .map(
+                        ([name, value]) =>
+                           `## queryMetadata.${name}="${value}"`,
+                     )
+                     .join("\n") +
+                  "\n" +
+                  MODEL,
+            },
+            {
+               manifest: {
+                  name: "pkg",
+                  description: "fixture",
+                  queryMetadata: six("p"),
+               },
+            },
          );
          await env.addPackage("pkg");
 

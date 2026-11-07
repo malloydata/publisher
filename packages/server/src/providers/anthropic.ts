@@ -1,15 +1,15 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
-import type { RawChat, RawChatRequest } from "./chat_model";
+import { tokenCount, type RawChat, type RawChatRequest } from "./chat_model";
 import { malformedReply } from "../service/http_retry";
 import { postJson } from "./http";
 import type { ChatResult, FetchFn } from "./types";
 
 export const ANTHROPIC_BASE_URL = "https://api.anthropic.com";
-export const ANTHROPIC_VERSION = "2023-06-01";
+const ANTHROPIC_VERSION = "2023-06-01";
 /** The Messages API requires max_tokens; this applies when the caller gives none. */
-export const ANTHROPIC_DEFAULT_MAX_TOKENS = 1_024;
+const ANTHROPIC_DEFAULT_MAX_TOKENS = 1_024;
 
 interface AnthropicReply {
    content?: { type?: string; text?: unknown }[];
@@ -42,7 +42,7 @@ function claudeVersion(
  * "disabled" (Opus 5.5, Sonnet 5.5) or think only when asked, and keep the
  * vendor default.
  */
-export function anthropicSampling(model: string): Record<string, unknown> {
+function anthropicSampling(model: string): Record<string, unknown> {
    const v = claudeVersion(model);
    if (!v) return { temperature: 0 };
    const modern =
@@ -55,12 +55,6 @@ export function anthropicSampling(model: string): Record<string, unknown> {
       return { thinking: { type: "disabled" } };
    }
    return {};
-}
-
-function count(value: unknown): number | undefined {
-   return typeof value === "number" && Number.isFinite(value)
-      ? value
-      : undefined;
 }
 
 /**
@@ -111,8 +105,8 @@ export class AnthropicChat implements RawChat {
       return {
          text,
          usage: {
-            inputTokens: count(reply.usage?.input_tokens),
-            outputTokens: count(reply.usage?.output_tokens),
+            inputTokens: tokenCount(reply.usage?.input_tokens),
+            outputTokens: tokenCount(reply.usage?.output_tokens),
          },
       };
    }

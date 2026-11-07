@@ -36,12 +36,12 @@ import { bestFacet } from "./vectors";
 import { terms } from "./keyword";
 
 /** The reciprocal-rank constant; 60 is the value the method was published with. */
-export const RRF_K = 60;
+const RRF_K = 60;
 
 /** How deep each list is read before fusing. */
-export const LIST_DEPTH = 200;
+const LIST_DEPTH = 200;
 
-export type FindTargetType =
+type FindTargetType =
    | "source"
    | "dimension"
    | "measure"
@@ -123,7 +123,7 @@ export interface FindResult {
  * meaning: a `dimensional_value` target's text as written, and nothing for
  * any other target.
  */
-export function valuePhrasesOf(target: FindTarget): string[] {
+function valuePhrasesOf(target: FindTarget): string[] {
    return target.type === "dimensional_value" && target.text.trim() !== ""
       ? [target.text]
       : [];

@@ -68,7 +68,7 @@ function reverseJoins(catalog: Catalog) {
  * routeDepth by default); none for other kinds. In indexed mode a joined
  * copy has none (it is a route itself).
  */
-export function routeList(
+function routeList(
    catalog: Catalog,
    node: CatalogNode,
    depth = catalog.routeDepth ?? ROUTE_MAX_DEPTH,

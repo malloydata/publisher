@@ -1,14 +1,24 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
-import { afterAll, describe, expect, it } from "bun:test";
-import { SpanStatusCode } from "@opentelemetry/api";
+import { afterAll, afterEach, describe, expect, it } from "bun:test";
+import { metrics, SpanStatusCode } from "@opentelemetry/api";
 import {
    BasicTracerProvider,
    InMemorySpanExporter,
    SimpleSpanProcessor,
 } from "@opentelemetry/sdk-trace-node";
-import { withSpan } from "./telemetry";
+import {
+   lazyCounter,
+   lazyHistogram,
+   publisherMeter,
+   resetInstrumentsForTesting,
+   withSpan,
+} from "./telemetry";
+import {
+   startMetricsHarness,
+   type MetricsHarness,
+} from "./test_helpers/metrics_harness";
 
 describe("withSpan", () => {
    const exporter = new InMemorySpanExporter();
@@ -59,5 +69,37 @@ describe("withSpan", () => {
          message: "boom",
       });
       expect(span.events.map((event) => event.name)).toEqual(["exception"]);
+   });
+});
+
+describe("lazy instruments", () => {
+   let harness: MetricsHarness | undefined;
+   afterEach(async () => {
+      await harness?.shutdown();
+      harness = undefined;
+      resetInstrumentsForTesting();
+   });
+
+   it("export to a provider registered after they were declared", async () => {
+      metrics.disable();
+      const eager = publisherMeter().createCounter(
+         "telemetry_spec_eager_total",
+      );
+      const lazy = lazyCounter("telemetry_spec_lazy_total", "lazy");
+      const latency = lazyHistogram("telemetry_spec_lazy_ms", "lazy");
+
+      harness = await startMetricsHarness();
+      eager.add(1);
+      lazy().add(1);
+      latency().record(12);
+
+      // The eager one bound to the no-op meter that preceded the provider.
+      expect(await harness.collectCounter("telemetry_spec_eager_total")).toBe(
+         0,
+      );
+      expect(await harness.collectCounter("telemetry_spec_lazy_total")).toBe(1);
+      expect(
+         await harness.collectHistogram("telemetry_spec_lazy_ms"),
+      ).toMatchObject({ count: 1, sum: 12 });
    });
 });

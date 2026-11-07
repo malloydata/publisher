@@ -104,23 +104,17 @@ async function buildModel(): Promise<Model> {
    const compiled = await mm.getModel();
    // eslint-disable-next-line @typescript-eslint/no-explicit-any
    const modelDef = (compiled as any)._modelDef;
-   const model = new Model(
-      "pkg",
-      "m.malloy",
-      {},
-      "model",
+   const model = new Model({
+      packageName: "pkg",
+      modelPath: "m.malloy",
+      dataStyles: {},
+      modelType: "model",
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      mm as any,
+      modelMaterializer: mm as any,
       modelDef,
-      undefined,
-      undefined,
-      undefined,
-      undefined,
-      undefined,
-      undefined,
-      [],
-      modelDefToModelInfo(modelDef),
-   );
+      givens: [],
+      modelInfo: modelDefToModelInfo(modelDef),
+   });
    const serveConfig = new MalloyConfig({ connections: {} });
    serveConfig.wrapConnections(() => new FixedConnectionMap(connMap, "duckdb"));
    model.setServeDestinationConfig(() => serveConfig);

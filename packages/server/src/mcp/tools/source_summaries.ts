@@ -134,7 +134,12 @@ const GROUPS = [
 const isFieldKind = (kind: string): boolean =>
    (FIELD_KINDS as readonly string[]).includes(kind);
 
-/** Text on one line, cut to `max` characters with "..." when it was longer. */
+/**
+ * Text on one line, cut to `max` characters with "..." when it was longer.
+ * Not package_entities' truncateDoc: this text is part of the summary
+ * message, and so of its input hash, so a different cut would regenerate
+ * every stored summary.
+ */
 function clipDoc(text: string, max: number): string {
    return text.length > max ? `${text.slice(0, max)}...` : text;
 }
@@ -339,7 +344,7 @@ function renderSourceFields(
 }
 
 /** What one source's summary is made from. */
-export interface SourceSummaryInput {
+interface SourceSummaryInput {
    source: string;
    modelPath: string;
    /** True when the source has doc text. */
@@ -492,7 +497,7 @@ export function countSummarizableSources(
 // Validation
 // ---------------------------------------------------------------------------
 
-export interface GeneratedSummary {
+interface GeneratedSummary {
    summary: string;
    oneLineSummary: string;
 }
@@ -689,7 +694,7 @@ export async function loadSourceSummaries(
 // Generation
 // ---------------------------------------------------------------------------
 
-export interface SourceSummaryProgress {
+interface SourceSummaryProgress {
    /** Sources that get a summary and have a current one stored. */
    done: number;
    /** Sources that get a summary. */
@@ -698,7 +703,7 @@ export interface SourceSummaryProgress {
    capped: boolean;
 }
 
-export interface SourceSummaryOutcome {
+interface SourceSummaryOutcome {
    progress: SourceSummaryProgress;
    /** Chat calls made, counted against the sync's `maxCallsPerSync`. */
    calls: number;

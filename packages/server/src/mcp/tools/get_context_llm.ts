@@ -31,18 +31,21 @@ export const REQUEST_RETRY: RetryPolicy = {
 /**
  * Run `fn` over `items` with at most `concurrency` calls in flight, results in
  * item order. The first failure stops new calls from starting, waits for the
- * ones already running, and is thrown.
+ * ones already running, and is thrown. `shouldStop`, checked before each
+ * call, stops new calls the same way without a failure.
  */
 export async function runPooled<T, R>(
    items: readonly T[],
    concurrency: number,
    fn: (item: T, index: number) => Promise<R>,
+   shouldStop?: () => boolean,
 ): Promise<R[]> {
    const out = new Array<R>(items.length);
    let next = 0;
    let failure: { error: unknown } | undefined;
    const worker = async () => {
       while (failure === undefined) {
+         if (shouldStop?.()) return;
          const index = next++;
          if (index >= items.length) return;
          try {
@@ -114,7 +117,7 @@ export class SyncRequestBudget {
    }
 }
 
-export interface LlmUsage {
+interface LlmUsage {
    /** HTTP requests sent to the vendor, retries and JSON repairs included. */
    calls: number;
    inputTokens: number;

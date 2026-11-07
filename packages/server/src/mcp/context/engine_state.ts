@@ -45,6 +45,7 @@ import {
    resolveSourceSummaries,
 } from "../tools/source_summaries";
 import { buildFcjIndex, type FcjIndex } from "./index_build";
+import type { VectorProgress } from "./vectors";
 import type {
    IndexValueFetcher,
    ValueBuildReport,
@@ -52,10 +53,19 @@ import type {
 } from "./values_index";
 
 export type FcjState =
-   | { status: "building"; startedAt: number }
+   | {
+        status: "building";
+        startedAt: number;
+        /** Set once the vectors step starts. */
+        progress?: VectorProgress;
+        /** When a vector this build keeps was last written. */
+        lastSyncedAt?: number;
+     }
    | {
         status: "ready";
         index: FcjIndex;
+        /** When this index's vectors were last written; unset when it has none. */
+        lastSyncedAt?: number;
         /** Set when value reads failed: when to build again for them. */
         rebuildAt?: number;
         /**
@@ -81,7 +91,7 @@ export function fcjStateOf(pkg: Package): FcjState | undefined {
 }
 
 /** The chat model the index-time steps and the judge use, or null when the LLM is off. */
-export function fcjChat(): ChatModel | null {
+function fcjChat(): ChatModel | null {
    try {
       return getChatModel();
    } catch (error) {
@@ -152,7 +162,8 @@ export function kickFcjBuild(args: {
    ) {
       return;
    }
-   states.set(pkg, { status: "building", startedAt: Date.now() });
+   const building: FcjState = { status: "building", startedAt: Date.now() };
+   states.set(pkg, building);
    void embeddingSyncQueue.enqueue(async () => {
       // A package unloaded, deleted or replaced while this waited must stay gone.
       if (!stillServed(args)) {
@@ -160,9 +171,25 @@ export function kickFcjBuild(args: {
          return;
       }
       try {
-         const index = await buildFor(args);
+         const index = await buildFor(
+            args,
+            undefined,
+            (progress, lastWrittenAt) => {
+               building.progress = progress;
+               building.lastSyncedAt = lastWrittenAt;
+            },
+         );
          if (await droppedDuringBuild(args)) return;
-         states.set(pkg, readyState(index, environmentName, packageName));
+         states.set(
+            pkg,
+            readyState(
+               index,
+               environmentName,
+               packageName,
+               0,
+               building.lastSyncedAt,
+            ),
+         );
       } catch (error) {
          const message = error instanceof Error ? error.message : String(error);
          logger.warn("[get_context fcj] The search index could not be built", {
@@ -244,10 +271,16 @@ function readyState(
    environmentName: string,
    packageName: string,
    failuresBefore = 0,
+   lastWrite?: number,
 ): FcjState {
+   // A build that never reported a write time (no vectors step) falls back to
+   // when its vectors went live.
+   const lastSyncedAt =
+      index.vectors.size > 0 ? (lastWrite ?? Date.now()) : undefined;
+   const synced = lastSyncedAt !== undefined ? { lastSyncedAt } : {};
    const values = index.report.values;
    const failed = "failed" in values ? values.failed : [];
-   if (failed.length === 0) return { status: "ready", index };
+   if (failed.length === 0) return { status: "ready", index, ...synced };
    const valueFailures = failuresBefore + 1;
    const retryAfterMs = valueRetryDelayMs(valueFailures);
    logger.warn(
@@ -262,6 +295,7 @@ function readyState(
    return {
       status: "ready",
       index,
+      ...synced,
       rebuildAt: Date.now() + retryAfterMs,
       valueFailures,
    };
@@ -315,6 +349,9 @@ function rebuildForValues(
          states.set(pkg, {
             status: "ready",
             index: state.index,
+            ...(state.lastSyncedAt !== undefined
+               ? { lastSyncedAt: state.lastSyncedAt }
+               : {}),
             rebuildAt: Date.now() + valueRetryDelayMs(valueFailures),
             valueFailures,
          });
@@ -330,6 +367,10 @@ async function buildFor(
       pkg: Package;
    },
    previousValues?: { index: ValueIndex; report: ValueBuildReport },
+   onVectorProgress?: (
+      progress: VectorProgress,
+      lastWrittenAt?: number,
+   ) => void,
 ): Promise<FcjIndex> {
    const { environmentStore, environmentName, packageName, pkg } = args;
    const pkgIndex = await getPackageIndex(
@@ -415,7 +456,47 @@ async function buildFor(
       ...(previousValues ? { previousValues } : {}),
       // A package removed mid-build stops reading values and embedding.
       shouldStop,
+      ...(onVectorProgress ? { onVectorProgress } : {}),
    });
+}
+
+/**
+ * How much of `pkg`'s index holds vectors: while building, as far as the
+ * vectors step has got (zero before it starts); once ready, what the index
+ * serves. Zero with no build, or after a failed one.
+ */
+export function fcjVectorProgressOf(pkg: Package): VectorProgress {
+   const state = states.get(pkg);
+   if (state?.status === "building" && state.progress) return state.progress;
+   if (state?.status !== "ready") {
+      return {
+         totalRows: 0,
+         embeddedRows: 0,
+         totalEntities: 0,
+         embeddedEntities: 0,
+      };
+   }
+   const { index } = state;
+   let embeddedRows = 0;
+   for (const facets of index.vectors.values()) embeddedRows += facets.length;
+   return {
+      totalRows: index.report.vectors.rows,
+      embeddedRows,
+      // Every searched node (one that is not a folded copy) wants a row.
+      totalEntities: [...index.catalog.nodes.values()].filter((n) => !n.copyOf)
+         .length,
+      embeddedEntities: index.vectors.size,
+   };
+}
+
+/** When the package's vectors were last written, as ISO 8601; undefined before any were. */
+export function fcjLastSyncedAtOf(pkg: Package): string | undefined {
+   const state = states.get(pkg);
+   const at =
+      state?.status === "building" || state?.status === "ready"
+         ? state.lastSyncedAt
+         : undefined;
+   return at === undefined ? undefined : new Date(at).toISOString();
 }
 
 /** The state as the REST Package resource reports it, under `embeddingIndex.fcj`. */

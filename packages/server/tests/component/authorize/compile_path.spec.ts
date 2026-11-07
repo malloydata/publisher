@@ -10,6 +10,7 @@ import path from "path";
 import { AccessDeniedError, NotQueryableError } from "../../../src/errors";
 import { hasCallerAuthorizeAnnotation } from "../../../src/service/authorize";
 import { Environment } from "../../../src/service/environment";
+import { writePackageFiles } from "../../../src/test_helpers/temp_package";
 
 /** The rows of a query result, whatever wrapper the result carries them in. */
 function rowsOf(result: unknown): unknown[] {
@@ -24,10 +25,10 @@ function rowsOf(result: unknown): unknown[] {
 // the early gate AND the compiled-source backstop fire, the latter REGARDLESS of
 // includeSql (a compile-time schema oracle is closed even with no SQL extraction).
 
-const PUBLISHER_JSON = JSON.stringify({
+const MANIFEST = {
    name: "pkg",
    description: "compile-gate",
-});
+};
 
 // `gated` is locked to $ROLE='analyst'; `open_src` is unrestricted; `row_gated`
 // is locked by a ROW-FIELD condition (`org_id`), not just a given.
@@ -98,14 +99,15 @@ describe("compile-path authorize gate (compileSource)", () => {
       const envPath = path.join(rootDir, "env");
       await fs.mkdir(envPath, { recursive: true });
       env = await Environment.create("testEnv", envPath, []);
-      await env.installPackage("pkg", async (stagingPath) => {
-         await fs.mkdir(stagingPath, { recursive: true });
-         await fs.writeFile(
-            path.join(stagingPath, "publisher.json"),
-            PUBLISHER_JSON,
-         );
-         await fs.writeFile(path.join(stagingPath, "model.malloy"), MODEL);
-      });
+      await env.installPackage("pkg", async (stagingPath) =>
+         writePackageFiles(
+            stagingPath,
+            {
+               "model.malloy": MODEL,
+            },
+            { manifest: MANIFEST },
+         ),
+      );
    });
 
    afterEach(async () => {
@@ -843,14 +845,15 @@ describe("caller-annotation guard on markdown prose (compileSource)", () => {
       const envPath = path.join(rootDir, "env");
       await fs.mkdir(envPath, { recursive: true });
       env = await Environment.create("testEnv", envPath, []);
-      await env.installPackage("pkg", async (stagingPath) => {
-         await fs.mkdir(stagingPath, { recursive: true });
-         await fs.writeFile(
-            path.join(stagingPath, "publisher.json"),
-            PUBLISHER_JSON,
-         );
-         await fs.writeFile(path.join(stagingPath, "model.malloy"), model);
-      });
+      await env.installPackage("pkg", async (stagingPath) =>
+         writePackageFiles(
+            stagingPath,
+            {
+               "model.malloy": model,
+            },
+            { manifest: MANIFEST },
+         ),
+      );
    };
 
    afterEach(async () => {
@@ -1027,26 +1030,17 @@ describe("compile-path is exempt from the query boundary (compileSource)", () =>
       const envPath = path.join(rootDir, "env");
       await fs.mkdir(envPath, { recursive: true });
       env = await Environment.create("testEnv", envPath, []);
-      await env.installPackage("pkg", async (stagingPath) => {
-         await fs.mkdir(stagingPath, { recursive: true });
-         await fs.writeFile(
-            path.join(stagingPath, "publisher.json"),
-            JSON.stringify({ name: "pkg" }),
-         );
-         await fs.writeFile(
-            path.join(stagingPath, "base.malloy"),
-            `source: base_source is duckdb.sql("select 1 as id") extend {
+      await env.installPackage("pkg", async (stagingPath) =>
+         writePackageFiles(stagingPath, {
+            "base.malloy": `source: base_source is duckdb.sql("select 1 as id") extend {
   measure: c is count()
 }`,
-         );
-         await fs.writeFile(
-            path.join(stagingPath, "index.malloy"),
-            `import "base.malloy"
+            "index.malloy": `import "base.malloy"
 source: helper is duckdb.sql("select 1 as id") extend { measure: hc is count() }
 source: customers is duckdb.sql("select 1 as id") extend { measure: c is count() }
 export { customers }`,
-         );
-      });
+         }),
+      );
    });
 
    afterEach(async () => {
@@ -1103,16 +1097,10 @@ describe("compile exemption is not an existence oracle (compileSource)", () => {
       const envPath = path.join(rootDir, "env");
       await fs.mkdir(envPath, { recursive: true });
       env = await Environment.create("testEnv", envPath, []);
-      await env.installPackage("pkg", async (stagingPath) => {
-         await fs.mkdir(stagingPath, { recursive: true });
-         await fs.writeFile(
-            path.join(stagingPath, "publisher.json"),
-            JSON.stringify({ name: "pkg" }),
-         );
-         // Hidden file (not imported by index.malloy's exports) holding a gated source.
-         await fs.writeFile(
-            path.join(stagingPath, "secret.malloy"),
-            `##! experimental.givens
+      await env.installPackage("pkg", async (stagingPath) =>
+         writePackageFiles(stagingPath, {
+            // Hidden file (not imported by index.malloy's exports) holding a gated source.
+            "secret.malloy": `##! experimental.givens
 
 #(secure)
 given:
@@ -1122,14 +1110,11 @@ given:
 source: hidden_gated is duckdb.sql("SELECT 1 as x") extend {
   measure: c is count()
 }`,
-         );
-         // Listed file with a gated source that IS exported (visible). It also
-         // imports the hidden file, so the evasion probes below can resolve
-         // hidden_gated in a LISTED model's namespace; the import does not
-         // export it, so it stays boundary-hidden.
-         await fs.writeFile(
-            path.join(stagingPath, "index.malloy"),
-            `##! experimental.givens
+            // Listed file with a gated source that IS exported (visible). It also
+            // imports the hidden file, so the evasion probes below can resolve
+            // hidden_gated in a LISTED model's namespace; the import does not
+            // export it, so it stays boundary-hidden.
+            "index.malloy": `##! experimental.givens
 import "secret.malloy"
 
 #(authorize) 'analyst' = $ROLE
@@ -1139,8 +1124,8 @@ source: visible_gated is duckdb.sql("SELECT 1 as x") extend {
 
 source: customers is duckdb.sql("SELECT 1 as x") extend { measure: c is count() }
 export { customers, visible_gated }`,
-         );
-      });
+         }),
+      );
    });
 
    afterEach(async () => {

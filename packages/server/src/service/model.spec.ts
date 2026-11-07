@@ -103,19 +103,12 @@ describe("service/model", () => {
    describe("instance methods", () => {
       describe("getPath", () => {
          it("should return the correct modelPath", async () => {
-            const model = new Model(
+            const model = new Model({
                packageName,
-               mockModelPath,
-               {},
-               "model",
-               undefined,
-               undefined,
-               undefined,
-               undefined,
-               undefined,
-               undefined,
-               undefined,
-            );
+               modelPath: mockModelPath,
+               dataStyles: {},
+               modelType: "model",
+            });
 
             expect(model.getPath()).toBe(mockModelPath);
 
@@ -126,19 +119,12 @@ describe("service/model", () => {
       describe("getType", () => {
          it("should return the correct modelType", async () => {
             const modelType = "model";
-            const model = new Model(
+            const model = new Model({
                packageName,
-               mockModelPath,
-               {},
+               modelPath: mockModelPath,
+               dataStyles: {},
                modelType,
-               undefined,
-               undefined,
-               undefined,
-               undefined,
-               undefined,
-               undefined,
-               undefined,
-            );
+            });
 
             expect(model.getType()).toBe(modelType);
 
@@ -148,19 +134,13 @@ describe("service/model", () => {
 
       describe("getModel", () => {
          it("should throw ModelCompilationError if a compilation error exists", async () => {
-            const model = new Model(
+            const model = new Model({
                packageName,
-               mockModelPath,
-               {},
-               "model",
-               undefined,
-               undefined,
-               undefined,
-               undefined,
-               undefined,
-               undefined,
-               new MalloyError("Compilation error"),
-            );
+               modelPath: mockModelPath,
+               dataStyles: {},
+               modelType: "model",
+               compilationError: new MalloyError("Compilation error"),
+            });
 
             await expect(async () => {
                await model.getModel();
@@ -170,19 +150,12 @@ describe("service/model", () => {
          });
 
          it("should throw ModelNotFoundError for invalid modelType", async () => {
-            const model = new Model(
+            const model = new Model({
                packageName,
-               mockModelPath,
-               {},
-               "notebook" as ModelType,
-               undefined,
-               undefined,
-               undefined,
-               undefined,
-               undefined,
-               undefined,
-               undefined,
-            );
+               modelPath: mockModelPath,
+               dataStyles: {},
+               modelType: "notebook" as ModelType,
+            });
 
             await expect(async () => {
                await model.getModel();
@@ -192,19 +165,12 @@ describe("service/model", () => {
          });
 
          it("names the model in `path`, the field the API declares", async () => {
-            const model = new Model(
+            const model = new Model({
                packageName,
-               mockModelPath,
-               {},
-               "model",
-               undefined,
-               undefined,
-               undefined,
-               undefined,
-               undefined,
-               undefined,
-               undefined,
-            );
+               modelPath: mockModelPath,
+               dataStyles: {},
+               modelType: "model",
+            });
 
             const compiled = await model.getModel();
             expect(compiled.path).toBe(mockModelPath);
@@ -215,19 +181,13 @@ describe("service/model", () => {
 
       describe("getNotebook", () => {
          it("should throw ModelCompilationError if a compilation error exists", async () => {
-            const model = new Model(
+            const model = new Model({
                packageName,
-               mockModelPath,
-               {},
-               "notebook",
-               undefined,
-               undefined,
-               undefined,
-               undefined,
-               undefined,
-               undefined,
-               new Error("Compilation error"),
-            );
+               modelPath: mockModelPath,
+               dataStyles: {},
+               modelType: "notebook",
+               compilationError: new Error("Compilation error"),
+            });
 
             await expect(async () => {
                await model.getNotebook();
@@ -237,19 +197,12 @@ describe("service/model", () => {
          });
 
          it("should throw ModelNotFoundError for invalid modelType", async () => {
-            const model = new Model(
+            const model = new Model({
                packageName,
-               mockModelPath,
-               {},
-               "model" as ModelType,
-               undefined,
-               undefined,
-               undefined,
-               undefined,
-               undefined,
-               undefined,
-               undefined,
-            );
+               modelPath: mockModelPath,
+               dataStyles: {},
+               modelType: "model" as ModelType,
+            });
 
             await expect(async () => {
                await model.getNotebook();
@@ -273,27 +226,20 @@ describe("service/model", () => {
                      annotations: ["#(doc) Region"],
                   },
                ];
-               const model = new Model(
+               const model = new Model({
                   packageName,
-                  "test.malloynb",
-                  {},
-                  "notebook",
-                  undefined, // modelMaterializer
-                  undefined, // modelDef
-                  undefined, // sources
-                  undefined, // queries
-                  undefined, // sourceInfos
-                  [
+                  modelPath: "test.malloynb",
+                  dataStyles: {},
+                  modelType: "notebook",
+                  runnableNotebookCells: [
                      {
                         type: "code",
                         text: "import 'carriers.malloy'",
                         newSources: [sourceInfo],
                      },
-                  ], // runnableNotebookCells
-                  undefined, // compilationError
-                  undefined, // filterMap
-                  givens, // givens
-               );
+                  ],
+                  givens,
+               });
 
                const notebook = await model.getNotebook();
                expect(notebook.notebookCells).toHaveLength(1);
@@ -309,27 +255,19 @@ describe("service/model", () => {
 
             it("omits givens from newSources when the model declares none", async () => {
                const sourceInfo = { name: "carriers", schema: { fields: [] } };
-               const model = new Model(
+               const model = new Model({
                   packageName,
-                  "test.malloynb",
-                  {},
-                  "notebook",
-                  undefined,
-                  undefined,
-                  undefined,
-                  undefined,
-                  undefined,
-                  [
+                  modelPath: "test.malloynb",
+                  dataStyles: {},
+                  modelType: "notebook",
+                  runnableNotebookCells: [
                      {
                         type: "code",
                         text: "import 'carriers.malloy'",
                         newSources: [sourceInfo],
                      },
                   ],
-                  undefined,
-                  undefined,
-                  undefined, // no givens
-               );
+               });
 
                const notebook = await model.getNotebook();
                const parsed = JSON.parse(
@@ -344,19 +282,13 @@ describe("service/model", () => {
       describe("getQueryResults", () => {
          it("should throw BadRequestError if a non-MalloyError compilation error exists", async () => {
             const error = new Error("Compilation error");
-            const model = new Model(
+            const model = new Model({
                packageName,
-               mockModelPath,
-               {},
-               "model",
-               undefined,
-               undefined,
-               undefined,
-               undefined,
-               undefined,
-               undefined,
-               error,
-            );
+               modelPath: mockModelPath,
+               dataStyles: {},
+               modelType: "model",
+               compilationError: error,
+            });
 
             await expect(async () => {
                await model.getQueryResults(unrecordedAudit());
@@ -366,19 +298,12 @@ describe("service/model", () => {
          });
 
          it("should throw BadRequestError if no queryable entities exist", async () => {
-            const model = new Model(
+            const model = new Model({
                packageName,
-               mockModelPath,
-               {},
-               "model",
-               undefined,
-               undefined,
-               undefined,
-               undefined,
-               undefined,
-               undefined,
-               undefined,
-            );
+               modelPath: mockModelPath,
+               dataStyles: {},
+               modelType: "model",
+            });
 
             await expect(async () => {
                await model.getQueryResults(unrecordedAudit());
@@ -410,21 +335,16 @@ describe("service/model", () => {
                const loadQuery = sinon.stub().returns(runnableStub);
                const loadRestrictedQuery = sinon.stub().returns(runnableStub);
                const modelMaterializer = { loadQuery, loadRestrictedQuery };
-               const model = new Model(
+               const model = new Model({
                   packageName,
-                  mockModelPath,
-                  {},
-                  "model",
+                  modelPath: mockModelPath,
+                  dataStyles: {},
+                  modelType: "model",
                   // eslint-disable-next-line @typescript-eslint/no-explicit-any
-                  modelMaterializer as any,
+                  modelMaterializer: modelMaterializer as any,
                   // eslint-disable-next-line @typescript-eslint/no-explicit-any
-                  { contents: {}, exports: [], queryList: [] } as any,
-                  undefined,
-                  undefined,
-                  undefined,
-                  undefined,
-                  undefined,
-               );
+                  modelDef: { contents: {}, exports: [], queryList: [] } as any,
+               });
                return { model, loadQuery, loadRestrictedQuery };
             }
 
@@ -477,26 +397,20 @@ describe("service/model", () => {
                loadRestrictedQuery: sinon.stub().returns(runnableStub),
             };
 
-            const model = new Model(
+            const model = new Model({
                packageName,
-               mockModelPath,
-               {},
-               "model",
+               modelPath: mockModelPath,
+               dataStyles: {},
+               modelType: "model",
                // eslint-disable-next-line @typescript-eslint/no-explicit-any
-               modelMaterializer as any,
+               modelMaterializer: modelMaterializer as any,
                // eslint-disable-next-line @typescript-eslint/no-explicit-any
-               { contents: {}, exports: [], queryList: [] } as any,
-               undefined,
-               undefined,
-               undefined,
-               undefined,
-               undefined,
-               undefined,
+               modelDef: { contents: {}, exports: [], queryList: [] } as any,
                // Model surfaces `region` so filterGivensToModelSurface (see
                // model.ts) forwards it rather than dropping it as unknown.
                // eslint-disable-next-line @typescript-eslint/no-explicit-any
-               [{ name: "region", type: "string" }] as any,
-            );
+               givens: [{ name: "region", type: "string" }] as any,
+            });
 
             await expect(
                model.getQueryResults(
@@ -540,21 +454,16 @@ describe("service/model", () => {
                loadRestrictedQuery: sinon.stub().returns(runnableStub),
             };
 
-            const model = new Model(
+            const model = new Model({
                packageName,
-               mockModelPath,
-               {},
-               "model",
+               modelPath: mockModelPath,
+               dataStyles: {},
+               modelType: "model",
                // eslint-disable-next-line @typescript-eslint/no-explicit-any
-               modelMaterializer as any,
+               modelMaterializer: modelMaterializer as any,
                // eslint-disable-next-line @typescript-eslint/no-explicit-any
-               { contents: {}, exports: [], queryList: [] } as any,
-               undefined,
-               undefined,
-               undefined,
-               undefined,
-               undefined,
-            );
+               modelDef: { contents: {}, exports: [], queryList: [] } as any,
+            });
 
             await expect(
                model.getQueryResults(
@@ -584,21 +493,16 @@ describe("service/model", () => {
                loadRestrictedQuery: sinon.stub().returns(runnableStub),
             };
 
-            const model = new Model(
+            const model = new Model({
                packageName,
-               mockModelPath,
-               {},
-               "model",
+               modelPath: mockModelPath,
+               dataStyles: {},
+               modelType: "model",
                // eslint-disable-next-line @typescript-eslint/no-explicit-any
-               modelMaterializer as any,
+               modelMaterializer: modelMaterializer as any,
                // eslint-disable-next-line @typescript-eslint/no-explicit-any
-               { contents: {}, exports: [], queryList: [] } as any,
-               undefined,
-               undefined,
-               undefined,
-               undefined,
-               undefined,
-            );
+               modelDef: { contents: {}, exports: [], queryList: [] } as any,
+            });
 
             const thrown = await model
                .getQueryResults(
@@ -670,21 +574,16 @@ describe("service/model", () => {
                   loadQuery: sinon.stub().returns(runnableStub),
                   loadRestrictedQuery: sinon.stub().returns(runnableStub),
                };
-               const model = new Model(
+               const model = new Model({
                   packageName,
-                  mockModelPath,
-                  {},
-                  "model",
+                  modelPath: mockModelPath,
+                  dataStyles: {},
+                  modelType: "model",
                   // eslint-disable-next-line @typescript-eslint/no-explicit-any
-                  modelMaterializer as any,
+                  modelMaterializer: modelMaterializer as any,
                   // eslint-disable-next-line @typescript-eslint/no-explicit-any
-                  { contents: {}, exports: [], queryList: [] } as any,
-                  undefined,
-                  undefined,
-                  undefined,
-                  undefined,
-                  undefined,
-               );
+                  modelDef: { contents: {}, exports: [], queryList: [] } as any,
+               });
                return { model, runStub, wrapStub };
             }
 
@@ -1017,25 +916,18 @@ describe("service/model", () => {
                },
             ];
 
-            const model = new Model(
+            const model = new Model({
                packageName,
-               "test.malloynb",
-               {},
-               "notebook",
-               undefined,
-               undefined,
-               undefined,
-               undefined,
-               undefined,
+               modelPath: "test.malloynb",
+               dataStyles: {},
+               modelType: "notebook",
                // eslint-disable-next-line @typescript-eslint/no-explicit-any
-               runnableCells as any,
-               undefined,
-               undefined,
+               runnableNotebookCells: runnableCells as any,
                // Model surfaces `target_code` so filterGivensToModelSurface
                // (see model.ts) forwards it rather than dropping it as unknown.
                // eslint-disable-next-line @typescript-eslint/no-explicit-any
-               [{ name: "target_code", type: "string" }] as any,
-            );
+               givens: [{ name: "target_code", type: "string" }] as any,
+            });
 
             await expect(
                model.executeNotebookCell(
@@ -1077,20 +969,14 @@ describe("service/model", () => {
                },
             ];
 
-            const model = new Model(
+            const model = new Model({
                packageName,
-               "test.malloynb",
-               {},
-               "notebook",
-               undefined,
-               undefined,
-               undefined,
-               undefined,
-               undefined,
+               modelPath: "test.malloynb",
+               dataStyles: {},
+               modelType: "notebook",
                // eslint-disable-next-line @typescript-eslint/no-explicit-any
-               runnableCells as any,
-               undefined,
-            );
+               runnableNotebookCells: runnableCells as any,
+            });
 
             await expect(
                model.executeNotebookCell(
@@ -1130,17 +1016,12 @@ describe("service/model", () => {
                   .resolves({ resultExplore: { limit: 10 } }),
                run: sinon.stub().rejects(driverError),
             };
-            const model = new Model(
+            const model = new Model({
                packageName,
-               "test.malloynb",
-               {},
-               "notebook",
-               undefined,
-               undefined,
-               undefined,
-               undefined,
-               undefined,
-               [
+               modelPath: "test.malloynb",
+               dataStyles: {},
+               modelType: "notebook",
+               runnableNotebookCells: [
                   {
                      type: "code" as const,
                      text: "run: orders -> by_code",
@@ -1148,8 +1029,7 @@ describe("service/model", () => {
                   },
                   // eslint-disable-next-line @typescript-eslint/no-explicit-any
                ] as any,
-               undefined,
-            );
+            });
 
             await expect(
                model.executeNotebookCell(unrecordedAudit(), 0),
@@ -1176,22 +1056,15 @@ describe("service/model", () => {
                },
             ];
 
-            const model = new Model(
+            const model = new Model({
                packageName,
-               "test.malloynb",
-               {},
-               "notebook",
-               undefined, // modelMaterializer
-               undefined, // modelDef
-               undefined, // sources
-               undefined, // queries
-               undefined, // sourceInfos
+               modelPath: "test.malloynb",
+               dataStyles: {},
+               modelType: "notebook",
                // eslint-disable-next-line @typescript-eslint/no-explicit-any
-               runnableCells as any, // runnableNotebookCells
-               undefined, // compilationError
-               undefined, // filterMap
-               givens, // givens
-            );
+               runnableNotebookCells: runnableCells as any,
+               givens,
+            });
 
             const result = await model.executeNotebookCell(
                unrecordedAudit(),
@@ -1223,23 +1096,16 @@ describe("service/model", () => {
                },
             ];
 
-            const model = new Model(
+            const model = new Model({
                packageName,
-               "test.malloynb",
-               {},
-               "notebook",
-               undefined,
-               undefined,
-               undefined,
-               undefined,
-               undefined,
+               modelPath: "test.malloynb",
+               dataStyles: {},
+               modelType: "notebook",
                // eslint-disable-next-line @typescript-eslint/no-explicit-any
-               runnableCells as any,
-               undefined,
-               undefined,
+               runnableNotebookCells: runnableCells as any,
                // eslint-disable-next-line @typescript-eslint/no-explicit-any
-               [{ name: "GROUPS", type: "number[]" }] as any,
-            );
+               givens: [{ name: "GROUPS", type: "number[]" }] as any,
+            });
 
             await expect(
                model.executeNotebookCell(
@@ -1281,23 +1147,16 @@ describe("service/model", () => {
                },
             ];
 
-            const model = new Model(
+            const model = new Model({
                packageName,
-               "test.malloynb",
-               {},
-               "notebook",
-               undefined,
-               undefined,
-               undefined,
-               undefined,
-               undefined,
+               modelPath: "test.malloynb",
+               dataStyles: {},
+               modelType: "notebook",
                // eslint-disable-next-line @typescript-eslint/no-explicit-any
-               runnableCells as any,
-               undefined,
-               undefined,
+               runnableNotebookCells: runnableCells as any,
                // eslint-disable-next-line @typescript-eslint/no-explicit-any
-               [{ name: "GROUPS", type: "number[]" }] as any,
-            );
+               givens: [{ name: "GROUPS", type: "number[]" }] as any,
+            });
 
             const groupsArg = { GROUPS: [1] };
             await expect(
@@ -1479,14 +1338,14 @@ describe("service/model", () => {
             loadQuery: sinon.stub().returns(liveRunnable),
             loadRestrictedQuery: sinon.stub().returns(liveRunnable),
          };
-         const model = new Model(
+         const model = new Model({
             packageName,
-            mockModelPath,
-            {},
-            "model",
+            modelPath: mockModelPath,
+            dataStyles: {},
+            modelType: "model",
             // eslint-disable-next-line @typescript-eslint/no-explicit-any
-            modelMaterializer as any,
-            {
+            modelMaterializer: modelMaterializer as any,
+            modelDef: {
                contents: Object.fromEntries(
                   Object.entries(opts.sourceNotes ?? {}).map(
                      ([name, texts]) => [
@@ -1567,14 +1426,10 @@ describe("service/model", () => {
                      : undefined,
                // eslint-disable-next-line @typescript-eslint/no-explicit-any
             } as any,
-            undefined,
             // queries: how a `queryName` request resolves to its source.
             // eslint-disable-next-line @typescript-eslint/no-explicit-any
-            opts.queries as any,
-            undefined,
-            undefined,
-            undefined,
-         );
+            queries: opts.queries as any,
+         });
          setEnv({ PERSIST_STORAGE_MODE: "on" });
          model.setServeBindings(
             // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -2035,13 +1890,13 @@ describe("service/model", () => {
          // than a made-up "live", because "this query had no storage binding to
          // consider" and "storage was considered and declined" are different
          // facts and only the second is worth showing anyone.
-         const model = new Model(
+         const model = new Model({
             packageName,
-            mockModelPath,
-            {},
-            "model",
+            modelPath: mockModelPath,
+            dataStyles: {},
+            modelType: "model",
             // eslint-disable-next-line @typescript-eslint/no-explicit-any
-            (() => {
+            modelMaterializer: (() => {
                const runnable = {
                   getPreparedResult: sinon.stub().resolves({
                      resultExplore: { limit: 0 },
@@ -2061,13 +1916,8 @@ describe("service/model", () => {
                // eslint-disable-next-line @typescript-eslint/no-explicit-any
             })() as any,
             // eslint-disable-next-line @typescript-eslint/no-explicit-any
-            { contents: {}, exports: [], queryList: [] } as any,
-            undefined,
-            undefined,
-            undefined,
-            undefined,
-            undefined,
-         );
+            modelDef: { contents: {}, exports: [], queryList: [] } as any,
+         });
          sinon
             .stub(API.util, "wrapResult")
             .returns({ rows: [] } as unknown as ReturnType<

@@ -14,6 +14,7 @@ import fs from "fs/promises";
 import os from "os";
 import path from "path";
 import { Environment } from "./environment";
+import { writePackageFiles } from "../test_helpers/temp_package";
 
 const UNKNOWN_COLSPAN = "Unknown render tag 'colspan' on field 'root'";
 
@@ -61,14 +62,15 @@ describe("render-tag findings for a tile's layout tags", () => {
       );
       const envPath = path.join(rootDir, "env");
       const dir = path.join(envPath, "pkg");
-      await fs.mkdir(dir, { recursive: true });
-      await fs.writeFile(
-         path.join(dir, "publisher.json"),
-         JSON.stringify({ name: "pkg", description: "fixture" }),
+      writePackageFiles(
+         dir,
+         {
+            "flights.malloy": FLIGHTS,
+            "grid.malloy": GRID_REPORT,
+            "notes.malloy": LINEAR_REPORT,
+         },
+         { manifest: { name: "pkg", description: "fixture" } },
       );
-      await fs.writeFile(path.join(dir, "flights.malloy"), FLIGHTS);
-      await fs.writeFile(path.join(dir, "grid.malloy"), GRID_REPORT);
-      await fs.writeFile(path.join(dir, "notes.malloy"), LINEAR_REPORT);
       env = await Environment.create("testEnv", envPath, []);
       await env.addPackage("pkg");
    });

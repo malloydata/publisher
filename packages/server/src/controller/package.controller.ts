@@ -24,7 +24,7 @@ import {
    BuildPlanUnavailableError,
 } from "../errors";
 import { logger } from "../logger";
-import { getPackageEmbeddingStatus } from "../mcp/tools/get_context_tool";
+import { getPackageEmbeddingStatus } from "../mcp/tools/package_embedding";
 import { EnvironmentStore } from "../service/environment_store";
 import type { Environment } from "../service/environment";
 import type { Package } from "../service/package";
@@ -36,6 +36,7 @@ import {
 import type { VersionService } from "../service/versions/version_service";
 import { versionManifestLocation } from "./manifest_location";
 import { changedFields } from "./versioned_patch";
+import { loadedPackage } from "./loaded_package";
 
 type ApiPackage = components["schemas"]["Package"];
 type ApiModelEntities = components["schemas"]["ModelEntities"];
@@ -225,13 +226,17 @@ export class PackageController {
    }
 
    /** The loaded package `versionId` names, for a sub-resource read. */
-   private async loadedPackage(
+   private loadedPackage(
       environmentName: string,
       packageName: string,
       versionId?: unknown,
    ) {
-      const environment = await this.environment(environmentName);
-      return environment.getPackage(packageName, false, { versionId });
+      return loadedPackage(
+         this.environmentStore,
+         environmentName,
+         packageName,
+         versionId,
+      );
    }
 
    /**
@@ -601,7 +606,7 @@ export class PackageController {
                   body,
                );
             }
-            // Versioning off, the transition default (#1381): installed in
+            // Versioning off, the transition default: installed in
             // place, as every publish from a location was before versions,
             // whatever its publisher.json declares. Versions already published
             // are not replaced.

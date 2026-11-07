@@ -15,6 +15,7 @@ import os from "os";
 import path from "path";
 import { Environment } from "./environment";
 import { isReportEligiblePath, reportWritePathProblem } from "./report";
+import { writePackageFiles } from "../test_helpers/temp_package";
 
 const PACKAGE = "report-root-index-case";
 
@@ -42,23 +43,19 @@ describe("a tagged root index file in another letter case", () => {
    });
 
    it("is not served, and its tag is reported as ignored", async () => {
-      await env.installPackage(PACKAGE, async (stagingPath) => {
-         await fs.mkdir(stagingPath, { recursive: true });
-         await fs.writeFile(
-            path.join(stagingPath, "publisher.json"),
-            JSON.stringify({ name: PACKAGE, version: "1.0.0" }),
-         );
-         await fs.writeFile(
-            path.join(stagingPath, "base.malloy"),
-            `source: s is duckdb.sql("select 1 as x") extend {\n` +
-               `   view: v is { group_by: x }\n` +
-               `}\n`,
-         );
-         await fs.writeFile(
-            path.join(stagingPath, "Index.malloy"),
-            `## artifact { layout=grid tiles=["s -> v"] }\nimport "base.malloy"\n`,
-         );
-      });
+      await env.installPackage(PACKAGE, async (stagingPath) =>
+         writePackageFiles(
+            stagingPath,
+            {
+               "base.malloy":
+                  `source: s is duckdb.sql("select 1 as x") extend {\n` +
+                  `   view: v is { group_by: x }\n` +
+                  `}\n`,
+               "Index.malloy": `## artifact { layout=grid tiles=["s -> v"] }\nimport "base.malloy"\n`,
+            },
+            { manifest: { name: PACKAGE, version: "1.0.0" } },
+         ),
+      );
       const pkg = await env.getPackage(PACKAGE, false);
 
       expect(pkg.isServedReport("Index.malloy")).toBe(false);

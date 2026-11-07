@@ -718,11 +718,14 @@ Under the same `publisher` meter, with bounded labels.
 | Metric                                                                           | Type               | What it counts                                                                                                                         |
 | -------------------------------------------------------------------------------- | ------------------ | -------------------------------------------------------------------------------------------------------------------------------------- |
 | `malloy_model_query_duration{malloy.model.query.status,…}`                       | Histogram          | Every model query. `status` is `success`, `error` (it compiled and failed), or `rejected` (malformed before anything compiled).        |
-| `publisher_mcp_tool_calls_total{tool,outcome}`, `publisher_mcp_tool_duration_ms` | Counter, histogram | Every MCP tool call: `ok`, `error` (answered with `isError`), or `exception` (threw).                                                  |
+| `publisher_mcp_tool_calls_total{tool,outcome}`, `publisher_mcp_tool_duration_ms` | Counter, histogram | Every MCP tool call: `ok`, `error` (`isError`), `exception` (threw), or `cancelled` (the client cancelled).                            |
 | `publisher_compiles_total{scope,outcome}`, `publisher_compile_duration_ms`       | Counter, histogram | Compile requests from REST and MCP alike: `success`, `error` (answered with error problems), or `refused` (threw).                     |
 | `publisher_packages{state}`                                                      | Gauge              | Packages `serving`, `failed` to load, or `stale` (serving the model from before a reload that failed), summed over environments.       |
 | `publisher_package_reloads_total{trigger,outcome}`                               | Counter            | Reloads by `rest`, `mcp` or `watch`, and whether they compiled. A failed one leaves the previous model serving.                        |
+| `publisher_package_reload_duration_ms{outcome}`                                  | Histogram          | An in-place reload, recompiling a package from disk: `success` or `failure`.                                                           |
+| `publisher_package_install_duration_ms{outcome}`                                 | Histogram          | An install (download, load, swap): an unversioned publish, or the reinstall a reload does for a package with a location.               |
 | `publisher_connection_operations_total{operation,type,outcome}`                  | Counter            | Connection `create`, `update`, `delete` and `test`. A test that runs and cannot connect is `failed`; anything that threw is `refused`. |
+| `publisher_connection_operation_duration_ms{operation,type,outcome}`             | Histogram          | How long each of those connection operations took, with the same labels.                                                               |
 | `publisher_mcp_row_limit_hits_total`                                             | Counter            | `execute_query` answers that landed on the server's default row limit, so the agent saw a sample.                                      |
 | `publisher_storage_bindings_withheld_total`                                      | Counter            | Storage bindings the freshness gate withheld from a routed query, which was then read live.                                            |
 
@@ -732,7 +735,45 @@ duration; per-request transport detail is at `debug`.
 
 With `OTEL_EXPORTER_OTLP_ENDPOINT` set, queries are traced as a `publisher.query` span (package,
 model path, the tier it was served from) with `publisher.query.execute` beneath it, and compiles as
-`publisher.compile`. They nest under the HTTP spans auto-instrumentation creates.
+`publisher.compile`. Every package load is a `publisher.package.load` span (environment, package,
+whether it was a dry run), and an in-place reload wraps its load in `publisher.package.reload`. Each
+MCP tool call is a `publisher.mcp.tool` span carrying `mcp.tool.name` and `mcp.tool.outcome` (`ok`,
+`error`, `cancelled`, or absent when it threw, which marks the span an error). A materialization
+run is a `publisher.materialization.build` span (package, build id, `auto` or `orchestrated` mode), with one
+`publisher.materialization.build_source` span per persist source it builds. They nest under the HTTP
+spans auto-instrumentation creates.
+
+### HTTP requests
+
+Every request is measured twice, by two different series that are easy to confuse:
+
+- `http_server_request_duration_ms{http.method,http.route,http.status_code}`, a histogram in
+  milliseconds with buckets up to 60 s, and `http_server_requests_total` with the same labels.
+  Publisher records these itself. `http.route` is the Express route the request matched, never
+  its raw path; a request that matched none (a static file, a Console page, a 404) is
+  `unmatched`. Health probes and `/metrics` are left out. Build dashboards and alerts on these.
+- `http_server_request_duration`, a histogram in **seconds** from OpenTelemetry's HTTP
+  instrumentation, with semantic-convention labels (`http_request_method`,
+  `http_response_status_code`, `http_route`) and OpenTelemetry's buckets, which stop at 10 s. It is
+  there for tooling that expects the standard name, and only where that instrumentation can hook
+  the server: under Node (`npx`). Under Bun (`npm start`, the Docker image) it never appears, and
+  neither does the HTTP span the traces above nest under.
+
+### The access log
+
+Each request other than a probe or a scrape writes one line at `info`, its message the method and
+URL. Its fields:
+
+| Field        | Meaning                                                                                                                                                                |
+| ------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `statusCode` | The response status.                                                                                                                                                   |
+| `durationMs` | Time to the response's last byte, in milliseconds, as a number.                                                                                                        |
+| `duration`   | The same, formatted (`12.34ms`, `1.23s`). Kept for existing readers; query on `durationMs`.                                                                            |
+| `params`     | The route parameters.                                                                                                                                                  |
+| `query`      | The query-string parameters.                                                                                                                                           |
+| `traceId`    | The request's trace: the HTTP span's, which continues an incoming `traceparent`, else the `traceparent` header's own. Absent when there is neither.                    |
+| `payload`    | The request body, **only when `LOG_LEVEL` is `debug`** (the default) or `silly`. Credential fields are masked by key name; query text and given values are not, so a production log at `info` leaves the body out. A body over 2048 characters of JSON is logged as `{truncated, length, head}`. |
+| `response`   | The response body, under the same rule: only at `debug` or `silly`, unless `DISABLE_RESPONSE_LOGGING` turns it off. It holds query result rows. Masked and truncated the same way. |
 
 ## Report and deprecation metrics
 

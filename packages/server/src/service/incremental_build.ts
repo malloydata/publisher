@@ -150,6 +150,42 @@ export function indexCallerLedger(
 }
 
 /**
+ * A source's incremental refresh in this run: the run's context with the
+ * lineage the source's declaration implies, or undefined when the run declared
+ * none, the source has no content address, or it is not a delta candidate
+ * ({@link incrementalLineage}). A table in a storage destination is written in
+ * DuckDB; a colocated one in the source's own dialect. The build dispatch and
+ * the skip-if-unchanged check share this one predicate so they never disagree.
+ */
+export function sourceIncrementalRefresh(
+   context: IncrementalRunContext | undefined,
+   persistSource: Pick<
+      PersistSource,
+      "sourceID" | "dialectName" | "connectionName"
+   >,
+   table: {
+      physicalTableName: string;
+      storageDestinationName?: string;
+      sourceEntityId: string | undefined;
+   },
+): { context: IncrementalRunContext; lineage: IncrementalLineage } | undefined {
+   if (!context || !table.sourceEntityId) return undefined;
+   const lineage = incrementalLineage({
+      declaration: context.declarations[persistSource.sourceID],
+      dialect: persistSource.dialectName,
+      targetDialect:
+         table.storageDestinationName !== undefined
+            ? STORAGE_TARGET_DIALECT
+            : persistSource.dialectName,
+      physicalTableName: table.physicalTableName,
+      connectionName: persistSource.connectionName,
+      storageDestinationName: table.storageDestinationName,
+      sourceEntityId: table.sourceEntityId,
+   });
+   return lineage ? { context, lineage } : undefined;
+}
+
+/**
  * The lineage a source's declaration implies, or undefined when this source is
  * not a candidate for a delta: build it the ordinary way and leave the ledger
  * alone. A declared-incremental source failing these checks is normally REJECTED

@@ -38,7 +38,7 @@ import type {
  * carries its doc in full.
  */
 export const SOURCE_DOC_MAX_CHARS = 500;
-export const JOIN_DOC_MAX_CHARS = 200;
+const JOIN_DOC_MAX_CHARS = 200;
 
 export function truncateDoc(doc: string, max: number): string {
    if (doc.length <= max) return doc;
@@ -1102,7 +1102,7 @@ export function sourceContextKey(modelPath: string, source: string): string {
 /**
  * The key of one CARD: an entity under one of the model paths it resolves in.
  */
-export function entityCardKey(e: {
+function entityCardKey(e: {
    modelPath: string;
    kind: string;
    source?: string;

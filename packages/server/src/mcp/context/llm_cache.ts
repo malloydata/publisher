@@ -21,18 +21,19 @@ import type { ChatModel } from "../../providers/types";
 import type { DuckDBConnection } from "../../storage/duckdb/DuckDBConnection";
 import { publicMessage } from "../../service/http_retry";
 import {
+   runPooled,
    SyncBudgetReached,
    type SyncRequestBudget,
 } from "../tools/get_context_llm";
 
-export type LlmCacheTable = "doc_parts" | "node_questions";
+type LlmCacheTable = "doc_parts" | "node_questions";
 
 export function sha256(text: string): string {
    return createHash("sha256").update(text).digest("hex");
 }
 
 /** One item a step may send. */
-export interface CacheItem {
+interface CacheItem {
    /** Stable key of the item within the package. */
    key: string;
    /** Hash of everything the model is shown for this item. */
@@ -128,13 +129,11 @@ export async function generateCached<T>(args: {
    let failure: unknown;
    let capped = false;
    let generated = 0;
-   let next = 0;
-   const worker = async () => {
-      while (failure === undefined && !capped) {
-         if (args.shouldStop?.()) return;
-         const index = next++;
-         if (index >= batches.length) return;
-         const batch = batches[index];
+   // Each batch settles its own failure, so the pool never sees one.
+   await runPooled(
+      batches,
+      args.concurrency,
+      async (batch) => {
          try {
             const reply = await args.budget.spend((onRequest) =>
                args.chat.completeJson({
@@ -176,19 +175,11 @@ export async function generateCached<T>(args: {
                );
             }
          } catch (error) {
-            if (error instanceof SyncBudgetReached) {
-               capped = true;
-               return;
-            }
-            failure ??= error;
+            if (error instanceof SyncBudgetReached) capped = true;
+            else failure ??= error;
          }
-      }
-   };
-   await Promise.all(
-      Array.from(
-         { length: Math.min(Math.max(1, args.concurrency), batches.length) },
-         worker,
-      ),
+      },
+      () => failure !== undefined || capped || args.shouldStop?.() === true,
    );
    return {
       output,

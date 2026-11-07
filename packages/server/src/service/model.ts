@@ -80,13 +80,9 @@ import {
    assertNoAuthorizeTagLike,
    assertNoCallerAuthorizeAnnotation,
    assertNoCallerClassificationAnnotation,
-   assertNoLegacyStringGate,
-   assertNoMisplacedAuthorizeAnnotations,
    containsAuthorizeAnnotationTag,
    hasCallerAuthorizeAnnotation,
-   findLegacyStringGates,
    referencedGivenNames,
-   validateAuthorizeProbes,
    type RowLevelGateRejectionCause,
 } from "./authorize";
 import { ACCESS_FILTER_ROUTE, AUTHORIZE_ROUTE } from "./authorize_routes";
@@ -111,10 +107,6 @@ import {
    type NotebookFormat,
 } from "../notebook_metrics";
 import {
-   validateSourceLineGateGivenUsage,
-   type ExpandableRefSummary,
-} from "./gate_dimension";
-import {
    buildFilterClause,
    FILTER_ANNOTATION_PREFIX,
    filterHasValue,
@@ -124,12 +116,7 @@ import {
    type FilterDefinition,
    type FilterParams,
 } from "./filter";
-import {
-   assertFilterGivensParse,
-   gateGivenSource,
-   malloyGivenToApi,
-   type MalloyGiven,
-} from "./given";
+import { assertFilterGivensParse, gateGivenSource } from "./given";
 import { filterPublisherOwnedRenderLogs } from "./report_manifest";
 import {
    docCommentTitleAndDescription,
@@ -197,11 +184,7 @@ import {
 // methods of the same names; without the alias, converting one of them to an
 // arrow-function property would recurse instead of delegating.
 import {
-   assertAuthorizeGrammarValid,
-   assertNoRetiredRouteMarkers,
    collectEntryPointGates as collectEntryPointGatesImpl,
-   collectRetiredRouteMarkers,
-   computeGivenDeclaredTypes,
    createGateClassificationDeps,
    resolveGateShape as resolveGateShapeImpl,
    resolveGraftTarget as resolveGraftTargetImpl,
@@ -210,9 +193,8 @@ import {
    type GraftScope,
    type RowLevelGraftEntry,
 } from "./gate_classification";
-import { collectSourceInfos } from "./source_extraction";
+import { extractCheckedModel } from "./model_load_checks";
 import {
-   recordAuthorizeAdmitAllGate,
    recordAuthorizeBypass,
    recordAuthorizeGuardRejection,
    recordLockDecision,
@@ -249,12 +231,7 @@ import {
    quoteMalloyIdentifier,
    runStatementCount,
 } from "./model_query_compile";
-import {
-   extractApiQueries,
-   extractApiSources,
-   runReadsPublished,
-   scrubHiddenIds,
-} from "./model_projection";
+import { runReadsPublished, scrubHiddenIds } from "./model_projection";
 import { StorageServeShape } from "./model_serve_shape";
 
 export type { ModelConnectionInput, ModelType } from "./model_runtime";
@@ -355,7 +332,7 @@ export interface OffSurfaceContext {
  * distinguish from a storage hit, which is exactly why it is reported
  * separately. Absent means the query never had a storage binding to consider.
  */
-export type ServedFrom = "storage" | "live_fallback";
+type ServedFrom = "storage" | "live_fallback";
 
 /**
  * A non-fatal render-tag finding from {@link Model.validateRenderTags}: an issue
@@ -432,6 +409,26 @@ const queryScannedBytesCounter = lazyCounter(
    "Warehouse bytes scanned by Malloy model queries, where the backend reports them. NOT bytes billed: BigQuery bills a 10MB minimum per query, so spend exceeds this on small reads.",
    "By",
 );
+
+/** What a {@link Model} is built from; only the first four are always known. */
+export interface ModelState {
+   packageName: string;
+   modelPath: string;
+   dataStyles: DataStyles;
+   modelType: ModelType;
+   modelMaterializer?: ModelMaterializer;
+   modelDef?: ModelDef;
+   sources?: ApiSource[];
+   queries?: ApiQuery[];
+   sourceInfos?: Malloy.SourceInfo[];
+   runnableNotebookCells?: RunnableNotebookCell[];
+   compilationError?: MalloyError | Error;
+   filterMap?: Map<string, FilterDefinition[]>;
+   givens?: ApiGiven[];
+   /** Precomputed `modelInfoOf(modelDef)` from the package-load worker;
+    *  derived here when omitted. */
+   modelInfo?: Malloy.ModelInfo;
+}
 
 export class Model {
    private packageName: string;
@@ -643,37 +640,20 @@ export class Model {
       QueryMaterializer,
       readonly RowLevelGraftEntry[]
    >();
-   constructor(
-      packageName: string,
-      modelPath: string,
-      dataStyles: DataStyles,
-      modelType: ModelType,
-      modelMaterializer: ModelMaterializer | undefined,
-      modelDef: ModelDef | undefined,
-      sources: ApiSource[] | undefined,
-      queries: ApiQuery[] | undefined,
-      sourceInfos: Malloy.SourceInfo[] | undefined,
-      runnableNotebookCells: RunnableNotebookCell[] | undefined,
-      compilationError: MalloyError | Error | undefined,
-      filterMap?: Map<string, FilterDefinition[]>,
-      givens?: ApiGiven[],
-      /** Precomputed `modelInfoOf(modelDef)` from the package-load worker;
-       *  derived here when omitted. */
-      modelInfo?: Malloy.ModelInfo,
-   ) {
-      this.packageName = packageName;
-      this.modelPath = modelPath;
-      this.dataStyles = dataStyles;
-      this.modelType = modelType;
-      this.modelDef = modelDef;
-      this.modelMaterializer = modelMaterializer;
-      this.sources = sources;
-      this.queries = queries;
-      this.sourceInfos = sourceInfos;
-      this.runnableNotebookCells = runnableNotebookCells;
-      this.compilationError = compilationError;
-      this.filterMap = filterMap ?? new Map();
-      this.givens = givens;
+   constructor(state: ModelState) {
+      this.packageName = state.packageName;
+      this.modelPath = state.modelPath;
+      this.dataStyles = state.dataStyles;
+      this.modelType = state.modelType;
+      this.modelDef = state.modelDef;
+      this.modelMaterializer = state.modelMaterializer;
+      this.sources = state.sources;
+      this.queries = state.queries;
+      this.sourceInfos = state.sourceInfos;
+      this.runnableNotebookCells = state.runnableNotebookCells;
+      this.compilationError = state.compilationError;
+      this.filterMap = state.filterMap ?? new Map();
+      this.givens = state.givens;
       this.notebookCellDeclaredGivens = declaredGivensPerCell(
          this.runnableNotebookCells ?? [],
       );
@@ -716,15 +696,16 @@ export class Model {
          this.authorizeReferencedGivenNames = new Set();
       }
       this.modelInfo =
-         modelInfo ?? (this.modelDef ? modelInfoOf(this.modelDef) : undefined);
+         state.modelInfo ??
+         (this.modelDef ? modelInfoOf(this.modelDef) : undefined);
 
       // One-time `#(filter)` deprecation notice per Model instance.
       if (this.filterMap.size > 0) {
          logger.warn(
-            `Model "${packageName}/${modelPath}" uses deprecated #(filter) annotations. Migrate to given: — see ${GIVENS_DOCS_URL}`,
+            `Model "${this.packageName}/${this.modelPath}" uses deprecated #(filter) annotations. Migrate to given: — see ${GIVENS_DOCS_URL}`,
             {
-               packageName,
-               modelPath,
+               packageName: this.packageName,
+               modelPath: this.modelPath,
                filterSourceCount: this.filterMap.size,
             },
          );
@@ -3667,110 +3648,34 @@ export class Model {
                modelPath,
             );
 
-         let modelDef = undefined;
-         let sources = undefined;
-         let queries = undefined;
-         let filterMap: Map<string, FilterDefinition[]> | undefined;
-         let givens: ApiGiven[] | undefined;
-         const sourceInfos: Malloy.SourceInfo[] = [];
-         if (modelMaterializer) {
-            const compiledModel = await modelMaterializer.getModel();
-            modelDef = compiledModel._modelDef;
-            // Malloy's `Model.givens` already collapses import inheritance.
-            const malloyGivens = Array.from(
-               compiledModel.givens.values(),
-            ) as MalloyGiven[];
-            givens =
-               malloyGivens.length > 0
-                  ? (malloyGivens.map(malloyGivenToApi) as ApiGiven[])
-                  : undefined;
-            const sourceResult = extractApiSources(modelDef, givens);
-            sources = sourceResult.sources;
-            filterMap = sourceResult.filterMap;
-            const queryResult = extractApiQueries(modelDef);
-            queries = queryResult.queries;
-
-            // A retired route marker (e.g. `#(partition)`) is enforced by
-            // nothing. Checked first so it gets its own message.
-            assertNoRetiredRouteMarkers(collectRetiredRouteMarkers(modelDef));
-
-            // A misplaced `#(authorize)` (on a `query:` or a field) is
-            // enforced by nothing and would fail OPEN. The checks below run
-            // before `validateAuthorizeProbes` so each mistake gets its own
-            // message.
-            assertNoMisplacedAuthorizeAnnotations([
-               ...sourceResult.misplacedAuthorize,
-               ...queryResult.misplacedAuthorize,
-            ]);
-            // The legacy string form is refused outright.
-            const legacyStringGates = findLegacyStringGates(
-               sourceResult.authorizeOwnNotes,
-            );
-            legacyStringGates.forEach(() =>
-               recordRowLevelGateRejected("legacy_string_gate"),
-            );
-            assertNoLegacyStringGate(legacyStringGates);
-            assertAuthorizeGrammarValid(
-               modelDef,
-               sourceResult.authorizeMap,
-               sourceResult.authorizeOwnNotes,
-               computeGivenDeclaredTypes(givens),
-               (_sourceName, route) => recordAuthorizeAdmitAllGate(route),
-               sourceResult.attributedAuthorizeOwnNotes,
-            );
-            // Load-time probe compile of every entry point's gate (shared with
-            // the worker), so unknown givens and fields fail at load, not on
-            // first request. `const` keeps the narrowed type in the closures.
-            const compiledModelDef: ModelDef = modelDef;
-            await validateAuthorizeProbes(modelMaterializer, {
-               authorizeMap: sourceResult.authorizeMap,
-               authorizeOwnNotes: sourceResult.attributedAuthorizeOwnNotes,
-               onRowLevelGateRejected: recordRowLevelGateRejected,
-               // An inherited gate not expressible at this entry point: not
-               // fatal (every query denies), so warn rather than lose it.
-               onRowLevelGateUnexpressible: (sourceName, detail) =>
-                  logger.warn(
-                     "Row-level #(access_filter) gate not expressible at this entry point; every query against it will be denied",
-                     { packageName, modelPath, sourceName, detail },
-                  ),
-               // Source-line gate given-usage checks, at every entry point
-               // whose probe compiled (`sourceName` may be an inheritor).
-               // `refSummary` is resolved against `contents[sourceName]`.
-               onOwnRowLevelConditionCompiled: (
-                  sourceName,
-                  condition,
-                  route,
-               ) => {
-                  const struct = compiledModelDef.contents[sourceName];
-                  if (!struct || !isSourceDef(struct)) return;
-                  validateSourceLineGateGivenUsage(
-                     sourceName,
-                     route,
-                     struct,
-                     condition.refSummary as ExpandableRefSummary | undefined,
-                     condition.e,
-                     compiledModelDef,
-                     (cause, detail) => {
-                        recordRowLevelGateRejected(cause);
-                        logger.warn(`#(${route}) gate warning`, {
-                           packageName,
-                           modelPath,
-                           sourceName,
-                           cause,
-                           detail,
-                        });
-                     },
-                  );
-               },
+         const compiled = await modelMaterializer?.getModel();
+         const checked =
+            modelMaterializer && compiled
+               ? await extractCheckedModel(
+                    modelMaterializer,
+                    compiled,
+                    (sourceName, err) =>
+                       logger.warn(
+                          `Failed to parse filter annotations on source "${sourceName}"`,
+                          { error: err },
+                       ),
+                 )
+               : undefined;
+         for (const warning of checked?.warnings ?? []) {
+            logger.warn(warning.message, {
+               packageName,
+               modelPath,
+               sourceName: warning.sourceName,
             });
-
-            // Every source this file can resolve: its own declarations plus
-            // exactly the names an `import { … }` selected (shared with the
-            // worker so the paths cannot drift).
-            sourceInfos.push(...collectSourceInfos(modelDef));
          }
+         const modelDef = compiled?._modelDef;
+         const sources = checked?.sources as ApiSource[] | undefined;
+         const queries = checked?.queries as ApiQuery[] | undefined;
+         const filterMap = checked?.filterMap;
+         const givens = checked?.givens as ApiGiven[] | undefined;
+         const sourceInfos = checked?.sourceInfos;
 
-         const model = new Model(
+         const model = new Model({
             packageName,
             modelPath,
             dataStyles,
@@ -3779,12 +3684,11 @@ export class Model {
             modelDef,
             sources,
             queries,
-            sourceInfos.length > 0 ? sourceInfos : undefined,
+            sourceInfos,
             runnableNotebookCells,
-            undefined,
             filterMap,
             givens,
-         );
+         });
          // Cast: `_loadModelFromModelDef` is internal and undeclared on the
          // public `Runtime` type.
          model.setGateRuntime(runtime as HydrationRuntime);
@@ -3806,19 +3710,13 @@ export class Model {
             }
             computedError = new ModelCompilationError(error);
          }
-         return new Model(
+         return new Model({
             packageName,
             modelPath,
             dataStyles,
             modelType,
-            undefined,
-            undefined,
-            undefined,
-            undefined,
-            undefined,
-            undefined,
-            computedError as Error,
-         );
+            compilationError: computedError as Error,
+         });
       }
    }
 
@@ -3863,24 +3761,22 @@ export class Model {
       // clean BadRequestError downstream; markdown cells are kept so
       // `getNotebook()` can serve them.
       if (!modelDef) {
-         return new Model(
+         return new Model({
             packageName,
-            data.modelPath,
+            modelPath: data.modelPath,
             dataStyles,
-            data.modelType,
-            undefined,
-            undefined,
+            modelType: data.modelType,
             sources,
             queries,
             sourceInfos,
-            data.modelType === "notebook"
-               ? hydrateMarkdownOnlyCells(data.notebookCells)
-               : undefined,
-            undefined,
+            runnableNotebookCells:
+               data.modelType === "notebook"
+                  ? hydrateMarkdownOnlyCells(data.notebookCells)
+                  : undefined,
             filterMap,
             givens,
             modelInfo,
-         );
+         });
       }
 
       const runtime = makeHydrationRuntime(
@@ -3893,22 +3789,21 @@ export class Model {
             ? hydrateNotebookCells(runtime, data.notebookCells)
             : undefined;
 
-      const model = new Model(
+      const model = new Model({
          packageName,
-         data.modelPath,
+         modelPath: data.modelPath,
          dataStyles,
-         data.modelType,
+         modelType: data.modelType,
          modelMaterializer,
          modelDef,
          sources,
          queries,
          sourceInfos,
          runnableNotebookCells,
-         undefined, // compilationError
          filterMap,
          givens,
          modelInfo,
-      );
+      });
       // `malloyConfig` is deliberately not captured for serve shapes: that
       // would put a storage destination in reach of the author's namespace
       // (see Package.setServeDestinationConfig). The gate runtime must be the
@@ -3981,19 +3876,13 @@ export class Model {
       // text judges the saved file instead of the edit.
       sourceText?: string,
    ): Model {
-      const model = new Model(
+      const model = new Model({
          packageName,
          modelPath,
-         {} as DataStyles,
+         dataStyles: {} as DataStyles,
          modelType,
-         undefined,
-         undefined,
-         undefined,
-         undefined,
-         undefined,
-         undefined,
-         error,
-      );
+         compilationError: error,
+      });
       model.compiledSourceText = sourceText;
       return model;
    }
@@ -6348,7 +6237,6 @@ export class Model {
          status: "success",
          connection: queryResults.connectionName,
          servedFrom,
-         rowsLimit: rowLimit,
       });
       queryExecutionHistogram().record(executionTime, metricAttributes);
       // Only when reported, so the counter is absent rather than a false zero.
@@ -6406,10 +6294,9 @@ export class Model {
     * The label set for `queryExecutionHistogram`, shared by every recording
     * site so success and error paths cannot drift.
     *
-    * Query text and row count are deliberately absent: both are unbounded
-    * label values (a cardinality leak); they stay on the request log.
-    * `rows_limit` is bounded only by convention (the default plus authored
-    * limits).
+    * Query text, row count and row limit are deliberately absent: each is
+    * unbounded, or chosen by the caller (a cardinality leak); they stay on the
+    * request log.
     */
    private queryMetricAttributes(args: {
       environment?: string;
@@ -6419,7 +6306,6 @@ export class Model {
       status: "success" | "error" | "rejected";
       connection?: string;
       servedFrom?: ServedFrom;
-      rowsLimit?: number;
    }): Record<string, string | number | undefined> {
       return {
          "malloy.model.path": this.modelPath,
@@ -6433,9 +6319,6 @@ export class Model {
          ...(args.connection
             ? { "malloy.model.query.connection": args.connection }
             : {}),
-         ...(args.rowsLimit === undefined
-            ? {}
-            : { "malloy.model.query.rows_limit": args.rowsLimit }),
          // Only for queries that reached the storage routing decision.
          ...(args.servedFrom
             ? { "malloy.model.query.served_from": args.servedFrom }

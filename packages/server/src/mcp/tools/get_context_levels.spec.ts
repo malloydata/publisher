@@ -97,7 +97,7 @@ function handlerFor(store: EnvironmentStore): Handler {
    let handler: Handler | undefined;
    registerGetContextTool(
       {
-         tool: (name: string, _d: string, _s: unknown, h: Handler) => {
+         registerTool: (name: string, _config: unknown, h: Handler) => {
             if (name === "get_context") handler = h;
          },
       } as never,

@@ -15,7 +15,7 @@ import type { ChatResult, FetchFn } from "./types";
  * request and answer 400 to more, so {@link vertexEmbedMaxBatch} gives 1 for
  * them.
  */
-export const VERTEX_EMBED_MAX_BATCH = 250;
+const VERTEX_EMBED_MAX_BATCH = 250;
 
 /** The most inputs one `:predict` request may carry for `model`. */
 export function vertexEmbedMaxBatch(model: string): number {
@@ -23,7 +23,7 @@ export function vertexEmbedMaxBatch(model: string): number {
       ? 1
       : VERTEX_EMBED_MAX_BATCH;
 }
-export const VERTEX_SCOPE = "https://www.googleapis.com/auth/cloud-platform";
+const VERTEX_SCOPE = "https://www.googleapis.com/auth/cloud-platform";
 
 /** Resolves an access token from Application Default Credentials. */
 export function adcAccessToken(): () => Promise<string> {
@@ -56,7 +56,7 @@ export function adcAccessToken(): () => Promise<string> {
  * request's own timeout only starts once the request is sent, so without this
  * a cancelled or timed-out call would sit waiting for the token.
  */
-export function untilAborted<T>(
+function untilAborted<T>(
    pending: Promise<T>,
    signal: AbortSignal,
    what: string,
@@ -89,7 +89,7 @@ export function untilAborted<T>(
 }
 
 /** `https://{location}-aiplatform.googleapis.com`, or the global host. */
-export function vertexHost(location: string): string {
+function vertexHost(location: string): string {
    return location === "global"
       ? "https://aiplatform.googleapis.com"
       : `https://${location}-aiplatform.googleapis.com`;

@@ -2,7 +2,6 @@
 // SPDX-License-Identifier: MIT
 
 import { describe, expect, it } from "bun:test";
-import type express from "express";
 import request from "supertest";
 import type { WatchModeController } from "../controller/watch-mode.controller";
 import { EnvironmentNotFoundError } from "../errors";
@@ -51,12 +50,6 @@ const watch = {
    unwatch: async () => {
       watched.environmentName = "";
    },
-   // The main API's deprecated handlers.
-   getWatchStatus: async (_req: unknown, res: express.Response) => {
-      res.json(watch.current());
-   },
-   startWatching: async () => undefined,
-   stopWatchMode: async () => undefined,
 } as unknown as WatchModeController & {
    current: () => { enabled: boolean };
 };

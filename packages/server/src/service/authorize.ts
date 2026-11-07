@@ -39,6 +39,7 @@
 import { payloadOf, routeOf } from "@malloydata/malloy";
 import { createRequire } from "module";
 import { BadRequestError, ModelCompilationError } from "../errors";
+import { logger } from "../logger";
 import { type AnnotationNote } from "./annotations";
 import {
    canonicalAuthorizeRoute,
@@ -324,8 +325,9 @@ function lexProseRanges(text: string): [number, number][] | undefined {
       // Without the lexer every prose-bearing notebook save and query answers 400, so say why once.
       if (!warnedNoParser) {
          warnedNoParser = true;
-         console.warn(
-            "Prose-aware caller-annotation guard disabled: @malloydata/malloy ./lang/run-malloy-parser could not be loaded; falling back to whole-text matching.",
+         logger.warn(
+            "Prose-aware caller-annotation guard disabled: the Malloy parser could not be loaded; falling back to whole-text matching",
+            { module: "@malloydata/malloy/lang/run-malloy-parser" },
          );
       }
       return undefined;

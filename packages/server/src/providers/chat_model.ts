@@ -42,6 +42,13 @@ export interface RawChat {
    send(req: RawChatRequest): Promise<ChatResult>;
 }
 
+/** A token count from a vendor reply, or undefined when it is not a finite number. */
+export function tokenCount(value: unknown): number | undefined {
+   return typeof value === "number" && Number.isFinite(value)
+      ? value
+      : undefined;
+}
+
 const JSON_ONLY_INSTRUCTION =
    "Reply with a single JSON value and nothing else: no prose, no code fences.";
 
@@ -62,7 +69,7 @@ function addUsage(a: ChatUsage, b: ChatUsage): ChatUsage {
    };
 }
 
-export interface ChatModelOptions {
+interface ChatModelOptions {
    timeoutMs: number;
    retry?: RetryPolicy;
    cooldown?: FailureCooldown;

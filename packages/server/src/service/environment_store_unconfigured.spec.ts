@@ -12,6 +12,7 @@ import {
    emptyRepository,
    stubStorageManager,
 } from "../test_helpers/storage_manager_stub";
+import { EnvironmentStore } from "./environment_store";
 import packageJson from "../../package.json";
 
 /**
@@ -25,11 +26,8 @@ import packageJson from "../../package.json";
  * value is easy to get right and still reach nobody. The parser-level cases
  * live in the first describe, the boot-path ones in the second.
  *
- * `../config` is deliberately NOT mocked: environment_store.spec.ts mocks it in
- * a beforeEach and these cases need the real resolver.
- *
- * Storage is stubbed (through stubStorageManager, which removes the stub when
- * this file finishes) so the boot reads the environments below. A boot that
+ * Storage is stubbed (injected through stubStorageManager) so the boot reads
+ * the environments below. A boot that
  * failed -- a storage `initialize` that throws makes construction fail and
  * `PUBLISHER_INIT_FAILED` fire -- would never reach the success tail that
  * carries the notice, and "stays quiet" would pass for that reason rather
@@ -47,13 +45,10 @@ import packageJson from "../../package.json";
  */
 let storedEnvironments: Array<Record<string, unknown>> = [];
 
-stubStorageManager({
+const storageManager = stubStorageManager({
    getRepository: () =>
       emptyRepository({ listEnvironments: async () => storedEnvironments }),
 });
-
-// After the mock, so the binding is the mock rather than the real module.
-const { EnvironmentStore } = await import("./environment_store");
 
 const serverRootPath = path.join(TEMP_DIR_PATH, "unconfigured-spec-root");
 const missingEnvPath = path.join(serverRootPath, "publisher_data", "gone");
@@ -158,7 +153,7 @@ describe("unconfigured boot notice", () => {
    });
 
    it("names the missing config once when nothing loaded", async () => {
-      const store = new EnvironmentStore(serverRootPath);
+      const store = new EnvironmentStore(serverRootPath, { storageManager });
       await store.finishedInitialization;
 
       assertInitialized();
@@ -186,7 +181,7 @@ describe("unconfigured boot notice", () => {
       // `frozenConfig` defaulting to false when no config file exists, which
       // nothing else pins. If a future change made runtime creation require a
       // config file, all three would quietly become wrong.
-      const store = new EnvironmentStore(serverRootPath);
+      const store = new EnvironmentStore(serverRootPath, { storageManager });
       await store.finishedInitialization;
       assertInitialized();
       expect(noticeLines()).toHaveLength(1);
@@ -213,7 +208,7 @@ describe("unconfigured boot notice", () => {
          { id: "env-id", name: "created-at-runtime", path: missingEnvPath },
       ];
 
-      const store = new EnvironmentStore(serverRootPath);
+      const store = new EnvironmentStore(serverRootPath, { storageManager });
       await store.finishedInitialization;
 
       assertInitialized();
@@ -231,7 +226,7 @@ describe("unconfigured boot notice", () => {
       });
       const errorSpy = spyOn(logger, "error").mockImplementation(() => logger);
       try {
-         const store = new EnvironmentStore(serverRootPath);
+         const store = new EnvironmentStore(serverRootPath, { storageManager });
          await store.finishedInitialization;
 
          assertInitialized();
@@ -264,7 +259,7 @@ describe("unconfigured boot notice", () => {
       // Read again, as a server started on this root now would.
       const configured = installSettings({ cwd: serverRootPath });
       try {
-         const store = new EnvironmentStore(serverRootPath);
+         const store = new EnvironmentStore(serverRootPath, { storageManager });
          await store.finishedInitialization;
 
          assertInitialized();

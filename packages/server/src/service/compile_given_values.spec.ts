@@ -9,6 +9,7 @@ import os from "os";
 import path from "path";
 import { AccessDeniedError, BadRequestError } from "../errors";
 import { Environment } from "./environment";
+import { writePackageFiles } from "../test_helpers/temp_package";
 
 // /compile takes given values too (they bind when it builds SQL), so a value a
 // `filter<T>` given cannot read is refused there the same way the query route
@@ -39,14 +40,15 @@ describe("compileSource checks filter given values", () => {
       const envPath = path.join(rootDir, "env");
       await fs.mkdir(envPath, { recursive: true });
       env = await Environment.create("testEnv", envPath, []);
-      await env.installPackage("pkg", async (stagingPath) => {
-         await fs.mkdir(stagingPath, { recursive: true });
-         await fs.writeFile(
-            path.join(stagingPath, "publisher.json"),
-            JSON.stringify({ name: "pkg", description: "compile-givens" }),
-         );
-         await fs.writeFile(path.join(stagingPath, "model.malloy"), MODEL);
-      });
+      await env.installPackage("pkg", async (stagingPath) =>
+         writePackageFiles(
+            stagingPath,
+            {
+               "model.malloy": MODEL,
+            },
+            { manifest: { name: "pkg", description: "compile-givens" } },
+         ),
+      );
    });
 
    afterEach(async () => {

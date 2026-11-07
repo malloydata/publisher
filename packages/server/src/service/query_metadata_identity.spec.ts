@@ -7,6 +7,7 @@ import * as os from "os";
 import * as path from "path";
 
 import { Environment } from "./environment";
+import { writePackageFiles } from "../test_helpers/temp_package";
 
 /**
  * Query metadata is observability, and it must never be identity.
@@ -73,12 +74,13 @@ describe("query metadata is excluded from persist identity", () => {
     */
    async function entityIdFor(tagged: boolean): Promise<string> {
       const dir = path.join(envPath, "pkg");
-      await fs.mkdir(dir, { recursive: true });
-      await fs.writeFile(
-         path.join(dir, "publisher.json"),
-         JSON.stringify(manifest(tagged)),
+      writePackageFiles(
+         dir,
+         {
+            "model.malloy": model(tagged),
+         },
+         { manifest: manifest(tagged) },
       );
-      await fs.writeFile(path.join(dir, "model.malloy"), model(tagged));
 
       const env = await Environment.create("testEnv", envPath, []);
       await env.addPackage("pkg");
@@ -127,12 +129,13 @@ describe("query metadata is excluded from persist identity", () => {
          // being dropped on the floor — the failure mode that would make it
          // look like the invariant holds while nothing is being tagged at all.
          const dir = path.join(envPath, "pkg");
-         await fs.mkdir(dir, { recursive: true });
-         await fs.writeFile(
-            path.join(dir, "publisher.json"),
-            JSON.stringify(manifest(true)),
+         writePackageFiles(
+            dir,
+            {
+               "model.malloy": model(true),
+            },
+            { manifest: manifest(true) },
          );
-         await fs.writeFile(path.join(dir, "model.malloy"), model(true));
 
          const env = await Environment.create("testEnv", envPath, []);
          await env.addPackage("pkg");

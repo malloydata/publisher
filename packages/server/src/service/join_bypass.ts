@@ -43,12 +43,7 @@ import {
    type AuthorizeGrammarParsedTerm,
 } from "./authorize_grammar";
 import { ACCESS_FILTER_ROUTE, AUTHORIZE_ROUTE } from "./authorize_routes";
-import {
-   alreadySeen,
-   findIrSource,
-   isDeniedToAll,
-   isDenyAll,
-} from "./classification";
+import { isDeniedToAll, isDenyAll, packageSources } from "./classification";
 import {
    MAX_JOIN_PATHS,
    MAX_JOIN_RECURSION_DEPTH,
@@ -242,138 +237,115 @@ export function joinBypasses(
 ): string[] {
    const messages: string[] = [];
    const truncated: string[] = [];
-   const seen = new Set<string>();
-   for (const [modelPath, model] of models) {
-      if (!isListed(modelPath)) continue;
-      let sourceInfos: ReturnType<Model["getSourceInfos"]>;
-      let apiSources: ReturnType<Model["getSources"]>;
-      let modelDef: ModelDef | undefined;
-      try {
-         sourceInfos = model.getSourceInfos(includeHidden);
-         apiSources = model.getSources(includeHidden);
-         modelDef = model.getModelDef();
-      } catch {
-         continue;
-      }
-      for (const sourceInfo of sourceInfos ?? []) {
-         if (
-            includeHidden &&
-            alreadySeen(seen, model, modelPath, sourceInfo.name)
-         ) {
-            continue;
-         }
-         const entry = findIrSource(modelDef, sourceInfo.name) as
-            | IrJoin
-            | undefined;
-         if (!entry) continue;
-         const apiSource = apiSources?.find((s) => s.name === sourceInfo.name);
-         if (apiSource && isDeniedToAll(apiSource)) continue;
-         const entryGates = [
-            ...(apiSource?.authorize ?? []),
-            ...(apiSource?.accessFilter ?? []),
-         ].filter((expr) => !isAdmitAll(expr));
-         const entryGivens = givensOf(entryGates);
-         const entryLock = lockTermsOf(apiSource?.authorize ?? []);
-         const entryTerms = entryLock === "false" ? [] : entryLock;
-         const where = `source ${sourceInfo.name} (${modelPath})`;
+   for (const source of packageSources(models, isListed, includeHidden)) {
+      const { modelPath, sourceInfo, apiSource, modelDef } = source;
+      const entry = source.ir as IrJoin;
+      if (apiSource && isDeniedToAll(apiSource)) continue;
+      const entryGates = [
+         ...(apiSource?.authorize ?? []),
+         ...(apiSource?.accessFilter ?? []),
+      ].filter((expr) => !isAdmitAll(expr));
+      const entryGivens = givensOf(entryGates);
+      const entryLock = lockTermsOf(apiSource?.authorize ?? []);
+      const entryTerms = entryLock === "false" ? [] : entryLock;
+      const where = `source ${sourceInfo.name} (${modelPath})`;
 
-         let joinPaths = 0;
-         let cut = false;
-         // A `->` source's base is a source the entry derives from: its joins are the entry's.
-         const joinsOf = (struct: IrJoin, hops = 0): IrJoin[] => {
-            const joins = (struct.fields ?? []).filter(
-               (f) => typeof f.join === "string" && Array.isArray(f.fields),
-            );
-            if (struct.type !== "query_source") return joins;
-            // The compiler reads a composite's resolved member before structRef.
-            const base = (resolveCompositeResolvedBase(
+      let joinPaths = 0;
+      let cut = false;
+      // A `->` source's base is a source the entry derives from: its joins are the entry's.
+      const joinsOf = (struct: IrJoin, hops = 0): IrJoin[] => {
+         const joins = (struct.fields ?? []).filter(
+            (f) => typeof f.join === "string" && Array.isArray(f.fields),
+         );
+         if (struct.type !== "query_source") return joins;
+         // The compiler reads a composite's resolved member before structRef.
+         const base = (resolveCompositeResolvedBase(
+            struct as unknown as SourceDef,
+         ) ??
+            resolveQuerySourceBase(
                struct as unknown as SourceDef,
-            ) ??
-               resolveQuerySourceBase(
-                  struct as unknown as SourceDef,
-                  modelDef,
-               )) as IrJoin | undefined;
-            if (hops >= MAX_JOIN_RECURSION_DEPTH) {
+               modelDef,
+            )) as IrJoin | undefined;
+         if (hops >= MAX_JOIN_RECURSION_DEPTH) {
+            cut = true;
+            return joins;
+         }
+         try {
+            return [
+               ...joins,
+               ...(stageJoins(struct.query?.pipeline) as IrJoin[]),
+               ...(base ? joinsOf(base, hops + 1) : []),
+            ];
+         } catch {
+            cut = true;
+            return joins;
+         }
+      };
+      const walk = (struct: IrJoin, prefix: string, joins: number) => {
+         for (const field of joinsOf(struct)) {
+            if (
+               joins >= MAX_JOIN_RECURSION_DEPTH ||
+               ++joinPaths > MAX_JOIN_PATHS
+            ) {
                cut = true;
-               return joins;
+               continue;
             }
-            try {
-               return [
-                  ...joins,
-                  ...(stageJoins(struct.query?.pipeline) as IrJoin[]),
-                  ...(base ? joinsOf(base, hops + 1) : []),
-               ];
-            } catch {
-               cut = true;
-               return joins;
-            }
-         };
-         const walk = (struct: IrJoin, prefix: string, joins: number) => {
-            for (const field of joinsOf(struct)) {
-               if (
-                  joins >= MAX_JOIN_RECURSION_DEPTH ||
-                  ++joinPaths > MAX_JOIN_PATHS
-               ) {
-                  cut = true;
-                  continue;
+            const name = field.as ?? field.name ?? "?";
+            const path = prefix ? `${prefix}.${name}` : name;
+            const joined = joinedLabel(field, path);
+            const gates = gatesOn(field, modelDef);
+            const lock = lockTermsOf(gates.authorize);
+            if (lock === "false") {
+               // A gated entry over a locked base is the curated-extension pattern.
+               if (entryGates.length === 0) {
+                  messages.push(
+                     `${where} is open to every caller and joins ${joined}, ` +
+                        `which is locked (#(authorize) false). A gate ` +
+                        `fires only on the source a query enters through, ` +
+                        `so the lock does not fire through this join and ` +
+                        `every caller reads ${path}'s rows. Gate ` +
+                        `${sourceInfo.name} with #(authorize) or ` +
+                        `#(access_filter), or drop the join.`,
+                  );
                }
-               const name = field.as ?? field.name ?? "?";
-               const path = prefix ? `${prefix}.${name}` : name;
-               const joined = joinedLabel(field, path);
-               const gates = gatesOn(field, modelDef);
-               const lock = lockTermsOf(gates.authorize);
-               if (lock === "false") {
-                  // A gated entry over a locked base is the curated-extension pattern.
-                  if (entryGates.length === 0) {
-                     messages.push(
-                        `${where} is open to every caller and joins ${joined}, ` +
-                           `which is locked (#(authorize) false). A gate ` +
-                           `fires only on the source a query enters through, ` +
-                           `so the lock does not fire through this join and ` +
-                           `every caller reads ${path}'s rows. Gate ` +
-                           `${sourceInfo.name} with #(authorize) or ` +
-                           `#(access_filter), or drop the join.`,
-                     );
-                  }
-               } else {
-                  const missingTerm = missingLockTerm(lock, entryTerms);
-                  if (missingTerm !== undefined) {
-                     messages.push(
-                        `${where} joins ${joined}, which is locked to ` +
-                           `${missingTerm}, a term no #(authorize) on ` +
-                           `${sourceInfo.name} requires. A gate fires only ` +
-                           `on the source a query enters through, so every ` +
-                           `caller ${sourceInfo.name} admits reads ${path}'s ` +
-                           `rows without holding it. The grammar has no OR: ` +
-                           `to serve a broader role, join an extension of ` +
-                           `the source joined as ${path} that declares ` +
-                           `${sourceInfo.name}'s own lock, or add ` +
-                           `${missingTerm} to ${sourceInfo.name}'s ` +
-                           `#(authorize), or drop the join.`,
-                     );
-                  }
-                  const missing = Array.from(
-                     givensOf(gates.accessFilter),
-                  ).filter((g) => !entryGivens.has(g));
-                  if (missing.length > 0) {
-                     messages.push(
-                        `${where} joins ${joined}, whose gate reads ` +
-                           `$${missing.join(", $")}, which no gate on ` +
-                           `${sourceInfo.name} reads. A gate fires only on the ` +
-                           `source a query enters through, so ${path}'s rows ` +
-                           `reach every caller ${sourceInfo.name} admits ` +
-                           `unscoped. Scope the entry source on the same given ` +
-                           `(#(access_filter) ${path}.<column> in $${missing[0]}, ` +
-                           `or carry the key in the join's on), or drop the join.`,
-                     );
-                  }
+            } else {
+               const missingTerm = missingLockTerm(lock, entryTerms);
+               if (missingTerm !== undefined) {
+                  messages.push(
+                     `${where} joins ${joined}, which is locked to ` +
+                        `${missingTerm}, a term no #(authorize) on ` +
+                        `${sourceInfo.name} requires. A gate fires only ` +
+                        `on the source a query enters through, so every ` +
+                        `caller ${sourceInfo.name} admits reads ${path}'s ` +
+                        `rows without holding it. The grammar has no OR: ` +
+                        `to serve a broader role, join an extension of ` +
+                        `the source joined as ${path} that declares ` +
+                        `${sourceInfo.name}'s own lock, or add ` +
+                        `${missingTerm} to ${sourceInfo.name}'s ` +
+                        `#(authorize), or drop the join.`,
+                  );
                }
-               walk(field, path, joins + 1);
+               const missing = Array.from(givensOf(gates.accessFilter)).filter(
+                  (g) => !entryGivens.has(g),
+               );
+               if (missing.length > 0) {
+                  messages.push(
+                     `${where} joins ${joined}, whose gate reads ` +
+                        `$${missing.join(", $")}, which no gate on ` +
+                        `${sourceInfo.name} reads. A gate fires only on the ` +
+                        `source a query enters through, so ${path}'s rows ` +
+                        `reach every caller ${sourceInfo.name} admits ` +
+                        `unscoped. Scope the entry source on the same given ` +
+                        `(#(access_filter) ${path}.<column> in $${missing[0]}, ` +
+                        `or carry the key in the join's on), or drop the join.`,
+                  );
+               }
             }
-         };
-         walk(entry, "", 0);
-         if (cut) truncated.push(where);
-      }
+            walk(field, path, joins + 1);
+         }
+      };
+      walk(entry, "", 0);
+      if (cut) truncated.push(where);
    }
    // Past a bound a gate may sit unread; with no gate anywhere there is nothing to bypass.
    if (truncated.length > 0 && packageHasGate(models)) {

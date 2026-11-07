@@ -8,15 +8,21 @@ import {
    embeddingConfigured,
    getEmbeddingProvider,
 } from "../../service/embedding_provider";
-import { fcjStatusOf, kickFcjBuild } from "../context/engine_state";
+import {
+   fcjLastSyncedAtOf,
+   fcjStatusOf,
+   fcjVectorProgressOf,
+   kickFcjBuild,
+} from "../context/engine_state";
 import type { EmbeddingIndexStatus } from "./embedding_index";
 import { getPackageIndex, packageIndexOf } from "./package_entities";
 
 /**
  * The search index state for one package: the build state of the find, list,
- * judge engine's index (see ../context/engine_state.ts). `lexical`, by design,
- * when no embedding provider is configured. `loaded` is the package (or the
- * version of it) already resolved; without it, the served package's.
+ * judge engine's index (see ../context/engine_state.ts), with how many of its
+ * entity vectors are stored. `lexical`, by design, when no embedding provider
+ * is configured. `loaded` is the package (or the version of it) already
+ * resolved; without it, the served package's.
  */
 export async function getPackageEmbeddingStatus(
    environmentStore: EnvironmentStore,
@@ -48,9 +54,11 @@ export async function getPackageEmbeddingStatus(
       ? await packageIndexOf(loaded, packageName)
       : await getPackageIndex(environmentStore, environmentName, packageName);
    const fcj = fcjStatusOf(pkgIndex.pkg);
+   const lastSyncedAt = fcjLastSyncedAtOf(pkgIndex.pkg);
    return {
-      ...empty,
       status: fcj.status as EmbeddingIndexStatus["status"],
+      ...fcjVectorProgressOf(pkgIndex.pkg),
+      ...(lastSyncedAt ? { lastSyncedAt } : {}),
       fcj,
    };
 }

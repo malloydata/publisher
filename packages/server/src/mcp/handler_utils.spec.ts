@@ -1,9 +1,23 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
-import { describe, expect, it } from "bun:test";
+import { describe, expect, it, spyOn } from "bun:test";
 import { MalloyError } from "@malloydata/malloy";
-import { classifyToolError } from "./handler_utils";
+import {
+   BACK_PRESSURE_SUGGESTIONS,
+   classifyToolError,
+   getModelForQuery,
+} from "./handler_utils";
+import {
+   getEnvironmentNotFoundError,
+   getInternalError,
+   getMalloyErrorDetails,
+   getNotFoundError,
+   type ErrorDetails,
+} from "./error_messages";
+import type { EnvironmentStore } from "../service/environment_store";
+import { logger } from "../logger";
+import { linesMentioning } from "../test_helpers/log_lines";
 import {
    AccessDeniedError,
    BadRequestError,
@@ -12,7 +26,11 @@ import {
    EnvironmentNotFoundError,
    InvalidArgumentError,
    ModelCompilationError,
+   ModelNotFoundError,
+   NotQueryableError,
+   OffSurfaceError,
    PackageManifestError,
+   PackageVersionError,
    PackageNotFoundError,
    PayloadTooLargeError,
    ResponseUnserializableError,
@@ -317,6 +335,137 @@ describe("classifyToolError", () => {
          expect(JSON.stringify(details.suggestions)).not.toContain(
             "Malloy file",
          );
+      }
+   });
+});
+
+/**
+ * getModelForQuery's setup failures, pinned to the exact details each class
+ * produced: the ones it homes (not-found, version, compile, denial,
+ * back-pressure) and the ones it reports as an internal setup fault even
+ * though classifyToolError would home them.
+ */
+describe("getModelForQuery setup failures", () => {
+   const ENV = "env";
+   const PKG = "pkg";
+   const MODEL = "m.malloy";
+   const modelId = `${ENV}/${PKG}/${MODEL}`;
+   const LOAD = "executeQuery (load model)";
+
+   async function failWith(error: unknown) {
+      const store = {
+         getEnvironment: async () => {
+            throw error;
+         },
+      } as unknown as EnvironmentStore;
+      const result = await getModelForQuery(store, ENV, PKG, MODEL);
+      if (!("error" in result)) throw new Error("expected a failure");
+      expect(result.cause).toBe(error);
+      return result.error;
+   }
+
+   const lookup = { environmentName: ENV, availableEnvironments: ["other"] };
+   const homed: Array<[string, unknown, ErrorDetails]> = [
+      [
+         "an environment lookup",
+         new EnvironmentNotFoundError("no env", lookup),
+         getEnvironmentNotFoundError(lookup),
+      ],
+      [
+         "a bare environment miss",
+         new EnvironmentNotFoundError("no env"),
+         getNotFoundError(`environment '${ENV}'`),
+      ],
+      [
+         "a package miss",
+         new PackageNotFoundError("no pkg"),
+         getNotFoundError(`package '${PKG}' in environment '${ENV}'`),
+      ],
+      [
+         "a model miss",
+         new ModelNotFoundError("no model"),
+         getNotFoundError(
+            `model '${MODEL}' in package '${PKG}' for environment '${ENV}'`,
+         ),
+      ],
+      [
+         "a compile failure",
+         new ModelCompilationError({ message: "bad model" }),
+         getMalloyErrorDetails(
+            LOAD,
+            modelId,
+            new ModelCompilationError({ message: "bad model" }),
+         ),
+      ],
+      [
+         "an authorize denial",
+         new AccessDeniedError("denied"),
+         getMalloyErrorDetails(LOAD, modelId, new AccessDeniedError("denied")),
+      ],
+      [
+         "back-pressure",
+         new ServiceUnavailableError("busy"),
+         { message: "busy", suggestions: [...BACK_PRESSURE_SUGGESTIONS] },
+      ],
+   ];
+
+   it.each(homed)("homes %s", async (_label, error, expected) => {
+      expect(await failWith(error)).toEqual(expected);
+   });
+
+   it("homes a package version refusal with its own message", async () => {
+      const error = new PackageVersionError("VERSION_NOT_FOUND", "no latest");
+      const details = await failWith(error);
+      expect(details.message).toBe("no latest");
+      expect(details).toEqual(
+         classifyToolError(
+            LOAD,
+            `package '${PKG}' in environment '${ENV}'`,
+            error,
+         ),
+      );
+   });
+
+   it.each([
+      ["an off-surface model", new OffSurfaceError("off surface"), "curation"],
+      [
+         "an unusable manifest",
+         new PackageManifestError("bad manifest"),
+         "publisher.json is invalid",
+      ],
+   ])(
+      "answers %s with its own guidance, not as an internal fault",
+      async (_label, error, guidance) => {
+         const details = await failWith(error);
+         expect(details.message).toBe(error.message);
+         expect(details.suggestions.join(" ")).toContain(guidance);
+      },
+   );
+
+   it.each([
+      ["a connection failure", new ConnectionFailedError("host down")],
+      ["a malformed argument", new InvalidArgumentError("bad arg")],
+      ["a query-boundary denial", new NotQueryableError("not queryable")],
+      ["anything else", new TypeError("undefined is not a function")],
+   ])("reports %s as an internal setup fault", async (_label, error) => {
+      expect(await failWith(error)).toEqual(
+         getInternalError("executeQuery (Setup)", error),
+      );
+   });
+
+   it("logs a caller's error at warn and an internal fault at error", async () => {
+      const warn = spyOn(logger, "warn");
+      const error = spyOn(logger, "error");
+      try {
+         await failWith(new PackageNotFoundError("setup-level-pkg-miss"));
+         await failWith(new TypeError("setup-level-bug"));
+         expect(linesMentioning(warn, "setup-level-pkg-miss")).toHaveLength(1);
+         expect(linesMentioning(error, "setup-level-pkg-miss")).toHaveLength(0);
+         expect(linesMentioning(error, "setup-level-bug")).toHaveLength(1);
+         expect(linesMentioning(warn, "setup-level-bug")).toHaveLength(0);
+      } finally {
+         warn.mockRestore();
+         error.mockRestore();
       }
    });
 });

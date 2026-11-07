@@ -201,3 +201,34 @@ export function recordPackageDryRun(
 ): void {
    dryRunDuration().record(durationMs, { outcome });
 }
+
+const operationDuration = {
+   reload: lazyHistogram(
+      "publisher_package_reload_duration_ms",
+      "One in-place package reload: recompiling a package from the files on disk. Label: outcome ('success'|'failure'; a failed reload leaves the previous model serving).",
+      { buckets: LOAD_DURATION_BUCKETS_MS },
+   ),
+   install: lazyHistogram(
+      "publisher_package_install_duration_ms",
+      "One package install: download, load and swap, for an unversioned publish or the reinstall a reload does for a package with a location. Label: outcome ('success'|'failure').",
+      { buckets: LOAD_DURATION_BUCKETS_MS },
+   ),
+};
+
+/** Run a package reload or install, recording how long it took and whether it threw. */
+export async function measurePackageOperation<T>(
+   operation: keyof typeof operationDuration,
+   run: () => Promise<T>,
+): Promise<T> {
+   const started = performance.now();
+   let outcome: "success" | "failure" = "failure";
+   try {
+      const result = await run();
+      outcome = "success";
+      return result;
+   } finally {
+      operationDuration[operation]().record(performance.now() - started, {
+         outcome,
+      });
+   }
+}
