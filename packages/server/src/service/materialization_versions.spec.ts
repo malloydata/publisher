@@ -32,6 +32,7 @@ import {
    storageBindingResolverFor,
    versionTableSuffix,
 } from "./versions/materialization_scope";
+import { writePackageFiles } from "../test_helpers/temp_package";
 
 // Materializations of published versions, end to end: real versions compiled
 // from real folders, real builds into a DuckDB file every version reaches (the
@@ -74,24 +75,24 @@ function writePackage(
       sourcesPath,
       `${version}-${answer}-${scope}${schedule ? "-scheduled" : ""}`,
    );
-   fs.mkdirSync(dir, { recursive: true });
-   fs.writeFileSync(
-      path.join(dir, "publisher.json"),
-      JSON.stringify({
-         name: PKG,
-         version,
-         materialization: { scope, ...(schedule ? { schedule } : {}) },
-      }),
-   );
-   fs.writeFileSync(
-      path.join(dir, "model.malloy"),
-      [
-         "##! experimental.persistence",
-         `source: base is warehouse.sql("SELECT ${answer} AS answer")`,
-         '#@ persist name="summary"',
-         "source: summary is base -> { group_by: answer }",
-         "",
-      ].join("\n"),
+   writePackageFiles(
+      dir,
+      {
+         "model.malloy": [
+            "##! experimental.persistence",
+            `source: base is warehouse.sql("SELECT ${answer} AS answer")`,
+            '#@ persist name="summary"',
+            "source: summary is base -> { group_by: answer }",
+            "",
+         ].join("\n"),
+      },
+      {
+         manifest: {
+            name: PKG,
+            version,
+            materialization: { scope, ...(schedule ? { schedule } : {}) },
+         },
+      },
    );
    return dir;
 }

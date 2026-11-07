@@ -9,6 +9,7 @@ import type { Environment } from "./environment";
 import { EnvironmentStore } from "./environment_store";
 import { installSettings } from "../test_helpers/settings_env";
 import type { VersionService } from "./versions/version_service";
+import { writePackageFiles } from "../test_helpers/temp_package";
 
 /**
  * A publish of a version is a load in flight from its download until it
@@ -74,14 +75,12 @@ afterEach(async () => {
 
 function source(name: string, version: string): string {
    const dir = path.join(root, "sources", name);
-   fs.mkdirSync(dir, { recursive: true });
-   fs.writeFileSync(
-      path.join(dir, "publisher.json"),
-      JSON.stringify({ name, version }),
-   );
-   fs.writeFileSync(
-      path.join(dir, "model.malloy"),
-      `source: numbers is duckdb.sql("SELECT 1 AS answer")\n`,
+   writePackageFiles(
+      dir,
+      {
+         "model.malloy": `source: numbers is duckdb.sql("SELECT 1 AS answer")\n`,
+      },
+      { manifest: { name, version } },
    );
    return dir;
 }

@@ -13,6 +13,7 @@ import type { ResourceRepository } from "../../storage/DatabaseInterface";
 import { initializeSchema } from "../../storage/duckdb/schema";
 import { VersionHost, VersionService } from "./version_service";
 import { VersionStore } from "./version_store";
+import { writePackageFiles } from "../../test_helpers/temp_package";
 
 // Two publishes of the SAME version id at once, against a real registry and
 // real version folders. The same content is one publish and one placement of
@@ -83,12 +84,13 @@ function copyFrom(location: string) {
 /** A package source tree declaring `version`, whose model is `model`. */
 function source(name: string, version: string, model: string): string {
    const dir = path.join(sourcesPath, name);
-   fs.mkdirSync(dir, { recursive: true });
-   fs.writeFileSync(
-      path.join(dir, "publisher.json"),
-      JSON.stringify({ name: PKG, version }),
+   writePackageFiles(
+      dir,
+      {
+         "model.malloy": model,
+      },
+      { manifest: { name: PKG, version } },
    );
-   fs.writeFileSync(path.join(dir, "model.malloy"), model);
    return dir;
 }
 

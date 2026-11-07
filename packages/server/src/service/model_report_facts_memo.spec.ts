@@ -9,6 +9,7 @@ import * as path from "path";
 import { Environment } from "./environment";
 import { Model } from "./model";
 import type { Package } from "./package";
+import { writePackageFiles } from "../test_helpers/temp_package";
 
 /**
  * `Model.carriesReportTag` is asked on every query (to filter render logs),
@@ -27,24 +28,19 @@ describe("report facts are derived once per Model", () => {
    async function loadPackage(): Promise<Package> {
       const envPath = path.join(rootDir, "env");
       const dir = path.join(envPath, "pkg");
-      await fs.mkdir(dir, { recursive: true });
-      await fs.writeFile(
-         path.join(dir, "publisher.json"),
-         JSON.stringify({ name: "pkg", description: "fixture" }),
-      );
-      await fs.writeFile(
-         path.join(dir, "m.malloy"),
-         `source: nums is duckdb.sql("SELECT 1 as one, 2 as two") extend {
+      writePackageFiles(
+         dir,
+         {
+            "m.malloy": `source: nums is duckdb.sql("SELECT 1 as one, 2 as two") extend {
   measure: total is two.sum()
   view: by_one is { group_by: one; aggregate: total }
 }
 `,
-      );
-      await fs.writeFile(
-         path.join(dir, "board.malloy"),
-         `## artifact { title="Board" layout=grid tiles=[{ query="nums -> by_one" }] }
+            "board.malloy": `## artifact { title="Board" layout=grid tiles=[{ query="nums -> by_one" }] }
 import "m.malloy"
 `,
+         },
+         { manifest: { name: "pkg", description: "fixture" } },
       );
       const env = await Environment.create("testEnv", envPath, []);
       await env.addPackage("pkg");

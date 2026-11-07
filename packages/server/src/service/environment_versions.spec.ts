@@ -14,6 +14,7 @@ import { initializeSchema } from "../storage/duckdb/schema";
 import { withSettings } from "../test_helpers/settings_env";
 import { Environment } from "./environment";
 import { Package } from "./package";
+import { writePackageFiles } from "../test_helpers/temp_package";
 
 // Loading published versions through a real Environment: real packages
 // compiled from real folders, a real registry, and real queries, so what each
@@ -36,14 +37,12 @@ function writePackage(
    manifest: Record<string, unknown>,
    answer: number,
 ): string {
-   fs.mkdirSync(dir, { recursive: true });
-   fs.writeFileSync(
-      path.join(dir, "publisher.json"),
-      JSON.stringify({ name: PKG, ...manifest }),
-   );
-   fs.writeFileSync(
-      path.join(dir, "model.malloy"),
-      `source: numbers is duckdb.sql("SELECT ${answer} AS answer") extend {\n  view: which_version is { select: answer }\n}\n`,
+   writePackageFiles(
+      dir,
+      {
+         "model.malloy": `source: numbers is duckdb.sql("SELECT ${answer} AS answer") extend {\n  view: which_version is { select: answer }\n}\n`,
+      },
+      { manifest: { name: PKG, ...manifest } },
    );
    return dir;
 }
@@ -412,15 +411,14 @@ describe("Environment loading: races, listings and bookkeeping", () => {
    /** An unversioned package whose query reads a file of its own. */
    function unversionedOverAFile(answer: number): void {
       const dir = path.join(envPath, PKG);
-      fs.mkdirSync(dir, { recursive: true });
-      fs.writeFileSync(
-         path.join(dir, "publisher.json"),
-         JSON.stringify({ name: PKG }),
-      );
-      fs.writeFileSync(path.join(dir, "data.csv"), `answer\n${answer}\n`);
-      fs.writeFileSync(
-         path.join(dir, "model.malloy"),
-         "source: numbers is duckdb.table('data.csv') extend {\n  view: which_version is { select: answer }\n}\n",
+      writePackageFiles(
+         dir,
+         {
+            "data.csv": `answer\n${answer}\n`,
+            "model.malloy":
+               "source: numbers is duckdb.table('data.csv') extend {\n  view: which_version is { select: answer }\n}\n",
+         },
+         { name: PKG },
       );
    }
 

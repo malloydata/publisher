@@ -8,6 +8,7 @@ import * as path from "path";
 import { PackageController } from "../controller/package.controller";
 import { EnvironmentStore } from "./environment_store";
 import { installSettings } from "../test_helpers/settings_env";
+import { writePackageFiles } from "../test_helpers/temp_package";
 
 /**
  * The startup cleanup of version folders, as a restart runs it: an
@@ -73,14 +74,12 @@ async function closeStore() {
 /** A package source declaring `version`, to publish from. */
 function source(version: string): string {
    const dir = path.join(root, "sources", version);
-   fs.mkdirSync(dir, { recursive: true });
-   fs.writeFileSync(
-      path.join(dir, "publisher.json"),
-      JSON.stringify({ name: PKG, version }),
-   );
-   fs.writeFileSync(
-      path.join(dir, "model.malloy"),
-      `source: numbers is duckdb.sql("SELECT 1 AS answer")\n`,
+   writePackageFiles(
+      dir,
+      {
+         "model.malloy": `source: numbers is duckdb.sql("SELECT 1 AS answer")\n`,
+      },
+      { manifest: { name: PKG, version } },
    );
    return dir;
 }

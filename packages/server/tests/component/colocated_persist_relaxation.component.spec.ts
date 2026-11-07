@@ -36,6 +36,7 @@ import * as path from "path";
 import { AccessDeniedError } from "../../src/errors";
 import { Environment } from "../../src/service/environment";
 import type { Package } from "../../src/service/package";
+import { writePackageFiles } from "../../src/test_helpers/temp_package";
 
 let rootDir: string;
 let envPath: string;
@@ -56,14 +57,13 @@ async function loadPackageFiles(
    files: Record<string, string>,
 ): Promise<Package> {
    const dir = path.join(envPath, "pkg");
-   await fs.mkdir(dir, { recursive: true });
-   await fs.writeFile(
-      path.join(dir, "publisher.json"),
-      JSON.stringify({ name: "pkg", description: "fixture" }),
+   writePackageFiles(
+      dir,
+      {
+         ...files,
+      },
+      { manifest: { name: "pkg", description: "fixture" } },
    );
-   for (const [name, contents] of Object.entries(files)) {
-      await fs.writeFile(path.join(dir, name), contents);
-   }
    const env = await Environment.create("testEnv", envPath, []);
    await env.addPackage("pkg");
    return env.getPackage("pkg", false);

@@ -23,6 +23,7 @@ import {
    versionTableSuffix,
    writeTargetsIn,
 } from "./versions/materialization_scope";
+import { writePackageFiles } from "../test_helpers/temp_package";
 
 // What archiving a version reclaims, and what it must leave alone: the keep
 // rules of MaterializationService.reclaimVersionTables (a table another
@@ -63,30 +64,24 @@ function writePackage(
       sourcesPath,
       `${packageName}-${version}-${answer}-${scope}${detail ? "-detail" : ""}`,
    );
-   fs.mkdirSync(dir, { recursive: true });
-   fs.writeFileSync(
-      path.join(dir, "publisher.json"),
-      JSON.stringify({
-         name: packageName,
-         version,
-         materialization: { scope },
-      }),
-   );
-   fs.writeFileSync(
-      path.join(dir, "model.malloy"),
-      [
-         "##! experimental.persistence",
-         `source: base is warehouse.sql("SELECT ${answer} AS answer")`,
-         '#@ persist name="summary"',
-         "source: summary is base -> { group_by: answer }",
-         ...(detail
-            ? [
-                 '#@ persist name="detail"',
-                 "source: detail is base -> { group_by: doubled is answer * 2 }",
-              ]
-            : []),
-         "",
-      ].join("\n"),
+   writePackageFiles(
+      dir,
+      {
+         "model.malloy": [
+            "##! experimental.persistence",
+            `source: base is warehouse.sql("SELECT ${answer} AS answer")`,
+            '#@ persist name="summary"',
+            "source: summary is base -> { group_by: answer }",
+            ...(detail
+               ? [
+                    '#@ persist name="detail"',
+                    "source: detail is base -> { group_by: doubled is answer * 2 }",
+                 ]
+               : []),
+            "",
+         ].join("\n"),
+      },
+      { manifest: { name: packageName, version, materialization: { scope } } },
    );
    return dir;
 }

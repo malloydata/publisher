@@ -42,6 +42,7 @@ import {
    isSameDeclaration,
 } from "../../src/service/filter_binding_guard";
 import type { Package } from "../../src/service/package";
+import { writePackageFiles } from "../../src/test_helpers/temp_package";
 
 /** The guard logs its reason under one of these: the inherited-filter walk, or a grafted gate's proof. */
 const DENY_MESSAGES = [
@@ -185,11 +186,7 @@ async function withPackage<T>(
    await fs.mkdir(envPath, { recursive: true });
    const env = await Environment.create("probeEnv", envPath, []);
    const pkg = await env.installPackage("pkg", async (staging) => {
-      await fs.mkdir(staging, { recursive: true });
-      await fs.writeFile(
-         path.join(staging, "publisher.json"),
-         JSON.stringify({ name: "pkg" }),
-      );
+      writePackageFiles(staging, {});
       for (const [name, text] of Object.entries(files)) {
          await fs.writeFile(
             path.join(staging, name),

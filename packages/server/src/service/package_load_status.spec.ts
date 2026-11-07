@@ -11,6 +11,7 @@ import { PackageNotFoundError, ServiceUnavailableError } from "../errors";
 import { Environment } from "./environment";
 import { Package } from "./package";
 import type { PackageMemoryGovernor } from "./package_memory_governor";
+import { writePackageFiles } from "../test_helpers/temp_package";
 
 /**
  * `Package.status` and the listing rules behind it.
@@ -49,12 +50,13 @@ describe("Package.status: serving and loading", () => {
       dir: string,
       description = "fixture",
    ): Promise<void> {
-      await fs.mkdir(dir, { recursive: true });
-      await fs.writeFile(
-         path.join(dir, "publisher.json"),
-         JSON.stringify({ name: "pkg", description }),
+      writePackageFiles(
+         dir,
+         {
+            "model.malloy": MODEL,
+         },
+         { manifest: { name: "pkg", description } },
       );
-      await fs.writeFile(path.join(dir, "model.malloy"), MODEL);
    }
 
    async function copyDir(src: string, dst: string): Promise<void> {
@@ -606,12 +608,13 @@ describe("Package.status: serving and loading", () => {
       // counts.
       const env = await Environment.create("testEnv", envPath, []);
       const dir = path.join(envPath, "pkg");
-      await fs.mkdir(dir, { recursive: true });
-      await fs.writeFile(
-         path.join(dir, "publisher.json"),
-         JSON.stringify({ name: "pkg", location: "/etc" }),
+      writePackageFiles(
+         dir,
+         {
+            "model.malloy": MODEL,
+         },
+         { manifest: { name: "pkg", location: "/etc" } },
       );
-      await fs.writeFile(path.join(dir, "model.malloy"), MODEL);
 
       const added = await env.addPackage("pkg");
       expect(added?.getPackageMetadata().location).toBeUndefined();
