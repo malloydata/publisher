@@ -114,8 +114,6 @@ export interface QueryTransportOptions {
    querySlotLabel?: string;
    /** Ad-hoc text runs on its own: a source or view name sent beside it is not passed on. */
    adHocRunsAlone: boolean;
-   /** Whether the answering version is stamped into the query-metadata input. */
-   metadataCarriesVersion: boolean;
    /** Debug message logged when a connection's query-metadata layers cannot be read. */
    noLayersLogMessage: string;
    /**
@@ -137,7 +135,6 @@ export const REST_QUERY_OPTIONS: Omit<QueryTransportOptions, "shape"> = {
    // queryConcurrency() middleware holds the slot for the whole request.
    querySlotLabel: undefined,
    adHocRunsAlone: false,
-   metadataCarriesVersion: true,
    noLayersLogMessage: "No query-metadata layers for connection",
 };
 
@@ -230,7 +227,7 @@ export class QueryUseCase {
                   queryClass,
                   // The version that answered (latest when none was named),
                   // not the raw request value.
-                  version: options.metadataCarriesVersion ? version : undefined,
+                  version,
                   noLayersLogMessage: options.noLayersLogMessage,
                });
                const target = !options.adHocRunsAlone

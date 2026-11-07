@@ -154,6 +154,7 @@ function storeCapturingMetadata(
          queryMetadataEnforced?: Record<string, string>;
       }
    > = {},
+   versionId?: string,
 ): {
    store: Partial<EnvironmentStore>;
    captured: () => ModelQueryMetadataInput | undefined;
@@ -175,7 +176,7 @@ function storeCapturingMetadata(
             getPackage: async () => ({
                // The tool reads the package's own declared bag as the
                // least-specific author layer.
-               getVersionId: () => undefined,
+               getVersionId: () => versionId,
                getDeclaredQueryMetadata: () => null,
                getModel: () => ({
                   getType: () => "model",
@@ -405,6 +406,12 @@ describe("execute_query per-query metadata", () => {
          default: { team: "finance" },
          enforced: { tenant: "acme" },
       });
+   });
+
+   it("stamps the version that answered, as the REST route does", async () => {
+      const { store, captured } = storeCapturingMetadata({}, "2.1.0");
+      await captureHandler(store)(args);
+      expect(captured()?.version).toBe("2.1.0");
    });
 
    it("passes the environment and mints a correlation id", async () => {
