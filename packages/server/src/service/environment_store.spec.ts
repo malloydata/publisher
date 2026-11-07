@@ -19,10 +19,7 @@ import { TEMP_DIR_PATH } from "../constants";
 import { BadRequestError, EnvironmentNotFoundError } from "../errors";
 import { withSettings, type SettingsInput } from "../test_helpers/settings_env";
 import { stubStorageManager } from "../test_helpers/storage_manager_stub";
-import {
-   deleteEnvironmentEmbeddings,
-   deletePackageEmbeddings,
-} from "../retrieval/index/embedding_index";
+import { RetrievalService } from "../retrieval/service";
 import { Environment, PackageStatus } from "./environment";
 import {
    CloneProgressReporter,
@@ -2995,18 +2992,12 @@ describe("EnvironmentStore embeddings cleanup wiring", () => {
    /** A store with the deletion hooks main_server installs. */
    function storeWithCleanupHooks(): EnvironmentStore {
       const store = new EnvironmentStore(serverRootPath, { storageManager });
+      const retrieval = new RetrievalService(store);
       store.setPackageDeletedHook((environmentName, packageName) =>
-         deletePackageEmbeddings(
-            store.storageManager.getDuckDbConnection(),
-            environmentName,
-            packageName,
-         ),
+         retrieval.purge(environmentName, packageName),
       );
       store.setEnvironmentDeletedHook((environmentName) =>
-         deleteEnvironmentEmbeddings(
-            store.storageManager.getDuckDbConnection(),
-            environmentName,
-         ),
+         retrieval.purge(environmentName),
       );
       return store;
    }

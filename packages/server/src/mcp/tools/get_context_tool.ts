@@ -13,7 +13,8 @@ import {
 import type { RequestExtra } from "../request_extra";
 import { jsonResource, jsonToolError } from "../tool_response";
 import { logger } from "../../logger";
-import { runFcjQuery, type TraceMode } from "../../retrieval/search/engine";
+import type { TraceMode } from "../../retrieval/search/engine";
+import { RetrievalService } from "../../retrieval/service";
 import {
    convergedContextShape,
    matchesScope,
@@ -260,6 +261,7 @@ function runListing(
 async function runContextQuery(
    resolved: ResolvedRequest,
    environmentStore: EnvironmentStore,
+   retrieval: RetrievalService,
    extraWarnings: string[] = [],
    traceMode: TraceMode = "none",
    withPackageInfo = false,
@@ -371,9 +373,8 @@ async function runContextQuery(
 
    return searchResource(
       uri,
-      await runFcjQuery({
+      await retrieval.search({
          request: resolved,
-         environmentStore,
          pkgIndex,
          warnings: ctx.warnings,
          traceMode,
@@ -404,6 +405,7 @@ function traceModeOf(extra: RequestExtra | undefined): TraceMode {
 export function registerGetContextTool(
    mcpServer: McpServer,
    environmentStore: EnvironmentStore,
+   retrieval: RetrievalService = new RetrievalService(environmentStore),
 ): void {
    registerTool(
       mcpServer,
@@ -438,6 +440,7 @@ export function registerGetContextTool(
          return runContextQuery(
             request,
             environmentStore,
+            retrieval,
             [...level.warnings, ...unsupportedTargetWarnings(request)],
             traceModeOf(extra),
             level.withPackageInfo === true,
