@@ -1,13 +1,18 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
-import { describe, expect, it } from "bun:test";
+import { describe, expect, it, spyOn } from "bun:test";
 import type { AxiosError } from "axios";
+import { EventEmitter } from "events";
+import type { Request, Response } from "express";
 import {
    SENSITIVE_KEY_NAMES,
    buildAxiosErrorLog,
+   logger,
+   loggerMiddleware,
    redactSensitive,
 } from "./logger";
+import { linesMentioning } from "./test_helpers/log_lines";
 
 describe("redactSensitive", () => {
    it("redacts every name in SENSITIVE_KEY_NAMES (reflective lock)", () => {
@@ -209,5 +214,71 @@ describe("buildAxiosErrorLog", () => {
       expect(message).toBe("Axios unknown error");
       expect(meta).toEqual({ message: "getaddrinfo ENOTFOUND" });
       expect(JSON.stringify(meta)).not.toContain("Bearer abc");
+   });
+});
+
+describe("loggerMiddleware", () => {
+   const TRACE_ID = "4bf92f3577b34da6a3ce929d0e0e4736";
+
+   /** Run one request through the middleware; the access-log metadata it wrote, if any. */
+   function accessLog(
+      url: string,
+      {
+         headers = {},
+         body,
+      }: { headers?: Record<string, string>; body?: unknown } = {},
+   ): Record<string, unknown> | undefined {
+      const info = spyOn(logger, "info").mockImplementation(
+         (() => logger) as never,
+      );
+      try {
+         const req = {
+            method: "POST",
+            url,
+            headers,
+            body,
+            params: {},
+            query: {},
+         };
+         const res = Object.assign(new EventEmitter(), {
+            statusCode: 200,
+            locals: {},
+            json: (payload: unknown) => payload,
+         });
+         loggerMiddleware(
+            req as unknown as Request,
+            res as unknown as Response,
+            () => {},
+         );
+         res.emit("finish");
+         const [line] = linesMentioning(info, url);
+         return line?.[1] as Record<string, unknown> | undefined;
+      } finally {
+         info.mockRestore();
+      }
+   }
+
+   it("logs the status, the duration and the redacted body of a request", () => {
+      const meta = accessLog("/logger-spec/a", {
+         body: { query: "run: x", password: "hunter2" },
+      });
+      expect(meta).toMatchObject({
+         statusCode: 200,
+         payload: { query: "run: x", password: "[REDACTED]" },
+         params: {},
+         query: {},
+      });
+      expect(meta?.duration).toMatch(/^\d+\.\d\dms$/);
+   });
+
+   it("carries the trace id of an incoming traceparent", () => {
+      const meta = accessLog("/logger-spec/b", {
+         headers: { traceparent: `00-${TRACE_ID}-00f067aa0ba902b7-01` },
+      });
+      expect(meta?.traceId).toBe(TRACE_ID);
+   });
+
+   it("writes nothing for a probe", () => {
+      expect(accessLog("/health")).toBeUndefined();
    });
 });
