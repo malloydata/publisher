@@ -3,12 +3,12 @@
 
 import type { components } from "../api";
 import { BadRequestError, PackageVersionError } from "../errors";
+import { Materialization } from "../storage/DatabaseInterface";
 import {
    BuildInstruction,
    LedgerEntry,
    ManifestReference,
-   Materialization,
-} from "../storage/DatabaseInterface";
+} from "../service/materialization/types";
 import { MaterializationService } from "../service/materialization_service";
 import { queryMetadataViolations } from "../service/query_metadata";
 

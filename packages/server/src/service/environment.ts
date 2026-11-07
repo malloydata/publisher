@@ -52,7 +52,7 @@ import {
    assertSafeRelativeModelPath,
    safeJoinUnderRoot,
 } from "../path_safety";
-import { FreshnessManifest, ManifestEntry } from "../storage/DatabaseInterface";
+import { FreshnessManifest, ManifestEntry } from "./materialization/types";
 import { errMessage } from "../utils";
 import {
    buildEnvironmentMalloyConfig,

@@ -38,7 +38,7 @@ import type {
    PersistSource,
 } from "@malloydata/malloy";
 import { beforeAll, describe, expect, it } from "bun:test";
-import type { FreshnessManifest } from "../storage/DatabaseInterface";
+import type { FreshnessManifest } from "./materialization/types";
 import { computeSourceEntityId, plannedSources } from "./build_plan";
 import { filterFreshManifest } from "./freshness";
 import {

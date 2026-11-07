@@ -4,7 +4,7 @@
 import type { PersistSource } from "@malloydata/malloy";
 import type { Tag } from "@malloydata/malloy-tag";
 
-import type { IncrementalStrategy } from "../storage/DatabaseInterface";
+import type { IncrementalStrategy } from "./materialization/types";
 import { deriveColumns } from "./build_plan";
 import { readTimeDynamicTerms } from "./persist_dynamic_terms";
 

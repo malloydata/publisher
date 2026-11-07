@@ -14,7 +14,7 @@ import {
    recordEligibilityRefused,
    recordServeShapeTypeFallback,
 } from "../materialization_metrics";
-import type { ManifestEntry } from "../storage/DatabaseInterface";
+import type { ManifestEntry } from "./materialization/types";
 import { quoteManifestTablePath } from "./quoting";
 import { storageTablePath } from "./storage_table_path";
 
