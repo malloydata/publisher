@@ -115,9 +115,16 @@ export class PackageController {
    /** Packages with versions (`env/pkg`) already warned that their PATCH is deprecated, this run. */
    private warnedPackagePatch = new Set<string>();
 
-   constructor(environmentStore: EnvironmentStore) {
+   /**
+    * `retrieval` is the composition root's one instance; a spec that builds a
+    * controller alone gets a store-backed one.
+    */
+   constructor(
+      environmentStore: EnvironmentStore,
+      retrieval: RetrievalService = new RetrievalService(environmentStore),
+   ) {
       this.environmentStore = environmentStore;
-      this.retrieval = new RetrievalService(environmentStore);
+      this.retrieval = retrieval;
    }
 
    public async listPackages(environmentName: string): Promise<ApiPackage[]> {

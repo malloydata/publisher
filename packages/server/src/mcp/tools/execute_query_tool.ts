@@ -3,23 +3,24 @@
 
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { registerTool } from "../register_tool";
-import { BadRequestError } from "../../errors";
+import { BadRequestError, ModelNotFoundError } from "../../errors";
 import { ErrorCode, McpError } from "@modelcontextprotocol/sdk/types.js";
 import { z } from "zod/v3";
 import type { GivenValue } from "@malloydata/malloy";
 import { logger } from "../../logger";
-import {
-   tryAcquireQuerySlot,
-   type QuerySlotHandle,
-} from "../../query_concurrency";
-import {
-   accessIdentityOf,
-   withAccessRecord,
-} from "../../service/access_record";
+import { accessIdentityOf } from "../../service/access_record";
 import type { Package } from "../../service/package";
-import { runModelQuery } from "../../service/run_model_query";
 import { EnvironmentStore } from "../../service/environment_store";
-import { RESTRICTED_CONSTRUCTS, type ErrorDetails } from "../error_messages";
+import {
+   QueryUseCase,
+   resolveCommandModel,
+   type QueryTransportOptions,
+} from "../../usecases/query";
+import {
+   getNotFoundError,
+   RESTRICTED_CONSTRUCTS,
+   type ErrorDetails,
+} from "../error_messages";
 import {
    buildMalloyUri,
    classifyToolError,
@@ -28,7 +29,6 @@ import {
 import type { RequestExtra } from "../request_extra";
 import { jsonResource, jsonToolError } from "../tool_response";
 import { buildQueryEnvelope } from "../query_envelope";
-import { buildQueryMetadataInput } from "../../service/query_metadata";
 import { bigIntReplacer } from "../../json_utils";
 import { MCP_ERROR_MESSAGES } from "../mcp_constants";
 import { recordDeprecatedFilterUsage } from "../../filter_deprecation";
@@ -119,9 +119,45 @@ A JSON object, the same shape Credible's execute_query and an in-package data ap
 
 Values above 2^53 are returned as JSON strings so their digits survive.`;
 
+/**
+ * execute_query's documented differences from the REST query route. Each
+ * call overrides `resolveModel` (to keep the refusal details
+ * getModelForQuery words) and sets its own `precondition`.
+ */
+const MCP_QUERY_OPTIONS: QueryTransportOptions = {
+   // Replaced per call by getModelForQuery, which serves the package's
+   // `latest`, refuses a notebook and a missing model, and compiles eagerly.
+   resolveModel: resolveCommandModel,
+   // Unreached while getModelForQuery refuses a missing model first; worded
+   // as its refusal is.
+   modelNotFound: ({ environmentName, packageName, modelPath }) =>
+      new ModelNotFoundError(
+         getNotFoundError(
+            `model '${modelPath}' in package '${packageName}' for environment '${environmentName}'`,
+         ).message,
+      ),
+   // The envelope is built from `compactResult`, so cap that shape:
+   // measuring the wrapped result would 413 on bytes the agent never
+   // receives.
+   shape: "compact",
+   // MCP sends no #(authorize) bypass, ever.
+   honorBypassAuthorize: false,
+   // Shares the HTTP routes' slot pool so an agent loop cannot bypass
+   // PUBLISHER_MAX_CONCURRENT_QUERIES; the label separates MCP load on the
+   // dashboard. Taken after the model resolves.
+   querySlotLabel: "mcp:executeQuery",
+   // The two call modes differ only in which arguments carry the query.
+   // Ad-hoc text runs on its own: a sourceName sent beside it is not passed on.
+   adHocRunsAlone: true,
+   metadataCarriesVersion: false,
+   noLayersLogMessage:
+      "[MCP Tool executeQuery] No query-metadata layers for connection",
+};
+
 export function registerExecuteQueryTool(
    mcpServer: McpServer,
    environmentStore: EnvironmentStore,
+   queryUseCase: QueryUseCase = new QueryUseCase(environmentStore),
 ): void {
    const offerHidden =
       environmentStore.mcpIncludeHiddenFilesAndSources === true;
@@ -162,78 +198,57 @@ export function registerExecuteQueryTool(
                  : undefined;
          let refusal: ErrorDetails | undefined;
          let pkg: Package | undefined;
-         // Shares the HTTP routes' slot pool so an agent loop cannot bypass
-         // PUBLISHER_MAX_CONCURRENT_QUERIES; the label separates MCP load on
-         // the dashboard. A refusal throws into the catch below.
-         let querySlot = null as QuerySlotHandle | null;
          try {
-            return await withAccessRecord(
+            return await queryUseCase.run(
                {
-                  environment: environmentName,
-                  package: packageName,
+                  environmentName,
+                  packageName,
                   modelPath,
-                  ...(queryName ? { queryName } : {}),
-                  ...(sourceName ? { requestedSource: sourceName } : {}),
-                  adHoc: hasAdhocQuery,
-                  ...accessIdentityOf(extra?.requestInfo?.headers),
+                  sourceName,
+                  queryName,
+                  query,
+                  filterParams,
+                  givens: givens as Record<string, GivenValue> | undefined,
+                  includeHiddenFilesAndSources,
+                  // A cancelled call stops the query at the driver.
+                  clientSignal: extra?.signal,
+                  identity: accessIdentityOf(extra?.requestInfo?.headers),
                },
-               extra?.signal,
-               async (audit) => {
-                  // Inside the record, so a refused call is recorded; thrown below as the protocol error.
-                  if (argumentError) throw new BadRequestError(argumentError);
-                  const modelResult = await getModelForQuery(
-                     environmentStore,
-                     environmentName,
-                     packageName,
-                     modelPath,
-                  );
-                  if ("error" in modelResult) {
-                     refusal = modelResult.error;
-                     throw modelResult.cause;
-                  }
-                  const { model, environment } = modelResult;
-                  pkg = modelResult.pkg;
-                  const version = pkg.getVersionId();
-                  if (version) audit.version = version;
-                  querySlot = tryAcquireQuerySlot("mcp:executeQuery");
-                  // Built as the HTTP controller builds it: a connection's enforced
-                  // properties describe the deployment, not the transport.
-                  const queryMetadataInput = buildQueryMetadataInput({
-                     environmentName,
-                     environment,
-                     pkg,
-                     noLayersLogMessage:
-                        "[MCP Tool executeQuery] No query-metadata layers for connection",
-                  });
-                  // The two call modes differ only in which arguments carry the
-                  // query; everything after the run is identical, so they share one
-                  // path rather than two copies that can drift. Ad-hoc text runs on
-                  // its own: a sourceName sent beside it is not passed on.
-                  const target = query
-                     ? { sourceName: undefined, queryName: undefined, query }
-                     : { sourceName, queryName, query: undefined };
-                  const {
+               {
+                  ...MCP_QUERY_OPTIONS,
+                  // Inside the record, so a refused call is recorded; thrown
+                  // below as the protocol error.
+                  precondition: argumentError
+                     ? new BadRequestError(argumentError)
+                     : undefined,
+                  // getModelForQuery refuses a missing model or a notebook
+                  // with MCP's own 404 wording, and compiles eagerly; the
+                  // details it words are what the catch below answers with.
+                  resolveModel: async (store, command) => {
+                     const modelResult = await getModelForQuery(
+                        store,
+                        command.environmentName,
+                        command.packageName,
+                        command.modelPath,
+                     );
+                     if ("error" in modelResult) {
+                        refusal = modelResult.error;
+                        throw modelResult.cause;
+                     }
+                     pkg = modelResult.pkg;
+                     return modelResult;
+                  },
+               },
+               ({
+                  result: {
                      result,
                      compactResult,
                      rowLimit,
                      rowLimitSource,
                      queryCorrelationId,
                      renderLogs,
-                  } = await runModelQuery(audit, pkg, modelPath, model, {
-                     ...target,
-                     filterParams,
-                     givens: givens as Record<string, GivenValue> | undefined,
-                     queryMetadataInput,
-                     // The envelope is built from `compactResult`, so cap that
-                     // shape: measuring the wrapped result would 413 on bytes
-                     // the agent never receives.
-                     shape: "compact",
-                     // MCP sends no #(authorize) bypass, ever.
-                     bypassAuthorize: false,
-                     includeHiddenFilesAndSources,
-                     // A cancelled call stops the query at the driver.
-                     clientSignal: extra?.signal,
-                  });
+                  },
+               }) => {
                   recordDeprecatedFilterUsage({ filterParams });
 
                   const resultUri = buildMalloyUri(
@@ -324,10 +339,6 @@ export function registerExecuteQueryTool(
                message: errorDetails.message,
                suggestions,
             });
-         } finally {
-            // `release()` is idempotent, so a double-fault cannot
-            // double-decrement.
-            querySlot?.release();
          }
       },
    );

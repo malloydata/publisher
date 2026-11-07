@@ -37,6 +37,8 @@ function controllers(stubs: Stubs): AppServices {
    const names: (keyof AppServices)[] = [
       "environmentStore",
       "themeStore",
+      "retrieval",
+      "queryUseCase",
       "themeController",
       "watchModeController",
       "connectionController",

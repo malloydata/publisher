@@ -11,6 +11,7 @@ import {
    loadTempPackage,
    type LoadedTempPackage,
 } from "../test_helpers/temp_package";
+import { QueryUseCase } from "../usecases/query";
 import { QueryController, type QueryRequest } from "./query.controller";
 
 /**
@@ -86,7 +87,7 @@ function controllerWith({
    });
    const store = { getEnvironment } as unknown as EnvironmentStore;
    return {
-      controller: new QueryController(store),
+      controller: new QueryController(new QueryUseCase(store)),
       getQueryResults,
       getEnvironment,
    };
