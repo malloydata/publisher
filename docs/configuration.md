@@ -736,8 +736,12 @@ duration; per-request transport detail is at `debug`.
 With `OTEL_EXPORTER_OTLP_ENDPOINT` set, queries are traced as a `publisher.query` span (package,
 model path, the tier it was served from) with `publisher.query.execute` beneath it, and compiles as
 `publisher.compile`. Every package load is a `publisher.package.load` span (environment, package,
-whether it was a dry run), and an in-place reload wraps its load in `publisher.package.reload`. They
-nest under the HTTP spans auto-instrumentation creates.
+whether it was a dry run), and an in-place reload wraps its load in `publisher.package.reload`. Each
+MCP tool call is a `publisher.mcp.tool` span carrying `mcp.tool.name` and `mcp.tool.outcome` (`ok`,
+`error`, or absent when it threw, which marks the span an error). A materialization run is a
+`publisher.materialization.build` span (package, build id, `auto` or `orchestrated` mode), with one
+`publisher.materialization.build_source` span per persist source it builds. They nest under the HTTP
+spans auto-instrumentation creates.
 
 ### HTTP requests
 
