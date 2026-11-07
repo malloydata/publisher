@@ -149,7 +149,6 @@ const MCP_QUERY_OPTIONS: QueryTransportOptions = {
    // The two call modes differ only in which arguments carry the query.
    // Ad-hoc text runs on its own: a sourceName sent beside it is not passed on.
    adHocRunsAlone: true,
-   metadataCarriesVersion: false,
    noLayersLogMessage:
       "[MCP Tool executeQuery] No query-metadata layers for connection",
 };

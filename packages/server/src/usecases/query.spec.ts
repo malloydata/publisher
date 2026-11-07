@@ -185,7 +185,7 @@ describe("QueryUseCase", () => {
       expect(ignored().bypassAuthorize).toBe(false);
    });
 
-   it("runs ad-hoc text alone and omits the version from metadata when asked", async () => {
+   it("runs ad-hoc text alone, still stamping the answering version", async () => {
       const args = spyRun();
       await useCaseOver("1.0.0").run(
          { ...COMMAND, query: "run: s -> { group_by: a }" },
@@ -193,14 +193,13 @@ describe("QueryUseCase", () => {
             ...REST,
             shape: "compact",
             adHocRunsAlone: true,
-            metadataCarriesVersion: false,
          },
          (o) => o,
       );
       const seen = args();
       expect(seen.sourceName).toBeUndefined();
       expect(seen.shape).toBe("compact");
-      expect(seen.metadata?.version).toBeUndefined();
+      expect(seen.metadata?.version).toBe("1.0.0");
       // The record still names the source the caller sent.
       expect(records()[0]).toMatchObject({ requestedSource: "s" });
    });
