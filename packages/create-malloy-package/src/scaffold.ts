@@ -1651,6 +1651,21 @@ export const SERVER_VALUE_FLAGS = new Set([
    "--retrieval-embedding-base-url",
    "--retrieval-embedding-dimensions",
    "--retrieval-embedding-min-similarity",
+   "--retrieval-llm-provider",
+   "--retrieval-llm-model",
+   "--retrieval-llm-base-url",
+   "--retrieval-llm-project-id",
+   "--retrieval-llm-location",
+   "--retrieval-llm-timeout-ms",
+   "--retrieval-llm-concurrency",
+   "--retrieval-llm-max-calls-per-sync",
+   "--retrieval-llm-max-calls-per-request",
+   "--retrieval-embedding-provider",
+   "--retrieval-embedding-project-id",
+   "--retrieval-embedding-location",
+   "--retrieval-embedding-query-prefix",
+   "--retrieval-embedding-document-prefix",
+   "--retrieval-egress-preset",
 ]);
 
 /** True when a quote is left open, which sh refuses to run at all. */
