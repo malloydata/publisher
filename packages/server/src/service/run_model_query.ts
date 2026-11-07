@@ -17,6 +17,7 @@ import type { Environment } from "./environment";
 import type { EnvironmentStore } from "./environment_store";
 import type { FilterParams } from "./filter";
 import type { Model } from "./model";
+import { QueryPrivileges } from "./model_query_request";
 import type { Package } from "./package";
 import type { ModelQueryMetadataInput } from "./query_metadata";
 import { filterPublisherOwnedRenderLogs } from "./report_manifest";
@@ -71,23 +72,24 @@ export async function runModelQuery(
 ) {
    const outcome = await runWithQueryTimeout(
       (abortSignal) =>
-         // The positional form of `Model.runQuery`, which splits these into a
-         // `QueryRequest` and `QueryPrivileges`. Kept here because the route
-         // specs' model doubles (access_record_routes, execute_query_tool,
-         // query.controller) stub `getQueryResults` by position.
-         model.getQueryResults(
+         model.runQuery(
             audit,
-            request.sourceName,
-            request.queryName,
-            request.query,
-            request.filterParams,
-            request.bypassFilters,
-            request.givens,
-            abortSignal,
-            request.queryMetadataInput,
-            request.shape,
-            request.bypassAuthorize,
-            request.includeHiddenFilesAndSources,
+            {
+               sourceName: request.sourceName,
+               queryName: request.queryName,
+               query: request.query,
+               filterParams: request.filterParams,
+               givens: request.givens,
+               abortSignal,
+               queryMetadataInput: request.queryMetadataInput,
+               responseShape: request.shape,
+            },
+            QueryPrivileges.of({
+               bypassFilters: request.bypassFilters,
+               bypassAuthorize: request.bypassAuthorize,
+               includeHiddenFilesAndSources:
+                  request.includeHiddenFilesAndSources,
+            }),
          ),
       getQueryTimeoutMs(),
       request.clientSignal,
