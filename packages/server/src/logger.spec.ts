@@ -244,6 +244,7 @@ describe("loggerMiddleware", () => {
          const req = {
             method: "POST",
             url,
+            path: url.split("?")[0],
             headers,
             body,
             params: {},
@@ -357,8 +358,9 @@ describe("loggerMiddleware", () => {
       });
    });
 
-   it("writes nothing for a probe", () => {
+   it("writes nothing for a probe, query string or not", () => {
       expect(accessLog("/health")).toBeUndefined();
+      expect(accessLog("/metrics?name[]=up")).toBeUndefined();
    });
 });
 

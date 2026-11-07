@@ -97,11 +97,6 @@ const SENSITIVE_KEYS: ReadonlySet<string> = new Set(
 
 const REDACTED = "[REDACTED]";
 
-/**
- * Deep-copy `value` with every property whose key names a credential masked,
- * recursing through objects and arrays (connections arrive nested under
- * `connections[]`). Never mutates the input.
- */
 /** Longest body, as serialized JSON, the access log carries whole. */
 export const MAX_LOGGED_BODY_CHARS = 2048;
 
@@ -128,6 +123,11 @@ export function boundedForLog(value: unknown): unknown {
    };
 }
 
+/**
+ * Deep-copy `value` with every property whose key names a credential masked,
+ * recursing through objects and arrays (connections arrive nested under
+ * `connections[]`). Never mutates the input.
+ */
 export function redactSensitive(
    value: unknown,
    seen: WeakSet<object> = new WeakSet(),
@@ -197,7 +197,7 @@ export const loggerMiddleware: RequestHandler = (req, res, next) => {
       return resJson.call(res, body);
    };
    res.on("finish", () => {
-      if (isProbePath(req.url)) return;
+      if (isProbePath(req.path)) return;
       const durationMs = performance.now() - startTime;
       const logMetadata: Record<string, unknown> = {
          statusCode: res.statusCode,
