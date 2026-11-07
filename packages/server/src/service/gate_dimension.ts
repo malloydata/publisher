@@ -119,10 +119,7 @@ const NEGATION_SCAN_DEPTH = 64;
  * `"too_deep"` when the nesting exceeds the scan's bound, so a caller can
  * warn rather than read an unscanned expression as clean.
  */
-function negatedMembershipScan(
-   node: unknown,
-   depth = 0,
-): boolean | "too_deep" {
+function negatedMembershipScan(node: unknown, depth = 0): boolean | "too_deep" {
    if (depth > NEGATION_SCAN_DEPTH) return "too_deep";
    if (node === null || typeof node !== "object") return false;
    const n = node as {
