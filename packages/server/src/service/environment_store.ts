@@ -53,11 +53,7 @@ import {
 } from "../storage/DatabaseInterface";
 import { StorageConfig, StorageManager } from "../storage/StorageManager";
 import { extractErrorDataFromError, validateAzureUrl } from "./db_utils";
-import {
-   Environment,
-   type PackageListingOptions,
-   PackageStatus,
-} from "./environment";
+import { Environment, type PackageListingOptions } from "./environment";
 import { formatPublishRejections } from "./publish_checks";
 import { assertGoogleCredentialsIsNotADirectory } from "./google_credentials";
 import type { Package } from "./package";
@@ -887,12 +883,11 @@ export class EnvironmentStore {
          // environments created at runtime still do not.
          environmentInstance.restoreUnversionedBindingsFromLocalStore();
 
+         // Registered as configured, not serving: none is loaded yet, and
+         // the first listing or request loads each.
          const packages = await repository.listPackages(dbEnvironment.id);
          packages.forEach((pkg) => {
-            environmentInstance.setPackageStatus(
-               pkg.name,
-               PackageStatus.SERVING,
-            );
+            environmentInstance.registerConfiguredPackage(pkg.name);
          });
 
          this.environments.set(dbEnvironment.name, environmentInstance);
@@ -1982,8 +1977,8 @@ export class EnvironmentStore {
       if (!newEnvironment.metadata) newEnvironment.metadata = {};
       newEnvironment.metadata.location = absoluteEnvironmentPath;
 
-      // Attach before the SERVING seeding below: those packages are configured
-      // but un-mounted, and this is the only record of why.
+      // Attach before registering the packages below: those packages are
+      // configured but un-mounted, and this is the only record of why.
       for (const [packageName, message] of mountErrors) {
          newEnvironment.setPackageMountError(packageName, message);
       }
@@ -1994,10 +1989,7 @@ export class EnvironmentStore {
 
       environment?.packages?.forEach((_package) => {
          if (_package.name) {
-            newEnvironment.setPackageStatus(
-               _package.name,
-               PackageStatus.SERVING,
-            );
+            newEnvironment.registerConfiguredPackage(_package.name);
          }
       });
 
