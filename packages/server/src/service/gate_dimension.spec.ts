@@ -4,11 +4,12 @@
 // The two IR readers gate classification rests on, against hand-built IR: the
 // transitive given expansion (which must refuse, never shrink, on a path it
 // cannot resolve) and the negated-membership detector.
-import type { SourceDef } from "@malloydata/malloy";
+import type { ModelDef, SourceDef } from "@malloydata/malloy";
 import { describe, expect, it } from "bun:test";
 import {
    containsNegatedMembership,
    expandRefSummaryGivenIds,
+   validateSourceLineGateGivenUsage,
 } from "./gate_dimension";
 
 /** A struct whose fields carry the given refSummaries. */
@@ -114,5 +115,37 @@ describe("containsNegatedMembership", () => {
          containsNegatedMembership({ node: "=", kids: { left: member } }),
       ).toBe(false);
       expect(containsNegatedMembership(null)).toBe(false);
+   });
+
+   it("fails closed on nesting deeper than it scans", () => {
+      let deep: object = member;
+      for (let i = 0; i < 100; i++) deep = paren(deep);
+      expect(containsNegatedMembership(deep)).toBe(true);
+      let shallow: object = member;
+      for (let i = 0; i < 10; i++) shallow = paren(shallow);
+      expect(containsNegatedMembership(shallow)).toBe(false);
+   });
+});
+
+describe("validateSourceLineGateGivenUsage", () => {
+   it("warns that a gate nested too deeply to scan could not be checked", () => {
+      let deep: object = { node: "inGiven", not: false };
+      for (let i = 0; i < 100; i++) deep = { node: "()", e: deep };
+      const warnings: string[] = [];
+      validateSourceLineGateGivenUsage(
+         "orders",
+         "authorize",
+         struct([]),
+         { givenUsage: [{ id: "ROLE" }] },
+         deep,
+         { givens: {} } as unknown as ModelDef,
+         (cause, detail) => warnings.push(`${cause}: ${detail}`),
+      );
+      expect(warnings).toEqual([
+         expect.stringContaining(
+            "source_line_gate_negated_membership: The #(authorize) gate on " +
+               'source "orders" nests too deeply to check',
+         ),
+      ]);
    });
 });
