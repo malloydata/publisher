@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+import { registerTool } from "../register_tool";
 import { z } from "zod/v3";
 import lunr from "lunr";
 import { EnvironmentStore } from "../../service/environment_store";
@@ -111,7 +112,8 @@ export function registerDocsSearchTool(
    mcpServer: McpServer,
    _environmentStore: EnvironmentStore,
 ): void {
-   mcpServer.tool(
+   registerTool(
+      mcpServer,
       "search_malloy_docs",
       SEARCH_DOCS_DESCRIPTION,
       searchDocsShape,

@@ -2,11 +2,10 @@
 // SPDX-License-Identifier: MIT
 
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
-import { logger } from "../../logger";
 import { EnvironmentStore } from "../../service/environment_store";
-import { type ErrorDetails } from "../error_messages";
-import { buildMalloyUri, classifyToolError } from "../handler_utils";
-import { jsonResource, jsonToolError } from "../tool_response";
+import { buildMalloyUri } from "../handler_utils";
+import { registerGuardedTool } from "../register_tool";
+import { jsonResource } from "../tool_response";
 
 const GET_STATUS_DESCRIPTION = `Report the server's health: its operational state and every configured package or environment that failed to load or is serving a stale model. This is the only MCP surface where a load failure is visible, so call it before concluding a package is empty or missing, and after a model edit whose reload you did not run yourself (e.g. you rely on watch mode).
 
@@ -34,9 +33,15 @@ export function registerGetStatusTool(
    mcpServer: McpServer,
    environmentStore: EnvironmentStore,
 ): void {
-   mcpServer.tool("get_status", GET_STATUS_DESCRIPTION, {}, async () => {
-      const uri = buildMalloyUri({}, "getStatus");
-      try {
+   registerGuardedTool(mcpServer, {
+      name: "get_status",
+      description: GET_STATUS_DESCRIPTION,
+      inputSchema: {},
+      op: "getStatus",
+      failed: "status failed",
+      uri: () => buildMalloyUri({}, "getStatus"),
+      identifier: () => "server",
+      run: async (_params, uri) => {
          const status = await environmentStore.getStatus();
          const payload = {
             operationalState: status.operationalState,
@@ -61,16 +66,6 @@ export function registerGetStatusTool(
             }),
          };
          return jsonResource(uri, payload);
-      } catch (error) {
-         logger.warn("[MCP Tool getStatus] status failed", {
-            error: error instanceof Error ? error.message : String(error),
-         });
-         const errorDetails: ErrorDetails = classifyToolError(
-            "getStatus",
-            "server",
-            error,
-         );
-         return jsonToolError(uri, errorDetails);
-      }
+      },
    });
 }

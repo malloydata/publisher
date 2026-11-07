@@ -6,9 +6,9 @@ import { z } from "zod/v3";
 import { logger } from "../../logger";
 import { EnvironmentStore } from "../../service/environment_store";
 import { PackageController } from "../../controller/package.controller";
-import { type ErrorDetails } from "../error_messages";
-import { buildMalloyUri, classifyToolError } from "../handler_utils";
-import { jsonResource, jsonToolError } from "../tool_response";
+import { buildMalloyUri } from "../handler_utils";
+import { registerGuardedTool } from "../register_tool";
+import { jsonResource } from "../tool_response";
 
 const reloadShape = {
    environmentName: z
@@ -58,75 +58,65 @@ export function registerReloadPackageTool(
 ): void {
    const packageController = new PackageController(environmentStore);
 
-   mcpServer.tool(
-      "reload_package",
-      RELOAD_DESCRIPTION,
-      reloadShape,
-      async (params) => {
-         const { environmentName, packageName } = params;
-
+   registerGuardedTool(mcpServer, {
+      name: "reload_package",
+      description: RELOAD_DESCRIPTION,
+      inputSchema: reloadShape,
+      op: "reloadPackage",
+      failed: "reload failed",
+      uri: ({ environmentName, packageName }) =>
+         buildMalloyUri(
+            { environment: environmentName, package: packageName },
+            "reloadPackage",
+         ),
+      identifier: ({ environmentName, packageName }) =>
+         `${environmentName}/${packageName}`,
+      logFields: ({ environmentName, packageName }) => ({
+         environmentName,
+         packageName,
+      }),
+      run: async ({ environmentName, packageName }, uri) => {
          logger.debug("[MCP Tool reloadPackage] Reloading package", {
             environmentName,
             packageName,
          });
-
-         const uri = buildMalloyUri(
-            { environment: environmentName, package: packageName },
-            "reloadPackage",
+         const {
+            metadata: pkg,
+            operational,
+            mode,
+         } = await packageController.reloadPackage(
+            environmentName,
+            packageName,
+            "mcp",
          );
 
-         try {
-            const {
-               metadata: pkg,
-               operational,
-               mode,
-            } = await packageController.reloadPackage(
-               environmentName,
-               packageName,
-               "mcp",
-            );
+         const payload = {
+            status: "reloaded" as const,
+            // "in-place" recompiled the tree on disk; "reinstalled"
+            // re-fetched it, so on-disk edits are gone. Only this says which.
+            mode,
+            name: pkg.name,
+            // A reload succeeds whether or not it saw the caller's edit; an unchanged sha on a hashed file is the signal.
+            ...(operational.sourceContentSha !== undefined && {
+               sourceContentSha: operational.sourceContentSha,
+            }),
+            ...(operational.servedRevision !== undefined && {
+               servedRevision: operational.servedRevision,
+            }),
+            ...(pkg.description !== undefined && {
+               description: pkg.description,
+            }),
+            ...(pkg.warnings !== undefined &&
+               pkg.warnings.length > 0 && { warnings: pkg.warnings }),
+            // An explores entry that did not resolve to a model, so a
+            // mistyped explores edit is not silently swallowed.
+            ...(pkg.exploresWarnings !== undefined &&
+               pkg.exploresWarnings.length > 0 && {
+                  exploresWarnings: pkg.exploresWarnings,
+               }),
+         };
 
-            const payload = {
-               status: "reloaded" as const,
-               // "in-place" recompiled the tree on disk; "reinstalled"
-               // re-fetched it, so on-disk edits are gone. Only this says which.
-               mode,
-               name: pkg.name,
-               // A reload succeeds whether or not it saw the caller's edit; an unchanged sha on a hashed file is the signal.
-               ...(operational.sourceContentSha !== undefined && {
-                  sourceContentSha: operational.sourceContentSha,
-               }),
-               ...(operational.servedRevision !== undefined && {
-                  servedRevision: operational.servedRevision,
-               }),
-               ...(pkg.description !== undefined && {
-                  description: pkg.description,
-               }),
-               ...(pkg.warnings !== undefined &&
-                  pkg.warnings.length > 0 && { warnings: pkg.warnings }),
-               // An explores entry that did not resolve to a model, so a
-               // mistyped explores edit is not silently swallowed.
-               ...(pkg.exploresWarnings !== undefined &&
-                  pkg.exploresWarnings.length > 0 && {
-                     exploresWarnings: pkg.exploresWarnings,
-                  }),
-            };
-
-            return jsonResource(uri, payload);
-         } catch (error) {
-            // A clean isError payload rather than a transport fault.
-            logger.warn("[MCP Tool reloadPackage] reload failed", {
-               environmentName,
-               packageName,
-               error: error instanceof Error ? error.message : String(error),
-            });
-            const errorDetails: ErrorDetails = classifyToolError(
-               "reloadPackage",
-               `${environmentName}/${packageName}`,
-               error,
-            );
-            return jsonToolError(uri, errorDetails);
-         }
+         return jsonResource(uri, payload);
       },
-   );
+   });
 }

@@ -41,6 +41,9 @@ describe("MCP tools/list and prompts/list", () => {
          fs.writeFileSync(GOLDEN_PATH, listing);
          return;
       }
-      expect(listing).toBe(fs.readFileSync(GOLDEN_PATH, "utf8"));
+      const golden = fs.readFileSync(GOLDEN_PATH, "utf8");
+      // Structural first, so a failure names the field that moved.
+      expect(JSON.parse(listing)).toEqual(JSON.parse(golden));
+      expect(listing).toBe(golden);
    });
 });

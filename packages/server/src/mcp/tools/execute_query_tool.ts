@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+import { registerTool } from "../register_tool";
 import { BadRequestError } from "../../errors";
 import { ErrorCode, McpError } from "@modelcontextprotocol/sdk/types.js";
 import { z } from "zod/v3";
@@ -127,7 +128,8 @@ export function registerExecuteQueryTool(
 ): void {
    const offerHidden =
       environmentStore.mcpIncludeHiddenFilesAndSources === true;
-   mcpServer.tool(
+   registerTool(
+      mcpServer,
       "execute_query",
       EXECUTE_QUERY_DESCRIPTION,
       // Typed as the full shape so the handler can name the parameter; the

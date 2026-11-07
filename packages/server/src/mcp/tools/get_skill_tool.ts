@@ -3,13 +3,12 @@
 
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod/v3";
-import { logger } from "../../logger";
 import { EnvironmentStore } from "../../service/environment_store";
-import { type ErrorDetails } from "../error_messages";
-import { buildMalloyUri, classifyToolError } from "../handler_utils";
+import { buildMalloyUri } from "../handler_utils";
+import { registerGuardedTool } from "../register_tool";
 import { type SkillEntry } from "../skills/build_skills_bundle";
 import { resolveSkills, type ResolvedSkill } from "../skills/package_skills";
-import { jsonResource, jsonToolError } from "../tool_response";
+import { jsonResource } from "../tool_response";
 
 const GET_SKILL_DESCRIPTION = `Fetch a task guide, or list the guides available. Guides are concise procedural instructions for working with Malloy and this server: query patterns, chart and rendering tags, analysis pitfalls, how to build or review a model.
 
@@ -82,74 +81,72 @@ export function registerGetSkillTool(
    environmentStore: EnvironmentStore,
    bundledSkills: SkillEntry[],
 ): void {
-   mcpServer.tool(
-      "get_skill",
-      GET_SKILL_DESCRIPTION,
-      getSkillShape,
-      async (params: GetSkillParams) => {
+   registerGuardedTool(mcpServer, {
+      name: "get_skill",
+      description: GET_SKILL_DESCRIPTION,
+      inputSchema: getSkillShape,
+      op: "getSkill",
+      failed: "lookup failed",
+      uri: (params) => {
          const scope = params.scopes?.[0];
-         const uri = buildMalloyUri(
+         return buildMalloyUri(
             scope
                ? { environment: scope.environment, package: scope.package }
                : {},
             "getSkill",
          );
-
-         try {
-            let resolved = resolveSkills(bundledSkills, []);
-            if (scope) {
-               const environment = await environmentStore.getEnvironment(
-                  scope.environment,
-                  false,
-               );
-               const pkg = await environment.getPackage(scope.package, false);
-               resolved = resolveSkills(bundledSkills, pkg.listSkills());
-            }
-
-            const availableSkills = summarize(resolved);
-            if (params.skill_name === undefined || params.skill_name === null) {
-               return jsonResource(uri, { skill: null, availableSkills });
-            }
-
-            const match = resolved.find((s) => s.name === params.skill_name);
-            if (!match) {
-               return jsonResource(uri, {
-                  skill: null,
-                  availableSkills,
-                  message: `No guide named ${JSON.stringify(params.skill_name)}${
-                     scope
-                        ? ` for package ${scope.environment}/${scope.package}`
-                        : ""
-                  }. Fix: use a name from availableSkills exactly as spelled there${
-                     scope
-                        ? "."
-                        : ", or pass scopes to include a package's own guides."
-                  }`,
-               });
-            }
-
-            return jsonResource(uri, {
-               skill: {
-                  name: match.name,
-                  content: match.body,
-                  origin: match.origin,
-               },
-               availableSkills,
-            });
-         } catch (error) {
-            logger.warn("[MCP Tool getSkill] lookup failed", {
-               skillName: params.skill_name,
-               environmentName: scope?.environment,
-               packageName: scope?.package,
-               error: error instanceof Error ? error.message : String(error),
-            });
-            const errorDetails: ErrorDetails = classifyToolError(
-               "getSkill",
-               scope ? `${scope.environment}/${scope.package}` : "skills",
-               error,
-            );
-            return jsonToolError(uri, errorDetails);
-         }
       },
-   );
+      identifier: (params) => {
+         const scope = params.scopes?.[0];
+         return scope ? `${scope.environment}/${scope.package}` : "skills";
+      },
+      logFields: (params) => ({
+         skillName: params.skill_name,
+         environmentName: params.scopes?.[0]?.environment,
+         packageName: params.scopes?.[0]?.package,
+      }),
+      run: async (params: GetSkillParams, uri) => {
+         const scope = params.scopes?.[0];
+         let resolved = resolveSkills(bundledSkills, []);
+         if (scope) {
+            const environment = await environmentStore.getEnvironment(
+               scope.environment,
+               false,
+            );
+            const pkg = await environment.getPackage(scope.package, false);
+            resolved = resolveSkills(bundledSkills, pkg.listSkills());
+         }
+
+         const availableSkills = summarize(resolved);
+         if (params.skill_name === undefined || params.skill_name === null) {
+            return jsonResource(uri, { skill: null, availableSkills });
+         }
+
+         const match = resolved.find((s) => s.name === params.skill_name);
+         if (!match) {
+            return jsonResource(uri, {
+               skill: null,
+               availableSkills,
+               message: `No guide named ${JSON.stringify(params.skill_name)}${
+                  scope
+                     ? ` for package ${scope.environment}/${scope.package}`
+                     : ""
+               }. Fix: use a name from availableSkills exactly as spelled there${
+                  scope
+                     ? "."
+                     : ", or pass scopes to include a package's own guides."
+               }`,
+            });
+         }
+
+         return jsonResource(uri, {
+            skill: {
+               name: match.name,
+               content: match.body,
+               origin: match.origin,
+            },
+            availableSkills,
+         });
+      },
+   });
 }

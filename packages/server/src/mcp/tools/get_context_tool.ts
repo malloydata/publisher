@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+import { registerTool } from "../register_tool";
 import { EnvironmentStore } from "../../service/environment_store";
 import { InvalidArgumentError } from "../../errors";
 import { buildMalloyUri } from "../handler_utils";
@@ -380,7 +381,8 @@ export function registerGetContextTool(
    mcpServer: McpServer,
    environmentStore: EnvironmentStore,
 ): void {
-   mcpServer.tool(
+   registerTool(
+      mcpServer,
       "get_context",
       GET_CONTEXT_DESCRIPTION,
       convergedContextShape,
