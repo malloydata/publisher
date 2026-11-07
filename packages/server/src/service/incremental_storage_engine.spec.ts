@@ -6,8 +6,8 @@
 //
 // Everything else that covers this path stops short of the engine: the unit specs
 // drive a fake session that pattern-matches SQL and returns fabricated rows, and
-// incremental_dml_semantics.spec.ts does execute but renders the Postgres
-// spelling. Both bugs this file pins were invisible to that arrangement, because
+// incremental_dml_semantics.spec.ts executes the SQL's semantics in both
+// spellings on a plain connection. Both bugs this file pins were invisible to that arrangement, because
 // each is a property of the driver and the engine rather than of the SQL text:
 // a probe truncated by a row limit, and a session left unusable by a failed
 // script. A table is ATTACHed rather than created in the default catalog so the
@@ -79,34 +79,7 @@ describe("probing a stored table's shape", () => {
    });
 });
 
-describe("applying a delta in DuckDB's own dialect", () => {
-   it("replaces exactly the half-open range and leaves the rest", async () => {
-      const name = await wideTable(1);
-      const t = `${DEST}.${name}`;
-      await session.runSQL(
-         `INSERT INTO ${t} VALUES (1,10),(2,20),(3,30),(4,40)`,
-      );
-      const statements = deltaStatements({
-         dialect: "duckdb",
-         quotedTablePath: t,
-         columns: ["wm", "c0"],
-         watermarkName: "wm",
-         start: { malloyType: "number", value: "2" },
-         end: { malloyType: "number", value: "4" },
-         mergeKeys: [],
-         deltaSQL: `SELECT 2 AS wm, 222 AS c0 UNION ALL SELECT 3 AS wm, 333 AS c0`,
-      });
-      await applyDeltaScript(runner, "duckdb", statements);
-      const rows = await session.runSQL(`SELECT wm, c0 FROM ${t} ORDER BY wm`);
-      // 1 and 4 untouched (4 is the excluded end), 2 and 3 replaced.
-      expect((rows.rows ?? []).map((r) => `${r.wm}:${r.c0}`)).toEqual([
-         "1:10",
-         "2:222",
-         "3:333",
-         "4:40",
-      ]);
-   });
-
+describe("a failed delta script in DuckDB's own dialect", () => {
    it("leaves the session usable after a failed script, having applied nothing", async () => {
       // DuckDB does NOT abandon a failed script's transaction by itself: once
       // BEGIN has opened one, every later statement is refused with "Current
