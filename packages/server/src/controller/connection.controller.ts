@@ -1,7 +1,11 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
-import { lazyCounter } from "../telemetry";
+import {
+   lazyCounter,
+   lazyHistogram,
+   REQUEST_DURATION_BUCKETS_MS,
+} from "../telemetry";
 import { Connection, RunSQLOptions, TableSourceDef } from "@malloydata/malloy";
 import { PersistSQLResults } from "@malloydata/malloy/connection";
 import { components } from "../api";
@@ -247,7 +251,13 @@ const connectionOperations = lazyCounter(
    "Connection create/update/delete/test requests. Labels: operation ('create'|'update'|'delete'|'test'), type (the connection type, 'unknown' when absent or unrecognised), outcome ('success'|'failed'|'refused'). 'failed' is a test that ran and could not connect; 'refused' threw (a 4xx or 5xx).",
 );
 
-/** Run a connection operation and count it once, however it ends. */
+const connectionOperationDuration = lazyHistogram(
+   "publisher_connection_operation_duration_ms",
+   "Wall-clock duration of a connection create/update/delete/test request. Labels as publisher_connection_operations_total.",
+   { buckets: REQUEST_DURATION_BUCKETS_MS },
+);
+
+/** Run a connection operation and count and time it once, however it ends. */
 async function metered<T>(
    operation: "create" | "update" | "delete" | "test",
    type: unknown,
@@ -261,12 +271,21 @@ async function metered<T>(
             ? type
             : "unknown",
    };
+   const startedAt = performance.now();
+   const record = (outcome: string) => {
+      const labels = { ...label, outcome };
+      connectionOperations().add(1, labels);
+      connectionOperationDuration().record(
+         performance.now() - startedAt,
+         labels,
+      );
+   };
    try {
       const result = await run();
-      connectionOperations().add(1, { ...label, outcome: outcomeOf(result) });
+      record(outcomeOf(result));
       return result;
    } catch (error) {
-      connectionOperations().add(1, { ...label, outcome: "refused" });
+      record("refused");
       throw error;
    }
 }

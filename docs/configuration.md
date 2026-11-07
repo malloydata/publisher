@@ -725,6 +725,7 @@ Under the same `publisher` meter, with bounded labels.
 | `publisher_package_reload_duration_ms{outcome}`                                  | Histogram          | An in-place reload, recompiling a package from disk: `success` or `failure`.                                                           |
 | `publisher_package_install_duration_ms{outcome}`                                 | Histogram          | An install (download, load, swap): an unversioned publish, or the reinstall a reload does for a package with a location.               |
 | `publisher_connection_operations_total{operation,type,outcome}`                  | Counter            | Connection `create`, `update`, `delete` and `test`. A test that runs and cannot connect is `failed`; anything that threw is `refused`. |
+| `publisher_connection_operation_duration_ms{operation,type,outcome}`             | Histogram          | How long each of those connection operations took, with the same labels.                                                               |
 | `publisher_mcp_row_limit_hits_total`                                             | Counter            | `execute_query` answers that landed on the server's default row limit, so the agent saw a sample.                                      |
 | `publisher_storage_bindings_withheld_total`                                      | Counter            | Storage bindings the freshness gate withheld from a routed query, which was then read live.                                            |
 
