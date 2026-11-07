@@ -293,12 +293,18 @@ jobs:
       #
       # The integration suite runs once. It needs no network: packages come from
       # the repo and its fixtures, and DuckDB extensions are baked above.
+      #
+      # On Linux the unit suite runs with coverage (`test:coverage`, configured
+      # in packages/server/bunfig.toml), uploaded below. It is reported, not
+      # enforced: no threshold can fail the job.
       - name: Run unit, component and integration tests
         env:
           USERPROFILE: ${{ runner.os == 'Windows' && env.WINDOWS_USERPROFILE || '' }}
         run: |
+          unit_script=test:unit
+          if [ "$RUNNER_OS" = "Linux" ]; then unit_script=test:coverage; fi
           unit_log="$RUNNER_TEMP/server-unit-tests.log"
-          bun run --cwd packages/server test:unit --serial > "$unit_log" 2>&1 &
+          bun run --cwd packages/server "$unit_script" --serial > "$unit_log" 2>&1 &
           unit_pid=$!
           component_log="$RUNNER_TEMP/server-component-tests.log"
           bun run --cwd packages/server test:component > "$component_log" 2>&1 &
@@ -328,3 +334,14 @@ jobs:
           echo "unit tests exit $unit_status, component tests exit $component_status, integration tests exit $integration_status"
           [ "$unit_status" -eq 0 ] && [ "$component_status" -eq 0 ] && [ "$integration_status" -eq 0 ]
         shell: bash
+
+      # The text summary is at the end of the unit log above; this is the lcov
+      # for tools that read it. Uploaded on a failure too, since the run still
+      # measured what it executed.
+      - name: Upload server unit coverage (Linux only)
+        if: runner.os == 'Linux' && !cancelled()
+        uses: actions/upload-artifact@v4
+        with:
+          name: server-unit-coverage
+          path: packages/server/coverage/lcov.info
+          if-no-files-found: warn

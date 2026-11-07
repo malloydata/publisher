@@ -1,0 +1,11 @@
+# Copyright (c) Credible Data Inc.
+# SPDX-License-Identifier: MIT
+
+# Read only when a run asks for coverage (`bun run test:coverage`); a plain
+# `bun test` collects none. Reported, not enforced: there is no threshold.
+[test]
+coverageReporter = ["text", "lcov"]
+coverageDir = "coverage"
+coverageSkipTestFiles = true
+# Test scaffolding, and src/api.ts, which is generated from the OpenAPI spec.
+coveragePathIgnorePatterns = ["src/test_helpers/**", "src/api.ts"]
