@@ -91,8 +91,8 @@ import {
 import { requestedVersionId } from "./versions/version_service";
 import { Mutex } from "async-mutex";
 import {
-   assertColocatedPersistNotAuthorizeGated,
    assertMaterializationEligible,
+   assertTierEligible,
 } from "./materialization_eligibility";
 import {
    assertStorageServeShapeCompiles,
@@ -1306,26 +1306,11 @@ export class MaterializationService {
             // ineligible source does not stop the rest of the package refreshing.
             // The run throws only when nothing else is left to build, or when
             // `sourceNames` asked for exactly this source.
+            // A colocated `#@ persist` is just as frozen as a storage build, so
+            // an authorize-gated source materialized there would be served to
+            // every caller.
             try {
-               if (destination) {
-                  assertMaterializationEligible(
-                     persistSource,
-                     deriveAnnotationFields(persistSource),
-                  );
-               } else {
-                  // Colocated `#@ persist`: just as frozen as a storage build, so
-                  // an authorize-gated source materialized here would be served
-                  // to every caller. The origin makes a refused rollup name
-                  // `#@ preaggregate`, since its synthesized name appears nowhere
-                  // in the author's model.
-                  assertColocatedPersistNotAuthorizeGated(
-                     persistSource,
-                     persistSource.name,
-                     isRollup ? "preaggregate" : "persist",
-                     compiled.sourceGateOutcomes?.[persistSource.sourceID],
-                     deriveAnnotationFields(persistSource),
-                  );
-               }
+               assertTierEligible(persistSource, !!destination, compiled);
             } catch (err) {
                if (!(err instanceof MaterializationEligibilityError)) throw err;
                if (include) throw err;
@@ -2144,31 +2129,16 @@ export class MaterializationService {
       try {
          // Host-supplied storage instructions are gated too, not trusted.
          // Skipped when the mode is off: the destination refusal owns that.
-         if (
+         const storage =
             orchestrated &&
-            instruction.destination &&
-            getPersistStorageMode() !== "off"
-         ) {
-            assertMaterializationEligible(
-               persistSource,
-               deriveAnnotationFields(persistSource),
-            );
-         } else if (!run.clearedTiers?.has(persistSource.sourceID)) {
-            // Every other instruction (colocated, or any build while the mode
-            // is off): refuse an authorize-gated source however it was
-            // instructed, unless its compile-time gate outcome proves the
-            // colocated relaxation applies. `else` because the storage gate
-            // already runs the same IR walk. A source auto-run cleared passed
-            // one of the two gates and is not walked again.
-            assertColocatedPersistNotAuthorizeGated(
-               persistSource,
-               persistSource.name,
-               compiled.preaggregatePlans?.[persistSource.sourceID]
-                  ? "preaggregate"
-                  : "persist",
-               compiled.sourceGateOutcomes?.[persistSource.sourceID],
-               deriveAnnotationFields(persistSource),
-            );
+            !!instruction.destination &&
+            getPersistStorageMode() !== "off";
+         // Every other instruction (colocated, or any build while the mode is
+         // off) takes the colocated gate however it was instructed, unless
+         // auto-run already cleared the source through one of the two gates.
+         // Never both: the storage gate already runs the same IR walk.
+         if (storage || !run.clearedTiers?.has(persistSource.sourceID)) {
+            assertTierEligible(persistSource, storage, compiled);
          }
       } catch (err) {
          if (!(err instanceof MaterializationEligibilityError)) throw err;

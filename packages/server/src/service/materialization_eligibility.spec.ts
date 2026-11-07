@@ -20,6 +20,7 @@ import { deriveAnnotationFields, plannedSources } from "./build_plan";
 import {
    assertColocatedPersistNotAuthorizeGated,
    assertMaterializationEligible,
+   assertTierEligible,
    READ_ONLY_DIALECTS,
 } from "./materialization_eligibility";
 import { fakeSource } from "../test_helpers/materialization_test_fixtures";
@@ -617,6 +618,51 @@ source: mz_joined_unread is joiner extend {
          deriveAnnotationFields(sources.mz_joined_unread),
       );
       expect(plan.terms).toEqual([]);
+   });
+});
+
+describe("assertTierEligible", () => {
+   const gatedModel = `##! experimental { persistence givens }
+given: GROUPS :: number[]
+#(access_filter) org_id in $GROUPS
+source: orders is duckdb.sql("SELECT 10 AS amount, 'A' AS category, 1 AS org_id")
+
+#@ persist
+source: by_category is orders -> {
+  group_by: category
+  aggregate: total is amount.sum()
+}`;
+   const refusal = (run: () => void): MaterializationEligibilityError => {
+      try {
+         run();
+      } catch (err) {
+         return err as MaterializationEligibilityError;
+      }
+      throw new Error("expected a refusal");
+   };
+
+   it("runs the colocated gate for a colocated source, naming the annotation the plan says the author wrote", async () => {
+      const source = (await persistSources(gatedModel)).by_category;
+      const asPersist = refusal(() => assertTierEligible(source, false, {}));
+      expect(asPersist).toBeInstanceOf(MaterializationEligibilityError);
+      expect(asPersist.message).toContain("#@ persist");
+      const asRollup = refusal(() =>
+         assertTierEligible(source, false, {
+            preaggregatePlans: { [source.sourceID]: {} },
+         }),
+      );
+      expect(asRollup.message).toContain("#@ preaggregate");
+   });
+
+   it("runs the storage gate for a storage source", async () => {
+      const source = (await persistSources(gatedModel)).by_category;
+      const viaTier = refusal(() =>
+         assertTierEligible(source, true, undefined),
+      );
+      const direct = refusal(() =>
+         assertMaterializationEligible(source, deriveAnnotationFields(source)),
+      );
+      expect(viaTier.message).toBe(direct.message);
    });
 });
 

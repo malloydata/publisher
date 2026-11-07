@@ -35,6 +35,7 @@ import {
 import {
    assertColocatedPersistNotAuthorizeGated,
    assertMaterializationEligible,
+   assertTierEligible,
    isAuthorizeAttributedToEntryPoint,
 } from "./materialization_eligibility";
 
@@ -1046,20 +1047,12 @@ export function deriveBuildPlan(
          // docs/materialization.md.
          if (!rollup) {
             try {
-               if (declaresStorage) {
-                  assertMaterializationEligible(
-                     source,
-                     deriveAnnotationFields(source),
-                  );
-               } else {
-                  assertColocatedPersistNotAuthorizeGated(
-                     source,
-                     source.name,
-                     "persist",
-                     options?.sourceGateOutcomes?.[sourceID],
-                     annotationFields,
-                  );
-               }
+               assertTierEligible(
+                  source,
+                  declaresStorage,
+                  options,
+                  annotationFields,
+               );
             } catch (err) {
                // Only an eligibility refusal is reportable; anything else must not
                // masquerade as a security refusal.
@@ -1293,17 +1286,8 @@ function collectColocatedSourceEligibility(
    const eligibleEntityIds = new Set<string>();
    const refused: Record<string, string> = {};
    for (const [sourceID, source] of Object.entries(compiled.sources)) {
-      const origin = compiled.preaggregatePlans?.[sourceID]
-         ? "preaggregate"
-         : "persist";
       try {
-         assertColocatedPersistNotAuthorizeGated(
-            source,
-            source.name,
-            origin,
-            compiled.sourceGateOutcomes?.[sourceID],
-            deriveAnnotationFields(source),
-         );
+         assertTierEligible(source, false, compiled);
       } catch (err) {
          // Gated BEFORE computeSourceEntityId: the gate never calls getSQL(),
          // so it refuses cleanly even when getSQL() would throw.
