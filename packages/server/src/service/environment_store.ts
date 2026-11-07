@@ -385,6 +385,77 @@ export function formatReadinessLine(counts: {
    );
 }
 
+/**
+ * The store-level callbacks main_server installs, each handed to every
+ * Environment bound to that environment. Set once at server start.
+ */
+interface EnvironmentHooks {
+   packageLoaded: ((environmentName: string, pkg: Package) => void) | null;
+   versionArchived:
+      | ((
+           environmentName: string,
+           packageName: string,
+           versionId: string,
+        ) => void)
+      | null;
+   versionDeleted:
+      | ((
+           environmentName: string,
+           packageName: string,
+           versionId: string,
+        ) => void)
+      | null;
+   /**
+    * Takes the Environment itself: a configured package publishes while the
+    * store is still initializing, when a lookup by name would wait for that
+    * very initialization.
+    */
+   owedReclaim:
+      | ((
+           environment: Environment,
+           packageName: string,
+           versionId: string,
+        ) => Promise<void>)
+      | null;
+}
+
+/** How each hook is handed to one Environment; `null` detaches it. */
+const ATTACH_HOOK: {
+   [K in keyof EnvironmentHooks]: (
+      env: Environment,
+      hook: EnvironmentHooks[K],
+   ) => void;
+} = {
+   packageLoaded: (env, hook) =>
+      env.setPackageLoadedHook(
+         hook && ((pkg) => hook(env.getEnvironmentName(), pkg)),
+      ),
+   versionArchived: (env, hook) =>
+      env.setVersionArchivedHook(
+         hook &&
+            ((packageName, versionId) =>
+               hook(env.getEnvironmentName(), packageName, versionId)),
+      ),
+   versionDeleted: (env, hook) =>
+      env.setVersionDeletedHook(
+         hook &&
+            ((packageName, versionId) =>
+               hook(env.getEnvironmentName(), packageName, versionId)),
+      ),
+   owedReclaim: (env, hook) =>
+      env.setOwedReclaimHook(
+         hook &&
+            ((packageName, versionId) => hook(env, packageName, versionId)),
+      ),
+};
+
+/** Picked up when an Environment's version registry is bound. */
+const VERSION_HOOKS = [
+   "versionArchived",
+   "versionDeleted",
+   "owedReclaim",
+] as const;
+
 export class EnvironmentStore {
    public serverRootPath: string;
    private environments: Map<string, Environment> = new Map();
@@ -422,37 +493,12 @@ export class EnvironmentStore {
    });
    private gcsClient: Storage;
    private memoryGovernor: PackageMemoryGovernor | null = null;
-   private packageLoadedHook:
-      | ((environmentName: string, pkg: Package) => void)
-      | null = null;
-   // Called when a version is archived. Set once at server start; each
-   // Environment picks it up when its version registry is bound.
-   private versionArchivedHook:
-      | ((
-           environmentName: string,
-           packageName: string,
-           versionId: string,
-        ) => void)
-      | null = null;
-   // Called once a version is deleted; picked up like versionArchivedHook.
-   private versionDeletedHook:
-      | ((
-           environmentName: string,
-           packageName: string,
-           versionId: string,
-        ) => void)
-      | null = null;
-   // Called before a publish creates a version's row; picked up like
-   // versionArchivedHook. It takes the Environment itself: a configured
-   // package publishes while the store is still initializing, when a lookup
-   // by name would wait for that very initialization.
-   private owedReclaimHook:
-      | ((
-           environment: Environment,
-           packageName: string,
-           versionId: string,
-        ) => Promise<void>)
-      | null = null;
+   private hooks: EnvironmentHooks = {
+      packageLoaded: null,
+      versionArchived: null,
+      versionDeleted: null,
+      owedReclaim: null,
+   };
 
    /**
     * Environments (from `PUBLISHER_WATCH`) whose package directories under
@@ -509,114 +555,63 @@ export class EnvironmentStore {
     * Attach (or detach with `null`) a callback run for every package that
     * enters an Environment's package map: at boot, on add, on install and on
     * reload. It must only schedule work, because a restart fires it for
-    * every package at once. Remembered, so Environments created after this
-    * call also use it.
+    * every package at once.
     */
-   public setPackageLoadedHook(
-      hook: ((environmentName: string, pkg: Package) => void) | null,
-   ): void {
-      this.packageLoadedHook = hook;
-      for (const env of this.environments.values()) {
-         this.attachPackageLoadedHook(env);
-      }
+   public setPackageLoadedHook(hook: EnvironmentHooks["packageLoaded"]): void {
+      this.setHook("packageLoaded", hook);
    }
 
    /**
     * Attach (or detach with `null`) the callback run when a version is
-    * archived, which reclaims the tables that version alone owns. Remembered,
-    * so Environments bound after this call also use it.
+    * archived, which reclaims the tables that version alone owns.
     */
    public setVersionArchivedHook(
-      hook:
-         | ((
-              environmentName: string,
-              packageName: string,
-              versionId: string,
-           ) => void)
-         | null,
+      hook: EnvironmentHooks["versionArchived"],
    ): void {
-      this.versionArchivedHook = hook;
-      for (const env of this.environments.values()) {
-         this.attachVersionArchivedHook(env);
-      }
-   }
-
-   private attachVersionArchivedHook(env: Environment): void {
-      const hook = this.versionArchivedHook;
-      env.setVersionArchivedHook(
-         hook
-            ? (packageName, versionId) =>
-                 hook(env.getEnvironmentName(), packageName, versionId)
-            : null,
-      );
+      this.setHook("versionArchived", hook);
    }
 
    /**
     * Attach (or detach with `null`) the callback run once a version is
     * deleted, which stops its builds and reclaims the tables that version
-    * alone owns, in the background. Remembered, so Environments bound after
-    * this call also use it.
+    * alone owns, in the background.
     */
    public setVersionDeletedHook(
-      hook:
-         | ((
-              environmentName: string,
-              packageName: string,
-              versionId: string,
-           ) => void)
-         | null,
+      hook: EnvironmentHooks["versionDeleted"],
    ): void {
-      this.versionDeletedHook = hook;
-      for (const env of this.environments.values()) {
-         this.attachVersionDeletedHook(env);
-      }
-   }
-
-   private attachVersionDeletedHook(env: Environment): void {
-      const hook = this.versionDeletedHook;
-      env.setVersionDeletedHook(
-         hook
-            ? (packageName, versionId) =>
-                 hook(env.getEnvironmentName(), packageName, versionId)
-            : null,
-      );
+      this.setHook("versionDeleted", hook);
    }
 
    /**
     * Attach (or detach with `null`) the callback a publish runs before it
     * creates a version's row, which reclaims what a deleted version of the
-    * same id still owes. Remembered, so Environments bound after this call
-    * also use it.
+    * same id still owes.
     */
-   public setOwedReclaimHook(
-      hook:
-         | ((
-              environment: Environment,
-              packageName: string,
-              versionId: string,
-           ) => Promise<void>)
-         | null,
+   public setOwedReclaimHook(hook: EnvironmentHooks["owedReclaim"]): void {
+      this.setHook("owedReclaim", hook);
+   }
+
+   /**
+    * Remember `hook` and hand it to every Environment already here. One
+    * created later gets it when it is attached ({@link attachHooks}).
+    */
+   private setHook<K extends keyof EnvironmentHooks>(
+      name: K,
+      hook: EnvironmentHooks[K],
    ): void {
-      this.owedReclaimHook = hook;
+      this.hooks[name] = hook;
       for (const env of this.environments.values()) {
-         this.attachOwedReclaimHook(env);
+         this.attachHooks(env, [name]);
       }
    }
 
-   private attachOwedReclaimHook(env: Environment): void {
-      const hook = this.owedReclaimHook;
-      env.setOwedReclaimHook(
-         hook
-            ? (packageName, versionId) => hook(env, packageName, versionId)
-            : null,
-      );
-   }
-
-   private attachPackageLoadedHook(env: Environment): void {
-      const hook = this.packageLoadedHook;
-      env.setPackageLoadedHook(
-         hook ? (pkg) => hook(env.getEnvironmentName(), pkg) : null,
-      );
+   private attachHooks(
+      env: Environment,
+      names: readonly (keyof EnvironmentHooks)[],
+   ): void {
+      for (const name of names) {
+         ATTACH_HOOK[name](env, this.hooks[name] as never);
+      }
    }
 
    /** The environments in memory, without touching the database or loading. */
@@ -842,7 +837,7 @@ export class EnvironmentStore {
             environmentInstance.markStorageDestinationsUnknown();
          }
          environmentInstance.setMemoryGovernor(this.memoryGovernor);
-         this.attachPackageLoadedHook(environmentInstance);
+         this.attachHooks(environmentInstance, ["packageLoaded"]);
          // Its version rules, with the storage-binding resolver every package
          // here restores its serve bindings through.
          await this.bindVersionRegistry(environmentInstance, dbEnvironment.id);
@@ -1025,9 +1020,7 @@ export class EnvironmentStore {
       environment.setStorageBindingResolver(
          storageBindingResolverFor(repository, environmentId),
       );
-      this.attachVersionArchivedHook(environment);
-      this.attachVersionDeletedHook(environment);
-      this.attachOwedReclaimHook(environment);
+      this.attachHooks(environment, VERSION_HOOKS);
       environment.bindVersions(repository, environmentId, {
          downloaderFor: (packageName, location) => (stagingPath) =>
             this.downloadPackageInto(
@@ -1946,7 +1939,7 @@ export class EnvironmentStore {
          environment.storageDestinations || [],
       );
       newEnvironment.setMemoryGovernor(this.memoryGovernor);
-      this.attachPackageLoadedHook(newEnvironment);
+      this.attachHooks(newEnvironment, ["packageLoaded"]);
 
       if (!newEnvironment.metadata) newEnvironment.metadata = {};
       newEnvironment.metadata.location = absoluteEnvironmentPath;
