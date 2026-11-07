@@ -41,7 +41,10 @@ describe("MCP tools/list and prompts/list", () => {
          fs.writeFileSync(GOLDEN_PATH, listing);
          return;
       }
-      const golden = fs.readFileSync(GOLDEN_PATH, "utf8");
+      // A Windows checkout may convert the golden's line endings to CRLF.
+      const golden = fs
+         .readFileSync(GOLDEN_PATH, "utf8")
+         .replace(/\r\n/g, "\n");
       // Structural first, so a failure names the field that moved.
       expect(JSON.parse(listing)).toEqual(JSON.parse(golden));
       expect(listing).toBe(golden);
