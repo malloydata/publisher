@@ -66,7 +66,7 @@ import {
 } from "./materialization_serve_transform";
 import { deserializeError } from "../package_load/package_load_pool";
 import type { SerializedModel } from "../package_load/protocol";
-import { BuildManifest } from "../storage/DatabaseInterface";
+import { BuildManifest } from "./materialization/types";
 import {
    annotationTexts,
    ownLevelNotes,

@@ -4,10 +4,8 @@
 import { decodeDottedTablePath } from "@malloydata/malloy";
 
 import { logger } from "../logger";
-import type {
-   IncrementalLedgerEntry,
-   IncrementalStrategy,
-} from "../storage/DatabaseInterface";
+import type { IncrementalLedgerEntry } from "../storage/DatabaseInterface";
+import type { IncrementalStrategy } from "./materialization/types";
 import { errMessage } from "../utils";
 import { quoteIdentifier } from "./quoting";
 

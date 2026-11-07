@@ -14,7 +14,7 @@ import {
    ManifestEntry,
    RefusedSource,
    SourceFailure,
-} from "../storage/DatabaseInterface";
+} from "./materialization/types";
 import { errMessage } from "../utils";
 import {
    computeSourceEntityId,

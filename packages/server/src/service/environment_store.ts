@@ -51,8 +51,8 @@ import {
    safeJoinUnderRoot,
 } from "../path_safety";
 import {
-   Connection,
-   type Environment as DbEnvironment,
+   type ConnectionRecord,
+   type EnvironmentRecord as DbEnvironment,
    type ResourceRepository,
 } from "../storage/DatabaseInterface";
 import { StorageConfig, StorageManager } from "../storage/StorageManager";
@@ -1437,7 +1437,7 @@ export class EnvironmentStore {
       const connectionData = {
          environmentId,
          name: conn.name,
-         type: conn.type as Connection["type"],
+         type: conn.type as ConnectionRecord["type"],
          config: conn,
       };
 
@@ -1470,7 +1470,7 @@ export class EnvironmentStore {
       }
 
       const connectionData = {
-         type: conn.type as Connection["type"],
+         type: conn.type as ConnectionRecord["type"],
          config: conn,
       };
 

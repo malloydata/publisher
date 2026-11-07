@@ -99,7 +99,7 @@ import {
    BuildPlan,
    FreshnessManifest,
    ManifestEntry,
-} from "../storage/DatabaseInterface";
+} from "./materialization/types";
 import { errMessage, ignoreDotfiles } from "../utils";
 import {
    getPersistCollisionEnforce,
