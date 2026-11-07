@@ -10,6 +10,7 @@ import {
 } from "../errors";
 import { logger } from "../logger";
 import type { LoadPackageOutcome } from "../package_load/package_load_pool";
+import { PackageLoadProtocolError } from "../package_load/protocol_decode";
 import { llmConfigured } from "../providers/active";
 import type { PreparedCeilingQueries } from "./classification";
 import type { ApiPackage, Package } from "./package";
@@ -30,7 +31,9 @@ export async function loadOutcomeOrThrow(
    } catch (err: unknown) {
       // A pool rejection is an infra failure (shutdown, spawn, crash, RPC
       // timeout) the client should retry. Compile and manifest errors keep
-      // their class across the wire and bubble untouched for their 4xx.
+      // their class across the wire and bubble untouched for their 4xx. A
+      // protocol error is not retryable (the worker bundle disagrees with
+      // the server), so it bubbles untouched as an internal 500.
       const realError =
          err instanceof Error
             ? err
@@ -38,7 +41,8 @@ export async function loadOutcomeOrThrow(
       if (
          realError instanceof MalloyError ||
          realError instanceof ModelCompilationError ||
-         realError instanceof PackageManifestError
+         realError instanceof PackageManifestError ||
+         realError instanceof PackageLoadProtocolError
       ) {
          throw realError;
       }

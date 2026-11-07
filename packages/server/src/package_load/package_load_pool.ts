@@ -63,6 +63,7 @@ import type {
    WorkerLogMessage,
    WorkerToMainMessage,
 } from "./protocol";
+import { checkLoadPackageResult } from "./protocol_decode";
 
 // ──────────────────────────────────────────────────────────────────────
 // Configuration
@@ -598,7 +599,24 @@ export class PackageLoadPool {
       if (!ctx) return;
       this.jobs.delete(msg.requestId);
       pw.inFlight.delete(msg.requestId);
-      ctx.resolve(msg);
+      // The message is structured-clone data typed only by the union; check
+      // its protocol version and envelope before anything casts into it.
+      let checked: LoadPackageResult;
+      try {
+         checked = checkLoadPackageResult(msg);
+      } catch (error) {
+         logger.error(
+            `PackageLoadPool: worker #${pw.id} sent a result this server cannot read`,
+            {
+               requestId: msg.requestId,
+               error: error instanceof Error ? error.message : String(error),
+            },
+         );
+         ctx.reject(error as Error);
+         this.tryDispatch();
+         return;
+      }
+      ctx.resolve(checked);
       this.tryDispatch();
    }
 

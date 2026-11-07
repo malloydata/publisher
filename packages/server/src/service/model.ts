@@ -66,6 +66,7 @@ import {
 } from "./materialization_serve_transform";
 import { deserializeError } from "../package_load/package_load_pool";
 import type { SerializedModel } from "../package_load/protocol";
+import { decodeSerializedModel } from "../package_load/protocol_decode";
 import { BuildManifest } from "./materialization/types";
 import {
    annotationTexts,
@@ -3739,6 +3740,9 @@ export class Model {
          skipAuthorizeWarningLog?: boolean;
       },
    ): Model {
+      // Envelope check before the casts below; throws a
+      // PackageLoadProtocolError naming the malformed field.
+      decodeSerializedModel(data);
       const modelDef = data.modelDef as ModelDef | undefined;
       const modelInfo = data.modelInfo as Malloy.ModelInfo | undefined;
       const dataStyles = (data.dataStyles ?? {}) as DataStyles;

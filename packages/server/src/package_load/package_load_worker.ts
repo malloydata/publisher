@@ -114,6 +114,7 @@ import type {
    WorkerBuildPlan,
    WorkerLogMessage,
 } from "./protocol";
+import { PACKAGE_LOAD_PROTOCOL_VERSION } from "./protocol";
 
 if (!parentPort) {
    throw new Error(
@@ -1264,6 +1265,7 @@ async function loadPackage(
    return {
       type: "load-package-result",
       requestId: job.requestId,
+      protocolVersion: PACKAGE_LOAD_PROTOCOL_VERSION,
       packageMetadata,
       models,
       replacementMatchedExisting,
