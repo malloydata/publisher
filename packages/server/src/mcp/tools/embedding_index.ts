@@ -94,6 +94,8 @@ export interface EmbeddingIndexStatus {
    embeddedRows: number;
    totalEntities: number;
    embeddedEntities: number;
+   /** Most recent write to the package's vectors (ISO 8601); absent before any. */
+   lastSyncedAt?: string;
    /** The engine's own state: its build status and, once built, its build report. */
    fcj?: Record<string, unknown>;
 }

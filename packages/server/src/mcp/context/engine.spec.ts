@@ -41,6 +41,7 @@ import { sourceContextKey } from "../tools/package_entities";
 import {
    _setFcjValueFetcherForTests,
    fcjJudgeChat,
+   fcjLastSyncedAtOf,
    fcjStateOf,
    fcjVectorProgressOf,
    kickFcjBuild,
@@ -178,10 +179,19 @@ describe("the search engine", () => {
             embeddedEntities: 20,
          });
          expect(fcjVectorProgressOf(pkg).totalRows).toBeGreaterThan(20);
+         expect(Date.parse(fcjLastSyncedAtOf(pkg) ?? "")).not.toBeNaN();
       } finally {
          release();
       }
+      const midBuild = fcjLastSyncedAtOf(pkg) ?? "";
       await untilSemantic(handler, request);
+      // The ready index keeps the time of the build's last stored batch.
+      expect(fcjLastSyncedAtOf(pkg)! >= midBuild).toBe(true);
+   });
+
+   it("has no last sync time before any vector is written", async () => {
+      const { pkg } = await compileFcjFixture();
+      expect(fcjLastSyncedAtOf(pkg as Package)).toBeUndefined();
    });
 
    it("says lexical, not semantic, when no embedding provider is configured", async () => {

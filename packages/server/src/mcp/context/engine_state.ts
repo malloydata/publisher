@@ -58,10 +58,14 @@ export type FcjState =
         startedAt: number;
         /** Set once the vectors step starts. */
         progress?: VectorProgress;
+        /** When this build last stored a batch of vectors. */
+        lastSyncedAt?: number;
      }
    | {
         status: "ready";
         index: FcjIndex;
+        /** When this index's vectors were last written; unset when it has none. */
+        lastSyncedAt?: number;
         /** Set when value reads failed: when to build again for them. */
         rebuildAt?: number;
         /**
@@ -169,9 +173,19 @@ export function kickFcjBuild(args: {
       try {
          const index = await buildFor(args, undefined, (progress) => {
             building.progress = progress;
+            if (progress.embeddedRows > 0) building.lastSyncedAt = Date.now();
          });
          if (await droppedDuringBuild(args)) return;
-         states.set(pkg, readyState(index, environmentName, packageName));
+         states.set(
+            pkg,
+            readyState(
+               index,
+               environmentName,
+               packageName,
+               0,
+               building.lastSyncedAt,
+            ),
+         );
       } catch (error) {
          const message = error instanceof Error ? error.message : String(error);
          logger.warn("[get_context fcj] The search index could not be built", {
@@ -253,10 +267,15 @@ function readyState(
    environmentName: string,
    packageName: string,
    failuresBefore = 0,
+   lastWrite?: number,
 ): FcjState {
+   // Vectors reused rather than written (a cache hit) went live with the index.
+   const lastSyncedAt =
+      index.vectors.size > 0 ? (lastWrite ?? Date.now()) : undefined;
+   const synced = lastSyncedAt !== undefined ? { lastSyncedAt } : {};
    const values = index.report.values;
    const failed = "failed" in values ? values.failed : [];
-   if (failed.length === 0) return { status: "ready", index };
+   if (failed.length === 0) return { status: "ready", index, ...synced };
    const valueFailures = failuresBefore + 1;
    const retryAfterMs = valueRetryDelayMs(valueFailures);
    logger.warn(
@@ -271,6 +290,7 @@ function readyState(
    return {
       status: "ready",
       index,
+      ...synced,
       rebuildAt: Date.now() + retryAfterMs,
       valueFailures,
    };
@@ -324,6 +344,9 @@ function rebuildForValues(
          states.set(pkg, {
             status: "ready",
             index: state.index,
+            ...(state.lastSyncedAt !== undefined
+               ? { lastSyncedAt: state.lastSyncedAt }
+               : {}),
             rebuildAt: Date.now() + valueRetryDelayMs(valueFailures),
             valueFailures,
          });
@@ -456,6 +479,16 @@ export function fcjVectorProgressOf(pkg: Package): VectorProgress {
          .length,
       embeddedEntities: index.vectors.size,
    };
+}
+
+/** When the package's vectors were last written, as ISO 8601; undefined before any were. */
+export function fcjLastSyncedAtOf(pkg: Package): string | undefined {
+   const state = states.get(pkg);
+   const at =
+      state?.status === "building" || state?.status === "ready"
+         ? state.lastSyncedAt
+         : undefined;
+   return at === undefined ? undefined : new Date(at).toISOString();
 }
 
 /** The state as the REST Package resource reports it, under `embeddingIndex.fcj`. */

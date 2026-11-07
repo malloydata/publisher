@@ -9,6 +9,7 @@ import {
    getEmbeddingProvider,
 } from "../../service/embedding_provider";
 import {
+   fcjLastSyncedAtOf,
    fcjStatusOf,
    fcjVectorProgressOf,
    kickFcjBuild,
@@ -53,9 +54,11 @@ export async function getPackageEmbeddingStatus(
       ? await packageIndexOf(loaded, packageName)
       : await getPackageIndex(environmentStore, environmentName, packageName);
    const fcj = fcjStatusOf(pkgIndex.pkg);
+   const lastSyncedAt = fcjLastSyncedAtOf(pkgIndex.pkg);
    return {
       status: fcj.status as EmbeddingIndexStatus["status"],
       ...fcjVectorProgressOf(pkgIndex.pkg),
+      ...(lastSyncedAt ? { lastSyncedAt } : {}),
       fcj,
    };
 }
