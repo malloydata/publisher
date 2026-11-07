@@ -1,6 +1,7 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
+import { reportAppOrigin } from "../mcp/tools/report_app_tools";
 import {
    BYPASS_AUTHORIZE_HEADER,
    readBypassAuthorize,
@@ -103,6 +104,7 @@ export const PROBES: Record<string, (context: SettingsContext) => unknown> = {
    "mcp.includeHiddenFilesAndSources": () =>
       isMcpIncludeHiddenFilesAndSources(),
    "mcp.trace": () => settings.get("mcp.trace") === "retrieval",
+   "mcp.appOrigin": () => reportAppOrigin(),
 
    "admin.port": () => settings.get("admin.port") ?? null,
    "admin.host": () => settings.get("admin.host"),

@@ -21,6 +21,18 @@ Give the heading a title — `## [Unreleased] — what changed`, with an em dash
 
 Two consequences worth knowing. A section merged to `main` ships in the **next** release, whenever that is, so do not write one for work that has not landed. And a heading already stamped with a version is history: a follow-up that changes that behaviour opens a **new** `[Unreleased]` section referencing the shipped version by number, rather than editing the old one.
 
+## [Unreleased] — Show a report inside the conversation: `list_reports` and `show_report`
+
+An agent can now put a report in front of the person it is talking to. `list_reports` names a package's reports by path; `show_report` takes one, with optional starting filter values, and in a host that supports [MCP Apps](https://github.com/modelcontextprotocol/ext-apps) (Claude Desktop and claude.ai among them) the report is drawn in the conversation as the Console draws it: the filter row, every tile, the click menu with Show rows, and `# drill`, where a drill to another report opens it in the same panel with Back to return. "Open in Publisher" takes the report and its current filters to the Console. Every client, including one that draws no panel, gets a text result naming the report, its tiles and filters, and its Console address.
+
+The panel fetches nothing itself. Its reads go back through the host as `report_api` calls, an app-only tool (`visibility: ["app"]`) that answers four reads (the theme, the report listing, one report, a query) through the REST routes' own controllers, so gates, row filters, givens, the query-slot pool and the access record apply as in the Console, for the MCP request's caller. Its script loads from the REST server: **`MCP_APP_ORIGIN`** (default `http://localhost:{port}`) is that server's address as a host's browser reaches it; set it behind a gateway. The panel offers no CSV download, which its sandbox cannot start.
+
+**Charts under a strict CSP.** The SDK now asks once whether the page may `eval`, and where it may not (an MCP host's sandbox, or any host with a strict Content-Security-Policy) renders charts through Vega's interpreter, which needs no `eval`. Where `eval` is allowed nothing changes. Scatter charts and the three maps do not take the interpreter yet in `@malloydata/render`, so under such a policy they show an error card.
+
+**SDK.** `ServerProvider` takes two new props: `adapter`, an axios adapter that carries every API call some other way than HTTP (the panel sends them through its host), and `mode`, a light or dark the host decides, which the viewer's toggle and stored choice do not override.
+
+**Telemetry.** A tool registered with `registerTool` (as the MCP Apps tools are, for their `_meta`) is now counted in `publisher_mcp_tool_calls_total` and `publisher_mcp_tool_duration_ms` like every other tool.
+
 ## [Unreleased] — `--help` and the configuration reference come from the settings registry, and startup logs the settings given
 
 Every setting is described once, in the settings registry 0.12.2 added, and three things are now generated from it:
