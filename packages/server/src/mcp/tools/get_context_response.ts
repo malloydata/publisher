@@ -2,19 +2,17 @@
 // SPDX-License-Identifier: MIT
 
 import type { Relationship } from "@malloydata/malloy-interfaces";
-import { classifyToolError } from "../handler_utils";
-import { jsonToolError } from "../tool_response";
-import { MAX_LIMIT } from "./get_context_request";
-import type {
-   Entity,
-   ListingContext,
-   ResolvedRequest,
-   ResultEntity,
-   SourceContextAuthorize,
-   SourceContextEntry,
-   SourceContextFilter,
-   SourceContextGiven,
-   SourceContextJoin,
+import {
+   MAX_LIMIT,
+   type Entity,
+   type ListingContext,
+   type ResolvedRequest,
+   type ResultEntity,
+   type SourceContextAuthorize,
+   type SourceContextEntry,
+   type SourceContextFilter,
+   type SourceContextGiven,
+   type SourceContextJoin,
 } from "./get_context_types";
 import { sourceContextKey } from "./package_entities";
 import { round4 } from "./retrieval_shared";
@@ -427,19 +425,6 @@ export function projectEntity(
          : {}),
       ...(e.code ? { code: e.code } : {}),
    };
-}
-
-/**
- * An error payload keeps the success shape's empty `sources: []`, so a caller
- * can read it unconditionally. Routed through classifyToolError so each error
- * class carries real remediation (e.g. an unknown package says so).
- */
-export function contextError(uri: string, identifier: string, error: unknown) {
-   return jsonToolError(
-      uri,
-      classifyToolError("getContext", identifier, error),
-      { sources: [] },
-   );
 }
 
 /**

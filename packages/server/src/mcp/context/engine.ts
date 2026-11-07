@@ -37,9 +37,11 @@ import { activeLlmSettings } from "../../providers/active";
 import { settings } from "../../settings";
 import type { ChatModel } from "../../providers/types";
 import { LlmMeter } from "../tools/get_context_llm";
-import { jsonResource, jsonToolError } from "../tool_response";
 import { skillsFor } from "../tools/get_context_response";
 import {
+   searchAnswer,
+   searchFailure,
+   type SearchResult,
    type PackageIndex,
    type ResolvedRequest,
 } from "../tools/get_context_types";
@@ -241,7 +243,6 @@ type FcjQueryArgs = {
    request: ResolvedRequest;
    environmentStore: EnvironmentStore;
    pkgIndex: PackageIndex;
-   uri: string;
    warnings: string[];
    traceMode: TraceMode;
    /** Who asked, for the access record of each gated value lookup. */
@@ -258,9 +259,7 @@ type FcjQueryArgs = {
  * embedding of the search text and a lookup already running finish on their
  * own.)
  */
-export async function runFcjQuery(
-   args: FcjQueryArgs,
-): Promise<ReturnType<typeof jsonResource>> {
+export async function runFcjQuery(args: FcjQueryArgs): Promise<SearchResult> {
    // Already cancelled: start no search for an answer nobody reads.
    if (args.clientSignal?.aborted) return cancelledResult(args);
    const ms = deadlineForTests ?? FCJ_REQUEST_DEADLINE_MS;
@@ -298,7 +297,7 @@ export async function runFcjQuery(
    );
 }
 
-function cancelledResult(args: FcjQueryArgs): ReturnType<typeof jsonResource> {
+function cancelledResult(args: FcjQueryArgs): SearchResult {
    return unansweredResult(
       args,
       "The call was cancelled before the search finished, so no target was answered.",
@@ -306,13 +305,10 @@ function cancelledResult(args: FcjQueryArgs): ReturnType<typeof jsonResource> {
 }
 
 /** Every target answered as unresolved, with `warning` saying why. */
-function unansweredResult(
-   args: FcjQueryArgs,
-   warning: string,
-): ReturnType<typeof jsonResource> {
+function unansweredResult(args: FcjQueryArgs, warning: string): SearchResult {
    const state = fcjStateOf(args.pkgIndex.pkg);
    const index = state?.status === "ready" ? state.index : undefined;
-   return jsonResource(args.uri, {
+   return searchAnswer({
       sources: [],
       ranking: "relevance" as const,
       total_available: 0,
@@ -332,10 +328,8 @@ function unansweredResult(
    });
 }
 
-async function runFcjSearch(
-   args: FcjQueryArgs,
-): Promise<ReturnType<typeof jsonResource>> {
-   const { request, environmentStore, pkgIndex, uri, traceMode } = args;
+async function runFcjSearch(args: FcjQueryArgs): Promise<SearchResult> {
+   const { request, environmentStore, pkgIndex, traceMode } = args;
    const pkg = pkgIndex.pkg;
    const state = fcjStateOf(pkg);
    // Starts a build when there is none, and on a ready index rebuilds one
@@ -355,7 +349,6 @@ async function runFcjSearch(
       const kept = held.get(key, index);
       if (kept) {
          return pageResponse({
-            uri,
             pkgIndex,
             result: kept,
             request,
@@ -390,8 +383,7 @@ async function runFcjSearch(
       logger.warn("[get_context fcj] The search text could not be embedded", {
          error: error instanceof Error ? error.message : String(error),
       });
-      return jsonToolError(
-         uri,
+      return searchFailure(
          {
             message: `The embedding provider failed to embed the search text: ${error instanceof Error ? error.message : String(error)}`,
             suggestions: ["Try again in a minute."],
@@ -545,7 +537,6 @@ async function runFcjSearch(
       ],
    };
    return pageResponse({
-      uri,
       pkgIndex,
       result,
       request,
@@ -582,10 +573,9 @@ async function runFcjSearch(
 function unreadyAnswer(
    args: FcjQueryArgs,
    state: FcjState | undefined,
-): ReturnType<typeof jsonResource> {
+): SearchResult {
    if (state?.status === "error") {
-      return jsonToolError(
-         args.uri,
+      return searchFailure(
          {
             message: `The fcj search index for this package could not be built: ${state.message}`,
             suggestions: [
@@ -600,7 +590,7 @@ function unreadyAnswer(
          },
       );
    }
-   return jsonResource(args.uri, {
+   return searchAnswer({
       sources: [],
       ranking: "relevance" as const,
       total_available: 0,
@@ -631,7 +621,7 @@ async function judgeStage(stage: {
    stages: StageRow[];
 }): Promise<
    | { verdicts: JudgeVerdict[]; chat: ChatModel | null }
-   | { failure: ReturnType<typeof jsonResource> }
+   | { failure: SearchResult }
 > {
    const {
       args,
@@ -643,7 +633,6 @@ async function judgeStage(stage: {
       connectedAll,
       stages,
    } = stage;
-   const { uri } = args;
    const pkg = args.pkgIndex.pkg;
    const started = performance.now();
    const meter = new LlmMeter(activeLlmSettings()?.maxCallsPerRequest ?? null);
@@ -655,7 +644,7 @@ async function judgeStage(stage: {
          logger.warn("[get_context fcj] The judge model could not be built", {
             error: error instanceof Error ? error.message : String(error),
          });
-         return { failure: judgeFailure(uri, error, stages) };
+         return { failure: judgeFailure(error, stages) };
       }
    }
    let verdicts: JudgeVerdict[];
@@ -686,7 +675,7 @@ async function judgeStage(stage: {
          logger.warn("[get_context fcj] The judge failed", {
             error: error instanceof Error ? error.message : String(error),
          });
-         return { failure: judgeFailure(uri, error, stages) };
+         return { failure: judgeFailure(error, stages) };
       }
       verdicts = dropBesideRoutes(
          verdicts,
@@ -830,7 +819,6 @@ function fullTrace(t: {
  * runs no stage, so its trace has only the page row.
  */
 function pageResponse(args: {
-   uri: string;
    pkgIndex: PackageIndex;
    result: HeldResult;
    request: ResolvedRequest;
@@ -840,7 +828,7 @@ function pageResponse(args: {
    stages?: StageRow[];
    full?: unknown;
    hold?: (paged: boolean) => void;
-}): ReturnType<typeof jsonResource> {
+}): SearchResult {
    const { result, request, traceMode } = args;
    const started = performance.now();
    const total = result.cards.length;
@@ -890,7 +878,7 @@ function pageResponse(args: {
          retrieval_trace: { engine: "fcj", stages },
       });
    }
-   return jsonResource(args.uri, {
+   return searchAnswer({
       sources: page.cards,
       ranking: "relevance" as const,
       total_available: total,
@@ -996,10 +984,9 @@ export function unjudged(
 }
 
 /** The error result when the judge failed after the provider's retries. */
-function judgeFailure(uri: string, error: unknown, stages: StageRow[]) {
+function judgeFailure(error: unknown, stages: StageRow[]) {
    const reason = error instanceof Error ? error.message : String(error);
-   return jsonToolError(
-      uri,
+   return searchFailure(
       {
          message: `get_context failed in the judge step: ${reason}`,
          suggestions: [

@@ -20,20 +20,13 @@ import { InvalidArgumentError } from "../../errors";
 import { EnvironmentStore } from "../../service/environment_store";
 import { FCJ_MAX_CHARS } from "../context/pages";
 import type { GetContextParams, ScopedParams } from "./get_context_request";
+import type { PackageInfo } from "./get_context_types";
 import { oneLineSummary } from "./package_entities";
 import {
    isServed,
    readPackageCatalog,
    type CatalogEnvironment,
 } from "./package_catalog";
-
-/** What `package_info` carries for a call scoped to one whole package. */
-export interface PackageInfo {
-   environment: string;
-   package: string;
-   description?: string;
-   one_line_summary?: string;
-}
 
 export type LevelOutcome =
    /** A listing of environments or packages, answered here. */
