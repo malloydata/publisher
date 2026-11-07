@@ -65,6 +65,7 @@ import { createAdminApp } from "./routes/admin";
 import { CatalogAdmin, catalogAdminConfig } from "./service/catalog_admin";
 import { createMainApp } from "./routes/main_app";
 import { createMcpApp } from "./routes/mcp";
+import type { AppServices } from "./app_services";
 import { externalEnv, settings } from "./settings";
 import { acceptBundledExperimentalDialects } from "./service/experimental_dialects";
 
@@ -280,7 +281,26 @@ startMaterializationSchedulerFromEnv(environmentStore, materializationService);
 const themeStore = new ThemeStore(environmentStore.storageManager, SERVER_ROOT);
 const themeController = new ThemeController(themeStore);
 
-export const mcpApp = createMcpApp(environmentStore);
+// One instance of each service, shared by the REST and MCP adapters.
+const appServices: AppServices = {
+   environmentStore,
+   themeStore,
+   themeController,
+   watchModeController,
+   connectionController,
+   packageController,
+   modelController,
+   skillController,
+   reportController,
+   databaseController,
+   queryController,
+   compileController,
+   materializationController,
+   storageDestinationController,
+   versionController,
+};
+
+export const mcpApp = createMcpApp(appServices);
 
 function prometheusMetricsHandler() {
    try {
@@ -294,23 +314,7 @@ function prometheusMetricsHandler() {
 }
 
 export const app = createMainApp({
-   controllers: {
-      environmentStore,
-      themeStore,
-      themeController,
-      watchModeController,
-      connectionController,
-      packageController,
-      modelController,
-      skillController,
-      reportController,
-      databaseController,
-      queryController,
-      compileController,
-      materializationController,
-      storageDestinationController,
-      versionController,
-   },
+   controllers: appServices,
    dataAppRuntimePath: path.join(
       path.dirname(__filename_esm),
       "runtime",
