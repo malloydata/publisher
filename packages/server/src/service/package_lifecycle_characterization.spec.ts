@@ -7,7 +7,8 @@ import * as os from "os";
 import * as path from "path";
 
 import { writePackageFiles } from "../test_helpers/temp_package";
-import { Environment, PackageStatus } from "./environment";
+import { Environment } from "./environment";
+import { PackageStatus } from "./package_lifecycle";
 
 /**
  * Characterization of a package's lifecycle as Environment's public read
@@ -38,11 +39,7 @@ describe("package lifecycle (characterization)", () => {
 
    /** Register `name` the way boot seeds a configured package. */
    function seed(env: Environment, name: string): void {
-      (
-         env as unknown as {
-            setPackageStatus(name: string, status: PackageStatus): void;
-         }
-      ).setPackageStatus(name, PackageStatus.SERVING);
+      env.registerConfiguredPackage(name);
    }
 
    beforeEach(async () => {
