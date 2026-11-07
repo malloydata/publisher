@@ -103,6 +103,31 @@ describe("MCP tool telemetry", () => {
       },
    );
 
+   it("records a call its client cancelled as cancelled, answered or thrown", async () => {
+      const cancelled = new AbortController();
+      cancelled.abort();
+      await instrumentTool(
+         "execute_query",
+         async () => answer(true),
+         tracer,
+      )({}, { signal: cancelled.signal });
+      await expect(
+         instrumentTool(
+            "execute_query",
+            async () => {
+               throw new Error("aborted");
+            },
+            tracer,
+         )({}, { signal: cancelled.signal }),
+      ).rejects.toThrow("aborted");
+      expect(
+         await harness.collectCounter("publisher_mcp_tool_calls_total", {
+            tool: "execute_query",
+            outcome: "cancelled",
+         }),
+      ).toBe(2);
+   });
+
    it("records a throwing handler as an exception and rethrows", async () => {
       const info = spyOn(logger, "info");
       try {

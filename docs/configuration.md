@@ -718,7 +718,7 @@ Under the same `publisher` meter, with bounded labels.
 | Metric                                                                           | Type               | What it counts                                                                                                                         |
 | -------------------------------------------------------------------------------- | ------------------ | -------------------------------------------------------------------------------------------------------------------------------------- |
 | `malloy_model_query_duration{malloy.model.query.status,…}`                       | Histogram          | Every model query. `status` is `success`, `error` (it compiled and failed), or `rejected` (malformed before anything compiled).        |
-| `publisher_mcp_tool_calls_total{tool,outcome}`, `publisher_mcp_tool_duration_ms` | Counter, histogram | Every MCP tool call: `ok`, `error` (answered with `isError`), or `exception` (threw).                                                  |
+| `publisher_mcp_tool_calls_total{tool,outcome}`, `publisher_mcp_tool_duration_ms` | Counter, histogram | Every MCP tool call: `ok`, `error` (`isError`), `exception` (threw), or `cancelled` (the client cancelled).                            |
 | `publisher_compiles_total{scope,outcome}`, `publisher_compile_duration_ms`       | Counter, histogram | Compile requests from REST and MCP alike: `success`, `error` (answered with error problems), or `refused` (threw).                     |
 | `publisher_packages{state}`                                                      | Gauge              | Packages `serving`, `failed` to load, or `stale` (serving the model from before a reload that failed), summed over environments.       |
 | `publisher_package_reloads_total{trigger,outcome}`                               | Counter            | Reloads by `rest`, `mcp` or `watch`, and whether they compiled. A failed one leaves the previous model serving.                        |
@@ -738,8 +738,8 @@ model path, the tier it was served from) with `publisher.query.execute` beneath 
 `publisher.compile`. Every package load is a `publisher.package.load` span (environment, package,
 whether it was a dry run), and an in-place reload wraps its load in `publisher.package.reload`. Each
 MCP tool call is a `publisher.mcp.tool` span carrying `mcp.tool.name` and `mcp.tool.outcome` (`ok`,
-`error`, or absent when it threw, which marks the span an error). A materialization run is a
-`publisher.materialization.build` span (package, build id, `auto` or `orchestrated` mode), with one
+`error`, `cancelled`, or absent when it threw, which marks the span an error). A materialization
+run is a `publisher.materialization.build` span (package, build id, `auto` or `orchestrated` mode), with one
 `publisher.materialization.build_source` span per persist source it builds. They nest under the HTTP
 spans auto-instrumentation creates.
 

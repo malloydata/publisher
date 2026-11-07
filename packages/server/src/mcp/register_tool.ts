@@ -15,11 +15,11 @@ import { classifyToolError } from "./handler_utils";
 import type { RequestExtra } from "./request_extra";
 import { jsonToolError, type ToolResult } from "./tool_response";
 
-type ToolOutcome = "ok" | "error" | "exception";
+type ToolOutcome = "ok" | "error" | "exception" | "cancelled";
 
 const toolCalls = lazyCounter(
    "publisher_mcp_tool_calls_total",
-   "MCP tool calls. Labels: tool, outcome ('ok' answered, 'error' answered with isError, 'exception' threw).",
+   "MCP tool calls. Labels: tool, outcome ('ok' answered, 'error' answered with isError, 'exception' threw, 'cancelled' the client cancelled the call).",
 );
 const toolDuration = lazyHistogram(
    "publisher_mcp_tool_duration_ms",
@@ -52,13 +52,19 @@ export function instrumentTool<Shape extends z.ZodRawShape>(
             { "mcp.tool.name": tool },
             async (span) => {
                const result = await handler(params, extra);
-               outcome = result.isError === true ? "error" : "ok";
+               outcome = extra?.signal?.aborted
+                  ? "cancelled"
+                  : result.isError === true
+                    ? "error"
+                    : "ok";
                span.setAttribute("mcp.tool.outcome", outcome);
                return result;
             },
             tracer,
          );
       } finally {
+         // A client cancel is the caller's choice, not a tool fault.
+         if (extra?.signal?.aborted) outcome = "cancelled";
          const durationMs = performance.now() - start;
          toolCalls().add(1, { tool, outcome });
          toolDuration().record(durationMs, { tool, outcome });

@@ -1,12 +1,13 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
-import { afterAll, beforeAll, describe, expect, it } from "bun:test";
+import { afterAll, beforeAll, describe, expect, it, spyOn } from "bun:test";
 import * as fs from "fs";
 import * as os from "os";
 import * as path from "path";
 import { MalloyError } from "@malloydata/malloy";
 import { isMcpIncludeHiddenFilesAndSources } from "../../config";
+import { logger } from "../../logger";
 import { registerExecuteQueryTool } from "./execute_query_tool";
 import {
    PackageLoadPool,
@@ -812,11 +813,25 @@ describe("execute_query cancellation", () => {
          extra: { signal: AbortSignal },
       ) => Promise<{ isError?: boolean }>;
       const client = new AbortController();
-      const call = handler(args, { signal: client.signal });
-      while (!querySignal) await new Promise((r) => setTimeout(r, 1));
-      expect(querySignal.aborted).toBe(false);
-      client.abort();
-      expect(querySignal.aborted).toBe(true);
-      expect((await call).isError).toBe(true);
+      const errors = spyOn(logger, "error");
+      try {
+         const call = handler(args, { signal: client.signal });
+         while (!querySignal) await new Promise((r) => setTimeout(r, 1));
+         expect(querySignal.aborted).toBe(false);
+         client.abort();
+         expect(querySignal.aborted).toBe(true);
+         const answer = (await call) as {
+            isError?: boolean;
+            content?: { text?: string }[];
+         };
+         expect(answer.isError).toBe(true);
+         expect(JSON.stringify(answer.content)).toContain(
+            "cancelled before the query finished",
+         );
+         // A cancel is the client's choice, not a server error.
+         expect(errors).not.toHaveBeenCalled();
+      } finally {
+         errors.mockRestore();
+      }
    });
 });

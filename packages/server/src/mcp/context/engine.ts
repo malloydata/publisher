@@ -261,6 +261,8 @@ type FcjQueryArgs = {
 export async function runFcjQuery(
    args: FcjQueryArgs,
 ): Promise<ReturnType<typeof jsonResource>> {
+   // Already cancelled: start no search for an answer nobody reads.
+   if (args.clientSignal?.aborted) return cancelledResult(args);
    const ms = deadlineForTests ?? FCJ_REQUEST_DEADLINE_MS;
    const controller = new AbortController();
    const search = runFcjSearch({ ...args, signal: controller.signal });
@@ -287,15 +289,19 @@ export async function runFcjQuery(
    }
    if (out === "cancelled") {
       controller.abort(new Error("the get_context call was cancelled"));
-      return unansweredResult(
-         args,
-         "The call was cancelled before the search finished, so no target was answered.",
-      );
+      return cancelledResult(args);
    }
    controller.abort(new Error("the get_context search ran out of time"));
    return unansweredResult(
       args,
       `The search ran out of time after ${ms / 1000} seconds, so no target was answered. Search again with a narrower scope: name the source in scopes[].source, and for a value its field in scopes[].entity_name, or send fewer targets.`,
+   );
+}
+
+function cancelledResult(args: FcjQueryArgs): ReturnType<typeof jsonResource> {
+   return unansweredResult(
+      args,
+      "The call was cancelled before the search finished, so no target was answered.",
    );
 }
 

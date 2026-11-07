@@ -284,6 +284,17 @@ export function registerExecuteQueryTool(
                   refusal,
                );
             }
+            if (extra?.signal?.aborted) {
+               logger.info("execute_query cancelled by the client", {
+                  environmentName,
+                  packageName,
+                  modelPath,
+               });
+               return jsonToolError("error://executeQuery/cancelled", {
+                  message: "The call was cancelled before the query finished.",
+                  suggestions: [],
+               });
+            }
             logger.error(
                `[MCP Server Error] Error executing query in ${environmentName}/${packageName}/${modelPath}:`,
                { error: queryError },

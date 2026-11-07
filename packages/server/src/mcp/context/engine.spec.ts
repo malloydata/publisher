@@ -189,6 +189,24 @@ describe("the search engine", () => {
       expect(fcjLastSyncedAtOf(pkg)! >= midBuild).toBe(true);
    });
 
+   it("keeps the original write time when a rebuild reuses every vector", async () => {
+      _setEmbeddingProviderForTests(stubEmbeddingProvider());
+      await deleteEngineRows(harness.db, "env", "fixture");
+      const request = {
+         search_targets: [{ target_type: "measure", search_text: "flights" }],
+         scopes,
+      };
+      const first = (await compileFcjFixture()).pkg as Package;
+      await untilSemantic(harness.handlerFor(first), request);
+      const written = fcjLastSyncedAtOf(first);
+      expect(written).toBeDefined();
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      // A fresh package instance builds again, reusing the stored vectors.
+      const second = (await compileFcjFixture()).pkg as Package;
+      await untilSemantic(harness.handlerFor(second), request);
+      expect(fcjLastSyncedAtOf(second)).toBe(written);
+   });
+
    it("has no last sync time before any vector is written", async () => {
       const { pkg } = await compileFcjFixture();
       expect(fcjLastSyncedAtOf(pkg as Package)).toBeUndefined();
@@ -589,6 +607,42 @@ describe("fcj request deadline", () => {
          );
       } finally {
          _setFcjDeadlineForTests(undefined);
+         _clearChatModelForTests();
+      }
+   });
+
+   it("starts no search for a call already cancelled when it arrives", async () => {
+      const reply = JSON.stringify({ picks: [], caveats: [] });
+      const base = scriptedChat(() => reply).model;
+      let judged = 0;
+      _setChatModelForTests({
+         ...base,
+         completeJson: (req) => {
+            if (req.prompt.includes("<targets>")) judged += 1;
+            return base.completeJson(req);
+         },
+      });
+      try {
+         const { pkg } = await compileFcjFixture();
+         const handler = harness.handlerFor(pkg);
+         const request = {
+            search_targets: [
+               { target_type: "measure", search_text: "number of flights" },
+            ],
+            scopes,
+         };
+         await pollUntilBuilt(handler, request);
+         const before = judged;
+         const client = new AbortController();
+         client.abort();
+         const { payload } = await callPayload(handler, request, {
+            signal: client.signal,
+         });
+         expect(judged).toBe(before);
+         expect(payload.warnings.at(-1)).toBe(
+            "The call was cancelled before the search finished, so no target was answered.",
+         );
+      } finally {
          _clearChatModelForTests();
       }
    });
