@@ -40,7 +40,7 @@ import os from "os";
 import path from "path";
 import { AccessDeniedError } from "../errors";
 import { malloyGivenToApi, type MalloyGiven } from "../service/given";
-import { Model } from "../service/model";
+import { Model, ModelPolicy } from "../service/model";
 import { seededDuckdb as seededTempDuckdb } from "./temp_package";
 
 export const AUTHORIZE_SEED_SQL = `
@@ -249,7 +249,6 @@ const ROOT = "file:///authorize-tests/";
 /** Private `Model` members the request-time specs reach past the public
  *  surface (same idiom as `authorize_gate_walk.spec.ts`'s `GateWalker`). */
 export interface ModelInternals {
-   setGateRuntime(runtime: Runtime): void;
    authorizeAndBindRunnable(
       runnable: QueryMaterializer,
       givens: Record<string, GivenValue>,
@@ -348,9 +347,11 @@ export async function buildGatedModel(
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       givens: givens as any,
       modelInfo: modelDefToModelInfo(modelDef),
+      policy: ModelPolicy.standalone(),
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      gateRuntime: runtime as any,
    });
    const internals = model as unknown as ModelInternals;
-   internals.setGateRuntime(runtime);
    return { model, internals, mm, duckdb };
 }
 
