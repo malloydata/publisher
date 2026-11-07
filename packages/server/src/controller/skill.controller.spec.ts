@@ -3,7 +3,7 @@
 
 import { describe, expect, it } from "bun:test";
 import { SkillNotFoundError } from "../errors";
-import { BUNDLED_SKILLS } from "../mcp/skills/package_skills";
+import { BUNDLED_SKILLS } from "../service/skills/package_skills";
 import type { EnvironmentStore } from "../service/environment_store";
 import { SkillController } from "./skill.controller";
 

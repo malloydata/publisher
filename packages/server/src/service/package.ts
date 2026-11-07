@@ -80,7 +80,7 @@ import {
    type PackageLoadStatus,
 } from "../package_load_metrics";
 import { assertSafeEnvironmentPath, safeJoinUnderRoot } from "../path_safety";
-import { type SkillEntry } from "../mcp/skills/build_skills_bundle";
+import { type SkillEntry } from "./skills/build_skills_bundle";
 import {
    PACKAGE_SKILLS_DIR,
    readAgentAsset,
@@ -88,7 +88,7 @@ import {
    readSkillsDir,
    summarizeAgentSkillFile,
    type PackageAgent,
-} from "../mcp/skills/package_skills";
+} from "./skills/package_skills";
 import {
    canonicalJson,
    computeSourceContentSha,

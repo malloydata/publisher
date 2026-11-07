@@ -6,8 +6,11 @@ import { z } from "zod/v3";
 import { EnvironmentStore } from "../../service/environment_store";
 import { buildMalloyUri } from "../handler_utils";
 import { registerGuardedTool } from "../register_tool";
-import { type SkillEntry } from "../skills/build_skills_bundle";
-import { resolveSkills, type ResolvedSkill } from "../skills/package_skills";
+import { type SkillEntry } from "../../service/skills/build_skills_bundle";
+import {
+   resolveSkills,
+   type ResolvedSkill,
+} from "../../service/skills/package_skills";
 import { jsonResource } from "../tool_response";
 
 const GET_SKILL_DESCRIPTION = `Fetch a task guide, or list the guides available. Guides are concise procedural instructions for working with Malloy and this server: query patterns, chart and rendering tags, analysis pitfalls, how to build or review a model.

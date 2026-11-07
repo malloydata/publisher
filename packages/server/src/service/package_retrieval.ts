@@ -19,6 +19,7 @@ import { createHash } from "crypto";
 import * as fs from "fs";
 import * as path from "path";
 import { PackageManifestError } from "../errors";
+import { stepsOutside } from "../path_safety";
 import {
    DEFAULT_QUESTIONS_PER_NODE,
    QUESTIONS_PROMPTS,
@@ -366,19 +367,6 @@ function fail(message: string): never {
 
 function describe(value: unknown): string {
    return JSON.stringify(value) ?? "nothing";
-}
-
-/**
- * Whether a path relative to the package root steps outside it: `..` itself or
- * a path that starts with `..` as a whole segment. A name that merely begins
- * with two dots (`..prompts`) is an ordinary name and stays inside.
- */
-export function stepsOutside(within: string): boolean {
-   return (
-      within === ".." ||
-      within.startsWith(`..${path.sep}`) ||
-      path.isAbsolute(within)
-   );
 }
 
 /**
