@@ -51,6 +51,8 @@ Results and any charts render in the Publisher web UI on the REST port (4000 by 
 export function initializeMcpServer(services: McpServices): McpServer {
    const {
       environmentStore,
+      retrieval,
+      queryUseCase,
       compileController,
       packageController,
       connectionController,
@@ -59,8 +61,8 @@ export function initializeMcpServer(services: McpServices): McpServer {
       instructions: MCP_INSTRUCTIONS,
    });
 
-   registerExecuteQueryTool(mcpServer, environmentStore);
-   registerGetContextTool(mcpServer, environmentStore);
+   registerExecuteQueryTool(mcpServer, environmentStore, queryUseCase);
+   registerGetContextTool(mcpServer, environmentStore, retrieval);
    registerListPackagesTool(mcpServer, environmentStore);
    registerDocsSearchTool(mcpServer, environmentStore);
    registerCompileTool(mcpServer, compileController);

@@ -5,7 +5,9 @@ import type { McpServices } from "../app_services";
 import { CompileController } from "../controller/compile.controller";
 import { ConnectionController } from "../controller/connection.controller";
 import { PackageController } from "../controller/package.controller";
+import { RetrievalService } from "../retrieval/service";
 import type { EnvironmentStore } from "../service/environment_store";
+import { QueryUseCase } from "../usecases/query";
 
 /**
  * The services initializeMcpServer takes, as the composition root builds them
@@ -14,10 +16,13 @@ import type { EnvironmentStore } from "../service/environment_store";
  */
 export function mcpServicesFor(store: unknown): McpServices {
    const environmentStore = store as EnvironmentStore;
+   const retrieval = new RetrievalService(environmentStore);
    return {
       environmentStore,
+      retrieval,
+      queryUseCase: new QueryUseCase(environmentStore),
       compileController: new CompileController(environmentStore),
-      packageController: new PackageController(environmentStore),
+      packageController: new PackageController(environmentStore, retrieval),
       connectionController: new ConnectionController(environmentStore),
    };
 }

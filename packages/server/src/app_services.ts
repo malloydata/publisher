@@ -14,8 +14,10 @@ import type { StorageDestinationController } from "./controller/storage_destinat
 import type { ThemeController } from "./controller/theme.controller";
 import type { VersionController } from "./controller/version.controller";
 import type { WatchModeController } from "./controller/watch-mode.controller";
+import type { RetrievalService } from "./retrieval/service";
 import type { EnvironmentStore } from "./service/environment_store";
 import type { ThemeStore } from "./service/theme_store";
+import type { QueryUseCase } from "./usecases/query";
 
 /**
  * The application services the composition root (main_server.ts) builds once
@@ -27,6 +29,10 @@ import type { ThemeStore } from "./service/theme_store";
 export interface AppServices {
    environmentStore: EnvironmentStore;
    themeStore: ThemeStore;
+   /** The one retrieval facade per process: get_context and the package routes share it. */
+   retrieval: RetrievalService;
+   /** The one query use case per process: the REST route and execute_query share it. */
+   queryUseCase: QueryUseCase;
    themeController: ThemeController;
    watchModeController: WatchModeController;
    connectionController: ConnectionController;
@@ -46,6 +52,8 @@ export interface AppServices {
 export type McpServices = Pick<
    AppServices,
    | "environmentStore"
+   | "retrieval"
+   | "queryUseCase"
    | "compileController"
    | "packageController"
    | "connectionController"

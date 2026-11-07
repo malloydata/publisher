@@ -46,6 +46,7 @@ import {
 import { setRetrievalConfig } from "./retrieval/config";
 import { checkHeapConfiguration } from "./heap_check";
 import { RetrievalService } from "./retrieval/service";
+import { QueryUseCase } from "./usecases/query";
 import { setQueryModelResolver } from "./retrieval/search/values";
 import { getModelForQuery } from "./mcp/handler_utils";
 import {
@@ -225,11 +226,14 @@ environmentStore.setEnvironmentDeletedHook((environmentName) =>
 );
 // A gated value lookup words a refused model the way execute_query does.
 setQueryModelResolver(getModelForQuery);
-const packageController = new PackageController(environmentStore);
+const packageController = new PackageController(environmentStore, retrieval);
 const reportController = new ReportController(environmentStore);
 const skillController = new SkillController(environmentStore);
 const databaseController = new DatabaseController(environmentStore);
-const queryController = new QueryController(environmentStore);
+// One query use case, shared by the REST route (QueryController) and MCP's
+// execute_query, so the two transports run one sequence.
+const queryUseCase = new QueryUseCase(environmentStore);
+const queryController = new QueryController(queryUseCase);
 const compileController = new CompileController(environmentStore);
 const materializationService = new MaterializationService(environmentStore);
 const storageDestinationController = new StorageDestinationController(
@@ -297,6 +301,8 @@ const themeController = new ThemeController(themeStore);
 const appServices: AppServices = {
    environmentStore,
    themeStore,
+   retrieval,
+   queryUseCase,
    themeController,
    watchModeController,
    connectionController,

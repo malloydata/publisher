@@ -3,25 +3,10 @@
 
 import { components } from "../api";
 import { API_PREFIX } from "../constants";
-import { BadRequestError, ModelNotFoundError } from "../errors";
-import {
-   type AccessIdentity,
-   type AccessRecordBase,
-   type QueryAudit,
-   recordRefusal,
-   withAccessRecord,
-} from "../service/access_record";
-import {
-   buildQueryMetadataInput,
-   parseQueryClass,
-   parseSuppliedQueryMetadata,
-   type QueryClass,
-   type QueryMetadata,
-} from "../service/query_metadata";
-import { resolveQueryModel, runModelQuery } from "../service/run_model_query";
-import { EnvironmentStore } from "../service/environment_store";
+import type { AccessIdentity } from "../service/access_record";
 import type { FilterParams } from "../service/filter";
 import type { GivenValue } from "@malloydata/malloy";
+import { type QueryUseCase, REST_QUERY_OPTIONS } from "../usecases/query";
 
 type ApiQuery = components["schemas"]["QueryResult"];
 
@@ -56,50 +41,59 @@ export interface QueryRequest {
    identity: AccessIdentity;
 }
 
-function accessBase(
-   environmentName: string,
-   packageName: string,
-   modelPath: string,
-   sourceName: string | undefined,
-   queryName: string | undefined,
-   query: string | undefined,
-   identity: AccessIdentity,
-): AccessRecordBase {
-   return {
-      environment: environmentName,
-      package: packageName,
-      modelPath,
-      ...(queryName ? { queryName } : {}),
-      ...(sourceName ? { requestedSource: sourceName } : {}),
-      adHoc: Boolean(query),
-      ...identity,
-   };
-}
-
+/**
+ * The REST adapter over {@link QueryUseCase}: runs it with
+ * {@link REST_QUERY_OPTIONS} (the bypass header honored, the slot held by the
+ * route's middleware, REST's 404 wording) and shapes the `QueryResult`.
+ */
 export class QueryController {
-   private environmentStore: EnvironmentStore;
-
-   constructor(environmentStore: EnvironmentStore) {
-      this.environmentStore = environmentStore;
-   }
+   constructor(private readonly queryUseCase: QueryUseCase) {}
 
    /**
     * Answer a query and emit its access record (`access_record.ts`), on
     * success and on refusal alike.
     */
    public async getQuery(request: QueryRequest): Promise<ApiQuery> {
-      return withAccessRecord(
-         accessBase(
-            request.environmentName,
-            request.packageName,
-            request.modelPath,
-            request.sourceName,
-            request.queryName,
-            request.query,
-            request.identity,
-         ),
-         request.clientSignal,
-         (audit) => this.runQuery(audit, request),
+      const { environmentName, packageName, modelPath } = request;
+      return this.queryUseCase.run(
+         request,
+         {
+            ...REST_QUERY_OPTIONS,
+            // Serialize and byte-cap exactly the shape this request receives.
+            shape: request.compactJson === true ? "compact" : "full",
+         },
+         ({
+            result: {
+               serializedResult,
+               rowLimit,
+               rowLimitSource,
+               queryCorrelationId,
+               servedFrom,
+               executionTimeMs,
+               queryCostBytes,
+               renderLogs,
+            },
+         }) =>
+            ({
+               // Serialized by the model: re-stringifying here would copy the
+               // payload, and an oversized one would surface as a bare 500 rather
+               // than the byte cap's 413.
+               result: serializedResult,
+               resource: `${API_PREFIX}/environments/${environmentName}/packages/${packageName}/models/${modelPath}/query`,
+               renderLogs: renderLogs.length > 0 ? renderLogs : undefined,
+               // The row cap the database applied and whether it was the query's
+               // own or the server default, so a caller can tell a complete result
+               // from a truncated one (it depends on server config).
+               queryRowLimit: rowLimit,
+               queryRowLimitSource: rowLimitSource,
+               queryCorrelationId,
+               // Reports only the `storage=` tier: a colocated `#@ persist` hit and
+               // a declined transform both read `null`, like a live query. See the
+               // field's description in `api-doc.yaml`.
+               servedFrom,
+               executionTimeMs,
+               queryCostBytes,
+            }) as ApiQuery,
       );
    }
 
@@ -112,116 +106,17 @@ export class QueryController {
       identity: AccessIdentity,
       error: Error,
    ): Promise<void> {
-      return recordRefusal(
-         accessBase(
+      return this.queryUseCase.recordRefusal(
+         {
             environmentName,
             packageName,
             modelPath,
-            body.sourceName,
-            body.queryName,
-            body.query,
+            sourceName: body.sourceName,
+            queryName: body.queryName,
+            query: body.query,
             identity,
-         ),
+         },
          error,
       );
-   }
-
-   private async runQuery(
-      audit: QueryAudit,
-      {
-         environmentName,
-         packageName,
-         modelPath,
-         sourceName,
-         queryName,
-         query,
-         compactJson = false,
-         filterParams,
-         bypassFilters,
-         givens,
-         queryMetadata,
-         queryClass: rawQueryClass,
-         versionId,
-         bypassAuthorize,
-         includeHiddenFilesAndSources,
-         clientSignal,
-      }: QueryRequest,
-   ): Promise<ApiQuery> {
-      let requestMetadata: QueryMetadata | undefined;
-      let queryClass: QueryClass | undefined;
-      try {
-         requestMetadata = parseSuppliedQueryMetadata(queryMetadata);
-         queryClass = parseQueryClass(rawQueryClass);
-      } catch (error) {
-         throw new BadRequestError((error as Error).message);
-      }
-
-      const { environment, pkg, model } = await resolveQueryModel(
-         this.environmentStore,
-         environmentName,
-         packageName,
-         modelPath,
-         versionId,
-      );
-      const version = pkg.getVersionId();
-      if (version) audit.version = version;
-      if (!model) {
-         // Worded exactly as Model.assertQueryBoundaryEarly's generic refusal,
-         // so a 404 cannot tell a gated hidden file from a missing one.
-         throw new ModelNotFoundError(`No queryable model "${modelPath}".`);
-      }
-      const {
-         serializedResult,
-         rowLimit,
-         rowLimitSource,
-         queryCorrelationId,
-         servedFrom,
-         executionTimeMs,
-         queryCostBytes,
-         renderLogs,
-      } = await runModelQuery(audit, pkg, modelPath, model, {
-         sourceName,
-         queryName,
-         query,
-         filterParams,
-         bypassFilters,
-         givens,
-         queryMetadataInput: buildQueryMetadataInput({
-            environmentName,
-            environment,
-            pkg,
-            request: requestMetadata,
-            queryClass,
-            // The version that answered (latest when none was named), not the
-            // raw request value; undefined for a package with no versions.
-            version,
-            noLayersLogMessage: "No query-metadata layers for connection",
-         }),
-         // Serialize and byte-cap exactly the shape this request receives.
-         shape: compactJson ? "compact" : "full",
-         bypassAuthorize,
-         includeHiddenFilesAndSources,
-         clientSignal,
-      });
-      return {
-         // Serialized by the model: re-stringifying here would copy the
-         // payload, and an oversized one would surface as a bare 500 rather
-         // than the byte cap's 413.
-         result: serializedResult,
-         resource: `${API_PREFIX}/environments/${environmentName}/packages/${packageName}/models/${modelPath}/query`,
-         renderLogs: renderLogs.length > 0 ? renderLogs : undefined,
-         // The row cap the database applied and whether it was the query's
-         // own or the server default, so a caller can tell a complete result
-         // from a truncated one (it depends on server config).
-         queryRowLimit: rowLimit,
-         queryRowLimitSource: rowLimitSource,
-         queryCorrelationId,
-         // Reports only the `storage=` tier: a colocated `#@ persist` hit and
-         // a declined transform both read `null`, like a live query. See the
-         // field's description in `api-doc.yaml`.
-         servedFrom,
-         executionTimeMs,
-         queryCostBytes,
-      } as ApiQuery;
    }
 }
