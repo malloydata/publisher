@@ -791,7 +791,7 @@ function filterModelPaths(allRelative: string[]): string[] {
 // (Package.getInvalidExplores). An unmatched entry simply lists nothing.
 
 // ──────────────────────────────────────────────────────────────────────
-// Model compile (mirrors service/model.ts but produces SerializedModel)
+// Model compile (the served shape and load checks are model_load_checks.ts)
 // ──────────────────────────────────────────────────────────────────────
 
 /**
