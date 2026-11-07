@@ -49,7 +49,7 @@ import {
    getPackageLoadSchemaCacheBytes,
    getPackageLoadWorkerCount,
 } from "../package_load/package_load_pool";
-import type { RetrievalLlmConfig } from "../retrieval_config";
+import type { RetrievalLlmConfig } from "../retrieval/config";
 import { callerHeaderName } from "../service/access_record";
 import { catalogAdminConfig } from "../service/catalog_admin";
 import { formatReadinessLine } from "../service/environment_store";

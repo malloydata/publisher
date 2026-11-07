@@ -11,13 +11,13 @@ import {
 import { logger } from "../logger";
 import type { LoadPackageOutcome } from "../package_load/package_load_pool";
 import { PackageLoadProtocolError } from "../package_load/protocol_decode";
-import { llmConfigured } from "../providers/active";
+import { llmConfigured } from "../retrieval/llm/active";
 import type { PreparedCeilingQueries } from "./classification";
 import type { ApiPackage, Package } from "./package";
 import {
    DEFAULT_PACKAGE_RETRIEVAL,
    assertRequiredStagesAvailable,
-} from "./package_retrieval";
+} from "../retrieval/package_retrieval";
 
 /**
  * Await a package-load worker job, rewrapping a pool-infrastructure failure as

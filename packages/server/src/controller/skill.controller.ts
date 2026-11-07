@@ -3,8 +3,11 @@
 
 import { components } from "../api";
 import { AgentNotFoundError, SkillNotFoundError } from "../errors";
-import { type SkillEntry } from "../mcp/skills/build_skills_bundle";
-import { BUNDLED_SKILLS, resolveSkills } from "../mcp/skills/package_skills";
+import { type SkillEntry } from "../service/skills/build_skills_bundle";
+import {
+   BUNDLED_SKILLS,
+   resolveSkills,
+} from "../service/skills/package_skills";
 import { EnvironmentStore } from "../service/environment_store";
 import { loadedPackage } from "./loaded_package";
 

@@ -43,9 +43,11 @@ import {
    embeddingStartupNotices,
    getRetrievalConfig,
 } from "./config";
-import { setRetrievalConfig } from "./retrieval_config";
+import { setRetrievalConfig } from "./retrieval/config";
 import { checkHeapConfiguration } from "./heap_check";
-import { startPackageEmbeddingSync } from "./mcp/tools/package_embedding";
+import { RetrievalService } from "./retrieval/service";
+import { setQueryModelResolver } from "./retrieval/search/values";
+import { getModelForQuery } from "./mcp/handler_utils";
 import {
    addCommand,
    ensureMcpConfig,
@@ -210,9 +212,19 @@ observePackageStates(environmentStore);
 // This only queues the build. The build runs with or without an embedding
 // provider: without one it still builds the catalog, the keyword index and
 // the value index of #(index) dimensions, and skips only the vectors.
+const retrieval = new RetrievalService(environmentStore);
 environmentStore.setPackageLoadedHook((environmentName, pkg) =>
-   startPackageEmbeddingSync(environmentStore, environmentName, pkg),
+   retrieval.onPackageLoaded(environmentName, pkg),
 );
+// A deleted package or environment takes what retrieval derived from it along.
+environmentStore.setPackageDeletedHook((environmentName, packageName) =>
+   retrieval.purge(environmentName, packageName),
+);
+environmentStore.setEnvironmentDeletedHook((environmentName) =>
+   retrieval.purge(environmentName),
+);
+// A gated value lookup words a refused model the way execute_query does.
+setQueryModelResolver(getModelForQuery);
 const packageController = new PackageController(environmentStore);
 const reportController = new ReportController(environmentStore);
 const skillController = new SkillController(environmentStore);

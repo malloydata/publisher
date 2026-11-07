@@ -4,7 +4,7 @@
 import { describe, expect, it } from "bun:test";
 import type { EnvironmentStore } from "../../service/environment_store";
 import { resolveLevel } from "./get_context_levels";
-import { oneLineSummary } from "./package_entities";
+import { oneLineSummary } from "../../retrieval/model/package_entities";
 import { registerGetContextTool } from "./get_context_tool";
 
 type Pkg = { name: string; description?: string };

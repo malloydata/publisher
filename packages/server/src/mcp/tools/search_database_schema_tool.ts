@@ -11,7 +11,11 @@ import { buildMalloyUri } from "../handler_utils";
 import { registerGuardedTool } from "../register_tool";
 import { jsonResource, jsonToolError } from "../tool_response";
 import { logger } from "../../logger";
-import { RankingMode, SchemaTableEntity, rankTables } from "./schema_index";
+import {
+   RankingMode,
+   SchemaTableEntity,
+   rankTables,
+} from "../../retrieval/index/schema_index";
 
 /** Tables returned when the caller does not ask for a specific number. */
 const DEFAULT_LIMIT = 20;
