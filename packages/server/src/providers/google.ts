@@ -1,7 +1,7 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
-import type { RawChat, RawChatRequest } from "./chat_model";
+import { tokenCount, type RawChat, type RawChatRequest } from "./chat_model";
 import { checkVectors, type EmbedChunkFn } from "./embedding_http";
 import { malformedReply } from "../service/http_retry";
 import { postJson } from "./http";
@@ -18,12 +18,6 @@ export const GEMINI_EMBED_MAX_BATCH = 100;
 /** `models/x` and `x` both name a model; the URL wants the bare name. */
 export function bareModelName(model: string): string {
    return model.replace(/^models\//, "");
-}
-
-function count(value: unknown): number | undefined {
-   return typeof value === "number" && Number.isFinite(value)
-      ? value
-      : undefined;
 }
 
 /** The request body Gemini and Vertex share for `generateContent`. */
@@ -60,8 +54,8 @@ interface GeminiReply {
 function geminiOutputTokens(
    usage: GeminiReply["usageMetadata"],
 ): number | undefined {
-   const reply = count(usage?.candidatesTokenCount);
-   const thoughts = count(usage?.thoughtsTokenCount);
+   const reply = tokenCount(usage?.candidatesTokenCount);
+   const thoughts = tokenCount(usage?.thoughtsTokenCount);
    if (reply === undefined && thoughts === undefined) return undefined;
    return (reply ?? 0) + (thoughts ?? 0);
 }
@@ -83,7 +77,7 @@ export function parseGeminiReply(reply: unknown, url: string): ChatResult {
    return {
       text,
       usage: {
-         inputTokens: count(r.usageMetadata?.promptTokenCount),
+         inputTokens: tokenCount(r.usageMetadata?.promptTokenCount),
          outputTokens: geminiOutputTokens(r.usageMetadata),
       },
    };

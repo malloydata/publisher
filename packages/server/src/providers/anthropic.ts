@@ -1,7 +1,7 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
-import type { RawChat, RawChatRequest } from "./chat_model";
+import { tokenCount, type RawChat, type RawChatRequest } from "./chat_model";
 import { malformedReply } from "../service/http_retry";
 import { postJson } from "./http";
 import type { ChatResult, FetchFn } from "./types";
@@ -57,12 +57,6 @@ export function anthropicSampling(model: string): Record<string, unknown> {
    return {};
 }
 
-function count(value: unknown): number | undefined {
-   return typeof value === "number" && Number.isFinite(value)
-      ? value
-      : undefined;
-}
-
 /**
  * Chat through the Anthropic Messages API. Chat only: Anthropic has no
  * embeddings endpoint. There is no JSON mode, so JSON requests rely on the
@@ -111,8 +105,8 @@ export class AnthropicChat implements RawChat {
       return {
          text,
          usage: {
-            inputTokens: count(reply.usage?.input_tokens),
-            outputTokens: count(reply.usage?.output_tokens),
+            inputTokens: tokenCount(reply.usage?.input_tokens),
+            outputTokens: tokenCount(reply.usage?.output_tokens),
          },
       };
    }

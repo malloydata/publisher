@@ -134,7 +134,12 @@ const GROUPS = [
 const isFieldKind = (kind: string): boolean =>
    (FIELD_KINDS as readonly string[]).includes(kind);
 
-/** Text on one line, cut to `max` characters with "..." when it was longer. */
+/**
+ * Text on one line, cut to `max` characters with "..." when it was longer.
+ * Not package_entities' truncateDoc: this text is part of the summary
+ * message, and so of its input hash, so a different cut would regenerate
+ * every stored summary.
+ */
 function clipDoc(text: string, max: number): string {
    return text.length > max ? `${text.slice(0, max)}...` : text;
 }

@@ -3,7 +3,7 @@
 
 import { malformedReply } from "../service/http_retry";
 import { postJson } from "./http";
-import type { RawChat, RawChatRequest } from "./chat_model";
+import { tokenCount, type RawChat, type RawChatRequest } from "./chat_model";
 import { isVector, type EmbedChunkFn } from "./embedding_http";
 import type { ChatResult, FetchFn, ProviderName } from "./types";
 
@@ -48,12 +48,6 @@ export function rejectsTemperature(
 interface OpenAiChatReply {
    choices?: { message?: { content?: unknown } }[];
    usage?: { prompt_tokens?: unknown; completion_tokens?: unknown };
-}
-
-function count(value: unknown): number | undefined {
-   return typeof value === "number" && Number.isFinite(value)
-      ? value
-      : undefined;
 }
 
 /**
@@ -118,8 +112,8 @@ export class OpenAiCompatibleChat implements RawChat {
       return {
          text: content,
          usage: {
-            inputTokens: count(reply.usage?.prompt_tokens),
-            outputTokens: count(reply.usage?.completion_tokens),
+            inputTokens: tokenCount(reply.usage?.prompt_tokens),
+            outputTokens: tokenCount(reply.usage?.completion_tokens),
          },
       };
    }

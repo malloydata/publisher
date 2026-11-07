@@ -389,11 +389,11 @@ function sourceLine(index: FcjIndex, key: string): string {
 }
 
 /** Longest start of a source's own doc the judge is shown beside it. */
-export const SOURCE_DOC_MAX_CHARS = 300;
+const JUDGE_SOURCE_DOC_MAX_CHARS = 300;
 
 /**
  * The start of a source's own doc, in its author's words: its first
- * sentences up to SOURCE_DOC_MAX_CHARS. This is where an author says which
+ * sentences up to JUDGE_SOURCE_DOC_MAX_CHARS. This is where an author says which
  * rows a source holds ("all channels combined", "for per-store use ..."),
  * which a generated summary can drop and an inherited field's doc never
  * says. Undefined when the source has no doc, or (unless asked otherwise)
@@ -403,7 +403,7 @@ export const SOURCE_DOC_MAX_CHARS = 300;
 export function sourceDocStart(
    index: FcjIndex,
    key: string,
-   max = SOURCE_DOC_MAX_CHARS,
+   max = JUDGE_SOURCE_DOC_MAX_CHARS,
    /** False beside a twin's fields: shown there even when the summary says the same. */
    unlessSummary = true,
 ): string | undefined {
