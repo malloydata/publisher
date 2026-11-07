@@ -3,16 +3,9 @@
 
 /**
  * What the rest of the server shares about an entity's identity in the search
- * index, and the clean-up of the rows an earlier release wrote. The index
- * itself is the find, list, judge engine's (../context/).
+ * index. The index itself is the find, list, judge engine's (index_build.ts);
+ * the clean-up of a deleted package's rows is purge.ts.
  */
-
-import type { DuckDBConnection } from "../../storage/duckdb/DuckDBConnection";
-import { deleteEngineRows } from "./catalog_store";
-import {
-   deleteEnvironmentSourceSummaries,
-   deletePackageSourceSummaries,
-} from "./source_summaries";
 
 /** The subset of the tool's Entity shape the index needs. */
 export interface EmbeddableEntity {
@@ -98,46 +91,4 @@ export interface EmbeddingIndexStatus {
    lastSyncedAt?: string;
    /** The engine's own state: its build status and, once built, its build report. */
    fcj?: Record<string, unknown>;
-}
-
-/**
- * Remove a deleted package's rows: the engine's tables (its catalog, LLM
- * output, vectors and stored values), the tables an earlier release's index
- * wrote (cached embeddings and keyphrases, which nothing reads or writes
- * now), and its source summaries. The stored values are warehouse data, so
- * they must not outlive the package.
- */
-export async function deletePackageEmbeddings(
-   db: DuckDBConnection,
-   environmentName: string,
-   packageName: string,
-): Promise<void> {
-   // First: these hold warehouse values, the rest only model text.
-   await deleteEngineRows(db, environmentName, packageName);
-   await db.run(
-      `DELETE FROM entity_embeddings
-       WHERE environment_name = ? AND package_name = ?`,
-      [environmentName, packageName],
-   );
-   await db.run(
-      `DELETE FROM entity_keyphrases
-       WHERE environment_name = ? AND package_name = ?`,
-      [environmentName, packageName],
-   );
-   await deletePackageSourceSummaries(db, environmentName, packageName);
-}
-
-/** Remove a deleted environment's rows from the same tables. */
-export async function deleteEnvironmentEmbeddings(
-   db: DuckDBConnection,
-   environmentName: string,
-): Promise<void> {
-   await deleteEngineRows(db, environmentName);
-   await db.run(`DELETE FROM entity_embeddings WHERE environment_name = ?`, [
-      environmentName,
-   ]);
-   await db.run(`DELETE FROM entity_keyphrases WHERE environment_name = ?`, [
-      environmentName,
-   ]);
-   await deleteEnvironmentSourceSummaries(db, environmentName);
 }

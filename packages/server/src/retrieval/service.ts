@@ -7,7 +7,7 @@ import type { EmbeddingIndexStatus } from "./index/embedding_index";
 import {
    deleteEnvironmentEmbeddings,
    deletePackageEmbeddings,
-} from "./index/embedding_index";
+} from "./index/purge";
 import {
    getPackageEmbeddingStatus,
    startPackageEmbeddingSync,

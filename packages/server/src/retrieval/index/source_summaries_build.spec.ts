@@ -36,11 +36,8 @@ import {
    createEntityKeyphrasesTable,
    createSourceSummariesTable,
 } from "../../storage/duckdb/schema";
-import {
-   deletePackageEmbeddings,
-   KEY_SEPARATOR,
-   type EmbeddableEntity,
-} from "./embedding_index";
+import { KEY_SEPARATOR, type EmbeddableEntity } from "./embedding_index";
+import { deletePackageEmbeddings } from "./purge";
 import { SyncRequestBudget } from "../llm/llm_calls";
 import {
    SOURCE_SUMMARY_SMALL_CONTEXT_PROMPT_CHARS,
