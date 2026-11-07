@@ -24,7 +24,7 @@ import {
    BuildPlanUnavailableError,
 } from "../errors";
 import { logger } from "../logger";
-import { getPackageEmbeddingStatus } from "../mcp/tools/get_context_tool";
+import { getPackageEmbeddingStatus } from "../mcp/tools/package_embedding";
 import { EnvironmentStore } from "../service/environment_store";
 import type { Environment } from "../service/environment";
 import type { Package } from "../service/package";

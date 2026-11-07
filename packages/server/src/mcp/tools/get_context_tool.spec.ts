@@ -172,7 +172,7 @@ describe("get_context sanitize", () => {
    });
 });
 
-// Capture the tool handler that registerGetContextTool passes to McpServer.tool,
+// Capture the tool handler that registerGetContextTool passes to McpServer.registerTool,
 // so each discovery tier can be exercised against a mocked EnvironmentStore.
 type Content = Array<{
    type?: string;
@@ -196,7 +196,7 @@ function captureNamed(
 ): Handler {
    const handlers = new Map<string, Handler>();
    const fakeServer = {
-      tool: (name: string, _desc: string, _shape: unknown, h: Handler) => {
+      registerTool: (name: string, _config: unknown, h: Handler) => {
          handlers.set(name, h);
       },
    };
@@ -3022,7 +3022,7 @@ describe("list_packages", () => {
    function listHandler(store: Partial<EnvironmentStore>): Handler {
       const handlers = new Map<string, Handler>();
       const fakeServer = {
-         tool: (name: string, _d: string, _s: unknown, h: Handler) => {
+         registerTool: (name: string, _config: unknown, h: Handler) => {
             handlers.set(name, h);
          },
       };

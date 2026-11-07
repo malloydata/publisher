@@ -56,7 +56,7 @@ describe("execute_query on a served notebook", () => {
             }) as never,
       };
       const fakeServer = {
-         tool: (_name: string, _desc: string, _shape: unknown, h: Handler) => {
+         registerTool: (_name: string, _config: unknown, h: Handler) => {
             handler = h;
          },
       };

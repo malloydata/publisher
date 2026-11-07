@@ -337,24 +337,18 @@ export async function buildGatedModel(
    ) as unknown as MalloyGiven[];
    const givens =
       malloyGivens.length > 0 ? malloyGivens.map(malloyGivenToApi) : undefined;
-   const model = new Model(
-      "test-pkg",
-      entry,
-      {},
-      "model",
+   const model = new Model({
+      packageName: "test-pkg",
+      modelPath: entry,
+      dataStyles: {},
+      modelType: "model",
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      mm as any,
+      modelMaterializer: mm as any,
       modelDef,
-      undefined,
-      undefined,
-      undefined,
-      undefined,
-      undefined,
-      undefined,
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      givens as any,
-      modelDefToModelInfo(modelDef),
-   );
+      givens: givens as any,
+      modelInfo: modelDefToModelInfo(modelDef),
+   });
    const internals = model as unknown as ModelInternals;
    internals.setGateRuntime(runtime);
    return { model, internals, mm, duckdb };

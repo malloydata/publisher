@@ -130,7 +130,7 @@ query: inline_t is orders extend { where: org_id = 2 or true } -> { group_by: or
             }) as never,
       };
       const fakeServer = {
-         tool: (_name: string, _desc: string, _shape: unknown, h: Handler) => {
+         registerTool: (_name: string, _config: unknown, h: Handler) => {
             handler = h;
          },
       };

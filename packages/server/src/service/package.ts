@@ -19,7 +19,7 @@ import {
    SourceDef,
    type ModelDef,
 } from "@malloydata/malloy";
-import { publisherMeter, withSpan } from "../telemetry";
+import { lazyHistogram, withSpan } from "../telemetry";
 import {
    type EntitiesModelFile,
    entitiesFindingCode,
@@ -461,15 +461,11 @@ export class Package {
    /** The manifest's `retrieval` block (prompt files included), re-read on reload. */
    private retrievalSettings: PackageRetrievalSettings =
       DEFAULT_PACKAGE_RETRIEVAL;
-   private static meter = publisherMeter();
-   private static packageLoadHistogram = this.meter.createHistogram(
+   // OTel's default buckets stop at 10s and would censor the slow tail.
+   private static packageLoadHistogram = lazyHistogram(
       "malloy_package_load_duration",
-      {
-         description: "Time taken to load a Malloy package",
-         unit: "ms",
-         // OTel's default buckets stop at 10s and would censor the slow tail.
-         advice: { explicitBucketBoundaries: LOAD_DURATION_BUCKETS_MS },
-      },
+      "Time taken to load a Malloy package",
+      { buckets: LOAD_DURATION_BUCKETS_MS },
    );
 
    constructor(
@@ -933,7 +929,7 @@ export class Package {
       logger.error(`Error loading package ${packageName}`, {
          error: errMessage(error),
       });
-      this.packageLoadHistogram.record(performance.now() - startTime, {
+      this.packageLoadHistogram().record(performance.now() - startTime, {
          malloy_package_name: packageName,
          status: packageLoadFailureStatus(error),
       });
@@ -1398,7 +1394,7 @@ export class Package {
          });
          return pkg;
       }
-      this.packageLoadHistogram.record(executionTime, {
+      this.packageLoadHistogram().record(executionTime, {
          malloy_package_name: packageName,
          status: "success",
       });

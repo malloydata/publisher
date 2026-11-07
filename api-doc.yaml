@@ -6254,14 +6254,14 @@ components:
         starts every package's index again, but vectors already stored for
         unchanged content are reused, so a restart over an unchanged package
         embeds nothing new.
-        Every count is scoped to the embedding model currently configured, so
-        rows left behind by an earlier model are never counted. Read `status`
-        for readiness and the counts for progress: they answer different
-        questions, and only `status` tracks what the search path will do. The
-        first read after a package loads builds the package's entity index and
-        its content fingerprint, which is work a metadata read would not
-        otherwise do. After that a read is two row counts and never waits on a
-        sync, so polling is cheap.
+        The counts are the search index's own: the vectors it holds in
+        `catalog_embeddings` under the embedding model currently configured,
+        so rows left behind by an earlier model are never counted. Every count
+        is 0 until the index build reaches its vectors step, and 0 again while
+        `status` is `error`. Read `status` for readiness and the counts for
+        progress: they answer different questions, and only `status` tracks
+        what the search path will do. A read is answered from memory and never
+        waits on a build, so polling is cheap.
       properties:
         status:
           type: string
@@ -6388,38 +6388,35 @@ components:
         embeddedRows:
           type: integer
           description: >-
-            Cached vectors for this package under the current embedding model.
-            With the default `retrieval.representation` of `single` an entity
-            contributes one row, so this equals `totalEntities` once indexed.
-            With `facets` an entity contributes one row for its name plus one
-            per chunk of its documentation, so this exceeds `totalEntities` on
-            a documented model and is not a count of entities. A keyphrase row
-            is an extra on top of those and is not counted here or in
-            `totalRows`. Scoped by model only, not by
-            vector length, so it counts what is cached rather than what a
-            search could read today: after a change to `EMBEDDING_DIMENSIONS`
-            that no question has probed yet, rows of the old length are still
-            counted here until the next search discards them. `status` is
-            already `indexing` in that window.
+            Vectors the index holds for this package under the current
+            embedding model, reused or newly embedded; it rises batch by batch
+            while `indexing`. With the default `retrieval.representation` of
+            `single` an entity contributes one row, so this equals
+            `totalEntities` once indexed. With `facets` an entity contributes
+            one row for its name plus one per chunk of its documentation, so
+            this exceeds `totalEntities` on a documented model and is not a
+            count of entities. A vector stored under another embedding model or
+            `EMBEDDING_DIMENSIONS` is embedded again rather than counted.
         totalRows:
           type: integer
           description: >-
-            Rows the package wants cached: the denominator for `embeddedRows`.
-            `embeddedRows` of `totalRows` is the progress of a first index.
+            Rows the index wants for this package: the denominator for
+            `embeddedRows`. `embeddedRows` of `totalRows` is the progress of a
+            build.
         totalEntities:
           type: integer
-          description: Entities the package currently exposes to retrieval.
+          description: >-
+            Entities the package exposes to retrieval, each of which wants at
+            least one row.
         embeddedEntities:
           type: integer
           description: >-
-            Of `totalEntities`, how many have at least one usable vector.
-            Reported because a row count cannot show a model edit that removes
-            two entities and adds two others: the row total is unchanged while
-            the new entities have no vector at all. Coverage by identity, so
-            equality does NOT imply `ready`: an edit that rewrote every doc
-            without renaming anything leaves each entity holding its stale
-            name vector. Read `status` for readiness and this pair for how
-            much of the package is covered.
+            Of `totalEntities`, how many have at least one vector. Reported
+            because a row count cannot show a model edit that removes two
+            entities and adds two others: the row total is unchanged while the
+            new entities have no vector at all. Coverage by identity, so
+            equality does NOT imply `ready`. Read `status` for readiness and
+            this pair for how much of the package is covered.
         lastSyncedAt:
           type: string
           format: date-time

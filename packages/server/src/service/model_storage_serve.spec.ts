@@ -82,23 +82,16 @@ async function buildModel(opts?: {
    // eslint-disable-next-line @typescript-eslint/no-explicit-any
    const modelDef = (compiled as any)._modelDef;
    const modelInfo = modelDefToModelInfo(modelDef);
-   const model = new Model(
-      "pkg",
-      "m.malloy",
-      {},
-      "model",
+   const model = new Model({
+      packageName: "pkg",
+      modelPath: "m.malloy",
+      dataStyles: {},
+      modelType: "model",
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      mm as any,
+      modelMaterializer: mm as any,
       modelDef,
-      undefined,
-      undefined,
-      undefined,
-      undefined,
-      undefined,
-      undefined,
-      undefined,
       modelInfo,
-   );
+   });
    // The serve shape compiles against the destination connections only, so hand
    // it a config carrying just this one — the same disjointness the Environment
    // enforces in production, expressed for a single-connection test.

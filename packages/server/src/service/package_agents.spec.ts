@@ -498,7 +498,7 @@ describe("package agents", () => {
          let handler: Handler | undefined;
          registerGetAgentTool(
             {
-               tool: (_n: string, _d: string, _s: unknown, h: Handler) => {
+               registerTool: (_n: string, _config: unknown, h: Handler) => {
                   handler = h;
                },
             } as never,
@@ -746,7 +746,11 @@ describe("package agents", () => {
          let description = "";
          registerGetAgentTool(
             {
-               tool: (_n: string, d: string, _s: unknown, h: Handler) => {
+               registerTool: (
+                  _n: string,
+                  { description: d }: { description: string },
+                  h: Handler,
+               ) => {
                   description = d;
                   handler = h;
                },

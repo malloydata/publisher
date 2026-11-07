@@ -386,22 +386,15 @@ source: X is duckdb.sql("SELECT 'org1' AS org_id, 1 AS id UNION ALL SELECT 'org2
             const modelDef = (
                (await mm.getModel()) as unknown as { _modelDef: never }
             )._modelDef;
-            const model = new Model(
-               "pkg",
-               "m.malloy",
-               {},
-               "model",
-               mm as never,
+            const model = new Model({
+               packageName: "pkg",
+               modelPath: "m.malloy",
+               dataStyles: {},
+               modelType: "model",
+               modelMaterializer: mm as never,
                modelDef,
-               undefined,
-               undefined,
-               undefined,
-               undefined,
-               undefined,
-               undefined,
-               undefined,
-               modelDefToModelInfo(modelDef),
-            );
+               modelInfo: modelDefToModelInfo(modelDef),
+            });
             const serveConfig = new MalloyConfig({ connections: {} });
             serveConfig.wrapConnections(
                () => new FixedConnectionMap(connMap, "duckdb"),

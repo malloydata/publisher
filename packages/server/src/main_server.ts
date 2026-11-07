@@ -45,7 +45,7 @@ import {
 } from "./config";
 import { setRetrievalConfig } from "./retrieval_config";
 import { checkHeapConfiguration } from "./heap_check";
-import { startPackageEmbeddingSync } from "./mcp/tools/get_context_tool";
+import { startPackageEmbeddingSync } from "./mcp/tools/package_embedding";
 import {
    addCommand,
    ensureMcpConfig,

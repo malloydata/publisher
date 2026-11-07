@@ -1,9 +1,7 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
-import { validateRenderTags } from "@malloydata/render-validator";
 import { components } from "../api";
-import { getQueryTimeoutMs } from "../config";
 import { API_PREFIX } from "../constants";
 import { BadRequestError, ModelNotFoundError } from "../errors";
 import {
@@ -20,8 +18,7 @@ import {
    type QueryClass,
    type QueryMetadata,
 } from "../service/query_metadata";
-import { runWithQueryTimeout } from "../query_timeout";
-import { filterPublisherOwnedRenderLogs } from "../service/report_manifest";
+import { resolveQueryModel, runModelQuery } from "../service/run_model_query";
 import { EnvironmentStore } from "../service/environment_store";
 import type { FilterParams } from "../service/filter";
 import type { GivenValue } from "@malloydata/malloy";
@@ -159,28 +156,21 @@ export class QueryController {
          throw new BadRequestError((error as Error).message);
       }
 
-      const environment = await this.environmentStore.getEnvironment(
+      const { environment, pkg, model } = await resolveQueryModel(
+         this.environmentStore,
          environmentName,
-         false,
-      );
-      // Shed load (503) before any disk / DB work rather than crash partway
-      // through a query. Loaded packages bypass the package-load admission
-      // gate, so this is the only guard for query traffic on a hot pod.
-      environment.assertCanAdmitQuery();
-      const p = await environment.getPackage(packageName, false, {
+         packageName,
+         modelPath,
          versionId,
-      });
-      const version = p.getVersionId();
+      );
+      const version = pkg.getVersionId();
       if (version) audit.version = version;
-      const model = p.getModel(modelPath);
-
       if (!model) {
          // Worded exactly as Model.assertQueryBoundaryEarly's generic refusal,
          // so a 404 cannot tell a gated hidden file from a missing one.
          throw new ModelNotFoundError(`No queryable model "${modelPath}".`);
       }
       const {
-         result,
          serializedResult,
          rowLimit,
          rowLimitSource,
@@ -188,42 +178,31 @@ export class QueryController {
          servedFrom,
          executionTimeMs,
          queryCostBytes,
-      } = await runWithQueryTimeout(
-         (abortSignal) =>
-            model.getQueryResults(
-               audit,
-               sourceName,
-               queryName,
-               query,
-               filterParams,
-               bypassFilters,
-               givens,
-               abortSignal,
-               buildQueryMetadataInput({
-                  environmentName,
-                  environment,
-                  pkg: p,
-                  request: requestMetadata,
-                  queryClass,
-                  // The version that answered (latest when none was
-                  // named), not the raw request value; undefined for a
-                  // package with no versions.
-                  version: p.getVersionId(),
-                  noLayersLogMessage: "No query-metadata layers for connection",
-               }),
-               // Serialize and byte-cap exactly the shape this request
-               // receives, not the other one.
-               compactJson ? "compact" : "full",
-               bypassAuthorize,
-               includeHiddenFilesAndSources,
-            ),
-         getQueryTimeoutMs(),
+         renderLogs,
+      } = await runModelQuery(audit, pkg, modelPath, model, {
+         sourceName,
+         queryName,
+         query,
+         filterParams,
+         bypassFilters,
+         givens,
+         queryMetadataInput: buildQueryMetadataInput({
+            environmentName,
+            environment,
+            pkg,
+            request: requestMetadata,
+            queryClass,
+            // The version that answered (latest when none was named), not the
+            // raw request value; undefined for a package with no versions.
+            version,
+            noLayersLogMessage: "No query-metadata layers for connection",
+         }),
+         // Serialize and byte-cap exactly the shape this request receives.
+         shape: compactJson ? "compact" : "full",
+         bypassAuthorize,
+         includeHiddenFilesAndSources,
          clientSignal,
-      );
-      const renderLogs = filterPublisherOwnedRenderLogs(
-         validateRenderTags(result),
-         p.getModel(modelPath)?.carriesReportTag() ?? false,
-      );
+      });
       return {
          // Serialized by the model: re-stringifying here would copy the
          // payload, and an oversized one would surface as a bare 500 rather

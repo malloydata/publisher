@@ -44,12 +44,6 @@ import {
 } from "./get_context_levels";
 import type { GivenValue } from "@malloydata/malloy";
 
-// server.ts and package.controller.ts import these from here.
-export {
-   getPackageEmbeddingStatus,
-   startPackageEmbeddingSync,
-} from "./package_embedding";
-
 /**
  * Contract rules first, reference last, because a tail-truncating client drops
  * whatever is last. The length budget is pinned in server.protocol.spec.ts.
