@@ -807,6 +807,53 @@ describe("EnvironmentStore Service", () => {
       expect(instances[1]).not.toBe(instances[0]);
    });
 
+   it("forwards the version hooks to every environment, naming it, and detaches them with null", async () => {
+      const projectPath = path.join(serverRootPath, projectName);
+      mkdirSync(projectPath, { recursive: true });
+      writeFileSync(
+         path.join(projectPath, "publisher.json"),
+         JSON.stringify({ name: projectName }),
+      );
+      writeFileSync(
+         path.join(serverRootPath, "publisher.config.json"),
+         JSON.stringify({
+            environments: [
+               {
+                  name: projectName,
+                  packages: [{ name: projectName, location: projectPath }],
+                  connections: [],
+               },
+            ],
+         }),
+      );
+      const store = new EnvironmentStore(serverRootPath);
+      await store.finishedInitialization;
+      const environment = await store.getEnvironment(projectName);
+      type Forwarded = (packageName: string, versionId: string) => unknown;
+      const forwarded = (name: string) =>
+         (environment as unknown as Record<string, Forwarded | null>)[name];
+
+      const calls: unknown[][] = [];
+      store.setVersionArchivedHook((...args) => void calls.push(args));
+      store.setVersionDeletedHook((...args) => void calls.push(args));
+      store.setOwedReclaimHook(async (...args) => void calls.push(args));
+      forwarded("versionArchivedHook")?.("pkg", "1.0.0");
+      forwarded("versionDeletedHook")?.("pkg", "1.0.1");
+      await forwarded("owedReclaimHook")?.("pkg", "1.0.2");
+      expect(calls).toEqual([
+         [projectName, "pkg", "1.0.0"],
+         [projectName, "pkg", "1.0.1"],
+         [environment, "pkg", "1.0.2"],
+      ]);
+
+      store.setVersionArchivedHook(null);
+      store.setVersionDeletedHook(null);
+      store.setOwedReclaimHook(null);
+      expect(forwarded("versionArchivedHook")).toBeNull();
+      expect(forwarded("versionDeletedHook")).toBeNull();
+      expect(forwarded("owedReclaimHook")).toBeNull();
+   });
+
    it("keeps sibling packages serving when one sharing their location fails to extract", async () => {
       // Packages grouped under ONE location share a single download, then each
       // is extracted separately. A failure in one extract must not strand the

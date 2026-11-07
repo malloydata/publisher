@@ -19,7 +19,7 @@ import {
    SourceDef,
    type ModelDef,
 } from "@malloydata/malloy";
-import { publisherMeter } from "../telemetry";
+import { publisherMeter, withSpan } from "../telemetry";
 import {
    type EntitiesModelFile,
    entitiesFindingCode,
@@ -835,7 +835,33 @@ export class Package {
        */
       options: { dryRun?: boolean } = {},
    ): Promise<Package> {
-      const dryRun = options.dryRun === true;
+      return withSpan(
+         "publisher.package.load",
+         {
+            "malloy.environment": environmentName,
+            "malloy.package": packageName,
+            "publisher.package.dry_run": options.dryRun === true,
+         },
+         () =>
+            Package.load(
+               environmentName,
+               packageName,
+               packagePath,
+               environmentMalloyConfig,
+               cleanupDirectoryOnFailure,
+               options.dryRun === true,
+            ),
+      );
+   }
+
+   private static async load(
+      environmentName: string,
+      packageName: string,
+      packagePath: string,
+      environmentMalloyConfig: PackageConnectionInput,
+      cleanupDirectoryOnFailure: boolean,
+      dryRun: boolean,
+   ): Promise<Package> {
       assertSafeEnvironmentPath(packagePath);
       const startTime = performance.now();
       await Package.validatePackageManifestExistsOrThrowError(packagePath);
@@ -877,50 +903,64 @@ export class Package {
                { error: errMessage(shutdownError) },
             );
          });
-         if (dryRun) {
-            logger.info(`Dry-run load of package ${packageName} failed`, {
-               packageName,
-               dryRun: true,
-               error: errMessage(error),
-            });
+         Package.reportFailedLoad(packageName, error, startTime, dryRun);
+         if (cleanupDirectoryOnFailure) {
+            await Package.removeFailedPackageDirectory(packagePath);
          } else {
-            logger.error(`Error loading package ${packageName}`, {
-               error: errMessage(error),
-            });
-            const endTime = performance.now();
-            const executionTime = endTime - startTime;
-            this.packageLoadHistogram.record(executionTime, {
-               malloy_package_name: packageName,
-               status: packageLoadFailureStatus(error),
-            });
-         }
-         // Clean up only when the caller opted in, and never a watch-mode
-         // symlink: removing it would unmount the package on a half-typed save
-         // until a restart.
-         try {
-            if (!cleanupDirectoryOnFailure) {
-               logger.info(
-                  `Preserving existing package directory after failed load: ${packagePath}`,
-               );
-            } else {
-               const stat = await fs.lstat(packagePath).catch(() => null);
-               if (stat?.isSymbolicLink()) {
-                  logger.info(
-                     `Skipping cleanup of symlinked package path on failure: ${packagePath}`,
-                  );
-               } else {
-                  await fs.rm(packagePath, { recursive: true, force: true });
-                  logger.info(
-                     `Cleaned up failed package directory: ${packagePath}`,
-                  );
-               }
-            }
-         } catch (cleanupError) {
-            logger.warn(`Failed to clean up package directory ${packagePath}`, {
-               error: cleanupError,
-            });
+            logger.info(
+               `Preserving existing package directory after failed load: ${packagePath}`,
+            );
          }
          throw error;
+      }
+   }
+
+   /** Log a failed load, and count it unless it was a dry run. */
+   private static reportFailedLoad(
+      packageName: string,
+      error: unknown,
+      startTime: number,
+      dryRun: boolean,
+   ): void {
+      if (dryRun) {
+         logger.info(`Dry-run load of package ${packageName} failed`, {
+            packageName,
+            dryRun: true,
+            error: errMessage(error),
+         });
+         return;
+      }
+      logger.error(`Error loading package ${packageName}`, {
+         error: errMessage(error),
+      });
+      this.packageLoadHistogram.record(performance.now() - startTime, {
+         malloy_package_name: packageName,
+         status: packageLoadFailureStatus(error),
+      });
+   }
+
+   /**
+    * Remove a staged package directory whose load failed. Never a watch-mode
+    * symlink: removing it would unmount the package on a half-typed save until
+    * a restart. Never throws.
+    */
+   private static async removeFailedPackageDirectory(
+      packagePath: string,
+   ): Promise<void> {
+      try {
+         const stat = await fs.lstat(packagePath).catch(() => null);
+         if (stat?.isSymbolicLink()) {
+            logger.info(
+               `Skipping cleanup of symlinked package path on failure: ${packagePath}`,
+            );
+            return;
+         }
+         await fs.rm(packagePath, { recursive: true, force: true });
+         logger.info(`Cleaned up failed package directory: ${packagePath}`);
+      } catch (cleanupError) {
+         logger.warn(`Failed to clean up package directory ${packagePath}`, {
+            error: cleanupError,
+         });
       }
    }
 
@@ -1323,11 +1363,7 @@ export class Package {
          // After discovery: which findings a tile explains depends on the reports.
          pkg.renderTagWarnings =
             pkg.surfacedRenderTagWarnings(renderTagWarnings);
-         pkg.manifestWarnings = outcome.packageMetadata.manifestWarnings ?? [];
-         pkg.recordDeprecatedUsage(outcome);
-         pkg.retrievalSettings =
-            outcome.packageMetadata.retrieval ?? DEFAULT_PACKAGE_RETRIEVAL;
-         pkg.rawAgents = outcome.packageMetadata.agents;
+         pkg.adoptOutcomeMetadata(outcome);
          // No manifest is bound yet, so this serves live until a bind.
          pkg.wireFreshnessResolvers();
          pkg.refreshServingIdentity();
@@ -2848,6 +2884,12 @@ export class Package {
     * a large package cannot block the liveness probe. A failed model is kept as
     * a placeholder rather than aborting; pool failures propagate as
     * `ServiceUnavailableError` for the caller to retry.
+    *
+    * Installs like {@link loadViaWorker} with three deliberate differences:
+    * the build plan, the load gates and the entities are a load's alone (a
+    * reload keeps the ones the package loaded with), and a reload re-reads the
+    * surface from publisher.json and re-applies serve routing to the new
+    * models, which a fresh package has none of yet.
     */
    public async reloadAllModels(entries: FreshnessManifest): Promise<void> {
       // Quote BEFORE any projection: everything downstream reads these entries.
@@ -2892,8 +2934,7 @@ export class Package {
       const discovery = await this.discoverReportsIn(nextModels, "reload");
       const discoveryMs = performance.now() - discoveryStarted;
       this.models = nextModels;
-      // Before refreshServingIdentity, which reads the agents it declares.
-      this.rawAgents = outcome.packageMetadata.agents;
+      this.adoptOutcomeMetadata(outcome);
       // Move the identity as soon as the new models are installed.
       this.refreshServingIdentity();
       // Pick up publisher.json edits to the surface and boundary mode.
@@ -2916,10 +2957,6 @@ export class Package {
       // Read against the reports installed above.
       this.renderTagWarnings =
          this.surfacedRenderTagWarnings(renderTagWarnings);
-      this.manifestWarnings = outcome.packageMetadata.manifestWarnings ?? [];
-      this.recordDeprecatedUsage(outcome);
-      this.retrievalSettings =
-         outcome.packageMetadata.retrieval ?? DEFAULT_PACKAGE_RETRIEVAL;
       // After installReports: the tile lint asks the refreshed boundary.
       const lintStarted = performance.now();
       await this.relintReports({ textLint: true });
@@ -3116,15 +3153,19 @@ export class Package {
       }
    }
 
-   /** Count the deprecated features this package uses, once per load or reload. */
-   private recordDeprecatedUsage(outcome: LoadPackageOutcome): void {
-      if (this.dryRun) {
-         return;
-      }
+   /**
+    * Take the publisher.json settings a load or reload read, and count the
+    * deprecated features the installed models use. Before
+    * `refreshServingIdentity`, which reads the agents.
+    */
+   private adoptOutcomeMetadata(outcome: LoadPackageOutcome): void {
+      const metadata = outcome.packageMetadata;
+      this.rawAgents = metadata.agents;
+      this.manifestWarnings = metadata.manifestWarnings ?? [];
+      this.retrievalSettings = metadata.retrieval ?? DEFAULT_PACKAGE_RETRIEVAL;
+      if (this.dryRun) return;
       recordDeprecatedFormatUsage(this.models);
-      recordDeprecatedManifestKeys(
-         outcome.packageMetadata.deprecatedManifestKeys,
-      );
+      recordDeprecatedManifestKeys(metadata.deprecatedManifestKeys);
    }
 
    /**

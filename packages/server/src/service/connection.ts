@@ -1390,7 +1390,7 @@ export function stripTrailingSlashes(url: string): string {
 }
 
 /** `url` with its trailing slashes replaced by exactly one. */
-export function oneTrailingSlash(url: string): string {
+function oneTrailingSlash(url: string): string {
    return `${stripTrailingSlashes(url)}/`;
 }
 
@@ -1593,7 +1593,7 @@ export type FederatedSourceType = "bigquery" | "snowflake" | "postgres";
  *  - snowflake: the created secret name (`snowflake_query('<sql>', '<secret>')`),
  *  - postgres: the ATTACH alias (`postgres_query('<alias>', '<sql>')`).
  */
-export interface FederatedHandle {
+interface FederatedHandle {
    handle: string;
    sourceType: FederatedSourceType;
    /**
@@ -1609,7 +1609,7 @@ export interface FederatedHandle {
  * session. `name` is a caller-supplied, already-safe base for the secret/alias
  * identifiers; the type-specific config carries the credentials.
  */
-export interface FederationConfig {
+interface FederationConfig {
    name: string;
    bigqueryConnection?: components["schemas"]["BigqueryConnection"];
    snowflakeConnection?: components["schemas"]["SnowflakeConnection"];
@@ -1623,7 +1623,7 @@ export interface FederationConfig {
 }
 
 /** Injection seam for tests: how a proxied federation opens its tunnel. */
-export interface FederationDeps {
+interface FederationDeps {
    openProxy?: typeof openProxy;
 }
 
@@ -1872,7 +1872,7 @@ export interface ProxiedAttachTrust {
    ambientBundle: () => string;
 }
 
-export function defaultProxiedAttachTrust(): ProxiedAttachTrust {
+function defaultProxiedAttachTrust(): ProxiedAttachTrust {
    return {
       caBundle: externalEnv("NODE_EXTRA_CA_CERTS") || undefined,
       ambientBundle: ambientTrustBundlePath,

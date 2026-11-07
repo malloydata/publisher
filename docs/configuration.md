@@ -722,6 +722,8 @@ Under the same `publisher` meter, with bounded labels.
 | `publisher_compiles_total{scope,outcome}`, `publisher_compile_duration_ms`       | Counter, histogram | Compile requests from REST and MCP alike: `success`, `error` (answered with error problems), or `refused` (threw).                     |
 | `publisher_packages{state}`                                                      | Gauge              | Packages `serving`, `failed` to load, or `stale` (serving the model from before a reload that failed), summed over environments.       |
 | `publisher_package_reloads_total{trigger,outcome}`                               | Counter            | Reloads by `rest`, `mcp` or `watch`, and whether they compiled. A failed one leaves the previous model serving.                        |
+| `publisher_package_reload_duration_ms{outcome}`                                  | Histogram          | An in-place reload, recompiling a package from disk: `success` or `failure`.                                                           |
+| `publisher_package_install_duration_ms{outcome}`                                 | Histogram          | An install (download, load, swap): an unversioned publish, or the reinstall a reload does for a package with a location.               |
 | `publisher_connection_operations_total{operation,type,outcome}`                  | Counter            | Connection `create`, `update`, `delete` and `test`. A test that runs and cannot connect is `failed`; anything that threw is `refused`. |
 | `publisher_mcp_row_limit_hits_total`                                             | Counter            | `execute_query` answers that landed on the server's default row limit, so the agent saw a sample.                                      |
 | `publisher_storage_bindings_withheld_total`                                      | Counter            | Storage bindings the freshness gate withheld from a routed query, which was then read live.                                            |
@@ -732,7 +734,9 @@ duration; per-request transport detail is at `debug`.
 
 With `OTEL_EXPORTER_OTLP_ENDPOINT` set, queries are traced as a `publisher.query` span (package,
 model path, the tier it was served from) with `publisher.query.execute` beneath it, and compiles as
-`publisher.compile`. They nest under the HTTP spans auto-instrumentation creates.
+`publisher.compile`. Every package load is a `publisher.package.load` span (environment, package,
+whether it was a dry run), and an in-place reload wraps its load in `publisher.package.reload`. They
+nest under the HTTP spans auto-instrumentation creates.
 
 ### HTTP requests
 
