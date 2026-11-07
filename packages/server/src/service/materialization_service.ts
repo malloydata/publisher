@@ -90,6 +90,7 @@ import {
 } from "./versions/materialization_scope";
 import { requestedVersionId } from "./versions/version_service";
 import { Mutex } from "async-mutex";
+import { withSpan } from "../telemetry";
 import {
    assertMaterializationEligible,
    assertTierEligible,
@@ -652,25 +653,36 @@ export class MaterializationService {
          this.runInBackground(
             created.id,
             (signal) =>
-               this.runBuild(
-                  created.id,
-                  environmentName,
-                  packageName,
+               withSpan(
+                  "publisher.materialization.build",
                   {
-                     sourceNames: options.sourceNames,
-                     forceRefresh,
-                     reseed,
-                     buildInstructions,
-                     // Orchestrated-only: an auto-run depends on the local
-                     // store, which a supplied ledger would replace.
-                     ledger: orchestrated ? options.ledger : undefined,
-                     referenceManifest: options.referenceManifest,
-                     strictUpstreams: options.strictUpstreams,
-                     trigger,
-                     runContext: options.runContext ?? undefined,
-                     version,
+                     "malloy.package": packageName,
+                     "publisher.materialization.id": created.id,
+                     "publisher.materialization.mode": orchestrated
+                        ? "orchestrated"
+                        : "auto",
                   },
-                  signal,
+                  () =>
+                     this.runBuild(
+                        created.id,
+                        environmentName,
+                        packageName,
+                        {
+                           sourceNames: options.sourceNames,
+                           forceRefresh,
+                           reseed,
+                           buildInstructions,
+                           // Orchestrated-only: an auto-run depends on the
+                           // local store, which a supplied ledger would replace.
+                           ledger: orchestrated ? options.ledger : undefined,
+                           referenceManifest: options.referenceManifest,
+                           strictUpstreams: options.strictUpstreams,
+                           trigger,
+                           runContext: options.runContext ?? undefined,
+                           version,
+                        },
+                        signal,
+                     ),
                ),
             release,
          );
@@ -1898,11 +1910,17 @@ export class MaterializationService {
             }
             for (const persistSource of sourcesInBuildOrder(build, sources)) {
                if (signal.aborted) throw new Error("Build cancelled");
-               await this.buildInstructedSource(
-                  run,
-                  persistSource,
-                  build.connectionName,
-                  connection,
+               await withSpan(
+                  "publisher.materialization.build_source",
+                  // Nested under the run's span, which names the package.
+                  { "malloy.source": persistSource.name },
+                  () =>
+                     this.buildInstructedSource(
+                        run,
+                        persistSource,
+                        build.connectionName,
+                        connection,
+                     ),
                );
             }
          }
