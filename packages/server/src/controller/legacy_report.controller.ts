@@ -24,6 +24,7 @@ import {
    withLegacyNotebookKind,
 } from "../service/legacy_report_views";
 import type { NotebookCellRunResult } from "../service/model";
+import { loadedPackage } from "./loaded_package";
 
 type ApiDashboard = components["schemas"]["Dashboard"];
 type ApiDashboardManifest = components["schemas"]["DashboardManifest"];
@@ -55,16 +56,17 @@ export class LegacyReportController {
       this.environmentStore = environmentStore;
    }
 
-   private async packageOf(
+   private packageOf(
       environmentName: string,
       packageName: string,
       versionId?: unknown,
    ) {
-      const environment = await this.environmentStore.getEnvironment(
+      return loadedPackage(
+         this.environmentStore,
          environmentName,
-         false,
+         packageName,
+         versionId,
       );
-      return environment.getPackage(packageName, false, { versionId });
    }
 
    public async listDashboards(

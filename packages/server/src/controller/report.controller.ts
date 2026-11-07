@@ -32,6 +32,7 @@ import {
 import { formatProblem } from "../service/query_text";
 import { EnvironmentStore } from "../service/environment_store";
 import type { Package } from "../service/package";
+import { loadedPackage } from "./loaded_package";
 
 type ApiReport = components["schemas"]["Report"];
 type ApiReportManifest = components["schemas"]["ReportManifest"];
@@ -98,15 +99,6 @@ function outcomeOf(error: Error): {
    return { outcome: "refused", reason };
 }
 
-/**
- * The version option for a package read: none when the caller names no
- * version, so an unversioned read asks for the package exactly as before.
- */
-export const versionOptions = (
-   versionId: unknown,
-): [{ versionId: unknown }] | [] =>
-   versionId === undefined ? [] : [{ versionId }];
-
 /** SHA-256 of a file's text, hex: what a caller hands back as `expectedHash`. */
 export const contentHashOf = (text: string): string =>
    createHash("sha256").update(text, "utf8").digest("hex");
@@ -130,14 +122,11 @@ export class ReportController {
       packageName: string,
       versionId?: unknown,
    ): Promise<ApiReport[]> {
-      const environment = await this.environmentStore.getEnvironment(
+      const p = await loadedPackage(
+         this.environmentStore,
          environmentName,
-         false,
-      );
-      const p = await environment.getPackage(
          packageName,
-         false,
-         ...versionOptions(versionId),
+         versionId,
       );
       return p.listReports();
    }
@@ -149,14 +138,11 @@ export class ReportController {
       reportPath: string,
       versionId?: unknown,
    ): Promise<ApiReportManifest> {
-      const environment = await this.environmentStore.getEnvironment(
+      const p = await loadedPackage(
+         this.environmentStore,
          environmentName,
-         false,
-      );
-      const p = await environment.getPackage(
          packageName,
-         false,
-         ...versionOptions(versionId),
+         versionId,
       );
       const report =
          typeof reportPath === "string" && reportPath.length > 0

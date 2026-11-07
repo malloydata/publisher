@@ -3,6 +3,7 @@
 
 import { components } from "../api";
 import { EnvironmentStore } from "../service/environment_store";
+import { loadedPackage } from "./loaded_package";
 
 type ApiDatabase = components["schemas"]["Database"];
 
@@ -18,11 +19,12 @@ export class DatabaseController {
       packageName: string,
       versionId?: unknown,
    ): Promise<ApiDatabase[]> {
-      const environment = await this.environmentStore.getEnvironment(
+      const p = await loadedPackage(
+         this.environmentStore,
          environmentName,
-         false,
+         packageName,
+         versionId,
       );
-      const p = await environment.getPackage(packageName, false, { versionId });
       return p.listDatabases();
    }
 }

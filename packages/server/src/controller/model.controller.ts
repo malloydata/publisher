@@ -7,6 +7,7 @@ import { logger } from "../logger";
 import { EnvironmentStore } from "../service/environment_store";
 import { lockedForCaller } from "../service/discovery_lock";
 import type { GivenValue } from "@malloydata/malloy";
+import { loadedPackage } from "./loaded_package";
 
 type ApiModel = components["schemas"]["Model"];
 type ApiCompiledModel = components["schemas"]["CompiledModel"];
@@ -85,13 +86,12 @@ export class ModelController {
       packageName: string,
       options: ModelReadOptions = {},
    ): Promise<ApiModel[]> {
-      const environment = await this.environmentStore.getEnvironment(
+      const p = await loadedPackage(
+         this.environmentStore,
          environmentName,
-         false,
+         packageName,
+         options.versionId,
       );
-      const p = await environment.getPackage(packageName, false, {
-         versionId: options.versionId,
-      });
       return p.listModels(options);
    }
 
@@ -103,13 +103,12 @@ export class ModelController {
    ): Promise<ApiCompiledModel> {
       const includeHiddenFilesAndSources =
          options.includeHiddenFilesAndSources === true;
-      const environment = await this.environmentStore.getEnvironment(
+      const p = await loadedPackage(
+         this.environmentStore,
          environmentName,
-         false,
+         packageName,
+         options.versionId,
       );
-      const p = await environment.getPackage(packageName, false, {
-         versionId: options.versionId,
-      });
       const model = p.getModel(modelPath);
       if (!model) {
          throw new ModelNotFoundError(`${modelPath} does not exist`);
