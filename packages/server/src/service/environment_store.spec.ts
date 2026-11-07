@@ -20,7 +20,7 @@ import { BadRequestError, EnvironmentNotFoundError } from "../errors";
 import { withSettings, type SettingsInput } from "../test_helpers/settings_env";
 import { stubStorageManager } from "../test_helpers/storage_manager_stub";
 import { RetrievalService } from "../retrieval/service";
-import { Environment, PackageStatus } from "./environment";
+import { Environment } from "./environment";
 import {
    CloneProgressReporter,
    cloneProgressLabel,
@@ -2418,9 +2418,9 @@ describe("Environment.getServingPackageCount", () => {
       // (would say 3) and a full inversion (would say 1), so the count really
       // is "registered minus failed".
       const env = await Environment.create("e", envRoot, []);
-      env.setPackageStatus("good-1", PackageStatus.SERVING);
-      env.setPackageStatus("good-2", PackageStatus.SERVING);
-      env.setPackageStatus("bad", PackageStatus.SERVING);
+      env.registerConfiguredPackage("good-1");
+      env.registerConfiguredPackage("good-2");
+      env.registerConfiguredPackage("bad");
       env.setPackageMountError("bad", "location does not exist");
 
       expect(env.getServingPackageCount()).toBe(2);

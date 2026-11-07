@@ -6,7 +6,8 @@ import * as fs from "fs/promises";
 import * as os from "os";
 import * as path from "path";
 
-import { Environment, PackageStatus } from "./environment";
+import { Environment } from "./environment";
+import { PackageStatus } from "./package_lifecycle";
 import { writePackageFiles } from "../test_helpers/temp_package";
 
 /**
