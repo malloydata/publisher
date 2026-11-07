@@ -6251,7 +6251,6 @@ export class Model {
          status: "success",
          connection: queryResults.connectionName,
          servedFrom,
-         rowsLimit: rowLimit,
       });
       queryExecutionHistogram().record(executionTime, metricAttributes);
       // Only when reported, so the counter is absent rather than a false zero.
@@ -6309,10 +6308,9 @@ export class Model {
     * The label set for `queryExecutionHistogram`, shared by every recording
     * site so success and error paths cannot drift.
     *
-    * Query text and row count are deliberately absent: both are unbounded
-    * label values (a cardinality leak); they stay on the request log.
-    * `rows_limit` is bounded only by convention (the default plus authored
-    * limits).
+    * Query text, row count and row limit are deliberately absent: each is
+    * unbounded, or chosen by the caller (a cardinality leak); they stay on the
+    * request log.
     */
    private queryMetricAttributes(args: {
       environment?: string;
@@ -6322,7 +6320,6 @@ export class Model {
       status: "success" | "error" | "rejected";
       connection?: string;
       servedFrom?: ServedFrom;
-      rowsLimit?: number;
    }): Record<string, string | number | undefined> {
       return {
          "malloy.model.path": this.modelPath,
@@ -6336,9 +6333,6 @@ export class Model {
          ...(args.connection
             ? { "malloy.model.query.connection": args.connection }
             : {}),
-         ...(args.rowsLimit === undefined
-            ? {}
-            : { "malloy.model.query.rows_limit": args.rowsLimit }),
          // Only for queries that reached the storage routing decision.
          ...(args.servedFrom
             ? { "malloy.model.query.served_from": args.servedFrom }
