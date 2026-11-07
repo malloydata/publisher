@@ -557,12 +557,19 @@ function isComposite(struct: SourceDef | undefined): boolean {
    return (struct as { type?: string } | undefined)?.type === "composite";
 }
 
+/**
+ * Every member of a composite, nested composites flattened in. THROWS past
+ * {@link MAX_JOIN_RECURSION_DEPTH}: a truncated member list could leave the
+ * member declaring a condition unseen, so an unprovable binding denies.
+ */
 function compositeMembers(
    composite: SourceDef,
    out: SourceDef[] = [],
    depth = 0,
 ): SourceDef[] {
-   if (depth > MAX_JOIN_RECURSION_DEPTH) return out;
+   if (depth > MAX_JOIN_RECURSION_DEPTH) {
+      throw new Error("composite nesting exceeded the resolution bound");
+   }
    const members = (composite as { sources?: readonly SourceDef[] }).sources;
    for (const member of members ?? []) {
       out.push(member);
