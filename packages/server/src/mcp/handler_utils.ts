@@ -36,6 +36,7 @@ import {
 import type { Model } from "../service/model";
 import type { Environment } from "../service/environment";
 import type { Package } from "../service/package";
+import { resolveQueryModel } from "../service/run_model_query";
 import { logger } from "../logger";
 
 /**
@@ -237,15 +238,13 @@ export async function getModelForQuery(
    | { error: ErrorDetails; cause: unknown }
 > {
    try {
-      const environment = await environmentStore.getEnvironment(
-         environmentName,
-         false,
-      );
-      // Shed load before any disk / DB work, as the HTTP query controllers do.
-      environment.assertCanAdmitQuery();
       // The MCP tools serve the package's `latest`.
-      const pkg = await environment.getPackage(packageName, false);
-      const model = pkg.getModel(modelPath);
+      const { environment, pkg, model } = await resolveQueryModel(
+         environmentStore,
+         environmentName,
+         packageName,
+         modelPath,
+      );
       if (!model || model.getType() === "notebook") {
          const details = getNotFoundError(
             `model '${modelPath}' in package '${packageName}' for environment '${environmentName}'`,

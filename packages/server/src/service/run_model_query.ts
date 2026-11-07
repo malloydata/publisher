@@ -1,0 +1,98 @@
+// Copyright (c) Credible Data Inc.
+// SPDX-License-Identifier: MIT
+
+/**
+ * The query pipeline REST and MCP share: find the model a request names, then
+ * run the query under the timeout and read its render tags. What each surface
+ * decides for itself (its refusals and their wording, which shape it sends,
+ * the authorize bypass, the concurrency slot) stays with the caller.
+ */
+
+import type { GivenValue } from "@malloydata/malloy";
+import { validateRenderTags } from "@malloydata/render-validator";
+import { getQueryTimeoutMs } from "../config";
+import { runWithQueryTimeout } from "../query_timeout";
+import type { QueryAudit } from "./access_record";
+import type { Environment } from "./environment";
+import type { EnvironmentStore } from "./environment_store";
+import type { FilterParams } from "./filter";
+import type { Model } from "./model";
+import type { Package } from "./package";
+import type { ModelQueryMetadataInput } from "./query_metadata";
+import { filterPublisherOwnedRenderLogs } from "./report_manifest";
+
+/**
+ * The environment, admitted for query traffic, and the package and model a
+ * request names. `model` is undefined when the package serves no such file;
+ * how to refuse that is the caller's.
+ */
+export async function resolveQueryModel(
+   environmentStore: EnvironmentStore,
+   environmentName: string,
+   packageName: string,
+   modelPath: string,
+   versionId?: unknown,
+): Promise<{ environment: Environment; pkg: Package; model?: Model }> {
+   const environment = await environmentStore.getEnvironment(
+      environmentName,
+      false,
+   );
+   // Shed load (503) before any disk / DB work rather than crash partway
+   // through a query. Loaded packages bypass the package-load admission gate,
+   // so this is the only guard for query traffic on a hot pod.
+   environment.assertCanAdmitQuery();
+   const pkg = await environment.getPackage(packageName, false, { versionId });
+   return { environment, pkg, model: pkg.getModel(modelPath) };
+}
+
+export interface ModelQueryRequest {
+   sourceName?: string;
+   queryName?: string;
+   query?: string;
+   filterParams?: FilterParams;
+   bypassFilters?: boolean;
+   givens?: Record<string, GivenValue>;
+   queryMetadataInput: ModelQueryMetadataInput;
+   /** The shape the caller sends, so exactly that one is built and byte-capped. */
+   shape: "compact" | "full";
+   bypassAuthorize?: boolean;
+   includeHiddenFilesAndSources?: boolean;
+   /** Aborted when the client goes away: cancels the query at the driver. */
+   clientSignal?: AbortSignal;
+}
+
+/** Run a query under PUBLISHER_QUERY_TIMEOUT_MS and read the render tags it carries. */
+export async function runModelQuery(
+   audit: QueryAudit,
+   pkg: Package,
+   modelPath: string,
+   model: Model,
+   request: ModelQueryRequest,
+) {
+   const outcome = await runWithQueryTimeout(
+      (abortSignal) =>
+         model.getQueryResults(
+            audit,
+            request.sourceName,
+            request.queryName,
+            request.query,
+            request.filterParams,
+            request.bypassFilters,
+            request.givens,
+            abortSignal,
+            request.queryMetadataInput,
+            request.shape,
+            request.bypassAuthorize,
+            request.includeHiddenFilesAndSources,
+         ),
+      getQueryTimeoutMs(),
+      request.clientSignal,
+   );
+   // Render-tag validation reads the FULL Malloy result: the tags live in its
+   // schema annotations, which the flat rows do not carry.
+   const renderLogs = filterPublisherOwnedRenderLogs(
+      validateRenderTags(outcome.result),
+      pkg.getModel(modelPath)?.carriesReportTag() ?? false,
+   );
+   return { ...outcome, renderLogs };
+}

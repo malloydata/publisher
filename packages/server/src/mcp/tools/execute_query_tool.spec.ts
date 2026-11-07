@@ -727,7 +727,11 @@ describe("execute_query on a package with published versions", () => {
    it("queries the package's latest, naming no version", async () => {
       const { store, asked } = versionedStore({ versionId: "1.2.0" });
       expect((await captureHandler(store)(args)).isError).not.toBe(true);
-      expect(asked()).toEqual([undefined]);
+      expect(
+         asked().map(
+            (o) => (o as { versionId?: unknown } | undefined)?.versionId,
+         ),
+      ).toEqual([undefined]);
    });
 
    it("answers a package with no latest yet with its own message, not an internal error", async () => {

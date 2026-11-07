@@ -7,20 +7,17 @@ import { BadRequestError } from "../../errors";
 import { ErrorCode, McpError } from "@modelcontextprotocol/sdk/types.js";
 import { z } from "zod/v3";
 import type { GivenValue } from "@malloydata/malloy";
-import { validateRenderTags } from "@malloydata/render-validator";
-import { getQueryTimeoutMs } from "../../config";
 import { logger } from "../../logger";
 import {
    tryAcquireQuerySlot,
    type QuerySlotHandle,
 } from "../../query_concurrency";
-import { runWithQueryTimeout } from "../../query_timeout";
 import {
    accessIdentityOf,
    withAccessRecord,
 } from "../../service/access_record";
 import type { Package } from "../../service/package";
-import { filterPublisherOwnedRenderLogs } from "../../service/report_manifest";
+import { runModelQuery } from "../../service/run_model_query";
 import { EnvironmentStore } from "../../service/environment_store";
 import { RESTRICTED_CONSTRUCTS, type ErrorDetails } from "../error_messages";
 import {
@@ -221,39 +218,23 @@ export function registerExecuteQueryTool(
                      rowLimit,
                      rowLimitSource,
                      queryCorrelationId,
-                  } = await runWithQueryTimeout(
-                     (abortSignal) =>
-                        model.getQueryResults(
-                           audit,
-                           target.sourceName,
-                           target.queryName,
-                           target.query,
-                           filterParams,
-                           undefined,
-                           givens as Record<string, GivenValue> | undefined,
-                           abortSignal,
-                           queryMetadataInput,
-                           // The envelope is built from `compactResult`, so cap
-                           // that shape: measuring the wrapped result would 413 on
-                           // bytes the agent never receives.
-                           "compact",
-                           // MCP sends no #(authorize) bypass, ever.
-                           false,
-                           includeHiddenFilesAndSources,
-                        ),
-                     getQueryTimeoutMs(),
+                     renderLogs,
+                  } = await runModelQuery(audit, pkg, modelPath, model, {
+                     ...target,
+                     filterParams,
+                     givens: givens as Record<string, GivenValue> | undefined,
+                     queryMetadataInput,
+                     // The envelope is built from `compactResult`, so cap that
+                     // shape: measuring the wrapped result would 413 on bytes
+                     // the agent never receives.
+                     shape: "compact",
+                     // MCP sends no #(authorize) bypass, ever.
+                     bypassAuthorize: false,
+                     includeHiddenFilesAndSources,
                      // A cancelled call stops the query at the driver.
-                     extra?.signal,
-                  );
+                     clientSignal: extra?.signal,
+                  });
                   recordDeprecatedFilterUsage({ filterParams });
-
-                  // Render-tag validation reads the FULL Malloy result: the tags live
-                  // in its schema annotations, which the flat rows do not carry. It
-                  // runs regardless of which shape is returned.
-                  const renderLogs = filterPublisherOwnedRenderLogs(
-                     validateRenderTags(result),
-                     pkg.getModel(modelPath)?.carriesReportTag() ?? false,
-                  );
 
                   const resultUri = buildMalloyUri(
                      {
