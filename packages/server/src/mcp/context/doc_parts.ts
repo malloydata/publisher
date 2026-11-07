@@ -44,6 +44,26 @@ export interface DocParts {
 /** Docs per LLM call. */
 export const DOC_PARTS_BATCH_SIZE = 10;
 
+/**
+ * Output tokens one doc may use. The reply copies every sentence of the doc,
+ * so it is as long as the doc plus the JSON around it, and a flat allowance
+ * cuts a long doc's reply off mid-JSON. Copied text runs about four characters
+ * a token in English and three to four in most other languages written in
+ * the Latin alphabet; two leaves room for those, and 50 tokens covers the
+ * item's JSON. At least 300, enough for a short doc.
+ */
+export function docPartsMaxTokens(line: string): number {
+   return Math.max(300, Math.ceil(line.length / 2) + 50);
+}
+
+/**
+ * The output tokens a doc parts batch aims to stay within, so that long docs
+ * go to the model a few at a time and a request fits models whose output
+ * limit is 8,192. Ten short docs (3,100) still go together. A doc whose own
+ * allowance is over 8,092 goes alone and asks for more.
+ */
+export const DOC_PARTS_MAX_TOKENS_PER_BATCH = 8_192;
+
 /** Most values a doc's list may seed. */
 const MAX_DOC_VALUES = 50;
 
@@ -221,7 +241,8 @@ export async function resolveDocParts(args: {
          render: renderDocPartsPrompt,
          validate: validateDocParts,
          batchSize: DOC_PARTS_BATCH_SIZE,
-         maxTokensPerItem: 300,
+         maxTokensPerItem: docPartsMaxTokens,
+         maxTokensPerBatch: DOC_PARTS_MAX_TOKENS_PER_BATCH,
       });
       const { output, ...rest } = result;
       run = rest;

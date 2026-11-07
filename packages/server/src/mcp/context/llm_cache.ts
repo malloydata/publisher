@@ -81,11 +81,23 @@ export async function generateCached<T>(args: {
    validate: (value: unknown, count: number) => Map<number, T>;
    batchSize: number;
    concurrency: number;
-   maxTokensPerItem: number;
+   /**
+    * Output tokens one item may use: a number for every item, or a function
+    * of the item's line where the reply grows with it. A batch may use the sum
+    * plus 100.
+    */
+   maxTokensPerItem: number | ((line: string) => number);
+   /**
+    * A batch closes before its request would pass this; a single item over it
+    * goes alone. No limit when omitted.
+    */
+   maxTokensPerBatch?: number;
    budget: SyncRequestBudget;
    shouldStop?: () => boolean;
 }): Promise<CachedRun<T>> {
    const { db, table, environmentName, packageName } = args;
+   const perItem = args.maxTokensPerItem;
+   const tokensFor = typeof perItem === "number" ? () => perItem : perItem;
    const promptHash = sha256(args.instructions);
    const model = `${args.chat.provider}:${args.chat.model}`;
    const rows = await db.all<StoredRow>(
@@ -120,9 +132,26 @@ export async function generateCached<T>(args: {
       }
    }
    const reused = output.size;
+   // A batch takes up to `batchSize` items, and stops before an item would
+   // take its allowance past `maxTokensPerBatch`. An item too large for that
+   // on its own still gets a batch of its own.
    const batches: CacheItem[][] = [];
-   for (let i = 0; i < pending.length; i += args.batchSize) {
-      batches.push(pending.slice(i, i + args.batchSize));
+   let tokens = 0;
+   for (const item of pending) {
+      const need = tokensFor(item.line);
+      const last = batches[batches.length - 1];
+      if (
+         last &&
+         last.length < args.batchSize &&
+         (args.maxTokensPerBatch === undefined ||
+            tokens + need <= args.maxTokensPerBatch)
+      ) {
+         last.push(item);
+         tokens += need;
+      } else {
+         batches.push([item]);
+         tokens = 100 + need;
+      }
    }
 
    let failure: unknown;
@@ -140,7 +169,10 @@ export async function generateCached<T>(args: {
                args.chat.completeJson({
                   system: args.instructions,
                   prompt: args.render(batch.map((b) => b.line)),
-                  maxTokens: args.maxTokensPerItem * batch.length + 100,
+                  maxTokens: batch.reduce(
+                     (sum, item) => sum + tokensFor(item.line),
+                     100,
+                  ),
                   validate: (v) => args.validate(v, batch.length),
                   onRequest,
                }),
