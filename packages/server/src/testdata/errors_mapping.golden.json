@@ -732,7 +732,7 @@
     }
   },
   "BadRequestError invalid query request": {
-    "class": "BadRequestError",
+    "class": "InvalidQueryRequestError",
     "http": {
       "status": 400,
       "json": {
@@ -745,6 +745,8 @@
     "mcp": {
       "message": "Error during executeQuery for resource 'env/pkg/m.malloy': Invalid query request. Query OR queryName must be defined",
       "suggestions": [
+        "Suggestion: This error can occur when specifying a view using 'sourceName' and 'queryName'. Try providing the full query string directly in the 'query' parameter instead (e.g., 'query': 'run: your_source_name->your_view_name').",
+        "Suggestion: Also verify you are providing either the 'query' parameter OR the correct combination of 'queryName' (and optionally 'sourceName' for views).",
         "Verify the structure and syntax within the Malloy file: env/pkg/m.malloy. Check for typos in source, query, or view names (e.g., 'source: my_source is ...', 'query: my_query is ...', 'view: my_view is { ... }'). See Model Structure: https://docs.malloydata.dev/documentation/language/statement",
         "Ensure all referenced sources, queries, or views are correctly defined within the model or imported files using expected keywords (e.g., 'source:', 'query:', 'view:'). See Sources: https://docs.malloydata.dev/documentation/language/source",
         "Check the database connection configuration used by the model, if applicable.",

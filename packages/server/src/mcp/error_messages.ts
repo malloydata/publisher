@@ -4,6 +4,7 @@
 import {
    AccessDeniedError,
    ConnectionError,
+   InvalidQueryRequestError,
    logInternalFailure,
 } from "../errors";
 import {
@@ -168,6 +169,12 @@ export function getMalloyErrorDetails(
          suggestions = [
             `Suggestion: Access to source '${error.source}' is restricted by an authorize gate. Supply the givens its authorize expression requires (e.g. a role/region given) and retry. This is an authorization denial, not a syntax error.`,
          ];
+      } else if (error instanceof InvalidQueryRequestError) {
+         refined = true;
+         suggestions.unshift(
+            "Suggestion: This error can occur when specifying a view using 'sourceName' and 'queryName'. Try providing the full query string directly in the 'query' parameter instead (e.g., 'query': 'run: your_source_name->your_view_name').",
+            "Suggestion: Also verify you are providing either the 'query' parameter OR the correct combination of 'queryName' (and optionally 'sourceName' for views).",
+         );
       } else {
          const matched = matchMalloyErrorText(error.message);
          if (matched) {

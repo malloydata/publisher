@@ -523,6 +523,17 @@ export class InvalidModelPathError extends BadRequestError {
    }
 }
 
+/**
+ * A query request that names neither query text nor a query to run (or a view
+ * without its source). A subclass so MCP advice can say how to name a view,
+ * which it used to try by matching a message no throw site produced. Still a 400.
+ */
+export class InvalidQueryRequestError extends BadRequestError {
+   override get kind(): "invalid_query_request" {
+      return "invalid_query_request";
+   }
+}
+
 /** A document's text carries a URL-producing render tag or markup in a label; counted apart from a restricted construct. */
 export class RenderTagRefusedError extends CompileRefusedError {
    override get kind(): "render_tag_refused" {
@@ -1237,6 +1248,7 @@ type BadRequestKind =
    | "bad_request"
    | "invalid_argument"
    | "invalid_model_path"
+   | "invalid_query_request"
    | CompileRefusedKind;
 type ConnectionKind =
    | "connection"
@@ -1256,6 +1268,7 @@ interface ErrorByKind {
    invalid_argument: InvalidArgumentError;
    compile_refused: CompileRefusedError;
    invalid_model_path: InvalidModelPathError;
+   invalid_query_request: InvalidQueryRequestError;
    render_tag_refused: RenderTagRefusedError;
    unparseable_text: UnparseableTextError;
    environment_not_found: EnvironmentNotFoundError;
@@ -1334,6 +1347,7 @@ const ERROR_CLASSES: {
    invalid_argument: InvalidArgumentError,
    compile_refused: CompileRefusedError,
    invalid_model_path: InvalidModelPathError,
+   invalid_query_request: InvalidQueryRequestError,
    render_tag_refused: RenderTagRefusedError,
    unparseable_text: UnparseableTextError,
    environment_not_found: EnvironmentNotFoundError,
@@ -1574,6 +1588,7 @@ export const ERROR_TABLE: { [K in ErrorKind]: ErrorMapping<ErrorByKind[K]> } = {
    },
    compile_refused: BAD_REQUEST,
    invalid_model_path: BAD_REQUEST,
+   invalid_query_request: BAD_REQUEST,
    render_tag_refused: BAD_REQUEST,
    unparseable_text: BAD_REQUEST,
    server_configuration: {
