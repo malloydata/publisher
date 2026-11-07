@@ -58,7 +58,7 @@ export type FcjState =
         startedAt: number;
         /** Set once the vectors step starts. */
         progress?: VectorProgress;
-        /** When this build last stored a batch of vectors. */
+        /** When a vector this build keeps was last written. */
         lastSyncedAt?: number;
      }
    | {
@@ -171,10 +171,14 @@ export function kickFcjBuild(args: {
          return;
       }
       try {
-         const index = await buildFor(args, undefined, (progress) => {
-            building.progress = progress;
-            if (progress.embeddedRows > 0) building.lastSyncedAt = Date.now();
-         });
+         const index = await buildFor(
+            args,
+            undefined,
+            (progress, lastWrittenAt) => {
+               building.progress = progress;
+               building.lastSyncedAt = lastWrittenAt;
+            },
+         );
          if (await droppedDuringBuild(args)) return;
          states.set(
             pkg,
@@ -269,7 +273,8 @@ function readyState(
    failuresBefore = 0,
    lastWrite?: number,
 ): FcjState {
-   // Vectors reused rather than written (a cache hit) went live with the index.
+   // A build that never reported a write time (no vectors step) falls back to
+   // when its vectors went live.
    const lastSyncedAt =
       index.vectors.size > 0 ? (lastWrite ?? Date.now()) : undefined;
    const synced = lastSyncedAt !== undefined ? { lastSyncedAt } : {};
@@ -362,7 +367,10 @@ async function buildFor(
       pkg: Package;
    },
    previousValues?: { index: ValueIndex; report: ValueBuildReport },
-   onVectorProgress?: (progress: VectorProgress) => void,
+   onVectorProgress?: (
+      progress: VectorProgress,
+      lastWrittenAt?: number,
+   ) => void,
 ): Promise<FcjIndex> {
    const { environmentStore, environmentName, packageName, pkg } = args;
    const pkgIndex = await getPackageIndex(

@@ -220,7 +220,10 @@ export async function buildFcjIndex(args: {
    previousValues?: { index: ValueIndex; report: ValueBuildReport };
    shouldStop?: () => boolean;
    /** Progress of the entity vectors step (not the value vectors). */
-   onVectorProgress?: (progress: VectorProgress) => void;
+   onVectorProgress?: (
+      progress: VectorProgress,
+      lastWrittenAt?: number,
+   ) => void;
 }): Promise<FcjIndex> {
    const started = Date.now();
    const { db, environmentName, packageName, settings } = args;

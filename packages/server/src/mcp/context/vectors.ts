@@ -79,6 +79,8 @@ interface StoredRow {
    content_hash: string;
    embedding_model: string;
    embedding: number[] | string;
+   /** `updated_at` as epoch milliseconds. */
+   updated_ms: number;
 }
 
 function parseVector(v: number[] | string): number[] {
@@ -117,8 +119,12 @@ export async function syncVectors(args: {
    /** Default `catalog_embeddings`. */
    table?: VectorTable;
    shouldStop?: () => boolean;
-   /** Called once the reusable rows are known, and after each stored batch. */
-   onProgress?: (progress: VectorProgress) => void;
+   /**
+    * Called once the reusable rows are known, and after each stored batch,
+    * with when a vector the package keeps was last written (undefined while
+    * it keeps none).
+    */
+   onProgress?: (progress: VectorProgress, lastWrittenAt?: number) => void;
 }): Promise<VectorSyncOutcome> {
    const { db, provider, environmentName, packageName } = args;
    const table: VectorTable = args.table ?? "catalog_embeddings";
@@ -140,7 +146,8 @@ export async function syncVectors(args: {
       });
    }
    const stored = await db.all<StoredRow>(
-      `SELECT node_key, facet, content_hash, embedding_model, embedding
+      `SELECT node_key, facet, content_hash, embedding_model, embedding,
+              CAST(epoch_ms(updated_at) AS DOUBLE) AS updated_ms
        FROM ${table} WHERE environment_name = ? AND package_name = ?`,
       [environmentName, packageName],
    );
@@ -152,6 +159,7 @@ export async function syncVectors(args: {
    };
    let reused = 0;
    let deleted = 0;
+   let lastWrittenAt: number | undefined;
    const kept = new Set<string>();
    let dims = 0;
    for (const row of stored) {
@@ -168,6 +176,10 @@ export async function syncVectors(args: {
             add(row.node_key, row.facet, v);
             kept.add(key);
             reused += 1;
+            lastWrittenAt = Math.max(
+               lastWrittenAt ?? 0,
+               Number(row.updated_ms),
+            );
             continue;
          }
       }
@@ -183,12 +195,15 @@ export async function syncVectors(args: {
    let embedded = 0;
    const totalEntities = new Set([...wanted.values()].map((r) => r.node)).size;
    const progress = () =>
-      args.onProgress?.({
-         totalRows: wanted.size,
-         embeddedRows: reused + embedded,
-         totalEntities,
-         embeddedEntities: vectors.size,
-      });
+      args.onProgress?.(
+         {
+            totalRows: wanted.size,
+            embeddedRows: reused + embedded,
+            totalEntities,
+            embeddedEntities: vectors.size,
+         },
+         lastWrittenAt,
+      );
    progress();
    let chars = 0;
    const batchSize = Math.max(1, Math.min(provider.maxBatch, 256));
@@ -243,6 +258,7 @@ export async function syncVectors(args: {
          params,
       );
       embedded += batch.length;
+      lastWrittenAt = Date.parse(now);
       progress();
    }
    return {
