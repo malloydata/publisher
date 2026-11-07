@@ -1,7 +1,7 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
-import { describe, expect, it } from "bun:test";
+import { describe, expect, it, spyOn } from "bun:test";
 import { MalloyError } from "@malloydata/malloy";
 import {
    BACK_PRESSURE_SUGGESTIONS,
@@ -16,6 +16,8 @@ import {
    type ErrorDetails,
 } from "./error_messages";
 import type { EnvironmentStore } from "../service/environment_store";
+import { logger } from "../logger";
+import { linesMentioning } from "../test_helpers/log_lines";
 import {
    AccessDeniedError,
    BadRequestError,
@@ -435,5 +437,21 @@ describe("getModelForQuery setup failures", () => {
       expect(await failWith(error)).toEqual(
          getInternalError("executeQuery (Setup)", error),
       );
+   });
+
+   it("logs a caller's error at warn and an internal fault at error", async () => {
+      const warn = spyOn(logger, "warn");
+      const error = spyOn(logger, "error");
+      try {
+         await failWith(new PackageNotFoundError("setup-level-pkg-miss"));
+         await failWith(new TypeError("setup-level-bug"));
+         expect(linesMentioning(warn, "setup-level-pkg-miss")).toHaveLength(1);
+         expect(linesMentioning(error, "setup-level-pkg-miss")).toHaveLength(0);
+         expect(linesMentioning(error, "setup-level-bug")).toHaveLength(1);
+         expect(linesMentioning(warn, "setup-level-bug")).toHaveLength(0);
+      } finally {
+         warn.mockRestore();
+         error.mockRestore();
+      }
    });
 });

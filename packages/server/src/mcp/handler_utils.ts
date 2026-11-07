@@ -259,57 +259,72 @@ export async function getModelForQuery(
       await model.getModel();
       return { model, environment, pkg };
    } catch (error) {
-      let errorDetails: ErrorDetails;
-      if (error instanceof EnvironmentNotFoundError) {
-         errorDetails = classifyToolError(
-            "executeQuery (load model)",
-            `environment '${environmentName}'`,
-            error,
-         );
-      } else if (error instanceof PackageNotFoundError) {
-         errorDetails = getNotFoundError(
-            `package '${packageName}' in environment '${environmentName}'`,
-         );
-      } else if (error instanceof PackageVersionError) {
-         // A package with versions and no `latest` yet: its own message, not
-         // an internal error.
-         errorDetails = classifyToolError(
-            "executeQuery (load model)",
-            `package '${packageName}' in environment '${environmentName}'`,
-            error,
-         );
-      } else if (error instanceof ModelNotFoundError) {
-         errorDetails = getNotFoundError(
-            `model '${modelPath}' in package '${packageName}' for environment '${environmentName}'`,
-         );
-      } else if (error instanceof ModelCompilationError) {
-         errorDetails = getMalloyErrorDetails(
-            "executeQuery (load model)",
-            `${environmentName}/${packageName}/${modelPath}`,
-            error,
-         );
-      } else if (error instanceof AccessDeniedError) {
-         // Defensive: the #(authorize) gate fires at query time, not setup, but
-         // a 403 must never surface as an opaque internal error.
-         errorDetails = getMalloyErrorDetails(
-            "executeQuery (load model)",
-            `${environmentName}/${packageName}/${modelPath}`,
-            error,
-         );
-      } else if (error instanceof ServiceUnavailableError) {
-         errorDetails = {
-            message: error.message,
-            suggestions: [...BACK_PRESSURE_SUGGESTIONS],
-         } satisfies ErrorDetails;
-      } else {
-         errorDetails = getInternalError("executeQuery (Setup)", error);
-      }
-      logger.error(
-         `[MCP Server Error] Error accessing package/model for query: ${environmentName}/${packageName}/${modelPath}`,
-         { error },
+      const identifier = setupIdentifier(
+         error,
+         environmentName,
+         packageName,
+         modelPath,
       );
-      return { error: errorDetails, cause: error };
+      const fields = { environmentName, packageName, modelPath };
+      if (identifier === undefined) {
+         logger.error(
+            "[MCP Server Error] Error accessing package/model for query",
+            { ...fields, error },
+         );
+         return {
+            error: getInternalError("executeQuery (Setup)", error),
+            cause: error,
+         };
+      }
+      logger.warn("[MCP Tool executeQuery] model setup refused", {
+         ...fields,
+         error: error instanceof Error ? error.message : String(error),
+      });
+      return {
+         error: classifyToolError(
+            "executeQuery (load model)",
+            identifier,
+            error,
+         ),
+         cause: error,
+      };
    }
+}
+
+/**
+ * What a setup failure that is the caller's to act on names, by class. Any
+ * other class (an unusable manifest, a connection fault, an off-surface model)
+ * is undefined: reported as an internal setup fault, not classified.
+ */
+function setupIdentifier(
+   error: unknown,
+   environmentName: string,
+   packageName: string,
+   modelPath: string,
+): string | undefined {
+   if (error instanceof EnvironmentNotFoundError) {
+      return `environment '${environmentName}'`;
+   }
+   if (
+      error instanceof PackageNotFoundError ||
+      // A package with versions and no `latest` yet: its own message.
+      error instanceof PackageVersionError
+   ) {
+      return `package '${packageName}' in environment '${environmentName}'`;
+   }
+   if (error instanceof ModelNotFoundError) {
+      return `model '${modelPath}' in package '${packageName}' for environment '${environmentName}'`;
+   }
+   if (
+      error instanceof ModelCompilationError ||
+      // The #(authorize) gate fires at query time, not setup, but a denial
+      // must never surface as an opaque internal error.
+      error instanceof AccessDeniedError ||
+      error instanceof ServiceUnavailableError
+   ) {
+      return `${environmentName}/${packageName}/${modelPath}`;
+   }
+   return undefined;
 }
 
 /**
