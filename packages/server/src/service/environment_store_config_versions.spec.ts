@@ -7,6 +7,7 @@ import * as os from "os";
 import * as path from "path";
 import { EnvironmentStore } from "./environment_store";
 import { installSettings } from "../test_helpers/settings_env";
+import { writePackageFiles } from "../test_helpers/temp_package";
 
 /**
  * With package versioning on, a package in publisher.config.json loads as a
@@ -68,14 +69,12 @@ async function closeStore() {
 /** A package source; `version` undefined writes a publisher.json without one. */
 function source(name: string, version?: string): string {
    const dir = path.join(root, "sources", name);
-   fs.mkdirSync(dir, { recursive: true });
-   fs.writeFileSync(
-      path.join(dir, "publisher.json"),
-      JSON.stringify(version ? { name, version } : { name }),
-   );
-   fs.writeFileSync(
-      path.join(dir, "model.malloy"),
-      `source: numbers is duckdb.sql("SELECT 1 AS answer")\n`,
+   writePackageFiles(
+      dir,
+      {
+         "model.malloy": `source: numbers is duckdb.sql("SELECT 1 AS answer")\n`,
+      },
+      { manifest: version ? { name, version } : { name } },
    );
    return dir;
 }
