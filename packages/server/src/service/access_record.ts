@@ -31,13 +31,7 @@
 import { trace } from "@opentelemetry/api";
 import type { GivenValue, ModelDef } from "@malloydata/malloy";
 import type { components } from "../api";
-import {
-   AccessDeniedError,
-   ConnectionAuthError,
-   ConnectionError,
-   internalErrorToHttpError,
-   ModelNotFoundError,
-} from "../errors";
+import { errorKind, internalErrorToHttpError, type ErrorKind } from "../errors";
 import { logger, traceIdOf } from "../logger";
 import { redactConnectionSecretShapes } from "../pg_helpers";
 import { settings } from "../settings";
@@ -230,10 +224,11 @@ export type AccessOutcome =
    | "cancelled"
    | "error";
 
-/** The outcome a thrown error means, by its class; the status it maps to is the route's. */
+/** The outcome a thrown error means, by its kind; the status it maps to is the route's. */
 export function outcomeOf(error: unknown, status: number): AccessOutcome {
-   if (error instanceof AccessDeniedError) return "denied_lock";
-   if (error instanceof ModelNotFoundError || status === 404) {
+   const kind = errorKind(error);
+   if (kind === "access_denied") return "denied_lock";
+   if (kind === "model_not_found" || status === 404) {
       return "refused_surface";
    }
    if (status === 403) return "denied_lock";
@@ -340,15 +335,22 @@ export const runUnrecorded = <T>(
    run: (audit: QueryAudit) => Promise<T>,
 ): Promise<T> => run(mintAudit());
 
+/** The kinds whose recorded text is what the HTTP path answered (ConnectionError and its subclasses, and rejected credentials). */
+const ANSWERED_TEXT_KINDS: ReadonlySet<ErrorKind> = new Set<ErrorKind>([
+   "connection",
+   "connection_failed",
+   "connection_pool_exhausted",
+   "connection_auth",
+]);
+
 /** A connection error's text is what the HTTP path answers, since a driver quotes the statement back and given values are literals in it. */
 function recordedErrorText(error: unknown, answered: string): string {
-   const text =
-      error instanceof ConnectionError || error instanceof ConnectionAuthError
-         ? answered
-         : // Driver errors quote connection config back; the record is a log line.
-           redactConnectionSecretShapes(
-              String((error as Error)?.message ?? error),
-           );
+   const text = ANSWERED_TEXT_KINDS.has(errorKind(error))
+      ? answered
+      : // Driver errors quote connection config back; the record is a log line.
+        redactConnectionSecretShapes(
+           String((error as Error)?.message ?? error),
+        );
    return text.slice(0, MAX_RECORDED_ERROR_CHARS);
 }
 
