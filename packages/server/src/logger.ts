@@ -102,6 +102,32 @@ const REDACTED = "[REDACTED]";
  * recursing through objects and arrays (connections arrive nested under
  * `connections[]`). Never mutates the input.
  */
+/** Longest body, as serialized JSON, the access log carries whole. */
+export const MAX_LOGGED_BODY_CHARS = 2048;
+
+/**
+ * A body for the access log: whole when it serializes within
+ * {@link MAX_LOGGED_BODY_CHARS}, otherwise its length and that many leading
+ * characters, so one large compile overlay or result set cannot become a
+ * multi-megabyte log line.
+ */
+export function boundedForLog(value: unknown): unknown {
+   let serialized: string | undefined;
+   try {
+      serialized = JSON.stringify(value);
+   } catch {
+      return "[Unserializable]";
+   }
+   if (serialized === undefined || serialized.length <= MAX_LOGGED_BODY_CHARS) {
+      return value;
+   }
+   return {
+      truncated: true,
+      length: serialized.length,
+      head: serialized.slice(0, MAX_LOGGED_BODY_CHARS),
+   };
+}
+
 export function redactSensitive(
    value: unknown,
    seen: WeakSet<object> = new WeakSet(),
@@ -184,10 +210,10 @@ export const loggerMiddleware: RequestHandler = (req, res, next) => {
       // Redaction is by key name only, so a body's query text and given
       // values pass through: kept to debug.
       if (logger.isDebugEnabled()) {
-         logMetadata.payload = redactSensitive(req.body);
+         logMetadata.payload = boundedForLog(redactSensitive(req.body));
       }
       if (!DISABLE_RESPONSE_LOGGING) {
-         logMetadata.response = redactSensitive(res.locals.body);
+         logMetadata.response = boundedForLog(redactSensitive(res.locals.body));
       }
       const traceId = requestTraceId(req, spanContext);
       if (traceId) {

@@ -18,6 +18,7 @@ import {
    buildAxiosErrorLog,
    logger,
    loggerMiddleware,
+   MAX_LOGGED_BODY_CHARS,
    redactSensitive,
 } from "./logger";
 import { linesMentioning } from "./test_helpers/log_lines";
@@ -294,6 +295,22 @@ describe("loggerMiddleware", () => {
          query: "run: x",
          password: "[REDACTED]",
       });
+   });
+
+   it("logs a large body as its length and head, not whole", () => {
+      const big = { source: "x".repeat(MAX_LOGGED_BODY_CHARS * 4) };
+      const meta = atLevel("debug", () =>
+         accessLog("/logger-spec/f", { body: big }),
+      );
+      const payload = meta?.payload as {
+         truncated: boolean;
+         length: number;
+         head: string;
+      };
+      expect(payload.truncated).toBe(true);
+      expect(payload.length).toBe(JSON.stringify(big).length);
+      expect(payload.head).toHaveLength(MAX_LOGGED_BODY_CHARS);
+      expect(payload.head.startsWith('{"source":"xxx')).toBe(true);
    });
 
    it("carries the trace id of an incoming traceparent", () => {
