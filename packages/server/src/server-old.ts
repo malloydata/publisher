@@ -16,7 +16,7 @@
  *   the `environments`-keyed payload.
  */
 
-import type { Express, Request } from "express";
+import type { Express } from "express";
 import { ParsedQs } from "qs";
 import { CompileController } from "./controller/compile.controller";
 import { ConnectionController } from "./controller/connection.controller";
@@ -29,16 +29,16 @@ import {
    setPackagePatchDeprecationHeaders,
 } from "./controller/package.controller";
 import { QueryController } from "./controller/query.controller";
-import { BadRequestError, internalErrorToHttpError } from "./errors";
+import { BadRequestError } from "./errors";
 import { logger, redactSensitive } from "./logger";
 import { accessIdentityOf } from "./service/access_record";
+import { notebookCellHandlers } from "./routes/deprecated";
 import { apiRoute, recordGateRefusal } from "./routes/json_route";
 import { queryConcurrency } from "./query_concurrency";
 import { normalizeQueryArray } from "./query_param_utils";
 import {
    assertListingTakesNoVersionId,
    booleanParam,
-   optionalBooleanParam,
    queryVersionIdOf,
    assertNoCollectionReload,
 } from "./route_params";
@@ -91,15 +91,6 @@ export function registerLegacyRoutes(
       materializationController,
    } = controllers;
    const legacyReportController = new LegacyReportController(environmentStore);
-   const recordCellRefusal = (req: Request, error: Error) =>
-      legacyReportController.recordCellRefusal(
-         req.params.projectName,
-         req.params.packageName,
-         (req.params as Record<string, string>)["0"],
-         accessIdentityOf(req.headers),
-         error,
-      );
-
    // ── projects (== environments) ──────────────────────────────────────────
    app.get(
       `${LEGACY_API_PREFIX}/projects`,
@@ -575,54 +566,13 @@ export function registerLegacyRoutes(
       }),
    );
 
-   // Cell execution route comes BEFORE the general getNotebook wildcard
+   // Before the general getNotebook wildcard, so it does not swallow `/cells/{i}`.
    app.get(
       `${LEGACY_API_PREFIX}/projects/:projectName/packages/:packageName/notebooks/*/cells/:cellIndex`,
-      queryConcurrency(),
-      apiRoute(async (req, res) => {
-         const notebookPath = (req.params as Record<string, string>)["0"];
-         // Answers the 400 after recording it: no controller method has run to.
-         const refuse = async (
-            message: string,
-            body: object = { error: message },
-         ) => {
-            await recordCellRefusal(req, new BadRequestError(message));
-            res.status(400).json(body);
-         };
-         const cellIndex = parseInt(req.params.cellIndex, 10);
-         if (isNaN(cellIndex)) return refuse("Invalid cell index");
-         let filterParams: Record<string, string | string[]> | undefined;
-         if (typeof req.query.filter_params === "string") {
-            try {
-               filterParams = JSON.parse(req.query.filter_params);
-            } catch {
-               return refuse("Invalid filter_params: must be valid JSON");
-            }
-         }
-         // Absence must stay distinguishable from an explicit `false`:
-         // the Deprecation header fires on `bypassFilters !== undefined`.
-         let bypassFilters: boolean | undefined;
-         try {
-            bypassFilters = optionalBooleanParam(req, "bypass_filters");
-         } catch (error) {
-            return refuse(
-               (error as Error).message,
-               internalErrorToHttpError(error as Error).json,
-            );
-         }
-         return legacyReportController.executeNotebookCell(
-            req.params.projectName,
-            req.params.packageName,
-            notebookPath,
-            cellIndex,
-            filterParams,
-            bypassFilters,
-            undefined,
-            req.query.versionId,
-            accessIdentityOf(req.headers),
-         );
+      ...notebookCellHandlers(legacyReportController, {
+         environmentParam: "projectName",
+         legacy: true,
       }),
-      recordGateRefusal(recordCellRefusal),
    );
 
    app.get(
