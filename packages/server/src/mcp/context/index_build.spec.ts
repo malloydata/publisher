@@ -27,7 +27,12 @@ import {
    stubEmbeddingProvider,
 } from "../../test_helpers/get_context_llm_harness";
 import { deleteEngineRows, ENGINE_TABLES } from "./catalog_store";
-import { listItems, resolveDocParts, splitDocByRules } from "./doc_parts";
+import {
+   docPartsMaxTokens,
+   listItems,
+   resolveDocParts,
+   splitDocByRules,
+} from "./doc_parts";
 import { buildFcjIndex } from "./index_build";
 import { KeywordIndex, stem, terms } from "./keyword";
 import { VectorSyncError } from "./vectors";
@@ -161,6 +166,101 @@ describe("doc parts by the model", () => {
       expect(out.byRules).toBe(1);
       expect(out.run?.failure).toBeDefined();
       expect(out.run?.missing).toBe(1);
+   });
+
+   // A model that copies every sentence, writes about three characters a
+   // token and stops at the allowance it was given, as a real one does.
+   const copyingChat = () => {
+      const chat = scriptedChat((prompt, n) => {
+         const results = numberedLines(prompt).map(([index, line]) => {
+            const [what, ...rules] = line.split(/(?<=\.) /);
+            return { index, what, values: [], rules, examples: [] };
+         });
+         const reply = JSON.stringify({ results });
+         return reply.slice(0, (chat.maxTokens[n - 1] ?? Infinity) * 3);
+      });
+      return chat;
+   };
+   const longDoc = (name: string) =>
+      Array.from(
+         { length: 30 },
+         (_, i) =>
+            `${name} rule ${i + 1}: leave out the rows whose status code is ${i + 1} when adding up this amount.`,
+      ).join(" ");
+
+   it("allows a doc output tokens by its length, at least 300", () => {
+      expect(docPartsMaxTokens("x".repeat(500))).toBe(300);
+      expect(docPartsMaxTokens("x".repeat(501))).toBe(301);
+      expect(docPartsMaxTokens("x".repeat(3000))).toBe(1550);
+   });
+
+   it("gives a long doc room for its whole copy, and a short doc the allowance it had", async () => {
+      const chat = copyingChat();
+      const long = longDoc("Amount");
+      const out = await resolveDocParts({
+         docs: [docs[0], long],
+         llm: {
+            db,
+            environmentName: "env",
+            packageName: "p",
+            chat: chat.model,
+            instructions: "split",
+            concurrency: 1,
+            budget: new SyncRequestBudget(10),
+         },
+      });
+      expect(out.run?.failure).toBeUndefined();
+      expect(out.byModel).toBe(2);
+      expect(out.byRules).toBe(0);
+      // 300 for the short doc, 1,346 for the long one, 100 for the reply.
+      expect(long.length).toBe(2591);
+      expect(chat.maxTokens).toEqual([1746]);
+   });
+
+   it("sends long docs a few at a time, within the batch allowance", async () => {
+      const chat = copyingChat();
+      const long = Array.from({ length: 7 }, (_, i) => longDoc(`Doc ${i}`));
+      const out = await resolveDocParts({
+         docs: long,
+         llm: {
+            db,
+            environmentName: "env",
+            packageName: "p",
+            chat: chat.model,
+            instructions: "split",
+            concurrency: 1,
+            budget: new SyncRequestBudget(10),
+         },
+      });
+      expect(out.run?.failure).toBeUndefined();
+      expect(out.byModel).toBe(7);
+      expect(long.map((d) => docPartsMaxTokens(d))).toEqual(
+         Array(7).fill(1331),
+      );
+      // Six docs fit in DOC_PARTS_MAX_TOKENS_PER_BATCH (100 + 6 × 1,331 =
+      // 8,086 of 8,192); the seventh goes in a batch of its own.
+      expect(chat.maxTokens).toEqual([8086, 1431]);
+   });
+
+   it("still sends ten short docs together", async () => {
+      const chat = copyingChat();
+      const short = Array.from(
+         { length: 10 },
+         (_, i) => `Amount ${i} in dollars. Exclude test orders when summing.`,
+      );
+      await resolveDocParts({
+         docs: short,
+         llm: {
+            db,
+            environmentName: "env",
+            packageName: "p",
+            chat: chat.model,
+            instructions: "split",
+            concurrency: 1,
+            budget: new SyncRequestBudget(10),
+         },
+      });
+      expect(chat.maxTokens).toEqual([10 * 300 + 100]);
    });
 });
 
