@@ -303,6 +303,9 @@ import {
    type OffSurfaceContext,
    type QueryBoundaryPolicy,
 } from "./model_policy";
+import { QueryPrivileges, type QueryRequest } from "./model_query_request";
+export { QueryPrivileges } from "./model_query_request";
+export type { QueryRequest } from "./model_query_request";
 
 type ApiCompiledModel = components["schemas"]["CompiledModel"];
 type ApiNotebookCell = components["schemas"]["NotebookCell"];
@@ -334,6 +337,50 @@ export { ModelPolicy, PackageModelPolicy } from "./model_policy";
  * separately. Absent means the query never had a storage binding to consider.
  */
 type ServedFrom = "storage" | "live_fallback";
+
+/** What {@link Model.runQuery} answers. */
+export interface ModelQueryResults {
+   result: Malloy.Result;
+   /**
+    * The JSON of the `responseShape` asked for, built once. Callers should
+    * send this string: it is the bytes the byte cap measured, and a payload
+    * too large to serialize surfaces here as a 413 rather than a bare 500.
+    */
+   serializedResult: string;
+   compactResult: QueryData;
+   modelInfo: Malloy.ModelInfo;
+   dataStyles: DataStyles;
+   /** Row cap pushed into the SQL: the query's own LIMIT, else the default. */
+   rowLimit: number;
+   /** Which of those two the cap came from. */
+   rowLimitSource: QueryRowLimitSource;
+   /**
+    * The `query_id` property attached to this query's statements, which is the
+    * caller's join key into the backend's own query record. Null when no
+    * metadata was attached.
+    */
+   queryCorrelationId: string | null;
+   /**
+    * How the answer was produced once the query reached the storage routing
+    * decision; null when it never had a storage binding to consider. See
+    * {@link ServedFrom} — `live_fallback` is a SUCCESS answered by the live
+    * warehouse, so a caller must not read it as a storage hit.
+    */
+   servedFrom: ServedFrom | null;
+   /**
+    * Wall-clock ms from query handling through execution, excluding
+    * serialization and transport; the span the query histogram records.
+    */
+   executionTimeMs: number;
+   /**
+    * Warehouse bytes this query SCANNED, when the backend reports it
+    * (BigQuery today) — not bytes billed. Null means "not reported",
+    * including a storage-served query; never read it as zero cost without
+    * checking `servedFrom`. Named after Malloy's `runStats.queryCostBytes`,
+    * which it carries verbatim.
+    */
+   queryCostBytes: number | null;
+}
 
 /**
  * A non-fatal render-tag finding from {@link Model.validateRenderTags}: an issue
@@ -5345,10 +5392,16 @@ export class Model {
    /**
     * Run a query against this model: a named view on a source, a named
     * query, or ad-hoc Malloy text. Traced as one `publisher.query` span.
+    *
+    * `privileges` relaxes governance checks and defaults to none; only an
+    * adapter that decided the caller holds one passes it.
     */
-   public async getQueryResults(
-      ...args: Parameters<Model["runQueryResults"]>
-   ): ReturnType<Model["runQueryResults"]> {
+   public async runQuery(
+      // Receives what the query learned for the access record; see `QueryAudit`.
+      audit: QueryAudit,
+      request: QueryRequest,
+      privileges: QueryPrivileges = QueryPrivileges.none,
+   ): Promise<ModelQueryResults> {
       return withSpan(
          "publisher.query",
          {
@@ -5356,7 +5409,11 @@ export class Model {
             "malloy.model.path": this.modelPath,
          },
          async (span) => {
-            const result = await this.runQueryResults(...args);
+            const result = await this.runQueryResults(
+               audit,
+               request,
+               privileges,
+            );
             if (result.servedFrom)
                span.setAttribute("publisher.served_from", result.servedFrom);
             return result;
@@ -5364,8 +5421,12 @@ export class Model {
       );
    }
 
-   private async runQueryResults(
-      // Receives what the query learned for the access record; see `QueryAudit`.
+   /**
+    * {@link runQuery} with positional arguments, kept for callers written
+    * against it (malloy-code-server passes the first four). New code calls
+    * {@link runQuery}.
+    */
+   public async getQueryResults(
       audit: QueryAudit,
       sourceName?: string,
       queryName?: string,
@@ -5373,78 +5434,49 @@ export class Model {
       filterParams?: FilterParams,
       bypassFilters?: boolean,
       givens?: Record<string, GivenValue>,
-      // Passed to `runnable.run` so a query timeout (`runWithQueryTimeout`)
-      // cancels the work in flight. `undefined` means no timeout.
       abortSignal?: AbortSignal,
-      /**
-       * Per-query metadata inputs from the request boundary (see
-       * {@link ModelQueryMetadataInput}). Omitting it still tags the query with
-       * the server context; what is lost is the caller's own properties, the
-       * connection default, and the correlation id.
-       */
       queryMetadataInput?: ModelQueryMetadataInput,
-      /**
-       * Which shape the caller will send, so exactly that one is built and
-       * measured: `"compact"` (the `compactJson` rows) or `"full"` (the wrapped
-       * result). Every production caller passes it.
-       */
       responseShape: "full" | "compact" = "full",
-      /**
-       * Skip `#(authorize)` gate evaluation — the private data-management path
-       * (the router's `dataManagementQuery`). Disables ONLY authorize gates;
-       * `where:`, `#(filter)` and {@link bypassFilters} are untouched. Never
-       * settable from the ingress-exposed surface: `/private/**` is not routed
-       * externally and the router pins an M2M identity before forwarding.
-       */
       bypassAuthorize = false,
-      /**
-       * Lift the package's surface for this request (like `queryableSources:
-       * "all"`), for package editors; the gateway decides who that is. Gates
-       * still apply: this lifts curation, never the lock.
-       */
       includeHiddenFilesAndSources = false,
-   ): Promise<{
-      result: Malloy.Result;
-      /**
-       * The JSON of the `responseShape` asked for, built once. Callers should
-       * send this string: it is the bytes the byte cap measured, and a payload
-       * too large to serialize surfaces here as a 413 rather than a bare 500.
-       */
-      serializedResult: string;
-      compactResult: QueryData;
-      modelInfo: Malloy.ModelInfo;
-      dataStyles: DataStyles;
-      /** Row cap pushed into the SQL: the query's own LIMIT, else the default. */
-      rowLimit: number;
-      /** Which of those two the cap came from. */
-      rowLimitSource: QueryRowLimitSource;
-      /**
-       * The `query_id` property attached to this query's statements, which is the
-       * caller's join key into the backend's own query record. Null when no
-       * metadata was attached.
-       */
-      queryCorrelationId: string | null;
-      /**
-       * How the answer was produced once the query reached the storage routing
-       * decision; null when it never had a storage binding to consider. See
-       * {@link ServedFrom} — `live_fallback` is a SUCCESS answered by the live
-       * warehouse, so a caller must not read it as a storage hit.
-       */
-      servedFrom: ServedFrom | null;
-      /**
-       * Wall-clock ms from query handling through execution, excluding
-       * serialization and transport; the span the query histogram records.
-       */
-      executionTimeMs: number;
-      /**
-       * Warehouse bytes this query SCANNED, when the backend reports it
-       * (BigQuery today) — not bytes billed. Null means "not reported",
-       * including a storage-served query; never read it as zero cost without
-       * checking `servedFrom`. Named after Malloy's `runStats.queryCostBytes`,
-       * which it carries verbatim.
-       */
-      queryCostBytes: number | null;
-   }> {
+   ): Promise<ModelQueryResults> {
+      return this.runQuery(
+         audit,
+         {
+            sourceName,
+            queryName,
+            query,
+            filterParams,
+            givens,
+            abortSignal,
+            queryMetadataInput,
+            responseShape,
+         },
+         QueryPrivileges.of({
+            bypassFilters,
+            bypassAuthorize,
+            includeHiddenFilesAndSources,
+         }),
+      );
+   }
+
+   private async runQueryResults(
+      audit: QueryAudit,
+      request: QueryRequest,
+      privileges: QueryPrivileges,
+   ): Promise<ModelQueryResults> {
+      const {
+         sourceName,
+         queryName,
+         query,
+         filterParams,
+         givens,
+         abortSignal,
+         queryMetadataInput,
+      } = request;
+      const responseShape = request.responseShape ?? "full";
+      const { bypassFilters, bypassAuthorize, includeHiddenFilesAndSources } =
+         privileges;
       const startTime = performance.now();
       if (this.compilationError) {
          // Re-throw MalloyError and ModelCompilationError as-is (they map to 400/424)

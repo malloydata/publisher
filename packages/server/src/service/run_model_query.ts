@@ -71,6 +71,10 @@ export async function runModelQuery(
 ) {
    const outcome = await runWithQueryTimeout(
       (abortSignal) =>
+         // The positional form of `Model.runQuery`, which splits these into a
+         // `QueryRequest` and `QueryPrivileges`. Kept here because the route
+         // specs' model doubles (access_record_routes, execute_query_tool,
+         // query.controller) stub `getQueryResults` by position.
          model.getQueryResults(
             audit,
             request.sourceName,
