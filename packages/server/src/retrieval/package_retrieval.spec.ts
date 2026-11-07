@@ -16,7 +16,7 @@ import {
    parsePackageRetrieval,
    readPackageRetrieval,
    resolvePromptPath,
-   sourceSummarySettingsOf,
+   sourceSummaryConfigOf,
 } from "./package_retrieval";
 
 describe("publisher.json retrieval block", () => {
@@ -345,7 +345,7 @@ describe("keys of the retrieval block that an earlier release read", () => {
 
 describe("retrieval.sourceSummary", () => {
    it("defaults to auto and parses enabled", () => {
-      expect(sourceSummarySettingsOf(DEFAULT_PACKAGE_RETRIEVAL)).toEqual({
+      expect(sourceSummaryConfigOf(DEFAULT_PACKAGE_RETRIEVAL)).toEqual({
          enabled: "auto",
       });
       expect("sourceSummary" in parsePackageRetrieval({})).toBe(false);

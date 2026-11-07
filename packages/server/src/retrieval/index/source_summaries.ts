@@ -28,10 +28,18 @@
 import { createHash } from "crypto";
 import { logger } from "../../logger";
 import {
+   DEFAULT_SOURCE_SUMMARY_INSTRUCTIONS,
    ONE_LINE_SUMMARY_MAX_CHARS,
    renderSourceSummaryUserPrompt,
+   sourceSummaryPromptHash,
    undocumentedOneLine,
 } from "../llm/prompts/source_summary";
+import { activeLlmSettings, getChatModel } from "../llm/active";
+import type { Package } from "../../service/package";
+import {
+   DEFAULT_PACKAGE_RETRIEVAL,
+   sourceSummaryConfigOf,
+} from "../package_retrieval";
 import type { ChatModel } from "../llm/types";
 import { publicMessage } from "../../service/http_retry";
 import type { DuckDBConnection } from "../../storage/duckdb/DuckDBConnection";
@@ -94,6 +102,55 @@ export interface SourceSummarySettings {
     * decides how much of the field list the model sees.
     */
    maxPromptChars?: number;
+}
+
+/**
+ * The summary settings for a package instance, or undefined when summaries
+ * will not be generated: the package turns them off, or the operator has no
+ * LLM configured (which is how `auto` quietly acts as off). A stand-in
+ * without the accessor gets the defaults.
+ *
+ * It combines the package's own `retrieval.sourceSummary` (publisher.json,
+ * a SourceSummaryConfig) with what the operator allows
+ * (publisher.config.json). Resolved once per call from the loaded package,
+ * never derived in a loop.
+ */
+export function resolveSourceSummarySettings(
+   pkg: Package | undefined,
+): SourceSummarySettings | undefined {
+   const retrieval =
+      (pkg as Partial<Package> | undefined)?.getRetrievalSettings?.() ??
+      DEFAULT_PACKAGE_RETRIEVAL;
+   if (sourceSummaryConfigOf(retrieval).enabled === false) return undefined;
+   const llm = activeLlmSettings();
+   if (!llm) return undefined;
+   let chat;
+   try {
+      chat = getChatModel();
+   } catch (error) {
+      logger.warn(
+         "[get_context] The LLM is configured but its client could not be built; source summaries are off",
+         { error: error instanceof Error ? error.message : String(error) },
+      );
+      return undefined;
+   }
+   if (!chat) return undefined;
+   const instructions =
+      retrieval.prompts.sourceSummary?.text ??
+      DEFAULT_SOURCE_SUMMARY_INSTRUCTIONS;
+   return {
+      chat,
+      modelId: `${llm.provider}/${llm.model}`,
+      instructions,
+      promptHash: sourceSummaryPromptHash(instructions),
+      concurrency: llm.concurrency,
+      maxCallsPerSync: llm.maxCallsPerSync,
+      // A local model runs at a small default context window and cuts a longer
+      // prompt without saying so; see SOURCE_SUMMARY_SMALL_CONTEXT_PROMPT_CHARS.
+      ...(llm.provider === "ollama"
+         ? { maxPromptChars: SOURCE_SUMMARY_SMALL_CONTEXT_PROMPT_CHARS }
+         : {}),
+   };
 }
 
 // ---------------------------------------------------------------------------

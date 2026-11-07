@@ -42,9 +42,9 @@ import {
    currentSummaryHashes,
    loadSourceSummaries,
    resolveSourceSummaries,
+   resolveSourceSummarySettings,
    summaryKey,
 } from "./source_summaries";
-import { resolveSourceSummarySettings } from "./source_summary_settings";
 
 const FILES = {
    "a.malloy": `
