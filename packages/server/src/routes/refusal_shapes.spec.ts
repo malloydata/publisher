@@ -8,8 +8,10 @@
  * quietly change them.
  */
 
-import { describe, expect, it } from "bun:test";
+import { describe, expect, it, spyOn } from "bun:test";
 import request from "supertest";
+import { logger } from "../logger";
+import { linesMentioning } from "../test_helpers/log_lines";
 import { API_PREFIX, buildRouteApp } from "../test_helpers/route_app";
 
 const app = buildRouteApp();
@@ -136,4 +138,24 @@ describe("a notebook cell refusal answers { error }", () => {
          );
       },
    );
+});
+
+it("a malformed param is logged once as a refusal", async () => {
+   const warn = spyOn(logger, "warn");
+   try {
+      await request(app).get(
+         `${API_PREFIX}/environments/refusal-marker?reload=1`,
+      );
+      expect(linesMentioning(warn, "refusal-marker")).toEqual([
+         [
+            "Request refused",
+            expect.objectContaining({
+               path: `${API_PREFIX}/environments/refusal-marker`,
+               status: 400,
+            }),
+         ],
+      ]);
+   } finally {
+      warn.mockRestore();
+   }
 });

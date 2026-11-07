@@ -43,10 +43,10 @@ import {
 import { timeReportRead } from "../report_metrics";
 import {
    assertListingTakesNoVersionId,
-   booleanParamOr400,
+   booleanParam,
    optionalBooleanParam,
    queryVersionIdOf,
-   setCollectionReloadError,
+   assertNoCollectionReload,
 } from "../route_params";
 import { processStorageDestinationsOrThrow } from "../service/connection_config";
 import type { EnvironmentStore } from "../service/environment_store";
@@ -252,14 +252,11 @@ function registerEnvironmentRoutes(
 ): void {
    app.get(
       `${apiPrefix}/environments`,
-      apiRoute((req, res) => {
-         if (req.query.reload !== undefined) {
-            setCollectionReloadError(
-               res,
-               `${apiPrefix}/environments/{environmentName}`,
-            );
-            return;
-         }
+      apiRoute((req) => {
+         assertNoCollectionReload(
+            req,
+            `${apiPrefix}/environments/{environmentName}`,
+         );
          return environmentStore.listEnvironments();
       }),
    );
@@ -281,9 +278,8 @@ function registerEnvironmentRoutes(
 
    app.get(
       env,
-      apiRoute(async (req, res) => {
-         const reload = booleanParamOr400(req, res, "reload");
-         if (reload === undefined) return;
+      apiRoute(async (req) => {
+         const reload = booleanParam(req, "reload");
          const environment = await environmentStore.getEnvironment(
             req.params.environmentName,
             reload,
@@ -487,15 +483,13 @@ function registerConnectionRoutes(
 /**
  * The `givens` query parameter, a JSON object the trusted tier sets for the
  * caller, so a model read can omit sources the caller cannot enter (see
- * service/discovery_lock.ts). `null` when absent; `undefined` after a 400
- * has been sent for one that is not a JSON object.
+ * service/discovery_lock.ts). `undefined` when absent.
  */
-function givensParamOr400(
+function givensParam(
    req: express.Request,
-   res: express.Response,
-): Record<string, GivenValue> | null | undefined {
+): Record<string, GivenValue> | undefined {
    const raw = req.query.givens;
-   if (raw === undefined) return null;
+   if (raw === undefined) return undefined;
    if (typeof raw === "string") {
       try {
          const parsed = JSON.parse(raw) as unknown;
@@ -506,11 +500,7 @@ function givensParamOr400(
          // fall through to the 400
       }
    }
-   res.status(400).json({
-      code: 400,
-      message: "givens must be one JSON object",
-   });
-   return undefined;
+   throw new BadRequestError("givens must be one JSON object");
 }
 
 function registerPackageRoutes(
@@ -531,23 +521,19 @@ function registerPackageRoutes(
 
    app.get(
       `${env}/packages`,
-      apiRoute((req, res) => {
+      apiRoute((req) => {
          assertListingTakesNoVersionId(req.query.versionId);
-         if (req.query.reload !== undefined) {
-            setCollectionReloadError(
-               res,
-               `${apiPrefix}/environments/${req.params.environmentName}/packages/{packageName}`,
-            );
-            return;
-         }
+         assertNoCollectionReload(
+            req,
+            `${apiPrefix}/environments/${req.params.environmentName}/packages/{packageName}`,
+         );
          return packageController.listPackages(req.params.environmentName);
       }),
    );
    app.post(
       `${env}/packages`,
-      apiRoute(async (req, res) => {
-         const dryRun = booleanParamOr400(req, res, "dryRun");
-         if (dryRun === undefined) return undefined;
+      apiRoute(async (req) => {
+         const dryRun = booleanParam(req, "dryRun");
          if (dryRun) {
             return packageController.dryRunPackage(
                req.params.environmentName,
@@ -572,9 +558,8 @@ function registerPackageRoutes(
    registerVersionRoutes(app, pkg, versionController);
    app.get(
       pkg,
-      apiRoute((req, res) => {
-         const reload = booleanParamOr400(req, res, "reload");
-         if (reload === undefined) return;
+      apiRoute((req) => {
+         const reload = booleanParam(req, "reload");
          return packageController.getPackage(
             req.params.environmentName,
             req.params.packageName,
@@ -607,13 +592,11 @@ function registerPackageRoutes(
 
    app.get(
       `${pkg}/models`,
-      apiRoute((req, res) => {
-         const includeHiddenFilesAndSources = booleanParamOr400(
+      apiRoute((req) => {
+         const includeHiddenFilesAndSources = booleanParam(
             req,
-            res,
             "includeHiddenFilesAndSources",
          );
-         if (includeHiddenFilesAndSources === undefined) return;
          return modelController.listModels(
             req.params.environmentName,
             req.params.packageName,
@@ -623,15 +606,12 @@ function registerPackageRoutes(
    );
    app.get(
       `${pkg}/models/*?`,
-      apiRoute((req, res) => {
-         const includeHiddenFilesAndSources = booleanParamOr400(
+      apiRoute((req) => {
+         const includeHiddenFilesAndSources = booleanParam(
             req,
-            res,
             "includeHiddenFilesAndSources",
          );
-         if (includeHiddenFilesAndSources === undefined) return;
-         const givens = givensParamOr400(req, res);
-         if (givens === undefined) return;
+         const givens = givensParam(req);
          return modelController.getModel(
             req.params.environmentName,
             req.params.packageName,
@@ -697,13 +677,11 @@ function registerPackageRoutes(
    ];
    app.get(
       `${pkg}/entities`,
-      apiRoute((req, res) => {
-         const includeHiddenFilesAndSources = booleanParamOr400(
+      apiRoute((req) => {
+         const includeHiddenFilesAndSources = booleanParam(
             req,
-            res,
             "includeHiddenFilesAndSources",
          );
-         if (includeHiddenFilesAndSources === undefined) return;
          return packageController.getPackageEntities(
             req.params.environmentName,
             req.params.packageName,
@@ -992,8 +970,7 @@ function registerMaterializationRoutes(
    app.delete(
       materialization,
       apiRoute(async (req, res) => {
-         const dropTables = booleanParamOr400(req, res, "dropTables");
-         if (dropTables === undefined) return;
+         const dropTables = booleanParam(req, "dropTables");
          await materializationController.deleteMaterialization(
             req.params.environmentName,
             req.params.packageName,

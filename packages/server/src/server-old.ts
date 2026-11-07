@@ -37,10 +37,10 @@ import { queryConcurrency } from "./query_concurrency";
 import { normalizeQueryArray } from "./query_param_utils";
 import {
    assertListingTakesNoVersionId,
-   booleanParamOr400,
+   booleanParam,
    optionalBooleanParam,
    queryVersionIdOf,
-   setCollectionReloadError,
+   assertNoCollectionReload,
 } from "./route_params";
 import { processStorageDestinationsOrThrow } from "./service/connection_config";
 import { EnvironmentStore } from "./service/environment_store";
@@ -103,14 +103,11 @@ export function registerLegacyRoutes(
    // ── projects (== environments) ──────────────────────────────────────────
    app.get(
       `${LEGACY_API_PREFIX}/projects`,
-      apiRoute(async (req, res) => {
-         if (req.query.reload !== undefined) {
-            setCollectionReloadError(
-               res,
-               `${LEGACY_API_PREFIX}/projects/{projectName}`,
-            );
-            return;
-         }
+      apiRoute(async (req) => {
+         assertNoCollectionReload(
+            req,
+            `${LEGACY_API_PREFIX}/projects/{projectName}`,
+         );
          return environmentStore.listEnvironments();
       }),
    );
@@ -131,11 +128,8 @@ export function registerLegacyRoutes(
 
    app.get(
       `${LEGACY_API_PREFIX}/projects/:projectName`,
-      apiRoute(async (req, res) => {
-         const reload = booleanParamOr400(req, res, "reload");
-         if (reload === undefined) {
-            return;
-         }
+      apiRoute(async (req) => {
+         const reload = booleanParam(req, "reload");
          const environment = await environmentStore.getEnvironment(
             req.params.projectName,
             reload,
@@ -433,15 +427,12 @@ export function registerLegacyRoutes(
    // ── packages ────────────────────────────────────────────────────────────
    app.get(
       `${LEGACY_API_PREFIX}/projects/:projectName/packages`,
-      apiRoute(async (req, res) => {
+      apiRoute(async (req) => {
          assertListingTakesNoVersionId(req.query.versionId);
-         if (req.query.reload !== undefined) {
-            setCollectionReloadError(
-               res,
-               `${LEGACY_API_PREFIX}/projects/${req.params.projectName}/packages/{packageName}`,
-            );
-            return;
-         }
+         assertNoCollectionReload(
+            req,
+            `${LEGACY_API_PREFIX}/projects/${req.params.projectName}/packages/{packageName}`,
+         );
          return packageController.listPackages(req.params.projectName);
       }),
    );
@@ -459,11 +450,8 @@ export function registerLegacyRoutes(
 
    app.get(
       `${LEGACY_API_PREFIX}/projects/:projectName/packages/:packageName`,
-      apiRoute(async (req, res) => {
-         const reload = booleanParamOr400(req, res, "reload");
-         if (reload === undefined) {
-            return;
-         }
+      apiRoute(async (req) => {
+         const reload = booleanParam(req, "reload");
          return packageController.getPackage(
             req.params.projectName,
             req.params.packageName,
@@ -730,8 +718,7 @@ export function registerLegacyRoutes(
    app.delete(
       `${LEGACY_API_PREFIX}/projects/:projectName/packages/:packageName/materializations/:materializationId`,
       apiRoute(async (req, res) => {
-         const dropTables = booleanParamOr400(req, res, "dropTables");
-         if (dropTables === undefined) return;
+         const dropTables = booleanParam(req, "dropTables");
          await materializationController.deleteMaterialization(
             req.params.projectName,
             req.params.packageName,
