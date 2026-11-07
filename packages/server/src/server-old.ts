@@ -16,8 +16,7 @@
  *   the `environments`-keyed payload.
  */
 
-import type { Express } from "express";
-import { ParsedQs } from "qs";
+import type { Express, Request } from "express";
 import { CompileController } from "./controller/compile.controller";
 import { ConnectionController } from "./controller/connection.controller";
 import { DatabaseController } from "./controller/database.controller";
@@ -152,272 +151,161 @@ export function registerLegacyRoutes(
    );
 
    // ── connections ─────────────────────────────────────────────────────────
+   const conn = `${LEGACY_API_PREFIX}/projects/:projectName/connections/:connectionName`;
+   const pkgConn = `${LEGACY_API_PREFIX}/projects/:projectName/packages/:packageName/connections/:connectionName`;
+
    app.get(
       `${LEGACY_API_PREFIX}/projects/:projectName/connections`,
-      apiRoute(async (req) => {
-         return connectionController.listConnections(req.params.projectName);
-      }),
+      apiRoute((req) =>
+         connectionController.listConnections(req.params.projectName),
+      ),
    );
-
    app.get(
-      `${LEGACY_API_PREFIX}/projects/:projectName/connections/:connectionName`,
-      apiRoute(async (req) => {
-         return connectionController.getConnection(
+      conn,
+      apiRoute((req) =>
+         connectionController.getConnection(
             req.params.projectName,
             req.params.connectionName,
-         );
-      }),
+         ),
+      ),
    );
-
    app.post(
-      `${LEGACY_API_PREFIX}/projects/:projectName/connections/:connectionName`,
+      conn,
       apiRoute(
-         async (req) => {
-            return connectionController.addConnection(
+         (req) =>
+            connectionController.addConnection(
                req.params.projectName,
                req.params.connectionName,
                req.body,
-            );
-         },
+            ),
          { status: 201 },
       ),
    );
-
    app.patch(
-      `${LEGACY_API_PREFIX}/projects/:projectName/connections/:connectionName`,
-      apiRoute(async (req) => {
-         return connectionController.updateConnection(
+      conn,
+      apiRoute((req) =>
+         connectionController.updateConnection(
             req.params.projectName,
             req.params.connectionName,
             req.body,
-         );
-      }),
+         ),
+      ),
    );
-
    app.delete(
-      `${LEGACY_API_PREFIX}/projects/:projectName/connections/:connectionName`,
-      apiRoute(async (req) => {
-         return connectionController.deleteConnection(
+      conn,
+      apiRoute((req) =>
+         connectionController.deleteConnection(
             req.params.projectName,
             req.params.connectionName,
-         );
-      }),
+         ),
+      ),
    );
-
    // /connections/test has no project segment and is served by the main app.
 
-   app.get(
-      `${LEGACY_API_PREFIX}/projects/:projectName/connections/:connectionName/schemas`,
-      apiRoute(async (req) => {
-         return connectionController.listSchemas(
-            req.params.projectName,
-            req.params.connectionName,
-         );
-      }),
-   );
-
-   app.get(
-      `${LEGACY_API_PREFIX}/projects/:projectName/connections/:connectionName/schemas/:schemaName/tables`,
-      apiRoute(async (req) => {
-         return connectionController.listTables(
-            req.params.projectName,
-            req.params.connectionName,
-            req.params.schemaName,
-            normalizeQueryArray(req.query.tableNames),
-         );
-      }),
-   );
-
-   app.get(
-      `${LEGACY_API_PREFIX}/projects/:projectName/connections/:connectionName/schemas/:schemaName/tables/:tablePath`,
-      apiRoute(async (req) => {
-         return connectionController.getTable(
-            req.params.projectName,
-            req.params.connectionName,
-            req.params.schemaName,
-            req.params.tablePath,
-         );
-      }),
-   );
-
-   // Per-package connection routes (duckdb context)
-   app.get(
-      `${LEGACY_API_PREFIX}/projects/:projectName/packages/:packageName/connections/:connectionName/schemas`,
-      apiRoute(async (req) => {
-         return connectionController.listSchemas(
-            req.params.projectName,
-            req.params.connectionName,
-            req.params.packageName,
-         );
-      }),
-   );
-
-   app.get(
-      `${LEGACY_API_PREFIX}/projects/:projectName/packages/:packageName/connections/:connectionName/schemas/:schemaName/tables`,
-      apiRoute(async (req) => {
-         return connectionController.listTables(
-            req.params.projectName,
-            req.params.connectionName,
-            req.params.schemaName,
-            normalizeQueryArray(req.query.tableNames),
-            req.params.packageName,
-         );
-      }),
-   );
-
-   app.get(
-      `${LEGACY_API_PREFIX}/projects/:projectName/packages/:packageName/connections/:connectionName/schemas/:schemaName/tables/:tablePath`,
-      apiRoute(async (req) => {
-         return connectionController.getTable(
-            req.params.projectName,
-            req.params.connectionName,
-            req.params.schemaName,
-            req.params.tablePath,
-            req.params.packageName,
-         );
-      }),
-   );
-
-   // sqlSource runs a live DB introspection, so it is gated like the modern
-   // route; otherwise the legacy surface would be an unbounded bypass.
-   app.post(
-      `${LEGACY_API_PREFIX}/projects/:projectName/connections/:connectionName/sqlSource`,
-      queryConcurrency(),
-      apiRoute(async (req) => {
-         return connectionController.getConnectionSqlSource(
-            req.params.projectName,
-            req.params.connectionName,
-            req.body.sqlStatement as string,
-         );
-      }),
-   );
-
-   app.post(
-      `${LEGACY_API_PREFIX}/projects/:projectName/packages/:packageName/connections/:connectionName/sqlSource`,
-      queryConcurrency(),
-      apiRoute(async (req) => {
-         return connectionController.getConnectionSqlSource(
-            req.params.projectName,
-            req.params.connectionName,
-            req.body.sqlStatement as string,
-            req.params.packageName,
-         );
-      }),
-   );
-
-   // queryData (GET, removed from the modern surface) and sqlQuery (POST).
-   // queryConcurrency() applies the same per-pod cap as the modern routes;
-   // timeouts and row/byte caps are enforced by the shared controllers.
-   app.get(
-      `${LEGACY_API_PREFIX}/projects/:projectName/connections/:connectionName/queryData`,
-      queryConcurrency(),
-      apiRoute(async (req) => {
-         return connectionController.getConnectionQueryData(
-            req.params.projectName,
-            req.params.connectionName,
-            req.query.sqlStatement as string,
-            req.query.options as string,
-            undefined,
-            undefined,
-            undefined,
-            accessIdentityOf(req.headers),
-         );
-      }),
-   );
-
-   app.get(
-      `${LEGACY_API_PREFIX}/projects/:projectName/packages/:packageName/connections/:connectionName/queryData`,
-      queryConcurrency(),
-      apiRoute(async (req) => {
-         return connectionController.getConnectionQueryData(
-            req.params.projectName,
-            req.params.connectionName,
-            req.query.sqlStatement as string,
-            req.query.options as string,
-            req.params.packageName,
-            undefined,
-            undefined,
-            accessIdentityOf(req.headers),
-         );
-      }),
-   );
-
-   app.post(
-      `${LEGACY_API_PREFIX}/projects/:projectName/connections/:connectionName/sqlQuery`,
-      queryConcurrency(),
-      apiRoute(async (req) => {
-         let options: string | ParsedQs | (string | ParsedQs)[] | undefined;
-         if (req.body?.options) {
-            options = req.body.options;
-         } else {
-            options = req.query.options;
-         }
-         return connectionController.getConnectionQueryData(
-            req.params.projectName,
-            req.params.connectionName,
-            req.body.sqlStatement as string,
-            options as string,
-            undefined,
-            undefined,
-            undefined,
-            accessIdentityOf(req.headers),
-         );
-      }),
-   );
-
-   app.post(
-      `${LEGACY_API_PREFIX}/projects/:projectName/packages/:packageName/connections/:connectionName/sqlQuery`,
-      queryConcurrency(),
-      apiRoute(async (req) => {
-         let options: string | ParsedQs | (string | ParsedQs)[] | undefined;
-         if (req.body?.options) {
-            options = req.body.options;
-         } else {
-            options = req.query.options;
-         }
-         return connectionController.getConnectionQueryData(
-            req.params.projectName,
-            req.params.connectionName,
-            req.body.sqlStatement as string,
-            options as string,
-            req.params.packageName,
-            undefined,
-            undefined,
-            accessIdentityOf(req.headers),
-         );
-      }),
-   );
-
-   // sqlTemporaryTable (POST), per-project + per-package
-   app.post(
-      `${LEGACY_API_PREFIX}/projects/:projectName/connections/:connectionName/sqlTemporaryTable`,
-      queryConcurrency(),
-      apiRoute(async (req) => {
-         return connectionController.getConnectionTemporaryTable(
-            req.params.projectName,
-            req.params.connectionName,
-            req.body.sqlStatement as string,
-            undefined,
-            undefined,
-            accessIdentityOf(req.headers),
-         );
-      }),
-   );
-
-   app.post(
-      `${LEGACY_API_PREFIX}/projects/:projectName/packages/:packageName/connections/:connectionName/sqlTemporaryTable`,
-      queryConcurrency(),
-      apiRoute(async (req) => {
-         return connectionController.getConnectionTemporaryTable(
-            req.params.projectName,
-            req.params.connectionName,
-            req.body.sqlStatement as string,
-            req.params.packageName,
-            undefined,
-            accessIdentityOf(req.headers),
-         );
-      }),
-   );
+   // Each route project-wide and per package (the package's duckdb context).
+   // Unlike the modern routes these read no versionId. The SQL routes run live
+   // database work, so they are admission-controlled like a query; timeouts
+   // and row/byte caps are enforced by the shared controllers.
+   for (const [prefix, scoped] of [
+      [conn, false],
+      [pkgConn, true],
+   ] as const) {
+      const packageName = (req: Request) =>
+         scoped ? req.params.packageName : undefined;
+      app.get(
+         `${prefix}/schemas`,
+         apiRoute((req) =>
+            connectionController.listSchemas(
+               req.params.projectName,
+               req.params.connectionName,
+               packageName(req),
+            ),
+         ),
+      );
+      app.get(
+         `${prefix}/schemas/:schemaName/tables`,
+         apiRoute((req) =>
+            connectionController.listTables(
+               req.params.projectName,
+               req.params.connectionName,
+               req.params.schemaName,
+               normalizeQueryArray(req.query.tableNames),
+               packageName(req),
+            ),
+         ),
+      );
+      app.get(
+         `${prefix}/schemas/:schemaName/tables/:tablePath`,
+         apiRoute((req) =>
+            connectionController.getTable(
+               req.params.projectName,
+               req.params.connectionName,
+               req.params.schemaName,
+               req.params.tablePath,
+               packageName(req),
+            ),
+         ),
+      );
+      app.post(
+         `${prefix}/sqlSource`,
+         queryConcurrency(),
+         apiRoute((req) =>
+            connectionController.getConnectionSqlSource(
+               req.params.projectName,
+               req.params.connectionName,
+               req.body.sqlStatement as string,
+               packageName(req),
+            ),
+         ),
+      );
+      // queryData (GET) was removed from the modern surface.
+      app.get(
+         `${prefix}/queryData`,
+         queryConcurrency(),
+         apiRoute((req) =>
+            connectionController.getConnectionQueryData(
+               req.params.projectName,
+               req.params.connectionName,
+               req.query.sqlStatement as string,
+               req.query.options as string,
+               packageName(req),
+               undefined,
+               undefined,
+               accessIdentityOf(req.headers),
+            ),
+         ),
+      );
+      app.post(
+         `${prefix}/sqlQuery`,
+         queryConcurrency(),
+         apiRoute((req) =>
+            connectionController.getConnectionQueryData(
+               req.params.projectName,
+               req.params.connectionName,
+               req.body.sqlStatement as string,
+               (req.body?.options || req.query.options) as string,
+               packageName(req),
+               undefined,
+               undefined,
+               accessIdentityOf(req.headers),
+            ),
+         ),
+      );
+      app.post(
+         `${prefix}/sqlTemporaryTable`,
+         queryConcurrency(),
+         apiRoute((req) =>
+            connectionController.getConnectionTemporaryTable(
+               req.params.projectName,
+               req.params.connectionName,
+               req.body.sqlStatement as string,
+               packageName(req),
+               undefined,
+               accessIdentityOf(req.headers),
+            ),
+         ),
+      );
+   }
 
    // ── packages ────────────────────────────────────────────────────────────
    app.get(
