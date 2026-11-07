@@ -160,10 +160,10 @@ describe("access record goldens, one per decision path", () => {
 
    it("filtered: a row filter is grafted from a supplied given", async () => {
       expect(
-         await golden(
-            "run: accounts_src -> { group_by: area; aggregate: n }",
-            { ORGS: ["org1"], NOTE: "mine" } as never,
-         ),
+         await golden("run: accounts_src -> { group_by: area; aggregate: n }", {
+            ORGS: ["org1"],
+            NOTE: "mine",
+         } as never),
       ).toEqual({
          ...RECORD,
          source: "accounts_src",
@@ -220,10 +220,7 @@ describe("access record goldens, one per decision path", () => {
    });
 
    it("denied by row level: the row filter's given is unbound", async () => {
-      const record = await golden(
-         "run: accounts_src -> { aggregate: n }",
-         {},
-      );
+      const record = await golden("run: accounts_src -> { aggregate: n }", {});
       const { error, ...rest } = record;
       expect(rest).toEqual({ ...RECORD, outcome: "denied_lock", status: 403 });
       expect(typeof error).toBe("string");
