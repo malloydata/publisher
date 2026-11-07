@@ -9,10 +9,11 @@ import {
    PackageNotFoundError,
    ServiceUnavailableError,
 } from "../../errors";
+import { CompileController } from "../../controller/compile.controller";
 
 // Capture the handler registerCompileTool passes to McpServer.registerTool, so it can
-// be exercised against a mocked EnvironmentStore. The tool builds a
-// CompileController internally, which calls environment.compileSource, so the
+// be exercised against a mocked EnvironmentStore. The tool calls the
+// CompileController it is handed, which calls environment.compileSource, so the
 // mock only needs getEnvironment -> { compileSource }.
 type Content = Array<{
    type?: string;
@@ -32,7 +33,10 @@ function captureHandler(store: Partial<EnvironmentStore>): Handler {
          handler = h;
       },
    };
-   registerCompileTool(fakeServer as never, store as EnvironmentStore);
+   registerCompileTool(
+      fakeServer as never,
+      new CompileController(store as EnvironmentStore),
+   );
    if (!handler) throw new Error("handler was not registered");
    return handler;
 }
