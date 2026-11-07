@@ -37,7 +37,7 @@ import { withStatementUsage } from "./statement_usage";
  * The options prepare and run must agree on. Spread into both calls, so a key
  * the caller leaves out is left out of both.
  */
-export type PrepareOptions = NonNullable<
+type PrepareOptions = NonNullable<
    Parameters<QueryMaterializer["getPreparedResult"]>[0]
 >;
 
@@ -153,7 +153,7 @@ export function serializeWithinCaps(
 
 type ErrorClass = abstract new (...args: never[]) => Error;
 
-export interface RunErrorContext {
+interface RunErrorContext {
    packageName: string;
    modelPath: string;
    /** Prefix of the generic 400's message, e.g. `Query execution failed`. */

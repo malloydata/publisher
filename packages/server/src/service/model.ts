@@ -338,7 +338,7 @@ export interface OffSurfaceContext {
  * distinguish from a storage hit, which is exactly why it is reported
  * separately. Absent means the query never had a storage binding to consider.
  */
-export type ServedFrom = "storage" | "live_fallback";
+type ServedFrom = "storage" | "live_fallback";
 
 /**
  * A non-fatal render-tag finding from {@link Model.validateRenderTags}: an issue
