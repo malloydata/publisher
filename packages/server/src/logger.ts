@@ -150,31 +150,25 @@ export const loggerMiddleware: RequestHandler = (req, res, next) => {
       return resJson.call(res, body);
    };
    res.on("finish", () => {
-      const endTime = performance.now();
-      const durationMs = endTime - startTime;
-
-      const traceparent = req.headers["traceparent"] as string | undefined;
-      const traceId = extractTraceIdFromTraceparent(traceparent);
-
+      if (isProbePath(req.url)) return;
+      const durationMs = performance.now() - startTime;
       const logMetadata: Record<string, unknown> = {
          statusCode: res.statusCode,
+         durationMs: Math.round(durationMs * 100) / 100,
+         // The same, formatted; kept for readers of the older field.
          duration: formatDuration(durationMs),
          payload: redactSensitive(req.body),
          params: req.params,
          query: req.query,
       };
-
       if (!DISABLE_RESPONSE_LOGGING) {
          logMetadata.response = redactSensitive(res.locals.body);
       }
-
+      const traceId = traceIdOf(req);
       if (traceId) {
          logMetadata.traceId = traceId;
       }
-
-      if (!isProbePath(req.url)) {
-         logger.info(`${req.method} ${req.url}`, logMetadata);
-      }
+      logger.info(`${req.method} ${req.url}`, logMetadata);
    });
    next();
 };

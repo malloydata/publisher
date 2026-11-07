@@ -269,6 +269,7 @@ describe("loggerMiddleware", () => {
          query: {},
       });
       expect(meta?.duration).toMatch(/^\d+\.\d\dms$/);
+      expect(typeof meta?.durationMs).toBe("number");
    });
 
    it("carries the trace id of an incoming traceparent", () => {
