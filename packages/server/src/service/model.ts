@@ -37,6 +37,7 @@ import {
 import {
    AccessDeniedError,
    BadRequestError,
+   InvalidQueryRequestError,
    ConnectionError,
    ModelCompilationError,
    ModelNotFoundError,
@@ -5638,7 +5639,7 @@ export class Model {
                   status: "rejected",
                }),
             );
-            throw new BadRequestError(
+            throw new InvalidQueryRequestError(
                "Invalid query request. (Query AND !sourceName) OR (queryName AND sourceName) must be defined.",
             );
          }

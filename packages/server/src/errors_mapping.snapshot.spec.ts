@@ -28,6 +28,7 @@ import {
    internalErrorToHttpError,
    InvalidArgumentError,
    InvalidModelPathError,
+   InvalidQueryRequestError,
    InvalidStateTransitionError,
    MaterializationConflictError,
    MaterializationEligibilityError,
@@ -181,7 +182,7 @@ const CASES: Array<[string, () => unknown]> = [
    [
       "BadRequestError invalid query request",
       () =>
-         new BadRequestError(
+         new InvalidQueryRequestError(
             "Invalid query request. Query OR queryName must be defined",
          ),
    ],
