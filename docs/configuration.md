@@ -746,7 +746,9 @@ Every request is measured twice, by two different series that are easy to confus
 - `http_server_request_duration`, a histogram in **seconds** from OpenTelemetry's HTTP
   instrumentation, with semantic-convention labels (`http_request_method`,
   `http_response_status_code`, `http_route`) and OpenTelemetry's buckets, which stop at 10 s. It is
-  there for tooling that expects the standard name.
+  there for tooling that expects the standard name, and only where that instrumentation can hook
+  the server: under Node (`npx`). Under Bun (`npm start`, the Docker image) it never appears, and
+  neither does the HTTP span the traces above nest under.
 
 ### The access log
 
