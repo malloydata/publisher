@@ -17,7 +17,12 @@ export const settings = {
    shadowed: (key: SettingKey) => Settings.current().shadowed(key),
 };
 
-export { SettingError, SettingsError, type SettingSource } from "./errors";
+export {
+   describeSource,
+   SettingError,
+   SettingsError,
+   type SettingSource,
+} from "./errors";
 export { externalEnv, referencedVariable } from "./external";
 export { REGISTRY, type SettingKey, type SettingValue } from "./registry";
 export { derivedEnvName, derivedFlagName } from "./setting";

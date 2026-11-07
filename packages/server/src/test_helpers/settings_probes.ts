@@ -49,7 +49,13 @@ import {
    getPackageLoadSchemaCacheBytes,
    getPackageLoadWorkerCount,
 } from "../package_load/package_load_pool";
-import type { RetrievalLlmConfig } from "../retrieval_config";
+import {
+   getDimensionValueSettings,
+   getEgressPreset,
+   loadedRetrievalConfig,
+   setRetrievalConfig,
+   type RetrievalLlmConfig,
+} from "../retrieval_config";
 import { callerHeaderName } from "../service/access_record";
 import { catalogAdminConfig } from "../service/catalog_admin";
 import { formatReadinessLine } from "../service/environment_store";
@@ -197,7 +203,50 @@ export const PROBES: Record<string, (context: SettingsContext) => unknown> = {
    "retrieval.llm.apiKey": () =>
       getLlmSettings({ provider: "openai", model: "gpt" } as RetrievalLlmConfig)
          ?.apiKey ?? null,
+   // The block's other leaves, from the block startup assembles and
+   // validates. It throws on a block that does not validate, so a row fails.
+   "retrieval.llm.provider": (context) => llm(context)?.provider ?? null,
+   "retrieval.llm.model": (context) => llm(context)?.model ?? null,
+   "retrieval.llm.baseUrl": (context) => llm(context)?.baseUrl ?? null,
+   "retrieval.llm.projectId": (context) => llm(context)?.projectId ?? null,
+   "retrieval.llm.location": (context) => llm(context)?.location ?? null,
+   "retrieval.llm.timeoutMs": (context) => llm(context)?.timeoutMs ?? null,
+   "retrieval.llm.concurrency": (context) => llm(context)?.concurrency ?? null,
+   "retrieval.llm.maxCallsPerSync": (context) =>
+      llm(context)?.maxCallsPerSync ?? null,
+   "retrieval.llm.maxCallsPerRequest": (context) =>
+      llm(context)?.maxCallsPerRequest ?? null,
+   "retrieval.embedding.provider": (context) =>
+      getRetrievalConfig(context.serverRoot)?.embedding?.provider ?? null,
+   "retrieval.embedding.projectId": (context) =>
+      getRetrievalConfig(context.serverRoot)?.embedding?.projectId ?? null,
+   "retrieval.embedding.location": (context) =>
+      getRetrievalConfig(context.serverRoot)?.embedding?.location ?? null,
+   "retrieval.embedding.queryPrefix": (context) =>
+      getRetrievalConfig(context.serverRoot)?.embedding?.queryPrefix ?? "",
+   "retrieval.embedding.documentPrefix": (context) =>
+      getRetrievalConfig(context.serverRoot)?.embedding?.documentPrefix ?? "",
+   "retrieval.egress.preset": (context) =>
+      inForce(context, () => getEgressPreset()),
+   "retrieval.dimensionValues.enabled": (context) =>
+      inForce(context, () => getDimensionValueSettings().enabled),
 };
+
+/** The `retrieval.llm` block startup assembles and validates. */
+function llm({ serverRoot }: SettingsContext) {
+   return getRetrievalConfig(serverRoot)?.llm;
+}
+
+/** `read`, with the `retrieval` block startup assembles installed, as main_server.ts installs it. */
+function inForce<T>({ serverRoot }: SettingsContext, read: () => T): T {
+   const saved = loadedRetrievalConfig();
+   setRetrievalConfig(getRetrievalConfig(serverRoot));
+   try {
+      return read();
+   } finally {
+      setRetrievalConfig(saved);
+   }
+}
 
 /** The ports the readiness line reports, which repeat main_server.ts's reads. */
 function readiness(): { port: number; mcpPort: number } {

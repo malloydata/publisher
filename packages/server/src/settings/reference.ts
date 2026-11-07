@@ -78,9 +78,9 @@ export function withReferenceTable(doc: string): string {
  * would still count as given, and move the other with it.
  *
  * A structured setting whose leaves are settings of their own (`retrieval`)
- * is left out with its leaves. Its own parser reads the block as a whole, and
- * a block of unset leaves is not the same as no block: an `llm` without the
- * provider and model, which are not settings, is refused.
+ * is there as its leaves, each `null`. The block is assembled from every
+ * source and validated as one, and supplies its own defaults: an `llm` given
+ * its limits but no provider would be refused, so a leaf there is unset.
  */
 export function exampleConfig(): Record<string, unknown> {
    const followed = new Set(
@@ -92,10 +92,12 @@ export function exampleConfig(): Record<string, unknown> {
    );
    const example: Record<string, unknown> = {};
    for (const entry of REGISTRY) {
-      if (entry.kind === "launch" || inBlockWithLeaves(entry.key)) continue;
+      const block = validatedBlockOf(entry.key);
+      if (entry.kind === "launch" || block === entry.key) continue;
       const fallback = entry.default;
       const value =
          entry.secret ||
+         block !== undefined ||
          followed.has(entry.key) ||
          fallback === undefined ||
          typeof fallback === "function"
@@ -117,17 +119,16 @@ export function exampleConfigText(): string {
 }
 
 /**
- * Whether `key` is a structured setting whose leaves are settings of their
- * own (`retrieval`), or one of those leaves: what {@link exampleConfig} leaves
- * out.
+ * The structured setting whose leaves are settings of their own
+ * (`retrieval`), validated as one object, that `key` is or is a leaf of.
  */
-export function inBlockWithLeaves(key: string): boolean {
-   return REGISTRY.some(
+export function validatedBlockOf(key: string): string | undefined {
+   return REGISTRY.find(
       (entry) =>
          entry.kind === "structured" &&
          REGISTRY.some((other) => other.key.startsWith(`${entry.key}.`)) &&
          (key === entry.key || key.startsWith(`${entry.key}.`)),
-   );
+   )?.key;
 }
 
 /** `--help`: today's flags, with what each sets and its default. */

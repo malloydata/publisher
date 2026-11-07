@@ -5,12 +5,13 @@ import { describe, expect, it } from "bun:test";
 import fs from "fs";
 import os from "os";
 import path from "path";
+import { getRetrievalConfig } from "../config";
 import { withSettings } from "../test_helpers/settings_env";
 import { REGISTRY, Settings, type SettingKey } from ".";
 import {
    exampleConfigText,
    helpText,
-   inBlockWithLeaves,
+   validatedBlockOf,
    REFERENCE_END,
    REFERENCE_START,
    settingsLine,
@@ -109,34 +110,48 @@ describe("publisher.config.json.example", () => {
                example,
             );
       for (const entry of REGISTRY) {
-         // A launch setting decides which file is read, and `retrieval` is
-         // read as a whole block (see exampleConfig), so neither is there.
-         if (entry.kind === "launch" || inBlockWithLeaves(entry.key)) {
+         // A launch setting decides which file is read, so it is not there.
+         if (entry.kind === "launch") {
             expect(at(entry.key), entry.key).toBeUndefined();
             continue;
          }
          expect(at(entry.key), entry.key).not.toBeUndefined();
+         // A leaf of a block validated as one is unset (see exampleConfig).
+         if (validatedBlockOf(entry.key) !== undefined) {
+            expect(at(entry.key), entry.key).toSatisfy(
+               (value) =>
+                  value === null ||
+                  (entry.key === "retrieval" && typeof value === "object"),
+            );
+         }
       }
-      expect(inBlockWithLeaves("retrieval.llm.apiKey")).toBe(true);
-      expect(inBlockWithLeaves("mcp.port")).toBe(false);
+      expect(validatedBlockOf("retrieval.llm.provider")).toBe("retrieval");
+      expect(validatedBlockOf("retrieval")).toBe("retrieval");
+      expect(validatedBlockOf("mcp.port")).toBeUndefined();
    });
 
    it("changes nothing when copied in as the config, and warns about nothing", () => {
       const read = (file?: Record<string, unknown>) =>
-         withSettings(file === undefined ? {} : { file }, () => {
+         withSettings(file === undefined ? {} : { file }, ({ serverRoot }) => {
             const settings = Settings.current();
             return {
                warnings: settings.warnings.map((warning) => warning.message),
+               // `retrieval` itself is the file's block as written; what the
+               // server uses is the block assembled from it.
                values: Object.fromEntries(
-                  REGISTRY.map((entry) => [
-                     entry.key,
-                     settings.get(entry.key as SettingKey) as unknown,
-                  ]),
+                  REGISTRY.filter((entry) => entry.key !== "retrieval").map(
+                     (entry) => [
+                        entry.key,
+                        settings.get(entry.key as SettingKey) as unknown,
+                     ],
+                  ),
                ),
+               retrieval: getRetrievalConfig(serverRoot),
             };
          });
       const copied = read(JSON.parse(readExample()));
       expect(copied.warnings).toEqual([]);
+      expect(copied.retrieval).toBeUndefined();
       // `mcp.host` follows `host` when it is given, so `host` is `null`
       // there: given its own default, it would move MCP onto every interface.
       expect(copied.values["mcp.host"]).toBe("127.0.0.1");

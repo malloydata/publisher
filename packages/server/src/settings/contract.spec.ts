@@ -50,7 +50,23 @@ const KEY = { EMBEDDING_API_KEY: "sk-test" };
  * holding these embedding keys. The server runs retrieval on its defaults.
  */
 const REJECTED_RETRIEVAL = (embedding: Record<string, unknown>) => ({
-   retrieval: { llm: { provider: "bogus" }, embedding },
+   // Vertex without projectId and location: the block's own check refuses
+   // it, where every leaf alone reads.
+   retrieval: { llm: { provider: "vertex", model: "m" }, embedding },
+});
+/** An `llm` block the file holds whole. */
+const LLM = (fields: Record<string, unknown> = {}) => ({
+   retrieval: { llm: { provider: "anthropic", model: "m", ...fields } },
+});
+const VERTEX_LLM = {
+   provider: "vertex",
+   model: "m",
+   projectId: "p",
+   location: "l",
+};
+/** An `embedding` block the file holds whole. */
+const EMBEDDING = (fields: Record<string, unknown> = {}) => ({
+   retrieval: { embedding: { ...fields } },
 });
 /** The memory governor's tunables are read only with a ceiling set. */
 const CEILING = { PUBLISHER_MAX_MEMORY_BYTES: "1000000" };
@@ -2028,6 +2044,311 @@ export const CONTRACT: Record<string, Case[]> = {
          name: "whitespace only is unset",
          env: { LLM_API_KEY: "   " },
          expect: value(null),
+      },
+   ],
+   "retrieval.llm.provider": [
+      { name: "unset turns every LLM feature off", expect: value(null) },
+      { name: "the file", file: LLM(), expect: value("anthropic") },
+      {
+         name: "PUBLISHER_RETRIEVAL_LLM_PROVIDER, with the file's model",
+         env: { PUBLISHER_RETRIEVAL_LLM_PROVIDER: "openai" },
+         file: { retrieval: { llm: { model: "m" } } },
+         expect: value("openai"),
+      },
+      {
+         name: "the variable over the file",
+         env: { PUBLISHER_RETRIEVAL_LLM_PROVIDER: "ollama" },
+         file: LLM(),
+         expect: value("ollama"),
+      },
+      {
+         name: "blank is unset",
+         env: { PUBLISHER_RETRIEVAL_LLM_PROVIDER: "" },
+         file: LLM(),
+         expect: value("anthropic"),
+      },
+      {
+         name: "a variable that switches the provider is checked against the file's other fields, naming each source",
+         env: { PUBLISHER_RETRIEVAL_LLM_PROVIDER: "vertex" },
+         file: LLM(),
+         expect: fails(
+            "Given: retrieval.llm.provider from PUBLISHER_RETRIEVAL_LLM_PROVIDER; retrieval.llm.model from ",
+         ),
+      },
+      {
+         name: "not a provider",
+         env: { PUBLISHER_RETRIEVAL_LLM_PROVIDER: "cohere" },
+         expect: fails(
+            "retrieval.llm.provider from PUBLISHER_RETRIEVAL_LLM_PROVIDER",
+         ),
+      },
+      {
+         name: "not a provider, in the file",
+         file: LLM({ provider: "cohere" }),
+         expect: fails("retrieval.llm.provider from "),
+      },
+   ],
+   "retrieval.llm.model": [
+      { name: "the file", file: LLM(), expect: value("m") },
+      {
+         name: "PUBLISHER_RETRIEVAL_LLM_MODEL over the file",
+         env: { PUBLISHER_RETRIEVAL_LLM_MODEL: "m2" },
+         file: LLM(),
+         expect: value("m2"),
+      },
+      {
+         name: "from variables alone",
+         env: {
+            PUBLISHER_RETRIEVAL_LLM_PROVIDER: "anthropic",
+            PUBLISHER_RETRIEVAL_LLM_MODEL: "m3",
+         },
+         expect: value("m3"),
+      },
+      {
+         name: "a provider without one fails",
+         file: { retrieval: { llm: { provider: "anthropic" } } },
+         expect: fails("retrieval.llm.model"),
+      },
+   ],
+   "retrieval.llm.baseUrl": [
+      { name: "unset is the provider's", file: LLM(), expect: value(null) },
+      {
+         name: "the file, without its trailing slash",
+         file: LLM({ baseUrl: "http://l.example/v1/" }),
+         expect: value("http://l.example/v1"),
+      },
+      {
+         name: "PUBLISHER_RETRIEVAL_LLM_BASE_URL over the file",
+         env: { PUBLISHER_RETRIEVAL_LLM_BASE_URL: "http://v.example/v1" },
+         file: LLM({ baseUrl: "http://l.example/v1" }),
+         expect: value("http://v.example/v1"),
+      },
+      {
+         name: "openai-compatible without one fails",
+         file: LLM({ provider: "openai-compatible" }),
+         expect: fails("retrieval.llm.baseUrl"),
+      },
+      {
+         name: "openai-compatible with one from the variable",
+         env: { PUBLISHER_RETRIEVAL_LLM_BASE_URL: "http://v.example/v1" },
+         file: LLM({ provider: "openai-compatible" }),
+         expect: value("http://v.example/v1"),
+      },
+      {
+         name: "not a URL",
+         env: { PUBLISHER_RETRIEVAL_LLM_BASE_URL: "nowhere" },
+         file: LLM(),
+         expect: fails("retrieval.llm.baseUrl"),
+      },
+   ],
+   "retrieval.llm.projectId": [
+      {
+         name: "the file",
+         file: { retrieval: { llm: VERTEX_LLM } },
+         expect: value("p"),
+      },
+      {
+         name: "PUBLISHER_RETRIEVAL_LLM_PROJECT_ID over the file",
+         env: { PUBLISHER_RETRIEVAL_LLM_PROJECT_ID: "p2" },
+         file: { retrieval: { llm: VERTEX_LLM } },
+         expect: value("p2"),
+      },
+      {
+         name: "vertex without one fails",
+         file: LLM({ provider: "vertex", location: "l" }),
+         expect: fails("needs projectId and location"),
+      },
+   ],
+   "retrieval.llm.location": [
+      {
+         name: "the file",
+         file: { retrieval: { llm: VERTEX_LLM } },
+         expect: value("l"),
+      },
+      {
+         name: "PUBLISHER_RETRIEVAL_LLM_LOCATION completes the file's vertex block",
+         env: { PUBLISHER_RETRIEVAL_LLM_LOCATION: "europe-west4" },
+         file: LLM({ provider: "vertex", projectId: "p" }),
+         expect: value("europe-west4"),
+      },
+   ],
+   "retrieval.llm.timeoutMs": [
+      { name: "no provider, so no LLM", expect: value(null) },
+      { name: "unset, with a provider", file: LLM(), expect: value(30000) },
+      { name: "the file", file: LLM({ timeoutMs: 1000 }), expect: value(1000) },
+      {
+         name: "PUBLISHER_RETRIEVAL_LLM_TIMEOUT_MS over the file",
+         env: { PUBLISHER_RETRIEVAL_LLM_TIMEOUT_MS: "2000" },
+         file: LLM({ timeoutMs: 1000 }),
+         expect: value(2000),
+      },
+      {
+         name: "zero",
+         env: { PUBLISHER_RETRIEVAL_LLM_TIMEOUT_MS: "0" },
+         file: LLM(),
+         expect: fails("PUBLISHER_RETRIEVAL_LLM_TIMEOUT_MS"),
+      },
+      {
+         name: "not a number",
+         env: { PUBLISHER_RETRIEVAL_LLM_TIMEOUT_MS: "soon" },
+         file: LLM(),
+         expect: fails("PUBLISHER_RETRIEVAL_LLM_TIMEOUT_MS"),
+      },
+   ],
+   "retrieval.llm.concurrency": [
+      { name: "unset, with a provider", file: LLM(), expect: value(4) },
+      {
+         name: "PUBLISHER_RETRIEVAL_LLM_CONCURRENCY",
+         env: { PUBLISHER_RETRIEVAL_LLM_CONCURRENCY: "8" },
+         file: LLM(),
+         expect: value(8),
+      },
+      {
+         name: "zero",
+         file: LLM({ concurrency: 0 }),
+         expect: fails("retrieval.llm.concurrency"),
+      },
+   ],
+   "retrieval.llm.maxCallsPerSync": [
+      { name: "unset, with a provider", file: LLM(), expect: value(300) },
+      {
+         name: "PUBLISHER_RETRIEVAL_LLM_MAX_CALLS_PER_SYNC",
+         env: { PUBLISHER_RETRIEVAL_LLM_MAX_CALLS_PER_SYNC: "50" },
+         file: LLM(),
+         expect: value(50),
+      },
+      {
+         name: "not a number",
+         env: { PUBLISHER_RETRIEVAL_LLM_MAX_CALLS_PER_SYNC: "many" },
+         file: LLM(),
+         expect: fails("PUBLISHER_RETRIEVAL_LLM_MAX_CALLS_PER_SYNC"),
+      },
+   ],
+   "retrieval.llm.maxCallsPerRequest": [
+      { name: "unset, with a provider", file: LLM(), expect: value(20) },
+      {
+         name: "the file",
+         file: LLM({ maxCallsPerRequest: 5 }),
+         expect: value(5),
+      },
+      {
+         name: "PUBLISHER_RETRIEVAL_LLM_MAX_CALLS_PER_REQUEST over the file",
+         env: { PUBLISHER_RETRIEVAL_LLM_MAX_CALLS_PER_REQUEST: "10" },
+         file: LLM({ maxCallsPerRequest: 5 }),
+         expect: value(10),
+      },
+   ],
+   "retrieval.embedding.provider": [
+      { name: "unset", expect: value(null) },
+      {
+         name: "the file",
+         file: EMBEDDING({ provider: "ollama", model: "nomic-embed-text" }),
+         expect: value("ollama"),
+      },
+      {
+         name: "PUBLISHER_RETRIEVAL_EMBEDDING_PROVIDER, with the file's model",
+         env: { PUBLISHER_RETRIEVAL_EMBEDDING_PROVIDER: "google" },
+         file: EMBEDDING({ model: "gemini-embedding-001" }),
+         expect: value("google"),
+      },
+      {
+         name: "a provider that needs a model, with only an old EMBEDDING_MODEL, fails naming it",
+         env: {
+            PUBLISHER_RETRIEVAL_EMBEDDING_PROVIDER: "google",
+            EMBEDDING_MODEL: "text-embedding-3-small",
+         },
+         expect: fails(
+            "retrieval.embedding.model from EMBEDDING_MODEL, which a google or vertex provider does not read",
+         ),
+      },
+      {
+         name: "anthropic has no embeddings API",
+         env: { PUBLISHER_RETRIEVAL_EMBEDDING_PROVIDER: "anthropic" },
+         expect: fails("PUBLISHER_RETRIEVAL_EMBEDDING_PROVIDER"),
+      },
+   ],
+   "retrieval.embedding.projectId": [
+      {
+         name: "PUBLISHER_RETRIEVAL_EMBEDDING_PROJECT_ID completes the file's vertex block",
+         env: { PUBLISHER_RETRIEVAL_EMBEDDING_PROJECT_ID: "p" },
+         file: EMBEDDING({ provider: "vertex", model: "e", location: "l" }),
+         expect: value("p"),
+      },
+      {
+         name: "vertex without one fails",
+         file: EMBEDDING({ provider: "vertex", model: "e", location: "l" }),
+         expect: fails("needs projectId and location"),
+      },
+   ],
+   "retrieval.embedding.location": [
+      {
+         name: "the file",
+         file: EMBEDDING({
+            provider: "vertex",
+            model: "e",
+            projectId: "p",
+            location: "l",
+         }),
+         expect: value("l"),
+      },
+   ],
+   "retrieval.embedding.queryPrefix": [
+      { name: "unset", expect: value("") },
+      {
+         name: "the file, its trailing space kept",
+         file: EMBEDDING({ queryPrefix: "search_query: " }),
+         expect: value("search_query: "),
+      },
+      {
+         name: "PUBLISHER_RETRIEVAL_EMBEDDING_QUERY_PREFIX, its trailing space kept",
+         env: { PUBLISHER_RETRIEVAL_EMBEDDING_QUERY_PREFIX: "q: " },
+         expect: value("q: "),
+      },
+   ],
+   "retrieval.embedding.documentPrefix": [
+      { name: "unset", expect: value("") },
+      {
+         name: "PUBLISHER_RETRIEVAL_EMBEDDING_DOCUMENT_PREFIX over the file",
+         env: { PUBLISHER_RETRIEVAL_EMBEDDING_DOCUMENT_PREFIX: "d: " },
+         file: EMBEDDING({ documentPrefix: "search_document: " }),
+         expect: value("d: "),
+      },
+   ],
+   "retrieval.egress.preset": [
+      { name: "unset", expect: value("default") },
+      {
+         name: "the file",
+         file: { retrieval: { egress: { preset: "full" } } },
+         expect: value("full"),
+      },
+      {
+         name: "PUBLISHER_RETRIEVAL_EGRESS_PRESET",
+         env: { PUBLISHER_RETRIEVAL_EGRESS_PRESET: "full" },
+         expect: value("full"),
+      },
+      {
+         name: "not a preset",
+         env: { PUBLISHER_RETRIEVAL_EGRESS_PRESET: "all" },
+         expect: fails("PUBLISHER_RETRIEVAL_EGRESS_PRESET"),
+      },
+   ],
+   "retrieval.dimensionValues.enabled": [
+      { name: "unset", expect: value(true) },
+      {
+         name: "the file",
+         file: { retrieval: { dimensionValues: { enabled: false } } },
+         expect: value(false),
+      },
+      {
+         name: "PUBLISHER_RETRIEVAL_DIMENSION_VALUES_ENABLED over the file",
+         env: { PUBLISHER_RETRIEVAL_DIMENSION_VALUES_ENABLED: "false" },
+         file: { retrieval: { dimensionValues: { enabled: true } } },
+         expect: value(false),
+      },
+      {
+         name: "a string in the file is still refused",
+         file: { retrieval: { dimensionValues: { enabled: "false" } } },
+         expect: fails("retrieval.dimensionValues.enabled"),
       },
    ],
 };

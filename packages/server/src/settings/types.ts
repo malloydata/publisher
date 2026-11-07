@@ -228,12 +228,20 @@ export class ListType extends SettingType<string[]> {
    }
 }
 
-/** Any text, trimmed. */
+/** Any text, trimmed unless the spaces are part of it. */
 export class StringType extends SettingType<string> {
    readonly expected = "a string";
 
+   /**
+    * @param trim false for text whose edges matter: an embedding prefix
+    *    (`"search_query: "`) is sent as written.
+    */
+   constructor(readonly trim = true) {
+      super();
+   }
+
    fromString(raw: string): string {
-      return raw.trim();
+      return this.trim ? raw.trim() : raw;
    }
 }
 
@@ -261,5 +269,6 @@ export const oneOf = <const V extends string>(values: readonly V[]) =>
    new EnumType(values);
 export const list = (options?: { ordered?: boolean }) =>
    new ListType(options?.ordered ?? true);
-export const string = () => new StringType();
+export const string = (options?: { trim?: boolean }) =>
+   new StringType(options?.trim ?? true);
 export const structured = () => new StructuredType();

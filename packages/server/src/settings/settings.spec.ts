@@ -114,6 +114,29 @@ const DESIGN_VARIABLES: Partial<Record<SettingKey, string>> = {
    "retrieval.embedding.connectionSchemaIndexingEnabled":
       "PUBLISHER_RETRIEVAL_EMBEDDING_CONNECTION_SCHEMA_INDEXING_ENABLED",
    "retrieval.llm.apiKey": "PUBLISHER_RETRIEVAL_LLM_API_KEY",
+   // "The other retrieval keys ... keep their file paths and gain derived
+   // variables and flags."
+   "retrieval.llm.provider": "PUBLISHER_RETRIEVAL_LLM_PROVIDER",
+   "retrieval.llm.model": "PUBLISHER_RETRIEVAL_LLM_MODEL",
+   "retrieval.llm.baseUrl": "PUBLISHER_RETRIEVAL_LLM_BASE_URL",
+   "retrieval.llm.projectId": "PUBLISHER_RETRIEVAL_LLM_PROJECT_ID",
+   "retrieval.llm.location": "PUBLISHER_RETRIEVAL_LLM_LOCATION",
+   "retrieval.llm.timeoutMs": "PUBLISHER_RETRIEVAL_LLM_TIMEOUT_MS",
+   "retrieval.llm.concurrency": "PUBLISHER_RETRIEVAL_LLM_CONCURRENCY",
+   "retrieval.llm.maxCallsPerSync":
+      "PUBLISHER_RETRIEVAL_LLM_MAX_CALLS_PER_SYNC",
+   "retrieval.llm.maxCallsPerRequest":
+      "PUBLISHER_RETRIEVAL_LLM_MAX_CALLS_PER_REQUEST",
+   "retrieval.embedding.provider": "PUBLISHER_RETRIEVAL_EMBEDDING_PROVIDER",
+   "retrieval.embedding.projectId": "PUBLISHER_RETRIEVAL_EMBEDDING_PROJECT_ID",
+   "retrieval.embedding.location": "PUBLISHER_RETRIEVAL_EMBEDDING_LOCATION",
+   "retrieval.embedding.queryPrefix":
+      "PUBLISHER_RETRIEVAL_EMBEDDING_QUERY_PREFIX",
+   "retrieval.embedding.documentPrefix":
+      "PUBLISHER_RETRIEVAL_EMBEDDING_DOCUMENT_PREFIX",
+   "retrieval.egress.preset": "PUBLISHER_RETRIEVAL_EGRESS_PRESET",
+   "retrieval.dimensionValues.enabled":
+      "PUBLISHER_RETRIEVAL_DIMENSION_VALUES_ENABLED",
 };
 
 /** The flags the design's tables name outright. */

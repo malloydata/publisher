@@ -19,9 +19,9 @@ Pass `--config <path>` to point the server at a specific `publisher.config.json`
 
 [`publisher.config.json.example`](../publisher.config.json.example) lists every setting the file can
 hold, at its key, with its default, or `null` where it has none, so a copy of it changes nothing; keep
-the keys you change. It leaves out the launch settings, which decide which file is read, and the
-`retrieval` block, which is read as a whole (see
-[Providers and the retrieval settings](#providers-and-the-retrieval-settings)). It is generated from
+the keys you change. It leaves out the launch settings, which decide which file is read. The
+`retrieval` block's keys are all `null` there: the block is checked as one object and supplies its own
+defaults (see [Providers and the retrieval settings](#providers-and-the-retrieval-settings)). It is generated from
 the settings registry by `bun run generate-settings-reference`, and CI fails when it falls behind.
 
 ```bash
@@ -159,6 +159,22 @@ and this table is generated from it. The names are today's; the configuration de
 | `logging.responseBodiesEnabled` | `PUBLISHER_LOGGING_RESPONSE_BODIES_ENABLED` | `--logging-response-bodies-enabled`, `--no-logging-response-bodies-enabled` | `DISABLE_RESPONSE_LOGGING` | `true` | Whether response bodies are logged. The deprecated `DISABLE_RESPONSE_LOGGING` says the opposite: `DISABLE_RESPONSE_LOGGING=true` (or `1`) is `false` here. |
 | `shutdown.drainDurationSeconds` | `PUBLISHER_SHUTDOWN_DRAIN_DURATION_SECONDS` | `--shutdown-drain-duration-seconds <n>` | `SHUTDOWN_DRAIN_DURATION_SECONDS`, `--shutdown_drain_duration_seconds` | `0` | After SIGTERM, how long to keep serving in-flight and new requests (readiness reports not-ready immediately) before the server starts refusing new traffic. |
 | `shutdown.gracefulCloseTimeoutSeconds` | `PUBLISHER_SHUTDOWN_GRACEFUL_CLOSE_TIMEOUT_SECONDS` | `--shutdown-graceful-close-timeout-seconds <n>` | `SHUTDOWN_GRACEFUL_CLOSE_TIMEOUT_SECONDS`, `--shutdown_graceful_close_timeout_seconds` | `0` | Time to wait for in-flight requests to drain before forcing close. |
+| `retrieval.llm.provider` | `PUBLISHER_RETRIEVAL_LLM_PROVIDER` | `--retrieval-llm-provider <value>` |  | _unset_ (LLM features off) | Which provider serves the chat model behind index-time keyphrases and source summaries. Unset: every LLM feature is off. It decides which other `retrieval.llm` fields apply: `openai-compatible` needs `baseUrl`, `vertex` needs `projectId` and `location`, and every keyed provider needs `retrieval.llm.apiKey`. The block is assembled from every source and then checked as one, so a variable that changes the provider is checked against the file's other fields. See "Providers and the retrieval settings" below. |
+| `retrieval.llm.model` | `PUBLISHER_RETRIEVAL_LLM_MODEL` | `--retrieval-llm-model <value>` |  | _unset_ | Chat model name; required with a provider. |
+| `retrieval.llm.baseUrl` | `PUBLISHER_RETRIEVAL_LLM_BASE_URL` | `--retrieval-llm-base-url <value>` |  | the provider's | Base URL of the chat API; required for openai-compatible, else the provider's. |
+| `retrieval.llm.projectId` | `PUBLISHER_RETRIEVAL_LLM_PROJECT_ID` | `--retrieval-llm-project-id <value>` |  | _unset_ | Google Cloud project of a vertex chat model. |
+| `retrieval.llm.location` | `PUBLISHER_RETRIEVAL_LLM_LOCATION` | `--retrieval-llm-location <value>` |  | _unset_ | Google Cloud region of a vertex chat model. |
+| `retrieval.llm.timeoutMs` | `PUBLISHER_RETRIEVAL_LLM_TIMEOUT_MS` | `--retrieval-llm-timeout-ms <n>` |  | `30000` with a provider | Milliseconds one chat call may take. |
+| `retrieval.llm.concurrency` | `PUBLISHER_RETRIEVAL_LLM_CONCURRENCY` | `--retrieval-llm-concurrency <n>` |  | `4` with a provider | Chat calls in flight at once. |
+| `retrieval.llm.maxCallsPerSync` | `PUBLISHER_RETRIEVAL_LLM_MAX_CALLS_PER_SYNC` | `--retrieval-llm-max-calls-per-sync <n>` |  | `300` with a provider | Most chat calls one index build may make; the spend ceiling. |
+| `retrieval.llm.maxCallsPerRequest` | `PUBLISHER_RETRIEVAL_LLM_MAX_CALLS_PER_REQUEST` | `--retrieval-llm-max-calls-per-request <n>` |  | `20` with a provider | Most chat calls one get_context request may make; a request past it fails, naming this setting. |
+| `retrieval.embedding.provider` | `PUBLISHER_RETRIEVAL_EMBEDDING_PROVIDER` | `--retrieval-embedding-provider <value>` |  | _unset_ (OpenAI-compatible) | Which provider serves embeddings. Unset: an OpenAI-compatible endpoint, set by `retrieval.embedding.baseUrl` and the rest. It decides which other `retrieval.embedding` fields apply: every provider but `openai` needs `model`, `openai-compatible` needs `baseUrl`, and `vertex` needs `projectId` and `location`. A `google` or `vertex` provider never reads `EMBEDDING_MODEL`, `EMBEDDING_API_BASE` or `EMBEDDING_DIMENSIONS`, which were only ever the OpenAI-compatible provider's. |
+| `retrieval.embedding.projectId` | `PUBLISHER_RETRIEVAL_EMBEDDING_PROJECT_ID` | `--retrieval-embedding-project-id <value>` |  | _unset_ | Google Cloud project of a vertex embedding model. |
+| `retrieval.embedding.location` | `PUBLISHER_RETRIEVAL_EMBEDDING_LOCATION` | `--retrieval-embedding-location <value>` |  | _unset_ | Google Cloud region of a vertex embedding model. |
+| `retrieval.embedding.queryPrefix` | `PUBLISHER_RETRIEVAL_EMBEDDING_QUERY_PREFIX` | `--retrieval-embedding-query-prefix <value>` |  | empty | Text put before a search query, as written (spaces included). |
+| `retrieval.embedding.documentPrefix` | `PUBLISHER_RETRIEVAL_EMBEDDING_DOCUMENT_PREFIX` | `--retrieval-embedding-document-prefix <value>` |  | empty | Text put before indexed text, as written; a change re-embeds every package. |
+| `retrieval.egress.preset` | `PUBLISHER_RETRIEVAL_EGRESS_PRESET` | `--retrieval-egress-preset <value>` |  | `default` | `default` sends entity names, doc text (`#(doc)`, `#"`, and the database's descriptions on a connection with `dbmeta` on) and schema context. `full` also sends code and dimension values. Access predicates (`#(access_filter)`, `#(authorize)`) never leave, whatever this says. |
+| `retrieval.dimensionValues.enabled` | `PUBLISHER_RETRIEVAL_DIMENSION_VALUES_ENABLED` | `--retrieval-dimension-values-enabled`, `--no-retrieval-dimension-values-enabled` |  | `true` | Value search: off reads no #(index) value and answers a dimensional_value target with "No index". |
 | `retrieval.embedding.apiKey` | `PUBLISHER_RETRIEVAL_EMBEDDING_API_KEY` |  | `EMBEDDING_API_KEY` | _unset_ | Turns on embedding closeness in `get_context`'s search, and embedding ranking in `search_database_schema` (see below). Sent as a bearer token to the embedding endpoint. Unset: `get_context` ranks by keyword and stored values only. Must be set explicitly; an ambient `OPENAI_API_KEY` is deliberately not read. See "How get_context searches" below. |
 | `retrieval.embedding.model` | `PUBLISHER_RETRIEVAL_EMBEDDING_MODEL` | `--retrieval-embedding-model <value>` | `EMBEDDING_MODEL` | `text-embedding-3-small` for OpenAI | Embedding model name sent to the endpoint. Precedence is the same as for every setting: a flag, then a variable, then `retrieval.embedding.model` in `publisher.config.json`. |
 | `retrieval.embedding.baseUrl` | `PUBLISHER_RETRIEVAL_EMBEDDING_BASE_URL` | `--retrieval-embedding-base-url <value>` | `EMBEDDING_API_BASE` | the provider's, else `https://api.openai.com/v1` | Base URL of an OpenAI-compatible embeddings API (`POST <base>/embeddings`). Point at any compatible endpoint (e.g. a local Ollama or vLLM server). Precedence is the same as for every setting: a flag, then a variable, then `retrieval.embedding.baseUrl` in `publisher.config.json`. |
@@ -345,10 +361,15 @@ What to know before turning it on:
 
 ### Providers and the retrieval settings
 
-Retrieval settings live in two files with two owners, and the only environment variables are the
-two API keys (plus the older `EMBEDDING_*` ones, which keep working as a fallback). The
-**server operator** owns `publisher.config.json`; a **package author** owns the package's
-`publisher.json`. A package can switch a feature on but never past what the operator allows: the
+Retrieval settings have two owners. The **server operator** owns the `retrieval` block below; a
+**package author** owns the package's `publisher.json`. Every key of the operator's block also has a
+variable and a flag derived from it, like every other setting: `retrieval.llm.provider` is
+`PUBLISHER_RETRIEVAL_LLM_PROVIDER` and `--retrieval-llm-provider` (the reference table above lists
+each). The block is put together from every source first, by the one precedence (flag, variable, file),
+and then checked as one object, because `provider` decides which other keys apply. So a variable that
+switches the provider is checked against the file's other keys, and a refusal ends with where each key
+it concerns came from: `Given: retrieval.llm.provider from PUBLISHER_RETRIEVAL_LLM_PROVIDER;
+retrieval.llm.model from /publisher/publisher.config.json.` A package can switch a feature on but never past what the operator allows: the
 credentials, what may leave the machine and the spend ceilings are all in the operator's file.
 
 `publisher.config.json`, the `retrieval` block (every key is optional):

@@ -91,5 +91,38 @@
   "shutdown": {
     "drainDurationSeconds": 0,
     "gracefulCloseTimeoutSeconds": 0
+  },
+  "retrieval": {
+    "llm": {
+      "provider": null,
+      "model": null,
+      "baseUrl": null,
+      "projectId": null,
+      "location": null,
+      "timeoutMs": null,
+      "concurrency": null,
+      "maxCallsPerSync": null,
+      "maxCallsPerRequest": null,
+      "apiKey": null
+    },
+    "embedding": {
+      "provider": null,
+      "projectId": null,
+      "location": null,
+      "queryPrefix": null,
+      "documentPrefix": null,
+      "apiKey": null,
+      "model": null,
+      "baseUrl": null,
+      "dimensions": null,
+      "minSimilarity": null,
+      "connectionSchemaIndexingEnabled": null
+    },
+    "egress": {
+      "preset": null
+    },
+    "dimensionValues": {
+      "enabled": null
+    }
   }
 }
