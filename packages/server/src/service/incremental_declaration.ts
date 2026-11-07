@@ -360,18 +360,3 @@ export function resolveIncrementalDeclaration(
       outputColumns: [...columns.keys()],
    };
 }
-
-/**
- * Whether a declaration says ANYTHING about incremental refresh; lets most
- * sources skip every gate and ledger read.
- */
-export function declaresIncremental(
-   declaration: IncrementalDeclaration,
-): boolean {
-   return (
-      declaration.incremental ||
-      declaration.declaredWatermark ||
-      declaration.declaredMergeKey ||
-      declaration.invalidRefresh !== undefined
-   );
-}

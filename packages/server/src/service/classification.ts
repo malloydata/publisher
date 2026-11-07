@@ -1437,7 +1437,7 @@ export interface PublishedSource {
  * model, and records it otherwise. A source with no recorded location is
  * keyed to its own model, so it is never skipped.
  */
-export function alreadySeen(
+function alreadySeen(
    seen: Set<string>,
    model: Model,
    modelPath: string,
@@ -1449,20 +1449,29 @@ export function alreadySeen(
    return false;
 }
 
+/** One source a listed model exports, as {@link packageSources} yields it. */
+export interface PackageSource {
+   modelPath: string;
+   model: Model;
+   sourceInfo: NonNullable<ReturnType<Model["getSourceInfos"]>>[number];
+   ir: IrField;
+   apiSource: NonNullable<ReturnType<Model["getSources"]>>[number] | undefined;
+   modelDef: ModelDef | undefined;
+}
+
 /**
- * Every source the package publishes, with its reachable fields classified.
- * `isListed` says which models are on the surface, the same answer
- * `listModels()` gives; `getSourceInfos()` says which sources a listed model
- * exports. A model with no compiled definition contributes nothing.
- * `includeHidden` also takes the sources a model does not export, each once
- * however many models import it.
+ * Every source the package's listed models export, with its compiled
+ * definition. `isListed` says which models are on the surface, the same
+ * answer `listModels()` gives; `getSourceInfos()` says which sources a listed
+ * model exports. A model that cannot be read, or a source with no compiled
+ * definition, contributes nothing. `includeHidden` also takes the sources a
+ * model does not export, each once however many models import it.
  */
-export function publishedSources(
+export function* packageSources(
    models: ReadonlyMap<string, Model>,
    isListed: (modelPath: string) => boolean,
    includeHidden = false,
-): PublishedSource[] {
-   const out: PublishedSource[] = [];
+): Generator<PackageSource> {
    const seen = new Set<string>();
    for (const [modelPath, model] of models) {
       if (!isListed(modelPath)) continue;
@@ -1486,41 +1495,62 @@ export function publishedSources(
          const ir = findIrSource(modelDef, sourceInfo.name);
          if (!ir) continue;
          const apiSource = apiSources?.find((s) => s.name === sourceInfo.name);
-         const lineage = readSourceClassifications(ir.fields, ir.query);
-         const views = readViewExposures(ir.fields, lineage);
-         const fields = Array.from(lineage).filter(
-            ([, c]) => c.isField && !c.hidden,
-         );
-         const hiddenRead: Array<[string, FieldClassification]> = [];
-         const visited = new Set<string>();
-         const visit = (path: string): void => {
-            if (visited.has(path)) return;
-            visited.add(path);
-            const c = lineage.get(path);
-            if (!c) return;
-            if (c.hidden && c.isField) hiddenRead.push([path, c]);
-            for (const input of c.inputs) visit(input.field);
-         };
-         for (const v of views) for (const r of v.reads) visit(r.field);
-         for (const [, c] of fields) for (const i of c.inputs) visit(i.field);
-         const chain = structCeilings(modelDef, ir, sourceInfo.name);
-         out.push({
-            modelPath,
-            source: sourceInfo.name,
-            ir,
-            carries: strictestCarries(
-               chain.ceilings,
-               chain.unresolved,
-               ir,
-               modelDef,
-            ),
-            deniedToAll: apiSource ? isDeniedToAll(apiSource) : false,
-            fields,
-            hiddenRead,
-            views,
-            truncated: lineage.truncated,
-         });
+         yield { modelPath, model, sourceInfo, ir, apiSource, modelDef };
       }
+   }
+}
+
+/**
+ * Every source the package publishes ({@link packageSources}), with its
+ * reachable fields classified.
+ */
+export function publishedSources(
+   models: ReadonlyMap<string, Model>,
+   isListed: (modelPath: string) => boolean,
+   includeHidden = false,
+): PublishedSource[] {
+   const out: PublishedSource[] = [];
+   for (const {
+      modelPath,
+      sourceInfo,
+      ir,
+      apiSource,
+      modelDef,
+   } of packageSources(models, isListed, includeHidden)) {
+      const lineage = readSourceClassifications(ir.fields, ir.query);
+      const views = readViewExposures(ir.fields, lineage);
+      const fields = Array.from(lineage).filter(
+         ([, c]) => c.isField && !c.hidden,
+      );
+      const hiddenRead: Array<[string, FieldClassification]> = [];
+      const visited = new Set<string>();
+      const visit = (path: string): void => {
+         if (visited.has(path)) return;
+         visited.add(path);
+         const c = lineage.get(path);
+         if (!c) return;
+         if (c.hidden && c.isField) hiddenRead.push([path, c]);
+         for (const input of c.inputs) visit(input.field);
+      };
+      for (const v of views) for (const r of v.reads) visit(r.field);
+      for (const [, c] of fields) for (const i of c.inputs) visit(i.field);
+      const chain = structCeilings(modelDef, ir, sourceInfo.name);
+      out.push({
+         modelPath,
+         source: sourceInfo.name,
+         ir,
+         carries: strictestCarries(
+            chain.ceilings,
+            chain.unresolved,
+            ir,
+            modelDef,
+         ),
+         deniedToAll: apiSource ? isDeniedToAll(apiSource) : false,
+         fields,
+         hiddenRead,
+         views,
+         truncated: lineage.truncated,
+      });
    }
    return out;
 }

@@ -2,9 +2,11 @@
 // SPDX-License-Identifier: MIT
 
 import { Manifest } from "@malloydata/malloy";
-import { beforeEach, describe, expect, it } from "bun:test";
+import { beforeEach, describe, expect, it, spyOn } from "bun:test";
 import * as sinon from "sinon";
+import { logger } from "../logger";
 import { BuildInstruction } from "../storage/DatabaseInterface";
+import { linesMentioning } from "../test_helpers/log_lines";
 import { fakeSource } from "../test_helpers/materialization_test_fixtures";
 import {
    createMocks,
@@ -222,12 +224,20 @@ describe("buildOneSource", () => {
       runSQL.onCall(0).resolves(); // initial staging drop
       runSQL.onCall(1).rejects(new Error("create boom")); // CREATE TABLE AS
       runSQL.onCall(2).rejects(new Error("cleanup boom")); // cleanup drop fails
-      // The cleanup failure is swallowed (logged as a physical leak); the
-      // original build error is what propagates, so the run is classified by its
-      // real cause rather than the cleanup noise.
-      await expect(callBuildOneSource({ runSQL }, "orders_v1")).rejects.toThrow(
-         "create boom",
-      );
+      // The cleanup failure is swallowed (logged as a physical leak, a real
+      // fault); the original build error is what propagates, so the run is
+      // classified by its real cause rather than the cleanup noise.
+      const errorSpy = spyOn(logger, "error");
+      try {
+         await expect(
+            callBuildOneSource({ runSQL }, "orders_v1"),
+         ).rejects.toThrow("create boom");
+         const leaks = linesMentioning(errorSpy, "orders_v1_abcdef123456");
+         expect(leaks).toHaveLength(1);
+         expect(String(leaks[0][0])).toContain("physical leak");
+      } finally {
+         errorSpy.mockRestore();
+      }
       expect(runSQL.callCount).toBe(3);
       expect(runSQL.lastCall.args[0]).toBe(
          'DROP TABLE IF EXISTS "orders_v1_abcdef123456"',

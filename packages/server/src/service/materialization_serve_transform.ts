@@ -377,17 +377,15 @@ export function buildServeShapeModel(
    sourceName: string,
    binding: ServeBinding,
 ): { modelText: string; shapeTypeName: string } {
-   const shapeTypeName = `${sourceName}__shape`;
-   const fields = binding.schema
-      .map((c) => `   ${emitFieldName(c.name)}::${duckdbTypeToMalloy(c.type)}`)
-      .join(",\n");
-   const modelText = `##! experimental.virtual_source
-type: ${shapeTypeName} is {
-${fields}
-}
-source: ${sourceName} is ${binding.destinationName}.virtual('${binding.virtualHandle}')::${shapeTypeName}
-`;
-   return { modelText, shapeTypeName };
+   const fragment = serveShapeFragment({
+      ...binding,
+      sourceName,
+      refinements: [],
+   });
+   return {
+      modelText: `##! experimental.virtual_source\n${fragment}\n`,
+      shapeTypeName: `${sourceName}__shape`,
+   };
 }
 
 /**
@@ -733,42 +731,13 @@ function liftQueryDerivedSource(
 }
 
 /**
- * Every source a query pipeline names: each stage's `structRef` and each join's
- * `sourceID`. An inline source yields "", which maps to no name and refuses the
- * lift. A named source is not descended into: what it reads is its own
- * binding's concern.
+ * Every source a query pipeline names, as ids: each stage's `structRef` and
+ * each join's `sourceID`. An inline source yields "", which maps to no name and
+ * refuses the lift, as does a pipeline nested too deeply to walk.
  */
 function referencedSourceIds(pipeline: unknown): string[] {
-   const out: string[] = [];
-   // Too deep refuses this lift rather than throwing, which would escape lift
-   // selection and cost every other lift.
-   let tooDeep = false;
-   const walk = (node: unknown, depth: number): void => {
-      if (tooDeep) return;
-      if (depth > 200) {
-         tooDeep = true;
-         return;
-      }
-      if (node === null || typeof node !== "object") return;
-      if (Array.isArray(node)) {
-         for (const item of node) walk(item, depth + 1);
-         return;
-      }
-      const record = node as Record<string, unknown>;
-      if (typeof record.join === "string") {
-         out.push(typeof record.sourceID === "string" ? record.sourceID : "");
-         return;
-      }
-      if (record.structRef !== undefined) {
-         out.push(structRefSourceId(record.structRef) ?? "");
-      }
-      for (const [key, value] of Object.entries(record)) {
-         if (key === "structRef") continue;
-         walk(value, depth + 1);
-      }
-   };
-   walk(pipeline, 0);
-   return tooDeep ? [""] : out;
+   const refs = pipelineReferences(pipeline);
+   return refs === undefined ? [""] : refs.map((r) => r.sourceID ?? "");
 }
 
 function liftOneDerivedSource(
@@ -785,28 +754,19 @@ function liftOneDerivedSource(
    const ownFields = (def.fields ?? []).filter(
       (f) => !baseFieldNames.has(fieldKey(f)),
    );
+   const refinements = sourceRefinements(
+      ownFields,
+      ownFilterList(def.filterList, baseDef?.filterList),
+      ctx,
+      available,
+   );
    // Every join this source declares must be carried, or none of it is.
    const declaredJoins = ownFields.filter(
       (f) => typeof (f as { join?: unknown }).join === "string",
    ).length;
-   const joins = extractJoins(ownFields, {
-      sourceNameById: ctx.sourceNameById,
-      materializedSourceNames: available,
-      liftText: ctx.liftText,
-   });
-   if (joins.length !== declaredJoins) return undefined;
-   return {
-      sourceName,
-      base,
-      refinements: [
-         ...joins,
-         ...extractRefinements(ownFields),
-         ...extractSourceFilters(
-            ownFilterList(def.filterList, baseDef?.filterList),
-         ),
-         ...extractViews(ownFields, ctx.liftText),
-      ],
-   };
+   const carriedJoins = refinements.filter((r) => r.kind === "join").length;
+   if (carriedJoins !== declaredJoins) return undefined;
+   return { sourceName, base, refinements };
 }
 
 /** `as` when the field was renamed, else `name` — how a shape refers to it. */
@@ -1246,7 +1206,10 @@ export function reachedPersistedSources(
       follow(base, label);
       // An extension's `query` is its base's, copied; the base is walked above.
       if (typeof def.extends !== "string") {
-         for (const ref of pipelineReferences(def.query?.pipeline)) {
+         const refs = pipelineReferences(def.query?.pipeline);
+         // A pipeline too deep to walk may reach anything, so it counts as
+         // reaching a leaf with no identity: raw, never "nothing".
+         for (const { ref } of refs ?? [{ ref: undefined }]) {
             follow(ref, label);
          }
       }
@@ -1281,32 +1244,65 @@ export function missingPersistedTables(
    );
 }
 
+/** Past this nesting a pipeline is refused rather than walked. */
+const MAX_PIPELINE_DEPTH = 200;
+
 /**
- * Every reference a query pipeline makes (stage `structRef`s and joins), as the
- * sourceID when named, else the embedded definition so the caller can walk an
- * inline source. Named sources are not descended into; the caller looks them up.
+ * One reference a query pipeline makes. `sourceID` is the referenced source's
+ * id when it is named; `ref` is what a walk follows: the sourceID of a named
+ * join, else the join or stage `structRef` as written (an id or an embedded
+ * definition).
  */
-function pipelineReferences(pipeline: unknown): unknown[] {
-   const out: unknown[] = [];
+interface PipelineReference {
+   sourceID: string | undefined;
+   ref: unknown;
+}
+
+/**
+ * Every reference a query pipeline makes: each stage's `structRef` and each
+ * join. Named sources are not descended into; the caller looks them up.
+ *
+ * Undefined when the pipeline nests past {@link MAX_PIPELINE_DEPTH}, which a
+ * caller must treat as an unknown reference. Returning rather than throwing
+ * keeps one refused source from escaping lift selection and costing every
+ * other lift.
+ */
+function pipelineReferences(
+   pipeline: unknown,
+): PipelineReference[] | undefined {
+   const out: PipelineReference[] = [];
+   let tooDeep = false;
    const walk = (node: unknown, depth: number): void => {
-      if (depth > 200 || node === null || typeof node !== "object") return;
+      if (tooDeep) return;
+      if (depth > MAX_PIPELINE_DEPTH) {
+         tooDeep = true;
+         return;
+      }
+      if (node === null || typeof node !== "object") return;
       if (Array.isArray(node)) {
          for (const item of node) walk(item, depth + 1);
          return;
       }
       const record = node as Record<string, unknown>;
       if (typeof record.join === "string") {
-         out.push(typeof record.sourceID === "string" ? record.sourceID : node);
+         const sourceID =
+            typeof record.sourceID === "string" ? record.sourceID : undefined;
+         out.push({ sourceID, ref: sourceID ?? node });
          return;
       }
-      if (record.structRef !== undefined) out.push(record.structRef);
+      if (record.structRef !== undefined) {
+         out.push({
+            sourceID: structRefSourceId(record.structRef),
+            ref: record.structRef,
+         });
+      }
       for (const [key, value] of Object.entries(record)) {
          if (key === "structRef") continue;
          walk(value, depth + 1);
       }
    };
    walk(pipeline, 0);
-   return out;
+   return tooDeep ? undefined : out;
 }
 
 /**
@@ -1322,7 +1318,26 @@ export function authorRefinementsFor(
    ctx: Pick<DerivedLiftContext, "contents" | "sourceNameById" | "liftText">,
    materializedSourceNames: ReadonlySet<string>,
 ): SourceRefinement[] {
-   const fields = ctx.contents[sourceName]?.fields;
+   const def = ctx.contents[sourceName];
+   return sourceRefinements(
+      def?.fields,
+      def?.filterList,
+      ctx,
+      materializedSourceNames,
+   );
+}
+
+/**
+ * Joins (to sources in `materializedSourceNames` only), dimensions and
+ * measures, `where:` filters, then views: the refinements a shape re-declares,
+ * in the order {@link refinementLines} emits them.
+ */
+function sourceRefinements(
+   fields: unknown[] | undefined,
+   filterList: unknown[] | undefined,
+   ctx: Pick<DerivedLiftContext, "sourceNameById" | "liftText">,
+   materializedSourceNames: ReadonlySet<string>,
+): SourceRefinement[] {
    return [
       ...extractJoins(fields, {
          sourceNameById: ctx.sourceNameById,
@@ -1330,7 +1345,7 @@ export function authorRefinementsFor(
          liftText: ctx.liftText,
       }),
       ...extractRefinements(fields),
-      ...extractSourceFilters(ctx.contents[sourceName]?.filterList),
+      ...extractSourceFilters(filterList),
       ...extractViews(fields, ctx.liftText),
    ];
 }

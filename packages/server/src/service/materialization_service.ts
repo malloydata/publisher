@@ -64,8 +64,8 @@ import {
    refreshOneSourceIncrementally,
    storageRefreshFor,
    advanceLedgerAfterSeed,
-   incrementalLineage,
    reportIncrementalStep,
+   sourceIncrementalRefresh,
    resetLedger,
    type IncrementalRunContext,
 } from "./incremental_build";
@@ -90,9 +90,10 @@ import {
 } from "./versions/materialization_scope";
 import { requestedVersionId } from "./versions/version_service";
 import { Mutex } from "async-mutex";
+import { withSpan } from "../telemetry";
 import {
-   assertColocatedPersistNotAuthorizeGated,
    assertMaterializationEligible,
+   assertTierEligible,
 } from "./materialization_eligibility";
 import {
    assertStorageServeShapeCompiles,
@@ -100,7 +101,6 @@ import {
    buildDownstreamIntoStorage,
    buildSourceIntoStorage,
    dropStorageTable,
-   STORAGE_TARGET_DIALECT,
    type StorageBuildResult,
    type StorageIncrementalRefresh,
 } from "./materialization_build_session";
@@ -653,25 +653,36 @@ export class MaterializationService {
          this.runInBackground(
             created.id,
             (signal) =>
-               this.runBuild(
-                  created.id,
-                  environmentName,
-                  packageName,
+               withSpan(
+                  "publisher.materialization.build",
                   {
-                     sourceNames: options.sourceNames,
-                     forceRefresh,
-                     reseed,
-                     buildInstructions,
-                     // Orchestrated-only: an auto-run depends on the local
-                     // store, which a supplied ledger would replace.
-                     ledger: orchestrated ? options.ledger : undefined,
-                     referenceManifest: options.referenceManifest,
-                     strictUpstreams: options.strictUpstreams,
-                     trigger,
-                     runContext: options.runContext ?? undefined,
-                     version,
+                     "malloy.package": packageName,
+                     "publisher.materialization.id": created.id,
+                     "publisher.materialization.mode": orchestrated
+                        ? "orchestrated"
+                        : "auto",
                   },
-                  signal,
+                  () =>
+                     this.runBuild(
+                        created.id,
+                        environmentName,
+                        packageName,
+                        {
+                           sourceNames: options.sourceNames,
+                           forceRefresh,
+                           reseed,
+                           buildInstructions,
+                           // Orchestrated-only: an auto-run depends on the
+                           // local store, which a supplied ledger would replace.
+                           ledger: orchestrated ? options.ledger : undefined,
+                           referenceManifest: options.referenceManifest,
+                           strictUpstreams: options.strictUpstreams,
+                           trigger,
+                           runContext: options.runContext ?? undefined,
+                           version,
+                        },
+                        signal,
+                     ),
                ),
             release,
          );
@@ -1306,26 +1317,11 @@ export class MaterializationService {
             // ineligible source does not stop the rest of the package refreshing.
             // The run throws only when nothing else is left to build, or when
             // `sourceNames` asked for exactly this source.
+            // A colocated `#@ persist` is just as frozen as a storage build, so
+            // an authorize-gated source materialized there would be served to
+            // every caller.
             try {
-               if (destination) {
-                  assertMaterializationEligible(
-                     persistSource,
-                     deriveAnnotationFields(persistSource),
-                  );
-               } else {
-                  // Colocated `#@ persist`: just as frozen as a storage build, so
-                  // an authorize-gated source materialized here would be served
-                  // to every caller. The origin makes a refused rollup name
-                  // `#@ preaggregate`, since its synthesized name appears nowhere
-                  // in the author's model.
-                  assertColocatedPersistNotAuthorizeGated(
-                     persistSource,
-                     persistSource.name,
-                     isRollup ? "preaggregate" : "persist",
-                     compiled.sourceGateOutcomes?.[persistSource.sourceID],
-                     deriveAnnotationFields(persistSource),
-                  );
-               }
+               assertTierEligible(persistSource, !!destination, compiled);
             } catch (err) {
                if (!(err instanceof MaterializationEligibilityError)) throw err;
                if (include) throw err;
@@ -1384,16 +1380,8 @@ export class MaterializationService {
             // delta path cannot act on (unsupported dialect, unusable watermark)
             // keeps skip-if-unchanged rather than rebuilding fully every run.
             const deltaEligible =
-               incremental !== undefined &&
-               incrementalLineage({
-                  declaration: incremental.declarations[persistSource.sourceID],
-                  dialect: persistSource.dialectName,
-                  targetDialect:
-                     destination !== undefined
-                        ? STORAGE_TARGET_DIALECT
-                        : persistSource.dialectName,
+               sourceIncrementalRefresh(incremental, persistSource, {
                   physicalTableName: logicalName,
-                  connectionName: persistSource.connectionName,
                   storageDestinationName: destination,
                   sourceEntityId,
                }) !== undefined;
@@ -1922,11 +1910,17 @@ export class MaterializationService {
             }
             for (const persistSource of sourcesInBuildOrder(build, sources)) {
                if (signal.aborted) throw new Error("Build cancelled");
-               await this.buildInstructedSource(
-                  run,
-                  persistSource,
-                  build.connectionName,
-                  connection,
+               await withSpan(
+                  "publisher.materialization.build_source",
+                  // Nested under the run's span, which names the package.
+                  { "malloy.source": persistSource.name },
+                  () =>
+                     this.buildInstructedSource(
+                        run,
+                        persistSource,
+                        build.connectionName,
+                        connection,
+                     ),
                );
             }
          }
@@ -2144,31 +2138,16 @@ export class MaterializationService {
       try {
          // Host-supplied storage instructions are gated too, not trusted.
          // Skipped when the mode is off: the destination refusal owns that.
-         if (
+         const storage =
             orchestrated &&
-            instruction.destination &&
-            getPersistStorageMode() !== "off"
-         ) {
-            assertMaterializationEligible(
-               persistSource,
-               deriveAnnotationFields(persistSource),
-            );
-         } else if (!run.clearedTiers?.has(persistSource.sourceID)) {
-            // Every other instruction (colocated, or any build while the mode
-            // is off): refuse an authorize-gated source however it was
-            // instructed, unless its compile-time gate outcome proves the
-            // colocated relaxation applies. `else` because the storage gate
-            // already runs the same IR walk. A source auto-run cleared passed
-            // one of the two gates and is not walked again.
-            assertColocatedPersistNotAuthorizeGated(
-               persistSource,
-               persistSource.name,
-               compiled.preaggregatePlans?.[persistSource.sourceID]
-                  ? "preaggregate"
-                  : "persist",
-               compiled.sourceGateOutcomes?.[persistSource.sourceID],
-               deriveAnnotationFields(persistSource),
-            );
+            !!instruction.destination &&
+            getPersistStorageMode() !== "off";
+         // Every other instruction (colocated, or any build while the mode is
+         // off) takes the colocated gate however it was instructed, unless
+         // auto-run already cleared the source through one of the two gates.
+         // Never both: the storage gate already runs the same IR walk.
+         if (storage || !run.clearedTiers?.has(persistSource.sourceID)) {
+            assertTierEligible(persistSource, storage, compiled);
          }
       } catch (err) {
          if (!(err instanceof MaterializationEligibilityError)) throw err;
@@ -2587,26 +2566,12 @@ export class MaterializationService {
       // and falls through to the CTAS.
       const dialect = persistSource.dialectName;
       const quotedPhysicalPath = quoteTablePath(physicalTableName, dialect);
-      // Colocated here, so one dialect is both source and target.
-      const lineage =
-         incremental && contentSourceEntityId
-            ? incrementalLineage({
-                 declaration: incremental.declarations[persistSource.sourceID],
-                 dialect,
-                 targetDialect: dialect,
-                 physicalTableName,
-                 connectionName: persistSource.connectionName,
-                 sourceEntityId: contentSourceEntityId,
-              })
-            : undefined;
       // One narrowing, so the incremental touchpoints below never disagree.
-      const incrementalRefresh =
-         incremental && lineage && contentSourceEntityId
-            ? {
-                 context: incremental,
-                 lineage,
-              }
-            : undefined;
+      const incrementalRefresh = sourceIncrementalRefresh(
+         incremental,
+         persistSource,
+         { physicalTableName, sourceEntityId: contentSourceEntityId },
+      );
       if (incrementalRefresh) {
          const applied = await refreshOneSourceIncrementally({
             ...incrementalRefresh,
@@ -2674,7 +2639,7 @@ export class MaterializationService {
                runOptions,
             );
          } catch (cleanupErr) {
-            logger.warn(
+            logger.error(
                "Failed to clean up staging table after a failed build; physical leak",
                {
                   stagingTableName,
@@ -2797,23 +2762,21 @@ export class MaterializationService {
 
       // Incremental refresh of a STORED table: the warehouse computes the delta,
       // the destination engine applies it; seed-vs-delta is the shared planner's.
-      const lineage =
-         incremental && params.contentSourceEntityId
-            ? incrementalLineage({
-                 declaration: incremental.declarations[persistSource.sourceID],
-                 dialect: persistSource.dialectName,
-                 targetDialect: STORAGE_TARGET_DIALECT,
-                 physicalTableName,
-                 connectionName: persistSource.connectionName,
-                 storageDestinationName: destinationName,
-                 sourceEntityId: params.contentSourceEntityId,
-              })
-            : undefined;
+      const incrementalRefresh = sourceIncrementalRefresh(
+         incremental,
+         persistSource,
+         {
+            physicalTableName,
+            storageDestinationName: destinationName,
+            sourceEntityId: params.contentSourceEntityId,
+         },
+      );
       // A CHAINED stored source always rebuilds: an incremental parent's delta
       // can restate rows BELOW this source's frontier, which a half-open range
       // never revisits. Reported under its own reason code.
-      const chainedSeed = lineage !== undefined && dependsOnStorageUpstream;
-      if (chainedSeed && lineage) {
+      const chainedSeed =
+         incrementalRefresh !== undefined && dependsOnStorageUpstream;
+      if (chainedSeed) {
          reportIncrementalStep({
             step: {
                mode: "seed",
@@ -2823,18 +2786,20 @@ export class MaterializationService {
                   `over a stored parent is not supported yet`,
             },
             sourceName: persistSource.name,
-            packageName: incremental!.packageName,
+            packageName: incrementalRefresh.context.packageName,
             physicalTableName,
          });
          // Clear the boundary before the rebuild, as the delta path does. A
          // source that becomes chained keeps its name and content address.
-         await resetLedger(incremental!, lineage);
+         await resetLedger(
+            incrementalRefresh.context,
+            incrementalRefresh.lineage,
+         );
       }
       const refresh: StorageIncrementalRefresh | undefined =
-         incremental && lineage && !chainedSeed
+         incrementalRefresh && !chainedSeed
             ? storageRefreshFor({
-                 context: incremental,
-                 lineage,
+                 ...incrementalRefresh,
                  persistSource,
                  instruction,
                  destinationName,
@@ -3034,7 +2999,7 @@ export class MaterializationService {
                environmentPath: environment.getEnvironmentPath(),
             });
          } catch (dropErr) {
-            logger.warn(
+            logger.error(
                "Failed to drop a storage table stranded by a serve-shape gate " +
                   "refusal (physical leak)",
                {
@@ -3101,11 +3066,12 @@ export class MaterializationService {
          // Incremental coverage and what this run did, as for a colocated
          // table. Absent for a non-incremental source.
          ...ledgerFields(
-            lineage,
+            incrementalRefresh?.lineage,
             result.refresh?.coveredThrough ?? result.seededThrough,
          ),
          ...refreshFields(
-            result.refresh?.refresh ?? (lineage ? "full" : undefined),
+            result.refresh?.refresh ??
+               (incrementalRefresh ? "full" : undefined),
          ),
          // How stored upstreams were read: a chained attempt answers for
          // itself; otherwise the manifest's answer for the passthrough SQL.

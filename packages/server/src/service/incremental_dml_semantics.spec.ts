@@ -17,8 +17,10 @@
 // dialects (see the Postgres integration path in the docs).
 //
 // DuckDB's OWN dialect is a target in its own right — it is what a `storage=`
-// destination's DML is issued in — and it is exercised as itself in
-// incremental_storage_engine.spec.ts rather than here. Snowflake's range replace
+// destination's DML is issued in — so the range-replace semantics run in both
+// spellings. What the storage engine adds beyond the SQL (the driver's row
+// limit, session recovery after a failed script) is in
+// incremental_storage_engine.spec.ts. Snowflake's range replace
 // (a Snowflake Scripting block) has no local stand-in at all: its text is pinned
 // in incremental_apply.spec.ts and its semantics are provable only against a
 // real Snowflake account.
@@ -75,9 +77,11 @@ async function applyDelta(params: {
    mergeKeys: string[];
    start: string;
    end: string;
+   dialect?: string;
 }): Promise<void> {
+   const dialect = params.dialect ?? "postgres";
    const statements = deltaStatements({
-      dialect: "postgres",
+      dialect,
       quotedTablePath: `"${params.table}"`,
       deltaSQL: rowsSQL(params.rows),
       columns: COLUMNS,
@@ -86,89 +90,97 @@ async function applyDelta(params: {
       start: { malloyType: "date", value: params.start },
       end: { malloyType: "date", value: params.end },
    });
-   await applyDeltaScript(runner, "postgres", statements);
+   await applyDeltaScript(runner, dialect, statements);
 }
 
-describe("range replace (no merge_key=)", () => {
-   it("replaces the range and leaves everything below it alone", async () => {
-      const name = await seed([
-         [1, "2024-05-01", 10],
-         [2, "2024-06-01", 20],
-      ]);
-      await applyDelta({
-         table: name,
-         rows: [
-            [2, "2024-06-01", 25],
-            [3, "2024-06-15", 30],
-         ],
-         mergeKeys: [],
-         start: "2024-06-01",
-         end: "2024-07-01",
+describe.each(["postgres", "duckdb"])(
+   "range replace (no merge_key=), %s spelling",
+   (dialect) => {
+      it("replaces exactly the half-open range and leaves the rest alone", async () => {
+         const name = await seed([
+            [1, "2024-05-01", 10],
+            [2, "2024-06-01", 20],
+            [4, "2024-07-01", 40],
+         ]);
+         await applyDelta({
+            table: name,
+            rows: [
+               [2, "2024-06-01", 25],
+               [3, "2024-06-15", 30],
+            ],
+            mergeKeys: [],
+            start: "2024-06-01",
+            end: "2024-07-01",
+            dialect,
+         });
+         expect(await contents(name)).toEqual([
+            "1|2024-05-01|10", // below the range: untouched
+            "2|2024-06-01|25", // inside: recomputed, not duplicated
+            "3|2024-06-15|30", // new
+            "4|2024-07-01|40", // the excluded end: untouched
+         ]);
       });
-      expect(await contents(name)).toEqual([
-         "1|2024-05-01|10", // below the range: untouched
-         "2|2024-06-01|25", // inside: recomputed, not duplicated
-         "3|2024-06-15|30", // new
-      ]);
-   });
 
-   it("converges when the SAME range is applied twice", async () => {
-      // The retry-safety property: a crash between the DML and the ledger
-      // advance costs a repeat, not a corruption.
-      const name = await seed([[1, "2024-06-01", 10]]);
-      const delta = {
-         table: name,
-         rows: [[1, "2024-06-01", 99]] as [number, string, number][],
-         mergeKeys: [],
-         start: "2024-06-01",
-         end: "2024-07-01",
-      };
-      await applyDelta(delta);
-      const once = await contents(name);
-      await applyDelta(delta);
-      expect(await contents(name)).toEqual(once);
-      expect(once).toEqual(["1|2024-06-01|99"]);
-   });
-
-   it("DUPLICATES a row restated with an advanced watermark", async () => {
-      // The documented weakness of range replace, and the reason the load-time
-      // advisory tells an author to declare merge_key= when rows are restated:
-      // the older copy sits BELOW the new range, so nothing deletes it.
-      const name = await seed([[1, "2024-06-01", 10]]);
-      await applyDelta({
-         table: name,
-         rows: [[1, "2024-07-15", 10]],
-         mergeKeys: [],
-         start: "2024-07-01",
-         end: "2024-08-01",
+      it("converges when the SAME range is applied twice", async () => {
+         // The retry-safety property: a crash between the DML and the ledger
+         // advance costs a repeat, not a corruption.
+         const name = await seed([[1, "2024-06-01", 10]]);
+         const delta = {
+            table: name,
+            rows: [[1, "2024-06-01", 99]] as [number, string, number][],
+            mergeKeys: [],
+            start: "2024-06-01",
+            end: "2024-07-01",
+            dialect,
+         };
+         await applyDelta(delta);
+         const once = await contents(name);
+         await applyDelta(delta);
+         expect(await contents(name)).toEqual(once);
+         expect(once).toEqual(["1|2024-06-01|99"]);
       });
-      expect(await contents(name)).toEqual([
-         "1|2024-06-01|10",
-         "1|2024-07-15|10",
-      ]);
-   });
 
-   it("is atomic: a failed insert leaves the deleted range in place", async () => {
-      // The claim the dialect allowlist exists to guarantee. Without the
-      // transaction the DELETE would autocommit on its own and the range would
-      // be empty in a table that is already serving.
-      const name = await seed([[1, "2024-06-01", 10]]);
-      const statements = deltaStatements({
-         dialect: "postgres",
-         quotedTablePath: `"${name}"`,
-         deltaSQL: `SELECT 1 AS "order_id", DATE '2024-06-02' AS "order_date", 'not a number' AS "revenue"`,
-         columns: COLUMNS,
-         mergeKeys: [],
-         watermarkName: "order_date",
-         start: { malloyType: "date", value: "2024-06-01" },
-         end: { malloyType: "date", value: "2024-07-01" },
+      it("DUPLICATES a row restated with an advanced watermark", async () => {
+         // The documented weakness of range replace, and the reason the load-time
+         // advisory tells an author to declare merge_key= when rows are restated:
+         // the older copy sits BELOW the new range, so nothing deletes it.
+         const name = await seed([[1, "2024-06-01", 10]]);
+         await applyDelta({
+            table: name,
+            rows: [[1, "2024-07-15", 10]],
+            mergeKeys: [],
+            start: "2024-07-01",
+            end: "2024-08-01",
+            dialect,
+         });
+         expect(await contents(name)).toEqual([
+            "1|2024-06-01|10",
+            "1|2024-07-15|10",
+         ]);
       });
-      await expect(
-         applyDeltaScript(runner, "postgres", statements),
-      ).rejects.toThrow();
-      expect(await contents(name)).toEqual(["1|2024-06-01|10"]);
-   });
-});
+
+      it("is atomic: a failed insert leaves the deleted range in place", async () => {
+         // The claim the dialect allowlist exists to guarantee. Without the
+         // transaction the DELETE would autocommit on its own and the range would
+         // be empty in a table that is already serving.
+         const name = await seed([[1, "2024-06-01", 10]]);
+         const statements = deltaStatements({
+            dialect,
+            quotedTablePath: `"${name}"`,
+            deltaSQL: `SELECT 1 AS "order_id", DATE '2024-06-02' AS "order_date", 'not a number' AS "revenue"`,
+            columns: COLUMNS,
+            mergeKeys: [],
+            watermarkName: "order_date",
+            start: { malloyType: "date", value: "2024-06-01" },
+            end: { malloyType: "date", value: "2024-07-01" },
+         });
+         await expect(
+            applyDeltaScript(runner, dialect, statements),
+         ).rejects.toThrow();
+         expect(await contents(name)).toEqual(["1|2024-06-01|10"]);
+      });
+   },
+);
 
 describe("merge (merge_key= declared)", () => {
    it("replaces a row restated with an advanced watermark, in place", async () => {
