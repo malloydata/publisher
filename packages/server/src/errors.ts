@@ -1459,7 +1459,7 @@ export type McpAdvice<E> =
 
 /**
  * Which part of an MCP setup request (environment, package, model) a setup
- * failure names, for getModelForQuery. `resource` is the whole
+ * failure names, for mapQuerySetupError. `resource` is the whole
  * `env/package/model`. Absent: the failure is reported as an internal setup
  * fault rather than classified.
  */
