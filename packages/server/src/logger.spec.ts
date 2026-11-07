@@ -1,7 +1,15 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
-import { describe, expect, it, spyOn } from "bun:test";
+import { afterAll, beforeAll, describe, expect, it, spyOn } from "bun:test";
+import {
+   context,
+   ROOT_CONTEXT,
+   trace,
+   TraceFlags,
+   type Context,
+   type ContextManager,
+} from "@opentelemetry/api";
 import type { AxiosError } from "axios";
 import { EventEmitter } from "events";
 import type { Request, Response } from "express";
@@ -279,7 +287,75 @@ describe("loggerMiddleware", () => {
       expect(meta?.traceId).toBe(TRACE_ID);
    });
 
+   describe("inside an active span", () => {
+      const SPAN_TRACE_ID = "0af7651916cd43dd8448eb211c80319c";
+      let registered = false;
+      beforeAll(() => {
+         registered = context.setGlobalContextManager(
+            new StackContextManager(),
+         );
+      });
+      afterAll(() => {
+         if (registered) context.disable();
+      });
+
+      function inSpan<T>(fn: () => T): T {
+         const span = trace.wrapSpanContext({
+            traceId: SPAN_TRACE_ID,
+            spanId: "b7ad6b7169203331",
+            traceFlags: TraceFlags.SAMPLED,
+         });
+         return context.with(trace.setSpan(ROOT_CONTEXT, span), fn);
+      }
+
+      it("takes the trace id from the span, over the header", () => {
+         const meta = inSpan(() =>
+            accessLog("/logger-spec/c", {
+               headers: { traceparent: `00-${TRACE_ID}-00f067aa0ba902b7-01` },
+            }),
+         );
+         expect(meta?.traceId).toBe(SPAN_TRACE_ID);
+      });
+
+      it("takes it from the span when there is no header", () => {
+         expect(inSpan(() => accessLog("/logger-spec/d"))?.traceId).toBe(
+            SPAN_TRACE_ID,
+         );
+      });
+   });
+
    it("writes nothing for a probe", () => {
       expect(accessLog("/health")).toBeUndefined();
    });
 });
+
+/** A synchronous context manager, enough for code that reads the active span before it awaits. */
+class StackContextManager implements ContextManager {
+   private stack: Context[] = [];
+   active(): Context {
+      return this.stack[this.stack.length - 1] ?? ROOT_CONTEXT;
+   }
+   with<A extends unknown[], F extends (...args: A) => ReturnType<F>>(
+      ctx: Context,
+      fn: F,
+      thisArg?: ThisParameterType<F>,
+      ...args: A
+   ): ReturnType<F> {
+      this.stack.push(ctx);
+      try {
+         return fn.call(thisArg, ...args);
+      } finally {
+         this.stack.pop();
+      }
+   }
+   bind<T>(_ctx: Context, target: T): T {
+      return target;
+   }
+   enable(): this {
+      return this;
+   }
+   disable(): this {
+      this.stack = [];
+      return this;
+   }
+}

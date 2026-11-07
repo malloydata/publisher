@@ -2,6 +2,11 @@
 // SPDX-License-Identifier: MIT
 
 import { externalEnv, settings } from "./settings";
+import {
+   isSpanContextValid,
+   trace,
+   type SpanContext,
+} from "@opentelemetry/api";
 import { AxiosError } from "axios";
 import { RequestHandler } from "express";
 import winston from "winston";
@@ -142,8 +147,24 @@ export function isProbePath(path: string): boolean {
    return PROBE_PATHS.has(path);
 }
 
+/**
+ * The trace a request runs in: its span's (the HTTP instrumentation's, which
+ * continues an incoming `traceparent`), else the header's own.
+ */
+function requestTraceId(
+   req: Parameters<typeof traceIdOf>[0],
+   spanContext: SpanContext | undefined,
+): string | undefined {
+   return spanContext && isSpanContextValid(spanContext)
+      ? spanContext.traceId
+      : traceIdOf(req);
+}
+
 export const loggerMiddleware: RequestHandler = (req, res, next) => {
    const startTime = performance.now();
+   // Read now: the span is active while the request is dispatched, not
+   // necessarily when `finish` fires.
+   const spanContext = trace.getActiveSpan()?.spanContext();
    const resJson = res.json;
    res.json = (body: unknown) => {
       res.locals.body = body;
@@ -164,7 +185,7 @@ export const loggerMiddleware: RequestHandler = (req, res, next) => {
       if (!DISABLE_RESPONSE_LOGGING) {
          logMetadata.response = redactSensitive(res.locals.body);
       }
-      const traceId = traceIdOf(req);
+      const traceId = requestTraceId(req, spanContext);
       if (traceId) {
          logMetadata.traceId = traceId;
       }
