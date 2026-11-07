@@ -18,15 +18,15 @@
 
 import { InvalidArgumentError } from "../../errors";
 import { EnvironmentStore } from "../../service/environment_store";
-import { FCJ_MAX_CHARS } from "../context/pages";
+import { FCJ_MAX_CHARS } from "../../retrieval/search/pages";
 import type { GetContextParams, ScopedParams } from "./get_context_request";
-import type { PackageInfo } from "./get_context_types";
-import { oneLineSummary } from "./package_entities";
+import type { PackageInfo } from "../../retrieval/model/types";
+import { oneLineSummary } from "../../retrieval/model/package_entities";
 import {
    isServed,
    readPackageCatalog,
    type CatalogEnvironment,
-} from "./package_catalog";
+} from "../../retrieval/model/package_catalog";
 
 export type LevelOutcome =
    /** A listing of environments or packages, answered here. */

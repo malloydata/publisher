@@ -10,7 +10,7 @@ import { buildMalloyUri } from "../handler_utils";
 import { jsonResource } from "../tool_response";
 import { logger } from "../../logger";
 import rawIndex from "./docs_search/malloy_docs_index.json";
-import { sanitizeLunrQuery } from "./retrieval_shared";
+import { sanitizeLunrQuery } from "../../retrieval/shared";
 
 interface DocEntry {
    title: string;

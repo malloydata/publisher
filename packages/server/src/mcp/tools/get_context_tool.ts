@@ -13,7 +13,7 @@ import {
 import type { RequestExtra } from "../request_extra";
 import { jsonResource, jsonToolError } from "../tool_response";
 import { logger } from "../../logger";
-import { runFcjQuery, type TraceMode } from "../context/engine";
+import { runFcjQuery, type TraceMode } from "../../retrieval/search/engine";
 import {
    convergedContextShape,
    matchesScope,
@@ -28,14 +28,17 @@ import {
    toSourceResults,
    truncationWarning,
    unsupportedTargetWarnings,
-} from "./get_context_response";
+} from "../../retrieval/search/response";
 import type {
    ListingContext,
    PackageIndex,
    ResolvedRequest,
    SearchResult,
-} from "./get_context_types";
-import { getPackageIndex, sourceContextKey } from "./package_entities";
+} from "../../retrieval/model/types";
+import {
+   getPackageIndex,
+   sourceContextKey,
+} from "../../retrieval/model/package_entities";
 import { lockedForCaller } from "../../service/discovery_lock";
 import {
    packageInfoOf,
@@ -252,7 +255,7 @@ function runListing(
 /**
  * One call, resolved: a request with no search text enumerates what its
  * targets name (a listing, answered here from the package's entity index);
- * anything else is ranked by the find, list, judge engine (../context/engine.ts).
+ * anything else is ranked by the find, list, judge engine (retrieval/search/engine.ts).
  */
 async function runContextQuery(
    resolved: ResolvedRequest,
@@ -301,7 +304,7 @@ async function runContextQuery(
       "get-context",
    );
 
-   // A ranked result is held for a while (../context/pages.ts), so `offset`
+   // A ranked result is held for a while (retrieval/search/pages.ts), so `offset`
    // resumes it. A listing other than the catalog browse has no order to
    // resume from.
    if (

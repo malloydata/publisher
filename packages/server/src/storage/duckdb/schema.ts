@@ -682,7 +682,7 @@ async function dropPreFacetEntityEmbeddings(
  * one row per (entity, facet). Nothing writes it now (the engine's vectors are
  * in `catalog_embeddings`). The table stays so a database from an earlier
  * release keeps its shape, and deleting a package or environment clears its
- * rows (see mcp/tools/embedding_index.ts).
+ * rows (see retrieval/index/embedding_index.ts).
  */
 export async function createEntityEmbeddingsTable(
    db: DuckDBConnection,
@@ -711,7 +711,7 @@ export async function createEntityEmbeddingsTable(
  * LLM-written search phrases for entities, from an earlier release's search.
  * Nothing writes it now; it stays so a database from an earlier release keeps
  * its shape, and deleting a package or environment clears its rows (see
- * mcp/tools/embedding_index.ts). `entity_key` is the JSON array
+ * retrieval/index/embedding_index.ts). `entity_key` is the JSON array
  * [kind, source, name].
  */
 export async function createEntityKeyphrasesTable(
@@ -733,7 +733,7 @@ export async function createEntityKeyphrasesTable(
 }
 
 /**
- * LLM-written source summaries (see mcp/tools/source_summaries.ts). One row per
+ * LLM-written source summaries (see retrieval/index/source_summaries.ts). One row per
  * (model path, source). `input_hash` covers everything the model was shown
  * (the rendered source and fields), the prompt text and the model, so a row is
  * reused only while none of those changed, and an unchanged source costs no LLM
@@ -760,7 +760,7 @@ export async function createSourceSummariesTable(
 }
 
 /**
- * The find, connect, judge engine's catalog (see mcp/context/catalog.ts): one
+ * The find, connect, judge engine's catalog (see retrieval/model/catalog.ts): one
  * row per node and per edge of a package, rewritten whole when the package
  * loads. The engine searches its in-memory copy; these rows are what an
  * operator reads to see what the catalog holds.
@@ -795,7 +795,7 @@ export async function createCatalogTables(db: DuckDBConnection): Promise<void> {
       PRIMARY KEY (environment_name, package_name, kind, from_key, to_key, path)
     )
   `);
-   // Index-time LLM output of the same engine (mcp/context/llm_cache.ts): a
+   // Index-time LLM output of the same engine (retrieval/llm/llm_cache.ts): a
    // doc split into parts, and the questions written for a node. A row is
    // reused only while its input, prompt and model hashes all match.
    for (const table of ["doc_parts", "node_questions"]) {
@@ -830,7 +830,7 @@ export async function createCatalogTables(db: DuckDBConnection): Promise<void> {
       PRIMARY KEY (environment_name, package_name, node_key, facet)
     )
   `);
-   // The engine's value index (mcp/context/values_index.ts): stored values of
+   // The engine's value index (retrieval/index/values_index.ts): stored values of
    // `#(index)` dimensions on ungated sources, and value lists from docs.
    // Rewritten at each load; the engine searches its in-memory copy.
    await db.run(`

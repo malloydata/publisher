@@ -2,12 +2,12 @@
 // SPDX-License-Identifier: MIT
 
 import { afterAll, beforeEach, describe, expect, it } from "bun:test";
-import { sanitizeLunrQuery as sanitize } from "./retrieval_shared";
-import { entityId } from "./get_context_response";
+import { sanitizeLunrQuery as sanitize } from "../../retrieval/shared";
+import { entityId } from "../../retrieval/search/response";
 import { registerGetContextTool } from "./get_context_tool";
 import { registerListPackagesTool } from "./list_packages_tool";
-import { docOnlyText, docText } from "./package_entities";
-import { setRetrievalConfig } from "../../retrieval_config";
+import { docOnlyText, docText } from "../../retrieval/model/package_entities";
+import { setRetrievalConfig } from "../../retrieval/config";
 import type { EnvironmentStore } from "../../service/environment_store";
 import { EnvironmentNotFoundError, PackageNotFoundError } from "../../errors";
 import {
@@ -18,7 +18,7 @@ import {
 // Pin the baseline: every test in this file runs with no embedding provider,
 // regardless of ambient EMBEDDING_* env vars in the developer's shell.
 // Value search is off here: the dimensional_value tests in this file pin what a
-// server with it turned off answers. The on-mode is get_context_values.spec.ts.
+// server with it turned off answers. The on-mode is retrieval/search/values.spec.ts.
 beforeEach(() => {
    _setEmbeddingProviderForTests(null);
    setRetrievalConfig({ dimensionValues: { enabled: false } });

@@ -24,17 +24,17 @@ import * as fs from "fs";
 import * as os from "os";
 import * as path from "path";
 import { DuckDBConnection } from "../storage/duckdb/DuckDBConnection";
-import type { PackageIndex } from "../mcp/tools/get_context_types";
+import type { PackageIndex } from "../retrieval/model/types";
 import {
    DEFAULT_PACKAGE_RETRIEVAL,
    type PackageRetrievalSettings,
-} from "../service/package_retrieval";
-import { getPackageIndex } from "../mcp/tools/package_entities";
+} from "../retrieval/package_retrieval";
+import { getPackageIndex } from "../retrieval/model/package_entities";
 import {
    buildCatalog,
    catalogInputOf,
    type Catalog,
-} from "../mcp/context/catalog";
+} from "../retrieval/model/catalog";
 import { compileModelFiles, storeServing } from "./get_context_join_fixture";
 
 export const FCJ_FILES: Record<string, string> = {

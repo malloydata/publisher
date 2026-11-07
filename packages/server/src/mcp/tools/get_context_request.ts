@@ -3,7 +3,7 @@
 
 import { z } from "zod/v3";
 import type { GivenValue } from "@malloydata/malloy";
-import { getDimensionValueSettings } from "../../retrieval_config";
+import { getDimensionValueSettings } from "../../retrieval/config";
 import {
    MAX_LIMIT,
    SEARCH_TARGET_TYPES,
@@ -11,7 +11,7 @@ import {
    type ResolvedRequest,
    type ResolvedSearch,
    type ResolvedValueSearch,
-} from "./get_context_types";
+} from "../../retrieval/model/types";
 
 /**
  * Sources a ranked search returns when the caller sets no limit. A listing

@@ -12,9 +12,9 @@ import * as fs from "fs";
 import * as os from "os";
 import * as path from "path";
 import { DEFAULT_EMBEDDING_MIN_SIMILARITY } from "../config";
-import { ChatModelImpl, type RawChat } from "../providers/chat_model";
-import { _setChatModelForTests } from "../providers/active";
-import type { ChatModel, LlmSettings } from "../providers/types";
+import { ChatModelImpl, type RawChat } from "../retrieval/llm/chat_model";
+import { _setChatModelForTests } from "../retrieval/llm/active";
+import type { ChatModel, LlmSettings } from "../retrieval/llm/types";
 import {
    EmbeddingProvider,
    _setEmbeddingProviderForTests,
