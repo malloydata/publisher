@@ -1,12 +1,78 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
-import type { PackageInfo } from "./get_context_levels";
 import type { Relationship } from "@malloydata/malloy-interfaces";
 import type { GivenValue } from "@malloydata/malloy";
 import type { Package } from "../../service/package";
-import type { SearchTargetType } from "./get_context_request";
 import type { ClassifiedInput } from "../../service/classification";
+
+/**
+ * The most sources one call may return. Shared by the parameter schema, the
+ * truncation warnings and the scan, which must agree.
+ */
+export const MAX_LIMIT = 150;
+
+/**
+ * The request shape, matching the hosted retrieval API's `GetContextRequest`
+ * field for field so one caller and eval harness serve both.
+ *
+ * Divergences: a search needs exactly one package in `scopes` (or a server
+ * serving one), because indexes are built per package and lazily, so an
+ * unscoped search could not tell "not modelled" from "not indexed yet"; with
+ * no `search_targets` a call lists instead (get_context_levels.ts); there are
+ * no organizations or workspaces; and `target_type` adds `join`. `dimensional_value` is answered from the value index built at load
+ * (context/values_index.ts), and for a gated source by a lookup through the
+ * query path with the caller's givens (get_context_values.ts); with
+ * `retrieval.dimensionValues.enabled: false` it is accepted and answered with
+ * a warning.
+ */
+export const SEARCH_TARGET_TYPES = [
+   "source",
+   "dimension",
+   "measure",
+   "view",
+   "dimensional_value",
+   "join",
+] as const;
+
+export type SearchTargetType = (typeof SEARCH_TARGET_TYPES)[number];
+
+/** What `package_info` carries for a call scoped to one whole package. */
+export interface PackageInfo {
+   environment: string;
+   package: string;
+   description?: string;
+   one_line_summary?: string;
+}
+
+/** The agent-facing account of a failure: what went wrong and what to try. */
+export interface SearchErrorDetails {
+   message: string;
+   suggestions: string[];
+}
+
+/**
+ * What a ranked search answers, before any wire envelope: the payload, or a
+ * failure with the payload fields that ride beside the error (an empty
+ * `sources`, `retrieval_reason`, ...). Only the get_context tool turns it into
+ * an MCP result.
+ */
+export type SearchResult =
+   | { ok: true; payload: Record<string, unknown> }
+   | { ok: false; error: SearchErrorDetails; payload: Record<string, unknown> };
+
+/** A successful search's payload. */
+export function searchAnswer(payload: Record<string, unknown>): SearchResult {
+   return { ok: true, payload };
+}
+
+/** A failed search: the error, and the payload fields that ride beside it. */
+export function searchFailure(
+   error: SearchErrorDetails,
+   payload: Record<string, unknown>,
+): SearchResult {
+   return { ok: false, error, payload };
+}
 
 /**
  * A retrievable model entity: a source, one of its views, a field (dimension or

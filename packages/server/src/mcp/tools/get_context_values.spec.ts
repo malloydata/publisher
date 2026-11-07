@@ -21,7 +21,10 @@ import { parseRetrievalConfig } from "../../retrieval_config";
 import type { EnvironmentStore } from "../../service/environment_store";
 import { Model } from "../../service/model";
 import { defaultIndexValueFetcher } from "../context/values_index";
-import { defaultValueFetcher } from "./get_context_values";
+import {
+   defaultValueFetcher,
+   setQueryModelResolver,
+} from "./get_context_values";
 import {
    editDistance,
    filterStem,
@@ -287,5 +290,30 @@ describe("the lookup query over a real model (gates are the query path's)", () =
       await expect(
          indexRead("locked_segments", "segment", 10),
       ).rejects.toBeInstanceOf(AccessDeniedError);
+   });
+});
+
+describe("the model resolver a lookup reads through", () => {
+   it("throws the installed resolver's worded refusal, not its cause", async () => {
+      setQueryModelResolver(async () => ({
+         error: { message: "worded by the adapter", suggestions: [] },
+         cause: new Error("raw cause"),
+      }));
+      try {
+         await expect(
+            defaultValueFetcher({
+               environmentStore: {} as EnvironmentStore,
+               environmentName: "env",
+               packageName: "pkg",
+               modelPath: "m.malloy",
+               source: "s",
+               dimension: "d",
+               limit: 5,
+               timeoutMs: 1000,
+            }),
+         ).rejects.toThrow("worded by the adapter");
+      } finally {
+         setQueryModelResolver(undefined);
+      }
    });
 });

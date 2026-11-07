@@ -46,6 +46,8 @@ import {
 import { setRetrievalConfig } from "./retrieval_config";
 import { checkHeapConfiguration } from "./heap_check";
 import { startPackageEmbeddingSync } from "./mcp/tools/package_embedding";
+import { setQueryModelResolver } from "./mcp/tools/get_context_values";
+import { getModelForQuery } from "./mcp/handler_utils";
 import {
    deleteEnvironmentEmbeddings,
    deletePackageEmbeddings,
@@ -216,6 +218,8 @@ observePackageStates(environmentStore);
 environmentStore.setPackageLoadedHook((environmentName, pkg) =>
    startPackageEmbeddingSync(environmentStore, environmentName, pkg),
 );
+// A gated value lookup words a refused model the way execute_query does.
+setQueryModelResolver(getModelForQuery);
 // A deleted package or environment takes what retrieval derived from it along.
 environmentStore.setPackageDeletedHook((environmentName, packageName) =>
    deletePackageEmbeddings(

@@ -28,8 +28,67 @@ import { quoteMalloyIdentifier } from "../../service/authorize";
 import type { EnvironmentStore } from "../../service/environment_store";
 import { tryAcquireQuerySlot } from "../../query_concurrency";
 import { runWithQueryTimeout } from "../../query_timeout";
-import type { ErrorDetails } from "../error_messages";
-import { getModelForQuery } from "../handler_utils";
+import { ModelNotFoundError } from "../../errors";
+import type { Environment } from "../../service/environment";
+import type { Model } from "../../service/model";
+import type { Package } from "../../service/package";
+import { resolveQueryModel } from "../../service/run_model_query";
+import type { SearchErrorDetails } from "./get_context_types";
+
+/**
+ * The model a value lookup queries, or why there is none: `error` is the
+ * account the caller reads, `cause` what the access record classifies.
+ */
+export type QueryModelResolution =
+   | { model: Model; environment: Environment; pkg: Package }
+   | { error: SearchErrorDetails; cause: unknown };
+
+/** Resolves the model a value lookup queries (the package's `latest`). */
+export type QueryModelResolver = (
+   environmentStore: EnvironmentStore,
+   environmentName: string,
+   packageName: string,
+   modelPath: string,
+) => Promise<QueryModelResolution>;
+
+/**
+ * The resolver with no adapter installed: a failure is its own error, unworded.
+ * The server installs the MCP tools' resolver (setQueryModelResolver), whose
+ * refusal is worded the way execute_query words it, because a value lookup's
+ * refusal reaches the agent in a get_context warning.
+ */
+const plainQueryModelResolver: QueryModelResolver = async (
+   environmentStore,
+   environmentName,
+   packageName,
+   modelPath,
+) => {
+   const { environment, pkg, model } = await resolveQueryModel(
+      environmentStore,
+      environmentName,
+      packageName,
+      modelPath,
+   );
+   if (!model || model.getType() === "notebook") {
+      throw new ModelNotFoundError(
+         `model '${modelPath}' in package '${packageName}' for environment '${environmentName}' not found`,
+      );
+   }
+   await model.getModel();
+   return { model, environment, pkg };
+};
+
+let queryModelResolver: QueryModelResolver = plainQueryModelResolver;
+
+/**
+ * Install the resolver value lookups use (the composition root passes the MCP
+ * tools' getModelForQuery); `undefined` restores the plain one.
+ */
+export function setQueryModelResolver(
+   resolver: QueryModelResolver | undefined,
+): void {
+   queryModelResolver = resolver ?? plainQueryModelResolver;
+}
 
 /** What one lookup query returns. */
 interface DistinctValues {
@@ -106,10 +165,10 @@ interface DistinctValueQuery {
 export async function queryDistinctValues(
    request: DistinctValueQuery,
 ): Promise<Array<Record<string, unknown>>> {
-   let refusal: ErrorDetails | undefined;
+   let refusal: SearchErrorDetails | undefined;
    try {
       const run = async (audit: QueryAudit) => {
-         const found = await getModelForQuery(
+         const found = await queryModelResolver(
             request.environmentStore,
             request.environmentName,
             request.packageName,
