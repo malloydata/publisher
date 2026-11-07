@@ -17,13 +17,13 @@ import { afterEach, describe, expect, it } from "bun:test";
 import request from "supertest";
 import { getMcpCorsOrigins } from "./config";
 import { createMcpApp } from "./routes/mcp";
-import type { EnvironmentStore } from "./service/environment_store";
 import { settings } from "./settings";
 import {
    installSettings,
    type SettingsInput,
    withSettings,
 } from "./test_helpers/settings_env";
+import { mcpServicesFor } from "./test_helpers/mcp_services";
 
 const ENV = "MCP_CORS_ORIGINS";
 
@@ -33,7 +33,7 @@ const ENV = "MCP_CORS_ORIGINS";
  * policy without a tool call.
  */
 function mcpApp() {
-   return createMcpApp({} as EnvironmentStore);
+   return createMcpApp(mcpServicesFor({}));
 }
 
 /** Settings with MCP_CORS_ORIGINS at `value`, or unset. */

@@ -3,7 +3,7 @@
 
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod/v3";
-import { ConnectionController } from "../../controller/connection.controller";
+import type { ConnectionController } from "../../controller/connection.controller";
 import { EnvironmentStore } from "../../service/environment_store";
 import { schemaEmbeddingEnabled } from "../../config";
 import { getEmbeddingProvider } from "../../service/embedding_provider";
@@ -304,7 +304,7 @@ Then paste that table's malloySource verbatim, e.g. source: \`orders\` is \`ware
 export function registerSearchDatabaseSchemaTool(
    mcpServer: McpServer,
    environmentStore: EnvironmentStore,
-   connectionController = new ConnectionController(environmentStore),
+   connectionController: ConnectionController,
 ): void {
    const deps: TierDeps = { environmentStore, connectionController };
 

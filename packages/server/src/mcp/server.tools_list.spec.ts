@@ -7,7 +7,7 @@ import * as path from "path";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { initializeMcpServer } from "./server";
-import type { EnvironmentStore } from "../service/environment_store";
+import { mcpServicesFor } from "../test_helpers/mcp_services";
 
 /**
  * Pins the full tools/list and prompts/list output byte for byte: tool names,
@@ -23,7 +23,7 @@ describe("MCP tools/list and prompts/list", () => {
    let listing: string;
 
    beforeAll(async () => {
-      const server = initializeMcpServer({} as unknown as EnvironmentStore);
+      const server = initializeMcpServer(mcpServicesFor({}));
       const [clientTransport, serverTransport] =
          InMemoryTransport.createLinkedPair();
       await server.connect(serverTransport);

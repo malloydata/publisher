@@ -4,8 +4,7 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod/v3";
 import { logger } from "../../logger";
-import { EnvironmentStore } from "../../service/environment_store";
-import { PackageController } from "../../controller/package.controller";
+import type { PackageController } from "../../controller/package.controller";
 import { buildMalloyUri } from "../handler_utils";
 import { registerGuardedTool } from "../register_tool";
 import { jsonResource } from "../tool_response";
@@ -54,10 +53,8 @@ A JSON object with status "reloaded", a mode, the package name, sourceContentSha
  */
 export function registerReloadPackageTool(
    mcpServer: McpServer,
-   environmentStore: EnvironmentStore,
+   packageController: PackageController,
 ): void {
-   const packageController = new PackageController(environmentStore);
-
    registerGuardedTool(mcpServer, {
       name: "reload_package",
       description: RELOAD_DESCRIPTION,

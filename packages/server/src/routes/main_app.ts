@@ -25,7 +25,8 @@ import { loggerMiddleware } from "../logger";
 import { rateLimitMiddleware } from "../rate_limit";
 import { registerLegacyRoutes } from "../server-old";
 import { isOverlayRoute } from "../service/request_overlay";
-import { type ApiControllers, registerApiRoutes } from "./api";
+import type { AppServices } from "../app_services";
+import { registerApiRoutes } from "./api";
 import {
    registerDataAppListRoute,
    registerDataAppStaticRoutes,
@@ -39,7 +40,7 @@ export const API_PREFIX = "/api/v0";
 const DEV_CONSOLE_ORIGIN = "http://localhost:5173";
 
 export interface MainAppOptions {
-   controllers: ApiControllers;
+   controllers: AppServices;
    /** The `publisher.js` runtime data apps load. */
    dataAppRuntimePath: string;
    /**
