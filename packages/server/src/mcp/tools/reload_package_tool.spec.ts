@@ -10,7 +10,7 @@ import {
    ServiceUnavailableError,
 } from "../../errors";
 
-// Capture the handler registerReloadPackageTool passes to McpServer.tool, so it
+// Capture the handler registerReloadPackageTool passes to McpServer.registerTool, so it
 // can be exercised against a mocked EnvironmentStore. The tool builds a
 // PackageController internally, which calls environment.getPackage(pkg, reload),
 // so the mock only needs getEnvironment -> { getPackage }.
@@ -22,7 +22,7 @@ type Handler = (params: Record<string, unknown>) => Promise<{
 function captureHandler(store: Partial<EnvironmentStore>): Handler {
    let handler: Handler | undefined;
    const fakeServer = {
-      tool: (_name: string, _desc: string, _shape: unknown, h: Handler) => {
+      registerTool: (_name: string, _config: unknown, h: Handler) => {
          handler = h;
       },
    };

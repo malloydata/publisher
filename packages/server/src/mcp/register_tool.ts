@@ -79,10 +79,9 @@ export function registerTool<Shape extends z.ZodRawShape>(
    inputSchema: Shape,
    handler: ToolHandler<Shape>,
 ): void {
-   server.tool(
+   server.registerTool(
       name,
-      description,
-      inputSchema,
+      { description, inputSchema },
       instrumentTool(name, handler) as never,
    );
 }

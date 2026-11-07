@@ -30,7 +30,11 @@ function register(skills: SkillEntry[]) {
    let shape: z.ZodRawShape | undefined;
    registerGetSkillTool(
       {
-         tool: (_n: string, _d: string, s: z.ZodRawShape, h: Handler) => {
+         registerTool: (
+            _n: string,
+            { inputSchema: s }: { inputSchema: z.ZodRawShape },
+            h: Handler,
+         ) => {
             shape = s;
             handler = h;
          },

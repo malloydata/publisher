@@ -155,7 +155,7 @@ describe("MCP tool telemetry", () => {
          | undefined;
       registerGuardedTool(
          {
-            tool: (_n: string, _d: string, _s: unknown, h: typeof handler) => {
+            registerTool: (_n: string, _config: unknown, h: typeof handler) => {
                handler = h;
             },
          } as unknown as McpServer,

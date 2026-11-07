@@ -25,7 +25,7 @@ import {
    ServiceUnavailableError,
 } from "../../errors";
 
-// Capture the handler registerExecuteQueryTool passes to McpServer.tool, so it
+// Capture the handler registerExecuteQueryTool passes to McpServer.registerTool, so it
 // can be exercised against a mocked EnvironmentStore. Mirrors the pattern in
 // compile_tool.spec.ts and reload_package_tool.spec.ts.
 type Handler = (params: Record<string, unknown>) => Promise<{
@@ -71,10 +71,9 @@ function captureTool(
    let handler: Handler | undefined;
    let shape: Record<string, unknown> | undefined;
    const fakeServer = {
-      tool: (
+      registerTool: (
          _name: string,
-         _desc: string,
-         s: Record<string, unknown>,
+         { inputSchema: s }: { inputSchema: Record<string, unknown> },
          h: Handler,
       ) => {
          shape = s;

@@ -38,7 +38,7 @@ function getAgent(getPackage?: () => Promise<unknown>): Handler {
    let handler: Handler | undefined;
    registerGetAgentTool(
       {
-         tool: (_n: string, _d: string, _s: unknown, h: Handler) => {
+         registerTool: (_n: string, _config: unknown, h: Handler) => {
             handler = h;
          },
       } as never,

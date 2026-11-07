@@ -18,7 +18,7 @@ function listPackages(store: unknown): Promise<Result> {
    let handler: (() => Promise<Result>) | undefined;
    registerListPackagesTool(
       {
-         tool: (_n: string, _d: string, _s: unknown, h: typeof handler) => {
+         registerTool: (_n: string, _config: unknown, h: typeof handler) => {
             handler = h;
          },
       } as never,
