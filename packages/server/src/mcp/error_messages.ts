@@ -1,7 +1,16 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
-import { ConnectionError, logInternalFailure } from "../errors";
+import {
+   AccessDeniedError,
+   ConnectionError,
+   logInternalFailure,
+} from "../errors";
+import {
+   isRestrictedByMessage,
+   matchMalloyErrorText,
+   type MalloyTextMatch,
+} from "./malloy_error_text";
 
 export interface ErrorDetails {
    message: string;
@@ -129,11 +138,9 @@ export function getMalloyErrorDetails(
       const restrictedProblems = Array.isArray(problems)
          ? problems.filter((p) => (p.code ?? "").includes("restricted"))
          : [];
-      // Narrower than includes("restricted"): a match suppresses other
-      // diagnostics, so a user identifier containing the word must not trip it.
       const restrictedBySniff =
          restrictedProblems.length === 0 &&
-         /cannot be used in a restricted/i.test(error.message);
+         isRestrictedByMessage(error.message);
       if (restrictedProblems.length > 0 || restrictedBySniff) {
          const causes =
             restrictedProblems.length > 0
@@ -152,96 +159,25 @@ export function getMalloyErrorDetails(
 
       baseMessage = `Error during ${operation} for resource '${modelIdentifier}': ${error.message}`;
 
-      // Order matters: more specific patterns are checked first.
-      const viewNotFoundMatch = error.message.match(
-         /View '([^']+)' not found in source '([^']+)'/i,
-      );
-      const sourceNotFoundMatch = error.message.match(
-         /Source '([^']+)' not found/i,
-      );
-      const queryNotFoundMatch = error.message.match(
-         /Query '([^']+)' not found/i,
-      );
-      const referenceErrorMatch = error.message.match(
-         /Reference to undefined object(?: '([^']+)')?/i,
-      );
-      const syntaxErrorMatch = error.message.match(
-         /no viable alternative at input/i,
-      );
-      const connectionErrorMatch = error.message.match(
-         /Cannot connect to database/i,
-      );
-      const fieldNotFoundMatch = error.message.match(
-         /Field '([^']+)' not found in (source|query|view) '([^']+)'/i,
-      );
-      const invalidRequestMatch = error.message.match(
-         /Invalid query request\\. Query OR queryName must be defined/i,
-      );
-      // `#(authorize)` denial: the message names only the source (gate logic
-      // is never leaked), and the advice is about access, not syntax.
-      const accessDeniedMatch = error.message.match(
-         /Access denied for source "([^"]+)"/i,
-      );
-
-      if (accessDeniedMatch) {
+      // What Publisher's own errors say they are, read as data; then what a
+      // Malloy message says, read as text (malloy_error_text.ts).
+      if (error instanceof AccessDeniedError && error.source !== undefined) {
+         // `#(authorize)` denial: the error names only the source (gate logic
+         // is never leaked), and the advice is about access, not syntax.
          refined = true;
-         const [, sourceName] = accessDeniedMatch;
          suggestions = [
-            `Suggestion: Access to source '${sourceName}' is restricted by an authorize gate. Supply the givens its authorize expression requires (e.g. a role/region given) and retry. This is an authorization denial, not a syntax error.`,
+            `Suggestion: Access to source '${error.source}' is restricted by an authorize gate. Supply the givens its authorize expression requires (e.g. a role/region given) and retry. This is an authorization denial, not a syntax error.`,
          ];
-      } else if (viewNotFoundMatch) {
-         refined = true;
-         const [, viewName, sourceName] = viewNotFoundMatch;
-         suggestions.unshift(
-            `Suggestion: View '${viewName}' was not found in source '${sourceName}'. Check the view name spelling, or list that source's views with get_context: pass search_targets [{"target_type": "view"}] and a scopes entry whose source is '${sourceName}'. Views are defined within sources like 'source: ${sourceName} is ... extend { view: ${viewName} is { ... } }'.`,
-         );
-      } else if (sourceNotFoundMatch) {
-         refined = true;
-         const [, sourceName] = sourceNotFoundMatch;
-         suggestions.unshift(
-            `Suggestion: Source '${sourceName}' was not found or could not be accessed. Verify its definition (e.g., \`source: ${sourceName} is table('...')\` or \`duckdb.sql("...")\`) and ensure any associated connections are valid.`,
-            `Suggestion: Check the spelling of '${sourceName}'. List the package's sources with get_context: pass search_targets [{"target_type": "source"}] and a scopes entry naming the environment and package.`,
-         );
-      } else if (queryNotFoundMatch) {
-         refined = true;
-         const [, queryName] = queryNotFoundMatch;
-         suggestions.unshift(
-            `Suggestion: Named query '${queryName}' was not found. Verify its definition (e.g., \`query: ${queryName} is source_name -> { ... }\`) within the model '${modelIdentifier}'.`,
-            `Suggestion: Check the spelling of '${queryName}'. Ensure it's a named query (defined with \`query:\`), not a view. List them with get_context: pass search_targets [{"target_type": "view"}], which covers named queries too.`,
-         );
-      } else if (fieldNotFoundMatch) {
-         refined = true;
-         const [, fieldName, fieldContextType, fieldContextName] =
-            fieldNotFoundMatch;
-         suggestions.unshift(
-            `Suggestion: Field '${fieldName}' was not found in ${fieldContextType} '${fieldContextName}'. Check the spelling of the field name within the definition of '${fieldContextName}'.`,
-            `Suggestion: Ensure the field is defined directly or inherited correctly in the '${fieldContextName}' ${fieldContextType}. Inspect its fields with get_context: pass search_targets [{"target_type": "dimension"}, {"target_type": "measure"}], scoped to the source that holds it.`,
-         );
-      } else if (referenceErrorMatch) {
-         refined = true;
-         const objectName = referenceErrorMatch[1] || "[unknown object]";
-         suggestions.unshift(
-            `Suggestion: Check if the referenced object '${objectName}' (source, query, view, field, dimension, measure) is defined correctly and spelled correctly (e.g., 'source: my_source is ...', 'query: my_query is ...'). Ensure it's defined *before* being used in the model file.`,
-         );
-      } else if (syntaxErrorMatch) {
-         refined = true;
-         suggestions.unshift(
-            "Suggestion: There seems to be a syntax error near the location indicated in the error message. Check for misplaced/missing keywords (like 'is', '->', 'extend', 'where', 'aggregate', 'group_by', 'nest'), commas, brackets '{ }', or parentheses '( )'. See Query Syntax: https://docs.malloydata.dev/documentation/language/query",
-         );
-      } else if (connectionErrorMatch) {
-         refined = true;
-         suggestions.unshift(
-            "Suggestion: Verify the database connection details (credentials, host, database name, connection name in Malloy) associated with this model.",
-         );
-         suggestions.push(
-            "Ensure the database server is running and accessible from the publisher server.",
-         );
-      } else if (invalidRequestMatch) {
-         refined = true;
-         suggestions.unshift(
-            "Suggestion: This error can occur when specifying a view using 'sourceName' and 'queryName'. Try providing the full query string directly in the 'query' parameter instead (e.g., 'query': 'run: your_source_name->your_view_name').",
-            "Suggestion: Also verify you are providing either the 'query' parameter OR the correct combination of 'queryName' (and optionally 'sourceName' for views).",
-         );
+      } else {
+         const matched = matchMalloyErrorText(error.message);
+         if (matched) {
+            refined = true;
+            suggestions = refineForMalloyText(
+               matched,
+               modelIdentifier,
+               suggestions,
+            );
+         }
       }
 
       if (!refined) {
@@ -256,4 +192,63 @@ export function getMalloyErrorDetails(
       message: baseMessage,
       suggestions: suggestions,
    };
+}
+
+/** The Malloy advice refined by what a Malloy error message said went wrong. */
+function refineForMalloyText(
+   matched: MalloyTextMatch,
+   modelIdentifier: string,
+   generic: readonly string[],
+): string[] {
+   switch (matched.match) {
+      case "view_not_found": {
+         const { view, source } = matched;
+         return [
+            `Suggestion: View '${view}' was not found in source '${source}'. Check the view name spelling, or list that source's views with get_context: pass search_targets [{"target_type": "view"}] and a scopes entry whose source is '${source}'. Views are defined within sources like 'source: ${source} is ... extend { view: ${view} is { ... } }'.`,
+            ...generic,
+         ];
+      }
+      case "source_not_found": {
+         const { source } = matched;
+         return [
+            `Suggestion: Source '${source}' was not found or could not be accessed. Verify its definition (e.g., \`source: ${source} is table('...')\` or \`duckdb.sql("...")\`) and ensure any associated connections are valid.`,
+            `Suggestion: Check the spelling of '${source}'. List the package's sources with get_context: pass search_targets [{"target_type": "source"}] and a scopes entry naming the environment and package.`,
+            ...generic,
+         ];
+      }
+      case "query_not_found": {
+         const { query } = matched;
+         return [
+            `Suggestion: Named query '${query}' was not found. Verify its definition (e.g., \`query: ${query} is source_name -> { ... }\`) within the model '${modelIdentifier}'.`,
+            `Suggestion: Check the spelling of '${query}'. Ensure it's a named query (defined with \`query:\`), not a view. List them with get_context: pass search_targets [{"target_type": "view"}], which covers named queries too.`,
+            ...generic,
+         ];
+      }
+      case "field_not_found": {
+         const { field, contextType, contextName } = matched;
+         return [
+            `Suggestion: Field '${field}' was not found in ${contextType} '${contextName}'. Check the spelling of the field name within the definition of '${contextName}'.`,
+            `Suggestion: Ensure the field is defined directly or inherited correctly in the '${contextName}' ${contextType}. Inspect its fields with get_context: pass search_targets [{"target_type": "dimension"}, {"target_type": "measure"}], scoped to the source that holds it.`,
+            ...generic,
+         ];
+      }
+      case "undefined_reference": {
+         const objectName = matched.object || "[unknown object]";
+         return [
+            `Suggestion: Check if the referenced object '${objectName}' (source, query, view, field, dimension, measure) is defined correctly and spelled correctly (e.g., 'source: my_source is ...', 'query: my_query is ...'). Ensure it's defined *before* being used in the model file.`,
+            ...generic,
+         ];
+      }
+      case "syntax":
+         return [
+            "Suggestion: There seems to be a syntax error near the location indicated in the error message. Check for misplaced/missing keywords (like 'is', '->', 'extend', 'where', 'aggregate', 'group_by', 'nest'), commas, brackets '{ }', or parentheses '( )'. See Query Syntax: https://docs.malloydata.dev/documentation/language/query",
+            ...generic,
+         ];
+      case "cannot_connect":
+         return [
+            "Suggestion: Verify the database connection details (credentials, host, database name, connection name in Malloy) associated with this model.",
+            ...generic,
+            "Ensure the database server is running and accessible from the publisher server.",
+         ];
+   }
 }

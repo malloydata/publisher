@@ -286,7 +286,7 @@ function denyUnlessAdmitted(
          outcome === "unresolvable" ? "denied_unresolvable" : "denied_by_lock",
          site,
       );
-      throw new AccessDeniedError(`Access denied for source "${label}".`);
+      throw AccessDeniedError.forSource(label);
    }
    recordLockDecision("denied_unresolvable", site);
    // Also booked on the row-level counter: a gate refused at shape resolution
@@ -294,7 +294,7 @@ function denyUnlessAdmitted(
    // `cause` is a finer label, not a substitute.
    recordRowLevelGateDecision("denied_by_gate", site);
    if (resolution.cause) recordRowLevelGateRejected(resolution.cause);
-   throw new AccessDeniedError(`Access denied for source "${label}".`);
+   throw AccessDeniedError.forSource(label);
 }
 
 export type { ModelQueryMetadataInput } from "./query_metadata";
@@ -1526,9 +1526,7 @@ export class Model {
          "denied_by_gate",
          unbound ? "caller_join" : "entry_point",
       );
-      return new AccessDeniedError(
-         `Access denied for source "${unbound?.label ?? fallbackLabel}".`,
-      );
+      return AccessDeniedError.forSource(unbound?.label ?? fallbackLabel);
    }
 
    /**
@@ -1846,7 +1844,7 @@ export class Model {
       );
       // Names the compiled entry point the request itself declared — never the
       // gate's column, nor which gated source it may have reached.
-      throw new AccessDeniedError(`Access denied for source "${entryPoint}".`);
+      throw AccessDeniedError.forSource(entryPoint);
    }
 
    /** Memo for {@link declaresAnyGate}. */
@@ -2230,7 +2228,7 @@ export class Model {
          reason,
          at,
       });
-      throw new AccessDeniedError(`Access denied for source "${alias}".`);
+      throw AccessDeniedError.forSource(alias);
    }
 
    /**
@@ -2594,9 +2592,7 @@ export class Model {
             g.givenNames.every((name) => Object.hasOwn(givens, name));
          if (!options?.checkOnly || !rowLevel.every(decidable)) {
             recordRowLevelGateDecision("denied_by_gate", siteOf(rowLevel[0]));
-            throw new AccessDeniedError(
-               `Access denied for source "${rowLevel[0].label}".`,
-            );
+            throw AccessDeniedError.forSource(rowLevel[0].label);
          }
          return runnable;
       }
@@ -2652,9 +2648,7 @@ export class Model {
             modelPath: this.modelPath,
             error: err instanceof Error ? err.message : String(err),
          });
-         throw new AccessDeniedError(
-            `Access denied for source "${rowLevel[0].label}".`,
-         );
+         throw AccessDeniedError.forSource(rowLevel[0].label);
       }
    }
 
@@ -3116,7 +3110,7 @@ export class Model {
          // `name` is the physical table identifier (`duckdb:orgtable`).
          const named = struct ?? target;
          const label = (named as { as?: string }).as || named.name;
-         throw new AccessDeniedError(`Access denied for source "${label}".`);
+         throw AccessDeniedError.forSource(label);
       }
    }
 
@@ -3602,9 +3596,7 @@ export class Model {
             modelPath: this.modelPath,
             error: err instanceof Error ? err.message : String(err),
          });
-         throw new AccessDeniedError(
-            `Access denied for source "${declaringSourceName}".`,
-         );
+         throw AccessDeniedError.forSource(declaringSourceName);
       }
    }
 
