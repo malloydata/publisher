@@ -30,7 +30,7 @@ import { deleteEngineRows, ENGINE_TABLES } from "./catalog_store";
 import { listItems, resolveDocParts, splitDocByRules } from "./doc_parts";
 import { buildFcjIndex } from "./index_build";
 import { KeywordIndex, stem, terms } from "./keyword";
-import { VectorSyncError } from "./vectors";
+import { VectorSyncError, type VectorProgress } from "./vectors";
 import { SyncRequestBudget } from "../tools/get_context_llm";
 
 describe("doc parts by rules", () => {
@@ -277,6 +277,46 @@ describe("index build", () => {
          reused: 51,
          deleted: 0,
       });
+   });
+
+   it("reports the vectors step's progress after each stored batch, and reused rows at once", async () => {
+      const batched = Object.defineProperty(
+         Object.create(stubEmbeddingProvider()),
+         "maxBatch",
+         { value: 20 },
+      );
+      const seen: VectorProgress[] = [];
+      const run = () =>
+         buildFcjIndex({
+            pkgIndex: fixture.pkgIndex,
+            db,
+            provider: batched,
+            environmentName: "env",
+            packageName: "fixture",
+            settings: DEFAULT_FCJ_SETTINGS,
+            onVectorProgress: (p) => seen.push(p),
+         });
+      await run();
+      // One derived row per node, so rows and entities move together here.
+      expect(seen.map((p) => [p.embeddedRows, p.embeddedEntities])).toEqual([
+         [0, 0],
+         [20, 20],
+         [40, 40],
+         [51, 51],
+      ]);
+      expect(
+         new Set(seen.map((p) => `${p.totalRows}/${p.totalEntities}`)),
+      ).toEqual(new Set(["51/51"]));
+      seen.length = 0;
+      await run();
+      expect(seen).toEqual([
+         {
+            totalRows: 51,
+            embeddedRows: 51,
+            totalEntities: 51,
+            embeddedEntities: 51,
+         },
+      ]);
    });
 
    it("names the vectors step, its progress and the deadline when embedding fails", async () => {

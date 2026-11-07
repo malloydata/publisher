@@ -23,6 +23,7 @@ import {
    embedText,
    scriptedChat,
    semanticHarness,
+   stubEmbeddingProvider,
    untilSemantic,
    useChat,
    type SemanticHarness,
@@ -35,16 +36,18 @@ import { ServiceUnavailableError } from "../../errors";
 import { pollFor, pollUntil } from "../../test_helpers/poll";
 import { PROVIDER_FAILURE_COOLDOWN_MS } from "../tools/retrieval_shared";
 import { _setFcjDeadlineForTests, inScope } from "./engine";
+import { getPackageEmbeddingStatus } from "../tools/package_embedding";
 import { sourceContextKey } from "../tools/package_entities";
 import {
    _setFcjValueFetcherForTests,
    fcjJudgeChat,
    fcjStateOf,
+   fcjVectorProgressOf,
    kickFcjBuild,
    VALUE_RETRY_MAX_DELAY_MS,
    valueRetryDelayMs,
 } from "./engine_state";
-import { ENGINE_TABLES } from "./catalog_store";
+import { deleteEngineRows, ENGINE_TABLES } from "./catalog_store";
 import type { EnvironmentStore } from "../../service/environment_store";
 import type { IndexValueFetcher } from "./values_index";
 import type { Package } from "../../service/package";
@@ -108,6 +111,77 @@ describe("the search engine", () => {
             (s.entities ?? []).map((e) => e.entity_id),
       );
       expect(ids).toContain("measure:flights:flight_count");
+   });
+
+   it("reports the built index's vectors as the embedding status counts", async () => {
+      const pkg = (await compileFcjFixture()).pkg as Package;
+      const before = await getPackageEmbeddingStatus(
+         {} as EnvironmentStore,
+         "env",
+         "fixture",
+         pkg,
+      );
+      expect(before).toMatchObject({ embeddedRows: 0, totalRows: 0 });
+      const handler = harness.handlerFor(pkg);
+      await untilSemantic(handler, {
+         search_targets: [
+            { target_type: "measure", search_text: "number of flights" },
+         ],
+         scopes,
+      });
+      const state = fcjStateOf(pkg);
+      if (state?.status !== "ready") throw new Error("expected a ready index");
+      const rows = state.index.report.vectors.rows;
+      const status = await getPackageEmbeddingStatus(
+         {} as EnvironmentStore,
+         "env",
+         "fixture",
+         pkg,
+      );
+      expect(rows).toBeGreaterThan(0);
+      expect(status).toMatchObject({
+         status: "ready",
+         totalRows: rows,
+         embeddedRows: rows,
+         totalEntities: state.index.vectors.size,
+         embeddedEntities: state.index.vectors.size,
+      });
+   });
+
+   it("reports the rows embedded so far while the index builds", async () => {
+      const stub = stubEmbeddingProvider();
+      let release!: () => void;
+      const gate = new Promise<void>((resolve) => (release = resolve));
+      let calls = 0;
+      const slow = Object.create(stub) as typeof stub;
+      Object.defineProperty(slow, "maxBatch", { value: 20 });
+      slow.embedBatch = async (...a: Parameters<typeof stub.embedBatch>) => {
+         // The second batch waits, so the build holds at 20 rows.
+         if (++calls === 2) await gate;
+         return stub.embedBatch(...a);
+      };
+      _setEmbeddingProviderForTests(slow);
+      // Vectors an earlier spec stored would be reused, not embedded.
+      await deleteEngineRows(harness.db, "env", "fixture");
+      const pkg = (await compileFcjFixture()).pkg as Package;
+      const handler = harness.handlerFor(pkg);
+      const request = {
+         search_targets: [{ target_type: "measure", search_text: "flights" }],
+         scopes,
+      };
+      try {
+         await callPayload(handler, request);
+         await pollUntil(() => fcjVectorProgressOf(pkg).embeddedRows === 20);
+         expect(fcjStateOf(pkg)?.status).toBe("building");
+         expect(fcjVectorProgressOf(pkg)).toMatchObject({
+            embeddedRows: 20,
+            embeddedEntities: 20,
+         });
+         expect(fcjVectorProgressOf(pkg).totalRows).toBeGreaterThan(20);
+      } finally {
+         release();
+      }
+      await untilSemantic(handler, request);
    });
 
    it("says lexical, not semantic, when no embedding provider is configured", async () => {

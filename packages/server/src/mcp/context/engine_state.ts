@@ -45,6 +45,7 @@ import {
    resolveSourceSummaries,
 } from "../tools/source_summaries";
 import { buildFcjIndex, type FcjIndex } from "./index_build";
+import type { VectorProgress } from "./vectors";
 import type {
    IndexValueFetcher,
    ValueBuildReport,
@@ -52,7 +53,12 @@ import type {
 } from "./values_index";
 
 export type FcjState =
-   | { status: "building"; startedAt: number }
+   | {
+        status: "building";
+        startedAt: number;
+        /** Set once the vectors step starts. */
+        progress?: VectorProgress;
+     }
    | {
         status: "ready";
         index: FcjIndex;
@@ -152,7 +158,8 @@ export function kickFcjBuild(args: {
    ) {
       return;
    }
-   states.set(pkg, { status: "building", startedAt: Date.now() });
+   const building: FcjState = { status: "building", startedAt: Date.now() };
+   states.set(pkg, building);
    void embeddingSyncQueue.enqueue(async () => {
       // A package unloaded, deleted or replaced while this waited must stay gone.
       if (!stillServed(args)) {
@@ -160,7 +167,9 @@ export function kickFcjBuild(args: {
          return;
       }
       try {
-         const index = await buildFor(args);
+         const index = await buildFor(args, undefined, (progress) => {
+            building.progress = progress;
+         });
          if (await droppedDuringBuild(args)) return;
          states.set(pkg, readyState(index, environmentName, packageName));
       } catch (error) {
@@ -330,6 +339,7 @@ async function buildFor(
       pkg: Package;
    },
    previousValues?: { index: ValueIndex; report: ValueBuildReport },
+   onVectorProgress?: (progress: VectorProgress) => void,
 ): Promise<FcjIndex> {
    const { environmentStore, environmentName, packageName, pkg } = args;
    const pkgIndex = await getPackageIndex(
@@ -415,7 +425,37 @@ async function buildFor(
       ...(previousValues ? { previousValues } : {}),
       // A package removed mid-build stops reading values and embedding.
       shouldStop,
+      ...(onVectorProgress ? { onVectorProgress } : {}),
    });
+}
+
+/**
+ * How much of `pkg`'s index holds vectors: while building, as far as the
+ * vectors step has got (zero before it starts); once ready, what the index
+ * serves. Zero with no build, or after a failed one.
+ */
+export function fcjVectorProgressOf(pkg: Package): VectorProgress {
+   const state = states.get(pkg);
+   if (state?.status === "building" && state.progress) return state.progress;
+   if (state?.status !== "ready") {
+      return {
+         totalRows: 0,
+         embeddedRows: 0,
+         totalEntities: 0,
+         embeddedEntities: 0,
+      };
+   }
+   const { index } = state;
+   let embeddedRows = 0;
+   for (const facets of index.vectors.values()) embeddedRows += facets.length;
+   return {
+      totalRows: index.report.vectors.rows,
+      embeddedRows,
+      // Every searched node (one that is not a folded copy) wants a row.
+      totalEntities: [...index.catalog.nodes.values()].filter((n) => !n.copyOf)
+         .length,
+      embeddedEntities: index.vectors.size,
+   };
 }
 
 /** The state as the REST Package resource reports it, under `embeddingIndex.fcj`. */

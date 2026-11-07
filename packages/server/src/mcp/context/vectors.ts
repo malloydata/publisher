@@ -94,6 +94,17 @@ export class VectorSyncError extends Error {
    }
 }
 
+/**
+ * How far a sync has got: rows (and the entities they belong to) that hold a
+ * usable vector, of those the package wants.
+ */
+export interface VectorProgress {
+   totalRows: number;
+   embeddedRows: number;
+   totalEntities: number;
+   embeddedEntities: number;
+}
+
 /** The tables the sync writes; both have the same columns (schema.ts). */
 export type VectorTable = "catalog_embeddings" | "value_embeddings";
 
@@ -106,6 +117,8 @@ export async function syncVectors(args: {
    /** Default `catalog_embeddings`. */
    table?: VectorTable;
    shouldStop?: () => boolean;
+   /** Called once the reusable rows are known, and after each stored batch. */
+   onProgress?: (progress: VectorProgress) => void;
 }): Promise<VectorSyncOutcome> {
    const { db, provider, environmentName, packageName } = args;
    const table: VectorTable = args.table ?? "catalog_embeddings";
@@ -168,6 +181,15 @@ export async function syncVectors(args: {
    }
    const toEmbed = [...wanted.entries()].filter(([k]) => !kept.has(k));
    let embedded = 0;
+   const totalEntities = new Set([...wanted.values()].map((r) => r.node)).size;
+   const progress = () =>
+      args.onProgress?.({
+         totalRows: wanted.size,
+         embeddedRows: reused + embedded,
+         totalEntities,
+         embeddedEntities: vectors.size,
+      });
+   progress();
    let chars = 0;
    const batchSize = Math.max(1, Math.min(provider.maxBatch, 256));
    for (let i = 0; i < toEmbed.length; i += batchSize) {
@@ -221,6 +243,7 @@ export async function syncVectors(args: {
          params,
       );
       embedded += batch.length;
+      progress();
    }
    return {
       vectors,

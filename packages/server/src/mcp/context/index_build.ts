@@ -69,7 +69,12 @@ import {
    type IndexValueFetcher,
    type ValueBuildReport,
 } from "./values_index";
-import { syncVectors, type Facet, type VectorRow } from "./vectors";
+import {
+   syncVectors,
+   type Facet,
+   type VectorProgress,
+   type VectorRow,
+} from "./vectors";
 
 /** What the build did, for the load log and the index-status endpoint. */
 export interface FcjBuildReport {
@@ -214,6 +219,8 @@ export async function buildFcjIndex(args: {
     */
    previousValues?: { index: ValueIndex; report: ValueBuildReport };
    shouldStop?: () => boolean;
+   /** Progress of the entity vectors step (not the value vectors). */
+   onVectorProgress?: (progress: VectorProgress) => void;
 }): Promise<FcjIndex> {
    const started = Date.now();
    const { db, environmentName, packageName, settings } = args;
@@ -420,6 +427,9 @@ export async function buildFcjIndex(args: {
          packageName,
          rows,
          ...(args.shouldStop ? { shouldStop: args.shouldStop } : {}),
+         ...(args.onVectorProgress
+            ? { onProgress: args.onVectorProgress }
+            : {}),
       });
       vectors = out.vectors;
       vectorReport = {
