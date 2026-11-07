@@ -15,6 +15,7 @@ import type { Connection } from "@malloydata/malloy";
 import { ConnectionController } from "../controller/connection.controller";
 import { LegacyReportController } from "../controller/legacy_report.controller";
 import { QueryController } from "../controller/query.controller";
+import { QueryUseCase } from "../usecases/query";
 import { AccessDeniedError, PayloadTooLargeError } from "../errors";
 import { logger } from "../logger";
 import { registerExecuteQueryTool } from "../mcp/tools/execute_query_tool";
@@ -107,7 +108,7 @@ function rest(
       signal?: AbortSignal;
    } = {},
 ) {
-   return new QueryController(store).getQuery({
+   return new QueryController(new QueryUseCase(store)).getQuery({
       environmentName: "env",
       packageName: "pkg",
       modelPath: opts.modelPath ?? "m.malloy",
@@ -192,7 +193,9 @@ describe("REST query writes exactly one record", () => {
    it("on the legacy model query route, carrying the caller and trace the request named", async () => {
       await withAuthorizeModel(MODEL, async ({ model }) => {
          const app = buildRouteApp({
-            queryController: new QueryController(storeOf(model)),
+            queryController: new QueryController(
+               new QueryUseCase(storeOf(model)),
+            ),
          });
          await request(app)
             .post("/api/v0/projects/env/packages/pkg/models/m.malloy/query")
@@ -466,7 +469,7 @@ describe("a request refused before its controller runs still writes one record",
    const appOver = (store: EnvironmentStore) =>
       buildRouteApp({
          environmentStore: store,
-         queryController: new QueryController(store),
+         queryController: new QueryController(new QueryUseCase(store)),
       });
    const atCap = (run: () => Promise<void>) =>
       withSettings(
