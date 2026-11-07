@@ -54,6 +54,7 @@ import { Environment } from "./environment";
 import { Model } from "./model";
 import { StorageServeShape } from "./model_serve_shape";
 import { Package } from "./package";
+import { writeTempPackage } from "../test_helpers/temp_package";
 
 type ApiConnection = components["schemas"]["Connection"];
 
@@ -117,11 +118,7 @@ describe("a storage destination is not in the namespace a tenant authors in", ()
 
    beforeEach(() => {
       envDir = fs.mkdtempSync(path.join(os.tmpdir(), "publisher-dest-env-"));
-      tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "publisher-dest-pkg-"));
-      fs.writeFileSync(
-         path.join(tempDir, "publisher.json"),
-         JSON.stringify({ name: "pkg" }),
-      );
+      tempDir = writeTempPackage({}, { prefix: "publisher-dest-pkg-" }).dir;
    });
 
    afterEach(() => {

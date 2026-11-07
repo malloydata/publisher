@@ -28,7 +28,6 @@ import {
    it,
 } from "bun:test";
 import * as fs from "fs";
-import * as os from "os";
 import * as path from "path";
 import {
    PackageLoadPool,
@@ -36,6 +35,7 @@ import {
 } from "../package_load/package_load_pool";
 import { Model } from "./model";
 import { Package } from "./package";
+import { writeTempPackage } from "../test_helpers/temp_package";
 
 const ROWS = `duckdb.sql("select * from (values (1,1),(2,2),(3,2),(4,1)) as t(id, org_id)")`;
 
@@ -135,12 +135,14 @@ describe("a query that bakes a default-less given loads", () => {
    });
 
    beforeEach(() => {
-      tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "publisher-unbound-"));
+      tempDir = writeTempPackage(
+         {},
+         {
+            prefix: "publisher-unbound-",
+            manifest: { name: "pkg", description: "unbound given" },
+         },
+      ).dir;
       duckdb = new DuckDBConnection("duckdb", ":memory:");
-      fs.writeFileSync(
-         path.join(tempDir, "publisher.json"),
-         JSON.stringify({ name: "pkg", description: "unbound given" }),
-      );
    });
 
    afterEach(async () => {

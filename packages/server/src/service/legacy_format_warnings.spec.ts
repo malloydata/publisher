@@ -23,13 +23,13 @@ import {
    it,
 } from "bun:test";
 import * as fs from "fs";
-import * as os from "os";
 import * as path from "path";
 import {
    PackageLoadPool,
    __setPackageLoadPoolForTests,
 } from "../package_load/package_load_pool";
 import { Package } from "./package";
+import { writeTempPackage } from "../test_helpers/temp_package";
 
 const ROWS = `duckdb.sql("select * from (values (1,'east'),(2,'west')) as t(id, region)")`;
 
@@ -62,12 +62,14 @@ describe("warnings for content on a deprecated format", () => {
    });
 
    beforeEach(() => {
-      tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "publisher-legacy-"));
+      tempDir = writeTempPackage(
+         {},
+         {
+            prefix: "publisher-legacy-",
+            manifest: { name: "pkg", description: "legacy formats" },
+         },
+      ).dir;
       duckdb = new DuckDBConnection("duckdb", ":memory:");
-      fs.writeFileSync(
-         path.join(tempDir, "publisher.json"),
-         JSON.stringify({ name: "pkg", description: "legacy formats" }),
-      );
    });
 
    afterEach(async () => {
