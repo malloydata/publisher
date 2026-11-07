@@ -13,12 +13,15 @@ import {
 import express from "express";
 import type { AddressInfo } from "net";
 import type { Server } from "http";
-import { httpMetricsMiddleware, UNMATCHED_ROUTE } from "./http_metrics";
-import { resetInstrumentsForTesting } from "./telemetry";
+import {
+   httpMetricsMiddleware,
+   UNMATCHED_ROUTE,
+} from "../../../src/http_metrics";
+import { resetInstrumentsForTesting } from "../../../src/telemetry";
 import {
    startMetricsHarness,
    type MetricsHarness,
-} from "./test_helpers/metrics_harness";
+} from "../../../src/test_helpers/metrics_harness";
 
 describe("httpMetricsMiddleware", () => {
    let server: Server;
