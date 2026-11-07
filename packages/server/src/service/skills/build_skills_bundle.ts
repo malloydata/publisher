@@ -9,7 +9,7 @@
  * Committed as a build-time asset so the server has no runtime dependency on the
  * skills directory layout. Regenerate when the skills change:
  *
- *   bun run packages/server/src/mcp/skills/build_skills_bundle.ts <skills-dir> [out.json]
+ *   bun run packages/server/src/service/skills/build_skills_bundle.ts <skills-dir> [out.json]
  *
  * <skills-dir> points at the repo's top-level skills/ directory.
  *

@@ -40,7 +40,7 @@ const byName = (a: SkillEntry, b: SkillEntry) => byCodepoint(a.name, b.name);
 describe("skills_bundle.json (generated dual-channel asset)", () => {
    it("is in sync with skills/", () => {
       // Regenerate with:
-      //   bun run src/mcp/skills/build_skills_bundle.ts ../../skills
+      //   bun run src/service/skills/build_skills_bundle.ts ../../skills
       expect([...skills].sort(byName)).toEqual(
          [...buildSkills(sourceDir)].sort(byName),
       );

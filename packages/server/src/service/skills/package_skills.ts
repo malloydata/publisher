@@ -14,9 +14,9 @@ import {
 import skillsBundle from "./skills_bundle.json";
 import { compareText } from "../../compare_text";
 import { MODEL_FILE_SUFFIX, NOTEBOOK_FILE_SUFFIX } from "../../constants";
-import { CronEvaluator } from "../../service/cron_evaluator";
-import { canonicalSha } from "../../service/package_revision";
-import { stepsOutside } from "../../service/package_retrieval";
+import { CronEvaluator } from "../cron_evaluator";
+import { canonicalSha } from "../package_revision";
+import { stepsOutside } from "../../path_safety";
 
 /** The build-time bundle of the repo's skills, served as MCP prompts and through get_skill. */
 export const BUNDLED_SKILLS = (skillsBundle as { skills: SkillEntry[] }).skills;
