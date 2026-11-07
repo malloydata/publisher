@@ -5,7 +5,6 @@
 // after it has checked the Node version, applied the command line and checked
 // which APIs the config enables. The admin listener starts here too when the
 // config leaves `adminApiEnabled` on and its port is set.
-import type { AddressInfo } from "net";
 import * as http from "http";
 import * as path from "path";
 import { fileURLToPath } from "url";
@@ -23,6 +22,7 @@ import { ThemeController } from "./controller/theme.controller";
 import { VersionController } from "./controller/version.controller";
 import { WatchModeController } from "./controller/watch-mode.controller";
 import { registerSignalHandlers } from "./health";
+import { logListening, longTimeouts } from "./listen";
 import "./instrumentation";
 import { getPrometheusMetricsHandler } from "./instrumentation";
 import { logger } from "./logger";
@@ -53,7 +53,6 @@ import {
    MCP_CONFIG_FILENAME,
    mcpConfigEnabled,
    mcpEndpoint,
-   resolveBoundPort,
    resolveClientHost,
 } from "./mcp_config";
 import { observePackageStates } from "./package_state_metrics";
@@ -335,11 +334,9 @@ export const app = createMainApp({
    getPackageLoadPool();
 }
 
-const mainServer = http.createServer({ maxHeaderSize: 262144 }, app);
-
-mainServer.timeout = 600000;
-mainServer.keepAliveTimeout = 600000;
-mainServer.headersTimeout = 600000;
+const mainServer = longTimeouts(
+   http.createServer({ maxHeaderSize: 262144 }, app),
+);
 
 // The .mcp.json write waits on this, so a process whose REST port fails to
 // bind never leaves a .mcp.json pointing at a server about to exit.
@@ -350,10 +347,7 @@ const restBound = new Promise<void>((resolve) => {
 
 mainServer.listen(PUBLISHER_PORT, PUBLISHER_HOST, async () => {
    resolveRestBound();
-   const address = mainServer.address() as AddressInfo;
-   logger.info(
-      `Publisher server listening at http://${address.address}:${address.port}`,
-   );
+   logListening("Publisher server", mainServer, PUBLISHER_HOST, PUBLISHER_PORT);
    if (isDevelopment) {
       logger.info(
          "Running in development mode - proxying to React dev server at http://localhost:5173",
@@ -393,18 +387,9 @@ const mcpServer = mcpApp.listen(
    MCP_PORT,
    MCP_HOST,
    function (this: import("net").Server) {
-      // Read back rather than reusing MCP_PORT: `--mcp_port 0` binds an
-      // ephemeral port.
-      const boundPort = resolveBoundPort(this.address(), MCP_PORT);
-      // The bind address, deliberately not resolveClientHost: the docs tell
-      // readers this line is the address really bound, which is how they
-      // catch a mistyped host falling back to 0.0.0.0.
-      const bound = this.address();
-      const boundHost =
-         typeof bound === "object" && bound ? bound.address : MCP_HOST;
-      logger.info(
-         `MCP server listening at http://${boundHost.includes(":") ? `[${boundHost}]` : boundHost}:${boundPort}`,
-      );
+      // The bind address, deliberately not resolveClientHost, and the port
+      // read back rather than MCP_PORT: `--mcp_port 0` binds an ephemeral one.
+      const boundPort = logListening("MCP server", this, MCP_HOST, MCP_PORT);
       // Checked before process.cwd(), which can throw: someone who turned the
       // feature off should not get a warning about it.
       if (MCP_CONFIG_ENABLED) {
@@ -477,13 +462,10 @@ mcpServer.on(
    fatalListenError("MCP", MCP_PORT, "--mcp_port", mainServer),
 );
 
-mcpServer.timeout = 600000;
-mcpServer.keepAliveTimeout = 600000;
-mcpServer.headersTimeout = 600000;
+longTimeouts(mcpServer);
 
 // The admin API (admin-api-doc.yaml): the DuckLake catalogs in the configured
-// catalog database, and controls of this process an operator uses. A file load
-// or a snapshot delete can run for minutes, hence the main API's long timeouts.
+// catalog database, and controls of this process an operator uses.
 const adminServer =
    ADMIN_PORT === null
       ? null
@@ -491,14 +473,7 @@ const adminServer =
            ADMIN_PORT,
            ADMIN_HOST,
            function (this: import("net").Server) {
-              const bound = this.address();
-              const host =
-                 typeof bound === "object" && bound
-                    ? bound.address
-                    : ADMIN_HOST;
-              logger.info(
-                 `Admin server listening at http://${host.includes(":") ? `[${host}]` : host}:${resolveBoundPort(bound, ADMIN_PORT)}`,
-              );
+              logListening("Admin server", this, ADMIN_HOST, ADMIN_PORT);
            },
         );
 if (adminServer) {
@@ -506,9 +481,7 @@ if (adminServer) {
       "error",
       fatalListenError("Admin", ADMIN_PORT!, "--admin_port", mainServer),
    );
-   adminServer.timeout = 600000;
-   adminServer.keepAliveTimeout = 600000;
-   adminServer.headersTimeout = 600000;
+   longTimeouts(adminServer);
 }
 
 registerSignalHandlers(
