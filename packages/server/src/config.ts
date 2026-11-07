@@ -155,8 +155,8 @@ export type PublisherConfig = {
  * flag, read from the environment only, and checked in one place: the publish
  * from a location. Off, that publish installs the package in place as before
  * versions; on, it publishes the version its publisher.json declares and
- * refuses a tree that declares none. #1381 removes the flag and the off branch
- * together, once every deployment runs with it on.
+ * refuses a tree that declares none. The flag and the off branch go together,
+ * once every deployment runs with it on.
  */
 export type PackageVersioningMode = "off" | "on";
 
