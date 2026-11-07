@@ -5,6 +5,7 @@ import { lazyCounter } from "../telemetry";
 import type * as Malloy from "@malloydata/malloy-interfaces";
 import { bigIntReplacer } from "../json_utils";
 import type { QueryRowLimitSource } from "../service/model_limits";
+import { resultColumns, type ResultColumn } from "./result_columns";
 
 const rowLimitHits = lazyCounter(
    "publisher_mcp_row_limit_hits_total",
@@ -23,6 +24,13 @@ const rowLimitHits = lazyCounter(
  */
 export interface QueryEnvelope {
    rows: unknown;
+   /**
+    * What each column is, read from the schema: type, numeric subtype, date
+    * grain, label, whether it is an aggregate, its declared display format,
+    * and the zone a timestamp reads in. Publisher's own addition: Credible's
+    * envelope carries the same facts only inside `_meta.schema`.
+    */
+   _columns: ResultColumn[];
    /** Malloy metadata the flat rows drop: field types, render tags, timezone. */
    _meta: {
       schema: Malloy.Schema;
@@ -129,6 +137,7 @@ export function buildQueryEnvelope(
 
    const envelope: QueryEnvelope = {
       rows,
+      _columns: resultColumns(result),
       _meta: {
          schema: result.schema,
          annotations: result.annotations ?? [],

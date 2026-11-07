@@ -21,6 +21,12 @@ Give the heading a title — `## [Unreleased] — what changed`, with an em dash
 
 Two consequences worth knowing. A section merged to `main` ships in the **next** release, whenever that is, so do not write one for work that has not landed. And a heading already stamped with a version is history: a follow-up that changes that behaviour opens a **new** `[Unreleased]` section referencing the shipped version by number, rather than editing the old one.
 
+## [Unreleased] — `execute_query` says what each column is: `_columns`
+
+An `execute_query` answer now carries `_columns` beside `rows`: one entry per column, in output order, with its `type`, and when they apply its numeric `subtype` (`integer`, `decimal`, `bigint`), `timeframe` (the grain of a truncated date: `month`), `label`, `measure: true` for an aggregate, `format` (the display format the model or query declares, as its tag spells it: `currency`, `currency = usd0k`, `percent`, `number = "#,##0.0"`, `duration = minutes`), `timezone` (the zone a timestamp's wall clock reads in, from the query's `timezone:` or a nest's own; absent means UTC) and a nest's or record's own `fields`.
+
+Flat rows lose all of it: a date is a string, a bigint past 2^53 is a string, a revenue is a bare number, and a timestamp is UTC text with nothing saying which zone it reads in. The facts were already in `_meta.schema`, but as Malloy's schema and raw tag strings an agent had to decode. `_columns` is read from that schema, adds no query, and `_meta` is unchanged. A column whose schema cannot be read is listed by name with `type: "unknown"` rather than failing the answer. Credible's `execute_query` does not carry `_columns` yet; everything else in the envelope keeps Credible's shape.
+
 ## [Unreleased] — `--help` and the configuration reference come from the settings registry, and startup logs the settings given
 
 Every setting is described once, in the settings registry 0.12.2 added, and three things are now generated from it:
