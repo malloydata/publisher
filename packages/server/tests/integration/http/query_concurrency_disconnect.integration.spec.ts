@@ -21,9 +21,9 @@ import net, { type AddressInfo } from "net";
 import {
    getActiveQueryCount,
    resetActiveQueryCountForTesting,
-} from "./query_concurrency";
-import { API_PREFIX, buildRouteApp } from "./test_helpers/route_app";
-import { installSettings } from "./test_helpers/settings_env";
+} from "../../../src/query_concurrency";
+import { API_PREFIX, buildRouteApp } from "../../../src/test_helpers/route_app";
+import { installSettings } from "../../../src/test_helpers/settings_env";
 
 /**
  * Puts back the settings a case installed, so a cap set here cannot leak into

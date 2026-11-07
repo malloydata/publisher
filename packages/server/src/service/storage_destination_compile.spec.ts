@@ -54,6 +54,10 @@ import { Environment } from "./environment";
 import { Model } from "./model";
 import { StorageServeShape } from "./model_serve_shape";
 import { Package } from "./package";
+import {
+   writeTempPackage,
+   writePackageFiles,
+} from "../test_helpers/temp_package";
 
 type ApiConnection = components["schemas"]["Connection"];
 
@@ -117,11 +121,7 @@ describe("a storage destination is not in the namespace a tenant authors in", ()
 
    beforeEach(() => {
       envDir = fs.mkdtempSync(path.join(os.tmpdir(), "publisher-dest-env-"));
-      tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "publisher-dest-pkg-"));
-      fs.writeFileSync(
-         path.join(tempDir, "publisher.json"),
-         JSON.stringify({ name: "pkg" }),
-      );
+      tempDir = writeTempPackage({}, { prefix: "publisher-dest-pkg-" }).dir;
    });
 
    afterEach(() => {
@@ -302,15 +302,9 @@ describe("a storage destination is not in the namespace a tenant authors in", ()
       // there at all.
       const environment = makeEnvironment();
       const packageDir = path.join(envDir, "pkg");
-      fs.mkdirSync(packageDir, { recursive: true });
-      fs.writeFileSync(
-         path.join(packageDir, "publisher.json"),
-         JSON.stringify({ name: "pkg" }),
-      );
-      fs.writeFileSync(
-         path.join(packageDir, "plain.malloy"),
-         `source: nums is duckdb.sql("SELECT 1 AS a")`,
-      );
+      writePackageFiles(packageDir, {
+         "plain.malloy": `source: nums is duckdb.sql("SELECT 1 AS a")`,
+      });
 
       // Observed at the Model's public seams, so nothing reaches a private: the
       // provider the load hands `setServeDestinationConfig`, and the

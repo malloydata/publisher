@@ -9,8 +9,8 @@ import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import fs from "fs/promises";
 import os from "os";
 import path from "path";
-import { DuckDBConnection } from "../../../src/storage/duckdb/DuckDBConnection";
-import { initializeSchema } from "../../../src/storage/duckdb/schema";
+import { DuckDBConnection } from "./DuckDBConnection";
+import { initializeSchema } from "./schema";
 
 const TEST_DB_DIR = path.join(os.tmpdir(), "duckdb-legacy-migration-tests");
 

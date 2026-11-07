@@ -266,15 +266,10 @@ jobs:
         run: bun run --cwd packages/create-malloy-package test:e2e
         shell: bash
 
-      # Split into three bun-test invocations (three processes). The unit specs
-      # under src/ use `mock.module(...)` to stub out `StorageManager` and
-      # other modules; Bun does not scope those mocks to a single file: they
-      # persist in the process-wide module cache and poison any later spec
-      # that imports the real module. Running integration specs (which import
-      # src/server.ts and expect the real StorageManager) in a separate
-      # process avoids the carry-over. The component specs (tests/component:
-      # real DuckDB, compiler and worker pool, but no listeners or fixed
-      # ports) get a process of their own for the same reason.
+      # Split into three bun-test invocations (three processes), one per layer:
+      # unit specs under src/, component specs (tests/component: real DuckDB,
+      # compiler and worker pool, but no fixed ports), and integration specs
+      # (tests/integration: real servers and sockets, run serially).
       #
       # The three processes run at the same time. They share no state: the
       # integration servers own packages/server's publisher.db and

@@ -18,13 +18,14 @@ import {
    emptyRepository,
    stubStorageManager,
 } from "../test_helpers/storage_manager_stub";
+import { EnvironmentStore } from "./environment_store";
 
 const workDir = path.join(TEMP_DIR_PATH, "unzip-environment-spec");
 const outsideDir = path.join(TEMP_DIR_PATH, "unzip-environment-spec-outside");
 
-stubStorageManager({ getRepository: () => emptyRepository() });
-
-const { EnvironmentStore } = await import("./environment_store");
+const storageManager = stubStorageManager({
+   getRepository: () => emptyRepository(),
+});
 
 // Zips `entries` of `sourceDir` in the order given, with `zip -y`, which stores
 // a symlink as a symlink entry rather than following it.
@@ -68,7 +69,7 @@ describe.skipIf(!hasZip)("unzipEnvironment", () => {
       const archive = path.join(workDir, "pkg.zip");
       zipDir(source, archive);
 
-      const store = new EnvironmentStore(workDir);
+      const store = new EnvironmentStore(workDir, { storageManager });
       const extracted = await store.unzipEnvironment(archive);
 
       expect(extracted).toBe(path.join(workDir, "pkg"));
@@ -86,7 +87,7 @@ describe.skipIf(!hasZip)("unzipEnvironment", () => {
       // A regular file first, so the rejection has a partial extract to remove.
       zipDir(source, archive, ["publisher.json", "escape"]);
 
-      const store = new EnvironmentStore(workDir);
+      const store = new EnvironmentStore(workDir, { storageManager });
       const attempt = store.unzipEnvironment(archive);
 
       await expect(attempt).rejects.toBeInstanceOf(BadRequestError);
@@ -126,7 +127,7 @@ describe.skipIf(!hasZip)("mountLocalDirectory with a zip location", () => {
       mkdirSync(operatorDir);
       writeFileSync(path.join(operatorDir, "keep.txt"), "mine");
 
-      const store = new EnvironmentStore(workDir);
+      const store = new EnvironmentStore(workDir, { storageManager });
       await store.mountLocalDirectory(
          path.join(mountDir, "pkg.zip"),
          target,
@@ -147,7 +148,7 @@ describe.skipIf(!hasZip)("mountLocalDirectory with a zip location", () => {
       "mounts an archive whose directory the server cannot write",
       async () => {
          chmodSync(mountDir, 0o555);
-         const store = new EnvironmentStore(workDir);
+         const store = new EnvironmentStore(workDir, { storageManager });
          await store.mountLocalDirectory(
             path.join(mountDir, "pkg.zip"),
             target,
@@ -159,7 +160,7 @@ describe.skipIf(!hasZip)("mountLocalDirectory with a zip location", () => {
    );
 
    it("reports a missing archive as a package that was not found", async () => {
-      const store = new EnvironmentStore(workDir);
+      const store = new EnvironmentStore(workDir, { storageManager });
       await expect(
          store.mountLocalDirectory(
             path.join(mountDir, "absent.zip"),

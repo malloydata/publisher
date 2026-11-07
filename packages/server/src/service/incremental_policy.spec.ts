@@ -29,6 +29,7 @@ import {
    type IncrementalPolicySource,
 } from "./incremental_policy";
 import type { Package } from "./package";
+import { writePackageFiles } from "../test_helpers/temp_package";
 
 /** A declaration with nothing declared; each test overrides what it needs. */
 function declaration(
@@ -728,12 +729,13 @@ describe("incremental policy gate over a real package", () => {
    /** Write the package tree, and the environment that will load it. */
    async function stage(model: string): Promise<Environment> {
       const dir = path.join(envPath, "pkg");
-      await fs.mkdir(dir, { recursive: true });
-      await fs.writeFile(
-         path.join(dir, "publisher.json"),
-         JSON.stringify({ name: "pkg", description: "fixture" }),
+      writePackageFiles(
+         dir,
+         {
+            "model.malloy": model,
+         },
+         { manifest: { name: "pkg", description: "fixture" } },
       );
-      await fs.writeFile(path.join(dir, "model.malloy"), model);
       return Environment.create("testEnv", envPath, []);
    }
 

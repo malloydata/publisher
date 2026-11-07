@@ -21,7 +21,6 @@ import {
    spyOn,
 } from "bun:test";
 import * as fs from "fs";
-import * as os from "os";
 import * as path from "path";
 import {
    PackageLoadPool,
@@ -43,6 +42,7 @@ import type { AnnotationsDef } from "./annotations";
 import { compileModelFiles } from "../test_helpers/get_context_join_fixture";
 import type { ModelDef } from "@malloydata/malloy";
 import { Package } from "./package";
+import { writeTempPackage } from "../test_helpers/temp_package";
 
 describe("readClassification", () => {
    it("reads one quoted class, or a quoted list, from a string or a {value} note", () => {
@@ -243,14 +243,14 @@ describe("classification warnings on package load", () => {
    });
 
    beforeEach(() => {
-      tempDir = fs.mkdtempSync(
-         path.join(os.tmpdir(), "publisher-classification-"),
-      );
+      tempDir = writeTempPackage(
+         {},
+         {
+            prefix: "publisher-classification-",
+            manifest: { name: "pkg", description: "classification" },
+         },
+      ).dir;
       duckdb = new DuckDBConnection("duckdb", ":memory:");
-      fs.writeFileSync(
-         path.join(tempDir, "publisher.json"),
-         JSON.stringify({ name: "pkg", description: "classification" }),
-      );
    });
 
    afterEach(async () => {

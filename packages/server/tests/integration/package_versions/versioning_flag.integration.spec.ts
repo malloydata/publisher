@@ -24,6 +24,7 @@ import os from "os";
 import path from "path";
 import { RestE2EEnv, startRestE2E } from "../../harness/rest_e2e";
 import { installVariables } from "../../../src/test_helpers/settings_env";
+import { writePackageFiles } from "../../../src/test_helpers/temp_package";
 
 const ENV_NAME = "versioning-flag-env";
 const FLAG = "PUBLISHER_PACKAGE_VERSIONING";
@@ -53,12 +54,14 @@ function writePackage(
    answer: number,
 ): string {
    const dir = path.join(root, folder);
-   fs.mkdirSync(dir, { recursive: true });
-   fs.writeFileSync(path.join(dir, "publisher.json"), JSON.stringify(manifest));
-   fs.writeFileSync(
-      path.join(dir, "model.malloy"),
-      `source: numbers is duckdb.sql("SELECT ${answer} AS answer") extend {\n` +
-         `  view: which is { select: answer }\n}\n`,
+   writePackageFiles(
+      dir,
+      {
+         "model.malloy":
+            `source: numbers is duckdb.sql("SELECT ${answer} AS answer") extend {\n` +
+            `  view: which is { select: answer }\n}\n`,
+      },
+      { manifest },
    );
    return dir;
 }

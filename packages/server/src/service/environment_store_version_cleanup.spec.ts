@@ -1,19 +1,14 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
-// Lives under `tests/unit/` (not `src/`) on purpose: it builds a real
-// EnvironmentStore over the real StorageManager, which sibling specs under
-// `src/` replace with `mock.module(...)`. Bun's module mocks persist
-// process-wide across spec files, so under `src/` it would get the mock; the
-// integration runner gives it a clean module cache (see theme_store.spec.ts).
-
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import * as fs from "fs";
 import * as os from "os";
 import * as path from "path";
-import { PackageController } from "../../../src/controller/package.controller";
-import { EnvironmentStore } from "../../../src/service/environment_store";
-import { installSettings } from "../../../src/test_helpers/settings_env";
+import { PackageController } from "../controller/package.controller";
+import { EnvironmentStore } from "./environment_store";
+import { installSettings } from "../test_helpers/settings_env";
+import { writePackageFiles } from "../test_helpers/temp_package";
 
 /**
  * The startup cleanup of version folders, as a restart runs it: an
@@ -79,14 +74,12 @@ async function closeStore() {
 /** A package source declaring `version`, to publish from. */
 function source(version: string): string {
    const dir = path.join(root, "sources", version);
-   fs.mkdirSync(dir, { recursive: true });
-   fs.writeFileSync(
-      path.join(dir, "publisher.json"),
-      JSON.stringify({ name: PKG, version }),
-   );
-   fs.writeFileSync(
-      path.join(dir, "model.malloy"),
-      `source: numbers is duckdb.sql("SELECT 1 AS answer")\n`,
+   writePackageFiles(
+      dir,
+      {
+         "model.malloy": `source: numbers is duckdb.sql("SELECT 1 AS answer")\n`,
+      },
+      { manifest: { name: PKG, version } },
    );
    return dir;
 }

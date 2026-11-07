@@ -17,6 +17,7 @@ import { Environment } from "./environment";
 // true coordinates; scope "package" is a dry-run with reload's reach (imports
 // across files) and none of its effects on the served model.
 import { listDashboards } from "./legacy_report_views";
+import { writePackageFiles } from "../test_helpers/temp_package";
 
 const BASE_MODEL = `source: base_source is duckdb.sql("select 1 as id, 5 as n") extend {
   measure: c is count()
@@ -37,18 +38,12 @@ describe("compile scopes (compileSource)", () => {
       const envPath = path.join(rootDir, "env");
       await fs.mkdir(envPath, { recursive: true });
       env = await Environment.create("testEnv", envPath, []);
-      await env.installPackage("pkg", async (stagingPath) => {
-         await fs.mkdir(stagingPath, { recursive: true });
-         await fs.writeFile(
-            path.join(stagingPath, "publisher.json"),
-            '{"name":"pkg"}',
-         );
-         await fs.writeFile(path.join(stagingPath, "base.malloy"), BASE_MODEL);
-         await fs.writeFile(
-            path.join(stagingPath, "tracks.malloy"),
-            TRACKS_MODEL,
-         );
-      });
+      await env.installPackage("pkg", async (stagingPath) =>
+         writePackageFiles(stagingPath, {
+            "base.malloy": BASE_MODEL,
+            "tracks.malloy": TRACKS_MODEL,
+         }),
+      );
    });
 
    afterEach(async () => {

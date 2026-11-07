@@ -7,14 +7,14 @@ import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import fs from "fs/promises";
 import os from "os";
 import path from "path";
-import { DuckDBConnection } from "../../../src/storage/duckdb/DuckDBConnection";
-import { MaterializationRepository } from "../../../src/storage/duckdb/MaterializationRepository";
+import { DuckDBConnection } from "./DuckDBConnection";
+import { MaterializationRepository } from "./MaterializationRepository";
 import {
    type ColumnShape,
    constrainedColumnsOf,
    initializeSchema,
    planColumnReconcile,
-} from "../../../src/storage/duckdb/schema";
+} from "./schema";
 
 const TEST_DB_DIR = path.join(os.tmpdir(), "duckdb-column-reconcile-tests");
 

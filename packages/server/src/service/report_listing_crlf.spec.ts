@@ -13,6 +13,7 @@ import fs from "fs/promises";
 import os from "os";
 import path from "path";
 import { Environment } from "./environment";
+import { writePackageFiles } from "../test_helpers/temp_package";
 
 const crlf = (text: string) => text.replace(/\r?\n/g, "\r\n");
 
@@ -55,15 +56,15 @@ describe("report listing over CRLF text", () => {
 
    const listing = async (eol: (text: string) => string) => {
       const name = eol === crlf ? "crlf" : "lf";
-      await env.installPackage(name, async (stagingPath) => {
-         await fs.mkdir(stagingPath, { recursive: true });
-         await fs.writeFile(
-            path.join(stagingPath, "publisher.json"),
-            JSON.stringify({ name, version: "1.0.0" }),
-         );
-         for (const [file, text] of Object.entries(FILES))
-            await fs.writeFile(path.join(stagingPath, file), eol(text));
-      });
+      await env.installPackage(name, async (stagingPath) =>
+         writePackageFiles(
+            stagingPath,
+            Object.fromEntries(
+               Object.entries(FILES).map(([file, text]) => [file, eol(text)]),
+            ),
+            { manifest: { name, version: "1.0.0" } },
+         ),
+      );
       const pkg = await env.getPackage(name, false);
       return Object.fromEntries(
          pkg

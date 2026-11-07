@@ -1,18 +1,15 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
-// Lives under `tests/unit/` (not `src/`) on purpose: it builds a real
-// EnvironmentStore over the real StorageManager, which sibling specs under
-// `src/` replace with `mock.module(...)` (see environment_store_version_cleanup.spec.ts).
-
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import * as fs from "fs";
 import * as os from "os";
 import * as path from "path";
-import type { Environment } from "../../../src/service/environment";
-import { EnvironmentStore } from "../../../src/service/environment_store";
-import { installSettings } from "../../../src/test_helpers/settings_env";
-import type { VersionService } from "../../../src/service/versions/version_service";
+import type { Environment } from "./environment";
+import { EnvironmentStore } from "./environment_store";
+import { installSettings } from "../test_helpers/settings_env";
+import type { VersionService } from "./versions/version_service";
+import { writePackageFiles } from "../test_helpers/temp_package";
 
 /**
  * A publish of a version is a load in flight from its download until it
@@ -78,14 +75,12 @@ afterEach(async () => {
 
 function source(name: string, version: string): string {
    const dir = path.join(root, "sources", name);
-   fs.mkdirSync(dir, { recursive: true });
-   fs.writeFileSync(
-      path.join(dir, "publisher.json"),
-      JSON.stringify({ name, version }),
-   );
-   fs.writeFileSync(
-      path.join(dir, "model.malloy"),
-      `source: numbers is duckdb.sql("SELECT 1 AS answer")\n`,
+   writePackageFiles(
+      dir,
+      {
+         "model.malloy": `source: numbers is duckdb.sql("SELECT 1 AS answer")\n`,
+      },
+      { manifest: { name, version } },
    );
    return dir;
 }

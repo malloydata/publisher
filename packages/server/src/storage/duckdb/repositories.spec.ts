@@ -15,11 +15,11 @@ import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import fs from "fs/promises";
 import os from "os";
 import path from "path";
-import { DuckDBConnection } from "../../../src/storage/duckdb/DuckDBConnection";
-import { initializeSchema } from "../../../src/storage/duckdb/schema";
-import { EnvironmentRepository } from "../../../src/storage/duckdb/EnvironmentRepository";
-import { PackageRepository } from "../../../src/storage/duckdb/PackageRepository";
-import { ConnectionRepository } from "../../../src/storage/duckdb/ConnectionRepository";
+import { DuckDBConnection } from "./DuckDBConnection";
+import { initializeSchema } from "./schema";
+import { EnvironmentRepository } from "./EnvironmentRepository";
+import { PackageRepository } from "./PackageRepository";
+import { ConnectionRepository } from "./ConnectionRepository";
 
 describe("DuckDB storage repositories (real connection)", () => {
    let dbDir: string;

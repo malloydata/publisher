@@ -18,6 +18,7 @@ import * as path from "path";
 import type { Package } from "../../../src/service/package";
 import { installVariables } from "../../../src/test_helpers/settings_env";
 import { startRestE2E } from "../../harness/rest_e2e";
+import { writePackageFiles } from "../../../src/test_helpers/temp_package";
 
 const ENV_NAME = "secure-givens-env";
 const FLAG = "PUBLISHER_PACKAGE_VERSIONING";
@@ -85,11 +86,7 @@ describe("secureGivens on the package responses", () => {
       manifest: Record<string, unknown> = {},
    ): string {
       const dir = path.join(tempDir, name);
-      fs.mkdirSync(dir, { recursive: true });
-      fs.writeFileSync(
-         path.join(dir, "publisher.json"),
-         JSON.stringify({ name, ...manifest }),
-      );
+      writePackageFiles(dir, {}, { manifest: { name, ...manifest } });
       for (const [file, text] of Object.entries(files)) {
          fs.mkdirSync(path.dirname(path.join(dir, file)), { recursive: true });
          fs.writeFileSync(path.join(dir, file), text);

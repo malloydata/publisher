@@ -19,15 +19,18 @@ import {
    allowUnverifiedHostKey,
    openProxy,
    type ProxyEndpoint,
-} from "./proxy";
-import { logger } from "../logger";
+} from "../../../src/service/proxy";
+import { logger } from "../../../src/logger";
 import {
    clientPrivatePem,
    closeQuietly,
    startEchoServer,
    startSshServer,
-} from "../test_helpers/ssh_tunnel_harness";
-import { installSettings, withSettings } from "../test_helpers/settings_env";
+} from "../../../src/test_helpers/ssh_tunnel_harness";
+import {
+   installSettings,
+   withSettings,
+} from "../../../src/test_helpers/settings_env";
 
 function connectAndSend(port: number, message: string): Promise<string> {
    return new Promise((resolve, reject) => {

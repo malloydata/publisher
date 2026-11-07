@@ -7,6 +7,7 @@ import * as os from "os";
 import * as path from "path";
 
 import { Environment, PackageStatus } from "./environment";
+import { writePackageFiles } from "../test_helpers/temp_package";
 
 /**
  * Regression tests for RELOAD data loss.
@@ -32,12 +33,13 @@ describe("failed reload does not destroy a serving package", () => {
    const BROKEN_MODEL = `source: broken is @@@ not valid malloy !!!\n`;
 
    async function writePackageDir(dir: string, model: string): Promise<void> {
-      await fs.mkdir(dir, { recursive: true });
-      await fs.writeFile(
-         path.join(dir, "publisher.json"),
-         JSON.stringify({ name: "pkg", description: "reload fixture" }),
+      writePackageFiles(
+         dir,
+         {
+            "model.malloy": model,
+         },
+         { manifest: { name: "pkg", description: "reload fixture" } },
       );
-      await fs.writeFile(path.join(dir, "model.malloy"), model);
    }
 
    async function copyDir(src: string, dst: string): Promise<void> {
