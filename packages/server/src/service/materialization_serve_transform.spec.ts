@@ -2166,6 +2166,24 @@ describe("reachedPersistedSources", () => {
          reachedPersistedSources(c, "monthly", persistedIn("daily", "monthly")),
       ).toMatchObject({ persisted: [], raw: true });
    });
+
+   it("follows the sources a query pipeline joins, not only its base", () => {
+      const c = modelCtx({
+         orders: tableDef("orders"),
+         regions: tableDef("regions"),
+         daily: persistedDef("daily", "orders"),
+         wide: queryDef("wide", "daily", ["regions"]),
+         monthly: persistedDef("monthly", "wide"),
+      });
+      expect(
+         reachedPersistedSources(c, "monthly", persistedIn("daily", "monthly")),
+      ).toMatchObject({
+         persisted: [stop("daily")],
+         raw: true,
+         rawLeaves: ["regions"],
+         rawVia: ["wide"],
+      });
+   });
 });
 
 describe("missingPersistedTables", () => {
