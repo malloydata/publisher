@@ -38,13 +38,13 @@ import {
 import * as fs from "fs";
 import * as path from "path";
 import { registerGetContextTool } from "./get_context_tool";
-import { setRetrievalConfig } from "../../retrieval_config";
+import { setRetrievalConfig } from "../../retrieval/config";
 import {
    _clearEmbeddingProviderForTests,
    _setEmbeddingProviderForTests,
 } from "../../service/embedding_provider";
 import type { EnvironmentStore } from "../../service/environment_store";
-import { _setFcjValueFetcherForTests } from "../context/engine_state";
+import { _setFcjValueFetcherForTests } from "../../retrieval/index/engine_state";
 import { compileFcjFixture } from "../../test_helpers/fcj_fixture";
 import { fcjValueFetcher } from "../../test_helpers/fcj_index_fixture";
 import {

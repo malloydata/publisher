@@ -3,7 +3,7 @@
 
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { EnvironmentStore } from "../../service/environment_store";
-import { readPackageCatalog } from "./package_catalog";
+import { readPackageCatalog } from "../../retrieval/model/package_catalog";
 import { buildMalloyUri } from "../handler_utils";
 import { registerGuardedTool } from "../register_tool";
 import { jsonResource } from "../tool_response";

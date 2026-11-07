@@ -43,15 +43,15 @@ import {
    embeddingStartupNotices,
    getRetrievalConfig,
 } from "./config";
-import { setRetrievalConfig } from "./retrieval_config";
+import { setRetrievalConfig } from "./retrieval/config";
 import { checkHeapConfiguration } from "./heap_check";
-import { startPackageEmbeddingSync } from "./mcp/tools/package_embedding";
-import { setQueryModelResolver } from "./mcp/tools/get_context_values";
+import { startPackageEmbeddingSync } from "./retrieval/index/package_embedding";
+import { setQueryModelResolver } from "./retrieval/search/values";
 import { getModelForQuery } from "./mcp/handler_utils";
 import {
    deleteEnvironmentEmbeddings,
    deletePackageEmbeddings,
-} from "./mcp/tools/embedding_index";
+} from "./retrieval/index/embedding_index";
 import {
    addCommand,
    ensureMcpConfig,

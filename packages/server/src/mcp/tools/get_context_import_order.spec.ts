@@ -30,7 +30,7 @@ function importInFreshProcess(first: string, second?: string) {
 
 describe("get_context module load order", () => {
    it("loads the engine first", () => {
-      const out = importInFreshProcess("../context/engine.ts");
+      const out = importInFreshProcess("../../retrieval/search/engine.ts");
       expect(out.stderr).not.toContain("before initialization");
       expect(out.code).toBe(0);
    });
@@ -43,7 +43,7 @@ describe("get_context module load order", () => {
 
    it("loads the engine, then the tool", () => {
       const out = importInFreshProcess(
-         "../context/engine.ts",
+         "../../retrieval/search/engine.ts",
          "get_context_tool.ts",
       );
       expect(out.code).toBe(0);

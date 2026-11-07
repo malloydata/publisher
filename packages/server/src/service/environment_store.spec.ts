@@ -22,7 +22,7 @@ import { stubStorageManager } from "../test_helpers/storage_manager_stub";
 import {
    deleteEnvironmentEmbeddings,
    deletePackageEmbeddings,
-} from "../mcp/tools/embedding_index";
+} from "../retrieval/index/embedding_index";
 import { Environment, PackageStatus } from "./environment";
 import {
    CloneProgressReporter,

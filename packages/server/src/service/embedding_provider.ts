@@ -2,23 +2,23 @@
 // SPDX-License-Identifier: MIT
 
 import { EmbeddingConfig, getEmbeddingSettings } from "../config";
-import { createEmbeddingModel } from "../providers/registry";
-import { loadedRetrievalConfig } from "../retrieval_config";
-import { BatchEmbeddingModel } from "../providers/embedding_http";
-import { openAiEmbedChunk } from "../providers/openai_compatible";
+import { createEmbeddingModel } from "../retrieval/llm/registry";
+import { loadedRetrievalConfig } from "../retrieval/config";
+import { BatchEmbeddingModel } from "../retrieval/llm/embedding_http";
+import { openAiEmbedChunk } from "../retrieval/llm/openai_compatible";
 import {
    DEFAULT_RETRY,
    HttpRequestError,
    RetryPolicy,
    withRetry,
 } from "./http_retry";
-import type { EmbeddingModel, FetchFn } from "../providers/types";
+import type { EmbeddingModel, FetchFn } from "../retrieval/llm/types";
 
 export {
    EMBEDDING_BATCH_TIMEOUT_MS,
    MAX_EMBED_INPUT_CHARS,
    prepareEmbeddingInput,
-} from "../providers/embedding_http";
+} from "../retrieval/llm/embedding_http";
 
 /**
  * Timeout for the per-request query embedding. Shorter than the bulk timeout
