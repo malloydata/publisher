@@ -13,7 +13,7 @@ import {
 import express from "express";
 import type { AddressInfo } from "net";
 import type { Server } from "http";
-import { httpMetricsMiddleware } from "./http_metrics";
+import { httpMetricsMiddleware, UNMATCHED_ROUTE } from "./http_metrics";
 import { resetInstrumentsForTesting } from "./telemetry";
 import {
    startMetricsHarness,
@@ -72,6 +72,17 @@ describe("httpMetricsMiddleware", () => {
             labels,
          ),
       ).toMatchObject({ count: 2 });
+   });
+
+   it("puts every request no route matched in one bucket, not one series per path", async () => {
+      await get("/assets/index-abc123.js", "/assets/index-def456.js", "/nope");
+      const routes = (
+         await harness.collectAttributes("http_server_requests_total")
+      ).map((attrs) => attrs["http.route"]);
+      expect(routes).toEqual([UNMATCHED_ROUTE]);
+      expect(await harness.collectCounter("http_server_requests_total")).toBe(
+         3,
+      );
    });
 
    it("leaves probes and scrapes out", async () => {

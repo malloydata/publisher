@@ -27,8 +27,16 @@ const httpRequestCount = lazyCounter(
    "Total number of HTTP requests",
 );
 
-export function httpRouteLabel(req: Pick<Request, "route" | "path">): string {
-   return req.route?.path ?? req.path;
+/** The `http.route` of a request that matched no Express route: static files, the Console, 404s. */
+export const UNMATCHED_ROUTE = "unmatched";
+
+/**
+ * The matched Express route pattern, never the raw path, so a label value
+ * cannot be minted per URL (each static asset, each probe for a missing page).
+ */
+export function httpRouteLabel(req: Pick<Request, "route">): string {
+   const path: unknown = req.route?.path;
+   return path === undefined ? UNMATCHED_ROUTE : String(path);
 }
 
 export function httpMetricsMiddleware(
