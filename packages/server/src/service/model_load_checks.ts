@@ -58,7 +58,7 @@ export interface CheckedModel {
    /** Every source this file can resolve; see `collectSourceInfos`. */
    sourceInfos: Malloy.SourceInfo[];
    /** Non-fatal gate findings: the model still serves, the caller reports them. */
-   warnings: string[];
+   warnings: { sourceName: string; message: string }[];
 }
 
 /**
@@ -125,7 +125,7 @@ export async function extractCheckedModel(
       extracted.attributedAuthorizeOwnNotes,
    );
 
-   const warnings: string[] = [];
+   const warnings: CheckedModel["warnings"] = [];
    // Probe-compiles every entry point's gate, so an unknown given or field
    // fails at load, not on first request. An inherited gate this entry point
    // cannot express only warns: every query against it is denied.
@@ -134,9 +134,10 @@ export async function extractCheckedModel(
       authorizeOwnNotes: extracted.attributedAuthorizeOwnNotes,
       onRowLevelGateRejected: recordRowLevelGateRejected,
       onRowLevelGateUnexpressible: (sourceName, detail) => {
-         warnings.push(
-            `Row-level #(access_filter) gate not expressible at entry point "${sourceName}"; every query against it will be denied: ${detail}`,
-         );
+         warnings.push({
+            sourceName,
+            message: `Row-level #(access_filter) gate not expressible at this entry point ("${sourceName}"); every query against it will be denied: ${detail}`,
+         });
       },
       // Runs at EVERY entry point whose probe compiled, so `sourceName` may be
       // an inheritor; `modelDef.contents[sourceName]` is the struct the probe
@@ -153,9 +154,10 @@ export async function extractCheckedModel(
             modelDef,
             (cause, detail) => {
                recordRowLevelGateRejected(cause);
-               warnings.push(
-                  `#(${route}) gate warning on "${sourceName}" (${cause}): ${detail}`,
-               );
+               warnings.push({
+                  sourceName,
+                  message: `#(${route}) gate warning on "${sourceName}" (${cause}): ${detail}`,
+               });
             },
          );
       },

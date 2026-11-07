@@ -3658,7 +3658,11 @@ export class Model {
                  )
                : undefined;
          for (const warning of checked?.warnings ?? []) {
-            logger.warn(warning, { packageName, modelPath });
+            logger.warn(warning.message, {
+               packageName,
+               modelPath,
+               sourceName: warning.sourceName,
+            });
          }
          const modelDef = compiled?._modelDef;
          const sources = checked?.sources as ApiSource[] | undefined;

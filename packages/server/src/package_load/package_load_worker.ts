@@ -938,7 +938,8 @@ async function compileMalloyModel(
       dataStyles: urlReader.getHackyAccumulatedDataStyles(),
       compileDurationMs,
       problems: job.collectProblems ? compiled.problems : undefined,
-      authorizeWarnings: warnings.length > 0 ? warnings : undefined,
+      authorizeWarnings:
+         warnings.length > 0 ? warnings.map((w) => w.message) : undefined,
       renderTagResults,
       preaggregateCompanion,
    };
@@ -1148,7 +1149,9 @@ async function compileNotebookModel(
       compileDurationMs: performance.now() - compileStart,
       problems: job.collectProblems ? compiled?.problems : undefined,
       authorizeWarnings:
-         checked && checked.warnings.length > 0 ? checked.warnings : undefined,
+         checked && checked.warnings.length > 0
+            ? checked.warnings.map((w) => w.message)
+            : undefined,
    };
 }
 
