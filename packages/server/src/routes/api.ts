@@ -26,10 +26,7 @@ import type { ReportController } from "../controller/report.controller";
 import type { SkillController } from "../controller/skill.controller";
 import type { StorageDestinationController } from "../controller/storage_destination.controller";
 import type { ThemeController } from "../controller/theme.controller";
-import {
-   registerVersionRoutes,
-   type VersionController,
-} from "../controller/version.controller";
+import type { VersionController } from "../controller/version.controller";
 import type { WatchModeController } from "../controller/watch-mode.controller";
 import { BadRequestError, ServiceUnavailableError } from "../errors";
 import { setFilterDeprecationHeaders } from "../filter_deprecation";
@@ -63,6 +60,7 @@ import {
 } from "./json_route";
 import { registerStorageDestinationRoutes } from "./storage_destinations";
 import { reportWriteRoute } from "./report_write";
+import { registerVersionRoutes } from "./versions";
 
 export interface ApiControllers {
    environmentStore: EnvironmentStore;
