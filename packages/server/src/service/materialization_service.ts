@@ -64,8 +64,8 @@ import {
    refreshOneSourceIncrementally,
    storageRefreshFor,
    advanceLedgerAfterSeed,
-   incrementalLineage,
    reportIncrementalStep,
+   sourceIncrementalRefresh,
    resetLedger,
    type IncrementalRunContext,
 } from "./incremental_build";
@@ -100,7 +100,6 @@ import {
    buildDownstreamIntoStorage,
    buildSourceIntoStorage,
    dropStorageTable,
-   STORAGE_TARGET_DIALECT,
    type StorageBuildResult,
    type StorageIncrementalRefresh,
 } from "./materialization_build_session";
@@ -1369,16 +1368,8 @@ export class MaterializationService {
             // delta path cannot act on (unsupported dialect, unusable watermark)
             // keeps skip-if-unchanged rather than rebuilding fully every run.
             const deltaEligible =
-               incremental !== undefined &&
-               incrementalLineage({
-                  declaration: incremental.declarations[persistSource.sourceID],
-                  dialect: persistSource.dialectName,
-                  targetDialect:
-                     destination !== undefined
-                        ? STORAGE_TARGET_DIALECT
-                        : persistSource.dialectName,
+               sourceIncrementalRefresh(incremental, persistSource, {
                   physicalTableName: logicalName,
-                  connectionName: persistSource.connectionName,
                   storageDestinationName: destination,
                   sourceEntityId,
                }) !== undefined;
@@ -2557,26 +2548,12 @@ export class MaterializationService {
       // and falls through to the CTAS.
       const dialect = persistSource.dialectName;
       const quotedPhysicalPath = quoteTablePath(physicalTableName, dialect);
-      // Colocated here, so one dialect is both source and target.
-      const lineage =
-         incremental && contentSourceEntityId
-            ? incrementalLineage({
-                 declaration: incremental.declarations[persistSource.sourceID],
-                 dialect,
-                 targetDialect: dialect,
-                 physicalTableName,
-                 connectionName: persistSource.connectionName,
-                 sourceEntityId: contentSourceEntityId,
-              })
-            : undefined;
       // One narrowing, so the incremental touchpoints below never disagree.
-      const incrementalRefresh =
-         incremental && lineage && contentSourceEntityId
-            ? {
-                 context: incremental,
-                 lineage,
-              }
-            : undefined;
+      const incrementalRefresh = sourceIncrementalRefresh(
+         incremental,
+         persistSource,
+         { physicalTableName, sourceEntityId: contentSourceEntityId },
+      );
       if (incrementalRefresh) {
          const applied = await refreshOneSourceIncrementally({
             ...incrementalRefresh,
@@ -2767,23 +2744,21 @@ export class MaterializationService {
 
       // Incremental refresh of a STORED table: the warehouse computes the delta,
       // the destination engine applies it; seed-vs-delta is the shared planner's.
-      const lineage =
-         incremental && params.contentSourceEntityId
-            ? incrementalLineage({
-                 declaration: incremental.declarations[persistSource.sourceID],
-                 dialect: persistSource.dialectName,
-                 targetDialect: STORAGE_TARGET_DIALECT,
-                 physicalTableName,
-                 connectionName: persistSource.connectionName,
-                 storageDestinationName: destinationName,
-                 sourceEntityId: params.contentSourceEntityId,
-              })
-            : undefined;
+      const incrementalRefresh = sourceIncrementalRefresh(
+         incremental,
+         persistSource,
+         {
+            physicalTableName,
+            storageDestinationName: destinationName,
+            sourceEntityId: params.contentSourceEntityId,
+         },
+      );
       // A CHAINED stored source always rebuilds: an incremental parent's delta
       // can restate rows BELOW this source's frontier, which a half-open range
       // never revisits. Reported under its own reason code.
-      const chainedSeed = lineage !== undefined && dependsOnStorageUpstream;
-      if (chainedSeed && lineage) {
+      const chainedSeed =
+         incrementalRefresh !== undefined && dependsOnStorageUpstream;
+      if (chainedSeed) {
          reportIncrementalStep({
             step: {
                mode: "seed",
@@ -2793,18 +2768,20 @@ export class MaterializationService {
                   `over a stored parent is not supported yet`,
             },
             sourceName: persistSource.name,
-            packageName: incremental!.packageName,
+            packageName: incrementalRefresh.context.packageName,
             physicalTableName,
          });
          // Clear the boundary before the rebuild, as the delta path does. A
          // source that becomes chained keeps its name and content address.
-         await resetLedger(incremental!, lineage);
+         await resetLedger(
+            incrementalRefresh.context,
+            incrementalRefresh.lineage,
+         );
       }
       const refresh: StorageIncrementalRefresh | undefined =
-         incremental && lineage && !chainedSeed
+         incrementalRefresh && !chainedSeed
             ? storageRefreshFor({
-                 context: incremental,
-                 lineage,
+                 ...incrementalRefresh,
                  persistSource,
                  instruction,
                  destinationName,
@@ -3071,11 +3048,12 @@ export class MaterializationService {
          // Incremental coverage and what this run did, as for a colocated
          // table. Absent for a non-incremental source.
          ...ledgerFields(
-            lineage,
+            incrementalRefresh?.lineage,
             result.refresh?.coveredThrough ?? result.seededThrough,
          ),
          ...refreshFields(
-            result.refresh?.refresh ?? (lineage ? "full" : undefined),
+            result.refresh?.refresh ??
+               (incrementalRefresh ? "full" : undefined),
          ),
          // How stored upstreams were read: a chained attempt answers for
          // itself; otherwise the manifest's answer for the passthrough SQL.
