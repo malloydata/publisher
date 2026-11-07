@@ -30,10 +30,10 @@ export interface QueryRequest {
    /**
     * Skip `#(authorize)` gates for this request. Set from the
     * `x-publisher-bypass-authorize` request header only, never from the body.
-    * Orthogonal to {@link bypassFilters} — see {@link Model.getQueryResults}.
+    * Orthogonal to {@link bypassFilters} — see {@link Model.runQuery}.
     */
    bypassAuthorize?: boolean;
-   /** Lift the package's surface for this request (see {@link Model.getQueryResults}). */
+   /** Lift the package's surface for this request (see {@link Model.runQuery}). */
    includeHiddenFilesAndSources?: boolean;
    /** Aborted when the HTTP client disconnects: cancels the query with it. */
    clientSignal?: AbortSignal;

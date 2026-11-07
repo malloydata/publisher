@@ -24,6 +24,7 @@ import { getActiveQueryCount } from "../query_concurrency";
 import type { AccessRecord } from "../service/access_record";
 import type { EnvironmentStore } from "../service/environment_store";
 import type { Model } from "../service/model";
+import { positionalQueryArgs } from "../test_helpers/positional_query_args";
 import { withSettings } from "../test_helpers/settings_env";
 import {
    loadTempPackage,
@@ -96,11 +97,11 @@ const COMMAND: QueryCommand = {
 
 const REST: QueryTransportOptions = { ...REST_QUERY_OPTIONS, shape: "full" };
 
-/** The positional arguments Model.getQueryResults was called with. */
+/** What Model.runQuery was called with, in `getQueryResults`'s positional order. */
 function spyRun() {
-   const spy = sinon.spy(model, "getQueryResults");
+   const spy = sinon.spy(model, "runQuery");
    return () => {
-      const args = spy.firstCall.args;
+      const args = positionalQueryArgs(...spy.firstCall.args);
       return {
          sourceName: args[1],
          queryName: args[2],

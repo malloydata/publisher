@@ -15,6 +15,7 @@ import {
 } from "../../package_load/package_load_pool";
 import type { EnvironmentStore } from "../../service/environment_store";
 import { Package } from "../../service/package";
+import { runQueryPositional } from "../../test_helpers/positional_query_args";
 import { withSettings } from "../../test_helpers/settings_env";
 import type { ModelQueryMetadataInput } from "../../service/model";
 import {
@@ -132,7 +133,7 @@ function storeWhoseQueryThrows(error: unknown): Partial<EnvironmentStore> {
                   getType: () => "model",
                   carriesReportTag: () => false,
                   getModel: async () => ({}),
-                  getQueryResults: async () => {
+                  runQuery: async () => {
                      throw error;
                   },
                }),
@@ -182,7 +183,7 @@ function storeCapturingMetadata(
                   getType: () => "model",
                   carriesReportTag: () => false,
                   getModel: async () => ({}),
-                  getQueryResults: async (..._args: unknown[]) => {
+                  runQuery: runQueryPositional(async (..._args: unknown[]) => {
                      // Positional: audit, sourceName, queryName, query, filterParams,
                      // bypassFilters, givens, abortSignal, metadata input,
                      // responseShape. Indexed rather than destructured off the
@@ -201,7 +202,7 @@ function storeCapturingMetadata(
                         rowLimitSource: "server_default",
                         queryCorrelationId: "corr-1",
                      };
-                  },
+                  }),
                }),
             }),
          }) as never,
@@ -707,7 +708,7 @@ describe("execute_query on a package with published versions", () => {
                         getType: () => "model",
                         carriesReportTag: () => false,
                         getModel: async () => ({}),
-                        getQueryResults: async () => {
+                        runQuery: async () => {
                            if (options.queryError) throw options.queryError;
                            return {
                               result: { schema: { fields: [] } },
@@ -804,13 +805,15 @@ describe("execute_query cancellation", () => {
                ...pkg,
                getModel: () => ({
                   ...pkg.getModel(),
-                  getQueryResults: (...queryArgs: unknown[]) =>
-                     new Promise((_resolve, reject) => {
-                        querySignal = queryArgs[7] as AbortSignal;
-                        querySignal.addEventListener("abort", () =>
-                           reject(new Error("query cancelled")),
-                        );
-                     }),
+                  runQuery: runQueryPositional(
+                     (...queryArgs: unknown[]) =>
+                        new Promise((_resolve, reject) => {
+                           querySignal = queryArgs[7] as AbortSignal;
+                           querySignal.addEventListener("abort", () =>
+                              reject(new Error("query cancelled")),
+                           );
+                        }),
+                  ),
                }),
             }),
          } as never;
