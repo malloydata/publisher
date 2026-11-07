@@ -36,10 +36,6 @@ import {
    getPrometheusMetricsHandler,
    httpMetricsMiddleware,
 } from "./instrumentation";
-import {
-   legacyPackageNameBodyMiddleware,
-   legacyPackageNameMiddleware,
-} from "./legacy_package_name";
 import { logger, loggerMiddleware } from "./logger";
 import {
    assertDuckDBResourceConfig,
@@ -322,10 +318,6 @@ const themeController = new ThemeController(themeStore);
 
 export const mcpApp = createMcpApp(environmentStore);
 
-// Before every package route, the data-app static routes included: a package
-// version named in a combined package name (see legacy_package_name).
-app.use(legacyPackageNameMiddleware());
-
 // The data-app static routes come before the SPA catch-all and (in dev) the
 // Vite proxy.
 registerDataAppStaticRoutes(
@@ -371,7 +363,6 @@ app.use((req, res, next) =>
    isOverlayRoute(req.path) ? overlayBodyParser(req, res, next) : next(),
 );
 app.use(bodyParser.json({ limit: "1mb" }));
-app.use(legacyPackageNameBodyMiddleware());
 
 try {
    const metricsHandler = getPrometheusMetricsHandler();

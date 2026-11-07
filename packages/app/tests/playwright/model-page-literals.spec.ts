@@ -2,10 +2,12 @@
 // SPDX-License-Identifier: MIT
 
 import { expect, Page, test } from "@playwright/test";
-import * as fs from "fs/promises";
-import * as path from "path";
-import { fileURLToPath } from "url";
-import { DEFAULT_ENV, PACKAGES } from "./helpers/fixtures";
+import { PACKAGES } from "./helpers/fixtures";
+import {
+   exampleFixture,
+   registerPackageEnv,
+   type PackageEnv,
+} from "./helpers/packageEnv";
 import { requireModelViewer } from "./helpers/publisherStatus";
 
 /**
@@ -24,17 +26,11 @@ import { requireModelViewer } from "./helpers/publisherStatus";
  * the same data is listed and queried, each value comes back as written, and
  * nothing on the page writes a value into Malloy text.
  *
- * Like notebook-givens, the spec writes its model into the `storefront`
- * package directory and reloads the package, so run it against a normal
- * server, not one started with `--watch-env examples`.
+ * Like notebook-givens, the spec adds its model to a throwaway copy of the
+ * `storefront` package.
  */
 
 const FIXTURE_MODEL = "model_page_literals.malloy";
-
-const PKG_DIR = path.resolve(
-   path.dirname(fileURLToPath(import.meta.url)),
-   "../../../server/publisher_data/examples/storefront",
-);
 
 const QUOTED = `27" Monitor`;
 const CRAFTED = `x" or "a" = "a`;
@@ -54,37 +50,32 @@ query: all_names is items -> {
 }
 `;
 
-async function reloadPackage(baseURL: string): Promise<void> {
-   const url = `${baseURL}/api/v0/environments/${DEFAULT_ENV}/packages/${PACKAGES.storefront}?reload=true`;
-   const res = await fetch(url);
-   if (!res.ok) {
-      throw new Error(`Package reload failed: ${res.status} ${res.statusText}`);
-   }
-}
+let pe: PackageEnv;
 
 async function openFixtureModel(page: Page): Promise<void> {
-   await page.goto(`/${DEFAULT_ENV}/${PACKAGES.storefront}/${FIXTURE_MODEL}`);
+   await page.goto(`/${pe.env}/${pe.pkg}/${FIXTURE_MODEL}`);
    await expect(
       page.getByRole("heading", { name: "items", level: 1 }),
    ).toBeVisible();
 }
 
 test.describe("model-page-literals", () => {
-   // Whether beforeAll got as far as writing the fixture: on a server that
-   // skips the spec it did not, and a reload would only disturb other specs.
-   let wrote = false;
-
-   test.beforeAll(async ({ baseURL }) => {
-      await requireModelViewer(baseURL!);
-      await fs.writeFile(path.join(PKG_DIR, FIXTURE_MODEL), MODEL_SOURCE);
-      wrote = true;
-      await reloadPackage(baseURL!);
+   // eslint-disable-next-line no-empty-pattern
+   test.beforeAll(async ({}, testInfo) => {
+      const baseURL = testInfo.project.use.baseURL ?? "http://localhost:4000";
+      // First, so a server that skips the spec gets no environment registered.
+      await requireModelViewer(baseURL);
+      pe = await registerPackageEnv(
+         baseURL,
+         "literals",
+         exampleFixture(PACKAGES.storefront),
+         PACKAGES.storefront,
+         { [FIXTURE_MODEL]: MODEL_SOURCE },
+      );
    });
 
-   test.afterAll(async ({ baseURL }) => {
-      if (!wrote) return;
-      await fs.unlink(path.join(PKG_DIR, FIXTURE_MODEL)).catch(() => undefined);
-      await reloadPackage(baseURL!).catch(() => undefined);
+   test.afterAll(async () => {
+      await pe?.dispose();
    });
 
    test("lists the source's fields", async ({ page }) => {

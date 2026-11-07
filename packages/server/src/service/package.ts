@@ -323,6 +323,29 @@ function packageLoadFailureStatus(error: unknown): PackageLoadStatus {
    return "error";
 }
 
+/**
+ * The fields `Package.getPackageMetadata` computes and overlays on what the
+ * package declares: what this server holds now (the load, its manifest
+ * binding, the sources it serves from storage), the build plan and agents,
+ * the secure givens, and the warnings. Never stored, so a caller that
+ * round-trips a response (a version load, a manifest rebind) cannot freeze
+ * them: the next read computes them again, and omits the inline ones while
+ * PUBLISHER_PACKAGE_INLINE_FIELDS is off.
+ */
+const COMPUTED_PACKAGE_FIELDS = [
+   "manifestBindingStatus",
+   "manifestEntryCount",
+   "boundManifestUri",
+   "servedRevision",
+   "sourceContentSha",
+   "storageServeBindings",
+   "buildPlan",
+   "agents",
+   "secureGivens",
+   "exploresWarnings",
+   "warnings",
+] as const satisfies readonly (keyof ApiPackage)[];
+
 /** Why a join-bypass finding is a warning and not a refusal (docs/authorize.md, "Gates are edge controls"). */
 const JOIN_BYPASS_NOTE =
    "Each gate governs only the source a query enters through, so exposing these rows to every " +
@@ -350,7 +373,7 @@ export class Package {
    /**
     * The classification walks over the `models` map and the listing metadata
     * they were computed for: `explores` and `queryableSources` are all
-    * `applyQueryBoundaryToModels` reads, so a PATCH that changes neither keeps it.
+    * `applyQueryBoundaryToModels` reads, so a metadata change to neither keeps it.
     */
    private classificationMemo: ClassificationMemo | undefined;
    /**
@@ -453,7 +476,7 @@ export class Package {
    private packageSkillWarnings: string[] = [];
    /**
     * The manifest's raw `agents` value, held apart from `packageMetadata` so a
-    * metadata PATCH cannot replace it.
+    * metadata update cannot replace it.
     */
    private rawAgents: unknown;
    private packageAgents = new Map<string, PackageAgent>();
@@ -1496,7 +1519,7 @@ export class Package {
    /**
     * The package's declared `queryMetadata`, the least specific layer. Falls
     * back to the deprecated `materialization.queryMetadata`, which an
-    * un-migrated PATCH can still set.
+    * un-migrated publisher.json can still declare.
     */
    public getDeclaredQueryMetadata(): QueryMetadata | null {
       return (
@@ -1793,7 +1816,7 @@ export class Package {
          // and the build plan and agents (also at their own routes).
          Object.assign(metadata, this.getOperationalFields(), {
             buildPlan: this.buildPlan,
-            // Overlaid so a metadata PATCH body can neither set nor wipe it.
+            // Overlaid so package metadata can neither set nor wipe it.
             agents:
                this.rawAgents === undefined ? undefined : this.listAgents(),
          });
@@ -1975,6 +1998,15 @@ export class Package {
    public markManifestBound(uri: string): void {
       this.boundManifestUri = uri;
       this.manifestBindingStatus = "bound";
+   }
+
+   /**
+    * Record that no manifest is bound, so the package serves live: undoes
+    * {@link markManifestBound} for a manifest that carried no entries, which
+    * a reload with no manifest never touches.
+    */
+   public markManifestUnbound(): void {
+      this.recordManifestBinding({});
    }
 
    /**
@@ -2400,7 +2432,7 @@ export class Package {
          }
       }
 
-      // Rule 4: a valid 5-field cron, here so publish, PATCH, load and the
+      // Rule 4: a valid 5-field cron, here so publish, load and the
       // scheduler all apply one rule and a bad cron cannot silently never arm.
       if (packageSchedule && !new CronEvaluator().isValid(packageSchedule)) {
          warnings.push(
@@ -3357,7 +3389,7 @@ export class Package {
    /** Whether the last lint ran the per-file text lint, which a re-lint keeps. */
    private lintIncludesText = false;
 
-   /** Re-run the report lint; also after a metadata PATCH, which can change the surface. */
+   /** Re-run the report lint; also after a metadata change, which can change the surface. */
    public async relintReports(
       options: { textLint?: boolean } = {},
    ): Promise<void> {
@@ -3958,16 +3990,15 @@ export class Package {
    }
 
    /**
-    * `packageMetadata` without the fields computed from the installed models,
-    * so a caller that round-trips `getPackageMetadata()` (or a PATCH body)
-    * cannot store a snapshot that outlives the models it describes.
+    * `packageMetadata` without the fields computed from the loaded package
+    * (COMPUTED_PACKAGE_FIELDS), so a caller that round-trips
+    * `getPackageMetadata()` cannot store a snapshot that outlives the load it
+    * describes.
     */
    private static storableMetadata(packageMetadata: ApiPackage): ApiPackage {
-      if (!("secureGivens" in packageMetadata)) {
-         return packageMetadata;
-      }
-      const { secureGivens: _computed, ...stored } = packageMetadata;
-      return stored;
+      const stored: Record<string, unknown> = { ...packageMetadata };
+      for (const key of COMPUTED_PACKAGE_FIELDS) delete stored[key];
+      return stored as ApiPackage;
    }
 
    public setPackageMetadata(packageMetadata: ApiPackage) {

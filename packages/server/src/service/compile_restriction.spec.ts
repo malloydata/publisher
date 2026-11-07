@@ -31,6 +31,7 @@ import path from "path";
 import { CompileRefusedError } from "../errors";
 import { onlyParseFailures, renderTagRefusal } from "./compile_restriction";
 import { Environment } from "./environment";
+import { installTestPackage } from "../test_helpers/install_test_package";
 
 // The curated model. It publishes `base_source` and nothing else; every
 // hostile fragment below tries to reach past it.
@@ -77,7 +78,7 @@ describe("compile construct containment", () => {
       const envPath = path.join(rootDir, "env");
       await fs.mkdir(envPath, { recursive: true });
       env = await Environment.create("testEnv", envPath, []);
-      await env.installPackage("pkg", async (stagingPath) => {
+      await installTestPackage(env, "pkg", async (stagingPath) => {
          await fs.mkdir(stagingPath, { recursive: true });
          await fs.writeFile(
             path.join(stagingPath, "publisher.json"),
@@ -184,7 +185,7 @@ describe("compile construct containment", () => {
       // Both properties below are malloy's rather than this module's, which is
       // why they are pinned here rather than reasoned about.
       it("classifies a construct reached through a non-exported source", async () => {
-         await env.installPackage("exports", async (stagingPath) => {
+         await installTestPackage(env, "exports", async (stagingPath) => {
             await fs.mkdir(stagingPath, { recursive: true });
             await fs.writeFile(
                path.join(stagingPath, "publisher.json"),
@@ -218,7 +219,7 @@ export { published }`,
       });
 
       it("classifies a construct that needs the base model's compiler flags", async () => {
-         await env.installPackage("flags", async (stagingPath) => {
+         await installTestPackage(env, "flags", async (stagingPath) => {
             await fs.mkdir(stagingPath, { recursive: true });
             await fs.writeFile(
                path.join(stagingPath, "publisher.json"),

@@ -21,6 +21,17 @@ Give the heading a title — `## [Unreleased] — what changed`, with an em dash
 
 Two consequences worth knowing. A section merged to `main` ships in the **next** release, whenever that is, so do not write one for work that has not landed. And a heading already stamped with a version is history: a follow-up that changes that behaviour opens a **new** `[Unreleased]` section referencing the shipped version by number, rather than editing the old one.
 
+## [Unreleased] — breaking: every package is a published version
+
+Package versions are no longer opt-in. `PUBLISHER_PACKAGE_VERSIONING` is gone ([#1381](https://github.com/malloydata/publisher/issues/1381)): a server that still sets it ignores it, and every package it serves is an immutable version numbered by the `version` in its own `publisher.json` ([package-versions.md](docs/package-versions.md)).
+
+- **A publish needs a `version`.** `POST …/packages` with a `location` publishes the version its `publisher.json` declares; a missing `version` answers 400 `MANIFEST_VERSION_MISSING`, a non-semver one 400 `MANIFEST_VERSION_INVALID`, and other content under a published version 409 `VERSION_CONFLICT`. Nothing installs a package in place any more. A request without a `location` answers 400.
+- **Packages in `publisher.config.json`, and those an environment created over the API lists, are published as versions too**, so each needs a `version`; one without fails to load and its error is in `/status`. A location holding several packages is downloaded once.
+- **Edits and reloads happen in a watched environment only** (`--watch-env`), which mounts its packages' sources in place. Anywhere else a reload (`?reload=true`, `reload_package`) answers the version unchanged, and a model or report write (`PUT …/models/{path}`, the Console's report builder) answers 409 `PACKAGE_IS_VERSIONED`: bump the version and publish it.
+- **`PATCH …/packages/{pkg}` is removed** ([#1330](https://github.com/malloydata/publisher/issues/1330)), with the Console's package edit dialog and its scope and schedule controls, and the CLI's `update package`, `schedule set` and `schedule clear`. A package's description, scope and schedule come from its `publisher.json`; rebind a version's manifest with `PUT …/versions/{version}/manifest`.
+- **A combined name, `<package>___<version>`, is an ordinary package name again.** The transition that read it as `<package>` at `<version>` is removed; name the version with `versionId`.
+- `/status` still reports `packageVersioning`, now always `"on"`.
+
 ## [Unreleased] — `--help` and the configuration reference come from the settings registry, and startup logs the settings given
 
 Every setting is described once, in the settings registry 0.12.2 added, and three things are now generated from it:

@@ -7,6 +7,7 @@ import os from "os";
 import path from "path";
 import { CompileRefusedError } from "../errors";
 import { Environment } from "./environment";
+import { installTestPackage } from "../test_helpers/install_test_package";
 
 /**
  * The fragment-checking advice in compile_model's tool description, pinned
@@ -47,7 +48,7 @@ describe("compile_model: checking part of a source", () => {
       const envPath = path.join(rootDir, "env");
       await fs.mkdir(envPath, { recursive: true });
       env = await Environment.create("testEnv", envPath, []);
-      await env.installPackage("pkg", async (stagingPath) => {
+      await installTestPackage(env, "pkg", async (stagingPath) => {
          await fs.mkdir(stagingPath, { recursive: true });
          await fs.writeFile(
             path.join(stagingPath, "publisher.json"),

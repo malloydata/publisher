@@ -17,10 +17,7 @@ import type { ConnectionController } from "../controller/connection.controller";
 import type { DatabaseController } from "../controller/database.controller";
 import type { MaterializationController } from "../controller/materialization.controller";
 import type { ModelController } from "../controller/model.controller";
-import {
-   setPackagePatchDeprecationHeaders,
-   type PackageController,
-} from "../controller/package.controller";
+import type { PackageController } from "../controller/package.controller";
 import type { QueryController } from "../controller/query.controller";
 import type { ReportController } from "../controller/report.controller";
 import type { SkillController } from "../controller/skill.controller";
@@ -581,18 +578,6 @@ function registerPackageRoutes(
             req.params.packageName,
             reload,
             req.query.versionId,
-         );
-      }),
-   );
-   // Deprecated (see setPackagePatchDeprecationHeaders), and kept working.
-   app.patch(
-      pkg,
-      apiRoute((req, res) => {
-         setPackagePatchDeprecationHeaders(res);
-         return packageController.updatePackage(
-            req.params.environmentName,
-            req.params.packageName,
-            req.body,
          );
       }),
    );

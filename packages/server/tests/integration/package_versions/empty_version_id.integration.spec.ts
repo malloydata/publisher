@@ -17,21 +17,21 @@
  * get, stop and delete, and the model query with the version in its URL.
  *
  * Two packages are probed: one with two published versions (`latest` is the
- * higher, 2.0.0), and one published with versioning off, so it has none. Each
- * package tree answers its own number from its model, report titles, notebook,
- * skills and agent, so an answer proves which tree served it. A route's
- * answer with "" is compared to its answer with nothing, status and body.
+ * higher, 2.0.0), and one with none, an unversioned tree in the environment's
+ * folder as a release before versions left one. Each package tree answers its
+ * own number from its model, report titles, notebook, skills and agent, so an
+ * answer proves which tree served it. A route's answer with "" is compared to
+ * its answer with nothing, status and body.
  */
 
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
 import fs from "fs";
 import os from "os";
 import path from "path";
+import { installTestPackage } from "../../../src/test_helpers/install_test_package";
 import { RestE2EEnv, startRestE2E } from "../../harness/rest_e2e";
-import { installVariables } from "../../../src/test_helpers/settings_env";
 
 const ENV_NAME = "empty-version-id-env";
-const FLAG = "PUBLISHER_PACKAGE_VERSIONING";
 const VERSIONED = "versioned";
 const PLAIN = "plain";
 const TERMINAL = ["MANIFEST_FILE_READY", "FAILED", "CANCELLED"];
@@ -40,20 +40,6 @@ const JSON_HEADERS = { "content-type": "application/json" };
 let env: (RestE2EEnv & { stop(): Promise<void> }) | undefined;
 let baseUrl = "";
 let root = "";
-/** The variables this suite sets, installed over the process's own settings. */
-const variables: Record<string, string | undefined> = {};
-let restoreSettings: (() => void) | undefined;
-
-/** Give the in-process server `name` at `value`, or unset, as a restart with it would. */
-function setVariable(name: string, value: string | undefined): void {
-   variables[name] = value;
-   restoreSettings?.();
-   restoreSettings = installVariables(variables);
-}
-
-function setFlag(value: string | undefined): void {
-   setVariable(FLAG, value);
-}
 
 /**
  * One package tree whose every surface names `answer`, with a persisted
@@ -314,7 +300,6 @@ function builtSources(run: Run): unknown[] {
 interface Kind {
    title: string;
    pkg: string;
-   flag: string | undefined;
    /** The number the tree that "" (and nothing) should reach answers. */
    n: number;
    /** The version a run of that tree records in its metadata, if any. */
@@ -325,14 +310,12 @@ const KINDS: Kind[] = [
    {
       title: "a versioned package (latest is 2.0.0 of 1.0.0 and 2.0.0)",
       pkg: VERSIONED,
-      flag: "on",
       n: 2,
       runVersion: { versionId: "2.0.0", scope: "package" },
    },
    {
-      title: "a package with no versions, versioning off",
+      title: "a package with no versions",
       pkg: PLAIN,
-      flag: undefined,
       n: 0,
       runVersion: {},
    },
@@ -356,19 +339,18 @@ describe("an empty versionId answers as no versionId", () => {
       });
       expect(created.status).toBeLessThan(300);
 
-      // Off: installed in place, with no versions.
-      setFlag(undefined);
-      const plain = await publish(
+      // An unversioned tree in the environment's folder, loaded in place.
+      const { environmentStore } = await import("../../../src/main_server");
+      const plain = await installTestPackage(
+         await environmentStore.getEnvironment(ENV_NAME, false),
          PLAIN,
-         writePackage(path.join(root, "plain"), { name: PLAIN }, 0),
+         async (dir) => {
+            writePackage(dir, { name: PLAIN }, 0);
+         },
       );
-      expect(plain.status).toBe(200);
-      expect(((await plain.json()) as { versionId?: unknown }).versionId).toBe(
-         undefined,
-      );
+      expect(plain.getVersionId()).toBeUndefined();
 
-      // On: two published versions, the later one latest.
-      setFlag("on");
+      // Two published versions, the later one latest.
       for (const [version, answer] of [
          ["1.0.0", 1],
          ["2.0.0", 2],
@@ -386,7 +368,6 @@ describe("an empty versionId answers as no versionId", () => {
             version,
          );
       }
-      setFlag(undefined);
    }, 180_000);
 
    afterAll(async () => {
@@ -395,7 +376,6 @@ describe("an empty versionId answers as no versionId", () => {
       }).catch(() => undefined);
       await env?.stop();
       fs.rmSync(root, { recursive: true, force: true });
-      restoreSettings?.();
    });
 
    for (const kind of KINDS) {
@@ -404,14 +384,11 @@ describe("an empty versionId answers as no versionId", () => {
          let built: Run;
 
          beforeAll(async () => {
-            setFlag(kind.flag);
             const created = await createRun(kind.pkg, {});
             expect(created.status).toBe(201);
             built = await settle(kind.pkg, created.run.id);
             expect(built.status).toBe("MANIFEST_FILE_READY");
          }, 180_000);
-
-         afterAll(() => setFlag(undefined));
 
          it("answers each report, dashboard, notebook cell, skill, agent and connection-table read the same with versionId= as with none", async () => {
             await expectEmptyReadsAsNone(kind.pkg, kind.n);
@@ -559,30 +536,25 @@ describe("an empty versionId answers as no versionId", () => {
          );
 
       it("refuses a write to a versioned package the same with ?versionId= as with none, and writes nothing", async () => {
-         setFlag("on");
-         try {
-            const source = report("Written");
-            const none = await put(VERSIONED, "none.malloy", "", { source });
-            expect(none.status).toBe(409);
-            expect((none.body as { reason?: string }).reason).toBe(
-               "PACKAGE_IS_VERSIONED",
-            );
-            expect(
-               await put(VERSIONED, "empty.malloy", "?versionId=", { source }),
-            ).toEqual(none);
+         const source = report("Written");
+         const none = await put(VERSIONED, "none.malloy", "", { source });
+         expect(none.status).toBe(409);
+         expect((none.body as { reason?: string }).reason).toBe(
+            "PACKAGE_IS_VERSIONED",
+         );
+         expect(
+            await put(VERSIONED, "empty.malloy", "?versionId=", { source }),
+         ).toEqual(none);
 
-            const paths = (
-               (await (
-                  await fetch(`${pkgApi(VERSIONED)}/reports?versionId=`)
-               ).json()) as { path: string }[]
-            ).map((r) => r.path);
-            expect(paths).toEqual([
-               "dashboards/overview.malloy",
-               "notes.malloynb",
-            ]);
-         } finally {
-            setFlag(undefined);
-         }
+         const paths = (
+            (await (
+               await fetch(`${pkgApi(VERSIONED)}/reports?versionId=`)
+            ).json()) as { path: string }[]
+         ).map((r) => r.path);
+         expect(paths).toEqual([
+            "dashboards/overview.malloy",
+            "notes.malloynb",
+         ]);
       });
 
       it("creates, then replaces, a report in a package with no versions the same with ?versionId= as with none", async () => {

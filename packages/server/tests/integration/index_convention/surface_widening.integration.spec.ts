@@ -17,33 +17,22 @@
  * stay quiet.
  *
  * Over HTTP against the real app, because the comparison lives in the reload
- * path and needs a package that was already serving.
+ * path and needs a package that was already serving. Only a package mounted in
+ * place reloads from disk (a published version is immutable), so the fixture is
+ * served from a copy mounted in place.
  */
 
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
 import * as fs from "fs";
 import * as path from "path";
-import { fileURLToPath } from "url";
-import { RestE2EEnv, startRestE2E } from "../../harness/rest_e2e";
-
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
+import {
+   fixture,
+   startPackageEnv,
+   type PackageEnv,
+} from "../../harness/reports";
 
 const ENV_NAME = "surface-widening-env";
 const PACKAGE_NAME = "index-convention-test";
-const fixtureDir = path.resolve(
-   __dirname,
-   "../../fixtures/index-convention-test",
-);
-
-// The served COPY under publisher_data is what the reload reads, so it is the
-// tree the test has to edit. Editing the fixture would pass either way.
-const servedDir = path.join(
-   path.resolve(__dirname, "../../.."),
-   "publisher_data",
-   ENV_NAME,
-   PACKAGE_NAME,
-);
 
 interface ApiPackage {
    explores?: string[];
@@ -51,11 +40,9 @@ interface ApiPackage {
 }
 
 describe("a package whose published surface disappears", () => {
-   let env: (RestE2EEnv & { stop(): Promise<void> }) | null = null;
-   let baseUrl: string;
+   let env: PackageEnv | null = null;
 
-   const pkgApi = () =>
-      `${baseUrl}/api/v0/environments/${ENV_NAME}/packages/${PACKAGE_NAME}`;
+   const pkgApi = () => env!.api();
 
    const getPackage = async (): Promise<ApiPackage> =>
       (await (await fetch(pkgApi())).json()) as ApiPackage;
@@ -74,40 +61,16 @@ describe("a package whose published surface disappears", () => {
          .find((m) => m.includes("publishes no surface now"));
 
    beforeAll(async () => {
-      env = await startRestE2E();
-      baseUrl = env.baseUrl;
-
-      const createRes = await fetch(`${baseUrl}/api/v0/environments`, {
-         method: "POST",
-         headers: { "Content-Type": "application/json" },
-         body: JSON.stringify({
-            name: ENV_NAME,
-            packages: [{ name: PACKAGE_NAME, location: fixtureDir }],
-            connections: [],
-         }),
-      });
-      if (!createRes.ok) {
-         throw new Error(
-            `Failed to create test environment (${createRes.status}): ` +
-               `${await createRes.text()}`,
-         );
-      }
-
-      const deadline = Date.now() + 30_000;
-      for (;;) {
-         const res = await fetch(pkgApi());
-         if (res.ok) break;
-         if (Date.now() > deadline) {
-            throw new Error(`Package ${PACKAGE_NAME} did not become available`);
-         }
-         await new Promise((r) => setTimeout(r, 500));
-      }
+      // A copy mounted in place: the reload reads it, so it is the tree the
+      // test edits. Editing the fixture would pass either way.
+      env = await startPackageEnv(
+         ENV_NAME,
+         { [PACKAGE_NAME]: fixture(PACKAGE_NAME) },
+         { copy: true },
+      );
    });
 
    afterAll(async () => {
-      await fetch(`${baseUrl}/api/v0/environments/${ENV_NAME}`, {
-         method: "DELETE",
-      }).catch(() => undefined);
       await env?.stop();
       env = null;
    });
@@ -155,7 +118,7 @@ describe("a package whose published surface disappears", () => {
    });
 
    it("reports the widening when the surface file is deleted", async () => {
-      fs.unlinkSync(path.join(servedDir, "index.malloy"));
+      fs.unlinkSync(path.join(env!.location(), "index.malloy"));
       const reload = await fetch(`${pkgApi()}?reload=true`);
       expect(reload.status).toBe(200);
 

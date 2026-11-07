@@ -18,7 +18,6 @@ import {
    getModelPageMode,
    getUnresolvedPublisherConfigPath,
    getVersionPromotionMode,
-   isVersioningEnabled,
    isMcpIncludeHiddenFilesAndSources,
    isPublisherConfigFrozen,
    ProcessedEnvironment,
@@ -625,15 +624,12 @@ export class EnvironmentStore {
    }
 
    private async addConfiguredEnvironment(environment: ProcessedEnvironment) {
-      // With package versioning on, a configured package loads as a publish of
-      // its location, exactly as `POST .../packages` with that location
-      // publishes it: as the version its publisher.json declares, by the same
-      // checks. A watched environment mounts its packages' sources in place,
-      // which are no immutable versions, so it loads them as before.
-      const asVersions =
-         isVersioningEnabled() && !this.inPlaceEnvs.has(environment.name);
+      // A configured package loads as a publish of its location, exactly as
+      // `POST .../packages` with that location publishes it: as the version
+      // its publisher.json declares, by the same checks (see addEnvironment).
+      // A watched environment mounts its packages' sources in place.
       try {
-         const added = await this.addEnvironment(
+         await this.addEnvironment(
             {
                name: environment.name,
                resource: `${API_PREFIX}/environments/${environment.name}`,
@@ -646,76 +642,116 @@ export class EnvironmentStore {
                        storageDestinations: environment.storageDestinations,
                     }
                   : {}),
-               packages: asVersions ? [] : environment.packages,
+               packages: environment.packages,
             },
             true,
-            { configuredPackagesPublished: asVersions },
          );
-         if (asVersions) {
-            await this.publishConfiguredPackages(added, environment.packages);
-         }
       } catch (error) {
          this.recordEnvironmentInitializationFailure(environment.name, error);
       }
    }
 
    /**
-    * Publish each configured package as the version its publisher.json
-    * declares (see addConfiguredEnvironment). One that cannot be published
-    * (no version, a refused check, a conflict) is recorded as that package's
-    * load error, as a configured package that does not mount is, and the
-    * others still load.
+    * Publish each of an environment's packages as the version its
+    * publisher.json declares. They are mounted first, as a watched
+    * environment's packages are (loadEnvironmentIntoDisk), into a staging
+    * folder of their own: a location holding several packages is downloaded
+    * once, and one that does not mount is recorded as that package's load
+    * error. Each mounted tree is then published from there. One that cannot
+    * be published (no version, a refused check, a conflict) is recorded as
+    * its load error too, and the others still load.
     */
-   private async publishConfiguredPackages(
+   private async publishEnvironmentPackages(
       environment: Environment,
-      packages: ProcessedEnvironment["packages"],
+      packages: NonNullable<ApiEnvironment["packages"]>,
    ): Promise<void> {
       const environmentName = environment.getEnvironmentName();
       const versions = environment.getVersionService();
-      for (const configured of packages) {
+      const stagingRoot = safeJoinUnderRoot(
+         environment.getEnvironmentPath(),
+         `.publish_${crypto.randomBytes(8).toString("hex")}`,
+      );
+      try {
+         let mountErrors: ReadonlyMap<string, string>;
          try {
-            if (!versions) {
-               throw new Error(
-                  "package versions are not available in this environment",
-               );
-            }
-            // A relative or `~/` location is the config's, resolved against
-            // its folder as an unversioned load resolves it (resolveLocalPath).
-            // downloadPackageInto stages only an absolute local path, and the
-            // recorded source location has to name the same folder when a
-            // later boot restores the version from it.
-            const location = this.isLocalPath(configured.location)
-               ? this.resolveLocalPath(configured.location)
-               : configured.location;
-            await versions.publish(
-               configured.name,
-               (stagingPath) =>
-                  this.downloadPackageInto(
-                     environmentName,
-                     configured.name,
-                     location,
-                     stagingPath,
-                  ),
-               {
-                  sourceLocation: location,
-                  promotion: getVersionPromotionMode(),
-                  validate: (loaded) => formatPublishRejections(loaded),
-               },
-            );
+            ({ mountErrors } = await this.loadEnvironmentIntoDisk(
+               environmentName,
+               packages,
+               stagingRoot,
+            ));
          } catch (error) {
-            const message = redactPgSecrets(
-               error instanceof Error ? error.message : String(error),
+            // Nothing could be staged (the environment's folder refused the
+            // staging folder, say): each package is a load error, as a
+            // location that does not mount is, and the environment serves.
+            const failed = new Map<string, string>();
+            this.recordMountFailure(
+               error,
+               stagingRoot,
+               packages.flatMap((p) => (p.name ? [p.name] : [])),
+               failed,
             );
-            logger.error(
-               `Failed to publish configured package "${configured.name}" as a version; skipping it`,
-               {
-                  environmentName,
-                  packageName: configured.name,
-                  error: message,
-               },
-            );
-            environment.setPackageMountError(configured.name, message);
+            mountErrors = failed;
          }
+         for (const configured of packages) {
+            // A package with no name has nothing to record a load error under.
+            if (!configured.name) continue;
+            const packageName = configured.name;
+            const configuredLocation = configured.location as string;
+            const mountError = mountErrors.get(packageName);
+            if (mountError !== undefined) {
+               environment.setPackageMountError(packageName, mountError);
+               continue;
+            }
+            try {
+               if (!versions) {
+                  throw new Error(
+                     "package versions are not available in this environment",
+                  );
+               }
+               // A relative or `~/` location is the config's, resolved against
+               // its folder as the mount resolved it (resolveLocalPath), so a
+               // later boot that restores the version from its recorded
+               // source location finds the same folder.
+               const sourceLocation = this.isLocalPath(configuredLocation)
+                  ? this.resolveLocalPath(configuredLocation)
+                  : configuredLocation;
+               const mounted = safeJoinUnderRoot(stagingRoot, packageName);
+               await versions.publish(
+                  packageName,
+                  (stagingPath) =>
+                     this.mountLocalDirectory(
+                        mounted,
+                        stagingPath,
+                        environmentName,
+                        packageName,
+                     ),
+                  {
+                     sourceLocation,
+                     promotion: getVersionPromotionMode(),
+                     validate: (loaded) => formatPublishRejections(loaded),
+                  },
+               );
+            } catch (error) {
+               const message = redactPgSecrets(
+                  error instanceof Error ? error.message : String(error),
+               );
+               logger.error(
+                  `Failed to publish package "${packageName}" as a version; skipping it`,
+                  { environmentName, packageName, error: message },
+               );
+               environment.setPackageMountError(packageName, message);
+            }
+         }
+      } finally {
+         await fs.promises
+            .rm(stagingRoot, { recursive: true, force: true })
+            .catch((error) =>
+               logger.warn("Could not remove a package staging folder", {
+                  environmentName,
+                  stagingRoot,
+                  error,
+               }),
+            );
       }
    }
 
@@ -1483,46 +1519,6 @@ export class EnvironmentStore {
       }
    }
 
-   public async addPackageToDatabase(
-      environmentName: string,
-      packageName: string,
-   ): Promise<void> {
-      const environment = await this.getEnvironment(environmentName, false);
-      const repository = this.storageManager.getRepository();
-
-      const dbEnvironment =
-         await repository.getEnvironmentByName(environmentName);
-
-      if (!dbEnvironment) {
-         logger.error(`Environment "${environmentName}" not found in database`);
-         throw new Error(
-            `Environment "${environmentName}" not found in database`,
-         );
-      }
-
-      const packages = await environment.listPackages();
-      const pkg = packages.find((p) => p.name === packageName);
-
-      if (!pkg) {
-         logger.warn(`Package "${packageName}" not found in environment`);
-         return;
-      }
-      // Under the package's lock, as addPackages does, so a first versioned
-      // publish (which takes it) cannot commit between the check and the
-      // write and have its row written over.
-      const synced = await environment.withPackageLock(
-         packageName,
-         async () => {
-            if (await this.isVersionedPackage(environment, packageName)) {
-               return false;
-            }
-            await this.addPackage(pkg, dbEnvironment.id, repository);
-            return true;
-         },
-      );
-      if (synced) logger.info(`Synced package "${packageName}" to database`);
-   }
-
    public async deletePackageFromDatabase(
       environmentName: string,
       packageName: string,
@@ -1690,10 +1686,10 @@ export class EnvironmentStore {
          operationalState,
          version: SERVER_VERSION,
       };
-      // Whether a publish from a location publishes versions, so an
-      // orchestrator mid-rollout can tell. A server from before versions sends
-      // no field, which means "off".
-      status.packageVersioning = isVersioningEnabled() ? "on" : "off";
+      // A publish from a location always publishes a version. Still reported,
+      // so an orchestrator that reads it to pick a protocol keeps working; a
+      // server from before versions sends no field, which means "off".
+      status.packageVersioning = "on";
       status.versionPromotion = getVersionPromotionMode();
       // The Console's model page. Absent, as from a server that predates the
       // setting, reads as "explorer".
@@ -1886,12 +1882,7 @@ export class EnvironmentStore {
    public async addEnvironment(
       environment: ApiEnvironment,
       skipInitialization: boolean = false,
-      {
-         storageDestinationsAreFallback = false,
-         // The config's packages are published as versions once the
-         // environment exists (see addConfiguredEnvironment), not loaded here.
-         configuredPackagesPublished = false,
-      } = {},
+      { storageDestinationsAreFallback = false } = {},
    ) {
       if (!skipInitialization) {
          await this.finishedInitialization;
@@ -1920,16 +1911,18 @@ export class EnvironmentStore {
       const environmentConfig = environmentManifest.environments.find(
          (e) => e.name === environmentName,
       );
-      const hasPackages =
-         (environment?.packages && environment.packages.length > 0) ||
-         (!configuredPackagesPublished &&
-            environmentConfig?.packages &&
-            environmentConfig.packages.length > 0);
+      const packagesToProcess =
+         environment?.packages && environment.packages.length > 0
+            ? environment.packages
+            : environmentConfig?.packages || [];
+      // Every package is served as a published version, except in a watched
+      // environment, which mounts its packages' sources in place so edits
+      // reload live. The versions are published once the environment has its
+      // database row, below.
+      const inPlace = this.inPlaceEnvs.has(environmentName);
       let absoluteEnvironmentPath: string;
       let mountErrors: ReadonlyMap<string, string> = new Map();
-      if (hasPackages) {
-         const packagesToProcess =
-            environment?.packages || environmentConfig?.packages || [];
+      if (inPlace && packagesToProcess.length > 0) {
          const loaded = await this.loadEnvironmentIntoDisk(
             environmentName,
             packagesToProcess,
@@ -1961,19 +1954,27 @@ export class EnvironmentStore {
       // It loaded, so any earlier failure for this name is stale.
       this.failedEnvironments.delete(environmentName);
 
-      environment?.packages?.forEach((_package) => {
-         if (_package.name) {
-            newEnvironment.setPackageStatus(
-               _package.name,
-               PackageStatus.SERVING,
-            );
-         }
-      });
+      if (inPlace) {
+         environment?.packages?.forEach((_package) => {
+            if (_package.name) {
+               newEnvironment.setPackageStatus(
+                  _package.name,
+                  PackageStatus.SERVING,
+               );
+            }
+         });
+      }
 
       if (storageDestinationsAreFallback) {
          newEnvironment.markStorageDestinationsUnknown();
       }
       await this.addEnvironmentToDatabase(newEnvironment);
+      if (!inPlace && packagesToProcess.length > 0) {
+         await this.publishEnvironmentPackages(
+            newEnvironment,
+            packagesToProcess,
+         );
+      }
 
       return newEnvironment;
    }
@@ -2247,16 +2248,25 @@ export class EnvironmentStore {
       }
    }
 
+   /**
+    * Mount an environment's packages, each at `<targetRoot>/<name>`:
+    * `targetRoot` is the environment's own folder when its packages are served
+    * in place (a watched environment), or a staging folder the packages are
+    * published from (publishEnvironmentPackages).
+    */
    private async loadEnvironmentIntoDisk(
       environmentName: string,
       packages: ApiEnvironment["packages"],
+      targetRoot?: string,
    ) {
       assertSafePackageName(environmentName);
-      const absoluteTargetPath = safeJoinUnderRoot(
-         this.serverRootPath,
-         PUBLISHER_DATA_DIR,
-         environmentName,
-      );
+      const absoluteTargetPath =
+         targetRoot ??
+         safeJoinUnderRoot(
+            this.serverRootPath,
+            PUBLISHER_DATA_DIR,
+            environmentName,
+         );
       const mountErrors = new Map<string, string>();
 
       await fs.promises.mkdir(absoluteTargetPath, { recursive: true });

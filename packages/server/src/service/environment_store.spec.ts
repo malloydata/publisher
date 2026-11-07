@@ -17,6 +17,7 @@ import * as sinon from "sinon";
 import { components } from "../api";
 import { TEMP_DIR_PATH } from "../constants";
 import { BadRequestError, EnvironmentNotFoundError } from "../errors";
+import { inMemoryVersionRegistry } from "../test_helpers/in_memory_version_registry";
 import { withSettings, type SettingsInput } from "../test_helpers/settings_env";
 import { stubStorageManager } from "../test_helpers/storage_manager_stub";
 import { Environment, PackageStatus } from "./environment";
@@ -75,6 +76,15 @@ function managedDestination(name = "managed"): Connection {
       },
    };
 }
+
+// The package rows and version registry the mock database holds. A configured
+// package is published as a version at boot, so the store records it here.
+// Fresh for every test (the file-level beforeEach below); two stores in one
+// test share it, as a restart shares publisher.db.
+let versionRegistry = inMemoryVersionRegistry();
+beforeEach(() => {
+   versionRegistry = inMemoryVersionRegistry();
+});
 
 // Recorder for the embeddings-cleanup wiring tests: every SQL statement
 // the store's cleanup path issues lands here. When `blocks` is true the
@@ -156,40 +166,8 @@ stubStorageManager({
          updatedAt: new Date(),
       }),
 
-      getPackageByName: async (
-         _environmentId: string,
-         _name: string,
-      ): Promise<MockData | null> => null,
-
-      // ===== VERSION METHODS: no package here has versions =====
-      listVersions: async (): Promise<unknown[]> => [],
-      listVersionsByEnvironment: async (): Promise<unknown[]> => [],
-      hasVersions: async (): Promise<boolean> => false,
-      getVersion: async (): Promise<null> => null,
-
-      createPackage: async (data: MockData): Promise<MockData> => ({
-         id: "test-package-id",
-         environmentId: data.environmentId,
-         name: data.name,
-         description: data.description,
-         manifestPath: data.manifestPath,
-         metadata: data.metadata,
-         createdAt: new Date(),
-         updatedAt: new Date(),
-      }),
-
-      updatePackage: async (id: string, data: MockData): Promise<MockData> => ({
-         id,
-         environmentId: "test-project-id",
-         name: "test-package",
-         description: data.description,
-         manifestPath: "/test/manifest.json",
-         metadata: data.metadata || {},
-         createdAt: new Date(),
-         updatedAt: new Date(),
-      }),
-
-      deletePackage: async (_id: string): Promise<void> => {},
+      // ===== PACKAGE ROWS AND VERSIONS: an in-memory registry =====
+      ...versionRegistry,
 
       // ===== CONNECTION METHODS =====
       listConnections: async (_environmentId: string): Promise<unknown[]> => [],
@@ -354,6 +332,7 @@ describe("EnvironmentStore Service", () => {
             path.join(projectPath, "publisher.json"),
             JSON.stringify({
                name: projectName,
+               version: "1.0.0",
                description: "Test package",
             }),
          );
@@ -474,6 +453,7 @@ describe("EnvironmentStore Service", () => {
          path.join(validProjectPath, "publisher.json"),
          JSON.stringify({
             name: validProjectName,
+            version: "1.0.0",
             description: "Valid project",
          }),
       );
@@ -481,6 +461,7 @@ describe("EnvironmentStore Service", () => {
          path.join(invalidProjectPath, "publisher.json"),
          JSON.stringify({
             name: invalidProjectName,
+            version: "1.0.0",
             description: "Invalid project",
          }),
       );
@@ -552,7 +533,11 @@ describe("EnvironmentStore Service", () => {
       mkdirSync(projectPath, { recursive: true });
       writeFileSync(
          path.join(projectPath, "publisher.json"),
-         JSON.stringify({ name: projectName, description: "Test package" }),
+         JSON.stringify({
+            name: projectName,
+            description: "Test package",
+            version: "1.0.0",
+         }),
       );
       writeFileSync(
          path.join(serverRootPath, "publisher.config.json"),
@@ -590,7 +575,7 @@ describe("EnvironmentStore Service", () => {
          mkdirSync(dir, { recursive: true });
          writeFileSync(
             path.join(dir, "publisher.json"),
-            JSON.stringify({ name: path.basename(dir) }),
+            JSON.stringify({ name: path.basename(dir), version: "1.0.0" }),
          );
       }
       writeFileSync(
@@ -642,7 +627,7 @@ describe("EnvironmentStore Service", () => {
       mkdirSync(source, { recursive: true });
       writeFileSync(
          path.join(source, "publisher.json"),
-         JSON.stringify({ name: "zipped" }),
+         JSON.stringify({ name: "zipped", version: "1.0.0" }),
       );
       const mount = path.join(serverRootPath, "mount");
       mkdirSync(mount, { recursive: true });
@@ -685,7 +670,9 @@ describe("EnvironmentStore Service", () => {
       // A failed RELOAD keeps the last good compiled model serving (the
       // package must not vanish), but the served model is now older than the
       // files on disk. That staleness must be visible in /status: it is the
-      // only off-box signal that a watch-mode save or reload failed.
+      // only off-box signal that a watch-mode save or reload failed. Only a
+      // watched environment's package reloads from its files: any other is a
+      // published version, which never changes.
       const projectPath = path.join(serverRootPath, projectName);
       mkdirSync(projectPath, { recursive: true });
       writeFileSync(
@@ -710,20 +697,17 @@ describe("EnvironmentStore Service", () => {
          }),
       );
 
-      const store = new EnvironmentStore(serverRootPath);
+      // The watch list is read when the store is constructed.
+      const store = withSettings(
+         { cwd: serverRootPath, env: { PUBLISHER_WATCH: projectName } },
+         () => new EnvironmentStore(serverRootPath),
+      );
       await store.finishedInitialization;
       expect((await store.getStatus()).loadErrors).toBeUndefined();
 
-      // Without a watch env the package is served from its copy under
-      // publisher_data, and that copy is what a reload recompiles, so the
-      // break has to land there.
-      const servedModel = path.join(
-         serverRootPath,
-         "publisher_data",
-         projectName,
-         projectName,
-         "model.malloy",
-      );
+      // The watched package is mounted in place, so the save that breaks it
+      // lands in its source and a reload recompiles that.
+      const servedModel = path.join(projectPath, "model.malloy");
       writeFileSync(servedModel, "source: s1 is duckdb.sql(\n"); // parse error
 
       const environment = await store.getEnvironment(projectName);
@@ -752,16 +736,17 @@ describe("EnvironmentStore Service", () => {
       expect(healthy.loadErrors).toBeUndefined();
    });
 
-   it("calls the package-loaded hook for each package loaded at boot, and again on reload", async () => {
+   it("calls the package-loaded hook for each package published at boot, and not again for the same version", async () => {
       // The hook is how the semantic index starts building before anyone asks
       // a question. It is set in the same synchronous turn as the store is
       // constructed, exactly as server.ts does, so it is in place before
-      // initialization creates the first Environment.
+      // initialization creates the first Environment. (A reload of a package
+      // served in place is a new load: environment_package_loaded_hook.spec.ts.)
       const projectPath = path.join(serverRootPath, projectName);
       mkdirSync(projectPath, { recursive: true });
       writeFileSync(
          path.join(projectPath, "publisher.json"),
-         JSON.stringify({ name: projectName }),
+         JSON.stringify({ name: projectName, version: "1.0.0" }),
       );
       writeFileSync(
          path.join(projectPath, "model.malloy"),
@@ -800,11 +785,11 @@ describe("EnvironmentStore Service", () => {
       await environment.getPackage(projectName, false);
       expect(loaded.length).toBe(1);
 
-      // A reload is a new Package instance, and so a new notification.
+      // Nor is a reload: a published version never changes, so the reload
+      // answers with the version already loaded, and the index it fed stays.
       const reloaded = await environment.getPackage(projectName, true);
-      expect(loaded.length).toBe(2);
-      expect(instances[1]).toBe(reloaded);
-      expect(instances[1]).not.toBe(instances[0]);
+      expect(loaded.length).toBe(1);
+      expect(instances[0]).toBe(reloaded);
    });
 
    it("keeps sibling packages serving when one sharing their location fails to extract", async () => {
@@ -817,7 +802,7 @@ describe("EnvironmentStore Service", () => {
       mkdirSync(shared, { recursive: true });
       writeFileSync(
          path.join(shared, "publisher.json"),
-         JSON.stringify({ name: "shared" }),
+         JSON.stringify({ name: "shared", version: "1.0.0" }),
       );
 
       writeFileSync(
@@ -885,7 +870,7 @@ describe("EnvironmentStore Service", () => {
       mkdirSync(good, { recursive: true });
       writeFileSync(
          path.join(good, "publisher.json"),
-         JSON.stringify({ name: "good" }),
+         JSON.stringify({ name: "good", version: "1.0.0" }),
       );
 
       writeFileSync(
@@ -926,7 +911,7 @@ describe("EnvironmentStore Service", () => {
       mkdirSync(projectPath, { recursive: true });
       writeFileSync(
          path.join(projectPath, "publisher.json"),
-         JSON.stringify({ name: projectName }),
+         JSON.stringify({ name: projectName, version: "1.0.0" }),
       );
       writeFileSync(
          path.join(serverRootPath, "publisher.config.json"),
@@ -1015,7 +1000,7 @@ describe("EnvironmentStore Service", () => {
       mkdirSync(envPath, { recursive: true });
       writeFileSync(
          path.join(envPath, "publisher.json"),
-         JSON.stringify({ name: projectName }),
+         JSON.stringify({ name: projectName, version: "1.0.0" }),
       );
 
       writeFileSync(
@@ -1073,7 +1058,7 @@ describe("EnvironmentStore Service", () => {
       mkdirSync(envPath, { recursive: true });
       writeFileSync(
          path.join(envPath, "publisher.json"),
-         JSON.stringify({ name: projectName }),
+         JSON.stringify({ name: projectName, version: "1.0.0" }),
       );
       writeFileSync(
          path.join(serverRootPath, "publisher.config.json"),
@@ -1137,7 +1122,7 @@ describe("EnvironmentStore Service", () => {
       mkdirSync(envPath, { recursive: true });
       writeFileSync(
          path.join(envPath, "publisher.json"),
-         JSON.stringify({ name: projectName }),
+         JSON.stringify({ name: projectName, version: "1.0.0" }),
       );
       writeFileSync(
          path.join(serverRootPath, "publisher.config.json"),
@@ -1179,7 +1164,7 @@ describe("EnvironmentStore Service", () => {
       mkdirSync(envPath, { recursive: true });
       writeFileSync(
          path.join(envPath, "publisher.json"),
-         JSON.stringify({ name: projectName }),
+         JSON.stringify({ name: projectName, version: "1.0.0" }),
       );
       writeFileSync(
          path.join(serverRootPath, "publisher.config.json"),
@@ -1240,7 +1225,7 @@ describe("EnvironmentStore Service", () => {
       mkdirSync(envPath, { recursive: true });
       writeFileSync(
          path.join(envPath, "publisher.json"),
-         JSON.stringify({ name: projectName }),
+         JSON.stringify({ name: projectName, version: "1.0.0" }),
       );
       // Config declares nothing, so the fallback on a failed read is an empty list.
       writeFileSync(
@@ -1299,7 +1284,7 @@ describe("EnvironmentStore Service", () => {
       mkdirSync(envPath, { recursive: true });
       writeFileSync(
          path.join(envPath, "publisher.json"),
-         JSON.stringify({ name: projectName }),
+         JSON.stringify({ name: projectName, version: "1.0.0" }),
       );
       writeFileSync(
          path.join(serverRootPath, "publisher.config.json"),
@@ -1336,7 +1321,7 @@ describe("EnvironmentStore Service", () => {
       mkdirSync(envPath, { recursive: true });
       writeFileSync(
          path.join(envPath, "publisher.json"),
-         JSON.stringify({ name: projectName }),
+         JSON.stringify({ name: projectName, version: "1.0.0" }),
       );
       writeFileSync(
          path.join(serverRootPath, "publisher.config.json"),
@@ -1379,7 +1364,7 @@ describe("EnvironmentStore Service", () => {
       mkdirSync(goodPackagePath, { recursive: true });
       writeFileSync(
          path.join(goodPackagePath, "publisher.json"),
-         JSON.stringify({ name: goodPackageName }),
+         JSON.stringify({ name: goodPackageName, version: "1.0.0" }),
       );
       // The directory exists, so the environment mounts; the package inside it
       // has no manifest, so only that package fails. This is the second, and
@@ -1428,7 +1413,7 @@ describe("EnvironmentStore Service", () => {
       mkdirSync(goodPackagePath, { recursive: true });
       writeFileSync(
          path.join(goodPackagePath, "publisher.json"),
-         JSON.stringify({ name: goodPackageName }),
+         JSON.stringify({ name: goodPackageName, version: "1.0.0" }),
       );
       mkdirSync(badPackagePath, { recursive: true });
 
@@ -1503,17 +1488,20 @@ describe("EnvironmentStore Service", () => {
          1,
       );
 
-      // Fix the package where the environment actually reads it, then re-add
-      // it. A package that is serving must not still be reported as failed.
+      // Fix the package at its location, then publish it again, as a restart
+      // would. A package that is serving must not still be reported as failed.
       writeFileSync(
-         path.join(
-            environment.metadata.location as string,
-            badPackageName,
-            "publisher.json",
-         ),
-         JSON.stringify({ name: badPackageName }),
+         path.join(badPackagePath, "publisher.json"),
+         JSON.stringify({ name: badPackageName, version: "1.0.0" }),
       );
-      await environment.addPackage(badPackageName);
+      await environment
+         .getVersionService()!
+         .publish(
+            badPackageName,
+            (stagingPath) =>
+               fsPromises.cp(badPackagePath, stagingPath, { recursive: true }),
+            { sourceLocation: badPackagePath, promotion: "on-publish" },
+         );
 
       const status = await newEnvironmentStore.getStatus();
       expect(status.operationalState).toBe("serving");
@@ -1532,6 +1520,7 @@ describe("EnvironmentStore Service", () => {
          path.join(projectPath, "publisher.json"),
          JSON.stringify({
             name: projectName,
+            version: "1.0.0",
             description: "Test package",
          }),
       );
@@ -1592,6 +1581,7 @@ describe("EnvironmentStore Service", () => {
             path.join(projectPath, "publisher.json"),
             JSON.stringify({
                name: projectName,
+               version: "1.0.0",
                description: "Test package",
             }),
          );
@@ -1795,6 +1785,7 @@ describe("EnvironmentStore Service", () => {
          path.join(validProjectPath, "publisher.json"),
          JSON.stringify({
             name: "valid-project",
+            version: "1.0.0",
             description: "Valid project",
          }),
       );
@@ -1870,6 +1861,7 @@ describe("EnvironmentStore Service", () => {
             path.join(projectPath, "publisher.json"),
             JSON.stringify({
                name: projectName,
+               version: "1.0.0",
                description: "Test package",
             }),
          );
@@ -2010,6 +2002,7 @@ describe("Project Service Error Recovery", () => {
                path.join(projectPath, "publisher.json"),
                JSON.stringify({
                   name: projectName,
+                  version: "1.0.0",
                   description: "Test package",
                }),
             );
@@ -2065,6 +2058,7 @@ describe("Project Service Error Recovery", () => {
                path.join(projectPath, "publisher.json"),
                JSON.stringify({
                   name: projectName,
+                  version: "1.0.0",
                   description: "Test package",
                }),
             );
@@ -2621,7 +2615,10 @@ describe("readiness line emission", () => {
    const writePackage = (name: string) => {
       const dir = path.join(readinessRoot, "src-packages", name);
       mkdirSync(dir, { recursive: true });
-      writeFileSync(path.join(dir, "publisher.json"), JSON.stringify({ name }));
+      writeFileSync(
+         path.join(dir, "publisher.json"),
+         JSON.stringify({ name, version: "1.0.0" }),
+      );
       return dir;
    };
 

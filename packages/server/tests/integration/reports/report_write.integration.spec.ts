@@ -43,7 +43,8 @@ const BROKEN_TAG =
 describe("PUT model source: reports anywhere (E2E)", () => {
    let env: PackageEnv;
    const put = (modelPath: string, body: unknown) => env.put(modelPath, body);
-   const served = (modelPath: string) => env.served(modelPath);
+   // The package is mounted in place, so its copy is the tree it serves.
+   const served = (modelPath: string) => path.join(env.location(), modelPath);
    const reportsByPath = async () =>
       Object.fromEntries(
          (

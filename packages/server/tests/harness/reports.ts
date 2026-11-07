@@ -62,14 +62,16 @@ export interface PackageEnv {
    warnings(pkg?: string): Promise<Warning[]>;
    /** The directory a package was registered from: the copy, when copied. */
    location(pkg?: string): string;
-   /** The package's own copy of a file, under `publisher_data`: where writes land. */
-   served(modelPath: string, pkg?: string): string;
    /** Delete the environment, stop the server and remove any copies. */
    stop(): Promise<void>;
 }
 
 export interface PackageEnvOptions {
-   /** Register a temporary copy of each fixture, for a spec that writes to it. */
+   /**
+    * Register a temporary copy of each fixture, mounted in place, for a spec
+    * that writes to it. Without it each fixture is published as the version
+    * its publisher.json declares.
+    */
    copy?: boolean;
    /** Runs on each copy before the environment is created. Implies `copy`. */
    prepare?: (dir: string, pkg: string) => Promise<void>;
@@ -111,6 +113,14 @@ export async function startPackageEnv(
 
    const server = await startRestE2E();
    const { baseUrl } = server;
+   if (copyRoot) {
+      // A spec that copies its fixtures writes into them (reports, reloads),
+      // and only a package mounted in place takes a write: every other
+      // package is a published version. So the environment is mounted in
+      // place, as a watched environment's packages are.
+      const { environmentStore } = await import("../../src/main_server");
+      environmentStore.markInPlace(envName);
+   }
    const api = (sub = "", pkg = first) =>
       `${baseUrl}/api/v0/environments/${envName}/packages/${pkg}${sub}`;
 
@@ -160,14 +170,6 @@ export async function startPackageEnv(
       warnings: async (pkg) =>
          (await getJson<{ warnings?: Warning[] }>(api("", pkg))).warnings ?? [],
       location: (pkg = first) => locations[pkg],
-      served: (modelPath, pkg = first) =>
-         path.resolve(
-            __dirname,
-            "../../publisher_data",
-            envName,
-            pkg,
-            modelPath,
-         ),
       stop: async () => {
          await fetch(`${baseUrl}/api/v0/environments/${envName}`, {
             method: "DELETE",

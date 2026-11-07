@@ -4,6 +4,8 @@
 /// <reference types="bun-types" />
 
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
+import fs from "fs";
+import os from "os";
 import path from "path";
 import { fileURLToPath } from "url";
 import type { MaterializationScheduler } from "../../../src/service/materialization_scheduler";
@@ -37,15 +39,30 @@ describe("MaterializationScheduler wiring (E2E, real env-var timer)", () => {
    let env: (RestE2EEnv & { stop(): Promise<void> }) | null = null;
    let baseUrl: string;
    let scheduler: MaterializationScheduler | null = null;
+   let sourceDir = "";
 
    beforeAll(async () => {
       env = await startRestE2E();
       baseUrl = env.baseUrl;
 
-      const fixtureDir = path.resolve(
-         __dirname,
-         "../../fixtures/persist-schedule-test",
+      // A copy of the fixture on an every-minute cron, so the real timer fires
+      // within the test window (the fixture ships a daily cron, which a
+      // wall-clock test can't wait on). A schedule comes from publisher.json.
+      sourceDir = fs.mkdtempSync(path.join(os.tmpdir(), "sched-wiring-"));
+      fs.cpSync(
+         path.resolve(__dirname, "../../fixtures/persist-schedule-test"),
+         sourceDir,
+         { recursive: true },
       );
+      const manifestPath = path.join(sourceDir, "publisher.json");
+      fs.writeFileSync(
+         manifestPath,
+         JSON.stringify({
+            ...JSON.parse(fs.readFileSync(manifestPath, "utf8")),
+            materialization: { schedule: "* * * * *" },
+         }),
+      );
+      const fixtureDir = sourceDir;
       const createRes = await fetch(`${baseUrl}/api/v0/environments`, {
          method: "POST",
          headers: { "Content-Type": "application/json" },
@@ -61,19 +78,7 @@ describe("MaterializationScheduler wiring (E2E, real env-var timer)", () => {
          );
       }
 
-      // Wait for the package to load, then switch it to an every-minute cron so
-      // the real timer fires within the test window (the fixture ships a daily
-      // cron, which a wall-clock test can't wait on).
       await waitUntilOk(`${baseUrl}${API}`, "Test package");
-      const patch = await fetch(`${baseUrl}${API}`, {
-         method: "PATCH",
-         headers: { "Content-Type": "application/json" },
-         body: JSON.stringify({
-            name: PACKAGE_NAME,
-            materialization: { schedule: "* * * * *" },
-         }),
-      });
-      expect(patch.ok).toBe(true);
    });
 
    afterAll(async () => {
@@ -89,6 +94,7 @@ describe("MaterializationScheduler wiring (E2E, real env-var timer)", () => {
       }
       await env?.stop();
       env = null;
+      if (sourceDir) fs.rmSync(sourceDir, { recursive: true, force: true });
    });
 
    it(

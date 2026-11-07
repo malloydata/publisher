@@ -21,6 +21,7 @@ import {
 import { Environment } from "./environment";
 import type { Package } from "./package";
 import { linesMentioning } from "../test_helpers/log_lines";
+import { installTestPackage } from "../test_helpers/install_test_package";
 
 const PACKAGE = "report-discovery-telemetry";
 
@@ -99,7 +100,7 @@ describe("report discovery telemetry", () => {
    });
 
    const install = async (): Promise<Package> => {
-      await env.installPackage(PACKAGE, async (stagingPath) => {
+      await installTestPackage(env, PACKAGE, async (stagingPath) => {
          await fs.mkdir(stagingPath, { recursive: true });
          for (const [name, text] of Object.entries(FILES))
             await fs.writeFile(path.join(stagingPath, name), text);

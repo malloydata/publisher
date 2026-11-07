@@ -13,7 +13,6 @@
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "bun:test";
 import type { components } from "../../../src/api";
 import { installVariables } from "../../../src/test_helpers/settings_env";
-import { versioningOnForSuite } from "../../harness/versioning";
 import { type ResourcesEnv, startResourcesEnv } from "./resources_harness";
 
 type ModelEntities = components["schemas"]["ModelEntities"];
@@ -35,7 +34,6 @@ function orders(n: number): string {
 }
 
 describe("a versioned package's sub-resources", () => {
-   versioningOnForSuite();
    let r: ResourcesEnv;
    const at = (sub: string, versionId?: string) =>
       r.get(
@@ -108,10 +106,7 @@ describe("a versioned package's sub-resources", () => {
    }, 60_000);
 
    it("with inline fields off, GET /status lists one slim entry per version", async () => {
-      // Installed over the process's variables, which do not hold the suite's
-      // versioning, so this keeps it on beside inline fields off.
       restoreInline = installVariables({
-         PUBLISHER_PACKAGE_VERSIONING: "on",
          PUBLISHER_PACKAGE_INLINE_FIELDS: "off",
       });
       const entries = await r.statusEntries("shop");

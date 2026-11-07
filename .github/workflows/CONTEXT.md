@@ -27,11 +27,8 @@ published, because a PR run proves nothing about the ref a dispatch actually tar
 not repeat is the server suites and the Linux-only e2e suite.
 
 `app-playwright.yml` runs the browser suite on every PR, whatever its base (a PR stacked on another
-PR's branch included), against a server with package versioning off,
-then runs `package-versions.spec.ts` once more against a server it starts with
-`PUBLISHER_PACKAGE_VERSIONING=on` (the spec skips itself on the first pass, and fails rather than
-skips on the second if versioning is not on). The model viewer's specs get a pass of their own the
-same way, against a server started with `PUBLISHER_MODEL_PAGE=viewer` (`EXPECT_MODEL_PAGE=viewer`),
+PR's branch included). The model viewer's specs get a pass of their own, against a server started
+with `PUBLISHER_MODEL_PAGE=viewer` (`EXPECT_MODEL_PAGE=viewer`),
 because the suite's server shows the default model page, the Explorer. `python-sdk.yml` is `workflow_call`-only (plus a
 manual dispatch): it builds and verifies the Python client, for `build.yml` on every PR and for
 `release.yml`, which publishes it to PyPI from a job of its own. It has published there since

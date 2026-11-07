@@ -17,20 +17,22 @@ const __dirname = path.dirname(__filename);
 const PROJECT_NAME = "manifest-bind-project";
 const PACKAGE_NAME = "persist-test";
 const MODEL_PATH = "persist_test.malloy";
+// The version the fixture's publisher.json declares: the one served as latest.
+const VERSION = "1.0.0";
 const API = `/api/v0/environments/${PROJECT_NAME}/packages/${PACKAGE_NAME}`;
 
 /**
- * Covers the publisher's manifestLocation plumbing: create/update accepts a
- * manifest URI, it is persisted to publisher.json (so it survives a reload),
- * the package loader fetches + binds it through the existing reloadAllModels
- * primitive on every (re)load, an unreachable manifest degrades to serving
- * live, and clearing it reverts.
+ * Covers the publisher's manifestLocation plumbing: the version manifest route
+ * (`PUT …/versions/{version}/manifest`) accepts a manifest URI and records it
+ * on the version, the package fetches + binds it through the existing
+ * reloadAllModels primitive, an unreachable manifest degrades to serving live,
+ * and clearing it reverts.
  *
  * The build-time rewrite of upstream persist references to physical tables is
  * Malloy's reloadAllModels behavior, exercised by the materialization lifecycle
  * spec; here we assert the publisher-owned fetch/persist/bind wiring.
  */
-describe("Manifest binding via Package.manifestLocation (E2E)", () => {
+describe("Manifest binding via a version's manifestLocation (E2E)", () => {
    let env: (RestE2EEnv & { stop(): Promise<void> }) | null = null;
    let baseUrl: string;
    let tmpDir: string;
@@ -81,27 +83,30 @@ describe("Manifest binding via Package.manifestLocation (E2E)", () => {
    // so a cleanup failure cannot mask the real one.
    afterEach(async () => {
       if (!baseUrl) return;
-      await fetch(url(""), {
-         method: "PATCH",
-         headers: { "Content-Type": "application/json" },
-         body: JSON.stringify({ name: PACKAGE_NAME, manifestLocation: null }),
-      }).catch(() => {});
-      await fetch(url("?reload=true")).catch(() => {});
+      await bindManifest(null).catch(() => {});
    });
 
-   async function getPackage(reload = false): Promise<Record<string, unknown>> {
-      const res = await fetch(url(reload ? "?reload=true" : ""));
+   async function getPackage(): Promise<Record<string, unknown>> {
+      const res = await fetch(url(""));
       expect(res.status).toBe(200);
       return (await res.json()) as Record<string, unknown>;
    }
 
-   async function patchPackage(
-      body: Record<string, unknown>,
+   /** The version's own record: the manifest it is bound to, as recorded. */
+   async function getVersion(): Promise<Record<string, unknown>> {
+      const res = await fetch(url(`/versions/${VERSION}`));
+      expect(res.status).toBe(200);
+      return (await res.json()) as Record<string, unknown>;
+   }
+
+   /** Bind the served version to a manifest URI, or to none with null. */
+   async function bindManifest(
+      manifestLocation: string | null,
    ): Promise<Response> {
-      return fetch(url(""), {
-         method: "PATCH",
+      return fetch(url(`/versions/${VERSION}/manifest`), {
+         method: "PUT",
          headers: { "Content-Type": "application/json" },
-         body: JSON.stringify({ name: PACKAGE_NAME, ...body }),
+         body: JSON.stringify({ manifestLocation }),
       });
    }
 
@@ -176,7 +181,7 @@ describe("Manifest binding via Package.manifestLocation (E2E)", () => {
       const built = await pollUntilTerminal(id);
       expect(built.status).toBe("MANIFEST_FILE_READY");
       // Revert to live: drop the auto-load binding but leave the built table.
-      await fetch(url("?reload=true"));
+      expect((await bindManifest(null)).status).toBe(200);
       // Retire the run record so it doesn't hold the per-package active slot.
       await fetch(url(`/materializations/${id}`), { method: "DELETE" });
    }
@@ -268,12 +273,10 @@ describe("Manifest binding via Package.manifestLocation (E2E)", () => {
       async () => {
          const manifestFile = await writeManifest();
 
-         // Accept on update; the response echoes the bound location and the
+         // Accept on bind; the response echoes the bound location and the
          // server-computed binding observability fields (surfaced on /status so
          // the control plane can confirm the worker actually bound the manifest).
-         const patchRes = await patchPackage({
-            manifestLocation: manifestFile,
-         });
+         const patchRes = await bindManifest(manifestFile);
          expect(patchRes.status).toBe(200);
          const patched = await patchRes.json();
          expect(patched.manifestLocation).toBe(manifestFile);
@@ -288,19 +291,19 @@ describe("Manifest binding via Package.manifestLocation (E2E)", () => {
          expect(bound.manifestEntryCount).toBe(1);
          expect(await queryOrderSummaryStatus()).toBe(200);
 
-         // Persisted to publisher.json: a reload re-reads and re-binds it.
-         expect((await getPackage(true)).manifestLocation).toBe(manifestFile);
-         expect(await queryOrderSummaryStatus()).toBe(200);
+         // Recorded on the version, which serves it until it is changed.
+         expect((await getVersion()).manifestLocation).toBe(manifestFile);
 
-         // Clearing reverts to live (unbound) and survives a reload.
-         const clearRes = await patchPackage({ manifestLocation: null });
+         // Clearing reverts to live (unbound), on the version's record too.
+         const clearRes = await bindManifest(null);
          expect(clearRes.status).toBe(200);
          const cleared = await clearRes.json();
          expect(cleared.manifestLocation ?? null).toBeNull();
          expect(cleared.manifestBindingStatus).toBe("unbound");
          expect(cleared.manifestEntryCount).toBe(0);
          expect(cleared.boundManifestUri ?? null).toBeNull();
-         expect((await getPackage(true)).manifestLocation ?? null).toBeNull();
+         expect((await getPackage()).manifestLocation ?? null).toBeNull();
+         expect((await getVersion()).manifestLocation ?? null).toBeNull();
          expect(await queryOrderSummaryStatus()).toBe(200);
       },
       { timeout: 60_000 },
@@ -310,7 +313,6 @@ describe("Manifest binding via Package.manifestLocation (E2E)", () => {
       "routes served queries to the materialized table after a manifest-URI bind",
       async () => {
          // Start from live so the baseline recomputes from the base CSV.
-         await getPackage(true);
          expect(await executedSql()).toContain("data/orders.csv");
 
          // Physically build the persist source, then revert to live (keeping
@@ -327,9 +329,7 @@ describe("Manifest binding via Package.manifestLocation (E2E)", () => {
             sourceEntityId,
             "order_summary",
          );
-         const patchRes = await patchPackage({
-            manifestLocation: manifestFile,
-         });
+         const patchRes = await bindManifest(manifestFile);
          expect(patchRes.status).toBe(200);
          const patched = await patchRes.json();
          expect(patched.manifestBindingStatus).toBe("bound");
@@ -342,8 +342,7 @@ describe("Manifest binding via Package.manifestLocation (E2E)", () => {
          expect(routed).toContain("order_summary");
 
          // Cleanup: revert to live so the dangling binding doesn't leak.
-         await patchPackage({ manifestLocation: null });
-         await getPackage(true);
+         await bindManifest(null);
       },
       { timeout: 120_000 },
    );
@@ -351,13 +350,10 @@ describe("Manifest binding via Package.manifestLocation (E2E)", () => {
    it(
       "binds a storage= entry as a cross-connection serve binding, not a tableName substitution",
       async () => {
-         await getPackage(true); // start from live (unbound)
          const sourceEntityId = await orderSummarySourceEntityId();
          const manifestFile = await writeStorageManifest(sourceEntityId);
 
-         const patchRes = await patchPackage({
-            manifestLocation: manifestFile,
-         });
+         const patchRes = await bindManifest(manifestFile);
          expect(patchRes.status).toBe(200);
          const patched = (await patchRes.json()) as Record<string, unknown>;
 
@@ -388,13 +384,12 @@ describe("Manifest binding via Package.manifestLocation (E2E)", () => {
          // Clearing reverts: the storage serve binding is dropped and the package
          // reports unbound again, so the bound status tracks real state in both
          // directions rather than latching on.
-         const clearRes = await patchPackage({ manifestLocation: null });
+         const clearRes = await bindManifest(null);
          expect(clearRes.status).toBe(200);
          const cleared = (await clearRes.json()) as Record<string, unknown>;
          expect(cleared.storageServeBindings ?? null).toBeNull();
          expect(cleared.manifestBindingStatus).toBe("unbound");
          expect(cleared.boundManifestUri ?? null).toBeNull();
-         await getPackage(true);
       },
       { timeout: 60_000 },
    );
@@ -402,14 +397,13 @@ describe("Manifest binding via Package.manifestLocation (E2E)", () => {
    it(
       "recovers from live_fallback when a later storage= manifest binds",
       async () => {
-         await getPackage(true); // start from live (unbound)
-
          // Degrade first: a manifest URI that cannot be fetched reports
          // live_fallback.
          const missing = path.join(tmpDir, `absent-${Date.now()}.json`);
-         const failed = (await (
-            await patchPackage({ manifestLocation: missing })
-         ).json()) as Record<string, unknown>;
+         const failed = (await (await bindManifest(missing)).json()) as Record<
+            string,
+            unknown
+         >;
          expect(failed.manifestBindingStatus).toBe("live_fallback");
 
          // A pure-`storage=` manifest binds with no colocated entry to recompile, so
@@ -419,7 +413,7 @@ describe("Manifest binding via Package.manifestLocation (E2E)", () => {
          const sourceEntityId = await orderSummarySourceEntityId();
          const manifestFile = await writeStorageManifest(sourceEntityId);
          const bound = (await (
-            await patchPackage({ manifestLocation: manifestFile })
+            await bindManifest(manifestFile)
          ).json()) as Record<string, unknown>;
          expect(bound.manifestBindingStatus).toBe("bound");
          expect(bound.boundManifestUri).toBe(manifestFile);
@@ -427,8 +421,7 @@ describe("Manifest binding via Package.manifestLocation (E2E)", () => {
             (bound.storageServeBindings as unknown[] | undefined)?.length,
          ).toBe(1);
 
-         await patchPackage({ manifestLocation: null });
-         await getPackage(true);
+         await bindManifest(null);
       },
       { timeout: 60_000 },
    );
@@ -436,11 +429,9 @@ describe("Manifest binding via Package.manifestLocation (E2E)", () => {
    it(
       "a failed rebind keeps the previously bound manifest in every field but the status",
       async () => {
-         await getPackage(true); // start from live (unbound)
-
          const manifestFile = await writeManifest();
          const bound = (await (
-            await patchPackage({ manifestLocation: manifestFile })
+            await bindManifest(manifestFile)
          ).json()) as Record<string, unknown>;
          expect(bound.manifestBindingStatus).toBe("bound");
          expect(bound.manifestEntryCount).toBe(1);
@@ -454,16 +445,16 @@ describe("Manifest binding via Package.manifestLocation (E2E)", () => {
          // generation boundManifestUri still points at, out from under a package
          // actively serving it.
          const missing = path.join(tmpDir, `absent-rebind-${Date.now()}.json`);
-         const failed = (await (
-            await patchPackage({ manifestLocation: missing })
-         ).json()) as Record<string, unknown>;
+         const failed = (await (await bindManifest(missing)).json()) as Record<
+            string,
+            unknown
+         >;
          expect(failed.manifestBindingStatus).toBe("live_fallback");
          expect(failed.manifestEntryCount).toBe(1);
          expect(failed.boundManifestUri).toBe(manifestFile);
          expect(await queryOrderSummaryStatus()).toBe(200);
 
-         await patchPackage({ manifestLocation: null });
-         await getPackage(true);
+         await bindManifest(null);
       },
       { timeout: 60_000 },
    );
@@ -475,11 +466,10 @@ describe("Manifest binding via Package.manifestLocation (E2E)", () => {
          // a NEW manifest (still a real URI, not a clear) no longer carries them —
          // otherwise stale bindings keep routing at a table the host no longer
          // vouches for.
-         await getPackage(true);
          const sourceEntityId = await orderSummarySourceEntityId();
          const withStorage = await writeStorageManifest(sourceEntityId);
          const bound = (await (
-            await patchPackage({ manifestLocation: withStorage })
+            await bindManifest(withStorage)
          ).json()) as Record<string, unknown>;
          expect(
             (bound.storageServeBindings as unknown[] | undefined)?.length,
@@ -493,7 +483,7 @@ describe("Manifest binding via Package.manifestLocation (E2E)", () => {
             "utf8",
          );
          const rebound = (await (
-            await patchPackage({ manifestLocation: noStorage })
+            await bindManifest(noStorage)
          ).json()) as Record<string, unknown>;
          // Stale storage binding must be gone, not left routing.
          expect(rebound.storageServeBindings ?? null).toBeNull();
@@ -507,8 +497,7 @@ describe("Manifest binding via Package.manifestLocation (E2E)", () => {
          expect(rebound.manifestEntryCount).toBe(0);
          expect(rebound.boundManifestUri).toBe(noStorage);
 
-         await patchPackage({ manifestLocation: null });
-         await getPackage(true);
+         await bindManifest(null);
       },
       { timeout: 60_000 },
    );
@@ -516,7 +505,7 @@ describe("Manifest binding via Package.manifestLocation (E2E)", () => {
    it("degrades to serving live when the manifest is unreachable", async () => {
       const missing = path.join(tmpDir, "does-not-exist.json");
 
-      const patchRes = await patchPackage({ manifestLocation: missing });
+      const patchRes = await bindManifest(missing);
       expect(patchRes.status).toBe(200);
       const patched = await patchRes.json();
       expect(patched.manifestLocation).toBe(missing);
@@ -526,11 +515,12 @@ describe("Manifest binding via Package.manifestLocation (E2E)", () => {
       expect(patched.manifestEntryCount).toBe(0);
       expect(patched.boundManifestUri ?? null).toBeNull();
 
-      // A fetch failure must not brick the package — it still serves live.
+      // A fetch failure must not brick the package — it still serves live,
+      // and the version keeps the location it was given.
       expect(await queryOrderSummaryStatus()).toBe(200);
-      expect((await getPackage(true)).manifestLocation).toBe(missing);
-      expect(await queryOrderSummaryStatus()).toBe(200);
+      expect((await getVersion()).manifestLocation).toBe(missing);
+      expect((await getPackage()).manifestLocation).toBe(missing);
 
-      await patchPackage({ manifestLocation: null });
+      await bindManifest(null);
    });
 });

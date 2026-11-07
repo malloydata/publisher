@@ -8,6 +8,8 @@
  * `latest` when it names none. Two versions of one package are published, each answering with its
  * own number from its model, its dashboard title, its notebook text and its
  * data-app page, so what a route returns proves which version's files it read.
+ * Beside it, a package with no versions (an unversioned tree in the
+ * environment's folder, as a release before versions left one) answers 0.
  */
 
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
@@ -15,8 +17,8 @@ import fs from "fs";
 import os from "os";
 import path from "path";
 import vm from "vm";
+import { installTestPackage } from "../../../src/test_helpers/install_test_package";
 import { RestE2EEnv, startRestE2E } from "../../harness/rest_e2e";
-import { versioningOnForSuite } from "../../harness/versioning";
 
 const ENV_NAME = "package-versions-routes-env";
 const PKG = "versioned";
@@ -120,8 +122,6 @@ async function answerOf(versionId?: string): Promise<number> {
 }
 
 describe("package-scoped routes of a versioned package", () => {
-   versioningOnForSuite();
-
    beforeAll(async () => {
       root = fs.realpathSync(
          fs.mkdtempSync(path.join(os.tmpdir(), "package-versions-routes-")),
@@ -129,21 +129,24 @@ describe("package-scoped routes of a versioned package", () => {
       env = await startRestE2E();
       baseUrl = env.baseUrl;
 
-      const plainDir = writePackage(
-         path.join(root, "plain"),
-         { name: PLAIN },
-         0,
-      );
       const created = await fetch(`${baseUrl}/api/v0/environments`, {
          method: "POST",
          headers: { "content-type": "application/json" },
          body: JSON.stringify({
             name: ENV_NAME,
-            packages: [{ name: PLAIN, location: plainDir }],
+            packages: [],
             connections: [],
          }),
       });
       expect(created.status).toBeLessThan(300);
+      const { environmentStore } = await import("../../../src/main_server");
+      await installTestPackage(
+         await environmentStore.getEnvironment(ENV_NAME, false),
+         PLAIN,
+         async (dir) => {
+            writePackage(dir, { name: PLAIN }, 0);
+         },
+      );
 
       for (const [version, answer] of [
          ["1.0.0", 1],

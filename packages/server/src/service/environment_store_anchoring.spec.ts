@@ -5,6 +5,7 @@ import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "fs";
 import * as path from "path";
 import { PUBLISHER_CONFIG_NAME, TEMP_DIR_PATH } from "../constants";
+import { inMemoryVersionRegistry } from "../test_helpers/in_memory_version_registry";
 import { installSettings } from "../test_helpers/settings_env";
 import {
    emptyRepository,
@@ -24,7 +25,10 @@ import {
 const serverRootPath = path.join(TEMP_DIR_PATH, "anchoring-server-root");
 const configDirPath = path.join(TEMP_DIR_PATH, "anchoring-config-dir");
 
-stubStorageManager({ getRepository: () => emptyRepository() });
+// A configured package is published as a version, so the stub needs a
+// registry to record it in; a fresh one per test.
+let registry = inMemoryVersionRegistry();
+stubStorageManager({ getRepository: () => emptyRepository(registry) });
 
 const { EnvironmentStore } = await import("./environment_store");
 
@@ -32,6 +36,7 @@ describe("relative package locations anchor at the config directory", () => {
    let restoreSettings: () => void;
 
    beforeEach(() => {
+      registry = inMemoryVersionRegistry();
       for (const dir of [serverRootPath, configDirPath]) {
          rmSync(dir, { recursive: true, force: true });
          mkdirSync(dir, { recursive: true });
@@ -60,13 +65,13 @@ describe("relative package locations anchor at the config directory", () => {
       mkdirSync(packageSource, { recursive: true });
       writeFileSync(
          path.join(packageSource, "publisher.json"),
-         JSON.stringify({ name: "sales" }),
+         JSON.stringify({ name: "sales", version: "1.0.0" }),
       );
       const decoySource = path.join(serverRootPath, "sales");
       mkdirSync(decoySource, { recursive: true });
       writeFileSync(
          path.join(decoySource, "publisher.json"),
-         JSON.stringify({ name: "decoy-from-server-root" }),
+         JSON.stringify({ name: "decoy-from-server-root", version: "1.0.0" }),
       );
 
       const store = new EnvironmentStore(serverRootPath);
@@ -76,11 +81,13 @@ describe("relative package locations anchor at the config directory", () => {
          connections: [],
       } as never);
 
+      // Served as the version its publisher.json declares.
       const mountedManifest = path.join(
          serverRootPath,
          "publisher_data",
          "probe",
          "sales",
+         "1.0.0",
          "publisher.json",
       );
       expect(existsSync(mountedManifest)).toBe(true);

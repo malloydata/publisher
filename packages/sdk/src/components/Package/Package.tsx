@@ -751,10 +751,7 @@ export default function Package({
                   {databases.length === 0 && <EmptyRow label="No data files" />}
                </PackageSection>
 
-               <Materializations
-                  resourceUri={resourceUri}
-                  versioned={!editable}
-               />
+               <Materializations resourceUri={resourceUri} />
 
                {readmePath && (
                   <Box sx={{ mt: 6 }}>

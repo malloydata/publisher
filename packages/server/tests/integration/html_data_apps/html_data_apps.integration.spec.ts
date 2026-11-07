@@ -39,37 +39,25 @@ const nopublicFixtureDir = path.resolve(
    "../../fixtures/html-data-apps-nopublic",
 );
 // The "malicious package" escape class: a symlink inside the served public/
-// directory that points outside it. We plant it in the *served* copy under
-// publisher_data AFTER the package mounts — never in the source fixture — so it
-// never gets routed through env-creation's `fs.cp`. (Copying an absolute-target
-// symlink is not portable across platforms and was breaking CI on Linux.) The
-// package is served from a copy (no --watch-env), at <SERVER_ROOT>/
-// publisher_data/<env>/<pkg>/public; SERVER_ROOT defaults to the server package
-// dir under `bun test`.
-const serverPkgRoot = path.resolve(__dirname, "../../..");
-const servedEscapeLink = path.join(
-   serverPkgRoot,
-   "publisher_data",
-   ENV_NAME,
-   PACKAGE_NAME,
-   "public",
-   "escape.html",
-);
+// directory that points outside it. We plant it in the *served* tree under
+// publisher_data AFTER the package is published — never in the source fixture —
+// so it never gets routed through the publish's copy. (Copying an
+// absolute-target symlink is not portable across platforms and was breaking CI
+// on Linux.) The package is served as the version its publisher.json declares,
+// from <environment location>/<pkg>/<version>/public; the environment's
+// location is read off the server once it exists, so the paths are set in
+// beforeAll.
+const PACKAGE_VERSION = "1.0.0";
+let servedEscapeLink = "";
 // A second planted symlink: the realistic "escape public/" vector, a link
 // inside public/ pointing at a package-root sibling (../report.malloy). It must
 // be rejected (403) just like the absolute /etc/hosts escape above.
-const servedSiblingLink = path.join(
-   serverPkgRoot,
-   "publisher_data",
-   ENV_NAME,
-   PACKAGE_NAME,
-   "public",
-   "leak.html",
-);
+let servedSiblingLink = "";
 
 interface DataAppItem {
    resource?: string;
    packageName?: string;
+   versionId?: string;
    path?: string;
    title?: string;
    fit?: "viewport";
@@ -135,6 +123,18 @@ describe("In-package HTML data apps (E2E)", () => {
       await waitForPackage(PACKAGE_NAME);
       await waitForPackage(NOPUBLIC_PACKAGE);
 
+      const { location } = (await (
+         await fetch(`${baseUrl}/api/v0/environments/${ENV_NAME}`)
+      ).json()) as { location: string };
+      const servedPublic = path.join(
+         location,
+         PACKAGE_NAME,
+         PACKAGE_VERSION,
+         "public",
+      );
+      servedEscapeLink = path.join(servedPublic, "escape.html");
+      servedSiblingLink = path.join(servedPublic, "leak.html");
+
       // Now that the package is mounted, plant the escape symlinks directly in
       // the served public/ copy (post-fs.cp): one pointing fully outside the
       // package (/etc/hosts) and one at a package-root sibling (../report.malloy),
@@ -170,6 +170,7 @@ describe("In-package HTML data apps (E2E)", () => {
       // DELETE removes the served dir (and the symlink within it); this is a
       // belt-and-suspenders unlink in case the env was never created.
       for (const link of [servedEscapeLink, servedSiblingLink]) {
+         if (!link) continue;
          try {
             fs.unlinkSync(link);
          } catch {
@@ -373,8 +374,11 @@ describe("In-package HTML data apps (E2E)", () => {
       const index = dataApps.find((a) => a.path === "index.html");
       expect(index?.title).toBe("Carrier Dashboard");
       expect(index?.packageName).toBe(PACKAGE_NAME);
+      // A published version's page names that version, so it keeps opening
+      // it after `latest` moves.
+      expect(index?.versionId).toBe(PACKAGE_VERSION);
       expect(index?.resource).toBe(
-         `/environments/${ENV_NAME}/packages/${PACKAGE_NAME}/index.html`,
+         `/environments/${ENV_NAME}/packages/${PACKAGE_NAME}/index.html?versionId=${PACKAGE_VERSION}`,
       );
    });
 

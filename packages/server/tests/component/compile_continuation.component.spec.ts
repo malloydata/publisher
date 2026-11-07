@@ -34,6 +34,7 @@ import os from "os";
 import path from "path";
 import { CompileRefusedError } from "../../src/errors";
 import { Environment } from "../../src/service/environment";
+import { installTestPackage } from "../../src/test_helpers/install_test_package";
 
 /** The tracked example packages, not the gitignored `publisher_data/` copy. */
 const EXAMPLES = path.resolve(import.meta.dir, "../../../../examples");
@@ -48,7 +49,7 @@ let absentPath: string;
 
 /** Copies a shipped example package into the environment under test. */
 async function installExample(name: string, sourceDir: string): Promise<void> {
-   await env.installPackage(name, async (stagingPath) => {
+   await installTestPackage(env, name, async (stagingPath) => {
       await fs.cp(sourceDir, stagingPath, { recursive: true });
    });
 }

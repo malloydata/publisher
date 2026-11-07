@@ -19,6 +19,8 @@ const __dirname = path.dirname(__filename);
 
 const PROJECT_NAME = "sched-project";
 const PACKAGE_NAME = "persist-schedule-test";
+// The version the fixture's publisher.json declares.
+const VERSION = "1.0.0";
 const API = `/api/v0/environments/${PROJECT_NAME}/packages/${PACKAGE_NAME}`;
 
 // Deterministic clock for the scheduler: we call tick(nowMs) explicitly, so the
@@ -88,6 +90,15 @@ describe("MaterializationScheduler (E2E, real build)", () => {
       const res = await fetch(`${baseUrl}${API}/materializations`);
       expect(res.status).toBe(200);
       return (await res.json()) as Array<Record<string, unknown>>;
+   }
+
+   /** Bind the served version to a manifest URI, or to none with null. */
+   function setManifest(manifestLocation: string | null): Promise<Response> {
+      return fetch(`${baseUrl}${API}/versions/${VERSION}/manifest`, {
+         method: "PUT",
+         headers: { "Content-Type": "application/json" },
+         body: JSON.stringify({ manifestLocation }),
+      });
    }
 
    function triggerOf(m: Record<string, unknown>): string | undefined {
@@ -165,15 +176,8 @@ describe("MaterializationScheduler (E2E, real build)", () => {
             }),
             "utf8",
          );
-         const patch = await fetch(`${baseUrl}${API}`, {
-            method: "PATCH",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({
-               name: PACKAGE_NAME,
-               manifestLocation: manifestFile,
-            }),
-         });
-         expect(patch.ok).toBe(true);
+         const bound = await setManifest(manifestFile);
+         expect(bound.ok).toBe(true);
 
          const before = (await listMaterializations()).length;
 
@@ -184,14 +188,7 @@ describe("MaterializationScheduler (E2E, real build)", () => {
 
          expect((await listMaterializations()).length).toBe(before);
 
-         await fetch(`${baseUrl}${API}`, {
-            method: "PATCH",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({
-               name: PACKAGE_NAME,
-               manifestLocation: null,
-            }),
-         });
+         await setManifest(null);
       },
       { timeout: 60_000 },
    );

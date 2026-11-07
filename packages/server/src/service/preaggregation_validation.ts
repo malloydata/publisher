@@ -11,7 +11,7 @@
  * this scans places the synthesizer never reads: on a dimension, join, view or
  * source the annotation compiles silently.
  *
- * Strict at publish/PATCH and at load, so a package refused at publish cannot
+ * Strict at publish and at load, so a package refused at publish cannot
  * serve by having been published earlier. Callers turn a non-empty result
  * into a 400 or a load failure.
  *

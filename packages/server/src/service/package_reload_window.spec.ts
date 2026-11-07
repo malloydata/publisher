@@ -15,6 +15,7 @@ import { afterEach, beforeEach, describe, expect, it, spyOn } from "bun:test";
 import fs from "fs/promises";
 import os from "os";
 import path from "path";
+import { installTestPackage } from "../test_helpers/install_test_package";
 import { Environment } from "./environment";
 import type { Model } from "./model";
 import { Package } from "./package";
@@ -90,12 +91,10 @@ describe("a reload's report swap", () => {
    };
 
    it("answers from the previous generation until the swap, and from the new one after", async () => {
-      await env.installPackage(PKG, async (stagingPath) => {
-         await fs.mkdir(stagingPath, { recursive: true });
+      const pkg = await installTestPackage(env, PKG, async (packagePath) => {
          for (const [name, text] of Object.entries(FILES))
-            await fs.writeFile(path.join(stagingPath, name), text);
+            await fs.writeFile(path.join(packagePath, name), text);
       });
-      const pkg = await env.getPackage(PKG, false);
       const before = pkg.getModel("flip.malloy");
       expect(pkg.getReportLayout("flip.malloy")).toBe("linear");
       expect(onSurface(before)).toBe(true);

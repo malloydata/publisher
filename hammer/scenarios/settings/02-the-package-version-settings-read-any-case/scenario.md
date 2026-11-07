@@ -10,17 +10,15 @@ SPDX-License-Identifier: MIT
 
 # The package-version settings read any case
 
-`PUBLISHER_PACKAGE_VERSIONING` and `PUBLISHER_VERSION_PROMOTION` are each one of
-a fixed set of values, read in any case through the settings registry
-(docs/configuration.md). This holds them end to end, on settings fixed at
-process start: `On` makes a publish from a location publish its version, and
-`Explicit` leaves that version unpromoted until latest is set (see
+`PUBLISHER_VERSION_PROMOTION` is one of a fixed set of values, read in any case
+through the settings registry (docs/configuration.md). This holds it end to
+end, on a setting fixed at process start: `Explicit` leaves a published version
+unpromoted until latest is set (see
 `explicit-promotion-serves-no-latest-until-one-is-set`, which uses lower case).
 
 ## Publisher
 
 - PERSIST_STORAGE_MODE: on
-- PUBLISHER_PACKAGE_VERSIONING: On
 - PUBLISHER_VERSION_PROMOTION: Explicit
 
 ## Model anchor/anchor.malloy
@@ -30,8 +28,6 @@ source: anchor is orders_pg.sql("SELECT 0 as n")
 ```
 
 ## Version sales@1.0.0
-
-`On` is on: the publish is a version.
 
 ```malloy
 source: answer is orders_pg.sql("SELECT 1 as n")

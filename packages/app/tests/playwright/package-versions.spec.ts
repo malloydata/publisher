@@ -9,10 +9,10 @@ import { tmpName } from "./helpers/fixtures";
 
 /**
  * The package page's version switch, against a server that publishes
- * versions (`PUBLISHER_PACKAGE_VERSIONING=on`, promotion `on-publish`). The
+ * versions (promotion `on-publish`). The
  * spec publishes its own package to a fresh environment: `sales` 1.0.0 with
  * one model, then 1.1.0, which adds a second, so each version's page is told
- * apart by what it lists. Skipped on a server with versioning off.
+ * apart by what it lists.
  *
  * Routes carry the version as a path segment, `/<env>/<pkg>/<version>/…`,
  * `latest` spelled out, and a bare package route is canonicalized onto
@@ -103,16 +103,6 @@ test.describe("package versions — the version switch", () => {
    // eslint-disable-next-line no-empty-pattern
    test.beforeAll(async ({}, testInfo) => {
       const baseURL = testInfo.project.use.baseURL ?? "http://localhost:4000";
-      const status = await (await api(baseURL, "GET", "/status")).json();
-      // CI runs this spec against a server it started with versioning on, and
-      // says so: there a server reporting it off is a failure, not a skip.
-      if (process.env.EXPECT_PACKAGE_VERSIONING === "on") {
-         expect(status.packageVersioning).toBe("on");
-      }
-      test.skip(
-         status.packageVersioning !== "on",
-         "the server does not publish versions (PUBLISHER_PACKAGE_VERSIONING is off)",
-      );
       env = tmpName("versions");
       const created = await api(baseURL, "POST", "/environments", {
          name: env,
@@ -421,41 +411,5 @@ test.describe("package versions — the version switch", () => {
       await expect(dialog).toBeHidden();
       await expect(page).toHaveURL(new RegExp(`/${env}/?$`));
       await expect(page.getByText(PKG, { exact: true })).toHaveCount(0);
-   });
-
-   test("a package with no versions keeps its route and shows no switch", async ({
-      page,
-   }) => {
-      // With versioning on, a configured package (storefront included) is
-      // published as its version, so register a directory instead: a package
-      // added with no location has no versions.
-      const baseURL =
-         test.info().project.use.baseURL ?? "http://localhost:4000";
-      const plain = "notes";
-      const { location } = await (
-         await api(baseURL, "GET", `/environments/${env}`)
-      ).json();
-      fs.mkdirSync(path.join(location, plain), { recursive: true });
-      fs.writeFileSync(
-         path.join(location, plain, "publisher.json"),
-         JSON.stringify({ name: plain, description: "No versions" }),
-      );
-      fs.writeFileSync(path.join(location, plain, "orders.malloy"), ORDERS);
-      const added = await api(
-         baseURL,
-         "POST",
-         `/environments/${env}/packages`,
-         {
-            name: plain,
-         },
-      );
-      expect(added.ok, await added.text()).toBe(true);
-
-      await page.goto(`/${env}/${plain}`);
-      await expect(
-         page.getByRole("heading", { name: plain, level: 1 }),
-      ).toBeVisible();
-      await expect(page).toHaveURL(new RegExp(`/${env}/${plain}$`));
-      await expect(versionSwitch(page)).toHaveCount(0);
    });
 });
