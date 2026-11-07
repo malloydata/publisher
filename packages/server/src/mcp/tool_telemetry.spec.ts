@@ -1,13 +1,18 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
-import { afterEach, beforeEach, describe, expect, it } from "bun:test";
+import { afterEach, beforeEach, describe, expect, it, spyOn } from "bun:test";
+import { Client } from "@modelcontextprotocol/sdk/client/index.js";
+import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+import { logger } from "../logger";
 import { resetInstrumentsForTesting } from "../telemetry";
 import {
    startMetricsHarness,
    type MetricsHarness,
 } from "../test_helpers/metrics_harness";
+import type { EnvironmentStore } from "../service/environment_store";
+import { initializeMcpServer } from "./server";
 import { instrumentTools } from "./tool_telemetry";
 
 /** A server whose `tool` keeps the (wrapped) handler it was given. */
@@ -24,6 +29,22 @@ function fakeServer() {
    instrumentTools(server as unknown as McpServer);
    return { server, handlers };
 }
+
+/** A real server over the in-memory transport, its store answering `getStatus`. */
+async function connectedClient(getStatus: () => Promise<unknown>) {
+   const server = initializeMcpServer({
+      getStatus,
+   } as unknown as EnvironmentStore);
+   const [clientTransport, serverTransport] =
+      InMemoryTransport.createLinkedPair();
+   await server.connect(serverTransport);
+   const client = new Client({ name: "telemetry-test", version: "0.0.0" });
+   await client.connect(clientTransport);
+   return client;
+}
+
+const exitLines = (spy: { mock: { calls: unknown[][] } }) =>
+   spy.mock.calls.filter((args) => args[0] === "MCP tool call");
 
 describe("MCP tool telemetry", () => {
    let harness: MetricsHarness;
@@ -64,7 +85,17 @@ describe("MCP tool telemetry", () => {
       server.tool("execute_query", async () => {
          throw new Error("boom");
       });
-      await expect(handlers.get("execute_query")!()).rejects.toThrow("boom");
+      const info = spyOn(logger, "info");
+      try {
+         await expect(handlers.get("execute_query")!()).rejects.toThrow("boom");
+         const [line] = exitLines(info);
+         expect(line?.[1]).toMatchObject({
+            tool: "execute_query",
+            outcome: "exception",
+         });
+      } finally {
+         info.mockRestore();
+      }
       expect(
          await harness.collectCounter("publisher_mcp_tool_calls_total", {
             tool: "execute_query",
@@ -85,5 +116,52 @@ describe("MCP tool telemetry", () => {
          result,
       );
       expect(seen).toEqual([{ a: 1 }, "extra"]);
+   });
+
+   describe("over the MCP protocol", () => {
+      it.each([
+         [
+            "ok",
+            async () => ({ environments: [], operationalState: "serving" }),
+         ],
+         [
+            "error",
+            async () => {
+               throw new Error("store down");
+            },
+         ],
+      ] as const)(
+         "a get_status call that answers %s records one call, one duration and one exit line",
+         async (outcome, getStatus) => {
+            const client = await connectedClient(getStatus);
+            const info = spyOn(logger, "info");
+            try {
+               await client.callTool({ name: "get_status", arguments: {} });
+               const lines = exitLines(info);
+               expect(lines).toHaveLength(1);
+               const fields = lines[0]![1] as Record<string, unknown>;
+               expect(Object.keys(fields).sort()).toEqual([
+                  "durationMs",
+                  "outcome",
+                  "tool",
+               ]);
+               expect(fields).toMatchObject({ tool: "get_status", outcome });
+               expect(Number.isInteger(fields.durationMs)).toBe(true);
+            } finally {
+               info.mockRestore();
+               await client.close();
+            }
+            expect(
+               await harness.collectAttributes(
+                  "publisher_mcp_tool_calls_total",
+               ),
+            ).toEqual([{ tool: "get_status", outcome }]);
+            expect(
+               await harness.collectAttributes(
+                  "publisher_mcp_tool_duration_ms",
+               ),
+            ).toEqual([{ tool: "get_status", outcome }]);
+         },
+      );
    });
 });
