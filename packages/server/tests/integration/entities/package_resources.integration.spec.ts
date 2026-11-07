@@ -95,11 +95,12 @@ describe("the package resource and its sub-resources", () => {
    const get = (rel: string) => r.get(rel);
    const publish = (name: string, location: string) =>
       r.publish(name, location);
+   // Each package is published as the version its publisher.json declares.
    const writePackage = (
       name: string,
       files: Record<string, string>,
       manifest?: Record<string, unknown>,
-   ) => r.writePackage(name, files, manifest);
+   ) => r.writePackage(name, files, { version: "1.0.0", ...manifest });
    const pkgUrl = (name: string, sub = "") => r.pkgUrl(name, sub);
 
    async function statusEntry(name: string): Promise<Record<string, unknown>> {

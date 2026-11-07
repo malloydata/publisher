@@ -10,6 +10,7 @@ import path from "path";
 import { AccessDeniedError, NotQueryableError } from "../../../src/errors";
 import { hasCallerAuthorizeAnnotation } from "../../../src/service/authorize";
 import { Environment } from "../../../src/service/environment";
+import { installTestPackage } from "../../../src/test_helpers/install_test_package";
 
 /** The rows of a query result, whatever wrapper the result carries them in. */
 function rowsOf(result: unknown): unknown[] {
@@ -98,7 +99,7 @@ describe("compile-path authorize gate (compileSource)", () => {
       const envPath = path.join(rootDir, "env");
       await fs.mkdir(envPath, { recursive: true });
       env = await Environment.create("testEnv", envPath, []);
-      await env.installPackage("pkg", async (stagingPath) => {
+      await installTestPackage(env, "pkg", async (stagingPath) => {
          await fs.mkdir(stagingPath, { recursive: true });
          await fs.writeFile(
             path.join(stagingPath, "publisher.json"),
@@ -843,7 +844,7 @@ describe("caller-annotation guard on markdown prose (compileSource)", () => {
       const envPath = path.join(rootDir, "env");
       await fs.mkdir(envPath, { recursive: true });
       env = await Environment.create("testEnv", envPath, []);
-      await env.installPackage("pkg", async (stagingPath) => {
+      await installTestPackage(env, "pkg", async (stagingPath) => {
          await fs.mkdir(stagingPath, { recursive: true });
          await fs.writeFile(
             path.join(stagingPath, "publisher.json"),
@@ -1027,7 +1028,7 @@ describe("compile-path is exempt from the query boundary (compileSource)", () =>
       const envPath = path.join(rootDir, "env");
       await fs.mkdir(envPath, { recursive: true });
       env = await Environment.create("testEnv", envPath, []);
-      await env.installPackage("pkg", async (stagingPath) => {
+      await installTestPackage(env, "pkg", async (stagingPath) => {
          await fs.mkdir(stagingPath, { recursive: true });
          await fs.writeFile(
             path.join(stagingPath, "publisher.json"),
@@ -1103,7 +1104,7 @@ describe("compile exemption is not an existence oracle (compileSource)", () => {
       const envPath = path.join(rootDir, "env");
       await fs.mkdir(envPath, { recursive: true });
       env = await Environment.create("testEnv", envPath, []);
-      await env.installPackage("pkg", async (stagingPath) => {
+      await installTestPackage(env, "pkg", async (stagingPath) => {
          await fs.mkdir(stagingPath, { recursive: true });
          await fs.writeFile(
             path.join(stagingPath, "publisher.json"),

@@ -42,7 +42,6 @@ const DESIGN_VARIABLES: Partial<Record<SettingKey, string>> = {
    callerHeader: "PUBLISHER_CALLER_HEADER",
    packageInlineFields: "PUBLISHER_PACKAGE_INLINE_FIELDS",
    modelPage: "PUBLISHER_MODEL_PAGE",
-   packageVersioning: "PUBLISHER_PACKAGE_VERSIONING",
    versionPromotion: "PUBLISHER_VERSION_PROMOTION",
    root: "PUBLISHER_ROOT",
    config: "PUBLISHER_CONFIG",

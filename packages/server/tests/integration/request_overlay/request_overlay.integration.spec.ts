@@ -12,6 +12,7 @@
 import { MAX_OVERLAY_BYTES, MAX_OVERLAY_FILES } from "../../../src/constants";
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
 import * as fs from "fs";
+import * as path from "path";
 import { writeTempPackage } from "../../../src/test_helpers/temp_package";
 import { startPackageEnv, type PackageEnv } from "../../harness/reports";
 
@@ -46,6 +47,9 @@ interface CompileBody {
    problems?: Problem[];
 }
 
+const ENV = "request-overlay-env";
+const VERSION = "1.0.0";
+
 const errorsOf = (body: CompileBody) =>
    (body.problems ?? []).filter((p) => p.severity === "error");
 
@@ -63,6 +67,13 @@ describe("a request's files overlay (E2E)", () => {
          body: (await res.json()) as { message?: string },
       };
    };
+   /** A file of the published version the package serves. */
+   const served = async (file: string) => {
+      const { location } = await env.getJson<{ location: string }>(
+         `${env.baseUrl}/api/v0/environments/${ENV}`,
+      );
+      return path.join(location, "overlay", VERSION, file);
+   };
 
    beforeAll(async () => {
       const { dir, cleanup } = writeTempPackage(
@@ -71,10 +82,10 @@ describe("a request's files overlay (E2E)", () => {
             "tracks.malloy": TRACKS,
             "gated.malloy": gated("admin"),
          },
-         { name: "overlay" },
+         { manifest: { name: "overlay", version: VERSION } },
       );
       removePackage = cleanup;
-      env = await startPackageEnv("request-overlay-env", { overlay: dir });
+      env = await startPackageEnv(ENV, { overlay: dir });
    }, 300_000);
 
    afterAll(async () => {
@@ -186,8 +197,10 @@ describe("a request's files overlay (E2E)", () => {
             status: 200,
             body: { status: "success", problems: [] },
          });
-         expect(fs.existsSync(env.served("leak.malloy"))).toBe(false);
-         expect(fs.readFileSync(env.served("base.malloy"), "utf8")).toBe(BASE);
+         expect(fs.existsSync(await served("leak.malloy"))).toBe(false);
+         expect(fs.readFileSync(await served("base.malloy"), "utf8")).toBe(
+            BASE,
+         );
       });
    });
 

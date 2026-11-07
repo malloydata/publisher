@@ -30,6 +30,7 @@ import {
    startMetricsHarness,
    type MetricsHarness,
 } from "../test_helpers/metrics_harness";
+import { installTestPackage } from "../test_helpers/install_test_package";
 
 const FIXTURE = path.join(
    path.dirname(fileURLToPath(import.meta.url)),
@@ -49,7 +50,7 @@ describe("compile_model, package scope: dashboard and render-tag findings", () =
       const envPath = path.join(rootDir, "env");
       await fs.mkdir(envPath, { recursive: true });
       env = await Environment.create("testEnv", envPath, []);
-      await env.installPackage("dashboards-lint", async (stagingPath) => {
+      await installTestPackage(env, "dashboards-lint", async (stagingPath) => {
          await fs.cp(FIXTURE, stagingPath, { recursive: true });
       });
    });
@@ -194,7 +195,7 @@ describe("compile_model, package scope: curation findings", () => {
       const envPath = path.join(rootDir, "env");
       await fs.mkdir(envPath, { recursive: true });
       env = await Environment.create("testEnv", envPath, []);
-      await env.installPackage(fixture, async (stagingPath) => {
+      await installTestPackage(env, fixture, async (stagingPath) => {
          await fs.cp(path.join(FIXTURE, "..", fixture), stagingPath, {
             recursive: true,
          });
@@ -455,15 +456,19 @@ describe("compile_model, package scope: telemetry", () => {
       const envPath = path.join(rootDir, "env");
       await fs.mkdir(envPath, { recursive: true });
       const env = await Environment.create("testEnv", envPath, []);
-      await env.installPackage("notebooks-malloyyo", async (stagingPath) => {
-         await fs.cp(
-            path.join(FIXTURE, "..", "notebooks-malloyyo"),
-            stagingPath,
-            {
-               recursive: true,
-            },
-         );
-      });
+      await installTestPackage(
+         env,
+         "notebooks-malloyyo",
+         async (stagingPath) => {
+            await fs.cp(
+               path.join(FIXTURE, "..", "notebooks-malloyyo"),
+               stagingPath,
+               {
+                  recursive: true,
+               },
+            );
+         },
+      );
       const count = () =>
          harness.collectCounter("publisher_reports_discovered_total", {
             layout: "linear",

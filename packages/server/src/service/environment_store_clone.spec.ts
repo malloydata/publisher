@@ -13,6 +13,7 @@ import {
 import { existsSync, mkdirSync, rmSync, writeFileSync } from "fs";
 import * as path from "path";
 import { TEMP_DIR_PATH } from "../constants";
+import { inMemoryVersionRegistry } from "../test_helpers/in_memory_version_registry";
 import {
    emptyRepository,
    stubStorageManager,
@@ -78,13 +79,14 @@ mock.module("simple-git", () => ({
             // contains a subdirectory per package (pkg-a plus a sibling used
             // by the shared-clone counter test). Extraction only copies the
             // named subdir, so an unused one is harmless to single-package
-            // tests.
+            // tests. Each declares a version, which a configured package is
+            // published as.
             for (const name of [PKG_NAME, "pkg-b"]) {
                const pkgDir = path.join(dir, name);
                mkdirSync(pkgDir, { recursive: true });
                writeFileSync(
                   path.join(pkgDir, "publisher.json"),
-                  JSON.stringify({ name }),
+                  JSON.stringify({ name, version: "1.0.0" }),
                );
             }
             // Drive the progress handler the way the real plugin would.
@@ -101,11 +103,14 @@ mock.module("simple-git", () => ({
    },
 }));
 
+// Where a boot records the versions it publishes; a fresh one per test.
+let registry = inMemoryVersionRegistry();
+
 stubStorageManager({
    initialize: async () => {
       if (storageInitFails) throw new Error(storageInitMessage);
    },
-   getRepository: () => emptyRepository(),
+   getRepository: () => emptyRepository(registry),
 });
 
 const { EnvironmentStore, GIT_CLONE_OPTIONS } = await import(
@@ -119,6 +124,7 @@ describe("git clone wiring", () => {
    beforeEach(() => {
       rmSync(serverRootPath, { recursive: true, force: true });
       mkdirSync(serverRootPath, { recursive: true });
+      registry = inMemoryVersionRegistry();
       recordedClones = [];
       lastFactoryOpts = null;
       storageInitFails = false;
@@ -183,7 +189,8 @@ describe("git clone wiring", () => {
          `[${ENV_NAME}] cloning example/repo (${PKG_NAME}): receiving 50% (1/2)`,
       );
 
-      // The package extracted from the (fake) clone and mounted.
+      // The package extracted from the (fake) clone and was published as the
+      // version it declares.
       expect(
          existsSync(
             path.join(
@@ -191,6 +198,7 @@ describe("git clone wiring", () => {
                "publisher_data",
                ENV_NAME,
                PKG_NAME,
+               "1.0.0",
                "publisher.json",
             ),
          ),

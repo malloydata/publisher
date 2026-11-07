@@ -2,29 +2,10 @@
 // SPDX-License-Identifier: MIT
 
 import os from "os";
-import path from "path";
 export const API_PREFIX = "/api/v0";
 export const README_NAME = "README.md";
 export const PUBLISHER_CONFIG_NAME = "publisher.config.json";
 export const PACKAGE_MANIFEST_NAME = "publisher.json";
-/**
- * `<environment>/.install-records/<package>.json`: where the server recorded
- * installing each package from. Kept outside every package directory so
- * package content cannot plant one, since a reload trusts it as the source to
- * re-fetch (an author's `location` in `publisher.json` is never read as one).
- */
-export const PACKAGE_INSTALL_RECORDS_DIR = ".install-records";
-
-export function installRecordPath(
-   environmentPath: string,
-   packageName: string,
-): string {
-   return path.join(
-      environmentPath,
-      PACKAGE_INSTALL_RECORDS_DIR,
-      `${packageName}.json`,
-   );
-}
 export const MODEL_FILE_SUFFIX = ".malloy";
 export const NOTEBOOK_FILE_SUFFIX = ".malloynb";
 /** The guide to migrating from deprecated `#(filter)` annotations to `given:` parameters. */

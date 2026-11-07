@@ -3,34 +3,21 @@
 
 /**
  * A package's `secureGivens` rides the responses a host reads after a load:
- * the publish (POST), a get, a reload, and a versioned publish. Over HTTP
- * against the real Express app and the real worker-pool load, because the
- * contract is that the load's own compile answers it, on the response body.
- * It follows the models it describes through a reload in place and a
- * reinstall, is absent while any file fails to compile, and a PATCH body
- * cannot set it.
+ * the publish (POST), a get, and a reload. Over HTTP against the real Express
+ * app and the real worker-pool load, because the contract is that the load's
+ * own compile answers it, on the response body. It follows the models it
+ * describes through a recompile in place and a new version, and is absent
+ * while any file fails to compile.
  */
 
-import { afterAll, afterEach, beforeAll, describe, expect, it } from "bun:test";
+import { afterAll, beforeAll, describe, expect, it } from "bun:test";
 import * as fs from "fs";
 import * as os from "os";
 import * as path from "path";
 import type { Package } from "../../../src/service/package";
-import { installVariables } from "../../../src/test_helpers/settings_env";
 import { startRestE2E } from "../../harness/rest_e2e";
 
 const ENV_NAME = "secure-givens-env";
-const FLAG = "PUBLISHER_PACKAGE_VERSIONING";
-/** The variables this suite sets, installed over the process's own settings. */
-const variables: Record<string, string | undefined> = {};
-let restoreSettings: (() => void) | undefined;
-
-/** Give the in-process server `name` at `value`, or unset, as a restart with it would. */
-function setVariable(name: string, value: string | undefined): void {
-   variables[name] = value;
-   restoreSettings?.();
-   restoreSettings = installVariables(variables);
-}
 
 const ROWS = `duckdb.sql("select * from (values (1, 'a'), (2, 'b')) as t(id, role)")`;
 
@@ -88,7 +75,7 @@ describe("secureGivens on the package responses", () => {
       fs.mkdirSync(dir, { recursive: true });
       fs.writeFileSync(
          path.join(dir, "publisher.json"),
-         JSON.stringify({ name, ...manifest }),
+         JSON.stringify({ name, version: "1.0.0", ...manifest }),
       );
       for (const [file, text] of Object.entries(files)) {
          fs.mkdirSync(path.dirname(path.join(dir, file)), { recursive: true });
@@ -151,12 +138,7 @@ describe("secureGivens on the package responses", () => {
       expect(created.status).toBeLessThan(300);
    }, 180_000);
 
-   afterEach(() => {
-      setVariable(FLAG, undefined);
-   });
-
    afterAll(async () => {
-      restoreSettings?.();
       await fetch(`${baseUrl}/api/v0/environments/${ENV_NAME}`, {
          method: "DELETE",
       }).catch(() => undefined);
@@ -201,6 +183,7 @@ describe("secureGivens on the package responses", () => {
       });
       const created = await publish("secure", location);
       expect(created.status).toBe(200);
+      expect(created.json.versionId).toBe("1.0.0");
       expect(created.json.secureGivens as SecureGiven[]).toEqual(EXPECTED);
 
       expect((await get("secure")).secureGivens as SecureGiven[]).toEqual(
@@ -219,20 +202,7 @@ describe("secureGivens on the package responses", () => {
       expect((await get("plain")).secureGivens).toEqual([]);
    }, 120_000);
 
-   it("a versioned publish carries it too", async () => {
-      setVariable(FLAG, "on");
-      const location = writePackage("versioned", SECURE_FILES, {
-         version: "1.0.0",
-      });
-      const created = await publish("versioned", location);
-      expect(created.status).toBeLessThan(300);
-      expect(created.json.versionId).toBe("1.0.0");
-      expect(created.json.secureGivens as SecureGiven[]).toEqual(EXPECTED);
-      expect((await get("versioned")).secureGivens as SecureGiven[]).toEqual(
-         EXPECTED,
-      );
-   }, 120_000);
-   it("follows the models through a reload in place and a reinstall", async () => {
+   it("follows the models through a recompile in place and a new version", async () => {
       const location = writePackage("editable", {
          "shared.malloy": SHARED,
          "orders.malloy": ORDERS,
@@ -263,14 +233,16 @@ describe("secureGivens on the package responses", () => {
          withTenant,
       );
 
-      // A reinstall from the location: ROLES is no longer secure.
-      fs.writeFileSync(
-         path.join(location, "shared.malloy"),
-         SHARED_WITHOUT_SECURE,
+      // A new version, in which ROLES is no longer secure: it becomes latest.
+      const next = writePackage(
+         "editable-next",
+         { "shared.malloy": SHARED_WITHOUT_SECURE, "orders.malloy": ORDERS },
+         { name: "editable", version: "1.1.0" },
       );
-      expect(
-         (await get("editable", "?reload=true")).secureGivens as SecureGiven[],
-      ).toEqual([]);
+      const published = await publish("editable", next);
+      expect(published.status).toBe(200);
+      expect(published.json.versionId).toBe("1.1.0");
+      expect(published.json.secureGivens).toEqual([]);
       expect((await get("editable")).secureGivens).toEqual([]);
    }, 120_000);
 
@@ -293,35 +265,6 @@ describe("secureGivens on the package responses", () => {
       fs.writeFileSync(orders, ORDERS);
       await pkg.reloadAllModels({});
       expect((await get("partial")).secureGivens as SecureGiven[]).toEqual(
-         ROLES_ONLY,
-      );
-   }, 120_000);
-
-   it("a PATCH body cannot set it", async () => {
-      const location = writePackage("patched", {
-         "shared.malloy": SHARED,
-         "orders.malloy": ORDERS,
-      });
-      expect((await publish("patched", location)).status).toBe(200);
-      const res = await fetch(
-         `${baseUrl}/api/v0/environments/${ENV_NAME}/packages/patched`,
-         {
-            method: "PATCH",
-            headers: { "content-type": "application/json" },
-            body: JSON.stringify({
-               name: "patched",
-               description: "edited",
-               secureGivens: [
-                  { name: "FORGED", type: "string", modelPaths: [] },
-               ],
-            }),
-         },
-      );
-      expect(res.status).toBe(200);
-      const patched = (await res.json()) as Record<string, unknown>;
-      expect(patched.description).toBe("edited");
-      expect(patched.secureGivens as SecureGiven[]).toEqual(ROLES_ONLY);
-      expect((await get("patched")).secureGivens as SecureGiven[]).toEqual(
          ROLES_ONLY,
       );
    }, 120_000);

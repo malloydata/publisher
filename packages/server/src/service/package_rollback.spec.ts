@@ -10,26 +10,19 @@ import { BadRequestError } from "../errors";
 import { Environment } from "./environment";
 
 /**
- * Regression tests for publish-validation ROLLBACK, guarding against the two
- * data-loss bugs a code review found:
+ * Regression test for publish-validation ROLLBACK, guarding against a
+ * data-loss bug a code review found: a no-location create rollback must NOT
+ * delete a pre-existing user directory. The controller `unloadPackage`s
+ * (evict from memory, keep files) instead of `deletePackage` (which renames +
+ * rm's the tree).
  *
- *  1. No-location create rollback must NOT delete a pre-existing user
- *     directory. The controller now `unloadPackage`s (evict from memory, keep
- *     files) instead of `deletePackage` (which renames + rm's the tree).
- *
- *  2. A location update/reinstall that fails validation (here, an invalid
- *     persistence policy) must roll back to the PREVIOUS tree rather than
- *     swapping the rejected one in and 400-ing after.
- *     Validation now happens inside `installPackage`'s swap window.
- *
- * Both run against a real `Environment` + real `Package.create` over temp dirs.
+ * It runs against a real `Environment` + real `Package.create` over temp dirs.
  */
 describe("publish-validation rollback (real Environment)", () => {
    let rootDir: string;
    let envPath: string;
 
    const GOOD_MODEL = `source: ones is duckdb.sql("SELECT 1 as x")\n`;
-   const BAD_MODEL = `source: twos is duckdb.sql("SELECT 2 as y")\n`;
 
    async function writePackageDir(
       dir: string,
@@ -46,11 +39,6 @@ describe("publish-validation rollback (real Environment)", () => {
          }),
       );
       await fs.writeFile(path.join(dir, "model.malloy"), model);
-   }
-
-   async function copyDir(src: string, dst: string): Promise<void> {
-      await fs.mkdir(dst, { recursive: true });
-      await fs.cp(src, dst, { recursive: true });
    }
 
    beforeEach(async () => {
@@ -83,92 +71,6 @@ describe("publish-validation rollback (real Environment)", () => {
          "utf-8",
       );
       expect(modelText).toBe(GOOD_MODEL);
-   });
-
-   it("Fix 2: a rejected location reinstall restores the previous tree", async () => {
-      const env = await Environment.create("testEnv", envPath, []);
-
-      const goodFixture = path.join(rootDir, "good");
-      const badFixture = path.join(rootDir, "bad");
-      await writePackageDir(goodFixture, {}, GOOD_MODEL);
-      // A cron schedule needs "scope": "version"; the default is "package".
-      await writePackageDir(
-         badFixture,
-         { materialization: { schedule: "0 * * * *" } },
-         BAD_MODEL,
-      );
-
-      // First install: the good tree is served.
-      await env.installPackage("pkg", (stagingPath) =>
-         copyDir(goodFixture, stagingPath),
-      );
-      expect(await env.getModelFileText("pkg", "model.malloy")).toBe(
-         GOOD_MODEL,
-      );
-
-      // Reinstall with an invalid-policy tree, validated inside the swap.
-      await expect(
-         env.installPackage(
-            "pkg",
-            (stagingPath) => copyDir(badFixture, stagingPath),
-            (pkg) => pkg.formatInvalidPersistencePolicy(),
-         ),
-      ).rejects.toBeInstanceOf(BadRequestError);
-
-      // The previous (good) tree is still the one on disk — the rejected tree
-      // was rolled back, not swapped in.
-      expect(await env.getModelFileText("pkg", "model.malloy")).toBe(
-         GOOD_MODEL,
-      );
-   });
-
-   it("a valid location reinstall still succeeds (no false rollback)", async () => {
-      const env = await Environment.create("testEnv", envPath, []);
-      const goodFixture = path.join(rootDir, "good");
-      const nextFixture = path.join(rootDir, "next");
-      await writePackageDir(goodFixture, {}, GOOD_MODEL);
-      await writePackageDir(
-         nextFixture,
-         { materialization: { scope: "version", schedule: "0 * * * *" } },
-         BAD_MODEL,
-      );
-
-      await env.installPackage("pkg", (stagingPath) =>
-         copyDir(goodFixture, stagingPath),
-      );
-      await env.installPackage(
-         "pkg",
-         (stagingPath) => copyDir(nextFixture, stagingPath),
-         (pkg) => pkg.formatInvalidPersistencePolicy(),
-      );
-      expect(await env.getModelFileText("pkg", "model.malloy")).toBe(BAD_MODEL);
-   });
-
-   // DEPRECATED FEATURE COVERAGE — delete together with
-   // `explores` (see RELEASE_NOTES deprecations).
-   describe("deprecated: explores", () => {
-      it("updatePackage normalizes a ./-prefixed body explores (no false 400, persists normalized)", async () => {
-         // API-body explores must go through the same normalization the worker
-         // applies to on-disk explores, so `./model.malloy` validates and persists
-         // as `model.malloy` rather than being rejected with a misleading 404.
-         const env = await Environment.create("testEnv", envPath, []);
-         const pkgDir = path.join(envPath, "pkg");
-         await writePackageDir(pkgDir, {}, GOOD_MODEL);
-         await env.addPackage("pkg");
-
-         const updated = await env.updatePackage("pkg", {
-            name: "pkg",
-            explores: ["./model.malloy"],
-         });
-
-         // Accepted (no BadRequestError) and stored in normalized form...
-         expect(updated.explores).toEqual(["model.malloy"]);
-         // ...both in memory and on disk.
-         const manifest = JSON.parse(
-            await fs.readFile(path.join(pkgDir, "publisher.json"), "utf-8"),
-         );
-         expect(manifest.explores).toEqual(["model.malloy"]);
-      });
    });
 
    // DEPRECATED FEATURE COVERAGE — delete together with

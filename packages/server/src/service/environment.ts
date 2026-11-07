@@ -10,14 +10,7 @@ import crypto from "crypto";
 import * as fs from "fs";
 import * as path from "path";
 import { components } from "../api";
-import {
-   API_PREFIX,
-   INDEX_MODEL_NAME,
-   normalizeModelPath,
-   README_NAME,
-   PACKAGE_INSTALL_RECORDS_DIR,
-   MAX_CONCURRENT_DRY_RUNS,
-} from "../constants";
+import { API_PREFIX, README_NAME, MAX_CONCURRENT_DRY_RUNS } from "../constants";
 import {
    BadRequestError,
    ConnectionNotFoundError,
@@ -68,7 +61,6 @@ import {
 } from "./manifest_loader";
 import { ApiConnection } from "./model";
 import { Package } from "./package";
-import { applyLoadGates } from "./package_load_gates";
 import type { PackageMemoryGovernor } from "./package_memory_governor";
 import {
    compileSource,
@@ -172,126 +164,6 @@ export function resetAdmissionTelemetryForTesting(): void {
    resetInstrumentsForTesting();
 }
 
-/** The publisher.json fields a metadata write may set. */
-type PackageManifestUpdate = {
-   name: string;
-   description?: string;
-   location?: string;
-   explores?: string[];
-   queryableSources?: "declared" | "all";
-   manifestLocation?: string | null;
-   scope?: ApiPackage["scope"];
-   queryMetadata?: ApiPackage["queryMetadata"];
-   materialization?: ApiPackage["materialization"];
-};
-
-/**
- * The publisher.json to write: the manifest on disk with `metadata` applied,
- * preserving what the caller did not send.
- */
-function mergePackageManifest(
-   existingManifest: Record<string, unknown>,
-   metadata: PackageManifestUpdate,
-): Record<string, unknown> {
-   const onDiskMaterialization =
-      existingManifest.materialization !== null &&
-      typeof existingManifest.materialization === "object" &&
-      !Array.isArray(existingManifest.materialization)
-         ? (existingManifest.materialization as Record<string, unknown>)
-         : undefined;
-
-   // Scope has two homes, `materialization.scope` (canonical) and the root
-   // (deprecated), and both are written in sync: root-only would conflict
-   // with an existing envelope (see resolvePackageScope), and envelope-only
-   // would make an older publisher default a `version` package to `package`.
-   // The wire materialization block has no `scope`, so an on-disk envelope
-   // value survives a materialization PATCH.
-   const resolvedScope =
-      metadata.scope ??
-      (onDiskMaterialization?.scope as ApiPackage["scope"] | undefined) ??
-      (existingManifest.scope as ApiPackage["scope"] | undefined);
-
-   // A materialization PATCH replaces the block wholesale (schedule and
-   // freshness are the policy being set), but `queryMetadata` is orthogonal:
-   // dropping it on omission would silently untag every build statement.
-   // Null preserves too, at both wire homes, since some clients serialize
-   // unset fields as null; the clear is an empty bag.
-   const preservedQueryMetadata =
-      metadata.materialization !== undefined &&
-      metadata.materialization?.queryMetadata == null &&
-      onDiskMaterialization?.queryMetadata !== undefined
-         ? { queryMetadata: onDiskMaterialization.queryMetadata }
-         : {};
-
-   const materializationBase: Record<string, unknown> | undefined =
-      metadata.materialization !== undefined
-         ? { ...metadata.materialization, ...preservedQueryMetadata }
-         : onDiskMaterialization !== undefined
-           ? { ...onDiskMaterialization }
-           : undefined;
-   const materializationBlock =
-      resolvedScope !== undefined
-         ? { ...(materializationBase ?? {}), scope: resolvedScope }
-         : materializationBase;
-
-   // `queryMetadata` also has two homes, the other way round: the root is
-   // canonical, the envelope deprecated, and both are written so an older
-   // publisher reading only the envelope still tags. Precedence matches the
-   // manifest resolver: top-level field, then the block, then disk. Null
-   // means "not provided" throughout; the clear is an empty bag.
-   const resolvedQueryMetadata =
-      metadata.queryMetadata ??
-      (materializationBlock as { queryMetadata?: unknown } | undefined)
-         ?.queryMetadata ??
-      (existingManifest as { queryMetadata?: unknown }).queryMetadata;
-
-   // Fields are overwritten only when provided. A convention-derived surface
-   // is never written: a read-modify-write PATCH echoes the `index.malloy`
-   // surface a GET derived, and freezing it into `explores` would leave the
-   // package serving nothing once that file is renamed. Recognized as the
-   // exact derived value in a manifest that declares no `explores`.
-   const echoesDerivedSurface =
-      existingManifest.explores === undefined &&
-      Array.isArray(metadata.explores) &&
-      metadata.explores.length === 1 &&
-      metadata.explores[0] === INDEX_MODEL_NAME;
-
-   return {
-      ...existingManifest,
-      name: metadata.name,
-      // An undefined would be dropped by JSON.stringify, erasing it on disk.
-      ...(metadata.description !== undefined
-         ? { description: metadata.description }
-         : {}),
-      ...(metadata.explores !== undefined && !echoesDerivedSurface
-         ? { explores: metadata.explores }
-         : {}),
-      ...(metadata.queryableSources !== undefined
-         ? { queryableSources: metadata.queryableSources }
-         : {}),
-      ...(metadata.manifestLocation !== undefined
-         ? { manifestLocation: metadata.manifestLocation }
-         : {}),
-      ...(resolvedScope !== undefined ? { scope: resolvedScope } : {}),
-      ...(resolvedQueryMetadata !== undefined
-         ? { queryMetadata: resolvedQueryMetadata }
-         : {}),
-      // Mirrored into the deprecated home only when it already exists or the
-      // caller wrote to it, so a manifest never gains the block being
-      // migrated away from.
-      ...(materializationBlock !== undefined
-         ? {
-              materialization: {
-                 ...materializationBlock,
-                 ...(resolvedQueryMetadata !== undefined
-                    ? { queryMetadata: resolvedQueryMetadata }
-                    : {}),
-              },
-           }
-         : {}),
-   };
-}
-
 /** Cap on runtime add failures kept per environment for /status. */
 const MAX_RECORDED_ADD_FAILURES = 100;
 
@@ -327,7 +199,7 @@ export class Environment {
    private packageMutexes = new Map<string, Mutex>();
    private packageStatuses: Map<string, PackageInfo> = new Map();
    /**
-    * Packages with a load, reinstall or recompile in progress, with when the
+    * Packages with a load or recompile in progress, with when the
     * first began; what `Package.status.loading` reports. Separate from
     * `packageStatuses` ("is a copy registered to serve") because a reload runs
     * while the previous copy keeps serving. Reference-counted so a nested
@@ -1062,19 +934,7 @@ export class Environment {
    }
 
    /**
-    * Where `packageName` was installed from, recorded outside the package
-    * directory (see {@link PACKAGE_INSTALL_RECORDS_DIR}).
-    */
-   private installRecordPath(packageName: string): string {
-      return safeJoinUnderRoot(
-         this.environmentPath,
-         PACKAGE_INSTALL_RECORDS_DIR,
-         `${packageName}.json`,
-      );
-   }
-
-   /**
-    * Resolve once no load, reinstall or recompile of the package is in flight,
+    * Resolve once no load or recompile of the package is in flight,
     * for a caller that must decide against the copy that will be resident.
     */
    public async awaitPackageLoads(packageName: string): Promise<void> {
@@ -1241,7 +1101,7 @@ export class Environment {
    /**
     * One mutex per package name, never replaced: replacing would let two
     * loads race on the canonical directory. `deletePackage` keeps the entry
-    * so a re-install serializes against straggling readers, so the map grows
+    * so a later load serializes against straggling readers, so the map grows
     * with distinct names ever served; there is no sweep for unbounded
     * create/delete of unique names.
     */
@@ -2157,6 +2017,12 @@ export class Environment {
          manifestLocation: version.manifestPath,
       });
       await this.bindManifestIfConfigured(loaded);
+      // The bind reloads the models, and a reload reads the binding from
+      // publisher.json; a version's lives on its row.
+      loaded.setPackageMetadata({
+         ...loaded.getPackageMetadata(),
+         manifestLocation: version.manifestPath,
+      });
       await this.rebindServeBindingsFromLocalStore(loaded);
       return loaded;
    }
@@ -2343,6 +2209,15 @@ export class Environment {
                loaded.bindStorageServeBindings({});
             });
          }
+         // A manifest with no entries left nothing to reload, but was still
+         // recorded as bound.
+         if (!manifestPath) loaded.markManifestUnbound();
+         // The bind reloads the models, and a reload reads the binding from
+         // publisher.json; a version's lives on its row.
+         loaded.setPackageMetadata({
+            ...loaded.getPackageMetadata(),
+            manifestLocation: manifestPath,
+         });
       } catch (error) {
          // The models still use the previous binding, so the metadata says so.
          loaded.setPackageMetadata({
@@ -2574,70 +2449,23 @@ export class Environment {
    }
 
    /**
-    * Replace a package on disk via stage-and-swap, then load it.
-    *
-    *  - Phase 1 (no lock): `downloader(stagingPath)` fills `.staging/…`, so
-    *    lock holders never queue behind a long download.
-    *  - Phase 2 (lock held): rename the canonical tree to `.retired/…`,
-    *    staging into place, and `Package.create` it.
-    *  - Phase 3 (after release): drain the old connections and remove the
-    *    retired tree.
-    *
-    * On failure the staging dir is removed and the old tree renamed back.
-    */
-   public async installPackage(
-      packageName: string,
-      downloader: (stagingPath: string) => Promise<void>,
-      validate?: (pkg: Package) => string | undefined,
-      options: {
-         allowAdmission?: boolean;
-         /**
-          * Metadata applied inside the install's lock hold. Its `location` is
-          * recorded as where the package was installed from (only installs
-          * record one).
-          */
-         update?: ApiPackage;
-      } = {},
-   ): Promise<Package> {
-      assertSafePackageName(packageName);
-      // The largest allocation a package can ask for (a reinstall holds two
-      // copies until the swap), so gate it before the download.
-      this.assertCanAdmitNewPackage(
-         packageName,
-         this.packages.has(packageName)
-            ? "reinstall a package"
-            : "install a package",
-         options.allowAdmission === true,
-      );
-      return this.trackPackageLoad(packageName, () =>
-         this._installPackageTracked(
-            packageName,
-            downloader,
-            validate,
-            options,
-         ),
-      );
-   }
-
-   /**
     * Load the tree `downloader` writes as `packageName` and run the publish
     * checks on it, exactly as a publish of it would, then discard it: nothing
     * is installed, swapped or recorded, and the package already served under
     * the name is untouched. Returns what `describe` reads from the loaded
     * package, before its connections are released.
     *
-    * `readVersion` (versioning on) also reads the version the tree's
-    * publisher.json declares, refusing a missing or invalid one with the
-    * publish's own 400; `describe` receives it. Version lifecycle checks (an
-    * existing version, `latest`) are not part of it.
+    * It also reads the version the tree's publisher.json declares, refusing
+    * a missing or invalid one with the publish's own 400; `describe` receives
+    * it. Version lifecycle checks (an existing version, `latest`) are not part
+    * of it.
     */
    public async dryRunInstall<T>(
       packageName: string,
       downloader: (stagingPath: string) => Promise<void>,
       options: {
          validate?: (pkg: Package) => string | undefined;
-         readVersion: boolean;
-         describe: (pkg: Package, versionId: string | undefined) => T;
+         describe: (pkg: Package, versionId: string) => T;
       },
    ): Promise<T> {
       assertSafePackageName(packageName);
@@ -2670,8 +2498,7 @@ export class Environment {
       downloader: (stagingPath: string) => Promise<void>,
       options: {
          validate?: (pkg: Package) => string | undefined;
-         readVersion: boolean;
-         describe: (pkg: Package, versionId: string | undefined) => T;
+         describe: (pkg: Package, versionId: string) => T;
       },
    ): Promise<T> {
       const stagingPath = await this.stageDownload(packageName, downloader);
@@ -2679,9 +2506,7 @@ export class Environment {
          // Admitted again before the load: the download can be long, and
          // memory may have filled meanwhile.
          this.assertCanAdmitNewPackage(packageName, "dry-run a package", false);
-         const versionId = options.readVersion
-            ? (await readManifestVersion(stagingPath)).versionId
-            : undefined;
+         const { versionId } = await readManifestVersion(stagingPath);
          const pkg = await this.loadStagedTree(
             packageName,
             stagingPath,
@@ -2784,206 +2609,6 @@ export class Environment {
             error,
          });
       }
-   }
-
-   private async _installPackageTracked(
-      packageName: string,
-      downloader: (stagingPath: string) => Promise<void>,
-      validate: ((pkg: Package) => string | undefined) | undefined,
-      options: { update?: ApiPackage },
-   ): Promise<Package> {
-      const stagingPath = await this.stageDownload(packageName, downloader);
-
-      return this.withPackageLock(packageName, async () => {
-         try {
-            await this.assertNotVersionedLocked(
-               packageName,
-               this.packages.get(packageName),
-            );
-         } catch (err) {
-            await fs.promises
-               .rm(stagingPath, { recursive: true, force: true })
-               .catch(() => {});
-            throw err;
-         }
-         logger.debug("install.phase2.swap.started", {
-            environmentName: this.environmentName,
-            packageName,
-         });
-         const canonicalPath = safeJoinUnderRoot(
-            this.environmentPath,
-            packageName,
-         );
-         let retiredPath: string | undefined;
-
-         const oldPackage = this.packages.get(packageName);
-         const oldExistsOnDisk = await fs.promises
-            .access(canonicalPath)
-            .then(() => true)
-            .catch(() => false);
-
-         if (oldExistsOnDisk) {
-            retiredPath = this.allocateRetiredPath(packageName);
-            await fs.promises.mkdir(path.dirname(retiredPath), {
-               recursive: true,
-            });
-            await fs.promises.rename(canonicalPath, retiredPath);
-            logger.debug("install.phase2.retired_old", {
-               environmentName: this.environmentName,
-               packageName,
-               retiredPath,
-            });
-         }
-
-         let newPackage: Package;
-         try {
-            await fs.promises.rename(stagingPath, canonicalPath);
-
-            this.setPackageStatus(packageName, PackageStatus.LOADING);
-            // A refusal is thrown inside the try so the swap rolls back.
-            newPackage = await this.loadStagedTree(
-               packageName,
-               canonicalPath,
-               validate,
-               { dryRun: false },
-            );
-            // The body's listing decides what the gates judge, so a refusal
-            // here rolls the swap back rather than 400ing a tree already live.
-            const gateMsg = options.update
-               ? await this.gatesRefuseUnder(newPackage, options.update)
-               : "";
-            if (gateMsg) {
-               throw new BadRequestError(gateMsg);
-            }
-            logger.debug("install.phase2.committed", {
-               environmentName: this.environmentName,
-               packageName,
-               canonicalPath,
-            });
-         } catch (err) {
-            await this.rollbackInstallSwap(packageName, err, {
-               canonicalPath,
-               retiredPath,
-               stagingPath,
-               oldPackage,
-            });
-            throw err;
-         }
-
-         // Outside the rollback window: an unfetchable manifest must not undo
-         // a successful install (it serves live instead).
-         await this.commitLoadedPackage(packageName, newPackage, {
-            bindServeState: true,
-            replaces: oldPackage,
-         });
-
-         if (retiredPath) {
-            this.scheduleRetiredTreeCleanup(packageName, retiredPath);
-         }
-
-         // Same lock hold: as a separate step, a delete queued behind the
-         // swap could run first and the update would 404 for completed work.
-         if (options.update !== undefined) {
-            await this._updatePackageLocked(packageName, options.update, {
-               recordLocation: true,
-               regated: true,
-            });
-         }
-
-         return newPackage;
-      });
-   }
-
-   /**
-    * Undo a failed Phase 2 swap: wipe the canonical path, put the retired tree
-    * back if one was moved aside, and leave the package maps agreeing with
-    * what is now on disk. The caller rethrows `err`.
-    */
-   private async rollbackInstallSwap(
-      packageName: string,
-      err: unknown,
-      {
-         canonicalPath,
-         retiredPath,
-         stagingPath,
-         oldPackage,
-      }: {
-         canonicalPath: string;
-         retiredPath: string | undefined;
-         stagingPath: string;
-         oldPackage: Package | undefined;
-      },
-   ): Promise<void> {
-      // Best-effort wipe (often already gone) so the rename-back has a clean
-      // destination.
-      await fs.promises
-         .rm(canonicalPath, { recursive: true, force: true })
-         .catch(() => {});
-      let restored = false;
-      if (retiredPath) {
-         try {
-            await fs.promises.rename(retiredPath, canonicalPath);
-            restored = true;
-         } catch (restoreErr) {
-            logger.error(
-               "Failed to restore retired package after install rollback",
-               {
-                  error: restoreErr,
-                  retiredPath,
-                  canonicalPath,
-               },
-            );
-         }
-      }
-      await fs.promises
-         .rm(stagingPath, { recursive: true, force: true })
-         .catch(() => {});
-      if (oldPackage && restored) {
-         // The old package still serves; deleting its status would hide it
-         // from listings (which enumerate packageStatuses) until a restart.
-         this.setPackageStatus(packageName, PackageStatus.SERVING);
-      } else {
-         // Nothing to fall back to, or the restore failed: the cached package
-         // no longer matches disk, so drop it from both maps.
-         this.deletePackageStatus(packageName);
-         if (oldPackage) {
-            // Retire before dropping, or its native handles are never
-            // released; drained rather than shut down inline because queries
-            // that already hold this Package are not covered by the lock.
-            this.retireConnectionGeneration(`package ${packageName}`, () =>
-               oldPackage.getMalloyConfig().shutdown("close"),
-            );
-         }
-         this.packages.delete(packageName);
-      }
-      logger.debug("install.phase2.rollback", {
-         environmentName: this.environmentName,
-         packageName,
-         restored,
-         errorName: err instanceof Error ? err.name : "Unknown",
-      });
-   }
-
-   /** Phase 3: remove the retired tree once the lock is released. */
-   private scheduleRetiredTreeCleanup(
-      packageName: string,
-      retiredPath: string,
-   ): void {
-      setImmediate(() => {
-         logger.debug("install.phase3.retired_cleanup", {
-            environmentName: this.environmentName,
-            packageName,
-            retiredPath,
-         });
-         void fs.promises
-            .rm(retiredPath, { recursive: true, force: true })
-            .catch((err) => {
-               logger.warn(
-                  `Failed to clean up retired package directory ${retiredPath}`,
-                  { error: err },
-               );
-            });
-      });
    }
 
    /**
@@ -3265,256 +2890,6 @@ export class Environment {
       });
    }
 
-   private async writePackageManifest(
-      packageName: string,
-      metadata: PackageManifestUpdate,
-   ): Promise<void> {
-      const packagePath = safeJoinUnderRoot(this.environmentPath, packageName);
-      const manifestPath = safeJoinUnderRoot(packagePath, "publisher.json");
-
-      try {
-         let existingManifest: Record<string, unknown> = {};
-         try {
-            const content = await fs.promises.readFile(manifestPath, "utf-8");
-            existingManifest = JSON.parse(content);
-         } catch (_err) {
-            logger.warn(`Could not read manifest for ${packageName}`);
-         }
-
-         const updatedManifest = mergePackageManifest(
-            existingManifest,
-            metadata,
-         );
-
-         await fs.promises.writeFile(
-            manifestPath,
-            JSON.stringify(updatedManifest, null, 2),
-            "utf-8",
-         );
-         // Recorded outside the package directory so nothing the package's
-         // content carries is ever read as its install location. Never
-         // cleared from here.
-         if (metadata.location !== undefined && metadata.location !== "") {
-            const recordPath = this.installRecordPath(packageName);
-            await fs.promises.mkdir(path.dirname(recordPath), {
-               recursive: true,
-            });
-            await fs.promises.writeFile(
-               recordPath,
-               JSON.stringify({ location: metadata.location }, null, 2),
-               "utf-8",
-            );
-         }
-
-         logger.info(`Updated publisher.json for ${packageName}`);
-      } catch (error) {
-         logger.error(`Failed to update publisher.json`, { error });
-         throw new Error(`Failed to update package manifest`, { cause: error });
-      }
-   }
-
-   public async updatePackage(packageName: string, body: ApiPackage) {
-      assertSafePackageName(packageName);
-      // An install downloads before taking the lock, so a PATCH arriving then
-      // would land on the copy about to be swapped away. Wait for loads in
-      // flight and apply to whatever is resident afterwards (or 404).
-      await this.awaitPackageLoads(packageName);
-      return this.withPackageLock(packageName, () =>
-         this._updatePackageLocked(packageName, body, {
-            recordLocation: false,
-         }),
-      );
-   }
-
-   /**
-    * The load gates' refusal for a package under the listing (`explores`,
-    * `queryableSources`) a body would give it, empty when the body leaves the
-    * listing as it is or the gates pass. The package keeps its own listing.
-    */
-   private async gatesRefuseUnder(
-      pkg: Package,
-      body: ApiPackage,
-   ): Promise<string> {
-      const existing = pkg.getPackageMetadata();
-      const explores =
-         body.explores !== undefined
-            ? body.explores.map(normalizeModelPath)
-            : existing.explores;
-      const queryableSources =
-         body.queryableSources != null
-            ? body.queryableSources
-            : existing.queryableSources;
-      const listing = (e?: string[], q?: string) =>
-         JSON.stringify([e ?? null, q ?? "declared"]);
-      if (
-         listing(explores, queryableSources) ===
-         listing(existing.explores, existing.queryableSources)
-      ) {
-         return "";
-      }
-      try {
-         await applyLoadGates(pkg, { explores, queryableSources });
-         return "";
-      } catch (error) {
-         if (error instanceof BadRequestError) return error.message;
-         throw error;
-      }
-   }
-
-   /** Apply a metadata PATCH to a loaded package. Caller holds the package mutex. */
-   private async _updatePackageLocked(
-      packageName: string,
-      body: ApiPackage,
-      options: {
-         /**
-          * Record the body's `location` as the install location. True only
-          * for an install; a PATCH naming a new location is a reinstall.
-          */
-         recordLocation: boolean;
-         /** The install already ran the gates under this body's listing, inside its swap. */
-         regated?: boolean;
-      },
-   ) {
-      const _package = this.packages.get(packageName);
-      if (!_package) {
-         throw new PackageNotFoundError(`Package ${packageName} not found`);
-      }
-      // `setPackageMetadata` replaces the whole object, so omitted fields
-      // carry over; a wiped `explores` would silently serve every model.
-      const existing = _package.getPackageMetadata();
-      // Normalized as the worker normalizes on-disk explores, so publish and
-      // reload agree.
-      const normalizedExplores = body.explores?.map(normalizeModelPath);
-      const explores =
-         normalizedExplores !== undefined
-            ? normalizedExplores
-            : existing.explores;
-      const queryableSources =
-         body.queryableSources != null
-            ? body.queryableSources
-            : existing.queryableSources;
-      // An explicit null clears it, reverting to live.
-      const manifestLocation =
-         body.manifestLocation !== undefined
-            ? body.manifestLocation
-            : existing.manifestLocation;
-      // `scope` and `materialization` apply when provided and are otherwise
-      // preserved; a schedule change re-arms the scheduler on its next tick.
-      // Null counts as omitted, so a client serializing unset fields as null
-      // neither trips the policy gate below (failing an orchestrated run) nor
-      // resets the policy. `manifestLocation` differs: null there clears.
-      const scopeProvided = body.scope != null;
-      const materializationProvided = body.materialization != null;
-      const editingPolicy = scopeProvided || materializationProvided;
-      const scope = scopeProvided ? body.scope : existing.scope;
-      // Preserved the same way (null = omitted; the clear is an empty bag),
-      // resolved once across both wire homes and written to both: the serve
-      // path reads the canonical field and the build path the block, so they
-      // must not disagree.
-      const queryMetadata =
-         body.queryMetadata ??
-         body.materialization?.queryMetadata ??
-         existing.queryMetadata ??
-         existing.materialization?.queryMetadata ??
-         null;
-      const materializationBase = materializationProvided
-         ? body.materialization
-         : existing.materialization;
-      const materialization =
-         materializationBase || queryMetadata !== null
-            ? { ...(materializationBase ?? {}), queryMetadata }
-            : materializationBase;
-      // Judged before the listing goes live, so a query meanwhile is served
-      // under the old one. Only a change to what is queryable re-runs them.
-      const gateMsg = options.regated
-         ? ""
-         : await this.gatesRefuseUnder(_package, body);
-      // Omitted (or null) fields carry over, so a rebind PATCH keeps the
-      // `location` a reload reinstalls from and the `resource` an
-      // orchestrator identifies the package by. An empty string is a value.
-      _package.setPackageMetadata({
-         name: body.name != null ? body.name : existing.name,
-         description:
-            body.description != null ? body.description : existing.description,
-         resource: body.resource != null ? body.resource : existing.resource,
-         location:
-            options.recordLocation && body.location != null
-               ? body.location
-               : existing.location,
-         explores,
-         queryableSources,
-         manifestLocation,
-         materialization,
-         queryMetadata,
-         scope,
-      });
-
-      // Strict-reject like publish, restoring the prior metadata first so a
-      // bad update neither persists nor changes the served surface. Each check
-      // runs only when the body touches its fields, so a PATCH is never newly
-      // rejected for a warning the load tolerated (and a post-swap update
-      // never fails, leaving the new tree serving unrecorded).
-      const policyMsg = editingPolicy
-         ? _package.formatInvalidPersistencePolicy()
-         : "";
-      const exploresMsg =
-         normalizedExplores !== undefined
-            ? _package.formatInvalidExplores()
-            : "";
-      const invalidMsg = [exploresMsg, policyMsg, gateMsg]
-         .filter(Boolean)
-         .join("\n");
-      if (invalidMsg) {
-         _package.setPackageMetadata(existing);
-         throw new BadRequestError(invalidMsg);
-      }
-      // After the checks, so a refused PATCH leaves the name as it was.
-      if (body.name) {
-         _package.setName(body.name);
-      }
-
-      await this.writePackageManifest(packageName, {
-         name: packageName,
-         description: body.description ?? undefined,
-         location: options.recordLocation
-            ? (body.location ?? undefined)
-            : undefined,
-         explores: normalizedExplores,
-         queryableSources: body.queryableSources ?? undefined,
-         manifestLocation: body.manifestLocation,
-         scope: scopeProvided ? body.scope : undefined,
-         queryMetadata: body.queryMetadata ?? undefined,
-         materialization: materializationProvided
-            ? body.materialization
-            : undefined,
-      });
-
-      // Apply a manifestLocation change now: a URI rebinds, null/empty
-      // reverts to live.
-      const revertsBinding =
-         body.manifestLocation !== undefined &&
-         !body.manifestLocation &&
-         (_package.hasBoundTableNameManifest() ||
-            _package.hasStorageServeBindings());
-      if (body.manifestLocation) {
-         // May recompile, so reported as loading.
-         await this.trackPackageLoad(packageName, () =>
-            this.bindManifest(_package, body.manifestLocation as string),
-         );
-      } else if (revertsBinding) {
-         // Drop both tiers so nothing still routes to a materialized table.
-         await this.trackPackageLoad(packageName, async () => {
-            await _package.reloadAllModels({});
-            _package.bindStorageServeBindings({});
-         });
-      } else {
-         // The surface may have changed with no file changing.
-         await _package.relintReports();
-      }
-
-      return _package.getPackageMetadata();
-   }
-
    public getPackageStatus(packageName: string): PackageInfo | undefined {
       return this.packageStatuses.get(packageName);
    }
@@ -3540,8 +2915,8 @@ export class Environment {
 
    /**
     * Record a runtime add that failed before the package could serve, for
-    * /status. Skipped while the name has any status (a failed re-install
-    * rolled back, so nothing failed). Names are the caller's, so the record
+    * /status. Skipped while the name has any status (a copy still
+    * serves, so nothing failed). Names are the caller's, so the record
     * is capped at MAX_RECORDED_ADD_FAILURES, oldest dropped first; boot-time
     * mount errors are not capped.
     */
@@ -3711,9 +3086,6 @@ export class Environment {
 
          this.packages.delete(packageName);
          this.packageStatuses.delete(packageName);
-         await fs.promises
-            .rm(this.installRecordPath(packageName), { force: true })
-            .catch(() => {});
          // Its rows, still under the lock: a first versioned publish that
          // waited for it must find the package gone, rows and all.
          await options.removeRecords?.();

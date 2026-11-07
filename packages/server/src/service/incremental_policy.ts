@@ -18,7 +18,7 @@ type ApiPackageWarning = NonNullable<ApiPackage["warnings"]>[number];
 /**
  * The gate for a source's INCREMENTAL declaration, plus advisory findings.
  *
- * STRICT everywhere a package is admitted: publish/PATCH answer a 400 with these
+ * STRICT everywhere a package is admitted: a publish answers a 400 with these
  * messages, and a package LOAD fails the same way (see Package.loadViaWorker).
  * Unlike the persistence-policy gate, load is not lenient: a package can reach a
  * worker without the publish endpoint, and a rejection nobody sees means a

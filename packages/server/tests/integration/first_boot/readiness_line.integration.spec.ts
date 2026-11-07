@@ -11,6 +11,8 @@ import {
    it,
    setDefaultTimeout,
 } from "bun:test";
+import fs from "fs";
+import path from "path";
 import {
    pollUntil,
    singlePackageConfig,
@@ -46,6 +48,12 @@ describe("first-boot readiness line", () => {
 
    beforeAll(async () => {
       src = writeSourcePackage(PKG_NAME);
+      // A configured package is published as the version its publisher.json
+      // declares, so it needs one to load.
+      fs.writeFileSync(
+         path.join(src.dir, "publisher.json"),
+         JSON.stringify({ name: PKG_NAME, version: "1.0.0" }),
+      );
       server = await spawnServer({
          config: singlePackageConfig(ENV_NAME, {
             name: PKG_NAME,

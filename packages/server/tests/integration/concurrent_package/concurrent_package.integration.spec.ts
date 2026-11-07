@@ -13,9 +13,11 @@
  * reads failed with "Package manifest for ... does not exist" and any
  * in-flight model compilation would 500 with "compiling model path not found".
  *
- * After fix: download is run inside the per-package mutex, so concurrent
- * callers serialize on the same target path. All N requests must succeed
- * and the package must be usable afterwards.
+ * Every publish now downloads into its own staging folder, and a publish of
+ * the version the package already holds, with the same content, is a
+ * placement: it answers 200 and writes nothing. So concurrent publishes of
+ * the same tree must all succeed, and readers alongside them must never see
+ * a missing manifest or a half-extracted directory.
  */
 
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
@@ -109,7 +111,7 @@ describe("Concurrent package operations (E2E)", () => {
       env = null;
    });
 
-   it("concurrent POST /packages for the same name all succeed", async () => {
+   it("concurrent POST /packages of the same version all succeed", async () => {
       const requests = Array.from({ length: CONCURRENCY }, () =>
          fetch(`${baseUrl}/api/v0/environments/${ENV_NAME}/packages`, {
             method: "POST",
@@ -135,13 +137,26 @@ describe("Concurrent package operations (E2E)", () => {
          expect(forbidden).toBeUndefined();
       }
 
-      // Package must be loadable after the storm.
+      // Package must be loadable after the storm, still as the one version
+      // the seed published: each publish was a placement.
       const res = await fetch(
          `${baseUrl}/api/v0/environments/${ENV_NAME}/packages/${PACKAGE_NAME}`,
       );
       expect(res.status).toBe(200);
-      const meta = (await res.json()) as { name?: string };
+      const meta = (await res.json()) as {
+         name?: string;
+         versionId?: string;
+         latestVersion?: string;
+      };
       expect(meta.name).toBe(PACKAGE_NAME);
+      expect(meta.versionId).toBe("1.0.0");
+      expect(meta.latestVersion).toBe("1.0.0");
+      const versionsRes = await fetch(
+         `${baseUrl}/api/v0/environments/${ENV_NAME}/packages/${PACKAGE_NAME}/versions`,
+      );
+      expect(versionsRes.status).toBe(200);
+      const versions = (await versionsRes.json()) as Array<{ id?: string }>;
+      expect(versions.map((v) => v.id)).toEqual(["1.0.0"]);
 
       // Models must be listable — proves the model files survived the unzip
       // race and Package.create read a consistent directory.
@@ -154,87 +169,7 @@ describe("Concurrent package operations (E2E)", () => {
       expect(models.length).toBeGreaterThan(0);
    });
 
-   it("concurrent GET /packages/:name?reload=true all succeed", async () => {
-      const requests = Array.from({ length: CONCURRENCY }, () =>
-         fetch(
-            `${baseUrl}/api/v0/environments/${ENV_NAME}/packages/${PACKAGE_NAME}?reload=true`,
-         ),
-      );
-      const responses = await Promise.all(requests);
-      const bodies = await Promise.all(
-         responses.map(async (r) => ({
-            status: r.status,
-            body: await r.json().catch(() => null),
-         })),
-      );
-      for (const { status, body } of bodies) {
-         expect(status).toBe(200);
-         const forbidden = findForbiddenError(body);
-         expect(forbidden).toBeUndefined();
-      }
-
-      // Models must still list cleanly.
-      const modelsRes = await fetch(
-         `${baseUrl}/api/v0/environments/${ENV_NAME}/packages/${PACKAGE_NAME}/models`,
-      );
-      expect(modelsRes.status).toBe(200);
-   });
-
-   it("simultaneous POST + PATCH for the same package serialize cleanly", async () => {
-      // Fire create and update at the same time. Both should land under the
-      // same per-package mutex. Whichever wins the mutex first runs first;
-      // the loser sees a coherent post-condition. After both settle the
-      // package must be loadable and the description must reflect the PATCH
-      // when the PATCH ran *after* a successful POST.
-      const newDescription = `concurrent-update-${Date.now()}`;
-      const [postRes, patchRes] = await Promise.all([
-         fetch(`${baseUrl}/api/v0/environments/${ENV_NAME}/packages`, {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({
-               name: PACKAGE_NAME,
-               location: fixtureDir,
-            }),
-         }),
-         fetch(
-            `${baseUrl}/api/v0/environments/${ENV_NAME}/packages/${PACKAGE_NAME}`,
-            {
-               method: "PATCH",
-               headers: { "Content-Type": "application/json" },
-               body: JSON.stringify({
-                  name: PACKAGE_NAME,
-                  description: newDescription,
-               }),
-            },
-         ),
-      ]);
-
-      // POST is idempotent here — always succeeds.
-      expect(postRes.status).toBe(200);
-      const postBody = await postRes.json().catch(() => null);
-      expect(findForbiddenError(postBody)).toBeUndefined();
-
-      // PATCH either succeeds (ran after POST loaded the package) or 404s
-      // (ran before POST populated `this.packages`). It must NOT silently
-      // rewrite disk and then 404, and must never surface the forbidden
-      // error fragments.
-      const patchBody = await patchRes.json().catch(() => null);
-      expect(findForbiddenError(patchBody)).toBeUndefined();
-      expect([200, 404]).toContain(patchRes.status);
-
-      // Whatever happened, the package must remain loadable.
-      const getRes = await fetch(
-         `${baseUrl}/api/v0/environments/${ENV_NAME}/packages/${PACKAGE_NAME}`,
-      );
-      expect(getRes.status).toBe(200);
-      const meta = (await getRes.json()) as {
-         name?: string;
-         description?: string;
-      };
-      expect(meta.name).toBe(PACKAGE_NAME);
-   });
-
-   it("interleaved POST + GET-reload + model list never surface stale-dir errors", async () => {
+   it("interleaved POST + package read + model list never surface stale-dir errors", async () => {
       // Worst-case interleave: writers and readers hammering the same
       // package. None of them should observe a missing manifest or a
       // half-extracted directory.
@@ -255,7 +190,7 @@ describe("Concurrent package operations (E2E)", () => {
          );
          work.push(
             fetch(
-               `${baseUrl}/api/v0/environments/${ENV_NAME}/packages/${PACKAGE_NAME}?reload=true`,
+               `${baseUrl}/api/v0/environments/${ENV_NAME}/packages/${PACKAGE_NAME}`,
             ).then(async (r) => ({
                status: r.status,
                body: await r.json().catch(() => null),
@@ -275,10 +210,8 @@ describe("Concurrent package operations (E2E)", () => {
       for (const { status, body } of results) {
          const forbidden = findForbiddenError(body);
          expect(forbidden).toBeUndefined();
-         // Model list while the package is being rewritten can transiently
-         // return 404 (the package is unloaded mid-rewrite), but never 5xx,
-         // and never with the forbidden error fragments.
-         expect(status).toBeLessThan(500);
+         // A placement swaps nothing in, so every request is served.
+         expect(status).toBe(200);
       }
    });
 });

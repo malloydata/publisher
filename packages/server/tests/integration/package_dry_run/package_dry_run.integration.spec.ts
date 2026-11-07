@@ -5,8 +5,9 @@
 
 /**
  * `POST …/packages?dryRun=true` over HTTP: the tree is loaded and checked as a
- * publish would, the answer is what a publish would answer, and nothing is
- * installed, listed or swapped in for the package already served.
+ * publish would, the answer is what a publish would answer (the version its
+ * publisher.json declares included), and nothing is published, listed or
+ * swapped in for the package already served.
  */
 
 import { MAX_CONCURRENT_DRY_RUNS } from "../../../src/constants";
@@ -18,7 +19,6 @@ import { MalloyConfig } from "@malloydata/malloy";
 import { logger } from "../../../src/logger";
 import { Package } from "../../../src/service/package";
 import { startRestE2E } from "../../harness/rest_e2e";
-import { installVariables } from "../../../src/test_helpers/settings_env";
 
 const ENV_NAME = "package-dry-run-env";
 const ROWS = `duckdb.sql("select * from (values (1, 'web'), (2, 'store')) as t(id, channel)")`;
@@ -28,11 +28,16 @@ describe("a dry-run publish", () => {
    let api: string;
    let tempDir: string;
 
-   const writePackage = (name: string, files: Record<string, string>) => {
+   /** A package tree; its publisher.json declares `version` unless null. */
+   const writePackage = (
+      name: string,
+      files: Record<string, string>,
+      version: string | null = "1.0.0",
+   ) => {
       const dir = fs.mkdtempSync(path.join(tempDir, `${name}-`));
       fs.writeFileSync(
          path.join(dir, "publisher.json"),
-         JSON.stringify({ name }),
+         JSON.stringify(version === null ? { name } : { name, version }),
       );
       for (const [file, text] of Object.entries(files)) {
          fs.writeFileSync(path.join(dir, file), text);
@@ -98,6 +103,7 @@ describe("a dry-run publish", () => {
       const { status, json } = await post("fresh", location, true);
       expect(status).toBe(200);
       expect(json.name).toBe("fresh");
+      expect(json.versionId).toBe("1.0.0");
       expect(json.location).toBe(location);
       expect(json.latestVersion).toBeUndefined();
       expect(await listed()).not.toContain("fresh");
@@ -133,10 +139,14 @@ describe("a dry-run publish", () => {
          await get(`/environments/${ENV_NAME}/packages/live/models`)
       ).json;
 
-      const next = writePackage("live", {
-         "orders.malloy": `source: orders is ${ROWS}\n`,
-         "extra.malloy": `source: extra is ${ROWS}\n`,
-      });
+      const next = writePackage(
+         "live",
+         {
+            "orders.malloy": `source: orders is ${ROWS}\n`,
+            "extra.malloy": `source: extra is ${ROWS}\n`,
+         },
+         "1.1.0",
+      );
       expect((await post("live", next, true)).status).toBe(200);
       const after = (
          await get(`/environments/${ENV_NAME}/packages/live/models`)
@@ -199,7 +209,11 @@ describe("a dry-run publish", () => {
       });
       fs.writeFileSync(
          path.join(dir, "publisher.json"),
-         JSON.stringify({ name: "refused", explores: ["missing.malloy"] }),
+         JSON.stringify({
+            name: "refused",
+            version: "1.0.0",
+            explores: ["missing.malloy"],
+         }),
       );
       const closed = await closesDuring(async () =>
          expect((await post("refused", dir, true)).status).toBe(400),
@@ -280,7 +294,7 @@ describe("a dry-run publish", () => {
                await downloaded;
                fs.cpSync(source, stagingPath, { recursive: true });
             },
-            { readVersion: false, describe: (pkg) => pkg.getPackageName() },
+            { describe: (pkg) => pkg.getPackageName() },
          ),
       );
       const refused = await post("other", source, true);
@@ -293,43 +307,29 @@ describe("a dry-run publish", () => {
       expect((await post("other", source, true)).status).toBe(200);
    }, 60_000);
 
-   describe("with package versioning on", () => {
-      // Settings are read once at startup, so the in-process server gets the
-      // variable as a restart with it would.
-      let restoreSettings: (() => void) | undefined;
-      beforeAll(() => {
-         restoreSettings = installVariables({
-            PUBLISHER_PACKAGE_VERSIONING: "on",
-         });
-      });
-      afterAll(() => {
-         restoreSettings?.();
-      });
+   it("refuses a tree whose publisher.json declares no version, as a publish does", async () => {
+      const location = writePackage(
+         "unversioned",
+         { "orders.malloy": `source: orders is ${ROWS}\n` },
+         null,
+      );
+      const dry = await post("unversioned", location, true);
+      expect(dry.status).toBe(400);
+      expect(dry.json.reason).toBe("MANIFEST_VERSION_MISSING");
+      const real = await post("unversioned", location, false);
+      expect(real.status).toBe(dry.status);
+      expect(real.json.reason).toBe(dry.json.reason);
+   }, 60_000);
 
-      it("refuses a tree whose publisher.json declares no version, as a versioned publish does", async () => {
-         const location = writePackage("unversioned", {
-            "orders.malloy": `source: orders is ${ROWS}\n`,
-         });
-         const dry = await post("unversioned", location, true);
-         expect(dry.status).toBe(400);
-         expect(dry.json.reason).toBe("MANIFEST_VERSION_MISSING");
-         const real = await post("unversioned", location, false);
-         expect(real.status).toBe(dry.status);
-         expect(real.json.reason).toBe(dry.json.reason);
-      }, 60_000);
-
-      it("names the version the tree would publish as, and publishes nothing", async () => {
-         const dir = writePackage("versioned", {
-            "orders.malloy": `source: orders is ${ROWS}\n`,
-         });
-         fs.writeFileSync(
-            path.join(dir, "publisher.json"),
-            JSON.stringify({ name: "versioned", version: "1.2.0" }),
-         );
-         const { status, json } = await post("versioned", dir, true);
-         expect(status).toBe(200);
-         expect(json.versionId).toBe("1.2.0");
-         expect(await listed()).not.toContain("versioned");
-      }, 60_000);
-   });
+   it("names the version the tree would publish as, and publishes nothing", async () => {
+      const dir = writePackage(
+         "versioned",
+         { "orders.malloy": `source: orders is ${ROWS}\n` },
+         "1.2.0",
+      );
+      const { status, json } = await post("versioned", dir, true);
+      expect(status).toBe(200);
+      expect(json.versionId).toBe("1.2.0");
+      expect(await listed()).not.toContain("versioned");
+   }, 60_000);
 });

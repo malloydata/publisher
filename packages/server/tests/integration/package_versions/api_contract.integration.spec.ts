@@ -5,14 +5,17 @@
 
 /**
  * The parts of the versions contract a client generated from api-doc.yaml
- * sees, over HTTP, with package versioning off and on:
+ * sees, over HTTP:
  *
  *  - a materialization response carries only properties the `Materialization`
- *    schema declares (no top-level `version`), and a versioned run's version
- *    goes out in `metadata.versionId`;
+ *    schema declares (no top-level `version`), and a run's version goes out
+ *    in `metadata.versionId`;
  *  - a malformed `versionId` answers 400 `VERSION_ID_INVALID` on the
  *    package-scoped routes, which api-doc.yaml declares (see
  *    src/version_id_contract.spec.ts);
+ *  - a tree whose publisher.json declares no version, or one that is not
+ *    semver, is refused 400 `MANIFEST_VERSION_MISSING` or
+ *    `MANIFEST_VERSION_INVALID`, and creates nothing;
  *  - a version with a leading zero publishes, and the same version written
  *    without it is then refused, so one package never holds both;
  *  - under explicit promotion a `scope: package` version is built before
@@ -27,7 +30,6 @@ import { RestE2EEnv, startRestE2E } from "../../harness/rest_e2e";
 import { installVariables } from "../../../src/test_helpers/settings_env";
 
 const ENV_NAME = "versions-api-contract-env";
-const FLAG = "PUBLISHER_PACKAGE_VERSIONING";
 const PROMOTION = "PUBLISHER_VERSION_PROMOTION";
 const TERMINAL = ["MANIFEST_FILE_READY", "FAILED", "CANCELLED"];
 
@@ -182,7 +184,6 @@ async function everyRunResponse(
 
 describe("the versions contract a generated client sees", () => {
    beforeAll(async () => {
-      setEnv(FLAG, undefined);
       setEnv(PROMOTION, undefined);
       root = fs.realpathSync(
          fs.mkdtempSync(path.join(os.tmpdir(), "versions-api-contract-")),
@@ -200,13 +201,6 @@ describe("the versions contract a generated client sees", () => {
       });
       expect(created.status).toBeLessThan(300);
 
-      // Off: installed in place, no versions.
-      expect(
-         (await publish("plain", writePackage("plain", { name: "plain" }, 0)))
-            .status,
-      ).toBe(200);
-      // On: a published version.
-      setEnv(FLAG, "on");
       const versioned = await publish(
          "ver",
          writePackage("ver-1", { name: "ver", version: "1.0.0" }, 1),
@@ -215,11 +209,9 @@ describe("the versions contract a generated client sees", () => {
          200,
          "1.0.0",
       ]);
-      setEnv(FLAG, undefined);
    }, 180_000);
 
    afterEach(() => {
-      setEnv(FLAG, undefined);
       setEnv(PROMOTION, undefined);
    });
 
@@ -233,27 +225,8 @@ describe("the versions contract a generated client sees", () => {
    });
 
    it(
-      "answers every materialization route with declared properties only, versioning off",
+      "answers every materialization route with declared properties only, the version in metadata",
       async () => {
-         const answers = await everyRunResponse("plain", {});
-         for (const [route, runs] of Object.entries(answers)) {
-            expect(runs.length).toBeGreaterThan(0);
-            for (const run of runs) {
-               expect([route, undeclared(run)]).toEqual([route, []]);
-               expect([route, "version" in run]).toEqual([route, false]);
-               expect(
-                  (run.metadata as Record<string, unknown> | null)?.versionId,
-               ).toBeUndefined();
-            }
-         }
-      },
-      { timeout: 300_000 },
-   );
-
-   it(
-      "answers every materialization route with declared properties only, versioning on, the version in metadata",
-      async () => {
-         setEnv(FLAG, "on");
          const answers = await everyRunResponse("ver", { versionId: "1.0.0" });
          for (const [route, runs] of Object.entries(answers)) {
             expect(runs.length).toBeGreaterThan(0);
@@ -368,21 +341,34 @@ describe("the versions contract a generated client sees", () => {
       return out;
    }
 
-   it("answers a malformed versionId 400 VERSION_ID_INVALID on the sampled routes, versioning off and on", async () => {
-      for (const [flag, name] of [
-         [undefined, "plain"],
-         ["on", "ver"],
-      ] as const) {
-         setEnv(FLAG, flag);
-         const answers = await malformedOn(name);
-         expect(answers).toEqual(
-            answers.map(([route]) => [route, 400, "VERSION_ID_INVALID"]),
-         );
-      }
+   it("answers a malformed versionId 400 VERSION_ID_INVALID on the sampled routes", async () => {
+      const answers = await malformedOn("ver");
+      expect(answers).toEqual(
+         answers.map(([route]) => [route, 400, "VERSION_ID_INVALID"]),
+      );
+   });
+
+   it("refuses a tree that declares no version, or one that is not semver, and creates nothing", async () => {
+      const missing = await publish(
+         "strict",
+         writePackage("strict-none", { name: "strict" }, 1),
+      );
+      expect([missing.status, missing.json.reason]).toEqual([
+         400,
+         "MANIFEST_VERSION_MISSING",
+      ]);
+      const invalid = await publish(
+         "strict",
+         writePackage("strict-bad", { name: "strict", version: "1.0" }, 2),
+      );
+      expect([invalid.status, invalid.json.reason]).toEqual([
+         400,
+         "MANIFEST_VERSION_INVALID",
+      ]);
+      expect((await fetch(pkgApi("strict"))).status).toBe(404);
    });
 
    it("publishes a version with a leading zero, refuses it written without, and keeps build metadata digits", async () => {
-      setEnv(FLAG, "on");
       const padded = await publish(
          "zeros",
          writePackage("zeros-padded", { name: "zeros", version: "01.0.0" }, 9),
@@ -429,7 +415,6 @@ describe("the versions contract a generated client sees", () => {
    it(
       "under explicit promotion, builds a default-scope version before anything is latest, and serves its table once promoted",
       async () => {
-         setEnv(FLAG, "on");
          setEnv(PROMOTION, "explicit");
          const published = await publish(
             "held",

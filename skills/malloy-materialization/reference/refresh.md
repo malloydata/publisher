@@ -29,7 +29,7 @@ or package-wide in `publisher.json` under `materialization.freshness`, or per mo
 - A 5-field UTC cron; `L`, `W`, `#`, `?` are rejected at publish. It **requires `scope: "version"`** and is **mutually exclusive with `freshness`** - including a per-source `freshness.*`.
 - It fires only on a standalone Publisher whose scheduler is enabled with `PUBLISHER_LOCAL_MATERIALIZATION_SCHEDULER`; without that, a schedule is inert. The scheduler sweeps loaded packages, skips one whose policy is invalid or that a control plane manages (`manifestLocation` set), fires at most a bounded number per tick, fires once to catch up after downtime, and skips a fire while a run is already active.
 - **Every scheduled fire is a forced run** (`forceRefresh: true`): every source is rebuilt whether or not its content address changed. A scheduled run therefore never reports reused sources, and a cron that is too frequent shows as build time, not as reuse.
-- `malloy-pub schedule set "<cron>"` writes the schedule and sets `scope: version` in one PATCH; it **replaces the whole `materialization` block**, dropping an existing `freshness` policy (it says so). `schedule clear` removes the cron and leaves `scope: version` in place; moving back to `package` scope is an edit to `publisher.json`.
+- The schedule lives in `publisher.json` (`materialization.schedule`, with `scope: "version"`), and a change to it ships as a new published version; `malloy-pub schedule view` reads the one in force.
 
 ## `refresh="incremental"`: bounded deltas
 

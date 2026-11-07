@@ -429,11 +429,9 @@ Package-level persistence policy lives at the root of `publisher.json`:
 
 `scope` at the manifest root is the original home and still works, with a deprecation warning on the package. Declare it inside `materialization` alongside the other build knobs.
 
-Whenever the server rewrites a manifest — any package PATCH, including a description-only one — it writes **both** homes with the same value, so a package edited through the API keeps loading on an older Publisher that reads only the root. An author who moved to the envelope alone will see the root key reappear after such an edit; the two never disagree, and the root form goes away with the deprecation.
-
 Editing a manifest by hand, change `materialization.scope` and delete the root key rather than editing the root copy. Two homes holding different values is not a warning — the package fails to load, disappears from the server, and says so only in `/status` `loadErrors`. The rejection is deliberate (guessing which one the author meant could reuse a table across versions that was never meant to be shared), but it means the reappearing root key is a copy to delete, never one to edit.
 
-Publisher enforces these rules identically at **publish** (strict — rejected), at **PATCH** that edits the policy (strict), at **package load** (warn — the package still serves), and in the **scheduler** (an offending package is skipped):
+Publisher enforces these rules identically at **publish** (strict — rejected), at **package load** (warn — the package still serves), and in the **scheduler** (an offending package is skipped):
 
 1. **`scope` is a single package-level mode** — `package` (default) or `version`. There is no per-source scope or per-source schedule; those are declared once for the package, not on individual `#@ persist` sources. Declaring it in both homes with different values is rejected: scope decides whether an artifact is version-owned, so an ambiguous intent is never guessed.
    - `package`: persisted artifacts are reused across the package's published versions while they satisfy freshness.
@@ -499,7 +497,7 @@ is therefore narrower than the disjunction you wrote. Both fail in the same dire
 duplicated row, never a row belonging to another caller. If either applies to your source,
 rebuild it rather than refreshing.
 
-**An invalid declaration fails the package, it does not downgrade it.** The rules below are checked wherever a package is admitted — a publish or PATCH answers 400, and a package **load** fails outright, the same severity a model that does not compile has. So a broken declaration cannot sit in a log while the source quietly rebuilds in full forever: `watermark=` without `refresh="incremental"`, `merge_key=` without `watermark=`, a malformed key value, a watermark that names no materialized column (or names an aggregate, or a type with no ordering), a `calculate:` field, or an unsupported dialect. Every rejection is reported at once, so a model with two broken declarations takes one republish to fix. What is _legal but probably unintended_ stays a warning on the package instead: an unrecognized `#@ persist` key, and a keyless delta.
+**An invalid declaration fails the package, it does not downgrade it.** The rules below are checked wherever a package is admitted — a publish answers 400, and a package **load** fails outright, the same severity a model that does not compile has. So a broken declaration cannot sit in a log while the source quietly rebuilds in full forever: `watermark=` without `refresh="incremental"`, `merge_key=` without `watermark=`, a malformed key value, a watermark that names no materialized column (or names an aggregate, or a type with no ordering), a `calculate:` field, or an unsupported dialect. Every rejection is reported at once, so a model with two broken declarations takes one republish to fix. What is _legal but probably unintended_ stays a warning on the package instead: an unrecognized `#@ persist` key, and a keyless delta.
 
 Details that decide whether a run advances or rebuilds:
 
@@ -573,10 +571,8 @@ See [configuration.md](configuration.md) for the env vars. Fire semantics:
 ## Manage it with the CLI
 
 ```bash
-# View / set / clear a package's schedule (set also sets scope: version)
-malloy-pub schedule view  --environment <env> --package <pkg>
-malloy-pub schedule set "0 6 * * *" --environment <env> --package <pkg>
-malloy-pub schedule clear --environment <env> --package <pkg>
+# View a package's schedule (set it in publisher.json and publish a new version)
+malloy-pub schedule view --environment <env> --package <pkg>
 
 # List a package's runs (ID, Status, Trigger, Started, Completed, Error)
 malloy-pub list materialization --environment <env> --package <pkg>

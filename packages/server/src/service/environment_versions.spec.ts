@@ -569,21 +569,13 @@ describe("Environment loading: races, listings and bookkeeping", () => {
       }
    });
 
-   it("refuses to add or install a versioned package as a single slot, keeping its versions", async () => {
+   it("refuses to add a versioned package as a single slot, keeping its versions", async () => {
       const env = await newEnvironment();
       await publish(env, source("1.0.0", 1));
       expect(await refusal(env.addPackage(PKG))).toEqual({
          status: 409,
          reason: "PACKAGE_IS_VERSIONED",
       });
-      const other = writePackage(path.join(root, "unversioned"), {}, 7);
-      expect(
-         await refusal(
-            env.installPackage(PKG, async (stagingPath) => {
-               await fs.promises.cp(other, stagingPath, { recursive: true });
-            }),
-         ),
-      ).toEqual({ status: 409, reason: "PACKAGE_IS_VERSIONED" });
       expect(fs.readdirSync(path.join(envPath, PKG))).toEqual(["1.0.0"]);
       expect(await answerOf(await env.getPackage(PKG))).toBe(1);
    });

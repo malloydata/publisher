@@ -1103,7 +1103,7 @@ describe("the archive hook and the startup sweep, as main_server.ts wires them",
       )?.status ?? null;
 
    beforeEach(() => {
-      env = { ...ALLOW_SETUP_SQL, PUBLISHER_PACKAGE_VERSIONING: "on" };
+      env = { ...ALLOW_SETUP_SQL };
       root = fs.realpathSync(
          fs.mkdtempSync(
             path.join(os.tmpdir(), "materialization-reclaim-wired-"),
@@ -1458,14 +1458,21 @@ describe("the archive hook and the startup sweep, as main_server.ts wires them",
    });
 
    it("an unversioned package's delete still drops nothing and starts no cleanup, as before versions", async () => {
-      env.PUBLISHER_PACKAGE_VERSIONING = "off";
+      // The one unversioned package left: one an environment mounts in place,
+      // as a watched environment does.
       const server = await openServer();
       await server.sweep;
+      server.store.markInPlace(ENV);
       await server.store.addEnvironment({
          name: ENV,
          connections: [WAREHOUSE],
+         packages: [
+            {
+               name: PKG,
+               location: writePackage(sourcesPath, PKG, "1.0.0", 1, "package"),
+            },
+         ],
       } as never);
-      await publish(server, "1.0.0", 1, "package");
       const created = await server.service.createMaterialization(ENV, PKG, {});
       const run = await settledRun(
          server.store.storageManager.getRepository(),

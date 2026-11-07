@@ -19,6 +19,7 @@ import { Environment } from "./environment";
 import { Model } from "./model";
 import { Package } from "./package";
 import { getDashboard } from "./legacy_report_views";
+import { installTestPackage } from "../test_helpers/install_test_package";
 
 type ApiPackageWarning = NonNullable<
    components["schemas"]["Package"]["warnings"]
@@ -72,7 +73,7 @@ describe("report discovery: what it does with a report it cannot read", () => {
    });
 
    const install = async (): Promise<Package> => {
-      await env.installPackage("drops", async (stagingPath) => {
+      await installTestPackage(env, "drops", async (stagingPath) => {
          await fs.mkdir(stagingPath, { recursive: true });
          for (const [name, text] of Object.entries(FILES))
             await fs.writeFile(path.join(stagingPath, name), text);

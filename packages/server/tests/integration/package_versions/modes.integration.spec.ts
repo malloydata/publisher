@@ -9,10 +9,9 @@
  * databases, the package-scoped connection (schemas, sqlQuery, sqlSource,
  * sqlTemporaryTable), materializations, events and static files. Each handler
  * reads the version itself, so each is probed, for each kind of package: one
- * with no versions (loaded with its environment), a versioned one under each
- * promotion mode, and one named for its version, as an orchestrator that
- * predates versions publishes it. A route that forgets the version shows up
- * as one failing row.
+ * with no versions (in an environment mounted in place, as a watched
+ * environment's packages are), and a versioned one under each promotion mode.
+ * A route that forgets the version shows up as one failing row.
  *
  * Each package tree carries markers of its own number `n`: the model answers
  * it, a source and a model file are named for it, a data file too, and its
@@ -254,10 +253,8 @@ const route = (name: string): Route => {
 };
 
 describe("package versions across promotion modes and package kinds", () => {
-   // Versioning on for the suite, with the promotion a case sets over it.
-   const variables: Record<string, string | undefined> = {
-      PUBLISHER_PACKAGE_VERSIONING: "on",
-   };
+   // The promotion a case sets, installed over the process's own settings.
+   const variables: Record<string, string | undefined> = {};
    let restoreSettings: (() => void) | undefined;
    function installSuiteVariables(): void {
       restoreSettings?.();
@@ -399,8 +396,10 @@ describe("package versions across promotion modes and package kinds", () => {
          }),
       });
       expect(created.status).toBe(200);
-      // An environment whose package comes with it, as one configured in
-      // publisher.config.json does: a package with no versions.
+      // An environment whose package comes with it, mounted in place as a
+      // watched environment's packages are: a package with no versions.
+      const { environmentStore } = await import("../../../src/main_server");
+      environmentStore.markInPlace(PLAIN_ENV);
       const plain = await fetch(`${baseUrl}/api/v0/environments`, {
          method: "POST",
          headers: json,
@@ -455,17 +454,7 @@ describe("package versions across promotion modes and package kinds", () => {
          );
       });
 
-      it("is still edited in place by PATCH, and has no versions to move or archive", async () => {
-         const patch = await fetch(api(), {
-            method: "PATCH",
-            headers: json,
-            body: JSON.stringify({ name: "plain", description: "edited" }),
-         });
-         expect(patch.status).toBe(200);
-         const after = (await (await fetch(api())).json()) as {
-            description?: string;
-         };
-         expect(after.description).toBe("edited");
+      it("has no versions to move or archive", async () => {
          for (const res of [
             await fetch(`${api()}/latest`, {
                method: "PUT",
@@ -610,33 +599,6 @@ describe("package versions across promotion modes and package kinds", () => {
          expect(
             (await route("POST query").call(pkgApi("ver"), undefined)).answer,
          ).toBe(2);
-      });
-   });
-
-   describe("a package named for its version, as an orchestrator that predates versions publishes it", () => {
-      beforeAll(async () => {
-         setPromotion();
-         expect((await publish("sales___1.0.3", "1.0.3", 3)).status).toBe(200);
-      });
-
-      it("is served on every route with no version, an empty one, or its own", async () => {
-         for (const versionId of [undefined, "", "1.0.3"]) {
-            expectEveryRoute(
-               await probeAll(pkgApi("sales___1.0.3"), versionId),
-               servedVersion("1.0.3", 3),
-            );
-         }
-      });
-
-      it("serves its page whatever version a forwarded query string names", async () => {
-         for (const versionId of ["1.0.3", "2.0.0", "not-a-version"]) {
-            expect(
-               await route("GET static page").call(
-                  pkgApi("sales___1.0.3"),
-                  versionId,
-               ),
-            ).toEqual({ status: 200, answer: 3 });
-         }
       });
    });
 

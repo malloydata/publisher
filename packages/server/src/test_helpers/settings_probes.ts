@@ -40,7 +40,6 @@ import {
    isMcpIncludeHiddenFilesAndSources,
    isPackageInlineFieldsEnabled,
    isPublisherConfigFrozen,
-   isVersioningEnabled,
    schemaEmbeddingEnabled,
 } from "../config";
 import { parseFrameAncestors } from "../frame_ancestors";
@@ -75,7 +74,6 @@ export const PROBES: Record<string, (context: SettingsContext) => unknown> = {
    rateLimit: () => settings.get("rateLimit"),
    frameAncestors: () => parseFrameAncestors(settings.get("frameAncestors")),
    callerHeader: () => callerHeaderName(),
-   packageVersioning: () => isVersioningEnabled(),
    versionPromotion: () => getVersionPromotionMode(),
    packageInlineFields: () => isPackageInlineFieldsEnabled(),
    modelPage: () => getModelPageMode(),

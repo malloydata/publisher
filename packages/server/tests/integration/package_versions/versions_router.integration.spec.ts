@@ -6,8 +6,7 @@
 /**
  * The versions routes over HTTP: list, get, archive/unarchive (and what an
  * archived version answers on a read route), manifest binding, and moving
- * `latest`, with every refusal they declare; and the 501 they answer with
- * package versioning off.
+ * `latest`, with every refusal they declare.
  */
 
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
@@ -15,7 +14,6 @@ import fs from "fs";
 import os from "os";
 import path from "path";
 import { RestE2EEnv, startRestE2E } from "../../harness/rest_e2e";
-import { versioningOnForSuite } from "../../harness/versioning";
 
 const ENV_NAME = "package-versions-router-env";
 const PKG = "lifecycle";
@@ -71,8 +69,6 @@ async function answerOf(versionId?: string): Promise<number> {
 }
 
 describe("versions routes", () => {
-   versioningOnForSuite();
-
    beforeAll(async () => {
       root = fs.realpathSync(
          fs.mkdtempSync(path.join(os.tmpdir(), "package-versions-router-")),
@@ -354,104 +350,22 @@ describe("versions routes", () => {
       });
    });
 
-   it("PATCH accepts the package echoed back, and a client's unset fields", async () => {
-      // A client that reads the package and sends it back whole.
-      const read = await call("GET", "");
-      expect(read.status).toBe(200);
-      const echoed = await call("PATCH", "", read.json);
-      expect([echoed.status, echoed.json.reason]).toEqual([200, undefined]);
-
-      // A generated client that serializes every field it knows, unset ones
-      // as empty lists, null, or their defaults.
-      const serialized = await call("PATCH", "", {
-         name: null,
-         location: null,
-         manifestLocation: null,
-         description: null,
-         scope: "package",
-         explores: [],
-         exploresWarnings: [],
-         warnings: [],
-         queryableSources: null,
-         storageServeBindings: [],
-         materialization: null,
-         queryMetadata: null,
-      });
-      expect([serialized.status, serialized.json.reason]).toEqual([
-         200,
-         undefined,
-      ]);
-   });
-
-   it("PATCH accepts a generated Java client's rebind of a version that has explores", async () => {
-      const name = "indexed";
-      const dir = path.join(root, "indexed-1.0.0");
-      fs.mkdirSync(dir, { recursive: true });
-      fs.writeFileSync(
-         path.join(dir, "publisher.json"),
-         JSON.stringify({ name, version: "1.0.0" }),
-      );
-      fs.writeFileSync(
-         path.join(dir, "model.malloy"),
-         'source: numbers is duckdb.sql("SELECT 1 AS answer")\n',
-      );
-      fs.writeFileSync(
-         path.join(dir, "index.malloy"),
-         'import "model.malloy"\n',
-      );
-      const published = await fetch(
+   it("a package's own description, sent with a publish, reads back, and an environment update keeps it", async () => {
+      // The version latest holds, published again (a placement) with the
+      // package's own description.
+      const placed = await fetch(
          `${baseUrl}/api/v0/environments/${ENV_NAME}/packages`,
          {
             method: "POST",
             headers: { "content-type": "application/json" },
-            body: JSON.stringify({ name, location: dir }),
+            body: JSON.stringify({
+               name: PKG,
+               location: writePackage("2.0.0", 3),
+               description: "Package-level",
+            }),
          },
       );
-      expect(published.status).toBe(200);
-      const api = `${baseUrl}/api/v0/environments/${ENV_NAME}/packages/${name}`;
-      const read = (await (await fetch(api)).json()) as { explores?: string[] };
-      expect(read.explores?.length).toBeGreaterThan(0);
-
-      // Every optional list starts empty in that client, and goes out as [].
-      const rebind = await fetch(api, {
-         method: "PATCH",
-         headers: { "content-type": "application/json" },
-         body: JSON.stringify({
-            name,
-            location: dir,
-            manifestLocation: null,
-            explores: [],
-            exploresWarnings: [],
-            warnings: [],
-            storageServeBindings: [],
-            scope: "package",
-         }),
-      });
-      expect([
-         rebind.status,
-         ((await rebind.json()) as { reason?: string }).reason,
-      ]).toEqual([200, undefined]);
-   });
-
-   it("PATCH refuses a description that is not text, and a manifest location it cannot read", async () => {
-      for (const body of [
-         { description: 7 },
-         { description: ["x"] },
-         { manifestLocation: "manifests/manifest.json" },
-         { manifestLocation: "https://example.com/manifest.json" },
-         { manifestLocation: 3 },
-      ]) {
-         expect([
-            JSON.stringify(body),
-            (await call("PATCH", "", body)).status,
-         ]).toEqual([JSON.stringify(body), 400]);
-      }
-   });
-
-   it("a package's own description reads back, and an environment update keeps it", async () => {
-      expect(
-         (await call("PATCH", "", { description: "Package-level" })).status,
-      ).toBe(200);
+      expect(placed.status).toBe(200);
       expect((await call("GET", "")).json.description).toBe("Package-level");
       const listed = async () =>
          (
@@ -592,8 +506,8 @@ describe("versions routes", () => {
       expect(listed.map((m) => m.id)).toEqual([run.id]);
    });
 
-   it("a package's description follows latest through an echoed PATCH, and its first version replaces an unversioned tree's", async () => {
-      const name = "echoed";
+   it("a package's description follows latest, and its first version replaces an unversioned tree's", async () => {
+      const name = "unversioned-first";
       const environment = (await (
          await fetch(`${baseUrl}/api/v0/environments/${ENV_NAME}`)
       ).json()) as { location?: string };
@@ -644,15 +558,6 @@ describe("versions routes", () => {
 
       await publishVersion("1.0.0");
       expect(await described()).toBe("about 1.0.0");
-
-      // A client that sends the package back whole sets nothing.
-      const read = (await (await fetch(api)).json()) as Record<string, unknown>;
-      const echoed = await fetch(api, {
-         method: "PATCH",
-         headers: { "content-type": "application/json" },
-         body: JSON.stringify(read),
-      });
-      expect(echoed.status).toBe(200);
       await publishVersion("2.0.0");
       expect(await described()).toBe("about 2.0.0");
    });
@@ -683,15 +588,6 @@ describe("versions routes", () => {
       );
       // Nothing was published: the package does not exist.
       expect(versions.status).toBe(404);
-   });
-
-   it("PATCH changes a versioned package's description, not its versions'", async () => {
-      const patched = await call("PATCH", "", { description: "changed" });
-      expect(patched.status).toBe(200);
-      // Each version keeps the description its own publisher.json gave it.
-      expect((await call("GET", "/versions/2.0.0")).json.description).toBe(
-         "release 2.0.0",
-      );
    });
 
    it("binds only a manifest location the loader reads", async () => {
@@ -776,38 +672,5 @@ describe("versions routes", () => {
          `/api/v0/environments/${ENV_NAME}/packages/${name}/versions/1.0.0%2Bb.1`,
       );
       expect((await fetch(`${baseUrl}${version.resource}`)).status).toBe(200);
-   });
-
-   it("PATCH on a versioned package rebinds latest's manifest and sets the description", async () => {
-      // The deprecated PATCH, as an orchestrator that rebinds through it sends
-      // it: the location it published from echoed back, and a manifest it
-      // never set, serialized as null, which leaves the binding as it is.
-      const versions = (await (await fetch(api("/versions"))).json()) as {
-         id: string;
-         location?: string;
-      }[];
-      const latest = versions.find((v) => v.id === "2.0.0")!;
-      const patched = await call("PATCH", "", {
-         name: PKG,
-         location: latest.location,
-         manifestLocation: null,
-         description: "The package, described",
-      });
-      expect(patched.status).toBe(200);
-      expect(patched.json).toMatchObject({ versionId: "2.0.0" });
-      expect(
-         (await call("GET", "/versions/2.0.0")).json.manifestLocation,
-      ).toBeNull();
-
-      const content = await call("PATCH", "", { explores: ["model.malloy"] });
-      expect([content.status, content.json.reason]).toEqual([
-         409,
-         "PACKAGE_IS_VERSIONED",
-      ]);
-      const moved = await call("PATCH", "", { location: "/somewhere/else" });
-      expect([moved.status, moved.json.reason]).toEqual([
-         409,
-         "PACKAGE_IS_VERSIONED",
-      ]);
    });
 });

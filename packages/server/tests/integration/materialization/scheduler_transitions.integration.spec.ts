@@ -4,6 +4,8 @@
 /// <reference types="bun-types" />
 
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "bun:test";
+import fs from "fs";
+import os from "os";
 import path from "path";
 import { fileURLToPath } from "url";
 import { MaterializationScheduler } from "../../../src/service/materialization_scheduler";
@@ -40,6 +42,8 @@ describe("MaterializationScheduler transitions (integration, real store)", () =>
    // own materialization list. There is no environment-wide list: a
    // materialization belongs to a package.
    let currentPackages: string[] = [];
+   // Copies of the fixtures a test edits, removed after each test.
+   const copies: string[] = [];
 
    beforeAll(async () => {
       e2e = await startRestE2E();
@@ -57,6 +61,9 @@ describe("MaterializationScheduler transitions (integration, real store)", () =>
          }
          currentEnv = null;
          currentPackages = [];
+      }
+      for (const dir of copies.splice(0)) {
+         fs.rmSync(dir, { recursive: true, force: true });
       }
    });
 
@@ -100,29 +107,39 @@ describe("MaterializationScheduler transitions (integration, real store)", () =>
       );
    }
 
-   // Set scope: version + a cron schedule on a package (makes persist-test
-   // standalone-schedulable). editingPolicy is true, so the publish-gate rules
-   // run and must pass (version scope + valid cron, no freshness).
-   async function setSchedule(
-      env: string,
-      pkg: string,
-      schedule: string,
-   ): Promise<void> {
+   /** A temporary copy of a fixture, removed after the test. */
+   function copyFixture(fixture: string): string {
+      const dir = fs.mkdtempSync(path.join(os.tmpdir(), "sched-tx-"));
+      fs.cpSync(fixture, dir, { recursive: true });
+      copies.push(dir);
+      return dir;
+   }
+
+   // Set scope: version + a cron schedule in a package's publisher.json, the
+   // one place a schedule comes from (makes persist-test
+   // standalone-schedulable when it is published from the copy).
+   function writeSchedule(dir: string, schedule: string): void {
+      const manifestPath = path.join(dir, "publisher.json");
+      const manifest = JSON.parse(fs.readFileSync(manifestPath, "utf8"));
+      fs.writeFileSync(
+         manifestPath,
+         JSON.stringify({
+            ...manifest,
+            scope: "version",
+            materialization: { schedule },
+         }),
+      );
+   }
+
+   // Recompile a package from its files: only a package mounted in place has
+   // files to recompile from (a published version answers unchanged).
+   async function reload(env: string, pkg: string): Promise<void> {
       const res = await fetch(
-         `${baseUrl}/api/v0/environments/${env}/packages/${pkg}`,
-         {
-            method: "PATCH",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({
-               name: pkg,
-               scope: "version",
-               materialization: { schedule },
-            }),
-         },
+         `${baseUrl}/api/v0/environments/${env}/packages/${pkg}?reload=true`,
       );
       if (!res.ok) {
          throw new Error(
-            `set schedule on ${pkg} failed (${res.status}): ${await res.text()}`,
+            `reload of ${pkg} failed (${res.status}): ${await res.text()}`,
          );
       }
    }
@@ -168,9 +185,14 @@ describe("MaterializationScheduler transitions (integration, real store)", () =>
    it(
       "a cron edit between ticks re-arms from now (no stale fire from the old cadence)",
       async () => {
+         // A published version's cron never changes (a new one ships as a new
+         // version, armed under its own key), so the edit is made where a
+         // cron can change: a package mounted in place, edited and reloaded.
          const ENV = "sched-tx-cron-edit";
+         const source = copyFixture(SCHEDULED_FIXTURE);
+         environmentStore.markInPlace(ENV);
          await createEnv(ENV, [
-            { name: "persist-schedule-test", location: SCHEDULED_FIXTURE },
+            { name: "persist-schedule-test", location: source },
          ]);
          await waitForPackage(ENV, "persist-schedule-test");
          const sched = newScheduler();
@@ -179,7 +201,8 @@ describe("MaterializationScheduler transitions (integration, real store)", () =>
          await sched.tick(T0);
 
          // Edit the cron to midnight before the old 06:00 occurrence fires.
-         await setSchedule(ENV, "persist-schedule-test", "0 0 * * *");
+         writeSchedule(source, "0 0 * * *");
+         await reload(ENV, "persist-schedule-test");
 
          // Tick just past the OLD 06:00 occurrence. If the edit didn't re-arm,
          // the stale nextFire would fire here; instead arm() re-anchors from now
@@ -237,14 +260,15 @@ describe("MaterializationScheduler transitions (integration, real store)", () =>
       "maxFiresPerTick caps a tick and the capped package fires on the next tick",
       async () => {
          const ENV = "sched-tx-cap";
+         // Make the second package standalone-schedulable on the same cadence.
+         const scheduledCopy = copyFixture(PERSIST_FIXTURE);
+         writeSchedule(scheduledCopy, "0 6 * * *");
          await createEnv(ENV, [
             { name: "persist-schedule-test", location: SCHEDULED_FIXTURE },
-            { name: "persist-test", location: PERSIST_FIXTURE },
+            { name: "persist-test", location: scheduledCopy },
          ]);
          await waitForPackage(ENV, "persist-schedule-test");
          await waitForPackage(ENV, "persist-test");
-         // Make the second package standalone-schedulable on the same cadence.
-         await setSchedule(ENV, "persist-test", "0 6 * * *");
 
          const sched = newScheduler(1); // cap = 1 fire per tick
 
