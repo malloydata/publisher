@@ -130,6 +130,18 @@ export function traceIdOf(req: {
    );
 }
 
+const PROBE_PATHS: ReadonlySet<string> = new Set([
+   "/health",
+   "/health/liveness",
+   "/health/readiness",
+   "/metrics",
+]);
+
+/** A health probe or metrics scrape: left out of the access log and request metrics, which they would drown. */
+export function isProbePath(path: string): boolean {
+   return PROBE_PATHS.has(path);
+}
+
 export const loggerMiddleware: RequestHandler = (req, res, next) => {
    const startTime = performance.now();
    const resJson = res.json;
@@ -160,13 +172,7 @@ export const loggerMiddleware: RequestHandler = (req, res, next) => {
          logMetadata.traceId = traceId;
       }
 
-      // Probes and scrapes would drown the log.
-      if (
-         req.url !== "/metrics" &&
-         req.url !== "/health" &&
-         req.url !== "/health/liveness" &&
-         req.url !== "/health/readiness"
-      ) {
+      if (!isProbePath(req.url)) {
          logger.info(`${req.method} ${req.url}`, logMetadata);
       }
    });
