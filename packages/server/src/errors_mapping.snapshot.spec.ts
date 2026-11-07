@@ -28,6 +28,7 @@ import {
    internalErrorToHttpError,
    InvalidArgumentError,
    InvalidModelPathError,
+   InvalidQueryRequestError,
    InvalidStateTransitionError,
    MaterializationConflictError,
    MaterializationEligibilityError,
@@ -181,7 +182,7 @@ const CASES: Array<[string, () => unknown]> = [
    [
       "BadRequestError invalid query request",
       () =>
-         new BadRequestError(
+         new InvalidQueryRequestError(
             "Invalid query request. Query OR queryName must be defined",
          ),
    ],
@@ -351,6 +352,7 @@ const CASES: Array<[string, () => unknown]> = [
       () =>
          new AccessDeniedError(
             'Access denied for source "orders": its authorize gate was not satisfied.',
+            { source: "orders" },
          ),
    ],
    [
@@ -555,5 +557,43 @@ describe("error mapping snapshot", () => {
          .filter(([, cls]) => !covered.has(cls as ErrorConstructor))
          .map(([name]) => name);
       expect(missing).toEqual([]);
+   });
+
+   it("gives every exported error class its own kind and table row", () => {
+      // The typecheck holds the table to the kinds; this holds the classes to
+      // the kinds. A subclass that does not override `kind` would silently
+      // answer from its parent's row.
+      const registered = new Map<unknown, string>(
+         Object.entries(errors.ERROR_CLASSES_FOR_TESTS).map(([kind, cls]) => [
+            cls,
+            kind,
+         ]),
+      );
+      const problems: string[] = [];
+      for (const [name, value] of Object.entries(errors)) {
+         if (
+            typeof value !== "function" ||
+            !((value as { prototype?: unknown }).prototype instanceof Error)
+         ) {
+            continue;
+         }
+         const kind = registered.get(value);
+         const own = Object.getOwnPropertyDescriptor(value.prototype, "kind");
+         if (kind === undefined) problems.push(`${name}: not registered`);
+         else if (!own?.get) problems.push(`${name}: no own kind`);
+         else if (own.get.call(value.prototype) !== kind) {
+            problems.push(`${name}: kind is not ${kind}`);
+         } else if (!(kind in errors.ERROR_TABLE)) {
+            problems.push(`${name}: no row for ${kind}`);
+         }
+      }
+      expect(problems).toEqual([]);
+      for (const [, make] of CASES) {
+         const error = make();
+         const kind = errors.errorKind(error);
+         if (error instanceof Error && registered.has(error.constructor)) {
+            expect(kind as string).toBe(registered.get(error.constructor)!);
+         }
+      }
    });
 });
