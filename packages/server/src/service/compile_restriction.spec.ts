@@ -31,6 +31,7 @@ import path from "path";
 import { CompileRefusedError } from "../errors";
 import { onlyParseFailures, renderTagRefusal } from "./compile_restriction";
 import { Environment } from "./environment";
+import { writePackageFiles } from "../test_helpers/temp_package";
 
 // The curated model. It publishes `base_source` and nothing else; every
 // hostile fragment below tries to reach past it.
@@ -77,26 +78,14 @@ describe("compile construct containment", () => {
       const envPath = path.join(rootDir, "env");
       await fs.mkdir(envPath, { recursive: true });
       env = await Environment.create("testEnv", envPath, []);
-      await env.installPackage("pkg", async (stagingPath) => {
-         await fs.mkdir(stagingPath, { recursive: true });
-         await fs.writeFile(
-            path.join(stagingPath, "publisher.json"),
-            '{"name":"pkg"}',
-         );
-         await fs.writeFile(path.join(stagingPath, "base.malloy"), BASE_MODEL);
-         await fs.writeFile(
-            path.join(stagingPath, "images.malloy"),
-            IMAGES_MODEL,
-         );
-         await fs.writeFile(
-            path.join(stagingPath, "tracks.malloy"),
-            TRACKS_MODEL,
-         );
-         await fs.writeFile(
-            path.join(stagingPath, "givens.malloy"),
-            GIVENS_MODEL,
-         );
-      });
+      await env.installPackage("pkg", async (stagingPath) =>
+         writePackageFiles(stagingPath, {
+            "base.malloy": BASE_MODEL,
+            "images.malloy": IMAGES_MODEL,
+            "tracks.malloy": TRACKS_MODEL,
+            "givens.malloy": GIVENS_MODEL,
+         }),
+      );
    });
 
    afterEach(async () => {
@@ -184,27 +173,25 @@ describe("compile construct containment", () => {
       // Both properties below are malloy's rather than this module's, which is
       // why they are pinned here rather than reasoned about.
       it("classifies a construct reached through a non-exported source", async () => {
-         await env.installPackage("exports", async (stagingPath) => {
-            await fs.mkdir(stagingPath, { recursive: true });
-            await fs.writeFile(
-               path.join(stagingPath, "publisher.json"),
-               '{"name":"exports"}',
-            );
-            // `helper` is deliberately outside the export list. If `extendModel`
-            // seeded the namespace from `exports` rather than from every entry
-            // in `contents`, `helper` would be unresolvable in the gate and
-            // resolvable in the concatenated file.
-            await fs.writeFile(
-               path.join(stagingPath, "base.malloy"),
-               `source: published is duckdb.sql("select 1 as id") extend {
+         await env.installPackage("exports", async (stagingPath) =>
+            writePackageFiles(
+               stagingPath,
+               {
+                  // `helper` is deliberately outside the export list. If `extendModel`
+                  // seeded the namespace from `exports` rather than from every entry
+                  // in `contents`, `helper` would be unresolvable in the gate and
+                  // resolvable in the concatenated file.
+                  "base.malloy": `source: published is duckdb.sql("select 1 as id") extend {
   measure: c is count()
 }
 source: helper is duckdb.sql("select 1 as id") extend {
   measure: c is count()
 }
 export { published }`,
-            );
-         });
+               },
+               { name: "exports" },
+            ),
+         );
          await expect(
             env.compileSource(
                "exports",
@@ -218,25 +205,23 @@ export { published }`,
       });
 
       it("classifies a construct that needs the base model's compiler flags", async () => {
-         await env.installPackage("flags", async (stagingPath) => {
-            await fs.mkdir(stagingPath, { recursive: true });
-            await fs.writeFile(
-               path.join(stagingPath, "publisher.json"),
-               '{"name":"flags"}',
-            );
-            // The gate compiles a synthetic document that carries no `##!` of
-            // its own. If the base model's flags did not ride along,
-            // `sql_number` would be rejected inside the gate as
-            // experiment-not-enabled -- no restricted code, so the gate passes
-            // -- and then accepted by the real compile, which does see the flag.
-            await fs.writeFile(
-               path.join(stagingPath, "base.malloy"),
-               `##! experimental.sql_functions
+         await env.installPackage("flags", async (stagingPath) =>
+            writePackageFiles(
+               stagingPath,
+               {
+                  // The gate compiles a synthetic document that carries no `##!` of
+                  // its own. If the base model's flags did not ride along,
+                  // `sql_number` would be rejected inside the gate as
+                  // experiment-not-enabled -- no restricted code, so the gate passes
+                  // -- and then accepted by the real compile, which does see the flag.
+                  "base.malloy": `##! experimental.sql_functions
 source: published is duckdb.sql("select 1 as id") extend {
   measure: c is count()
 }`,
-            );
-         });
+               },
+               { name: "flags" },
+            ),
+         );
          await expect(
             env.compileSource(
                "flags",
