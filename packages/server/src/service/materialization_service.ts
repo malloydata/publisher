@@ -2639,7 +2639,7 @@ export class MaterializationService {
                runOptions,
             );
          } catch (cleanupErr) {
-            logger.warn(
+            logger.error(
                "Failed to clean up staging table after a failed build; physical leak",
                {
                   stagingTableName,
@@ -2999,7 +2999,7 @@ export class MaterializationService {
                environmentPath: environment.getEnvironmentPath(),
             });
          } catch (dropErr) {
-            logger.warn(
+            logger.error(
                "Failed to drop a storage table stranded by a serve-shape gate " +
                   "refusal (physical leak)",
                {
