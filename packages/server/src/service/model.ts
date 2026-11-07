@@ -410,6 +410,26 @@ const queryScannedBytesCounter = lazyCounter(
    "By",
 );
 
+/** What a {@link Model} is built from; only the first four are always known. */
+export interface ModelState {
+   packageName: string;
+   modelPath: string;
+   dataStyles: DataStyles;
+   modelType: ModelType;
+   modelMaterializer?: ModelMaterializer;
+   modelDef?: ModelDef;
+   sources?: ApiSource[];
+   queries?: ApiQuery[];
+   sourceInfos?: Malloy.SourceInfo[];
+   runnableNotebookCells?: RunnableNotebookCell[];
+   compilationError?: MalloyError | Error;
+   filterMap?: Map<string, FilterDefinition[]>;
+   givens?: ApiGiven[];
+   /** Precomputed `modelInfoOf(modelDef)` from the package-load worker;
+    *  derived here when omitted. */
+   modelInfo?: Malloy.ModelInfo;
+}
+
 export class Model {
    private packageName: string;
    private modelPath: string;
@@ -620,37 +640,20 @@ export class Model {
       QueryMaterializer,
       readonly RowLevelGraftEntry[]
    >();
-   constructor(
-      packageName: string,
-      modelPath: string,
-      dataStyles: DataStyles,
-      modelType: ModelType,
-      modelMaterializer: ModelMaterializer | undefined,
-      modelDef: ModelDef | undefined,
-      sources: ApiSource[] | undefined,
-      queries: ApiQuery[] | undefined,
-      sourceInfos: Malloy.SourceInfo[] | undefined,
-      runnableNotebookCells: RunnableNotebookCell[] | undefined,
-      compilationError: MalloyError | Error | undefined,
-      filterMap?: Map<string, FilterDefinition[]>,
-      givens?: ApiGiven[],
-      /** Precomputed `modelInfoOf(modelDef)` from the package-load worker;
-       *  derived here when omitted. */
-      modelInfo?: Malloy.ModelInfo,
-   ) {
-      this.packageName = packageName;
-      this.modelPath = modelPath;
-      this.dataStyles = dataStyles;
-      this.modelType = modelType;
-      this.modelDef = modelDef;
-      this.modelMaterializer = modelMaterializer;
-      this.sources = sources;
-      this.queries = queries;
-      this.sourceInfos = sourceInfos;
-      this.runnableNotebookCells = runnableNotebookCells;
-      this.compilationError = compilationError;
-      this.filterMap = filterMap ?? new Map();
-      this.givens = givens;
+   constructor(state: ModelState) {
+      this.packageName = state.packageName;
+      this.modelPath = state.modelPath;
+      this.dataStyles = state.dataStyles;
+      this.modelType = state.modelType;
+      this.modelDef = state.modelDef;
+      this.modelMaterializer = state.modelMaterializer;
+      this.sources = state.sources;
+      this.queries = state.queries;
+      this.sourceInfos = state.sourceInfos;
+      this.runnableNotebookCells = state.runnableNotebookCells;
+      this.compilationError = state.compilationError;
+      this.filterMap = state.filterMap ?? new Map();
+      this.givens = state.givens;
       this.notebookCellDeclaredGivens = declaredGivensPerCell(
          this.runnableNotebookCells ?? [],
       );
@@ -693,15 +696,16 @@ export class Model {
          this.authorizeReferencedGivenNames = new Set();
       }
       this.modelInfo =
-         modelInfo ?? (this.modelDef ? modelInfoOf(this.modelDef) : undefined);
+         state.modelInfo ??
+         (this.modelDef ? modelInfoOf(this.modelDef) : undefined);
 
       // One-time `#(filter)` deprecation notice per Model instance.
       if (this.filterMap.size > 0) {
          logger.warn(
-            `Model "${packageName}/${modelPath}" uses deprecated #(filter) annotations. Migrate to given: — see ${GIVENS_DOCS_URL}`,
+            `Model "${this.packageName}/${this.modelPath}" uses deprecated #(filter) annotations. Migrate to given: — see ${GIVENS_DOCS_URL}`,
             {
-               packageName,
-               modelPath,
+               packageName: this.packageName,
+               modelPath: this.modelPath,
                filterSourceCount: this.filterMap.size,
             },
          );
@@ -3671,7 +3675,7 @@ export class Model {
          const givens = checked?.givens as ApiGiven[] | undefined;
          const sourceInfos = checked?.sourceInfos;
 
-         const model = new Model(
+         const model = new Model({
             packageName,
             modelPath,
             dataStyles,
@@ -3682,10 +3686,9 @@ export class Model {
             queries,
             sourceInfos,
             runnableNotebookCells,
-            undefined,
             filterMap,
             givens,
-         );
+         });
          // Cast: `_loadModelFromModelDef` is internal and undeclared on the
          // public `Runtime` type.
          model.setGateRuntime(runtime as HydrationRuntime);
@@ -3707,19 +3710,13 @@ export class Model {
             }
             computedError = new ModelCompilationError(error);
          }
-         return new Model(
+         return new Model({
             packageName,
             modelPath,
             dataStyles,
             modelType,
-            undefined,
-            undefined,
-            undefined,
-            undefined,
-            undefined,
-            undefined,
-            computedError as Error,
-         );
+            compilationError: computedError as Error,
+         });
       }
    }
 
@@ -3764,24 +3761,22 @@ export class Model {
       // clean BadRequestError downstream; markdown cells are kept so
       // `getNotebook()` can serve them.
       if (!modelDef) {
-         return new Model(
+         return new Model({
             packageName,
-            data.modelPath,
+            modelPath: data.modelPath,
             dataStyles,
-            data.modelType,
-            undefined,
-            undefined,
+            modelType: data.modelType,
             sources,
             queries,
             sourceInfos,
-            data.modelType === "notebook"
-               ? hydrateMarkdownOnlyCells(data.notebookCells)
-               : undefined,
-            undefined,
+            runnableNotebookCells:
+               data.modelType === "notebook"
+                  ? hydrateMarkdownOnlyCells(data.notebookCells)
+                  : undefined,
             filterMap,
             givens,
             modelInfo,
-         );
+         });
       }
 
       const runtime = makeHydrationRuntime(
@@ -3794,22 +3789,21 @@ export class Model {
             ? hydrateNotebookCells(runtime, data.notebookCells)
             : undefined;
 
-      const model = new Model(
+      const model = new Model({
          packageName,
-         data.modelPath,
+         modelPath: data.modelPath,
          dataStyles,
-         data.modelType,
+         modelType: data.modelType,
          modelMaterializer,
          modelDef,
          sources,
          queries,
          sourceInfos,
          runnableNotebookCells,
-         undefined, // compilationError
          filterMap,
          givens,
          modelInfo,
-      );
+      });
       // `malloyConfig` is deliberately not captured for serve shapes: that
       // would put a storage destination in reach of the author's namespace
       // (see Package.setServeDestinationConfig). The gate runtime must be the
@@ -3882,19 +3876,13 @@ export class Model {
       // text judges the saved file instead of the edit.
       sourceText?: string,
    ): Model {
-      const model = new Model(
+      const model = new Model({
          packageName,
          modelPath,
-         {} as DataStyles,
+         dataStyles: {} as DataStyles,
          modelType,
-         undefined,
-         undefined,
-         undefined,
-         undefined,
-         undefined,
-         undefined,
-         error,
-      );
+         compilationError: error,
+      });
       model.compiledSourceText = sourceText;
       return model;
    }
