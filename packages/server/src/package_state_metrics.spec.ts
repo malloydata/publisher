@@ -5,7 +5,6 @@ import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import {
    observePackageStates,
    recordPackageReload,
-   resetPackageStateGaugeForTesting,
 } from "./package_state_metrics";
 import type { EnvironmentStore } from "./service/environment_store";
 import { resetInstrumentsForTesting } from "./telemetry";
@@ -25,12 +24,10 @@ describe("package state metrics", () => {
    beforeEach(async () => {
       harness = await startMetricsHarness();
       resetInstrumentsForTesting();
-      resetPackageStateGaugeForTesting();
    });
    afterEach(async () => {
       await harness.shutdown();
       resetInstrumentsForTesting();
-      resetPackageStateGaugeForTesting();
    });
 
    it("sums packages by state across environments at each scrape", async () => {

@@ -1,8 +1,12 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
-import { type Counter } from "@opentelemetry/api";
-import { publisherMeter } from "./telemetry";
+import {
+   lazyCounter,
+   lazyInstrument,
+   publisherMeter,
+   resetInstrumentsForTesting,
+} from "./telemetry";
 import type { NextFunction, Request, RequestHandler, Response } from "express";
 
 import { getMaxConcurrentQueries } from "./config";
@@ -15,58 +19,42 @@ import { logger } from "./logger";
  */
 let active = 0;
 
-/**
- * Lazily created so a MeterProvider installed after import (as tests do)
- * still receives data: OTel's `ProxyMeter` binds earlier instruments to NoOp.
- */
-let queryConcurrencyRejectionsCounter: Counter | null = null;
-let concurrencyTelemetryInitialized = false;
-function ensureConcurrencyTelemetry(): Counter {
-   if (queryConcurrencyRejectionsCounter && concurrencyTelemetryInitialized) {
-      return queryConcurrencyRejectionsCounter;
-   }
+const queryConcurrencyRejections = lazyCounter(
+   "publisher_query_concurrency_rejections_total",
+   "Queries rejected with 503 because the per-pod PUBLISHER_MAX_CONCURRENT_QUERIES cap was reached",
+);
+
+const queryConcurrencyGauges = lazyInstrument(() => {
    const meter = publisherMeter();
-   queryConcurrencyRejectionsCounter = meter.createCounter(
-      "publisher_query_concurrency_rejections_total",
+   const activeSlots = meter.createObservableGauge(
+      "publisher_query_active_slots",
       {
          description:
-            "Queries rejected with 503 because the per-pod PUBLISHER_MAX_CONCURRENT_QUERIES cap was reached",
+            "In-flight queries currently holding a per-pod concurrency slot",
       },
    );
-   if (!concurrencyTelemetryInitialized) {
-      meter
-         .createObservableGauge("publisher_query_active_slots", {
-            description:
-               "In-flight queries currently holding a per-pod concurrency slot",
-         })
-         .addCallback((observation) => observation.observe(active));
+   activeSlots.addCallback((observation) => observation.observe(active));
+   // Exposed so dashboards can render utilization (`active / max`). Read per
+   // scrape so an env-var change shows immediately.
+   const maxSlots = meter.createObservableGauge("publisher_query_max_slots", {
+      description:
+         "Current effective PUBLISHER_MAX_CONCURRENT_QUERIES (0 = disabled)",
+   });
+   maxSlots.addCallback((observation) => {
+      try {
+         observation.observe(getMaxConcurrentQueries());
+      } catch {
+         // A misconfigured env var fails the next request, not the scrape;
+         // -1 makes it visible.
+         observation.observe(-1);
+      }
+   });
+   return [activeSlots, maxSlots];
+});
 
-      // Exposed so dashboards can render utilization (`active / max`). Read
-      // per scrape so an env-var change shows immediately.
-      meter
-         .createObservableGauge("publisher_query_max_slots", {
-            description:
-               "Current effective PUBLISHER_MAX_CONCURRENT_QUERIES (0 = disabled)",
-         })
-         .addCallback((observation) => {
-            try {
-               observation.observe(getMaxConcurrentQueries());
-            } catch {
-               // A misconfigured env var fails the next request, not the
-               // scrape; -1 makes it visible.
-               observation.observe(-1);
-            }
-         });
-      concurrencyTelemetryInitialized = true;
-   }
-   return queryConcurrencyRejectionsCounter;
-}
-
-/** Test-only: drop cached instruments so a fresh MeterProvider captures them. */
-export function resetQueryConcurrencyTelemetryForTesting(): void {
-   queryConcurrencyRejectionsCounter = null;
-   concurrencyTelemetryInitialized = false;
-}
+/** Test-only: kept for component specs; drops every lazily created instrument. */
+export const resetQueryConcurrencyTelemetryForTesting =
+   resetInstrumentsForTesting;
 
 export function getActiveQueryCount(): number {
    return active;
@@ -95,7 +83,7 @@ export interface QuerySlotHandle {
  */
 export function tryAcquireQuerySlot(routeLabel: string): QuerySlotHandle {
    // On every call so the gauges exist even on pods that never hit the cap.
-   ensureConcurrencyTelemetry();
+   queryConcurrencyGauges();
 
    const limit = getMaxConcurrentQueries();
    if (limit <= 0) {
@@ -104,7 +92,7 @@ export function tryAcquireQuerySlot(routeLabel: string): QuerySlotHandle {
    }
 
    if (active >= limit) {
-      ensureConcurrencyTelemetry().add(1, {
+      queryConcurrencyRejections().add(1, {
          "http.route": routeLabel,
          limit,
       });
