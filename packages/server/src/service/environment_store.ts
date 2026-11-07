@@ -40,10 +40,6 @@ import {
 } from "../errors";
 import { getOperationalState, markNotReady, markReady } from "../health";
 import { formatDuration, logger } from "../logger";
-import {
-   deleteEnvironmentEmbeddings,
-   deletePackageEmbeddings,
-} from "../mcp/tools/embedding_index";
 import { redactPgSecrets } from "../pg_helpers";
 import {
    assertSafeEnvironmentPath,
@@ -417,11 +413,25 @@ interface EnvironmentHooks {
            versionId: string,
         ) => Promise<void>)
       | null;
+   /**
+    * A package left the store (deleted, or replaced by a publish that dropped
+    * it): retrieval drops what it derived from it. Fired by the store itself,
+    * not handed to an Environment. Best effort: a rejection is logged.
+    */
+   packageDeleted:
+      | ((environmentName: string, packageName: string) => Promise<void>)
+      | null;
+   /** An environment was deleted; like {@link packageDeleted}, for all of it. */
+   environmentDeleted: ((environmentName: string) => Promise<void>) | null;
 }
+
+/** The hooks the store fires itself rather than handing to an Environment. */
+type StoreLevelHook = "packageDeleted" | "environmentDeleted";
+type EnvironmentLevelHook = Exclude<keyof EnvironmentHooks, StoreLevelHook>;
 
 /** How each hook is handed to one Environment; `null` detaches it. */
 const ATTACH_HOOK: {
-   [K in keyof EnvironmentHooks]: (
+   [K in EnvironmentLevelHook]: (
       env: Environment,
       hook: EnvironmentHooks[K],
    ) => void;
@@ -504,6 +514,8 @@ export class EnvironmentStore {
       versionArchived: null,
       versionDeleted: null,
       owedReclaim: null,
+      packageDeleted: null,
+      environmentDeleted: null,
    };
 
    /**
@@ -602,10 +614,28 @@ export class EnvironmentStore {
    }
 
    /**
+    * Attach (or detach with `null`) the callback run when a package is
+    * deleted, which drops what retrieval derived from it (its embeddings and
+    * search-index rows).
+    */
+   public setPackageDeletedHook(
+      hook: EnvironmentHooks["packageDeleted"],
+   ): void {
+      this.hooks.packageDeleted = hook;
+   }
+
+   /** Environment-wide variant of {@link setPackageDeletedHook}. */
+   public setEnvironmentDeletedHook(
+      hook: EnvironmentHooks["environmentDeleted"],
+   ): void {
+      this.hooks.environmentDeleted = hook;
+   }
+
+   /**
     * Remember `hook` and hand it to every Environment already here. One
     * created later gets it when it is attached ({@link attachHooks}).
     */
-   private setHook<K extends keyof EnvironmentHooks>(
+   private setHook<K extends EnvironmentLevelHook>(
       name: K,
       hook: EnvironmentHooks[K],
    ): void {
@@ -617,7 +647,7 @@ export class EnvironmentStore {
 
    private attachHooks(
       env: Environment,
-      names: readonly (keyof EnvironmentHooks)[],
+      names: readonly EnvironmentLevelHook[],
    ): void {
       for (const name of names) {
          ATTACH_HOOK[name](env, this.hooks[name] as never);
@@ -1557,21 +1587,20 @@ export class EnvironmentStore {
    }
 
    /**
-    * Best-effort, non-blocking: drop a deleted package's cached embeddings so
-    * churn does not grow publisher.db forever. Not awaited: it queues behind
-    * the package's sync mutex, which a bulk embed can hold for minutes. An
-    * orphaned row is inert, so failure is logged, never propagated.
+    * Best-effort, non-blocking: fire the packageDeleted hook, which drops a
+    * deleted package's cached embeddings so churn does not grow publisher.db
+    * forever. Not awaited: it queues behind the package's sync mutex, which a
+    * bulk embed can hold for minutes. An orphaned row is inert, so failure is
+    * logged, never propagated.
     */
    public cleanupPackageEmbeddings(
       environmentName: string,
       packageName: string,
    ): void {
+      const hook = this.hooks.packageDeleted;
+      if (!hook) return;
       try {
-         deletePackageEmbeddings(
-            this.storageManager.getDuckDbConnection(),
-            environmentName,
-            packageName,
-         ).catch((error: unknown) => {
+         hook(environmentName, packageName).catch((error: unknown) => {
             logger.warn("Failed to clean up entity embeddings for package", {
                environmentName,
                packageName,
@@ -1589,11 +1618,10 @@ export class EnvironmentStore {
 
    /** Environment-wide variant of {@link cleanupPackageEmbeddings}. */
    private cleanupEnvironmentEmbeddings(environmentName: string): void {
+      const hook = this.hooks.environmentDeleted;
+      if (!hook) return;
       try {
-         deleteEnvironmentEmbeddings(
-            this.storageManager.getDuckDbConnection(),
-            environmentName,
-         ).catch((error: unknown) => {
+         hook(environmentName).catch((error: unknown) => {
             logger.warn(
                "Failed to clean up entity embeddings for environment",
                {
