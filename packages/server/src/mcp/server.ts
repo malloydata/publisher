@@ -17,7 +17,7 @@ import { registerGetAgentTool } from "./tools/get_agent_tool";
 import { registerGetSkillTool } from "./tools/get_skill_tool";
 import { registerSearchDatabaseSchemaTool } from "./tools/search_database_schema_tool";
 import { registerGetStatusTool } from "./tools/get_status_tool";
-import { BUNDLED_SKILLS } from "./skills/package_skills";
+import { BUNDLED_SKILLS } from "../service/skills/package_skills";
 import { SERVER_VERSION } from "../version";
 
 const testServerInfo = {

@@ -38,7 +38,7 @@ import type { LoadPackageRequest } from "../package_load/protocol";
 import {
    DEFAULT_PACKAGE_RETRIEVAL,
    type PackageRetrievalSettings,
-} from "./package_retrieval";
+} from "../retrieval/package_retrieval";
 import {
    API_PREFIX,
    INDEX_MODEL_NAME,
@@ -80,7 +80,7 @@ import {
    type PackageLoadStatus,
 } from "../package_load_metrics";
 import { assertSafeEnvironmentPath, safeJoinUnderRoot } from "../path_safety";
-import { type SkillEntry } from "../mcp/skills/build_skills_bundle";
+import { type SkillEntry } from "./skills/build_skills_bundle";
 import {
    PACKAGE_SKILLS_DIR,
    readAgentAsset,
@@ -88,7 +88,7 @@ import {
    readSkillsDir,
    summarizeAgentSkillFile,
    type PackageAgent,
-} from "../mcp/skills/package_skills";
+} from "./skills/package_skills";
 import {
    canonicalJson,
    computeSourceContentSha,

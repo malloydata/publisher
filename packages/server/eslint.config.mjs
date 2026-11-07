@@ -237,15 +237,7 @@ const IMPORT_DIRECTION_RULES = [
       message: "governance/** must not depend on service/model.ts",
    },
 ];
-export const IMPORT_DIRECTION_ALLOWLIST = {
-   // R1. U2 adds packageDeleted/environmentDeleted to EnvironmentHooks and
-   // wires the embedding deletes from main_server.ts instead.
-   "service/environment_store.ts -> mcp/tools/embedding_index": "U2",
-   // R1. U2 moves mcp/skills/{package_skills,build_skills_bundle} to
-   // service/skills/.
-   "service/package.ts -> mcp/skills/build_skills_bundle": "U2",
-   "service/package.ts -> mcp/skills/package_skills": "U2",
-};
+export const IMPORT_DIRECTION_ALLOWLIST = {};
 
 const toPosix = (p) => p.split(path.sep).join("/");
 const importDirectionRule = {

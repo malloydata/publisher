@@ -4,7 +4,7 @@
 import { describe, expect, it } from "bun:test";
 import { z } from "zod/v3";
 import type { EnvironmentStore } from "../../service/environment_store";
-import { type SkillEntry } from "../skills/build_skills_bundle";
+import { type SkillEntry } from "../../service/skills/build_skills_bundle";
 import { registerGetSkillTool } from "./get_skill_tool";
 
 type Handler = (params: unknown) => Promise<{

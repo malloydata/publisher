@@ -7,7 +7,7 @@ import { boolean, integer, number, string, structured } from "../types";
 
 /**
  * The configuration design's `retrieval` table: the block itself, which
- * retrieval_config.ts parses and validates, and the leaves that have a
+ * retrieval/config.ts parses and validates, and the leaves that have a
  * variable today. Where `provider` decides a leaf's default, the code that
  * assembles the block applies it.
  */

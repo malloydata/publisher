@@ -11,7 +11,7 @@ import {
    PUBLISHER_CONFIG_NAME,
 } from "./constants";
 import { logger } from "./logger";
-import { defaultOpenAiBaseUrl } from "./providers/openai_compatible";
+import { defaultOpenAiBaseUrl } from "./retrieval/llm/openai_compatible";
 import {
    referencedVariable,
    settings,
@@ -22,14 +22,14 @@ import type {
    EmbeddingSettings,
    LlmSettings,
    ProviderName,
-} from "./providers/types";
+} from "./retrieval/llm/types";
 import {
    DEFAULT_SEMANTIC_INDEX_MAX_ENTITIES,
    parseRetrievalConfig,
    type RetrievalConfig,
    type RetrievalEmbeddingConfig,
    type RetrievalLlmConfig,
-} from "./retrieval_config";
+} from "./retrieval/config";
 
 // Re-exported: callers import these from here.
 export {
