@@ -25,7 +25,7 @@ import {
    startMetricsHarness,
    type MetricsHarness,
 } from "../test_helpers/metrics_harness";
-import { Model } from "./model";
+import { Model, ModelPolicy } from "./model";
 import { Package } from "./package";
 import { listNotebooks } from "./legacy_report_views";
 
@@ -190,13 +190,17 @@ describe("served linear report cells", () => {
                tempDir,
                modelPath,
                config,
+               {
+                  policy: ModelPolicy.fixed({
+                     queryBoundary: {
+                        mode: "all",
+                        exploresDeclared: false,
+                        isQueryEntryPoint: true,
+                        layout: "linear",
+                     },
+                  }),
+               },
             );
-            inProcess.setQueryBoundary({
-               mode: "all",
-               exploresDeclared: false,
-               isQueryEntryPoint: true,
-               layout: "linear",
-            });
             expect(
                inProcess.attachServedNotebookCells(
                   inProcess.getCompiledSourceText()!,

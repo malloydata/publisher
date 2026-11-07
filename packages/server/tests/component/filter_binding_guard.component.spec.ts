@@ -41,7 +41,7 @@ import { describe, expect, it, spyOn } from "bun:test";
 import { AccessDeniedError } from "../../src/errors";
 import { logger } from "../../src/logger";
 import { malloyGivenToApi, type MalloyGiven } from "../../src/service/given";
-import { Model } from "../../src/service/model";
+import { Model, ModelPolicy } from "../../src/service/model";
 import type { Package } from "../../src/service/package";
 import {
    createTempModel,
@@ -302,10 +302,10 @@ async function buildGatedModel(
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       givens: givens as any,
       modelInfo,
+      policy: ModelPolicy.standalone(),
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      gateRuntime: runtime as any,
    });
-   (model as unknown as { setGateRuntime(r: Runtime): void }).setGateRuntime(
-      runtime,
-   );
    return { model, duckdb };
 }
 

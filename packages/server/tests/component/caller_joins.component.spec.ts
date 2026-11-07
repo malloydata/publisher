@@ -13,7 +13,7 @@ import { afterAll, beforeAll, describe, expect, it } from "bun:test";
 import fs from "fs/promises";
 import path from "path";
 import { AccessDeniedError, NotQueryableError } from "../../src/errors";
-import { Model } from "../../src/service/model";
+import { Model, ModelPolicy } from "../../src/service/model";
 import {
    seededDuckdb,
    writeTempPackage,
@@ -101,22 +101,25 @@ let plainModel: Model;
 let boundaryModel: Model;
 
 async function loadModel(boundary: boolean): Promise<Model> {
-   const model = await Model.create(
+   return Model.create(
       "test-pkg",
       PKG_DIR,
       "m.malloy",
       new Map<string, Connection>([["duckdb", duck as Connection]]),
+      {
+         policy: boundary
+            ? // What `Package` decides for a curated package (a root index.malloy).
+              ModelPolicy.fixed({
+                 discoveryCuration: true,
+                 queryBoundary: {
+                    mode: "declared",
+                    exploresDeclared: true,
+                    isQueryEntryPoint: true,
+                 },
+              })
+            : ModelPolicy.standalone(),
+      },
    );
-   if (boundary) {
-      // What `Package` does for a curated package (a root index.malloy).
-      model.setDiscoveryCuration(true);
-      model.setQueryBoundary({
-         mode: "declared",
-         exploresDeclared: true,
-         isQueryEntryPoint: true,
-      });
-   }
-   return model;
 }
 
 async function run(

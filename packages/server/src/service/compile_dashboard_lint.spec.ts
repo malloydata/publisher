@@ -23,7 +23,7 @@ import path from "path";
 import { fileURLToPath } from "url";
 import { logger } from "../logger";
 import { Environment } from "./environment";
-import { Model } from "./model";
+import { Model, ModelPolicy } from "./model";
 import { Package } from "./package";
 import { resetReportMetricsForTest } from "../report_metrics";
 import {
@@ -510,6 +510,7 @@ describe("Model.fromSerialized: authorize warning log", () => {
       const warn = spyOn(logger, "warn");
       try {
          Model.fromSerialized("pkg", "/unused", {} as never, serialized, {
+            policy: ModelPolicy.standalone(),
             skipAuthorizeWarningLog,
          });
          return warn.mock.calls.map(([message]) => String(message));

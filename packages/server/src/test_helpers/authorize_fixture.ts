@@ -40,7 +40,7 @@ import os from "os";
 import path from "path";
 import { AccessDeniedError } from "../errors";
 import { malloyGivenToApi, type MalloyGiven } from "../service/given";
-import { Model } from "../service/model";
+import { Model, ModelPolicy, QueryPrivileges } from "../service/model";
 import { seededDuckdb as seededTempDuckdb } from "./temp_package";
 
 export const AUTHORIZE_SEED_SQL = `
@@ -162,14 +162,10 @@ export async function queryRows(
    query: string,
    givens: Record<string, unknown> = {},
 ): Promise<Array<Record<string, unknown>>> {
-   const result = await model.getQueryResults(
+   const result = await model.runQuery(
       unrecordedAudit(),
-      undefined,
-      undefined,
-      query,
-      {},
-      true,
-      givens as Record<string, GivenValue>,
+      { query, filterParams: {}, givens: givens as Record<string, GivenValue> },
+      QueryPrivileges.of({ bypassFilters: true }),
    );
    return result.compactResult as unknown as Array<Record<string, unknown>>;
 }
@@ -249,7 +245,6 @@ const ROOT = "file:///authorize-tests/";
 /** Private `Model` members the request-time specs reach past the public
  *  surface (same idiom as `authorize_gate_walk.spec.ts`'s `GateWalker`). */
 export interface ModelInternals {
-   setGateRuntime(runtime: Runtime): void;
    authorizeAndBindRunnable(
       runnable: QueryMaterializer,
       givens: Record<string, GivenValue>,
@@ -348,9 +343,11 @@ export async function buildGatedModel(
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       givens: givens as any,
       modelInfo: modelDefToModelInfo(modelDef),
+      policy: ModelPolicy.standalone(),
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      gateRuntime: runtime as any,
    });
    const internals = model as unknown as ModelInternals;
-   internals.setGateRuntime(runtime);
    return { model, internals, mm, duckdb };
 }
 
