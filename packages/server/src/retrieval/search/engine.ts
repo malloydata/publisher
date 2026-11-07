@@ -235,7 +235,7 @@ export function _setFcjDeadlineForTests(ms: number | undefined): void {
    deadlineForTests = ms;
 }
 
-type FcjQueryArgs = {
+export type FcjQueryArgs = {
    /** Aborted when the deadline passes or the client cancels; set by runFcjQuery. */
    signal?: AbortSignal;
    /** Aborted when the MCP client cancels the call. */

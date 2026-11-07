@@ -24,7 +24,7 @@ import {
    BuildPlanUnavailableError,
 } from "../errors";
 import { logger } from "../logger";
-import { getPackageEmbeddingStatus } from "../retrieval/index/package_embedding";
+import { RetrievalService } from "../retrieval/service";
 import { EnvironmentStore } from "../service/environment_store";
 import type { Environment } from "../service/environment";
 import type { Package } from "../service/package";
@@ -109,6 +109,7 @@ export function setPackagePatchDeprecationHeaders(res: HeaderSetter): void {
 
 export class PackageController {
    private environmentStore: EnvironmentStore;
+   private retrieval: RetrievalService;
    /** Packages (`env/pkg`) already warned that versioning is off, this run. */
    private warnedVersioningOff = new Set<string>();
    /** Packages with versions (`env/pkg`) already warned that their PATCH is deprecated, this run. */
@@ -116,6 +117,7 @@ export class PackageController {
 
    constructor(environmentStore: EnvironmentStore) {
       this.environmentStore = environmentStore;
+      this.retrieval = new RetrievalService(environmentStore);
    }
 
    public async listPackages(environmentName: string): Promise<ApiPackage[]> {
@@ -327,12 +329,7 @@ export class PackageController {
          packageName,
          versionId,
       );
-      return getPackageEmbeddingStatus(
-         this.environmentStore,
-         environmentName,
-         packageName,
-         pkg,
-      );
+      return this.retrieval.status(environmentName, packageName, pkg);
    }
 
    /**
@@ -352,12 +349,7 @@ export class PackageController {
             packageName,
             versionId,
          );
-         return await getPackageEmbeddingStatus(
-            this.environmentStore,
-            environmentName,
-            packageName,
-            pkg,
-         );
+         return await this.retrieval.status(environmentName, packageName, pkg);
       } catch (error) {
          logger.debug("Could not read the package's embedding index state", {
             environmentName,
