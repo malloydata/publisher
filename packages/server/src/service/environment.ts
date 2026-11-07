@@ -4,7 +4,12 @@
 import type { GivenValue } from "@malloydata/malloy";
 import { type CompiledDocument } from "./compile_document";
 import { isUnderPublicDir, reportWritePathProblem } from "./report";
-import { lazyCounter, resetInstrumentsForTesting } from "../telemetry";
+import {
+   lazyCounter,
+   resetInstrumentsForTesting,
+   withSpan,
+} from "../telemetry";
+import { measurePackageOperation } from "../package_load_metrics";
 import { Mutex } from "async-mutex";
 import crypto from "crypto";
 import * as fs from "fs";
@@ -2423,6 +2428,23 @@ export class Environment {
       }
       await this.assertNotVersionedLocked(packageName, existingPackage);
 
+      const load = () => this.loadPackageLocked(packageName, existingPackage);
+      if (!reload) return load();
+      return withSpan(
+         "publisher.package.reload",
+         {
+            "malloy.environment": this.environmentName,
+            "malloy.package": packageName,
+         },
+         () => measurePackageOperation("reload", load),
+      );
+   }
+
+   /** Create the package from disk and serve it. Caller holds the package mutex. */
+   private loadPackageLocked(
+      packageName: string,
+      existingPackage: Package | undefined,
+   ): Promise<Package> {
       return this.trackPackageLoad(packageName, async () => {
          this.setPackageStatus(packageName, PackageStatus.LOADING);
 
@@ -2449,7 +2471,7 @@ export class Environment {
             return _package;
          } catch (error) {
             logger.error(`Failed to load package ${packageName}`, { error });
-            if (existingPackage !== undefined && reload) {
+            if (existingPackage !== undefined) {
                // A failed reload keeps serving the last good model (replaced
                // only on success) rather than evicting the package.
                this.setPackageStatus(packageName, PackageStatus.SERVING);
@@ -2609,12 +2631,14 @@ export class Environment {
             : "install a package",
          options.allowAdmission === true,
       );
-      return this.trackPackageLoad(packageName, () =>
-         this._installPackageTracked(
-            packageName,
-            downloader,
-            validate,
-            options,
+      return measurePackageOperation("install", () =>
+         this.trackPackageLoad(packageName, () =>
+            this._installPackageTracked(
+               packageName,
+               downloader,
+               validate,
+               options,
+            ),
          ),
       );
    }

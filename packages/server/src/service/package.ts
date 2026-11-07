@@ -19,7 +19,7 @@ import {
    SourceDef,
    type ModelDef,
 } from "@malloydata/malloy";
-import { publisherMeter } from "../telemetry";
+import { publisherMeter, withSpan } from "../telemetry";
 import {
    type EntitiesModelFile,
    entitiesFindingCode,
@@ -835,7 +835,33 @@ export class Package {
        */
       options: { dryRun?: boolean } = {},
    ): Promise<Package> {
-      const dryRun = options.dryRun === true;
+      return withSpan(
+         "publisher.package.load",
+         {
+            "malloy.environment": environmentName,
+            "malloy.package": packageName,
+            "publisher.package.dry_run": options.dryRun === true,
+         },
+         () =>
+            Package.load(
+               environmentName,
+               packageName,
+               packagePath,
+               environmentMalloyConfig,
+               cleanupDirectoryOnFailure,
+               options.dryRun === true,
+            ),
+      );
+   }
+
+   private static async load(
+      environmentName: string,
+      packageName: string,
+      packagePath: string,
+      environmentMalloyConfig: PackageConnectionInput,
+      cleanupDirectoryOnFailure: boolean,
+      dryRun: boolean,
+   ): Promise<Package> {
       assertSafeEnvironmentPath(packagePath);
       const startTime = performance.now();
       await Package.validatePackageManifestExistsOrThrowError(packagePath);
