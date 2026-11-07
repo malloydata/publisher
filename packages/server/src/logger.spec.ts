@@ -235,7 +235,12 @@ describe("loggerMiddleware", () => {
       {
          headers = {},
          body,
-      }: { headers?: Record<string, string>; body?: unknown } = {},
+         response,
+      }: {
+         headers?: Record<string, string>;
+         body?: unknown;
+         response?: unknown;
+      } = {},
    ): Record<string, unknown> | undefined {
       const info = spyOn(logger, "info").mockImplementation(
          (() => logger) as never,
@@ -260,6 +265,7 @@ describe("loggerMiddleware", () => {
             res as unknown as Response,
             () => {},
          );
+         if (response !== undefined) res.json(response);
          res.emit("finish");
          const [line] = linesMentioning(info, url);
          return line?.[1] as Record<string, unknown> | undefined;
@@ -296,6 +302,17 @@ describe("loggerMiddleware", () => {
          query: "run: x",
          password: "[REDACTED]",
       });
+   });
+
+   it("adds the response body only at debug", () => {
+      const response = { result: "[[1]]" };
+      expect(
+         atLevel("info", () => accessLog("/logger-spec/g", { response })),
+      ).not.toHaveProperty("response");
+      expect(
+         atLevel("debug", () => accessLog("/logger-spec/h", { response }))
+            ?.response,
+      ).toEqual(response);
    });
 
    it("logs a large body as its length and head, not whole", () => {

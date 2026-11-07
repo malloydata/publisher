@@ -772,8 +772,8 @@ URL. Its fields:
 | `params`     | The route parameters.                                                                                                                                                  |
 | `query`      | The query-string parameters.                                                                                                                                           |
 | `traceId`    | The request's trace: the HTTP span's, which continues an incoming `traceparent`, else the `traceparent` header's own. Absent when there is neither.                    |
-| `payload`    | The request body, **only when `LOG_LEVEL` is `debug`** (the default) or `silly`. Credential fields are masked by key name; query text and given values are not, so a production log at `info` leaves the body out. |
-| `response`   | The response body, unless response-body logging is turned off (`DISABLE_RESPONSE_LOGGING`). Masked the same way.                                                       |
+| `payload`    | The request body, **only when `LOG_LEVEL` is `debug`** (the default) or `silly`. Credential fields are masked by key name; query text and given values are not, so a production log at `info` leaves the body out. A body over 2048 characters of JSON is logged as `{truncated, length, head}`. |
+| `response`   | The response body, under the same rule: only at `debug` or `silly`, unless `DISABLE_RESPONSE_LOGGING` turns it off. It holds query result rows. Masked and truncated the same way. |
 
 ## Report and deprecation metrics
 

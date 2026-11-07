@@ -207,13 +207,15 @@ export const loggerMiddleware: RequestHandler = (req, res, next) => {
          params: req.params,
          query: req.query,
       };
-      // Redaction is by key name only, so a body's query text and given
-      // values pass through: kept to debug.
+      // Redaction is by key name only, so a request's query text and given
+      // values, and a response's result rows, pass through: kept to debug.
       if (logger.isDebugEnabled()) {
          logMetadata.payload = boundedForLog(redactSensitive(req.body));
-      }
-      if (!DISABLE_RESPONSE_LOGGING) {
-         logMetadata.response = boundedForLog(redactSensitive(res.locals.body));
+         if (!DISABLE_RESPONSE_LOGGING) {
+            logMetadata.response = boundedForLog(
+               redactSensitive(res.locals.body),
+            );
+         }
       }
       const traceId = requestTraceId(req, spanContext);
       if (traceId) {
