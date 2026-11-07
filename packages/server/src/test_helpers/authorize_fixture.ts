@@ -40,7 +40,7 @@ import os from "os";
 import path from "path";
 import { AccessDeniedError } from "../errors";
 import { malloyGivenToApi, type MalloyGiven } from "../service/given";
-import { Model, ModelPolicy } from "../service/model";
+import { Model, ModelPolicy, QueryPrivileges } from "../service/model";
 import { seededDuckdb as seededTempDuckdb } from "./temp_package";
 
 export const AUTHORIZE_SEED_SQL = `
@@ -162,14 +162,10 @@ export async function queryRows(
    query: string,
    givens: Record<string, unknown> = {},
 ): Promise<Array<Record<string, unknown>>> {
-   const result = await model.getQueryResults(
+   const result = await model.runQuery(
       unrecordedAudit(),
-      undefined,
-      undefined,
-      query,
-      {},
-      true,
-      givens as Record<string, GivenValue>,
+      { query, filterParams: {}, givens: givens as Record<string, GivenValue> },
+      QueryPrivileges.of({ bypassFilters: true }),
    );
    return result.compactResult as unknown as Array<Record<string, unknown>>;
 }
