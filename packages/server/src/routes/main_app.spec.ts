@@ -119,13 +119,31 @@ describe("createMainApp", () => {
          expect(
             (await request(app).post(`${pkg}/compile`).send(body)).status,
          ).toBe(200);
-         // Refused by the general parser before any route runs (its status
-         // is the error mapper's to decide).
-         expect(
-            (await request(app).post(`${pkg}/query`).send(body)).status,
-         ).toBeGreaterThanOrEqual(400);
+         // Refused by the general parser before any route runs.
+         const refused = await request(app).post(`${pkg}/query`).send(body);
+         expect(refused.status).toBe(413);
+         expect(refused.body).toEqual({
+            code: 413,
+            message: "request entity too large",
+         });
       } finally {
          for (const spy of quiet) spy.mockRestore();
+      }
+   });
+
+   it("answers malformed JSON with 400, not an internal error", async () => {
+      const app = buildRouteApp({});
+      const pkg = `${API_PREFIX}/environments/env/packages/pkg/models/m.malloy`;
+      const quiet = spyOn(logger, "warn").mockImplementation(() => logger);
+      try {
+         const res = await request(app)
+            .post(`${pkg}/query`)
+            .set("content-type", "application/json")
+            .send("{bad");
+         expect(res.status).toBe(400);
+         expect(res.body.code).toBe(400);
+      } finally {
+         quiet.mockRestore();
       }
    });
 });
