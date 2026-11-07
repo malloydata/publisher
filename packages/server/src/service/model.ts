@@ -126,7 +126,9 @@ import {
 } from "./filter";
 import {
    assertFilterGivensParse,
+   attachSuggestGivenNames,
    gateGivenSource,
+   suggestGivenLookup,
    malloyGivenToApi,
    type MalloyGiven,
 } from "./given";
@@ -3686,6 +3688,15 @@ export class Model {
                   : undefined;
             const sourceResult = extractApiSources(modelDef, givens);
             sources = sourceResult.sources;
+            // As the worker does: say which givens each `suggest` needs.
+            attachSuggestGivenNames(
+               givens,
+               suggestGivenLookup(
+                  modelDef,
+                  (name) => gateGivenSource(sourceResult.sources, name),
+                  new Set((givens ?? []).map((given) => given.name)),
+               ),
+            );
             filterMap = sourceResult.filterMap;
             const queryResult = extractApiQueries(modelDef);
             queries = queryResult.queries;

@@ -141,6 +141,11 @@ describe("Model.create and the worker load the same model", () => {
          { "m.malloy": GATED },
          "m.malloy",
       ],
+      [
+         "a given whose suggest reads a gated source",
+         { "m.malloy": SUGGESTED },
+         "m.malloy",
+      ],
    ];
    for (const [name, files, entry] of cases) {
       it(`serves the same shape: ${name}`, async () => {
