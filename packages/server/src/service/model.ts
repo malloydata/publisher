@@ -116,10 +116,7 @@ import {
    type FilterDefinition,
    type FilterParams,
 } from "./filter";
-import {
-   assertFilterGivensParse,
-   gateGivenSource,
-} from "./given";
+import { assertFilterGivensParse, gateGivenSource } from "./given";
 import { filterPublisherOwnedRenderLogs } from "./report_manifest";
 import {
    docCommentTitleAndDescription,
@@ -234,10 +231,7 @@ import {
    quoteMalloyIdentifier,
    runStatementCount,
 } from "./model_query_compile";
-import {
-   runReadsPublished,
-   scrubHiddenIds,
-} from "./model_projection";
+import { runReadsPublished, scrubHiddenIds } from "./model_projection";
 import { StorageServeShape } from "./model_serve_shape";
 
 export type { ModelConnectionInput, ModelType } from "./model_runtime";
