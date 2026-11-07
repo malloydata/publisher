@@ -304,11 +304,9 @@ Then paste that table's malloySource verbatim, e.g. source: \`orders\` is \`ware
 export function registerSearchDatabaseSchemaTool(
    mcpServer: McpServer,
    environmentStore: EnvironmentStore,
+   connectionController = new ConnectionController(environmentStore),
 ): void {
-   const deps: TierDeps = {
-      environmentStore,
-      connectionController: new ConnectionController(environmentStore),
-   };
+   const deps: TierDeps = { environmentStore, connectionController };
 
    registerGuardedTool(mcpServer, {
       name: "search_database_schema",

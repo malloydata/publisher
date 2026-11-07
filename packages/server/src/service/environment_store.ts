@@ -456,6 +456,12 @@ const VERSION_HOOKS = [
    "owedReclaim",
 ] as const;
 
+/** Seams for tests: replace the metadata store or the git client. */
+export interface EnvironmentStoreDeps {
+   storageManager?: StorageManager;
+   simpleGit?: typeof simpleGit;
+}
+
 export class EnvironmentStore {
    public serverRootPath: string;
    private environments: Map<string, Environment> = new Map();
@@ -508,8 +514,11 @@ export class EnvironmentStore {
     */
    private inPlaceEnvs = new Set<string>();
 
-   constructor(serverRootPath: string) {
+   private readonly simpleGit: typeof simpleGit;
+
+   constructor(serverRootPath: string, deps: EnvironmentStoreDeps = {}) {
       this.serverRootPath = serverRootPath;
+      this.simpleGit = deps.simpleGit ?? simpleGit;
       this.mcpIncludeHiddenFilesAndSources =
          isMcpIncludeHiddenFilesAndSources();
       this.gcsClient = new Storage();
@@ -524,7 +533,8 @@ export class EnvironmentStore {
             path: path.join(serverRootPath, "publisher.db"),
          },
       };
-      this.storageManager = new StorageManager(storageConfig);
+      this.storageManager =
+         deps.storageManager ?? new StorageManager(storageConfig);
 
       this.finishedInitialization = this.initialize();
    }
@@ -2835,7 +2845,7 @@ export class EnvironmentStore {
       );
 
       await new Promise<void>((resolve, reject) => {
-         simpleGit({
+         this.simpleGit({
             progress: (event) => reporter.onProgress(event),
          }).clone(repoUrl, absoluteDirPath, GIT_CLONE_OPTIONS, (err) => {
             reporter.done();

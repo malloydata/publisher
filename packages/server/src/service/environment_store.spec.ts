@@ -83,7 +83,7 @@ function managedDestination(name = "managed"): Connection {
 const embeddingCleanupRuns: Array<{ sql: string; params: unknown[] }> = [];
 let embeddingCleanupBlocks = false;
 
-stubStorageManager({
+const storageManager = stubStorageManager({
    getDuckDbConnection: () => ({
       run: (sql: string, params?: unknown[]) => {
          embeddingCleanupRuns.push({ sql, params: params ?? [] });
@@ -318,7 +318,9 @@ describe("EnvironmentStore Service", () => {
       failNextDestinationReads = 0;
       sandbox = sinon.createSandbox();
 
-      environmentStore = new EnvironmentStore(serverRootPath);
+      environmentStore = new EnvironmentStore(serverRootPath, {
+         storageManager,
+      });
    });
 
    afterEach(async () => {
@@ -451,7 +453,9 @@ describe("EnvironmentStore Service", () => {
       );
 
       // Create a new project store that will read the configuration
-      const newEnvironmentStore = new EnvironmentStore(serverRootPath);
+      const newEnvironmentStore = new EnvironmentStore(serverRootPath, {
+         storageManager,
+      });
       await newEnvironmentStore.finishedInitialization;
 
       // Test that both projects can be listed
@@ -524,7 +528,9 @@ describe("EnvironmentStore Service", () => {
          }),
       );
 
-      const newEnvironmentStore = new EnvironmentStore(serverRootPath);
+      const newEnvironmentStore = new EnvironmentStore(serverRootPath, {
+         storageManager,
+      });
       await newEnvironmentStore.finishedInitialization;
 
       const projects = await newEnvironmentStore.listEnvironments();
@@ -568,7 +574,9 @@ describe("EnvironmentStore Service", () => {
          }),
       );
 
-      const newEnvironmentStore = new EnvironmentStore(serverRootPath);
+      const newEnvironmentStore = new EnvironmentStore(serverRootPath, {
+         storageManager,
+      });
       await newEnvironmentStore.finishedInitialization;
 
       // Absent, not an empty array: a healthy status is unchanged by this
@@ -610,7 +618,9 @@ describe("EnvironmentStore Service", () => {
          }),
       );
 
-      const newEnvironmentStore = new EnvironmentStore(serverRootPath);
+      const newEnvironmentStore = new EnvironmentStore(serverRootPath, {
+         storageManager,
+      });
       await newEnvironmentStore.finishedInitialization;
 
       const status = await newEnvironmentStore.getStatus();
@@ -669,7 +679,9 @@ describe("EnvironmentStore Service", () => {
          }),
       );
 
-      const newEnvironmentStore = new EnvironmentStore(serverRootPath);
+      const newEnvironmentStore = new EnvironmentStore(serverRootPath, {
+         storageManager,
+      });
       await newEnvironmentStore.finishedInitialization;
 
       const status = await newEnvironmentStore.getStatus();
@@ -710,7 +722,7 @@ describe("EnvironmentStore Service", () => {
          }),
       );
 
-      const store = new EnvironmentStore(serverRootPath);
+      const store = new EnvironmentStore(serverRootPath, { storageManager });
       await store.finishedInitialization;
       expect((await store.getStatus()).loadErrors).toBeUndefined();
 
@@ -784,7 +796,7 @@ describe("EnvironmentStore Service", () => {
       const loaded: Array<{ environmentName: string; packageName: string }> =
          [];
       const instances: unknown[] = [];
-      const store = new EnvironmentStore(serverRootPath);
+      const store = new EnvironmentStore(serverRootPath, { storageManager });
       store.setPackageLoadedHook((environmentName, pkg) => {
          loaded.push({ environmentName, packageName: pkg.getPackageName() });
          instances.push(pkg);
@@ -826,7 +838,7 @@ describe("EnvironmentStore Service", () => {
             ],
          }),
       );
-      const store = new EnvironmentStore(serverRootPath);
+      const store = new EnvironmentStore(serverRootPath, { storageManager });
       await store.finishedInitialization;
       const environment = await store.getEnvironment(projectName);
       type Forwarded = (packageName: string, versionId: string) => unknown;
@@ -901,7 +913,9 @@ describe("EnvironmentStore Service", () => {
       }) as typeof realCp);
 
       try {
-         const newEnvironmentStore = new EnvironmentStore(serverRootPath);
+         const newEnvironmentStore = new EnvironmentStore(serverRootPath, {
+            storageManager,
+         });
          await newEnvironmentStore.finishedInitialization;
 
          const environment =
@@ -951,7 +965,9 @@ describe("EnvironmentStore Service", () => {
          }),
       );
 
-      const newEnvironmentStore = new EnvironmentStore(serverRootPath);
+      const newEnvironmentStore = new EnvironmentStore(serverRootPath, {
+         storageManager,
+      });
       await newEnvironmentStore.finishedInitialization;
 
       // Boot pre-validates the names and skips the environment, so reach the
@@ -995,7 +1011,9 @@ describe("EnvironmentStore Service", () => {
          .stub(EnvironmentStore.prototype, "addEnvironmentToDatabase")
          .rejects(new Error("database write failed"));
 
-      const newEnvironmentStore = new EnvironmentStore(serverRootPath);
+      const newEnvironmentStore = new EnvironmentStore(serverRootPath, {
+         storageManager,
+      });
       await newEnvironmentStore.finishedInitialization;
 
       const status = await newEnvironmentStore.getStatus();
@@ -1043,7 +1061,9 @@ describe("EnvironmentStore Service", () => {
          },
       ];
 
-      const newEnvironmentStore = new EnvironmentStore(serverRootPath);
+      const newEnvironmentStore = new EnvironmentStore(serverRootPath, {
+         storageManager,
+      });
       await newEnvironmentStore.finishedInitialization;
 
       const status = await newEnvironmentStore.getStatus();
@@ -1096,7 +1116,9 @@ describe("EnvironmentStore Service", () => {
          }),
       );
 
-      const newEnvironmentStore = new EnvironmentStore(serverRootPath);
+      const newEnvironmentStore = new EnvironmentStore(serverRootPath, {
+         storageManager,
+      });
       await newEnvironmentStore.finishedInitialization;
 
       const status = await newEnvironmentStore.getStatus();
@@ -1137,7 +1159,9 @@ describe("EnvironmentStore Service", () => {
          }),
       );
 
-      const firstBoot = new EnvironmentStore(serverRootPath);
+      const firstBoot = new EnvironmentStore(serverRootPath, {
+         storageManager,
+      });
       await firstBoot.finishedInitialization;
 
       expect(mockDbDestinations.map((row) => row.name)).toEqual(["managed"]);
@@ -1167,7 +1191,9 @@ describe("EnvironmentStore Service", () => {
          }),
       );
 
-      const afterRestart = new EnvironmentStore(serverRootPath);
+      const afterRestart = new EnvironmentStore(serverRootPath, {
+         storageManager,
+      });
       await afterRestart.finishedInitialization;
 
       const environment = await afterRestart.getEnvironment(projectName);
@@ -1201,7 +1227,9 @@ describe("EnvironmentStore Service", () => {
          }),
       );
 
-      const newEnvironmentStore = new EnvironmentStore(serverRootPath);
+      const newEnvironmentStore = new EnvironmentStore(serverRootPath, {
+         storageManager,
+      });
       await newEnvironmentStore.finishedInitialization;
       expect(mockDbDestinations.map((row) => row.name)).toEqual(["managed"]);
 
@@ -1243,7 +1271,9 @@ describe("EnvironmentStore Service", () => {
          }),
       );
 
-      const firstBoot = new EnvironmentStore(serverRootPath);
+      const firstBoot = new EnvironmentStore(serverRootPath, {
+         storageManager,
+      });
       await firstBoot.finishedInitialization;
       expect(mockDbDestinations.map((row) => row.name)).toEqual(["managed"]);
 
@@ -1272,7 +1302,9 @@ describe("EnvironmentStore Service", () => {
          }),
       );
 
-      const afterRestart = new EnvironmentStore(serverRootPath);
+      const afterRestart = new EnvironmentStore(serverRootPath, {
+         storageManager,
+      });
       await afterRestart.finishedInitialization;
 
       expect(mockDbDestinations.map((row) => row.name)).toEqual(["managed"]);
@@ -1327,7 +1359,9 @@ describe("EnvironmentStore Service", () => {
       // The read at restore fails; every later read (the sync's own) succeeds.
       failNextDestinationReads = 1;
 
-      const newEnvironmentStore = new EnvironmentStore(serverRootPath);
+      const newEnvironmentStore = new EnvironmentStore(serverRootPath, {
+         storageManager,
+      });
       await newEnvironmentStore.finishedInitialization;
 
       // An ordinary environment write — a readme edit is enough to reach the sync.
@@ -1363,7 +1397,9 @@ describe("EnvironmentStore Service", () => {
          }),
       );
 
-      const newEnvironmentStore = new EnvironmentStore(serverRootPath);
+      const newEnvironmentStore = new EnvironmentStore(serverRootPath, {
+         storageManager,
+      });
       await newEnvironmentStore.finishedInitialization;
       expect(mockDbDestinations.map((row) => row.name)).toEqual(["managed"]);
 
@@ -1408,7 +1444,9 @@ describe("EnvironmentStore Service", () => {
          },
       ];
 
-      const newEnvironmentStore = new EnvironmentStore(serverRootPath);
+      const newEnvironmentStore = new EnvironmentStore(serverRootPath, {
+         storageManager,
+      });
       await newEnvironmentStore.finishedInitialization;
 
       const environment = await newEnvironmentStore.getEnvironment(projectName);
@@ -1451,7 +1489,9 @@ describe("EnvironmentStore Service", () => {
          }),
       );
 
-      const newEnvironmentStore = new EnvironmentStore(serverRootPath);
+      const newEnvironmentStore = new EnvironmentStore(serverRootPath, {
+         storageManager,
+      });
       await newEnvironmentStore.finishedInitialization;
 
       const environment = await newEnvironmentStore.getEnvironment(projectName);
@@ -1496,7 +1536,9 @@ describe("EnvironmentStore Service", () => {
          }),
       );
 
-      const newEnvironmentStore = new EnvironmentStore(serverRootPath);
+      const newEnvironmentStore = new EnvironmentStore(serverRootPath, {
+         storageManager,
+      });
       await newEnvironmentStore.finishedInitialization;
 
       const environment = await newEnvironmentStore.getEnvironment(projectName);
@@ -1542,7 +1584,9 @@ describe("EnvironmentStore Service", () => {
          }),
       );
 
-      const newEnvironmentStore = new EnvironmentStore(serverRootPath);
+      const newEnvironmentStore = new EnvironmentStore(serverRootPath, {
+         storageManager,
+      });
       await newEnvironmentStore.finishedInitialization;
 
       const environment = await newEnvironmentStore.getEnvironment(projectName);
@@ -1706,7 +1750,9 @@ describe("EnvironmentStore Service", () => {
          }),
       );
 
-      const newEnvironmentStore = new EnvironmentStore(serverRootPath);
+      const newEnvironmentStore = new EnvironmentStore(serverRootPath, {
+         storageManager,
+      });
       await newEnvironmentStore.finishedInitialization;
 
       // The environment loaded rather than being skipped.
@@ -1731,7 +1777,9 @@ describe("EnvironmentStore Service", () => {
       writeFileSync(publisherConfigPath, "invalid json");
 
       // Create a new project store that will read the invalid config
-      const newEnvironmentStore = new EnvironmentStore(serverRootPath);
+      const newEnvironmentStore = new EnvironmentStore(serverRootPath, {
+         storageManager,
+      });
 
       // Test that the project store handles invalid JSON gracefully by falling back to empty config
       await newEnvironmentStore.finishedInitialization;
@@ -1753,7 +1801,9 @@ describe("EnvironmentStore Service", () => {
          writeFileSync(publisherConfigPath, '{"environments":[]}');
          chmodSync(publisherConfigPath, 0o000);
          try {
-            const newEnvironmentStore = new EnvironmentStore(serverRootPath);
+            const newEnvironmentStore = new EnvironmentStore(serverRootPath, {
+               storageManager,
+            });
             await newEnvironmentStore.finishedInitialization;
             const status = await newEnvironmentStore.getStatus();
             expect(status.initError).toContain("EACCES");
@@ -1820,7 +1870,9 @@ describe("EnvironmentStore Service", () => {
       );
 
       // Create a new project store that will read the invalid config
-      const newEnvironmentStore = new EnvironmentStore(serverRootPath);
+      const newEnvironmentStore = new EnvironmentStore(serverRootPath, {
+         storageManager,
+      });
 
       // Test that the project store handles invalid fields gracefully without crashing
       await newEnvironmentStore.finishedInitialization;
@@ -1895,7 +1947,9 @@ describe("EnvironmentStore Service", () => {
       );
 
       // Create a new project store that will read the config
-      const newEnvironmentStore = new EnvironmentStore(serverRootPath);
+      const newEnvironmentStore = new EnvironmentStore(serverRootPath, {
+         storageManager,
+      });
 
       // Test that invalid projects are filtered out
       await newEnvironmentStore.finishedInitialization;
@@ -1994,7 +2048,9 @@ describe("Project Service Error Recovery", () => {
       sandbox = sinon.createSandbox();
       mkdirSync(serverRootPath, { recursive: true });
 
-      environmentStore = new EnvironmentStore(serverRootPath);
+      environmentStore = new EnvironmentStore(serverRootPath, {
+         storageManager,
+      });
    });
 
    afterEach(async () => {
@@ -2033,7 +2089,9 @@ describe("Project Service Error Recovery", () => {
             }),
          );
 
-         const newEnvironmentStore = new EnvironmentStore(serverRootPath);
+         const newEnvironmentStore = new EnvironmentStore(serverRootPath, {
+            storageManager,
+         });
          await newEnvironmentStore.finishedInitialization;
 
          const environment =
@@ -2189,7 +2247,9 @@ describe("EnvironmentStore path-injection guards", () => {
          rmSync(serverRootPath, { recursive: true, force: true });
       }
       mkdirSync(serverRootPath);
-      environmentStore = new EnvironmentStore(serverRootPath);
+      environmentStore = new EnvironmentStore(serverRootPath, {
+         storageManager,
+      });
       await environmentStore.finishedInitialization;
    });
 
@@ -2711,7 +2771,7 @@ describe("readiness line emission", () => {
          }),
       );
 
-      const store = new EnvironmentStore(readinessRoot);
+      const store = new EnvironmentStore(readinessRoot, { storageManager });
       await store.finishedInitialization;
 
       const lines = readyLines();
@@ -2748,7 +2808,7 @@ describe("readiness line emission", () => {
          }),
       );
 
-      const store = new EnvironmentStore(readinessRoot);
+      const store = new EnvironmentStore(readinessRoot, { storageManager });
       await store.finishedInitialization;
 
       const lines = readyLines();
@@ -2791,7 +2851,7 @@ describe("readiness line emission", () => {
          }),
       );
 
-      const store = new EnvironmentStore(readinessRoot);
+      const store = new EnvironmentStore(readinessRoot, { storageManager });
       await store.finishedInitialization;
 
       const lines = readyLines();
@@ -2948,7 +3008,7 @@ describe("EnvironmentStore embeddings cleanup wiring", () => {
    });
 
    it("deletePackageFromDatabase fires cleanup without awaiting it, even with no metadata row", async () => {
-      const store = new EnvironmentStore(serverRootPath);
+      const store = new EnvironmentStore(serverRootPath, { storageManager });
       await store.finishedInitialization;
 
       // The cleanup's SQL never resolves: were the store awaiting it,
@@ -2967,7 +3027,7 @@ describe("EnvironmentStore embeddings cleanup wiring", () => {
    });
 
    it("deleteEnvironmentFromDatabase fires the env-wide cleanup without awaiting it", async () => {
-      const store = new EnvironmentStore(serverRootPath);
+      const store = new EnvironmentStore(serverRootPath, { storageManager });
       await store.finishedInitialization;
 
       embeddingCleanupBlocks = true;
