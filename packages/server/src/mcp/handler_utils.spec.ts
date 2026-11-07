@@ -221,9 +221,9 @@ describe("classifyToolError", () => {
       // An authorize denial reaches the Malloy helper and is REFINED there: the
       // message pattern replaces the generic suggestion list outright, so the
       // marker is the authorize advice, not "Malloy file".
-      expect(
-         advice(new AccessDeniedError('Access denied for source "orders"')),
-      ).toContain("restricted by an authorize gate");
+      expect(advice(AccessDeniedError.forSource("orders"))).toContain(
+         "restricted by an authorize gate",
+      );
       expect(advice(new BadRequestError("Invalid query request."))).toContain(
          "Malloy file",
       );
