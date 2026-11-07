@@ -80,13 +80,9 @@ import {
    assertNoAuthorizeTagLike,
    assertNoCallerAuthorizeAnnotation,
    assertNoCallerClassificationAnnotation,
-   assertNoLegacyStringGate,
-   assertNoMisplacedAuthorizeAnnotations,
    containsAuthorizeAnnotationTag,
    hasCallerAuthorizeAnnotation,
-   findLegacyStringGates,
    referencedGivenNames,
-   validateAuthorizeProbes,
    type RowLevelGateRejectionCause,
 } from "./authorize";
 import { ACCESS_FILTER_ROUTE, AUTHORIZE_ROUTE } from "./authorize_routes";
@@ -111,10 +107,6 @@ import {
    type NotebookFormat,
 } from "../notebook_metrics";
 import {
-   validateSourceLineGateGivenUsage,
-   type ExpandableRefSummary,
-} from "./gate_dimension";
-import {
    buildFilterClause,
    FILTER_ANNOTATION_PREFIX,
    filterHasValue,
@@ -126,11 +118,7 @@ import {
 } from "./filter";
 import {
    assertFilterGivensParse,
-   attachSuggestGivenNames,
    gateGivenSource,
-   suggestGivenLookup,
-   malloyGivenToApi,
-   type MalloyGiven,
 } from "./given";
 import { filterPublisherOwnedRenderLogs } from "./report_manifest";
 import {
@@ -199,11 +187,7 @@ import {
 // methods of the same names; without the alias, converting one of them to an
 // arrow-function property would recurse instead of delegating.
 import {
-   assertAuthorizeGrammarValid,
-   assertNoRetiredRouteMarkers,
    collectEntryPointGates as collectEntryPointGatesImpl,
-   collectRetiredRouteMarkers,
-   computeGivenDeclaredTypes,
    createGateClassificationDeps,
    resolveGateShape as resolveGateShapeImpl,
    resolveGraftTarget as resolveGraftTargetImpl,
@@ -212,9 +196,8 @@ import {
    type GraftScope,
    type RowLevelGraftEntry,
 } from "./gate_classification";
-import { collectSourceInfos } from "./source_extraction";
+import { extractCheckedModel } from "./model_load_checks";
 import {
-   recordAuthorizeAdmitAllGate,
    recordAuthorizeBypass,
    recordAuthorizeGuardRejection,
    recordLockDecision,
@@ -252,8 +235,6 @@ import {
    runStatementCount,
 } from "./model_query_compile";
 import {
-   extractApiQueries,
-   extractApiSources,
    runReadsPublished,
    scrubHiddenIds,
 } from "./model_projection";
@@ -3669,117 +3650,28 @@ export class Model {
                modelPath,
             );
 
-         let modelDef = undefined;
-         let sources = undefined;
-         let queries = undefined;
-         let filterMap: Map<string, FilterDefinition[]> | undefined;
-         let givens: ApiGiven[] | undefined;
-         const sourceInfos: Malloy.SourceInfo[] = [];
-         if (modelMaterializer) {
-            const compiledModel = await modelMaterializer.getModel();
-            modelDef = compiledModel._modelDef;
-            // Malloy's `Model.givens` already collapses import inheritance.
-            const malloyGivens = Array.from(
-               compiledModel.givens.values(),
-            ) as MalloyGiven[];
-            givens =
-               malloyGivens.length > 0
-                  ? (malloyGivens.map(malloyGivenToApi) as ApiGiven[])
-                  : undefined;
-            const sourceResult = extractApiSources(modelDef, givens);
-            sources = sourceResult.sources;
-            // As the worker does: say which givens each `suggest` needs.
-            attachSuggestGivenNames(
-               givens,
-               suggestGivenLookup(
-                  modelDef,
-                  (name) => gateGivenSource(sourceResult.sources, name),
-                  new Set((givens ?? []).map((given) => given.name)),
-               ),
-            );
-            filterMap = sourceResult.filterMap;
-            const queryResult = extractApiQueries(modelDef);
-            queries = queryResult.queries;
-
-            // A retired route marker (e.g. `#(partition)`) is enforced by
-            // nothing. Checked first so it gets its own message.
-            assertNoRetiredRouteMarkers(collectRetiredRouteMarkers(modelDef));
-
-            // A misplaced `#(authorize)` (on a `query:` or a field) is
-            // enforced by nothing and would fail OPEN. The checks below run
-            // before `validateAuthorizeProbes` so each mistake gets its own
-            // message.
-            assertNoMisplacedAuthorizeAnnotations([
-               ...sourceResult.misplacedAuthorize,
-               ...queryResult.misplacedAuthorize,
-            ]);
-            // The legacy string form is refused outright.
-            const legacyStringGates = findLegacyStringGates(
-               sourceResult.authorizeOwnNotes,
-            );
-            legacyStringGates.forEach(() =>
-               recordRowLevelGateRejected("legacy_string_gate"),
-            );
-            assertNoLegacyStringGate(legacyStringGates);
-            assertAuthorizeGrammarValid(
-               modelDef,
-               sourceResult.authorizeMap,
-               sourceResult.authorizeOwnNotes,
-               computeGivenDeclaredTypes(givens),
-               (_sourceName, route) => recordAuthorizeAdmitAllGate(route),
-               sourceResult.attributedAuthorizeOwnNotes,
-            );
-            // Load-time probe compile of every entry point's gate (shared with
-            // the worker), so unknown givens and fields fail at load, not on
-            // first request. `const` keeps the narrowed type in the closures.
-            const compiledModelDef: ModelDef = modelDef;
-            await validateAuthorizeProbes(modelMaterializer, {
-               authorizeMap: sourceResult.authorizeMap,
-               authorizeOwnNotes: sourceResult.attributedAuthorizeOwnNotes,
-               onRowLevelGateRejected: recordRowLevelGateRejected,
-               // An inherited gate not expressible at this entry point: not
-               // fatal (every query denies), so warn rather than lose it.
-               onRowLevelGateUnexpressible: (sourceName, detail) =>
-                  logger.warn(
-                     "Row-level #(access_filter) gate not expressible at this entry point; every query against it will be denied",
-                     { packageName, modelPath, sourceName, detail },
-                  ),
-               // Source-line gate given-usage checks, at every entry point
-               // whose probe compiled (`sourceName` may be an inheritor).
-               // `refSummary` is resolved against `contents[sourceName]`.
-               onOwnRowLevelConditionCompiled: (
-                  sourceName,
-                  condition,
-                  route,
-               ) => {
-                  const struct = compiledModelDef.contents[sourceName];
-                  if (!struct || !isSourceDef(struct)) return;
-                  validateSourceLineGateGivenUsage(
-                     sourceName,
-                     route,
-                     struct,
-                     condition.refSummary as ExpandableRefSummary | undefined,
-                     condition.e,
-                     compiledModelDef,
-                     (cause, detail) => {
-                        recordRowLevelGateRejected(cause);
-                        logger.warn(`#(${route}) gate warning`, {
-                           packageName,
-                           modelPath,
-                           sourceName,
-                           cause,
-                           detail,
-                        });
-                     },
-                  );
-               },
-            });
-
-            // Every source this file can resolve: its own declarations plus
-            // exactly the names an `import { … }` selected (shared with the
-            // worker so the paths cannot drift).
-            sourceInfos.push(...collectSourceInfos(modelDef));
+         const compiled = await modelMaterializer?.getModel();
+         const checked =
+            modelMaterializer && compiled
+               ? await extractCheckedModel(
+                    modelMaterializer,
+                    compiled,
+                    (sourceName, err) =>
+                       logger.warn(
+                          `Failed to parse filter annotations on source "${sourceName}"`,
+                          { error: err },
+                       ),
+                 )
+               : undefined;
+         for (const warning of checked?.warnings ?? []) {
+            logger.warn(warning, { packageName, modelPath });
          }
+         const modelDef = compiled?._modelDef;
+         const sources = checked?.sources as ApiSource[] | undefined;
+         const queries = checked?.queries as ApiQuery[] | undefined;
+         const filterMap = checked?.filterMap;
+         const givens = checked?.givens as ApiGiven[] | undefined;
+         const sourceInfos = checked?.sourceInfos;
 
          const model = new Model(
             packageName,
@@ -3790,7 +3682,7 @@ export class Model {
             modelDef,
             sources,
             queries,
-            sourceInfos.length > 0 ? sourceInfos : undefined,
+            sourceInfos,
             runnableNotebookCells,
             undefined,
             filterMap,

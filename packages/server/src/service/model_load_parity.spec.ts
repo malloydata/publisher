@@ -146,6 +146,11 @@ describe("Model.create and the worker load the same model", () => {
          { "m.malloy": SUGGESTED },
          "m.malloy",
       ],
+      [
+         "a notebook with a selective import",
+         { "lib.malloy": LIB, "nb.malloynb": NOTEBOOK },
+         "nb.malloynb",
+      ],
    ];
    for (const [name, files, entry] of cases) {
       it(`serves the same shape: ${name}`, async () => {
