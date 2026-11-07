@@ -7,10 +7,7 @@ import { getNodeAutoInstrumentations } from "@opentelemetry/auto-instrumentation
 import { OTLPLogExporter } from "@opentelemetry/exporter-logs-otlp-proto";
 import { PrometheusExporter } from "@opentelemetry/exporter-prometheus";
 import { OTLPTraceExporter } from "@opentelemetry/exporter-trace-otlp-proto";
-import {
-   ExpressInstrumentation,
-   ExpressLayerType,
-} from "@opentelemetry/instrumentation-express";
+import { ExpressLayerType } from "@opentelemetry/instrumentation-express";
 import { resourceFromAttributes } from "@opentelemetry/resources";
 import { BatchLogRecordProcessor } from "@opentelemetry/sdk-logs";
 import { NodeSDK } from "@opentelemetry/sdk-node";
@@ -52,11 +49,13 @@ function instrument() {
       preventServerStart: true,
    });
 
+   // The auto set already includes Express; a second instance would patch it twice.
    const instrumentations = [
-      getNodeAutoInstrumentations(),
-      new ExpressInstrumentation({
-         ignoreLayersType: [ExpressLayerType.MIDDLEWARE],
-         ignoreLayers: [/\/health/, /\/metrics/],
+      getNodeAutoInstrumentations({
+         "@opentelemetry/instrumentation-express": {
+            ignoreLayersType: [ExpressLayerType.MIDDLEWARE],
+            ignoreLayers: [/\/health/, /\/metrics/],
+         },
       }),
    ];
 
