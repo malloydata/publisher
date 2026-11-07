@@ -125,6 +125,36 @@ export async function loadTempPackage(
    } = {},
 ): Promise<LoadedTempPackage> {
    const { dir, cleanup: removeDir } = writeTempPackage(files, options);
+   return loadPackageDir(dir, removeDir, options);
+}
+
+/**
+ * Copy the package at `sourceDir` (a committed fixture) to a fresh temp
+ * directory and load the copy with `Package.create`, so the load never writes
+ * into the source tree.
+ */
+export async function loadPackageCopy(
+   sourceDir: string,
+   options: { name?: string; environmentName?: string } = {},
+): Promise<LoadedTempPackage> {
+   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "publisher-pkg-copy-"));
+   fs.cpSync(sourceDir, dir, { recursive: true });
+   return loadPackageDir(
+      dir,
+      () => fs.rmSync(dir, { recursive: true, force: true }),
+      options,
+   );
+}
+
+async function loadPackageDir(
+   dir: string,
+   removeDir: () => void,
+   options: {
+      name?: string;
+      environmentName?: string;
+      duckdb?: DuckDBConnection;
+   },
+): Promise<LoadedTempPackage> {
    const { malloyConfig, duckdb } = duckdbMalloyConfig(options.duckdb);
    const cleanup = async () => {
       await duckdb.close();
