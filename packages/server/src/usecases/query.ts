@@ -6,7 +6,8 @@
  * share: one fixed sequence, so the two transports cannot drift on the steps
  * that decide what runs and what is recorded.
  *
- *   withAccessRecord → precondition → metadata parse → resolve the model →
+ *   withAccessRecord → precondition → metadata parse → resolve the model
+ *   (with the transport's early refusal and eager compile) →
  *   audit.version → query-metadata input → concurrency slot → runModelQuery
  *
  * What each transport decides for itself is an explicit option
@@ -69,9 +70,9 @@ export interface QueryCommand {
 
 /**
  * Find the environment, package and model a command names. `model` is
- * undefined when the package serves no such file; a transport that refuses
- * earlier (MCP's notebook refusal) throws instead. A thrown error is what the
- * access record classifies.
+ * undefined when the package serves no such file; how that is refused is
+ * {@link QueryTransportOptions}'. A thrown error is what the access record
+ * classifies.
  */
 export type QueryModelResolver = (
    environmentStore: EnvironmentStore,
@@ -121,6 +122,67 @@ export interface QueryTransportOptions {
     * argument the transport already detected).
     */
    precondition?: Error;
+   /**
+    * Refuse a notebook as no queryable model, and refuse a missing model
+    * while resolving, before the answering version is recorded (MCP).
+    * Without it a notebook is queried as resolved and a missing model is
+    * refused after the version is recorded (REST).
+    */
+   refuseNotebook?: boolean;
+   /**
+    * Compile the model while resolving, so a compile error is a setup
+    * refusal rather than a failure partway through the query (MCP).
+    */
+   eagerCompile?: boolean;
+   /**
+    * Told of an error thrown while the model is resolved or eagerly
+    * compiled, before it is rethrown, so the transport can word it as a
+    * setup failure. Not told of the {@link modelNotFound} refusal.
+    */
+   onSetupError?: (error: unknown) => void;
+}
+
+/** What {@link resolveQueryTarget} reads from a transport's options. */
+export type QueryResolutionOptions = Pick<
+   QueryTransportOptions,
+   | "resolveModel"
+   | "modelNotFound"
+   | "refuseNotebook"
+   | "eagerCompile"
+   | "onSetupError"
+>;
+
+/**
+ * The resolving step of {@link QueryUseCase.run}, on its own for a caller
+ * that needs the model without running a query (value search): the
+ * command's model, with the transport's early refusal and eager compile.
+ */
+export async function resolveQueryTarget(
+   environmentStore: EnvironmentStore,
+   command: QueryCommand,
+   options: QueryResolutionOptions,
+): Promise<{ environment: Environment; pkg: Package; model?: Model }> {
+   let resolved: Awaited<ReturnType<QueryModelResolver>>;
+   try {
+      resolved = await options.resolveModel(environmentStore, command);
+   } catch (error) {
+      options.onSetupError?.(error);
+      throw error;
+   }
+   const { model } = resolved;
+   if (options.refuseNotebook && (!model || model.getType() === "notebook")) {
+      throw options.modelNotFound(command);
+   }
+   if (options.eagerCompile && model) {
+      try {
+         // Surface a compilation error here rather than mid-query.
+         await model.getModel();
+      } catch (error) {
+         options.onSetupError?.(error);
+         throw error;
+      }
+   }
+   return resolved;
 }
 
 /** The options REST's query route runs with. */
@@ -206,9 +268,10 @@ export class QueryUseCase {
                throw new BadRequestError((error as Error).message);
             }
 
-            const { environment, pkg, model } = await options.resolveModel(
+            const { environment, pkg, model } = await resolveQueryTarget(
                this.environmentStore,
                command,
+               options,
             );
             const version = pkg.getVersionId();
             if (version) audit.version = version;
