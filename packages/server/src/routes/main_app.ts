@@ -89,7 +89,6 @@ export function createMainApp(options: MainAppOptions): express.Express {
       );
    }
    if (options.proxyConsoleToDevServer) {
-      app.use(API_PREFIX, loggerMiddleware);
       app.use(
          createProxyMiddleware({
             target: DEV_CONSOLE_ORIGIN,

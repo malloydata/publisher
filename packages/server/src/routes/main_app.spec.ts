@@ -79,6 +79,19 @@ describe("createMainApp", () => {
       expect(names.at(-2)).toBe("route *");
    });
 
+   it("in development proxies the Console and still access-logs each request once", () => {
+      const names = layout(
+         createMainApp({
+            controllers: {} as never,
+            dataAppRuntimePath: "/nonexistent/publisher.js",
+            proxyConsoleToDevServer: true,
+         }),
+      );
+      expect(names.filter((n) => n === "loggerMiddleware")).toHaveLength(1);
+      expect(names).not.toContain("serveStatic");
+      expect(names).not.toContain("route *");
+   });
+
    it("puts the frame-ancestors policy on an early refusal", async () => {
       const res = await request(buildRouteApp()).get(
          `${API_PREFIX}/environments?reload=true`,
