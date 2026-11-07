@@ -83,9 +83,6 @@ describe("service/package", () => {
                "model1.malloy",
                {
                   getPath: () => "model1.malloy",
-                  setDiscoveryCuration: () => {},
-                  setQueryBoundary: () => {},
-                  setSiblingModelDefResolver: () => {},
                   getGivens: () => [],
                   getCompilationError: () => undefined,
                } as unknown as Model,
@@ -94,9 +91,6 @@ describe("service/package", () => {
                "model2.malloynb",
                {
                   getPath: () => "model2.malloynb",
-                  setDiscoveryCuration: () => {},
-                  setQueryBoundary: () => {},
-                  setSiblingModelDefResolver: () => {},
                   getGivens: () => [],
                   getCompilationError: () => undefined,
                } as unknown as Model,
@@ -353,9 +347,6 @@ describe("service/package", () => {
                      {
                         getPath: () => "model1.malloy",
                         getModel: () => "foo",
-                        setDiscoveryCuration: () => {},
-                        setQueryBoundary: () => {},
-                        setSiblingModelDefResolver: () => {},
                         getGivens: () => [],
                         getCompilationError: () => undefined,
                      } as unknown as Model,
@@ -364,7 +355,6 @@ describe("service/package", () => {
                      "model2.malloynb",
                      {
                         getPath: () => "model2.malloynb",
-                        setDiscoveryCuration: () => {},
                         getNotebookError: () => {
                            return {
                               message: "This is the error",
@@ -374,8 +364,6 @@ describe("service/package", () => {
                         // and no cells, so it resolves no title or description
                         // and lists as its path.
                         getNotebookListing: () => ({}),
-                        setQueryBoundary: () => {},
-                        setSiblingModelDefResolver: () => {},
                         getGivens: () => [],
                         getCompilationError: () => undefined,
                      } as unknown as Model,
@@ -846,9 +834,6 @@ describe("service/package", () => {
       ) =>
          ({
             getPath: () => modelPath,
-            setDiscoveryCuration: () => {},
-            setQueryBoundary: () => {},
-            setSiblingModelDefResolver: () => {},
             getGivens: () => givens,
             getCompilationError: () => compilationError,
             isNotebook: () => modelPath.endsWith(".malloynb"),

@@ -195,7 +195,12 @@ import {
 import { filterFreshManifest } from "./freshness";
 import { sqlLiteral } from "./introspection_sql";
 import { isQuotedIdentifierPath, quoteManifestTablePath } from "./quoting";
-import { Model, type OffSurfaceContext } from "./model";
+import { Model } from "./model";
+import {
+   PackageModelPolicy,
+   type OffSurfaceContext,
+   type QueryBoundaryPolicy,
+} from "./model_policy";
 import {
    type ApiSecureGivenSummary,
    summarizeSecureGivens,
@@ -335,6 +340,12 @@ export class Package {
    private packageMetadata: ApiPackage;
    private databases: ApiDatabase[];
    private models: Map<string, Model> = new Map();
+   /**
+    * The policy every model in {@link models} was constructed with (each holds
+    * `modelPolicy.forModel(path)`): curation, query boundary, sibling
+    * resolution and freshness. Replaced together with `models` on a reload.
+    */
+   private modelPolicy: PackageModelPolicy;
    /**
     * {@link summarizeSecureGivens} over the `models` map it was computed for.
     * Keyed on that map's identity, so whatever replaces `models` gets a fresh
@@ -476,7 +487,13 @@ export class Package {
       databases: ApiDatabase[],
       models: Map<string, Model>,
       malloyConfig: MalloyConfig = new MalloyConfig({ connections: {} }),
+      /**
+       * The policy `models` were hydrated with. Omitted only where `models`
+       * are not this package's own hydrations (spec doubles, an empty map).
+       */
+      modelPolicy: PackageModelPolicy = new PackageModelPolicy(),
    ) {
+      this.modelPolicy = modelPolicy;
       this.environmentName = environmentName;
       this.packageName = packageName;
       this.packagePath = packagePath;
@@ -691,16 +708,13 @@ export class Package {
       return explores && explores.length > 0 ? new Set(explores) : null;
    }
 
-   /** Push discovery curation (`explores` listing, `export {}` filtering) onto each Model. */
+   /** Decide discovery curation (`explores` listing, `export {}` filtering) for every model. */
    private applyDiscoveryPolicyToModels(): void {
-      const curationEnabled = this.exploresDeclared();
-      for (const model of this.models.values()) {
-         model.setDiscoveryCuration(curationEnabled);
-      }
+      this.modelPolicy.setDiscoveryCuration(this.exploresDeclared());
    }
 
    /**
-    * Push the query-boundary policy onto each Model, where
+    * Decide each model's query boundary in the model policy, where
     * `Model.getQueryResults` enforces it (`/compile` is exempt; only
     * `#(authorize)` gates it). Policy: queryable == discoverable. Inert unless
     * the package resolved a surface AND `queryableSources` is "declared" (the
@@ -767,12 +781,13 @@ export class Package {
                  files: [...exploreSet].sort(),
               }
             : undefined;
-      for (const [modelPath, model] of this.models) {
+      const boundaries = new Map<string, QueryBoundaryPolicy>();
+      for (const modelPath of this.models.keys()) {
          // A `.malloy` report only: a `.malloynb` is a notebook by its format.
          const report = modelPath.endsWith(MODEL_FILE_SUFFIX)
             ? this.reports.get(modelPath)
             : undefined;
-         model.setQueryBoundary({
+         boundaries.set(modelPath, {
             mode,
             exploresDeclared,
             // A discovered report is always an entry point: it is always
@@ -789,6 +804,7 @@ export class Package {
             derivationText: report?.text,
          });
       }
+      this.modelPolicy.setQueryBoundaries(boundaries);
    }
 
    /**
@@ -805,11 +821,9 @@ export class Package {
             model,
          );
       }
-      const resolver = (url: string): ModelDef | undefined =>
-         byUrl.get(url)?.getModelDef();
-      for (const model of this.models.values()) {
-         model.setSiblingModelDefResolver(resolver);
-      }
+      this.modelPolicy.setSiblingModelDefResolver(
+         (url: string): ModelDef | undefined => byUrl.get(url)?.getModelDef(),
+      );
    }
 
    static async create(
@@ -1012,6 +1026,8 @@ export class Package {
          compile?: boolean;
          /** The what-if text, so a failed model's placeholder carries the edit, not the saved file. */
          replacement?: LoadPackageRequest["replacement"];
+         /** The policy each hydrated model is constructed with (`forModel(path)`). */
+         modelPolicy: PackageModelPolicy;
       },
       onCompileError: "throw" | "placeholder",
       afterHydrate?: (
@@ -1036,9 +1052,13 @@ export class Package {
             sm.modelPath,
             sm.modelType,
             err,
-            sm.modelPath === ctx.replacement?.modelPath
-               ? ctx.replacement.source
-               : undefined,
+            {
+               policy: ctx.modelPolicy.forModel(sm.modelPath),
+               sourceText:
+                  sm.modelPath === ctx.replacement?.modelPath
+                     ? ctx.replacement.source
+                     : undefined,
+            },
          );
       // Hydration and validation run on the main thread, one model after
       // another; let other requests in between models.
@@ -1075,6 +1095,7 @@ export class Package {
                malloyConfig,
                sm,
                {
+                  policy: ctx.modelPolicy.forModel(sm.modelPath),
                   buildManifest,
                   skipAuthorizeWarningLog: ctx.compile,
                },
@@ -1182,6 +1203,7 @@ export class Package {
       renderTagWarnings: ApiPackageWarning[];
       reportWarnings: ApiPackageWarning[];
    }> {
+      const modelPolicy = new PackageModelPolicy();
       const { models, renderTagWarnings } = await Package.hydrateWorkerModels(
          outcome,
          {
@@ -1191,6 +1213,7 @@ export class Package {
             buildManifest,
             compile: true,
             replacement,
+            modelPolicy,
          },
          "placeholder",
       );
@@ -1206,6 +1229,7 @@ export class Package {
          [],
          models,
          malloyConfig,
+         modelPolicy,
       );
       try {
          await pkg.discoverReports("compile");
@@ -1300,6 +1324,7 @@ export class Package {
       );
 
       // Any model compile failure aborts the load (reload keeps placeholders).
+      const modelPolicy = new PackageModelPolicy();
       let models: Map<string, Model>;
       let renderTagWarnings: ApiPackageWarning[];
       let hydrationTimings: { hydrateMs: number; renderValidationMs: number };
@@ -1310,7 +1335,7 @@ export class Package {
             timings: hydrationTimings,
          } = await Package.hydrateWorkerModels(
             outcome,
-            { packageName, packagePath, malloyConfig },
+            { packageName, packagePath, malloyConfig, modelPolicy },
             "throw",
             async (sm) => {
                // Reject an unquoted `#@ persist name=`: it is dropped from the
@@ -1349,6 +1374,7 @@ export class Package {
          databases,
          models,
          malloyConfig,
+         modelPolicy,
       );
       pkg.dryRun = dryRun;
       let reportTimings: Awaited<ReturnType<Package["discoverReports"]>>;
@@ -1970,14 +1996,12 @@ export class Package {
       return manifest;
    }
 
-   /** Install the per-query freshness resolvers on every model; idempotent. */
+   /** Install the per-query freshness resolvers for every model; idempotent. */
    private wireFreshnessResolvers(): void {
-      for (const model of this.models.values()) {
-         model.setFreshnessResolver(() => this.getFreshBuildManifest());
-         model.setPreaggregateEntityIdResolver(() =>
-            this.getPreaggregateEntityIds(),
-         );
-      }
+      this.modelPolicy.setFreshnessResolvers({
+         manifest: () => this.getFreshBuildManifest(),
+         preaggregateEntityIds: () => this.getPreaggregateEntityIds(),
+      });
    }
 
    /**
@@ -2913,6 +2937,8 @@ export class Package {
       // Same check as create, before anything is swapped.
       assertOutcomeStagesAvailable(outcome);
 
+      // The new models' own policy, undecided until they are installed below.
+      const nextModelPolicy = new PackageModelPolicy();
       const { models: nextModels, renderTagWarnings } =
          await Package.hydrateWorkerModels(
             outcome,
@@ -2921,6 +2947,7 @@ export class Package {
                packagePath: this.packagePath,
                malloyConfig: this.malloyConfig,
                buildManifest,
+               modelPolicy: nextModelPolicy,
             },
             "placeholder",
          );
@@ -2930,6 +2957,7 @@ export class Package {
       const discovery = await this.discoverReportsIn(nextModels, "reload");
       const discoveryMs = performance.now() - discoveryStarted;
       this.models = nextModels;
+      this.modelPolicy = nextModelPolicy;
       this.adoptOutcomeMetadata(outcome);
       // Move the identity as soon as the new models are installed.
       this.refreshServingIdentity();
