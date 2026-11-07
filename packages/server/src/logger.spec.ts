@@ -266,18 +266,34 @@ describe("loggerMiddleware", () => {
       }
    }
 
-   it("logs the status, the duration and the redacted body of a request", () => {
-      const meta = accessLog("/logger-spec/a", {
-         body: { query: "run: x", password: "hunter2" },
-      });
-      expect(meta).toMatchObject({
-         statusCode: 200,
-         payload: { query: "run: x", password: "[REDACTED]" },
-         params: {},
-         query: {},
-      });
+   function atLevel<T>(level: string, fn: () => T): T {
+      const previous = logger.level;
+      logger.level = level;
+      try {
+         return fn();
+      } finally {
+         logger.level = previous;
+      }
+   }
+
+   const body = { query: "run: x", password: "hunter2" };
+
+   it("logs the status and the duration of a request", () => {
+      const meta = atLevel("info", () => accessLog("/logger-spec/a", { body }));
+      expect(meta).toMatchObject({ statusCode: 200, params: {}, query: {} });
       expect(meta?.duration).toMatch(/^\d+\.\d\dms$/);
       expect(typeof meta?.durationMs).toBe("number");
+      expect(meta).not.toHaveProperty("payload");
+   });
+
+   it("adds the redacted request body at debug", () => {
+      const meta = atLevel("debug", () =>
+         accessLog("/logger-spec/e", { body }),
+      );
+      expect(meta?.payload).toEqual({
+         query: "run: x",
+         password: "[REDACTED]",
+      });
    });
 
    it("carries the trace id of an incoming traceparent", () => {

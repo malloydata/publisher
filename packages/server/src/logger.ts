@@ -178,10 +178,14 @@ export const loggerMiddleware: RequestHandler = (req, res, next) => {
          durationMs: Math.round(durationMs * 100) / 100,
          // The same, formatted; kept for readers of the older field.
          duration: formatDuration(durationMs),
-         payload: redactSensitive(req.body),
          params: req.params,
          query: req.query,
       };
+      // Redaction is by key name only, so a body's query text and given
+      // values pass through: kept to debug.
+      if (logger.isDebugEnabled()) {
+         logMetadata.payload = redactSensitive(req.body);
+      }
       if (!DISABLE_RESPONSE_LOGGING) {
          logMetadata.response = redactSensitive(res.locals.body);
       }
