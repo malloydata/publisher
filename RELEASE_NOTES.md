@@ -35,7 +35,7 @@ A pass over the server that changes no route, tool or response shape, but does c
 
 New, alongside the existing series: `publisher_package_reload_duration_ms{outcome}`, `publisher_package_install_duration_ms{outcome}` and `publisher_connection_operation_duration_ms{operation,type,outcome}` histograms; and the spans `publisher.package.load`, `publisher.package.reload`, `publisher.mcp.tool` (with `mcp.tool.name` and `mcp.tool.outcome`), `publisher.materialization.build` and `publisher.materialization.build_source`. [docs/configuration.md](docs/configuration.md#core-operation-metrics-logs-and-traces) lists them.
 
-## [Unreleased] — `--help` and the configuration reference come from the settings registry, and startup logs the settings given
+## [0.12.5] — `--help` and the configuration reference come from the settings registry, and startup logs the settings given
 
 Every setting is described once, in the settings registry 0.12.2 added, and three things are now generated from it:
 
