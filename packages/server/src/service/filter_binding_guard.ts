@@ -87,6 +87,27 @@ function nextDerivationLink(
    return undefined;
 }
 
+/**
+ * The nearest struct back along {@link nextDerivationLink} from `start` (not
+ * `start` itself) that satisfies `matches`, within ANCESTOR_WALK_MAX_DEPTH.
+ */
+function firstDerivationAncestor(
+   start: SourceDef,
+   modelDef: ModelDef,
+   matches: (link: SourceDef) => boolean,
+): SourceDef | undefined {
+   let current = start;
+   const seen = new Set<SourceDef>([start]);
+   for (let depth = 0; depth < ANCESTOR_WALK_MAX_DEPTH; depth++) {
+      const next = nextDerivationLink(current, modelDef, seen);
+      if (!next) return undefined;
+      if (matches(next)) return next;
+      seen.add(next);
+      current = next;
+   }
+   return undefined;
+}
+
 /** Duck-typed: Malloy does not re-export `RefSummary` from its root. */
 interface FieldUsageEntryLike {
    path: readonly string[];
@@ -816,15 +837,8 @@ function findAnnotationDeclaringSource(
    const notes = allAnnotationNotes(struct.annotations).filter(isGateNote);
    const viaNotes = findNoteOwner(notes, modelDef);
    if (viaNotes) return viaNotes;
-   let current = struct;
-   const seen = new Set<SourceDef>([struct]);
-   for (let depth = 0; depth < ANCESTOR_WALK_MAX_DEPTH; depth++) {
-      const next = nextDerivationLink(current, modelDef, seen);
-      if (!next) break;
-      if (ownLevelNotes(next.annotations).some(isGateNote)) return next;
-      seen.add(next);
-      current = next;
-   }
+   const ancestor = firstDerivationAncestor(struct, modelDef, ownsGateNote);
+   if (ancestor) return ancestor;
    for (const note of notes) {
       const sibling = findSiblingAnnotationDeclaringSource(
          note,
@@ -836,6 +850,11 @@ function findAnnotationDeclaringSource(
    // the gate note: Malloy resolves one concrete member, whose own
    // annotations entry-point gate collection reads.
    return findCompositeMemberDeclaringSource(struct, modelDef);
+}
+
+/** Whether `struct` itself, not an ancestor, carries a gate note. */
+function ownsGateNote(struct: SourceDef): boolean {
+   return ownLevelNotes(struct.annotations).some(isGateNote);
 }
 
 /**
@@ -850,17 +869,8 @@ function findCompositeMemberDeclaringSource(
 ): SourceDef | undefined {
    const member = resolveCompositeResolvedBase(struct);
    if (!member) return undefined;
-   if (ownLevelNotes(member.annotations).some(isGateNote)) return member;
-   let current = member;
-   const seen = new Set<SourceDef>([member]);
-   for (let depth = 0; depth < ANCESTOR_WALK_MAX_DEPTH; depth++) {
-      const next = nextDerivationLink(current, modelDef, seen);
-      if (!next) break;
-      if (ownLevelNotes(next.annotations).some(isGateNote)) return next;
-      seen.add(next);
-      current = next;
-   }
-   return undefined;
+   if (ownsGateNote(member)) return member;
+   return firstDerivationAncestor(member, modelDef, ownsGateNote);
 }
 
 /**
@@ -903,15 +913,12 @@ export function findFilterAnnotationDeclaringSource(
    const matched = matches(allAnnotationNotes(struct.annotations));
    const viaNotes = findNoteOwner(matched, modelDef);
    if (viaNotes) return viaNotes;
-   let current = struct;
-   const seen = new Set<SourceDef>([struct]);
-   for (let depth = 0; depth < ANCESTOR_WALK_MAX_DEPTH; depth++) {
-      const next = nextDerivationLink(current, modelDef, seen);
-      if (!next) break;
-      if (matches(ownLevelNotes(next.annotations)).length > 0) return next;
-      seen.add(next);
-      current = next;
-   }
+   const ancestor = firstDerivationAncestor(
+      struct,
+      modelDef,
+      (link) => matches(ownLevelNotes(link.annotations)).length > 0,
+   );
+   if (ancestor) return ancestor;
    for (const note of matched) {
       const sibling = findSiblingAnnotationDeclaringSource(
          note,
