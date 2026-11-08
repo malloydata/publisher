@@ -33,9 +33,9 @@ info:
     finds changed content each make a version; nothing edits one in place.
 
     - Under a version: **models** (compiled metadata, query, compile), **reports** (a `.malloy` file carrying an `##
-    artifact` tag, grid or linear; a legacy `.malloynb` read-only), **data apps**, **data files**, **agents**,
-    **skills**, its **entities**, **classification**, **index**, **build plan**, **bindings**, and its one own
-    **connection**, the in-memory `duckdb` sandbox over its data files.
+    artifact` tag, grid or linear), **data apps**, **data files**, **agents**, **skills**, its **entities**,
+    **classification**, **index**, **build plan**, **bindings**, and its one own **connection**, the in-memory `duckdb`
+    sandbox over its data files.
 
     - Under a package: **runs**, each an attempt to build a slot's persisted sources, with a **manifest** of one entry
     per source; under a connection: the physical **tables** those entries landed in.
@@ -95,7 +95,7 @@ tags:
   - name: models
     description: "Model files: compiled metadata, queries, compile checks, and the report write."
   - name: reports
-    description: "Documents: a `.malloy` file with an `## artifact` tag, grid or linear, and read-only legacy `.malloynb` files."
+    description: "Documents: a `.malloy` file with an `## artifact` tag, grid or linear."
   - name: data-apps
     description: HTML data apps under a version's `public/`.
   - name: data-files
@@ -1268,9 +1268,9 @@ paths:
         - models
       summary: Write a report file, making a new version
       description: The builder's save. Only a report (a file carrying an `## artifact` tag) may be written; never a model, an
-        untagged file, a `.malloynb`, the root `index.malloy` or anything under `public/`. The text is compiled first
-        (400 `COMPILE_ERROR` with `problems`). On a published version the write makes version `<parent>+edit.N` and
-        moves `latestVersionId` to it; on a live package it writes through to the author's directory. Create without
+        untagged file, the root `index.malloy` or anything under `public/`. The text is compiled first (400
+        `COMPILE_ERROR` with `problems`). On a published version the write makes version `<parent>+edit.N` and moves
+        `latestVersionId` to it; on a live package it writes through to the author's directory. Create without
         `expectedHash` (201); replace with it (200). 409 `FILE_EXISTS` or `CONFLICT` when the file is not as the caller
         read it.
       parameters:
@@ -1432,13 +1432,6 @@ paths:
       parameters:
         - $ref: "#/components/parameters/limit"
         - $ref: "#/components/parameters/after"
-        - name: kind
-          in: query
-          schema:
-            type: string
-            enum:
-              - malloy
-              - malloynb
         - name: layout
           in: query
           schema:
@@ -3449,11 +3442,6 @@ components:
           type: array
           items:
             $ref: "#/components/schemas/Given"
-        cells:
-          type: array
-          description: The text's own definition cells, as a saved document lists them.
-          items:
-            $ref: "#/components/schemas/NotebookCell"
     CompiledModel:
       type: object
       description: "One model file compiled: its sources, named queries and givens. Larger parts are included on request with
@@ -3557,13 +3545,13 @@ components:
             collides ("Cannot redefine"), and diagnostic positions land in the concatenated virtual file. "file"
             compiles the source AS that model, replacing its on-disk content for the check — validates an edit before
             saving, at true file coordinates. "package" runs the same worker compiler and file selection as reload over
-            every .malloy and .malloynb file, without swapping the result into the served package; with a source,
-            importers compile against the replacement. It also reports the render-tag findings (code "render-tag") and
-            the dashboard, given and drill findings (code "dashboard-lint") a reload would put on the package's
-            warnings, at their own severity and with no position. The package's other warnings (storage, persist,
-            materialization, explores, surface and discovery warnings, among others) are not reported. Package
-            diagnostics can name files hidden from discovery. No rows or SQL are returned, and caller-provided source
-            remains subject to authorize gates. includeSql is not available at "package".
+            every .malloy file, without swapping the result into the served package; with a source, importers compile
+            against the replacement. It also reports the render-tag findings (code "render-tag") and the dashboard,
+            given and drill findings (code "dashboard-lint") a reload would put on the package's warnings, at their own
+            severity and with no position. The package's other warnings (storage, persist, materialization, explores,
+            surface and discovery warnings, among others) are not reported. Package diagnostics can name files hidden
+            from discovery. No rows or SQL are returned, and caller-provided source remains subject to authorize gates.
+            includeSql is not available at "package".
 
             "append" text is checked against the model's PUBLISHED surface, so it may not declare its own data roots:
             import, connection.table(…), connection.sql(…), given:, ##! compiler flags and the raw-SQL function forms
@@ -3599,9 +3587,9 @@ components:
             for `source`; giving both is a 400. Overlay files are author content, read exactly as the package's own
             files: they are not restricted like ad-hoc text, and their `#(authorize)` and `#(access_filter)` annotations
             gate as written, so a host must offer `files` only to callers who may edit the package. An empty list is no
-            overlay. Only `.malloy` and `.malloynb` files can be overlaid; data files and `publisher.json` are read from
-            the package as published. A path that is absolute, has a \".\" or \"..\" segment or a backslash, names
-            another kind of file, or appears twice is a 400; more than 500 files or 8 MiB of text is a 413."
+            overlay. Only `.malloy` files can be overlaid; data files and `publisher.json` are read from the package as
+            published. A path that is absolute, has a \".\" or \"..\" segment or a backslash, names another kind of
+            file, or appears twice is a 400; more than 500 files or 8 MiB of text is a 413."
           items:
             $ref: "#/components/schemas/OverlayFile"
     CompileResult:
@@ -4847,69 +4835,6 @@ components:
         password:
           type: string
           description: MySQL password for authentication
-    NotebookCell:
-      type: object
-      description: Individual cell within a Malloy notebook
-      properties:
-        type:
-          type: string
-          enum:
-            - markdown
-            - code
-          description: Type of notebook cell
-        kind:
-          type: string
-          enum:
-            - markdown
-            - query
-            - definition
-          description: What a cell is, on a `.malloy` notebook. A definition cell (`source:`, `import`, `query:`, `given:`,
-            `type:`, `export`) has type `code` and produces no result. Absent on a `.malloynb`.
-        text:
-          type: string
-          description: Text contents of the notebook cell (either markdown or Malloy code)
-        markdown:
-          type: string
-          description: On a `.malloy` notebook's code cell, the prose written on the `(markdown)` route in its own tag lines
-            (`#(markdown) text` lines, `#|(markdown)` … `|#` blocks), which `text` still contains. Blocks join with a
-            blank line, adjacent lines with a newline. Author prose, so it is served even when `queryInfo` is withheld.
-            Absent when the cell has none.
-        proseLines:
-          type: array
-          description: Present on every code cell of a `.malloy` notebook, and absent on a `.malloynb` or from a server that
-            predates it. The lines of `text` that hold `markdown`, as `[start, end]` pairs in file order; `[]` when the
-            cell has none. Lines are 0-based and inclusive, counted on `text` split at `\n`. Strip exactly these lines
-            to get the cell's code without its prose; do not re-derive them from `text`, whose first line has lost its
-            indentation.
-          items:
-            type: array
-            minItems: 2
-            maxItems: 2
-            items:
-              type: integer
-        restricted:
-          type: boolean
-          description: Set on a cell of a compiled document (`CompileResult.document`) whose source the caller may not read. It
-            was not compiled, so nothing else is known about what it reads.
-        codeLine:
-          type: integer
-          description: Present on every code cell of a `.malloy` notebook, as `proseLines` is. The 0-based line of `text` (split
-            at `\n`) where the statement's code starts, its first token that is neither a note nor a comment, so the
-            `source`, `run`, `given` or `import` keyword sits on it.
-        caption:
-          type: string
-          description: On a `.malloy` notebook's code cell, the joined text of its leading `#"` lines (space-joined, trimmed).
-            Author prose, so it is served even when `queryInfo` is withheld. Absent when the cell has none, which is
-            authoritative wherever `proseLines` is present.
-        newSources:
-          type: array
-          description: Array of JSON strings containing SourceInfo objects made available in this cell
-          items:
-            type: string
-        queryInfo:
-          type: string
-          description: JSON string containing QueryInfo object for the query in this cell (if the cell contains a query). On a
-            package with a surface, left out for a cell whose query reads a source the notebook may not read.
     OverlayFile:
       type: object
       description: One file of a request's `files` overlay.
@@ -4919,7 +4844,7 @@ components:
       properties:
         path:
           type: string
-          description: The file's path relative to the package root, `/`-separated, ending in `.malloy` or `.malloynb`.
+          description: The file's path relative to the package root, `/`-separated, ending in `.malloy`.
           example: orders/orders.malloy
         content:
           type: string
@@ -5571,9 +5496,6 @@ components:
         queryName:
           type: string
           description: A view or named-query name exactly as the model lists it.
-        cell:
-          type: integer
-          description: For a `.malloynb` report, the cell to run, counted from 0. The model path is the report's path.
         givens:
           $ref: "#/components/schemas/GivenValues"
         queryMetadata:
@@ -5781,14 +5703,12 @@ components:
             $ref: "#/components/schemas/ReloadResult"
     Report:
       type: object
-      description: A `.malloy` file carrying an `## artifact` tag, wherever it lives in the version, or a legacy `.malloynb`.
+      description: A `.malloy` file carrying an `## artifact` tag, wherever it lives in the version.
       required:
         - path
         - name
-        - kind
         - layout
         - title
-        - editable
       properties:
         resource:
           type: string
@@ -5804,11 +5724,6 @@ components:
         name:
           type: string
           description: The basename without extension; a display label only.
-        kind:
-          type: string
-          enum:
-            - malloy
-            - malloynb
         layout:
           type: string
           enum:
@@ -5817,9 +5732,6 @@ components:
         title:
           type: string
         description: "{ type: string }"
-        editable:
-          type: boolean
-          description: True for a `.malloy` report; false for a `.malloynb`, which is read-only.
         error:
           type: string
     ReportList:
@@ -5834,8 +5746,7 @@ components:
         nextCursor:
           $ref: "#/components/schemas/Cursor"
     ReportManifest:
-      description: A `Report` plus what a viewer needs to draw it. A `.malloy` report carries `tiles`; a `.malloynb` carries
-        `cells`.
+      description: A `Report` plus what a viewer needs to draw it.
       allOf:
         - $ref: "#/components/schemas/Report"
         - type: object
@@ -5856,20 +5767,6 @@ components:
               description: The control row, one entry per given the tiles read.
               items:
                 $ref: "#/components/schemas/Given"
-            cells:
-              type: array
-              description: "For a `.malloynb`: its cells in order, each run with `POST …/models/{path}/query` and `cell`."
-              items:
-                $ref: "#/components/schemas/NotebookCell"
-            sources:
-              type: array
-              description: "For a `.malloynb`: the sources its cells build up."
-              items:
-                $ref: "#/components/schemas/Source"
-            queries:
-              type: array
-              items:
-                $ref: "#/components/schemas/Query"
     ReportTile:
       type: object
       description: One tile of a report. A `query` tile (the default) runs a query; a `text` tile shows markdown and runs

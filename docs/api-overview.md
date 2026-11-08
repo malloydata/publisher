@@ -37,7 +37,7 @@ Environment                     a namespace for packages and connections; the un
     ├── runs                    attempts to build persisted sources, each with a manifest
     └── Version                 an immutable snapshot of the package's content; `latest` is a reserved segment
         ├── models              compiled sources, views and givens; query; compile; the report write
-        ├── reports             a `.malloy` file with an `## artifact` tag (grid or linear); `.malloynb` read-only
+        ├── reports             a `.malloy` file with an `## artifact` tag (grid or linear)
         ├── data-apps, public/  HTML data apps and the static files they load
         ├── data-files          embedded CSV, Parquet, JSON and Excel files
         ├── agents, skills      what the package declares for agents
@@ -93,7 +93,7 @@ parent.
 | `POST …/versions/{v}/models/{path}/query`                                  | Run a query. See [request shapes](#query-request-shapes).                                                                                                                                 |
 | `POST …/versions/{v}/models/{path}/compile`                                | Compile-check Malloy text at `append`, `file` or `package` scope.                                                                                                                         |
 | `PUT …/versions/{v}/models/{path}`                                         | The builder's save: write a report file, which makes version `<parent>+edit.N` and moves `latestVersionId`. Create (201) without `expectedHash`, replace (200) with it.                  |
-| `GET …/versions/{v}/reports`, `…/reports/{path}`                           | Reports by `path`, `kind` and `layout`; one report's manifest (tiles, or cells for a `.malloynb`). Run a tile through `query`; run a `.malloynb` cell with `cell` on the query request.      |
+| `GET …/versions/{v}/reports`, `…/reports/{path}`                           | Reports by `path` and `layout`; one report's manifest (its tiles and controls). Run a tile through `query`.                                                                          |
 | `GET …/versions/{v}/data-apps`, `…/public/{path}`                          | HTML data apps and the static files they load, served from the version they were published with.                                                                                        |
 | `GET …/versions/{v}/data-files`                                            | Embedded data files and their schemas.                                                                                                                                                    |
 | `GET …/versions/{v}/agents`, `…/agents/{name}`, `…/skills`, `…/skills/{name}` | What the version declares for agents, and the skills in force for it. Adopt an agent only when the user names it.                                                                        |
@@ -116,8 +116,7 @@ curl -s -X POST \
 The body takes one of two shapes: `query` alone (ad-hoc Malloy, compiled in the model's context), or `queryName`
 without `query` (a view when `sourceName` is set, a model-level named query when it is not). Names are names, not
 Malloy code: send one name per field, bare, exactly as the model's `sources` listing returns it. Anything richer goes in
-`query`. `givens` ride on either shape to supply [runtime parameters](givens.md); `rowLimit` caps the rows; `cell`
-selects a `.malloynb` cell when the path is a legacy report.
+`query`. `givens` ride on either shape to supply [runtime parameters](givens.md); and `rowLimit` caps the rows.
 
 The response is `{rows, schema, metadata}`: plain row objects, the column schema, and `metadata` with `rowLimit`,
 `rowLimitSource`, `rowLimitHit`, `elapsedMs`, `servedFrom`, `costBytes`, `queryCorrelationId` and `renderLogs`. Add
@@ -142,7 +141,7 @@ The spec's nouns are the vocabulary, and the Console and the docs follow them:
 | package          | a record with pointers; its content is a version                                                        |
 | version          | an immutable snapshot of a package's content; `latest` is the package's pointer to one of them          |
 | model            | a `.malloy` file; compiled, it yields sources, views, named queries and givens                          |
-| report           | a `.malloy` file with an `## artifact` tag, `layout` grid or linear; a `.malloynb` is a read-only legacy kind |
+| report           | a `.malloy` file with an `## artifact` tag, `layout` grid or linear                                     |
 | data app         | an HTML page under `public/`                                                                            |
 | data file        | a CSV, Parquet, JSON or Excel file embedded in a version                                                |
 | agent, skill     | what a package declares for agents; the guides in force for it                                          |
