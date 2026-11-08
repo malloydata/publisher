@@ -76,21 +76,13 @@ export class ColocatedCtasStrategy
          );
          buildCostBytes = ctas?.runStats?.queryCostBytes;
       } catch (err) {
-         try {
-            await connection.runSQL(
-               `DROP TABLE IF EXISTS ${quotedStaging}`,
-               runOptions,
-            );
-         } catch (cleanupErr) {
-            logger.error(
-               "Failed to clean up staging table after a failed build; physical leak",
-               {
-                  stagingTableName,
-                  connectionName: persistSource.connectionName,
-                  cleanupError: errMessage(cleanupErr),
-               },
-            );
-         }
+         await dropStagingAfterFailure({
+            connection,
+            runOptions,
+            dialect,
+            stagingTableName,
+            connectionName: persistSource.connectionName,
+         });
          throw err;
       }
       await swapIntoPlace({
@@ -148,6 +140,41 @@ export class ColocatedCtasStrategy
 }
 
 /**
+ * Drop the staging table of a build that failed. Never throws: the build's own
+ * failure is what the caller reports, so a failed drop is only logged, as the
+ * table it leaves behind in the warehouse.
+ */
+async function dropStagingAfterFailure({
+   connection,
+   runOptions,
+   dialect,
+   stagingTableName,
+   connectionName,
+}: {
+   connection: Pick<MalloyConnection, "runSQL">;
+   runOptions: ColocatedBuildRequest["runOptions"];
+   dialect: string;
+   stagingTableName: string;
+   connectionName: string;
+}): Promise<void> {
+   try {
+      await connection.runSQL(
+         `DROP TABLE IF EXISTS ${quoteTablePath(stagingTableName, dialect)}`,
+         runOptions,
+      );
+   } catch (cleanupErr) {
+      logger.error(
+         "Failed to clean up staging table after a failed build; physical leak",
+         {
+            stagingTableName,
+            connectionName,
+            cleanupError: errMessage(cleanupErr),
+         },
+      );
+   }
+}
+
+/**
  * Put a built staging table in place of the served one, without ever leaving
  * neither: the served table is moved aside to `backupTableName`, the staging
  * table renamed onto the physical name, and only then is the backup dropped.
@@ -201,20 +228,14 @@ export async function swapIntoPlace({
          return false;
       }
    };
-   const dropStaging = async () => {
-      try {
-         await run(`DROP TABLE IF EXISTS ${quotedStaging}`);
-      } catch (cleanupErr) {
-         logger.error(
-            "Failed to clean up staging table after a failed build; physical leak",
-            {
-               stagingTableName,
-               connectionName,
-               cleanupError: errMessage(cleanupErr),
-            },
-         );
-      }
-   };
+   const dropStaging = () =>
+      dropStagingAfterFailure({
+         connection,
+         runOptions,
+         dialect,
+         stagingTableName,
+         connectionName,
+      });
 
    // Whether the previous table now sits under the backup name.
    let movedAside: boolean;
