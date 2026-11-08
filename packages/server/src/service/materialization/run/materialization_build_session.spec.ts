@@ -800,22 +800,24 @@ describe("createTableAndDescribe (schema read-back window)", () => {
       return { session, issued };
    };
 
-   it("drops the just-created table when the schema read-back fails", async () => {
-      // The CTAS has committed by now and the caller records nothing until this
-      // returns — so without the drop the table is reachable by neither the
-      // failed-run reclaim nor manifest GC, which only drop names they recorded.
+   it("rolls back, not drops, when the schema read-back fails", async () => {
+      // The physical name is stable across generations, so a DROP after the
+      // CREATE OR REPLACE would delete the table the previous manifest still
+      // serves. The create and read-back run in one transaction instead: a
+      // failed read-back rolls back to the previous generation (or, on a first
+      // build, to no table), which no reclaim has to find.
       const { session, issued } = sessionThatFailsDescribe();
 
       await expect(
          createTableAndDescribe(session, `"lake"."t"`, "SELECT 1"),
       ).rejects.toThrow(/describe boom/);
 
+      expect(issued[0]).toMatch(/^BEGIN/i);
       expect(issued.some((s) => /^CREATE OR REPLACE TABLE/i.test(s))).toBe(
          true,
       );
-      expect(
-         issued.some((s) => /^DROP TABLE IF EXISTS "lake"\."t"/i.test(s)),
-      ).toBe(true);
+      expect(issued.some((s) => /^ROLLBACK/i.test(s))).toBe(true);
+      expect(issued.some((s) => /^DROP TABLE/i.test(s))).toBe(false);
    });
 
    it("surfaces the read-back failure, not a failure of the cleanup drop", async () => {
