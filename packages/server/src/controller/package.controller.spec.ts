@@ -13,6 +13,7 @@ import {
    BuildPlanUnavailableError,
    internalErrorToHttpError,
    ServiceUnavailableError,
+   ConflictError,
 } from "../errors";
 import { logger } from "../logger";
 import { installSettings } from "../test_helpers/settings_env";
@@ -692,7 +693,6 @@ describe("PackageController.updatePackage reinstall decision", () => {
       const body = {
          name: "pkg",
          location: "gs://bucket/pkg___1.0.1.zip",
-         description: "next",
       };
 
       await controller.updatePackage("env", "pkg", body);
@@ -732,6 +732,74 @@ describe("PackageController.updatePackage reinstall decision", () => {
       expect(updatePackage.calledOnce).toBe(true);
    });
 
+   it("refuses a PATCH that changes what a reload of a location-installed package would discard (409)", async () => {
+      // A reload fetches the package again from its location and replaces its
+      // files, keeping only the location and the manifest binding, so a change
+      // to anything else would silently disappear on the next reload.
+      for (const body of [
+         {
+            name: "pkg",
+            location: "gs://bucket/pkg___1.0.0.zip",
+            description: "renamed",
+         },
+         { name: "pkg", description: "renamed" },
+         {
+            name: "pkg",
+            location: "gs://bucket/pkg___1.0.1.zip",
+            description: "next",
+         },
+         { name: "pkg", queryableSources: "all" as const },
+      ]) {
+         const installPackage = sinon.stub().resolves(servedPackage);
+         const updatePackage = sinon.stub().resolves({ name: "pkg" });
+         const { controller, addPackageToDatabase } = controllerWith({
+            peekPackage: () => servedPackage,
+            awaitPackageLoads: async () => {},
+            installPackage,
+            updatePackage,
+         });
+         const refusal = controller.updatePackage("env", "pkg", body);
+         await expect(refusal).rejects.toBeInstanceOf(ConflictError);
+         await expect(refusal).rejects.toThrow(/installed from .*reload/);
+         expect(installPackage.called).toBe(false);
+         expect(updatePackage.called).toBe(false);
+         expect(addPackageToDatabase.called).toBe(false);
+      }
+   });
+
+   it("accepts a PATCH of a location-installed package that only echoes it back", async () => {
+      const updatePackage = sinon.stub().resolves({ name: "pkg" });
+      const { controller } = controllerWith({
+         peekPackage: () => servedPackage,
+         awaitPackageLoads: async () => {},
+         installPackage: sinon.stub(),
+         updatePackage,
+      });
+      await controller.updatePackage("env", "pkg", {
+         name: "pkg",
+         location: "gs://bucket/pkg___1.0.0.zip",
+         explores: [],
+         scope: "package",
+      });
+      expect(updatePackage.calledOnce).toBe(true);
+   });
+
+   it("still applies metadata to a package that was not installed from a location", async () => {
+      const local = { getPackageMetadata: () => ({ name: "pkg" }) };
+      const updatePackage = sinon.stub().resolves({ name: "pkg" });
+      const { controller } = controllerWith({
+         peekPackage: () => local,
+         awaitPackageLoads: async () => {},
+         installPackage: sinon.stub(),
+         updatePackage,
+      });
+      await controller.updatePackage("env", "pkg", {
+         name: "pkg",
+         description: "renamed",
+      });
+      expect(updatePackage.calledOnce).toBe(true);
+   });
+
    it("a PATCH whose location is null is a metadata update", async () => {
       // A client that serializes unset fields as null names nothing to fetch.
       // Read as a location it would reach the downloader, which has no path to
@@ -748,7 +816,7 @@ describe("PackageController.updatePackage reinstall decision", () => {
       await controller.updatePackage("env", "pkg", {
          name: "pkg",
          location: null as unknown as string,
-         description: "renamed",
+         manifestLocation: "gs://bucket/pkg___1.0.0.manifest.json",
       });
 
       expect(installPackage.called).toBe(false);

@@ -12,6 +12,7 @@ import {
    WriteConflictError,
    WriteRollbackFailedError,
    WriteRolledBackError,
+   ConflictError,
 } from "../errors";
 import { resetReportMetricsForTest } from "../report_metrics";
 import {
@@ -67,6 +68,8 @@ function harness(
       reloadedNotes?: string[];
       /** A refusal the environment raises once the lock is held (a link leading outside). */
       writeRefusal?: Error;
+      /** The location the package was installed from, if any (its install record). */
+      installedFrom?: string;
    } = {},
 ) {
    const model = {
@@ -81,6 +84,10 @@ function harness(
          },
    };
    const pkg = {
+      getPackageMetadata: () => ({
+         name: "pkg",
+         location: options.installedFrom,
+      }),
       getModel: sinon.stub().returns(model),
       // A report, served or (a grid one with no tiles yet) not.
       isReport: () =>
@@ -497,6 +504,23 @@ describe("ReportController.putReportSource", () => {
          ).rejects.toBeInstanceOf(WriteConflictError);
       },
    );
+
+   it("refuses a write to a package installed from a location, which a reload would discard (409)", async () => {
+      const { controller, environment } = harness({
+         current: BEFORE,
+         installedFrom: "gs://bucket/pkg.zip",
+      });
+      const refusal = controller.putReportSource("env", "pkg", PATH, {
+         source: AFTER,
+         expectedHash: contentHashOf(BEFORE),
+      });
+      await expect(refusal).rejects.toThrow(
+         /installed from gs:\/\/bucket\/pkg\.zip.*reload/,
+      );
+      await expect(refusal).rejects.toBeInstanceOf(ConflictError);
+      expect(environment.compileSource.called).toBe(false);
+      expect(environment.writeModelFileTransactional.called).toBe(false);
+   });
 
    it("refuses text that does not compile, and writes nothing", async () => {
       const { controller, environment } = harness({
