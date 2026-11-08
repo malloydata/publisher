@@ -17,7 +17,6 @@ import { setPackagePatchDeprecationHeaders } from "../controller/package.control
 import { BadRequestError, ServiceUnavailableError } from "../errors";
 import { setFilterDeprecationHeaders } from "../filter_deprecation";
 import { logger, redactSensitive } from "../logger";
-import { queryConcurrency } from "../query_concurrency";
 import {
    normalizeQueryArray,
    parseNonNegativeIntParam,
@@ -285,7 +284,7 @@ function registerConnectionRoutes(
    apiPrefix: string,
    env: string,
    pkg: string,
-   { connectionController }: AppServices,
+   { connectionController, querySlots }: AppServices,
 ): void {
    const conn = `${env}/connections/:connectionName`;
    const pkgConn = `${pkg}/connections/:connectionName`;
@@ -406,12 +405,12 @@ function registerConnectionRoutes(
    ) => {
       app.post(
          `${conn}${suffix}`,
-         queryConcurrency(),
+         querySlots.middleware,
          apiRoute((req) => handler(req, undefined, undefined)),
       );
       app.post(
          `${pkgConn}${suffix}`,
-         queryConcurrency(),
+         querySlots.middleware,
          apiRoute((req) =>
             handler(req, req.params.packageName, req.query.versionId),
          ),
@@ -490,6 +489,7 @@ function registerPackageRoutes(
       reportController,
       environmentStore,
       versionController,
+      querySlots,
    } = c;
 
    app.get(
@@ -722,7 +722,7 @@ function registerPackageRoutes(
       // A save compiles and reloads under the package lock, more work than
       // one /compile. Ungated it would also convoy: slot-holding compiles on
       // the package would pile up behind a save holding the mutex.
-      queryConcurrency(),
+      querySlots.middleware,
       reportWriteRoute(reportController),
    );
    app.get(
@@ -749,13 +749,18 @@ function registerPackageRoutes(
       ),
    );
 
-   registerDeprecatedRoutes(app, apiPrefix, environmentStore);
+   registerDeprecatedRoutes(app, apiPrefix, environmentStore, querySlots);
 }
 
 function registerQueryRoutes(
    app: express.Express,
    pkg: string,
-   { queryController, databaseController, compileController }: AppServices,
+   {
+      queryController,
+      databaseController,
+      compileController,
+      querySlots,
+   }: AppServices,
 ): void {
    const recordRefusal = (req: express.Request, error: Error) =>
       queryController.recordRefusal(
@@ -768,7 +773,7 @@ function registerQueryRoutes(
       );
    app.post(
       `${pkg}/models/*?/query`,
-      queryConcurrency(),
+      querySlots.middleware,
       async (req: express.Request, res: express.Response) => {
          let includeHiddenFilesAndSources: boolean;
          try {
@@ -856,7 +861,7 @@ function registerQueryRoutes(
       `${pkg}/models/*?/compile`,
       // Compile runs real Malloy compilation (and resolves source schemas
       // against the connection), so it is admission-controlled like a query.
-      queryConcurrency(),
+      querySlots.middleware,
       apiRoute((req) =>
          compileController.compile(
             req.params.environmentName,

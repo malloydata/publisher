@@ -18,12 +18,12 @@ import { afterEach, describe, expect, it } from "bun:test";
 import type { Server } from "http";
 import net, { type AddressInfo } from "net";
 
-import {
-   getActiveQueryCount,
-   resetActiveQueryCountForTesting,
-} from "../../../src/query_concurrency";
+import { QuerySlots } from "../../../src/query_concurrency";
 import { API_PREFIX, buildRouteApp } from "../../../src/test_helpers/route_app";
 import { installSettings } from "../../../src/test_helpers/settings_env";
+
+/** The pool the served routes take their slot from; fresh for each case. */
+let slots = new QuerySlots();
 
 /**
  * Puts back the settings a case installed, so a cap set here cannot leak into
@@ -42,7 +42,7 @@ function installCap(cap: string): void {
 afterEach(() => {
    restoreSettings?.();
    restoreSettings = undefined;
-   resetActiveQueryCountForTesting();
+   slots = new QuerySlots();
 });
 
 /** A promise plus the handles that settle it, so a query can be held open. */
@@ -63,10 +63,10 @@ function deferred(): {
 /** Polls until the slot count reaches `count`, or gives up after `ms`. */
 async function slotsReach(count: number, ms = 2000): Promise<number> {
    const deadline = Date.now() + ms;
-   while (getActiveQueryCount() !== count && Date.now() < deadline) {
+   while (slots.active !== count && Date.now() < deadline) {
       await new Promise((r) => setTimeout(r, 10));
    }
-   return getActiveQueryCount();
+   return slots.active;
 }
 
 /**
@@ -76,6 +76,7 @@ async function slotsReach(count: number, ms = 2000): Promise<number> {
  */
 async function abandonQuery(hold: Promise<void>): Promise<Server> {
    const server = buildRouteApp({
+      querySlots: slots,
       queryController: {
          getQuery: async () => {
             await hold;

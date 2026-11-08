@@ -274,6 +274,3 @@ export class HeldResults {
       this.entries.delete(key);
    }
 }
-
-/** The process's held results. */
-export const heldResults = new HeldResults();

@@ -18,6 +18,7 @@ import * as path from "path";
 import type { Package } from "../../../src/service/package";
 import { installVariables } from "../../../src/test_helpers/settings_env";
 import { startRestE2E } from "../../harness/rest_e2e";
+import { bootMainServer } from "../../harness/main_server";
 import { writePackageFiles } from "../../../src/test_helpers/temp_package";
 
 const ENV_NAME = "secure-givens-env";
@@ -117,7 +118,7 @@ describe("secureGivens on the package responses", () => {
    }
 
    async function getPackage(name: string): Promise<Package> {
-      const { environmentStore } = await import("../../../src/main_server");
+      const { environmentStore } = await bootMainServer();
       const environment = await environmentStore.getEnvironment(
          parseEnvironmentName(ENV_NAME),
          false,

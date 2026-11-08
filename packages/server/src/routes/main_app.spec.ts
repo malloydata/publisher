@@ -12,6 +12,7 @@ import { describe, expect, it, spyOn } from "bun:test";
 import request from "supertest";
 import { MAX_OVERLAY_BYTES } from "../constants";
 import { logger } from "../logger";
+import { QuerySlots } from "../query_concurrency";
 import { API_PREFIX, buildRouteApp } from "../test_helpers/route_app";
 import { createMainApp } from "./main_app";
 
@@ -59,7 +60,7 @@ describe("createMainApp", () => {
 
    it("serves the Console and its fallback only when given its root, and /metrics only when given its handler", () => {
       const app = createMainApp({
-         controllers: {} as never,
+         controllers: { querySlots: new QuerySlots() } as never,
          dataAppRuntimePath: "/nonexistent/publisher.js",
          consoleRoot: "/nonexistent/app",
          metricsHandler: (_req, res) => {
@@ -82,7 +83,7 @@ describe("createMainApp", () => {
    it("in development proxies the Console and still access-logs each request once", () => {
       const names = layout(
          createMainApp({
-            controllers: {} as never,
+            controllers: { querySlots: new QuerySlots() } as never,
             dataAppRuntimePath: "/nonexistent/publisher.js",
             proxyConsoleToDevServer: true,
          }),

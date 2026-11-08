@@ -12,6 +12,7 @@ import {
 // Shared with the package index so a query is humanized the same way
 // whichever index answers it.
 import { humanizeName } from "./embedding_index";
+import { retrievalRegistry } from "../registry";
 import {
    PROVIDER_FAILURE_COOLDOWN_MS,
    providerKeyFor,
@@ -154,7 +155,7 @@ export function rankLexically(
    if (!sanitized || tables.length === 0) return { hits: [], matched: 0 };
 
    const fingerprint = cacheKey ? schemaFingerprint(tables) : "";
-   let cached = cacheKey ? lexicalCache.get(cacheKey) : undefined;
+   let cached = cacheKey ? lexicalCache().get(cacheKey) : undefined;
    if (cached && cached.fingerprint !== fingerprint) cached = undefined;
 
    const byResource =
@@ -171,17 +172,17 @@ export function rankLexically(
          }
       });
    if (cacheKey && !cached) {
-      lexicalCache.delete(cacheKey);
-      lexicalCache.set(cacheKey, { index, byResource, fingerprint });
-      while (lexicalCache.size > MAX_CACHED_SCHEMAS) {
-         const oldest = lexicalCache.keys().next();
+      lexicalCache().delete(cacheKey);
+      lexicalCache().set(cacheKey, { index, byResource, fingerprint });
+      while (lexicalCache().size > MAX_CACHED_SCHEMAS) {
+         const oldest = lexicalCache().keys().next();
          if (oldest.done) break;
-         lexicalCache.delete(oldest.value);
+         lexicalCache().delete(oldest.value);
       }
    } else if (cacheKey && cached) {
       // Mark most-recently-used.
-      lexicalCache.delete(cacheKey);
-      lexicalCache.set(cacheKey, cached);
+      lexicalCache().delete(cacheKey);
+      lexicalCache().set(cacheKey, cached);
    }
 
    let hits: lunr.Index.Result[];
@@ -232,7 +233,8 @@ interface VectorCacheEntry {
  * rebuilding is one batch call per schema, and writing a customer's warehouse
  * identifiers to disk is a separate disclosure decision.
  */
-const vectorCache = new Map<string, VectorCacheEntry>();
+const vectorCache = (): Map<string, VectorCacheEntry> =>
+   retrievalRegistry().schemaIndex.vectors;
 
 interface LexicalCacheEntry {
    index: lunr.Index;
@@ -246,27 +248,39 @@ interface LexicalCacheEntry {
  * Rebuilding per call blocks the event loop (roughly 180ms for 5,000 tables,
  * growing linearly). Keyed by fingerprint so a changed schema rebuilds.
  */
-const lexicalCache = new Map<string, LexicalCacheEntry>();
-const cooldownUntilMs = new Map<string, number>();
+const lexicalCache = (): Map<string, LexicalCacheEntry> =>
+   retrievalRegistry().schemaIndex.lexical;
+const cooldownUntilMs = (): Map<string, number> =>
+   retrievalRegistry().schemaIndex.cooldownUntilMs;
+
+/**
+ * The caches above, held by the RetrievalRegistry: in memory only, keyed by
+ * schema and bounded by MAX_CACHED_SCHEMAS.
+ */
+export class SchemaIndexCaches {
+   readonly vectors = new Map<string, VectorCacheEntry>();
+   readonly lexical = new Map<string, LexicalCacheEntry>();
+   readonly cooldownUntilMs = new Map<string, number>();
+}
 
 /** Read an entry and mark it most-recently-used (Map insertion order is the LRU). */
 function touchCacheEntry(key: string): VectorCacheEntry | undefined {
-   const entry = vectorCache.get(key);
+   const entry = vectorCache().get(key);
    if (entry) {
-      vectorCache.delete(key);
-      vectorCache.set(key, entry);
+      vectorCache().delete(key);
+      vectorCache().set(key, entry);
    }
    return entry;
 }
 
 /** Store an entry, evicting the least-recently-used until within the cap. */
 function storeCacheEntry(key: string, entry: VectorCacheEntry): void {
-   vectorCache.delete(key);
-   vectorCache.set(key, entry);
-   while (vectorCache.size > MAX_CACHED_SCHEMAS) {
-      const oldest = vectorCache.keys().next();
+   vectorCache().delete(key);
+   vectorCache().set(key, entry);
+   while (vectorCache().size > MAX_CACHED_SCHEMAS) {
+      const oldest = vectorCache().keys().next();
       if (oldest.done) break;
-      vectorCache.delete(oldest.value);
+      vectorCache().delete(oldest.value);
    }
 }
 
@@ -276,18 +290,11 @@ function storeCacheEntry(key: string, entry: VectorCacheEntry): void {
  * path, so pruning there would let it add an entry per schema forever.
  */
 function pruneCooldowns(): void {
-   if (cooldownUntilMs.size <= MAX_CACHED_SCHEMAS * 4) return;
+   if (cooldownUntilMs().size <= MAX_CACHED_SCHEMAS * 4) return;
    const now = Date.now();
-   for (const [k, until] of cooldownUntilMs) {
-      if (until <= now) cooldownUntilMs.delete(k);
+   for (const [k, until] of cooldownUntilMs()) {
+      if (until <= now) cooldownUntilMs().delete(k);
    }
-}
-
-/** Test seam: drop all cached state. */
-export function _resetSchemaIndexStateForTests(): void {
-   vectorCache.clear();
-   lexicalCache.clear();
-   cooldownUntilMs.clear();
 }
 
 /**
@@ -319,7 +326,7 @@ async function tryRankSemantically(args: {
       return null;
    }
 
-   const until = cooldownUntilMs.get(cacheKey);
+   const until = cooldownUntilMs().get(cacheKey);
    if (until !== undefined && Date.now() < until) return null;
 
    const fingerprint = schemaFingerprint(tables);
@@ -372,7 +379,10 @@ async function tryRankSemantically(args: {
       scored.sort((a, b) => b.score - a.score);
       return { hits: scored.slice(0, limit), matched: scored.length };
    } catch (error) {
-      cooldownUntilMs.set(cacheKey, Date.now() + PROVIDER_FAILURE_COOLDOWN_MS);
+      cooldownUntilMs().set(
+         cacheKey,
+         Date.now() + PROVIDER_FAILURE_COOLDOWN_MS,
+      );
       pruneCooldowns();
       // The message can carry a provider body excerpt but never the API key,
       // which stays in the Authorization header.

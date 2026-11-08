@@ -37,7 +37,7 @@ import {
    recordGateRefusal,
    wildcardParam,
 } from "./routes/json_route";
-import { queryConcurrency } from "./query_concurrency";
+import type { QuerySlots } from "./query_concurrency";
 import { normalizeQueryArray } from "./query_param_utils";
 import {
    assertListingTakesNoVersionId,
@@ -61,6 +61,8 @@ export interface LegacyControllerSet {
    queryController: QueryController;
    compileController: CompileController;
    materializationController: MaterializationController;
+   /** The process's one query-slot pool, shared with the new routes. */
+   querySlots: QuerySlots;
 }
 
 // ─── response/body field mappers ───────────────────────────────────────────
@@ -93,6 +95,7 @@ export function registerLegacyRoutes(
       queryController,
       compileController,
       materializationController,
+      querySlots,
    } = controllers;
    const legacyReportController = new LegacyReportController(environmentStore);
    // ── projects (== environments) ──────────────────────────────────────────
@@ -249,7 +252,7 @@ export function registerLegacyRoutes(
       );
       app.post(
          `${prefix}/sqlSource`,
-         queryConcurrency(),
+         querySlots.middleware,
          apiRoute((req) =>
             connectionController.getConnectionSqlSource(
                req.params.projectName,
@@ -262,7 +265,7 @@ export function registerLegacyRoutes(
       // queryData (GET) was removed from the modern surface.
       app.get(
          `${prefix}/queryData`,
-         queryConcurrency(),
+         querySlots.middleware,
          apiRoute((req) =>
             connectionController.getConnectionQueryData(
                req.params.projectName,
@@ -278,7 +281,7 @@ export function registerLegacyRoutes(
       );
       app.post(
          `${prefix}/sqlQuery`,
-         queryConcurrency(),
+         querySlots.middleware,
          apiRoute((req) =>
             connectionController.getConnectionQueryData(
                req.params.projectName,
@@ -294,7 +297,7 @@ export function registerLegacyRoutes(
       );
       app.post(
          `${prefix}/sqlTemporaryTable`,
-         queryConcurrency(),
+         querySlots.middleware,
          apiRoute((req) =>
             connectionController.getConnectionTemporaryTable(
                req.params.projectName,
@@ -397,7 +400,7 @@ export function registerLegacyRoutes(
    // authorize_bypass_wiring.
    app.post(
       `${LEGACY_API_PREFIX}/projects/:projectName/packages/:packageName/models/*?/query`,
-      queryConcurrency(),
+      querySlots.middleware,
       apiRoute(async (req) => {
          return queryController.getQuery({
             environmentName: req.params.projectName,
@@ -428,7 +431,7 @@ export function registerLegacyRoutes(
    app.post(
       `${LEGACY_API_PREFIX}/projects/:projectName/packages/:packageName/models/:modelName/compile`,
       // Gated like the modern compile route.
-      queryConcurrency(),
+      querySlots.middleware,
       apiRoute(async (req) => {
          return compileController.compile(
             req.params.projectName,
@@ -458,6 +461,7 @@ export function registerLegacyRoutes(
       ...notebookCellHandlers(legacyReportController, {
          environmentParam: "projectName",
          legacy: true,
+         querySlots,
       }),
    );
 

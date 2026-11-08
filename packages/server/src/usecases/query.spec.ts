@@ -20,7 +20,7 @@ import {
 import sinon from "sinon";
 import { BadRequestError, ModelNotFoundError } from "../errors";
 import { logger } from "../logger";
-import { getActiveQueryCount } from "../query_concurrency";
+import { QuerySlots } from "../query_concurrency";
 import type { AccessRecord } from "../service/access_record";
 import type { EnvironmentStore } from "../service/environment_store";
 import type { Model } from "../service/model";
@@ -67,6 +67,10 @@ function records(): AccessRecord[] {
       .map(([, record]) => record as AccessRecord);
 }
 
+/** The pool every use case in this file takes its slot from. */
+const slots = new QuerySlots();
+const getActiveQueryCount = () => slots.active;
+
 function useCaseOver(version?: string) {
    const pkg = {
       getModel: (path: string) => (path === "m.malloy" ? model : undefined),
@@ -83,7 +87,7 @@ function useCaseOver(version?: string) {
    const store = {
       getEnvironment: async () => environment,
    } as unknown as EnvironmentStore;
-   return new QueryUseCase(store);
+   return new QueryUseCase(store, slots);
 }
 
 const COMMAND: QueryCommand = {

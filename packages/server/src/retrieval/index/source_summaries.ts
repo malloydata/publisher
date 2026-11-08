@@ -50,6 +50,7 @@ import {
    runPooled,
 } from "../llm/llm_calls";
 import { scrubForEgress } from "../shared";
+import { retrievalRegistry } from "../registry";
 
 /** Most fields rendered for one source (and for each joined source). */
 export const SOURCE_SUMMARY_MAX_FIELDS = 200;
@@ -508,10 +509,11 @@ export function sourceSummaryInputsDigest(
    return createHash("sha256").update(rows.join("\n")).digest("hex");
 }
 
-const hashesCache = new WeakMap<
+/** Current input hashes per frozen entity list, by prompt-and-model variant (RetrievalRegistry.summaryHashes). */
+export type SummaryHashesCache = WeakMap<
    readonly SummaryEntity[],
    Map<string, Map<string, string>>
->();
+>;
 
 /**
  * The input hash a stored summary must carry to be current, by summaryKey.
@@ -526,6 +528,7 @@ export function currentSummaryHashes(
    >,
 ): ReadonlyMap<string, string> {
    const frozen = Object.isFrozen(entities);
+   const hashesCache = retrievalRegistry().summaryHashes;
    const variant = `${settings.promptHash}\u0000${settings.modelId}\u0000${settings.maxPromptChars ?? ""}`;
    const cached = frozen ? hashesCache.get(entities)?.get(variant) : undefined;
    if (cached) return cached;
