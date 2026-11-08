@@ -54,8 +54,8 @@ info:
     "cancelled"`. The one explicit action is `POST …/connections/{connectionName}/test`.
 
     - `PATCH` is JSON merge-patch: present fields are set, `null` unsets, absent fields are untouched, lists replace.
-    `PUT` replaces the whole resource where that is wanted (environments, theme). `POST` on a collection answers 201
-    with the resource and a `Location`; `DELETE` answers 204.
+    `PUT` replaces the whole resource where that is wanted (environments, for an orchestrator's push). `POST` on a
+    collection answers 201 with the resource and a `Location`; `DELETE` answers 204.
 
     - Every mutable resource carries a `revision`, returned as `ETag` on reads; every write accepts `If-Match` and
     answers 412 when the resource has moved on.
@@ -79,7 +79,7 @@ servers:
     description: This server
 tags:
   - name: server
-    description: This server's state and its theme.
+    description: This server's state.
   - name: environments
     description: Namespaces for packages and connections; the unit of tenancy.
   - name: connections
@@ -128,103 +128,6 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/ServerStatus"
-        "503":
-          $ref: "#/components/responses/Unavailable"
-  /theme:
-    get:
-      operationId: get-theme
-      tags:
-        - server
-      summary: The instance theme
-      responses:
-        "200":
-          description: The theme.
-          headers:
-            ETag:
-              $ref: "#/components/headers/ETag"
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/Theme"
-        "400":
-          $ref: "#/components/responses/BadRequest"
-        "401":
-          $ref: "#/components/responses/Unauthorized"
-        "403":
-          $ref: "#/components/responses/Forbidden"
-        "404":
-          $ref: "#/components/responses/NotFound"
-        "409":
-          $ref: "#/components/responses/Conflict"
-        "412":
-          $ref: "#/components/responses/PreconditionFailed"
-        "500":
-          $ref: "#/components/responses/Internal"
-        "503":
-          $ref: "#/components/responses/Unavailable"
-    put:
-      operationId: replace-theme
-      tags:
-        - server
-      summary: Replace the instance theme
-      parameters:
-        - $ref: "#/components/parameters/ifMatch"
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              $ref: "#/components/schemas/Theme"
-      responses:
-        "200":
-          description: The theme as stored.
-          headers:
-            ETag:
-              $ref: "#/components/headers/ETag"
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/Theme"
-        "400":
-          $ref: "#/components/responses/BadRequest"
-        "401":
-          $ref: "#/components/responses/Unauthorized"
-        "403":
-          $ref: "#/components/responses/Forbidden"
-        "404":
-          $ref: "#/components/responses/NotFound"
-        "409":
-          $ref: "#/components/responses/Conflict"
-        "412":
-          $ref: "#/components/responses/PreconditionFailed"
-        "500":
-          $ref: "#/components/responses/Internal"
-        "503":
-          $ref: "#/components/responses/Unavailable"
-    delete:
-      operationId: reset-theme
-      tags:
-        - server
-      summary: Reset the theme to the server default
-      parameters:
-        - $ref: "#/components/parameters/ifMatch"
-      responses:
-        "204":
-          description: Reset.
-        "400":
-          $ref: "#/components/responses/BadRequest"
-        "401":
-          $ref: "#/components/responses/Unauthorized"
-        "403":
-          $ref: "#/components/responses/Forbidden"
-        "404":
-          $ref: "#/components/responses/NotFound"
-        "409":
-          $ref: "#/components/responses/Conflict"
-        "412":
-          $ref: "#/components/responses/PreconditionFailed"
-        "500":
-          $ref: "#/components/responses/Internal"
         "503":
           $ref: "#/components/responses/Unavailable"
   /environments:
@@ -6322,8 +6225,6 @@ components:
           type: array
           items:
             $ref: "#/components/schemas/EnvironmentStatus"
-        theme:
-          $ref: "#/components/schemas/Theme"
     ServingState:
       type: object
       description: "How this server holds one version right now. The same schema in two reads: per version under `GET
@@ -6914,154 +6815,6 @@ components:
             $ref: "#/components/schemas/TableSummary"
         nextCursor:
           $ref: "#/components/schemas/Cursor"
-    Theme:
-      type: object
-      description: Visual theme applied to Malloy renderer output (chart palette, fonts, table chrome) and to the Publisher
-        app shell. Cascade order is instance → per-chart Malloy annotation, with later layers overriding earlier ones
-        for the keys they set. (A per-environment layer is reserved but not yet applied by the client.)
-      properties:
-        defaultMode:
-          type: string
-          enum:
-            - light
-            - dark
-            - auto
-          description: Initial color mode for new viewers. "auto" follows the browser's prefers-color-scheme until the viewer
-            overrides.
-        allowUserToggle:
-          type: boolean
-          description: When true, the Publisher app renders a light/dark toggle and persists the viewer's choice to localStorage.
-            When false, the defaultMode is enforced.
-        palette:
-          type: object
-          description: Color tokens consumed by the Malloy renderer and the app shell.
-          properties:
-            series:
-              type: array
-              description: Ordered list of hex colors used by multi-series charts (passed to Vega's `range.category`). Shared across
-                light and dark modes so the brand palette stays consistent when viewers switch modes.
-              items:
-                type: string
-            background:
-              type: object
-              description: Page and chart background per mode.
-              properties:
-                light:
-                  type: string
-                dark:
-                  type: string
-            tableHeader:
-              type: object
-              description: Foreground color for the table header per mode.
-              properties:
-                light:
-                  type: string
-                dark:
-                  type: string
-            tableHeaderBackground:
-              type: object
-              description: Background color for the table header row, per mode. Distinct from `tile` (the dashboard tile container
-                that wraps each chart / table) so operators can theme the header band independently from the padding
-                around the table.
-              properties:
-                light:
-                  type: string
-                dark:
-                  type: string
-            tableBody:
-              type: object
-              description: Foreground color for table body cells per mode.
-              properties:
-                light:
-                  type: string
-                dark:
-                  type: string
-            tile:
-              type: object
-              description: Background color of the dashboard tile (the padded container that wraps each chart / table) per mode.
-              properties:
-                light:
-                  type: string
-                dark:
-                  type: string
-            tileTitle:
-              type: object
-              description: Foreground color for the title text that sits in the dashboard tile padding (e.g. the "by_month" label
-                above a chart) per mode.
-              properties:
-                light:
-                  type: string
-                dark:
-                  type: string
-            mapColor:
-              type: object
-              description: Saturated end of the gradient used by choropleth maps and other sequential color scales. The renderer pairs
-                it with a near-neutral low end so the operator only picks the brand-saturated colour.
-              properties:
-                light:
-                  type: string
-                dark:
-                  type: string
-            border:
-              type: object
-              description: Hairline color for table gridlines and row rules, per mode.
-              properties:
-                light:
-                  type: string
-                dark:
-                  type: string
-            cardBorder:
-              type: object
-              description: Edge color of a dashboard card and of a pinned table header row, per mode. A step stronger than `border`,
-                so a card reads as a card on a page whose ground and tile share one colour.
-              properties:
-                light:
-                  type: string
-                dark:
-                  type: string
-            axis:
-              type: object
-              description: Color of chart axis domain and tick lines, per mode.
-              properties:
-                light:
-                  type: string
-                dark:
-                  type: string
-            gridline:
-              type: object
-              description: Color of chart gridlines, per mode.
-              properties:
-                light:
-                  type: string
-                dark:
-                  type: string
-            chartText:
-              type: object
-              description: Color of chart text (axis labels and titles, legend, chart and header titles), per mode.
-              properties:
-                light:
-                  type: string
-                dark:
-                  type: string
-            value:
-              type: object
-              description: Color of the big-value (KPI) number in a dashboard tile, per mode.
-              properties:
-                light:
-                  type: string
-                dark:
-                  type: string
-        font:
-          type: object
-          description: Typography overrides applied to both the app shell and the Malloy renderer (Vega text marks). Shared across
-            light and dark modes because font choice is a brand decision, not a mode-specific one.
-          properties:
-            family:
-              type: string
-              description: CSS font-family stack.
-            size:
-              type: number
-              description: Base font size in pixels for renderer text.
     TrinoConnection:
       type: object
       description: Trino database connection configuration

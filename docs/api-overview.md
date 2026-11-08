@@ -61,8 +61,8 @@ parent.
   `status: "cancelled"`. The one explicit action is `POST …/connections/{connectionName}/test`; to test an unsaved
   configuration, create or update with `?dryRun=true`.
 - **One mutation shape.** `PATCH` is JSON merge-patch: present fields are set, `null` unsets, absent fields are untouched,
-  lists replace. `PUT` replaces the whole resource where that is wanted (environments, for an orchestrator's push; the
-  theme). `POST` on a collection answers 201 with the resource and a `Location`; `DELETE` answers 204.
+  lists replace. `PUT` replaces the whole resource where that is wanted (environments, for an orchestrator's push).
+  `POST` on a collection answers 201 with the resource and a `Location`; `DELETE` answers 204.
 - **Concurrency.** Every mutable resource carries a `revision`, returned as `ETag` on reads. Send it back as `If-Match` on
   a write; 412 `REVISION_MISMATCH` when the resource has moved on. The report write also takes `expectedHash`, the
   SHA-256 of the text you read.
