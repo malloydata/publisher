@@ -3,17 +3,17 @@ Copyright (c) Credible Data Inc.
 SPDX-License-Identifier: MIT
 -->
 
-# Plan: Publisher's next API and storage, and the retirement of v0
+# Publisher v1: the first major release
 
-**Status: plan of record, proposed.** This document consolidates six issues into one plan: [#1562](https://github.com/malloydata/publisher/issues/1562) (the API review and the decisions behind the new API), [#1560](https://github.com/malloydata/publisher/issues/1560) (the storage redesign) [#1540](https://github.com/malloydata/publisher/issues/1540) (shipping the new API, moving every client, and retiring v0 and every deprecated feature) [#1539](https://github.com/malloydata/publisher/issues/1539) (which reads may load a package), [#1538](https://github.com/malloydata/publisher/issues/1538) (one implementation for queryability and gates) and [ms2data/service#7479](https://github.com/ms2data/service/issues/7479) (the Publisher half of cutting load time for draft checkpoints). The three issues are closed; everything they held is here, and they remain as history. Tracking happens against this document's steps. The new API's spec is [`api-doc.v1.yaml`](../api-doc.v1.yaml), drafted in [#1563](https://github.com/malloydata/publisher/pull/1563); its reference is [api-overview.md](api-overview.md).
+**Status: plan of record, proposed.** Publisher v1 is the first major release, version 1.0.0. It ships a new API at `/api/v1`, rebuilds the storage underneath it, moves every client we own to the new API, and removes `/api/v0` and every deprecated feature. The work lands over a series of 0.x releases and finishes with the 1.0.0 release, after a 90-day window announced in advance. This document is the plan, consolidated from six issues: [#1562](https://github.com/malloydata/publisher/issues/1562) (the API review and the decisions behind the new API), [#1560](https://github.com/malloydata/publisher/issues/1560) (the storage redesign) [#1540](https://github.com/malloydata/publisher/issues/1540) (shipping the new API, moving every client, and retiring v0 and every deprecated feature) [#1539](https://github.com/malloydata/publisher/issues/1539) (which reads may load a package), [#1538](https://github.com/malloydata/publisher/issues/1538) (one implementation for queryability and gates) and [ms2data/service#7479](https://github.com/ms2data/service/issues/7479) (the Publisher half of cutting load time for draft checkpoints). The three issues are closed; everything they held is here, and they remain as history. Tracking happens against this document's steps. The new API's spec is [`api-doc.v1.yaml`](../api-doc.v1.yaml), drafted in [#1563](https://github.com/malloydata/publisher/pull/1563); its reference is [api-overview.md](api-overview.md).
 
 "Today" means `fix/server-bugs` at `ccd659a64` (2026-11-08). Every claim about today in the storage sections carries a `path:line` under `packages/server/src/`, collected in [Appendix A](#appendix-a-evidence); the API review's findings, with their evidence, are [Appendix C](#appendix-c-the-api-reviews-findings), and the route-by-consumer usage matrix is [Appendix D](#appendix-d-the-usage-matrix).
 
-**How to read it.** [The goal](#1-the-goal) says what the three pieces of work are for. [Today](#2-today) says what exists and where it falls short. [The target](#3-the-target) is the design: one resource model, the API over it, and the storage under it. [The order of work](#4-the-order-of-work) is the single sequence everything is built in, with each step's scope and acceptance; it is the part to come back to. [What the removal release removes](#5-what-the-removal-release-removes) is the inventory of everything deprecated. [Decisions](#6-decisions) and [Open questions](#7-open-questions) are the record.
+**How to read it.** [The goal](#1-the-goal) says what v1 is for and what 1.0 promises. [Today](#2-today) says what exists and where it falls short. [The target](#3-the-target) is the design: one resource model, the API over it, and the storage under it. [The order of work](#4-the-order-of-work) is the single sequence everything is built in, with each step's scope and acceptance; it is the part to come back to. [What the 1.0.0 release removes](#5-what-10-removes) is the inventory of everything deprecated. [Decisions](#6-decisions) and [Open questions](#7-open-questions) are the record.
 
 ## 1. The goal
 
-Three pieces of work with one shape: the API is designed first, the storage is rebuilt under it, and the old API and every deprecated feature are retired on a date.
+Publisher has shipped as 0.x releases while its API, package format and storage took shape, and each carries the marks of that: three naming conventions in one spec, four homes for one status, a database that is a copy of memory. v1 is the release where the shape is settled and promised. Three pieces of work with one shape: the API is designed first, the storage is rebuilt under it, and the old API and every deprecated feature are retired on a date.
 
 **The API** (#1562) is held to three expectations:
 
@@ -27,9 +27,22 @@ Three pieces of work with one shape: the API is designed first, the storage is r
 2. **A request touches only the storage it needs.** Reading or changing one resource reads or writes that resource. It does not load the environment, rewrite a large blob, or recompile a package.
 3. **It follows system-design practice.** Each piece of state has one owner and one source of truth. Invariants hold inside transactions. Crashes recover. Growth is bounded, and the schema is versioned.
 
-**The rollout** (#1540) is one rule: ship the new API, move everything we own to it, warn on everything users own that is deprecated, give the community 90 days, then remove v0 and every deprecated feature in one release.
+**The rollout** (#1540) is one rule: ship the new API, move everything we own to it, warn on everything users own that is deprecated, give the community 90 days, then remove v0 and every deprecated feature in one release. That release is 1.0.0.
 
-Two decisions shape everything below. **The new API is greenfield**: a new spec at `/api/v1`, designed from the review, with `/api/v0` frozen and deprecated as a whole; nothing in v0 is renamed or reshaped to meet v1 halfway. **v1 is built over today's storage**: it needs only the first storage step (the catalog of record, with `revision` and the version columns), so the 90-day clock does not wait for the rest of the storage work, which then replaces the storage under both APIs without changing a route.
+### What 1.0 promises
+
+From 1.0.0 on, every 1.x release keeps these contracts, and anything that breaks one is a 2.0:
+
+- **The API.** `/api/v1` changes additively: new optional fields, new routes, new enum members where clients are told to tolerate unknowns. Nothing is removed or retyped. The MCP tools' arguments and results follow the same schemas.
+- **The package format.** Every `publisher.json` key and model annotation the 1.0 docs describe is read by every 1.x release. A key or annotation deprecated in 1.x warns, with its rewrite, for the rest of 1.x; its reader goes in 2.0.
+- **The store.** Every 1.x release opens a store a 1.0 release wrote, through recorded migrations, and a 1.x release opens the store the next 1.x release wrote until a migration says otherwise. Rollback is running the previous release.
+- **Configuration.** The settings file's keys, variables and flags follow [configuration-design.md](configuration-design.md); resources are created through the API and an init script, never read from the file.
+
+The 0.x releases before 1.0.0 are where the contracts are built; they carry the usual release notes and may still change what they ship.
+
+Two decisions shape everything below. **The new API is greenfield**: a new spec at `/api/v1`, designed from the review, with `/api/v0` frozen and deprecated as a whole; nothing in v0 is renamed or reshaped to meet the new one halfway. **The new API is built over today's storage**: it needs only the first storage step (the catalog of record, with `revision` and the version columns), so the 90-day clock does not wait for the rest of the storage work, which then replaces the storage under both APIs without changing a route.
+
+A note on names. "v1" below means Publisher v1, the program and the 1.0 release; `/api/v1` is its API and `/api/v0` the one it retires; the storage design's own phases and the rollout's stages are folded into the one order of work in section 4.
 
 ## 2. Today
 
@@ -468,7 +481,7 @@ Consequences:
 - **The zero-flag quick start needs a bootstrap.** `npx @malloy-publisher/server` serves the bundled samples today by reading the bundled config. To keep that, the server gets `--apply <file>` (`PUBLISHER_APPLY`): once `serving`, and only when the catalog is empty, it runs the code `malloy-pub apply` runs against its own API. The zero-flag start sets it to the bundled resources file; Docker and Compose set it when no CLI runs beside the server. It is still the API path, with a different driver (open for Kyle: see [Decisions](#6-decisions)).
 - **The hammer harness and the Playwright authoring pools** move from "a config naming only its own packages" to `apply` after boot.
 
-**Migration (step 5).** Until step 8, the server keeps reading an `environments` block: at boot, if the catalog is empty and the settings file carries the block, it applies it through the API path, logs a deprecation and counts `publisher_deprecated_usage_total{feature="config:environments"}`. `malloy-pub config split <file>` writes the two files. The removal release refuses the block. This slots into the configuration design's own migration steps.
+**Migration (step 5).** Until step 8, the server keeps reading an `environments` block: at boot, if the catalog is empty and the settings file carries the block, it applies it through the API path, logs a deprecation and counts `publisher_deprecated_usage_total{feature="config:environments"}`. `malloy-pub config split <file>` writes the two files. The 1.0.0 release refuses the block. This slots into the configuration design's own migration steps.
 
 #### The materialization commit protocol
 
@@ -595,7 +608,7 @@ Three rules the table implies, each with a violation today: a catalog write and 
 
 ## 4. The order of work
 
-One sequence, numbered 1 to 8, with two tracks beside it. The storage design's phases and the rollout's stages are folded into these steps; [Appendix B](#appendix-b-where-things-came-from) maps the old labels.
+One sequence, numbered 1 to 8, with two tracks beside it. Steps 1 to 7 ship as 0.x releases; step 8 is the 1.0.0 release. The storage design's phases and the rollout's stages are folded into these steps; [Appendix B](#appendix-b-where-things-came-from) maps the old labels.
 
 | Step | Work | Needs | Unblocks |
 |---|---|---|---|
@@ -605,15 +618,15 @@ One sequence, numbered 1 to 8, with two tracks beside it. The storage design's p
 | **4** | v1, built over today's storage, served beside v0; the admin v1 spec; v0 frozen with `Deprecation` headers and counted; the migration guide. | 3 | 5, 6 |
 | **5** | Resources through the API: the config split and `malloy-pub apply`, `resources.readOnly`; unload and warm start. | 4 | Credible's S1 |
 | **6** | Everything we own moves to v1: Console and SDK, CLI, MCP tools with the skills, docs and scripts, generated clients. Every deprecated manifest key and annotation warns and is counted. Credible's dated plan to switch. | 4 | 7 |
-| **7** | Release R announces the removal date; the 90-day window. | 5, 6, Credible's plan | 8 |
-| **8** | The removal release, no earlier than R + 90 days: v0 and every deprecated feature. | 7 | |
+| **7** | Release R, the last 0.x minor before 1.0, announces the 1.0.0 date; the 90-day window. | 5, 6, Credible's plan | 8 |
+| **8** | The 1.0.0 release, no earlier than R + 90 days: v0 and every deprecated feature removed, the 1.0 contracts in force. | 7 | |
 | **B1** | The materialization commit protocol: generational tables, manifest entries, bindings, leases, reclaim. | 3 | B3 |
 | **B2** | Content-addressed package storage: blobs, trees, overlays, server-made versions as versions, retention, the loaded-version LRU. | 3 | B3 |
 | **B3** | The derived store split out; the compiled-model store; bindings leave the compile; incremental recompile. | B1, B2 | B4 |
 | **B4** | One reconciler and GC service. | B1, B2 | |
 | **C** | Invalid annotations that warn today fail loudly. | | |
 
-**The critical path to the window** is 1 → 3 → 4 → 6 → 7: v1 waits only on step 3, because it is built over today's storage. Step 5 depends on v1 (`apply` uses `If-Match`) and is needed before R because Credible's warm-start work reads its fields. **Track B** is the rest of the storage design; it changes no route shape in either API, so it can land at any point after step 3, before or after the removal release. Landing B1 and B2 before step 8 means extending the v0 mappers to their records; landing them after spares that work at the cost of their benefits arriving later. **Track C** is independent and can start now, with its first item (the `#(filter)` fix) in step 2.
+**The critical path to the window** is 1 → 3 → 4 → 6 → 7: v1 waits only on step 3, because it is built over today's storage. Step 5 depends on v1 (`apply` uses `If-Match`) and is needed before R because Credible's warm-start work reads its fields. **Track B** is the rest of the storage design; it changes no route shape in either API, so it can land at any point after step 3, in a 0.x release or a 1.x release. Landing B1 and B2 before 1.0.0 means extending the v0 mappers to their records; landing them in 1.x spares that work at the cost of their benefits arriving later, and the 1.0 store promise then covers their migrations. **Track C** is independent and can start now, with its first item (the `#(filter)` fix) in step 2.
 
 Test tiers are the publisher's (`test:unit`, `test:component`, `test:integration`, the hammer scenarios); "standalone check" means the Docker image on an empty root with the example packages plus an upgrade of a root the previous release created; "Credible check" means the image on gcp dev with the pin bumped, read through the M0 dashboard and worker logs. Each step's hammer scenarios are written before its code, from its acceptance list.
 
@@ -644,7 +657,7 @@ Acceptance: a package POST reads one row and loads one package (spec on the repo
 - The migration runner, migration 0001 baseline, the column reconcile and the drop list removed; destinations become connections with a role (0002), secrets split out (0003), run control fields promoted (0004).
 - `revision` on every mutable record, for v1's `ETag`/`If-Match`.
 - The version columns v1 needs over today's storage: `seq`, `origin`, `parent_version`, `pinned` (migration 0005). Server-made versions (`+edit.N`, `+reload.N`) are full directory copies published through today's version store until B2 makes them content-addressed.
-- v0 mappers: v0's routes are served from the new records, keeping their shapes, until the removal release; each later phase that replaces a record v0 reads (runs and manifests in B1, version trees in B2) extends them.
+- v0 mappers: v0's routes are served from the new records, keeping their shapes, until the 1.0.0 release; each later phase that replaces a record v0 reads (runs and manifests in B1, version trees in B2) extends them.
 - A lint spec that nothing under `controller/` or `routes/` imports from `storage/`. (`server-old.ts` and the `/projects` aliases are removed at step 8, not here.)
 
 Acceptance: a connection write never reads or writes another resource (repository call log); the store from the previous release migrates in place with no row lost and a store too new is refused; the previous release still opens this release's store (downgrade test); `environments`, `connections`, `packages` rows carry no wire-shaped JSON; every v0 route answers as before over the new records (the existing contract and hammer suites, unchanged).
@@ -665,7 +678,7 @@ Since the API redesign ([#1562](https://github.com/malloydata/publisher/issues/1
 | `PATCH …/versions/{versionId}` takes `{"loaded": false}` as an unload; `/status` (both base paths) gains `hostname` and, per version, `loaded`, `lastReadAt`, `inFlightQueries`; `PUBLISHER_WARM_START` | step 5 |
 | `/status` gains `storage: {schemaVersion, gc: {...}}` | step 3, B4 |
 | `malloy-pub apply <file>` (and `--prune`), `malloy-pub config split <file>`; the server's `--apply <file>` / `PUBLISHER_APPLY` bootstrap | step 5 |
-| `resources.readOnly` replaces `frozenConfig` (alias until the removal release); the `environments` block of `publisher.config.json` deprecated, refused at the removal release | step 5 |
+| `resources.readOnly` replaces `frozenConfig` (alias until the 1.0.0 release); the `environments` block of `publisher.config.json` deprecated, refused at the 1.0.0 release | step 5 |
 | `GET …/connections/{connectionName}/tables` and `…/tables/{tableId}`: the `physical_tables` rows, with state and generation (a new v1 route, added with its phase); manifest entries' `tableId` resolves through it from then on | B1 |
 | `compiledFrom`, `compiledAt`, `schemaAsOf`, `compiledModelBytes` on `ServingState` (optional fields, absent until then); `PUBLISHER_COMPILED_MODEL_CACHE` and `PUBLISHER_COMPILED_MODEL_CACHE_MAX_BYTES`; `POST …/reload` becomes the guaranteed schema-refresh verb | B3 |
 | `GET`/`POST /admin/v1/gc` on the admin API | B4 |
@@ -682,14 +695,14 @@ Since the API redesign ([#1562](https://github.com/malloydata/publisher/issues/1
 
 ### Step 5: resources through the API, and restart in place
 
-- The config split: `malloy-pub apply`, `--apply`, `resources.readOnly`, the deprecated `environments` block applied once through the API path until the removal release; hammer and Playwright pools switched to `apply`.
+- The config split: `malloy-pub apply`, `--apply`, `resources.readOnly`, the deprecated `environments` block applied once through the API path until the 1.0.0 release; hammer and Playwright pools switched to `apply`.
 - The unload verb, per-version telemetry and `hostname` on `/status` (v0 additively, v1 in its shape), warm start (`loaded_at`): what the control plane needs for a worker to restart in place.
 
 Acceptance: hammer scenarios: `apply` of a resources file creates, re-applies as a no-op, updates a changed connection and prunes only with `--prune`; a server under `resources.readOnly` refuses the write on the serving API and takes it on the admin API; a settings file with an `environments` block seeds an empty catalog once, with a deprecation, and is ignored on the next boot; a loaded version unloads and a following read reloads it, unload during a run is 409, and after a restart the loaded version reports `loading` then `serving` without a read while the unloaded one stays unloaded; time from container start to `serving` on gcp dev within ±10% of the previous release.
 
 ### Step 6: move everything we own, and warn on everything users own
 
-The deprecated manifest keys and annotations that get a warning, a label and a migration-guide row in this step are listed in [section 5](#5-what-the-removal-release-removes); the work here is the clients and the warnings.
+The deprecated manifest keys and annotations that get a warning, a label and a migration-guide row in this step are listed in [section 5](#5-what-10-removes); the work here is the clients and the warnings.
 
 #### Clients
 
@@ -704,18 +717,20 @@ The deprecated manifest keys and annotations that get a warning, a label and a m
 These are not ours to move, but they are known, so they are tracked here and coordinated before the clock starts where possible.
 
 - [ ] **Credible's control plane and router** adopt v1 with a new mirror spec and a regenerated client. Today the control plane still reads `buildPlan` inline and the router projects several moved fields; the router proxies the dashboards, notebooks and both connection scopes to customers; the control plane parses `resource` positionally (`WorkerCalls.java:141-155`) and gates on `supportsDryRun`. Its customers' passthrough calls are what the router's own deprecation plan covers.
-- [ ] **`@malloydata/db-publisher`** calls `/projects/...` through the router's facade, not Publisher's. Publisher's aliases can go at the removal release regardless; the facade is the router's to retire.
+- [ ] **`@malloydata/db-publisher`** calls `/projects/...` through the router's facade, not Publisher's. Publisher's aliases can go at the 1.0.0 release regardless; the facade is the router's to retire.
 
-### Step 7: release R and the 90-day window
+### Step 7: release R, and the 90-day window
+
+R is the last 0.x minor before 1.0.0, the first release in which steps 4, 5 and 6 are complete and Credible has a dated plan to switch.
 
 - [ ] Release R's notes carry a **BREAKING (announced)** section: the removal date, what goes, the migration guide, and how to read your own `publisher_deprecated_usage_total` counters.
 - [ ] The date also appears in every `Deprecation`/`Link` header's target, in the load warnings' messages, and at the top of `docs/api-overview.md`.
 - [ ] Midway (day 45) and two weeks before the date, a reminder in the release notes with the counters we can see.
 - [ ] No deprecated surface is removed during the window. Bug fixes to v0 continue.
 
-### Step 8: the removal release (no earlier than R + 90 days)
+### Step 8: the 1.0.0 release (no earlier than R + 90 days)
 
-One release, one **BREAKING** section in `RELEASE_NOTES.md`, the spec, clients and docs updated in the same PRs. What it removes is [section 5](#5-what-the-removal-release-removes); the release after deletes the readers of the manifest keys and annotations it refused.
+The first major release, which removes `/api/v0` and every deprecated feature: one release, one **BREAKING** section in `RELEASE_NOTES.md`, the spec, clients and docs updated in the same PRs. What it removes is [section 5](#5-what-10-removes); 1.1 deletes the readers of the manifest keys and annotations 1.0 refused. From 1.0.0 the contracts in [What 1.0 promises](#what-10-promises) are in force.
 
 ### Track B: the rest of the storage design
 
@@ -767,12 +782,12 @@ Acceptance: plant an orphan blob, an orphan checkout, a `reclaimable` table, a s
 
 ### Track C: invalid annotations that warn today should fail loudly
 
-Steps 6 and 8 retire annotations that are *valid but deprecated*. This track is about annotations that are *invalid*: malformed, naming something that does not exist, or on the wrong kind of field. Today the Publisher answers each with a warning, a log line, or nothing, and loads the package. It is not tied to the 90-day clock: each row moves as soon as it is ready, and any refusal can ride the removal release.
+Steps 6 and 8 retire annotations that are *valid but deprecated*. This track is about annotations that are *invalid*: malformed, naming something that does not exist, or on the wrong kind of field. Today the Publisher answers each with a warning, a log line, or nothing, and loads the package. It is not tied to the 90-day clock: each row moves as soon as it is ready, and any refusal can ride the 1.0.0 release.
 
 Each row moves the same way:
 1. **A coded `Package.warnings` entry and a metric.** Several rows have neither.
 2. **Refuse at publish.** The `publish_checks.ts` pattern; packages already published keep loading.
-3. **Refuse at load**, once its metric reads zero for a release, or at the removal release.
+3. **Refuse at load**, once its metric reads zero for a release, or at the 1.0.0 release.
 
 Two facts shape it:
 - **Compiler warnings are dropped at load.** Malloy's own tag-parse warnings (`malformed-route` and the like) reach only `POST …/compile`; a load drops them (`compile_source.ts:1094`, `package_load_worker.ts:1129`).
@@ -840,9 +855,9 @@ Misplaced, near-miss and legacy-string `#(authorize)`, and grammar failures; an 
 - [ ] Have `POST …/compile` at scope `package` report every finding a load reports (report-text lints included), so authors see them before publishing.
 - [ ] For each row: refuse at publish, then at load.
 
-## 5. What the removal release removes
+## 5. What 1.0 removes
 
-Step 8 is one release with one **BREAKING** section in `RELEASE_NOTES.md`; the spec, clients and docs are updated in the same PRs. Everything below is counted by then (section 4, step 4 adds the counters), so the release notes can say what the community still used.
+The 1.0.0 release (step 8) is one release with one **BREAKING** section in `RELEASE_NOTES.md`; the spec, clients and docs are updated in the same PRs. Everything below is counted by then (section 4, step 4 adds the counters), so the release notes can say what the community still used.
 
 ### How usage is measured
 
@@ -862,7 +877,7 @@ Steps 4 and 6 add what is missing, so that every deprecated thing is counted bef
 
 **Fix the `bypass_filters` count first.** The SDK sends `bypassFilters: true` on every range query (`useDimensionalFilterRangeData.ts:688`) and `filter_deprecation.ts` counts any `bypassFilters !== undefined`, so the label is inflated by our own client. step 6's move of the SDK to v1 removes the source; until then, read the label as an upper bound. Also check whether a proxy's generated client defaults `bypassFilters` to `false` and forwards it, which would count every routed query.
 
-The counters are the evidence for the community's progress, not a gate: the removal release ships on the announced date. If a known host reports a blocker during the window, the date moves by release-notes announcement, never silently.
+The counters are the evidence for the community's progress, not a gate: the 1.0.0 release ships on the announced date. If a known host reports a blocker during the window, the date moves by release-notes announcement, never silently.
 
 ### The v0 API and its code, deprecated fields, flags and schemas
 
@@ -887,25 +902,25 @@ One release, one **BREAKING** section in `RELEASE_NOTES.md`, the spec, clients a
 
 **Users' files:**
 - [ ] Every manifest key and annotation in the step 6 tables is refused at load, with its rewrite in the message.
-- [ ] The release after: their readers are deleted, the already-refused artifact-tag forms drop to plain parse errors, and the migration rows stay in the docs for reference.
+- [ ] In 1.1: their readers are deleted, the already-refused artifact-tag forms drop to plain parse errors, and the migration rows stay in the docs for reference.
 
 ### Package manifest keys
 
-Each key below gets, in step 6: a load warning with a stable `code` and the rewrite, a usage label, and a row in the migration guide. At the removal release each is refused at load for one release with the same rewrite, then its reader is deleted.
+Each key below gets, in step 6: a load warning with a stable `code` and the rewrite, a usage label, and a row in the migration guide. At the 1.0.0 release each is refused at load for one release with the same rewrite, then its reader is deleted.
 
 | Key | Replace with | Today | step 6 work |
 |---|---|---|---|
 | Root `scope` | `materialization.scope` (v0.0.234) | Read from both homes; `mergePackageManifest` dual-writes both | Stop the dual write (it goes with package `PATCH`, #1552); warn on the root key |
 | `materialization.queryMetadata` | Root `queryMetadata` (v0.0.247) | Read from both homes; dual-written | Stop the dual write; warn on the envelope key |
-| `explores` | A root `index.malloy` (v0.7.0) | Warned, counted (`explores`) | Deprecated, removed at the removal release like every other key; the migration guide shows the `index.malloy` that replaces each use |
+| `explores` | A root `index.malloy` (v0.7.0) | Warned, counted (`explores`) | Deprecated, removed at the 1.0.0 release like every other key; the migration guide shows the `index.malloy` that replaces each use |
 | `queryableSources: "declared"` | Delete the key (it is the default) (v0.8.1) | Warned, counted (`queryable_sources`) | None |
-| `queryableSources: "all"` | Curate with `index.malloy` and gate with `#(authorize)` | Supported, no warning | Deprecated with the rest of the key: add the warning and label (`queryable_sources` covers `"declared"` only today); removed at the removal release |
+| `queryableSources: "all"` | Curate with `index.malloy` and gate with `#(authorize)` | Supported, no warning | Deprecated with the rest of the key: add the warning and label (`queryable_sources` covers `"declared"` only today); removed at the 1.0.0 release |
 | `manifestLocation` | `PATCH …/versions/{versionId} {"manifestLocation": …}` in v1 | Written by package `PATCH`, read back at load (`package_load_worker.ts`) | Stops being written with `PATCH` (#1552); warn and count (`manifest_location`) when a package still carries it |
 | Retired `retrieval` keys: `retrieval.engine`, `representation`, `keyphrases`, `refine`, `rerank`, `sourceMatch`, and `retrieval.prompts.keyphrase`, `refine`, `rerank`, `sourceMatch` | Delete them | Accepted, ignored, named in `warnings` (`ignoredRetrievalWarnings`); every other unknown `retrieval` key already fails the load | Count them (`retrieval_ignored_keys`); at removal they fail the load like any other unknown key and leave `docs/configuration.md` |
 
 ### Model annotations
 
-Annotations live in users' model files, so each gets the same treatment: in step 6, a load warning with a stable `code` and the rewrite, a usage label, and a row in the migration guide; at the removal release, a refusal at load with the rewrite for one release, then the reader is deleted.
+Annotations live in users' model files, so each gets the same treatment: in step 6, a load warning with a stable `code` and the rewrite, a usage label, and a row in the migration guide; at the 1.0.0 release, a refusal at load with the rewrite for one release, then the reader is deleted.
 
 **Deprecated, still read today:**
 
@@ -919,9 +934,9 @@ Annotations live in users' model files, so each gets the same treatment: in step
 | A `"` note below the `## artifact` tag | Move it above the tag | Read as a fallback; the lint flags it. |
 | `#(description="…")` on a given (the app-route spelling) | `# description=…` | Works in the client but warns `malformed-route` on every compile. Drop the client fallback. |
 | `## materialization.queryMetadata.*` (model) | `## queryMetadata.*` | The model-level home does not warn yet; only the manifest home does. |
-| `.malloynb` notebook format | `.malloy` with `## artifact { layout=linear … }` | Warned (`deprecated-malloynb-notebook`), counted (`malloynb`). Not carried into v1 (decision A4), so v0 is its only API until the removal release. |
+| `.malloynb` notebook format | `.malloy` with `## artifact { layout=linear … }` | Warned (`deprecated-malloynb-notebook`), counted (`malloynb`). Not carried into v1 (decision A4), so v0 is its only API until the 1.0.0 release. |
 
-**Already refused; only the migration message remains.** These never fail open (Malloy ignores an unknown tag; the error only adds a better message), so each refusal drops to a plain parse error at the removal release:
+**Already refused; only the migration message remains.** These never fail open (Malloy ignores an unknown tag; the error only adds a better message), so each refusal drops to a plain parse error at the 1.0.0 release:
 
 | Annotation | Refusal today |
 |---|---|
@@ -935,7 +950,7 @@ Annotations live in users' model files, so each gets the same treatment: in step
 
 ### Kept refused permanently
 
-Malloy still parses each of these, and without the refusal the package would load clean with its access control missing. They are not deprecated features; they are guards, and the removal release does not touch them.
+Malloy still parses each of these, and without the refusal the package would load clean with its access control missing. They are not deprecated features; they are guards, and the 1.0.0 release does not touch them.
 
 | Annotation | Why it stays |
 |---|---|
@@ -1013,7 +1028,7 @@ From the durability program, settled with Kyle on 2026-10-24, with two revisions
 - **The catalog work is split** into step 3 (records, migrations, `revision`, the version columns, v0 mappers), which v1 needs, and step 5 (the config split and `apply`, unload and warm start), which needs v1. That breaks the loop between them.
 - **Live packages** expose the pseudo-version `live` (decision A23).
 - **`.malloynb` is not carried into v1** (decision A4, as revised). Its users have v0 and the 90-day window; the `malloy-pub migrate` rewrite to `.malloy` with `## artifact { layout=linear }` is a step 6 task.
-- **`explores` and `queryableSources` are deprecated, both values included,** and go at the removal release with no exception. `queryableSources: "all"`, the one way today to hide an `#(authorize)`-gated source from listings while authorized callers query it by name, has no like-for-like replacement and does not get one: curation is `index.malloy`, access is `#(authorize)`, and the migration guide says so.
+- **`explores` and `queryableSources` are deprecated, both values included,** and go at the 1.0.0 release with no exception. `queryableSources: "all"`, the one way today to hide an `#(authorize)`-gated source from listings while authorized callers query it by name, has no like-for-like replacement and does not get one: curation is `index.malloy`, access is `#(authorize)`, and the migration guide says so.
 - **The clock waits for Credible's dated plan.** Release R is the first release in which steps 4, 5 and 6 are complete and Credible has a dated plan to switch its control plane and router inside the window, because its router's passthrough makes the switch customer-facing for Credible.
 
 ## 7. Open questions
