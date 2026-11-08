@@ -416,7 +416,7 @@ export class QueryGovernor {
    /** Given names (`$NAME`) referenced by any authorize gate reachable in this
     *  model, own or inherited (the walk {@link assertAuthorizedForAllSources}
     *  runs). Computed at construction for {@link filterGivensToModelSurface}. */
-   public authorizeReferencedGivenNames: Set<string> = new Set();
+   public readonly authorizeReferencedGivenNames: Set<string> = new Set();
    /** Entry-point gates per declared source name — see
     *  {@link computeEntryPointGatesBySource}. The one answer that
     *  `sources[].authorize`, {@link getAuthorize} and the early gate all read. */
@@ -466,7 +466,7 @@ export class QueryGovernor {
     * access record reports, so a record says what was decided rather than
     * what a load-time lookup by name finds.
     */
-   public readonly enforcedGatesByRunnable = new WeakMap<
+   private readonly enforcedGatesByRunnable = new WeakMap<
       QueryMaterializer,
       EnforcedGates
    >();
@@ -478,7 +478,7 @@ export class QueryGovernor {
     * Used to keep a filtered query off the storage-serve tier (which cannot
     * bind the filter's given) and to record `empty_after_filter`.
     */
-   public readonly rowLevelFilteredRunnables = new WeakMap<
+   private readonly rowLevelFilteredRunnables = new WeakMap<
       QueryMaterializer,
       readonly RowLevelGraftEntry[]
    >();
@@ -1403,7 +1403,7 @@ export class QueryGovernor {
     * Has no bypass concept, so calling it twice per request (pre- and
     * post-refinement) never double-counts a bypass audit.
     */
-   public async probeEntryPointGates(
+   private async probeEntryPointGates(
       runnable: QueryMaterializer,
       givens: Record<string, GivenValue>,
       graftScope: GraftScope | undefined,
@@ -1821,7 +1821,7 @@ export class QueryGovernor {
     * compiled struct, so a source a caller declares over a carried one keeps
     * it. A `bad_request` record names the reads.
     */
-   public async assertWithinCarriesCeiling(
+   private async assertWithinCarriesCeiling(
       audit: QueryAudit,
       live: QueryMaterializer,
       bound: QueryMaterializer,
@@ -2139,7 +2139,7 @@ export class QueryGovernor {
     * `bypassAuthorize`, like the run target's own backstop. A no-op when the
     * boundary is inert.
     */
-   public async assertCallerJoinsQueryable(
+   private async assertCallerJoinsQueryable(
       runnable: QueryMaterializer,
       region: CallerRegion,
    ): Promise<void> {
@@ -2243,7 +2243,7 @@ export class QueryGovernor {
     * a chain this cannot follow just stops, and a join in a declaration the
     * query never runs is read too — an over-denial, never an admission.
     */
-   public async assertCallerJoinBasesEarly(
+   private async assertCallerJoinBasesEarly(
       query: string,
       givens: Record<string, GivenValue>,
       phase: "boundary" | "locks",
@@ -2348,7 +2348,7 @@ export class QueryGovernor {
     * trusted. Any failure denies; the 403 names nothing about the gate (a gate
     * reading `childtable.name` reveals a relationship), details go to `debug`.
     */
-   public async authorizeAndBindRunnable(
+   private async authorizeAndBindRunnable(
       runnable: QueryMaterializer,
       givens: Record<string, GivenValue>,
       options?: {
@@ -3254,7 +3254,7 @@ export class QueryGovernor {
     * recognized; a field that merely shares a locked name is refused too, and
     * only for a caller that lock already refuses.
     */
-   public async assertLocksOnAppearingNames(
+   private async assertLocksOnAppearingNames(
       text: string,
       givens: Record<string, GivenValue>,
       bypassAuthorize: boolean,
