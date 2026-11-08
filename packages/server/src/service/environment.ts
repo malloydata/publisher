@@ -356,6 +356,13 @@ export class Environment {
     * against it. An explicit set makes it authoritative again.
     */
    private destinationsAuthoritative = true;
+   /**
+    * The connection counterpart of {@link destinationsAuthoritative}: false
+    * when the list is a fallback (the config standing in for a missing
+    * directory) or torn down, so the database sync must not prune stored
+    * connections against it. Replacing the list makes it authoritative again.
+    */
+   private connectionsAuthoritative = true;
    private environmentPath: string;
    private environmentName: string;
    // Resolves a package's latest persisted manifest entries (both tiers), so
@@ -800,6 +807,16 @@ export class Environment {
    /** See {@link destinationsAuthoritative}. */
    public hasAuthoritativeStorageDestinations(): boolean {
       return this.destinationsAuthoritative;
+   }
+
+   /** The connection list is a best guess; see {@link connectionsAuthoritative}. */
+   public markConnectionsUnknown(): void {
+      this.connectionsAuthoritative = false;
+   }
+
+   /** See {@link connectionsAuthoritative}. */
+   public hasAuthoritativeConnections(): boolean {
+      return this.connectionsAuthoritative;
    }
 
    /**
@@ -3728,6 +3745,7 @@ export class Environment {
       const previousMalloyConfig = this.malloyConfig;
       this.malloyConfig = malloyConfig;
       this.apiConnections = malloyConfig.apiConnections;
+      this.connectionsAuthoritative = true;
 
       if (previousMalloyConfig !== malloyConfig) {
          this.retireConnectionGeneration(
@@ -3809,6 +3827,8 @@ export class Environment {
       await this.releaseAllRetiredConnectionGenerations();
 
       this.apiConnections = [];
+      // Torn down: as for destinations, not a list to prune against.
+      this.connectionsAuthoritative = false;
 
       logger.info(
          `Closed all connections for environment ${this.environmentName}`,

@@ -615,8 +615,12 @@ export class EnvironmentStore
                   true,
                   // The config is only a fallback for a missing directory:
                   // its empty destination list must not prune destinations
+                  // registered over the API, nor its connections the ones
                   // registered over the API.
-                  { storageDestinationsAreFallback: true },
+                  {
+                     storageDestinationsAreFallback: true,
+                     connectionsAreFallback: true,
+                  },
                );
 
                await repository.updateEnvironment(dbEnvironment.id, {
@@ -1132,6 +1136,14 @@ export class EnvironmentStore
       }
    }
 
+   /**
+    * Mirror an environment's connection list into the database so it survives
+    * a restart. The list has replace semantics (an environment PATCH replaces
+    * it wholesale), so rows the environment no longer holds are deleted too:
+    * a left-behind row would resurrect a removed connection on the next load,
+    * which restores connections from these rows. A failed write throws, so the
+    * request that changed the list does not answer success.
+    */
    private async addConnections(
       environment: Environment,
       environmentId: string,
@@ -1139,11 +1151,13 @@ export class EnvironmentStore
    ): Promise<void> {
       try {
          const connections = environment.listApiConnections();
+         const kept = new Set<string>();
          for (const conn of connections) {
             if (!conn.name) {
                logger.warn("Skipping connection with undefined name");
                continue;
             }
+            kept.add(conn.name);
 
             const existingConn = await repository.getConnectionByName(
                environmentId,
@@ -1156,19 +1170,38 @@ export class EnvironmentStore
                await this.addConnection(conn, environmentId, repository);
             }
          }
+
+         // Prune only against a list that IS the desired state, as for
+         // destinations: a fallback list (the config standing in for a missing
+         // directory) would delete every connection registered over the API.
+         if (!environment.hasAuthoritativeConnections()) {
+            logger.warn(
+               `Not reconciling stored connections for "${environment.metadata?.name}": the in-memory list is a fallback, not the desired state`,
+            );
+            return;
+         }
+
+         const stored = await repository.listConnections(environmentId);
+         for (const row of stored) {
+            if (!kept.has(row.name)) {
+               await repository.deleteConnection(row.id);
+               logger.info(
+                  `Removed connection ${row.name} from environment ${environment.metadata?.name}`,
+               );
+            }
+         }
       } catch (err: unknown) {
-         const error = err as Error;
-         const environmentName = environment.metadata?.name;
          logger.error(
-            `Error syncing connections for "${environmentName}":`,
-            error,
+            `Error syncing connections for "${environment.metadata?.name}":`,
+            err,
          );
+         throw err;
       }
    }
 
    /**
     * Mirror an environment's destination list into the database so it
-    * survives a restart. Unlike {@link addConnections} it also deletes rows the
+    * survives a restart. Like {@link addConnections} it also deletes rows the
     * environment no longer holds: the list has replace semantics, so a
     * left-behind row would resurrect a removed destination on the next load.
     */
@@ -1655,18 +1688,25 @@ export class EnvironmentStore
                },
             );
          }
-         return await this.addEnvironment({
-            name: environmentName,
-            resource: environmentResource(environmentName),
-            connections: environmentConfig?.connections || [],
-            // Only asserted when the config declares destinations: an empty
-            // list reads as "clear them", wiping API-registered ones on reload.
-            ...(environmentConfig?.storageDestinations?.length
-               ? {
-                    storageDestinations: environmentConfig.storageDestinations,
-                 }
-               : {}),
-         });
+         return await this.addEnvironment(
+            {
+               name: environmentName,
+               resource: environmentResource(environmentName),
+               connections: environmentConfig?.connections || [],
+               // Only asserted when the config declares destinations: an empty
+               // list reads as "clear them", wiping API-registered ones on reload.
+               ...(environmentConfig?.storageDestinations?.length
+                  ? {
+                       storageDestinations:
+                          environmentConfig.storageDestinations,
+                    }
+                  : {}),
+            },
+            false,
+            // The config's list (empty for an environment created over the
+            // API) is not a request to delete stored connections.
+            { connectionsAreFallback: true },
+         );
       });
    }
 
@@ -1680,6 +1720,9 @@ export class EnvironmentStore
       skipInitialization: boolean = false,
       {
          storageDestinationsAreFallback = false,
+         // The same for connections: the sync must not prune stored rows
+         // against the payload's list.
+         connectionsAreFallback = false,
          // The config's packages are published as versions once the
          // environment exists (see addConfiguredEnvironment), not loaded here.
          configuredPackagesPublished = false,
@@ -1703,6 +1746,9 @@ export class EnvironmentStore
          this.environments.set(environmentName, updatedEnvironment);
          if (storageDestinationsAreFallback) {
             updatedEnvironment.markStorageDestinationsUnknown();
+         }
+         if (connectionsAreFallback) {
+            updatedEnvironment.markConnectionsUnknown();
          }
          await this.addEnvironmentToDatabase(updatedEnvironment);
          return updatedEnvironment;
@@ -1761,6 +1807,9 @@ export class EnvironmentStore
 
       if (storageDestinationsAreFallback) {
          newEnvironment.markStorageDestinationsUnknown();
+      }
+      if (connectionsAreFallback) {
+         newEnvironment.markConnectionsUnknown();
       }
       await this.addEnvironmentToDatabase(newEnvironment);
 
