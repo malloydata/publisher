@@ -27,6 +27,7 @@ import {
    summarizeQueryAccess,
    unrecordedAudit,
    withAccessRecord,
+   enforcedGatesOf,
 } from "./access_record";
 
 const MODEL = `##! experimental.givens
@@ -263,6 +264,29 @@ source: a is duckdb.table('child') extend { join_one: b on b.id = id }
          fieldsRead: [],
          fieldsReadComplete: false,
       });
+   });
+});
+
+describe("enforcedGatesOf", () => {
+   it("lists a gate once when two checks built separate entries for it", () => {
+      const lock = () => ({
+         route: "authorize",
+         exprs: ["'clinician' in $ROLES"],
+      });
+      expect(enforcedGatesOf([lock(), lock()])).toEqual({
+         authorize: ["'clinician' in $ROLES"],
+         accessFilter: [],
+      });
+   });
+
+   it("keeps distinct gates, by route, in evaluation order", () => {
+      expect(
+         enforcedGatesOf([
+            { route: "authorize", exprs: ["a"] },
+            { route: "access_filter", exprs: ["org_id = $ORG"] },
+            { route: "authorize", exprs: ["b"] },
+         ]),
+      ).toEqual({ authorize: ["a", "b"], accessFilter: ["org_id = $ORG"] });
    });
 });
 

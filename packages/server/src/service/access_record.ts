@@ -126,12 +126,19 @@ export interface EnforcedGates {
  * {@link EnforcedGates} from the gate entries enforcement evaluated, in the
  * order it evaluated them. A gate is evaluated once per check that reaches it
  * (a request-declared entry point is decided by the walk and again by the
- * laundering check), so the same entry is listed once.
+ * laundering check, each building its own entry), so an entry is listed once
+ * per route and expression list, not per object.
  */
 export function enforcedGatesOf(
    entries: ReadonlyArray<{ route: string; exprs: readonly string[] }>,
 ): EnforcedGates {
-   const unique = Array.from(new Set(entries));
+   const seen = new Set<string>();
+   const unique = entries.filter((e) => {
+      const key = JSON.stringify([e.route, e.exprs]);
+      if (seen.has(key)) return false;
+      seen.add(key);
+      return true;
+   });
    const of = (route: string) =>
       unique.filter((e) => e.route === route).flatMap((e) => [...e.exprs]);
    return {
