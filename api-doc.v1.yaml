@@ -15,7 +15,8 @@ info:
     `/api/v0`, is deprecated as a whole and takes bug fixes only; its retirement is announced in the release notes once
     every
 
-    first-party client has moved. `GET /status` is served at both base paths with this shape.
+    first-party client has moved. `GET /status` answers on both base paths: here in this shape, and on v0 in v0's shape
+    with additive fields only.
 
 
     ## The model
@@ -29,8 +30,9 @@ info:
     - A **package** is a record with pointers: its source, its description, and `latestVersionId`. It holds no content.
 
     - A **version** is an immutable snapshot of a package's content. Every content read is of exactly one version, named
-    in the path; `latest` is a reserved segment for the package's latest. A publish, a report write and a reload that
-    finds changed content each make a version; nothing edits one in place.
+    in the path; `latest` is a reserved segment for the package's latest, and a live (watched) package has one
+    pseudo-version, `live`. A publish, a report write and a reload that finds changed content each make a version;
+    nothing edits one in place.
 
     - Under a version: **models** (compiled metadata, query, compile), **reports** (a `.malloy` file carrying an `##
     artifact` tag, grid or linear), **data apps**, **data files**, **agents**, **skills**, its **entities**,
@@ -1014,6 +1016,7 @@ paths:
       tags:
         - versions
       summary: List the package's versions
+      description: A live package lists none; its one pseudo-version, `live`, is read by name.
       parameters:
         - $ref: "#/components/parameters/limit"
         - $ref: "#/components/parameters/after"
@@ -1091,10 +1094,11 @@ paths:
         - versions
       summary: Change a version's lifecycle state
       description: "JSON merge-patch over `archived`, `loaded`, `pinned` and `manifestLocation`, each independent. `archived:
-        true` is refused with 409 while the version is `latest` (`VERSION_IS_LATEST`), the last active version
-        (`VERSION_IS_LAST_ACTIVE`) or building (`VERSION_BUILDING`). `loaded: false` drains and unloads; 409 while a run
-        holds the version. `manifestLocation` binds an external manifest (`null` clears it and the version serves live);
-        a bind failure leaves the previous binding and answers 424."
+        true` is refused with 409 on a live package's `live` (`PACKAGE_IS_LIVE`), and while the version is `latest`
+        (`VERSION_IS_LATEST`), the last active version (`VERSION_IS_LAST_ACTIVE`) or building (`VERSION_BUILDING`).
+        `loaded: false` drains and unloads; 409 while a run holds the version. `manifestLocation` binds an external
+        manifest (`null` clears it and the version serves live); a bind failure leaves the previous binding and answers
+        424."
       parameters:
         - $ref: "#/components/parameters/ifMatch"
       requestBody:
@@ -1138,8 +1142,9 @@ paths:
       tags:
         - versions
       summary: Delete a version for good
-      description: Refused with 409 while it is `latest` and other versions remain, or the last active version while archived
-        ones remain. Deleting the only version deletes the package.
+      description: Refused with 409 on a live package's `live` (`PACKAGE_IS_LIVE`), and while it is `latest` and other
+        versions remain, or the last active version while archived ones remain. Deleting the only version deletes the
+        package.
       parameters:
         - $ref: "#/components/parameters/ifMatch"
       responses:
@@ -3460,7 +3465,7 @@ components:
         packageName:
           type: string
         versionId:
-          $ref: "#/components/schemas/VersionIdPattern"
+          $ref: "#/components/schemas/VersionId"
         path:
           type: string
         malloyVersion:
@@ -3791,7 +3796,7 @@ components:
         packageName:
           type: string
         versionId:
-          $ref: "#/components/schemas/VersionIdPattern"
+          $ref: "#/components/schemas/VersionId"
         path:
           type: string
           description: The HTML file's path under `public/`.
@@ -4705,7 +4710,7 @@ components:
         packageName:
           type: string
         versionId:
-          $ref: "#/components/schemas/VersionIdPattern"
+          $ref: "#/components/schemas/VersionId"
         path:
           type: string
           description: The file's path within the version, its identity.
@@ -4874,7 +4879,7 @@ components:
           $ref: "#/components/schemas/PackageSource"
         latestVersionId:
           oneOf:
-            - $ref: "#/components/schemas/VersionIdPattern"
+            - $ref: "#/components/schemas/VersionId"
             - type: "null"
           description: The version served when a request names `latest`. Null under `explicit` promotion until it is set. Moved
             with `PATCH` under `If-Match`; moving it back to a parent version is the undo of a server-made version.
@@ -4982,7 +4987,7 @@ components:
           type: string
         latestVersionId:
           oneOf:
-            - $ref: "#/components/schemas/VersionIdPattern"
+            - $ref: "#/components/schemas/VersionId"
             - type: "null"
         versions:
           type: array
@@ -5717,7 +5722,7 @@ components:
         packageName:
           type: string
         versionId:
-          $ref: "#/components/schemas/VersionIdPattern"
+          $ref: "#/components/schemas/VersionId"
         path:
           type: string
           description: The report's identity.
@@ -5899,7 +5904,7 @@ components:
         packageName:
           type: string
         versionId:
-          $ref: "#/components/schemas/VersionIdPattern"
+          $ref: "#/components/schemas/VersionId"
         slot:
           type: string
           description: "`<package>` under `scope: package`, `<package>@<version>` under `scope: version`."
@@ -6202,7 +6207,7 @@ components:
               packageName:
                 type: string
               versionId:
-                $ref: "#/components/schemas/VersionIdPattern"
+                $ref: "#/components/schemas/VersionId"
               message:
                 type: string
               stale:
@@ -6233,7 +6238,7 @@ components:
         packageName:
           type: string
         versionId:
-          $ref: "#/components/schemas/VersionIdPattern"
+          $ref: "#/components/schemas/VersionId"
         status:
           type: object
           required:
@@ -6854,7 +6859,7 @@ components:
           type: string
           readOnly: true
         versionId:
-          $ref: "#/components/schemas/VersionIdPattern"
+          $ref: "#/components/schemas/VersionId"
         seq:
           type: integer
           format: int64
@@ -6875,7 +6880,7 @@ components:
             `migration`: imported from a pre-v1 store."
         parentVersionId:
           oneOf:
-            - $ref: "#/components/schemas/VersionIdPattern"
+            - $ref: "#/components/schemas/VersionId"
             - type: "null"
           readOnly: true
           description: The version a server-made version was made from; undo is pointing `latestVersionId` back at it.
@@ -6958,6 +6963,12 @@ components:
             - "null"
           format: date-time
           readOnly: true
+    VersionId:
+      type: string
+      pattern: ^(live|\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?)$
+      description: "A resolved version: a semantic version, or `live` for a live (watched) package, which has no stored
+        versions. A `live` version is never listed by `GET …/versions`, has no `seq`, and refuses `PATCH` and `DELETE`
+        with 409 `PACKAGE_IS_LIVE`."
     VersionIdPattern:
       type: string
       pattern: ^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?(\+[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$
@@ -6980,9 +6991,10 @@ components:
           $ref: "#/components/schemas/Cursor"
     VersionRef:
       type: string
-      pattern: ^(latest|\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?)$
+      pattern: ^(latest|live|\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?)$
       description: "A version in a path: the version's id (a semantic version, build metadata included, so `1.4.0+edit.3`
-        names a server-made version), or the reserved word `latest` for the package's latest version. A request that
+        names a server-made version), the reserved word `latest` for the package's latest version, or the reserved word
+        `live`, the one pseudo-version of a live (watched) package, which `latest` resolves to there. A request that
         names `latest` on a package with none answers 404 `VERSION_NOT_FOUND`."
     View:
       type: object

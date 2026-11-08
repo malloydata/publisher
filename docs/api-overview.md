@@ -22,7 +22,8 @@ behind your own gateway before exposing it beyond localhost ([security-posture.m
 
 **The previous API, `/api/v0`, is deprecated as a whole.** It keeps working, takes bug fixes only, and every response
 carries a `Deprecation` header. Its retirement is announced in the release notes once every first-party client has
-moved. Its spec is served at `/api-doc.v0.yaml`. `GET /status` is served at both base paths with the v1 shape.
+moved. Its spec is served at `/api-doc.v0.yaml`. `GET /status` answers on both base paths: in the v1 shape here, and in v0's
+shape, with additive fields only, on v0.
 
 ## The model
 
