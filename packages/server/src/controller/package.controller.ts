@@ -36,7 +36,7 @@ import {
 } from "../package_load_metrics";
 import type { VersionService } from "../service/versions/version_service";
 import { versionManifestLocation } from "./manifest_location";
-import { KEPT_ACROSS_A_RELOAD, changedFields } from "./versioned_patch";
+import { LOST_ON_A_RELOAD, changedFields } from "./versioned_patch";
 import { loadedPackage } from "./loaded_package";
 import {
    parseEnvironmentName,
@@ -872,12 +872,19 @@ export class PackageController {
    ): void {
       const resident = environment.peekPackage(packageName);
       if (!resident) return;
+      const fields = body as Record<string, unknown>;
+      const written = Object.fromEntries(
+         LOST_ON_A_RELOAD.filter((key) => key in fields).map((key) => [
+            key,
+            fields[key],
+         ]),
+      );
       const changed = changedFields(
-         body as Record<string, unknown>,
+         written,
          resident.getPackageMetadata() as Record<string, unknown>,
          packageName,
          installedFrom,
-         KEPT_ACROSS_A_RELOAD,
+         new Set(),
       );
       if (changed.length > 0) {
          throw new ConflictError(

@@ -10,15 +10,19 @@
  */
 
 /**
- * The fields a PATCH of a package installed from a `location` may change: the
- * ones a reload re-applies. A reload fetches the package again from its
- * location and replaces its files, so any other change would be discarded.
+ * The fields a PATCH writes into a package's `publisher.json` that a reload
+ * does not re-apply. A reload fetches a package installed from a `location`
+ * again and replaces its files, keeping only its location and manifest
+ * binding, so a change to any of these would be discarded.
  */
-export const KEPT_ACROSS_A_RELOAD = new Set([
-   "resource",
-   "location",
-   "manifestLocation",
-]);
+export const LOST_ON_A_RELOAD = [
+   "description",
+   "explores",
+   "queryableSources",
+   "scope",
+   "queryMetadata",
+   "materialization",
+] as const;
 
 /** The fields a PATCH of a versioned package applies, rather than checks. */
 export const APPLIED_TO_A_VERSIONED_PACKAGE = new Set([

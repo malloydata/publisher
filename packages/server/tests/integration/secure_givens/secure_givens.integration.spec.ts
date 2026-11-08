@@ -310,9 +310,10 @@ describe("secureGivens on the package responses", () => {
          {
             method: "PATCH",
             headers: { "content-type": "application/json" },
+            // Only the read-only field: a package installed from a location
+            // refuses a `description` change, which a reload would discard.
             body: JSON.stringify({
                name: "patched",
-               description: "edited",
                secureGivens: [
                   { name: "FORGED", type: "string", modelPaths: [] },
                ],
@@ -321,7 +322,6 @@ describe("secureGivens on the package responses", () => {
       );
       expect(res.status).toBe(200);
       const patched = (await res.json()) as Record<string, unknown>;
-      expect(patched.description).toBe("edited");
       expect(patched.secureGivens as SecureGiven[]).toEqual(ROLES_ONLY);
       expect((await get("patched")).secureGivens as SecureGiven[]).toEqual(
          ROLES_ONLY,
