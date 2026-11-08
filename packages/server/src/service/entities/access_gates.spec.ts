@@ -98,6 +98,47 @@ describe("parseGateAnnotation", () => {
       }
    });
 
+   test("an expression that starts with a string literal is read verbatim, as the load reads it", () => {
+      // The load accepts `"admin" = $ROLE` as an ordinary expression; only a
+      // payload that is ONE string literal is the refused legacy form.
+      assert.deepStrictEqual(
+         parseGateAnnotation('#(authorize) "admin" = $ROLE'),
+         {
+            route: "authorize",
+            expr: '"admin" = $ROLE',
+         },
+      );
+      assert.deepStrictEqual(
+         parseGateAnnotation(
+            `#(access_filter) 'us' = $REGION and region = $REGION`,
+         ),
+         {
+            route: "access_filter",
+            expr: `'us' = $REGION and region = $REGION`,
+         },
+      );
+   });
+
+   test("a payload that is one string literal is the legacy form, decoded to the expression it meant", () => {
+      assert.deepStrictEqual(
+         parseGateAnnotation(`#(authorize) "$ROLE = 'admin'"`),
+         { route: "authorize", expr: "$ROLE = 'admin'" },
+      );
+      assert.deepStrictEqual(
+         parseGateAnnotation(`#(authorize) "a = \\"b\\""`),
+         { route: "authorize", expr: 'a = "b"' },
+      );
+   });
+
+   test("an unbalanced quote throws (callers fail closed), as the load refuses it", () => {
+      for (const text of [
+         `#(authorize) "$ROLE = 'admin'`,
+         `#(authorize) $ROLE = 'admin`,
+      ]) {
+         assert.throws(() => parseGateAnnotation(text), /mismatched quotes/);
+      }
+   });
+
    test("an ordinary render tag is not a gate", () => {
       assert.strictEqual(parseGateAnnotation("# bar_chart"), null);
       assert.strictEqual(parseGateAnnotation("#(doc) about authorize"), null);
@@ -105,6 +146,20 @@ describe("parseGateAnnotation", () => {
 });
 
 describe("resolveGates", () => {
+   test("a source gated by an expression that starts with a string literal is reported with that gate, not as locked", () => {
+      const gated = {
+         type: "table",
+         annotations: {
+            blockNotes: [{ text: '#(authorize) "admin" = $ROLE' }],
+         },
+      } satisfies GateStructDef;
+      // Before, the reader threw on the leading quote and the caller reported
+      // the source as locked (`false`), a gate the server never applies.
+      assert.deepStrictEqual(resolveGates(gated, new Map()).gates, [
+         { route: "authorize", expr: '"admin" = $ROLE' },
+      ]);
+   });
+
    const note = (text: string) => ({ text });
    const table = (
       blockNotes: string[],

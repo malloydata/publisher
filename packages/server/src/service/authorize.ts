@@ -1129,6 +1129,27 @@ export function isLegacyQuotedPayload(payload: string): boolean {
  * Decodes only the quote and backslash escapes; any other backslash sequence
  * passes through as authored rather than being silently mangled.
  */
+/**
+ * The expression a gate payload means when it is the legacy quoted-string form
+ * (the whole payload one string literal, {@link isLegacyQuotedPayload}), or
+ * undefined when it is an ordinary expression, which may itself start with a
+ * string literal (`"admin" = $ROLE`). For readers that report gates rather than
+ * enforce them (the entities extraction), so they classify a payload exactly as
+ * the load does.
+ */
+export function legacyGatePayloadExpression(
+   payload: string,
+): string | undefined {
+   return isLegacyQuotedPayload(payload)
+      ? unquoteLegacyGatePayload(payload)
+      : undefined;
+}
+
+/** True when every quote in `expr` belongs to a complete string literal. */
+export function quotesAreBalanced(expr: string): boolean {
+   return !/['"]/.test(expr.replace(STRING_LITERAL_PATTERN, ""));
+}
+
 function unquoteLegacyGatePayload(payload: string): string {
    const trimmed = payload.trim();
    const inner = trimmed.slice(1, -1);

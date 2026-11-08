@@ -16,6 +16,8 @@ import type { SourceDef } from "@malloydata/malloy";
 import {
    collectAuthorizeNearMissesAllRoutes,
    parseAuthorizeAnnotation,
+   legacyGatePayloadExpression,
+   quotesAreBalanced,
 } from "../authorize";
 import {
    parseAuthorizeGrammarBody,
@@ -46,18 +48,21 @@ export interface GateExpr {
  *  package carrying one never serves; it throws here, which every caller
  *  treats as fail-closed (deny, or skip-and-warn for a file-level note).
  *
- *  Two payload shapes are read:
+ *  Two payload shapes are read, told apart by the same test the load uses
+ *  (`legacyGatePayloadExpression`, ../authorize.ts):
  *
- *   - A bare expression (`#(authorize) $ROLE = 'analyst'`), returned verbatim.
- *   - A double-quoted string, from which exactly one layer of wrapping quotes
- *     is stripped; inner single quotes pass through, and `\"` / `\\` are unescaped.
+ *   - An expression (`#(authorize) $ROLE = 'analyst'`, or one that starts with
+ *     a string literal, `#(authorize) "admin" = $ROLE`), returned verbatim.
+ *   - The legacy quoted-string form, the whole payload one string literal
+ *     (`#(authorize) "$ROLE = 'analyst'"`), decoded to the expression it meant.
  *
- *  The quoted form is refused at model load (../authorize.ts), so a package
- *  carrying it never reaches this code; reading it costs nothing because the
- *  payload is metadata here, never enforcement.
+ *  The legacy form is refused at model load, so a package carrying it never
+ *  serves; reading it costs nothing because the payload is metadata here,
+ *  never enforcement.
  *
  *  Returns `null` if the string is not a gate annotation. Throws on an empty
- *  payload, a near miss, or a quoted payload with missing/mismatched quotes.
+ *  payload, a near miss, or an expression with an unbalanced quote (which the
+ *  load would refuse as an unparseable gate).
  *  Callers differ on purpose: the file-level reader skip-and-warns, while a
  *  source's own gate resolution fails closed (deny).
  *
@@ -78,40 +83,17 @@ export const parseGateAnnotation = (annotation: string): GateExpr | null => {
    if (body.length === 0) {
       throw new Error("authorize annotation has an empty expression body");
    }
-   if (body[0] !== '"') return { route, expr: body };
-   let expr = "";
-   let i = 1;
-   let closed = false;
-   for (; i < body.length; i++) {
-      const ch = body[i];
-      if (ch === "\\" && i + 1 < body.length) {
-         const next = body[i + 1];
-         if (next === '"' || next === "\\") {
-            expr += next;
-            i++;
-            continue;
-         }
+   const legacy = legacyGatePayloadExpression(body);
+   if (legacy !== undefined) {
+      if (legacy.trim().length === 0) {
+         throw new Error("authorize annotation has an empty expression body");
       }
-      if (ch === '"') {
-         closed = true;
-         i++;
-         break;
-      }
-      expr += ch;
+      return { route, expr: legacy };
    }
-   if (!closed) {
+   if (!quotesAreBalanced(body)) {
       throw new Error(`authorize annotation has mismatched quotes: ${body}`);
    }
-   const rest = body.slice(i).trim();
-   if (rest.length > 0) {
-      throw new Error(
-         `authorize annotation has unexpected content after the expression: ${rest}`,
-      );
-   }
-   if (expr.trim().length === 0) {
-      throw new Error("authorize annotation has an empty expression body");
-   }
-   return { route, expr };
+   return { route, expr: body };
 };
 
 // A budget for `query_source` structRef resolution by NAME, separate from the
