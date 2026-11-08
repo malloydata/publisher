@@ -13,6 +13,10 @@ import { DuckDBConnection } from "../../../storage/duckdb/DuckDBConnection";
 import { createDuckDBRepository } from "../../../storage/duckdb/DuckDBRepository";
 import type { ResourceRepository } from "../../../storage/DatabaseInterface";
 import { initializeSchema } from "../../../storage/duckdb/schema";
+import {
+   failInterruptedMaterializations,
+   INTERRUPTED_RUN_ERROR,
+} from "../../../storage/StorageManager";
 import { Environment } from "../../environment";
 import { EnvironmentStore } from "../../environment_store";
 import { installSettings } from "../../../test_helpers/settings_env";
@@ -479,6 +483,50 @@ describe("reclaiming an archived version's tables", () => {
       // is left behind that no record names.
       expect(await tablesIn(env)).toEqual([]);
       expect(await statusOf(failed.id)).toBeNull();
+   });
+
+   it("a run a dead process left unsettled is FAILED when the store opens, and its tables are reclaimed as a failed run's are", async () => {
+      await publish("1.0.0", 1, "version", { detail: true });
+      await publish("2.0.0", 2, "version");
+      // The run builds both tables; the commit never comes back.
+      const commit = spyOn(
+         service as unknown as {
+            commitManifest: (...args: unknown[]) => Promise<void>;
+         },
+         "commitManifest",
+      ).mockImplementationOnce(async () => {
+         throw new Error("the store refused the commit");
+      });
+      const built = await build({ versionId: VersionRef.parse("1.0.0") });
+      commit.mockRestore();
+      // As the process died mid-run: the record still says it is running and
+      // holds its version's slot. Nothing in this process tracks it.
+      await db.run(
+         "UPDATE materializations SET status = 'MANIFEST_ROWS_READY', active_key = ?, completed_at = NULL, error = NULL WHERE id = ?",
+         [`${ENV_ID}|${PKG}@1.0.0`, built.id],
+      );
+      await expect(
+         service.createMaterialization(ENV, PKG, {
+            versionId: VersionRef.parse("1.0.0"),
+         }),
+      ).rejects.toThrow("already has an active materialization");
+      // A record still running keeps its tables through an archive.
+      await archive("1.0.0");
+      expect(await statusOf(built.id)).toBe("MANIFEST_ROWS_READY");
+      expect((await tablesIn(env)).sort()).toEqual(
+         [DETAIL_V1, TABLE_V1].sort(),
+      );
+
+      // The restart: the store opens first, then the startup sweep runs.
+      await failInterruptedMaterializations(db);
+      await restart();
+      const settled = (await repo.getMaterializationById(built.id))!;
+      expect(settled.status).toBe("FAILED");
+      expect(settled.error).toBe(INTERRUPTED_RUN_ERROR);
+      await service.reclaimArchivedVersions();
+
+      expect(await tablesIn(env)).toEqual([]);
+      expect(await statusOf(built.id)).toBeNull();
    });
 
    it("reclaims nothing of a `scope: package` version, even when the package's later version is `scope: version`", async () => {

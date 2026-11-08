@@ -5,6 +5,7 @@ import { logger } from "../logger";
 import { ResourceRepository } from "./DatabaseInterface";
 import { DuckDBConnection } from "./duckdb/DuckDBConnection";
 import { createDuckDBRepository } from "./duckdb/DuckDBRepository";
+import { MaterializationRepository } from "./duckdb/MaterializationRepository";
 import { initializeSchema } from "./duckdb/schema";
 
 export interface StorageConfig {
@@ -12,6 +13,41 @@ export interface StorageConfig {
    duckdb?: {
       path?: string;
    };
+}
+
+/** The error an interrupted run is settled with. */
+export const INTERRUPTED_RUN_ERROR =
+   "Interrupted: the server restarted during this run";
+
+/**
+ * Settle the runs a previous process left unsettled (see
+ * MaterializationRepository.failInterrupted), before anything reads the store:
+ * otherwise each would hold its package's (or version's) build slot forever,
+ * refusing every later build of it with a conflict. A settled run is FAILED,
+ * as a run that threw is, so what reclaims a failed run's tables (a version's
+ * archive or delete) reclaims its tables too, and the tables it claimed are
+ * free to the next build.
+ */
+export async function failInterruptedMaterializations(
+   connection: DuckDBConnection,
+): Promise<void> {
+   const settled = await new MaterializationRepository(
+      connection,
+   ).failInterrupted(INTERRUPTED_RUN_ERROR);
+   for (const m of settled) {
+      logger.warn(
+         "Marked a materialization FAILED: the server restarted during its run",
+         {
+            materializationId: m.id,
+            environmentId: m.environmentId,
+            packageName: m.packageName,
+            ...(m.version !== null ? { version: m.version } : {}),
+            ...(Array.isArray(m.metadata?.writesTables)
+               ? { writesTables: m.metadata.writesTables }
+               : {}),
+         },
+      );
+   }
 }
 
 /**
@@ -40,6 +76,7 @@ export class StorageManager {
       const connection = new DuckDBConnection(this.config.duckdb?.path);
       await connection.initialize();
       await initializeSchema(connection, reinit);
+      await failInterruptedMaterializations(connection);
 
       this.connection = connection;
       this.repository = createDuckDBRepository(connection);

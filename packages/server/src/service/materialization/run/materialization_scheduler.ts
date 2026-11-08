@@ -412,7 +412,9 @@ export class MaterializationScheduler {
       } catch (err) {
          if (err instanceof MaterializationConflictError) {
             recordScheduledFire("conflict");
-            logger.debug(
+            // Warn, not debug: a conflict that persists across fires is a
+            // stuck run, and this is the only place it shows.
+            logger.warn(
                "MaterializationScheduler: skipped fire; a materialization is already active",
                { environmentName, packageName, versionId },
             );
