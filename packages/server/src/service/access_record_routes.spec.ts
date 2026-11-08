@@ -15,17 +15,30 @@ import type { Connection } from "@malloydata/malloy";
 import { ConnectionController } from "../controller/connection.controller";
 import { LegacyReportController } from "../controller/legacy_report.controller";
 import { QueryController } from "../controller/query.controller";
+import { QueryUseCase } from "../usecases/query";
 import { AccessDeniedError, PayloadTooLargeError } from "../errors";
 import { logger } from "../logger";
 import { registerExecuteQueryTool } from "../mcp/tools/execute_query_tool";
-import { defaultIndexValueFetcher } from "../mcp/context/values_index";
-import { queryDistinctValues } from "../mcp/tools/get_context_values";
-import { tryAcquireQuerySlot } from "../query_concurrency";
+import { indexValueFetcherFor } from "../retrieval/index/values_index";
+import {
+   queryDistinctValues,
+   type ValueQueryDeps,
+} from "../retrieval/search/values";
+import { QuerySlots } from "../query_concurrency";
 import { withAuthorizeModel } from "../test_helpers/authorize_fixture";
+import type { QueryRequest } from "./model_query_request";
 import { buildRouteApp } from "../test_helpers/route_app";
 import { withSettings } from "../test_helpers/settings_env";
 import { accessIdentityOf, type AccessRecord } from "./access_record";
-import type { EnvironmentStore } from "./environment_store";
+import { fakeOf } from "../test_helpers/store_fakes";
+import type {
+   ConnectionAdmin,
+   McpExposureReader,
+   PackageLookup,
+} from "./environment_ports";
+
+/** What these routes read from the store. */
+type AccessStore = PackageLookup & McpExposureReader;
 
 const MODEL = `##! experimental.givens
 #(secure)
@@ -68,7 +81,7 @@ function records(): AccessRecord[] {
       .map(([, record]) => record as AccessRecord);
 }
 
-function storeOf(model: unknown, version?: string): EnvironmentStore {
+function storeOf(model: unknown, version?: string): AccessStore {
    const pkg = {
       getModel: (path: string) => (path === "m.malloy" ? model : undefined),
       getDeclaredQueryMetadata: () => null,
@@ -81,25 +94,28 @@ function storeOf(model: unknown, version?: string): EnvironmentStore {
          throw new Error("no such connection");
       },
    };
-   return {
+   return fakeOf<PackageLookup & McpExposureReader>({
       getEnvironment: async () => environment,
       mcpIncludeHiddenFilesAndSources: false,
-   } as unknown as EnvironmentStore;
+   });
 }
 
 /** A model whose query runs until it is aborted, by the client or the timeout. */
 const HUNG = {
    carriesReportTag: () => false,
-   getQueryResults: (_audit: unknown, ...args: unknown[]): Promise<never> =>
+   runQuery: (_audit: unknown, request: QueryRequest): Promise<never> =>
       new Promise((_, reject) =>
-         (args[6] as AbortSignal).addEventListener("abort", () =>
+         request.abortSignal?.addEventListener("abort", () =>
             reject(new Error("aborted")),
          ),
       ),
 };
 
+/** The one slot pool every adapter in this file shares, as buildApp shares one. */
+const slots = new QuerySlots();
+
 function rest(
-   store: EnvironmentStore,
+   store: AccessStore,
    opts: {
       modelPath?: string;
       query?: string;
@@ -107,7 +123,7 @@ function rest(
       signal?: AbortSignal;
    } = {},
 ) {
-   return new QueryController(store).getQuery({
+   return new QueryController(new QueryUseCase(store, slots)).getQuery({
       environmentName: "env",
       packageName: "pkg",
       modelPath: opts.modelPath ?? "m.malloy",
@@ -192,7 +208,9 @@ describe("REST query writes exactly one record", () => {
    it("on the legacy model query route, carrying the caller and trace the request named", async () => {
       await withAuthorizeModel(MODEL, async ({ model }) => {
          const app = buildRouteApp({
-            queryController: new QueryController(storeOf(model)),
+            queryController: new QueryController(
+               new QueryUseCase(storeOf(model), slots),
+            ),
          });
          await request(app)
             .post("/api/v0/projects/env/packages/pkg/models/m.malloy/query")
@@ -215,7 +233,7 @@ describe("REST query writes exactly one record", () => {
 });
 
 /** The MCP execute_query handler over a store, as the SDK would call it. */
-function mcpHandler(store: EnvironmentStore) {
+function mcpHandler(store: AccessStore) {
    let handler!: (
       params: Record<string, unknown>,
       extra?: unknown,
@@ -227,6 +245,7 @@ function mcpHandler(store: EnvironmentStore) {
          },
       } as never,
       store,
+      new QueryUseCase(store, slots),
    );
    return handler;
 }
@@ -310,7 +329,7 @@ describe("MCP execute_query writes exactly one record", () => {
       await withSettings(
          { env: { PUBLISHER_MAX_CONCURRENT_QUERIES: "1" } },
          async () => {
-            const held = tryAcquireQuerySlot("test");
+            const held = slots.tryAcquire("test");
             try {
                await withAuthorizeModel(MODEL, async ({ model }) => {
                   const result = await mcpHandler(storeOf(model))(
@@ -331,19 +350,27 @@ describe("MCP execute_query writes exactly one record", () => {
 });
 
 describe("value search writes exactly one record per lookup", () => {
-   const lookup = (store: EnvironmentStore, source: string) =>
-      queryDistinctValues({
-         environmentStore: store,
-         environmentName: "env",
-         packageName: "pkg",
-         modelPath: "m.malloy",
-         source,
-         dimension: "label",
-         limit: 5,
-         timeoutMs: 5000,
-         counted: false,
-         routeLabel: "mcp:getContext:values",
-      });
+   // A pool of its own and the plain model resolver, as a spec's registry has.
+   const valueQuery: ValueQueryDeps = {
+      querySlots: new QuerySlots(),
+      queryModelResolver: undefined,
+   };
+   const lookup = (store: AccessStore, source: string) =>
+      queryDistinctValues(
+         {
+            environmentStore: store,
+            environmentName: "env",
+            packageName: "pkg",
+            modelPath: "m.malloy",
+            source,
+            dimension: "label",
+            limit: 5,
+            timeoutMs: 5000,
+            counted: false,
+            routeLabel: "mcp:getContext:values",
+         },
+         valueQuery,
+      );
 
    it("when it reads", async () => {
       await withAuthorizeModel(MODEL, async ({ model }) => {
@@ -356,19 +383,22 @@ describe("value search writes exactly one record per lookup", () => {
 
    it("carrying the caller and trace the request named", async () => {
       await withAuthorizeModel(MODEL, async ({ model }) => {
-         await queryDistinctValues({
-            environmentStore: storeOf(model),
-            environmentName: "env",
-            packageName: "pkg",
-            modelPath: "m.malloy",
-            source: "open_src",
-            dimension: "label",
-            limit: 5,
-            timeoutMs: 5000,
-            counted: false,
-            routeLabel: "mcp:getContext:values",
-            identity: accessIdentityOf(EXTRA.requestInfo.headers),
-         });
+         await queryDistinctValues(
+            {
+               environmentStore: storeOf(model),
+               environmentName: "env",
+               packageName: "pkg",
+               modelPath: "m.malloy",
+               source: "open_src",
+               dimension: "label",
+               limit: 5,
+               timeoutMs: 5000,
+               counted: false,
+               routeLabel: "mcp:getContext:values",
+               identity: accessIdentityOf(EXTRA.requestInfo.headers),
+            },
+            valueQuery,
+         );
          expect(records()).toMatchObject([
             {
                caller: "agent@example.com",
@@ -394,7 +424,7 @@ describe("value search writes exactly one record per lookup", () => {
 
    it("not at all when the index build reads, which is the system's and not a caller's", async () => {
       await withAuthorizeModel(MODEL, async ({ model }) => {
-         const read = await defaultIndexValueFetcher({
+         const read = await indexValueFetcherFor(valueQuery)({
             environmentStore: storeOf(model),
             environmentName: "env",
             packageName: "pkg",
@@ -463,16 +493,17 @@ describe("a request refused before its controller runs still writes one record",
    const cell = (prefix: string, index: string, query = "") =>
       `/api/v0/${prefix}/env/packages/pkg/notebooks/n.malloynb/cells/${index}${query}`;
    const CALLER = { "x-publisher-caller": "alice@example.com" };
-   const appOver = (store: EnvironmentStore) =>
+   const appOver = (store: AccessStore) =>
       buildRouteApp({
          environmentStore: store,
-         queryController: new QueryController(store),
+         queryController: new QueryController(new QueryUseCase(store, slots)),
+         querySlots: slots,
       });
    const atCap = (run: () => Promise<void>) =>
       withSettings(
          { env: { PUBLISHER_MAX_CONCURRENT_QUERIES: "1" } },
          async () => {
-            const held = tryAcquireQuerySlot("test");
+            const held = slots.tryAcquire("test");
             try {
                await run();
             } finally {
@@ -590,9 +621,11 @@ describe("raw SQL writes exactly one record, as ungated", () => {
          assertCanAdmitQuery: () => {},
          getApiConnection: () => ({ name: "warehouse", type: "postgres" }),
       };
-      const controller = new ConnectionController({
-         getEnvironment: async () => environment,
-      } as unknown as EnvironmentStore);
+      const controller = new ConnectionController(
+         fakeOf<ConnectionAdmin>({
+            getEnvironment: async () => environment,
+         }),
+      );
       sinon
          .stub(
             controller as unknown as {

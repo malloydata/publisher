@@ -11,6 +11,8 @@ import { AccessDeniedError, NotQueryableError } from "../../../src/errors";
 import { hasCallerAuthorizeAnnotation } from "../../../src/service/authorize";
 import { Environment } from "../../../src/service/environment";
 import { writePackageFiles } from "../../../src/test_helpers/temp_package";
+import { governorOf } from "../../../src/test_helpers/governor";
+import { parsePackageName } from "../../../src/service/identity";
 
 /** The rows of a query result, whatever wrapper the result carries them in. */
 function rowsOf(result: unknown): unknown[] {
@@ -233,7 +235,7 @@ describe("compile-path authorize gate (compileSource)", () => {
          // The early text gate would refuse these first; neutralize it so only
          // `assertAuthorizedForRunnable` is under test.
          const backstopOnly = async () => {
-            const pkg = await env.getPackage("pkg");
+            const pkg = await env.getPackage(parsePackageName("pkg"));
             const { model } = pkg.getCompileAuthorizationModel("model.malloy");
             spyOn(model!, "assertAuthorizedForText").mockResolvedValue(
                undefined,
@@ -259,9 +261,9 @@ describe("compile-path authorize gate (compileSource)", () => {
          });
 
          it("keeps a walk entry that has no on-disk twin (fails closed)", async () => {
-            const pkg = await env.getPackage("pkg");
+            const pkg = await env.getPackage(parsePackageName("pkg"));
             const { model } = pkg.getCompileAuthorizationModel("model.malloy");
-            const internals = model as unknown as {
+            const internals = governorOf(model!) as unknown as {
                entryPointGatesBySource: Map<
                   string,
                   { label: string; route: string; exprs: string[] }[]
@@ -310,19 +312,11 @@ describe("compile-path authorize gate (compileSource)", () => {
          givens: Record<string, GivenValue>,
       ) => {
          const { model } = (
-            await env.getPackage("pkg")
+            await env.getPackage(parsePackageName("pkg"))
          ).getCompileAuthorizationModel("model.malloy");
-         const { compactResult, result } = await model!.getQueryResults(
+         const { compactResult, result } = await model!.runQuery(
             unrecordedAudit(),
-            undefined,
-            undefined,
-            text,
-            undefined,
-            false,
-            givens,
-            undefined,
-            undefined,
-            "full",
+            { query: text, givens, responseShape: "full" },
          );
          return {
             rows: compactResult as unknown as Record<string, unknown>[],
@@ -403,9 +397,9 @@ describe("compile-path authorize gate (compileSource)", () => {
       describe("fails closed", () => {
          const modelInternals = async () => {
             const { model } = (
-               await env.getPackage("pkg")
+               await env.getPackage(parsePackageName("pkg"))
             ).getCompileAuthorizationModel("model.malloy");
-            return model as unknown as {
+            return governorOf(model!) as unknown as {
                queries: { name: string; sourceName?: string }[];
                entryPointGatesBySource: Map<
                   string,
@@ -974,26 +968,21 @@ describe("caller-annotation guard on markdown prose (compileSource)", () => {
 
    it("still filters a derived row-gated source whose caller text wraps #(access_filter) true in prose", async () => {
       await install(MODEL);
-      const model = (await env.getPackage("pkg", false)).getModel(
-         "model.malloy",
-      );
+      const model = (
+         await env.getPackage(parsePackageName("pkg"), false)
+      ).getModel("model.malloy");
       const DERIVED =
          "source: mine is row_gated extend {}\nrun: mine -> { select: org_id }";
       /** The rows the query returns, or the error it was refused with. */
       const run = (query: string, groups: number[]) =>
          model
-            ?.getQueryResults(
-               unrecordedAudit(),
-               undefined,
-               undefined,
+            ?.runQuery(unrecordedAudit(), {
                query,
-               undefined,
-               undefined,
-               {
+               givens: {
                   ROLE: "nobody",
                   GROUPS: groups,
                },
-            )
+            })
             .then(
                (r) => rowsOf(r),
                (e: Error) => e,
@@ -1068,16 +1057,11 @@ export { customers }`,
    });
 
    it("the QUERY path still denies the same hidden targets (exemption is compile-only)", async () => {
-      const pkg = await env.getPackage("pkg");
+      const pkg = await env.getPackage(parsePackageName("pkg"));
       await expect(
-         pkg
-            .getModel("index.malloy")!
-            .getQueryResults(
-               unrecordedAudit(),
-               undefined,
-               undefined,
-               "run: helper -> { aggregate: hc }",
-            ),
+         pkg.getModel("index.malloy")!.runQuery(unrecordedAudit(), {
+            query: "run: helper -> { aggregate: hc }",
+         }),
       ).rejects.toBeInstanceOf(NotQueryableError);
    });
 });

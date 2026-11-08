@@ -9,6 +9,9 @@ import { PackageController } from "../controller/package.controller";
 import { EnvironmentStore } from "./environment_store";
 import { installSettings } from "../test_helpers/settings_env";
 import { writePackageFiles } from "../test_helpers/temp_package";
+import { parseEnvironmentName, parsePackageName, VersionRef } from "./identity";
+import { startedStore } from "../test_helpers/started_store";
+import { testRetrieval } from "../test_helpers/test_retrieval";
 
 /**
  * The startup cleanup of version folders, as a restart runs it: an
@@ -54,7 +57,7 @@ async function openStore(): Promise<EnvironmentStore> {
       env: { PUBLISHER_PACKAGE_VERSIONING: "on" },
       cwd: path.join(root, "server"),
    }).restore;
-   store = new EnvironmentStore(path.join(root, "server"));
+   store = startedStore(new EnvironmentStore(path.join(root, "server")));
    await store.finishedInitialization;
    return store;
 }
@@ -88,13 +91,15 @@ describe("startup cleanup of version folders", () => {
    it("keeps a build-metadata version's folder and removes a folder no version owns", async () => {
       const first = await openStore();
       await first.addEnvironment({ name: ENV, connections: [] } as never);
-      const packages = new PackageController(first);
+      const packages = new PackageController(first, testRetrieval(first));
       await packages.addPackage(ENV, {
          name: PKG,
          location: source("1.0.0+b"),
       });
       await packages.addPackage(ENV, { name: PKG, location: source("2.0.0") });
-      const envPath = (await first.getEnvironment(ENV)).getEnvironmentPath();
+      const envPath = (
+         await first.getEnvironment(parseEnvironmentName(ENV))
+      ).getEnvironmentPath();
       const packagePath = path.join(envPath, PKG);
       expect(fs.readdirSync(packagePath).sort()).toEqual(["1.0.0_b", "2.0.0"]);
       const buildFolder = fs.statSync(path.join(packagePath, "1.0.0_b")).ino;
@@ -118,10 +123,16 @@ describe("startup cleanup of version folders", () => {
       expect(fs.statSync(path.join(packagePath, "1.0.0_b")).ino).toBe(
          buildFolder,
       );
-      const environment = await restarted.getEnvironment(ENV);
-      const served = await environment.getPackage(PKG, false, {
-         versionId: "1.0.0+b",
-      });
+      const environment = await restarted.getEnvironment(
+         parseEnvironmentName(ENV),
+      );
+      const served = await environment.getPackage(
+         parsePackageName(PKG),
+         false,
+         {
+            versionId: VersionRef.parse("1.0.0+b"),
+         },
+      );
       expect(served.getPackageMetadata().versionId).toBe("1.0.0+b");
       expect(served.getPackagePath()).toBe(path.join(packagePath, "1.0.0_b"));
    });

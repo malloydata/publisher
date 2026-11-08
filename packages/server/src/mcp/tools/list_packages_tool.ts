@@ -2,8 +2,8 @@
 // SPDX-License-Identifier: MIT
 
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
-import { EnvironmentStore } from "../../service/environment_store";
-import { readPackageCatalog } from "./package_catalog";
+import type { EnvironmentCatalog } from "../../service/environment_ports";
+import { readPackageCatalog } from "../../retrieval/model/package_catalog";
 import { buildMalloyUri } from "../handler_utils";
 import { registerGuardedTool } from "../register_tool";
 import { jsonResource } from "../tool_response";
@@ -30,7 +30,7 @@ Takes no arguments.`;
  */
 export function registerListPackagesTool(
    mcpServer: McpServer,
-   environmentStore: EnvironmentStore,
+   environmentStore: EnvironmentCatalog,
 ): void {
    registerGuardedTool(mcpServer, {
       name: "list_packages",

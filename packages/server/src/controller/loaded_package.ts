@@ -1,8 +1,13 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
-import type { EnvironmentStore } from "../service/environment_store";
+import type { PackageLookup } from "../service/environment_ports";
 import type { Package } from "../service/package";
+import {
+   parseEnvironmentName,
+   parsePackageName,
+   VersionRef,
+} from "../service/identity";
 
 /**
  * The loaded package a read route names, without reloading it: the version
@@ -10,14 +15,16 @@ import type { Package } from "../service/package";
  * for an environment or package this server does not hold.
  */
 export async function loadedPackage(
-   environmentStore: EnvironmentStore,
+   environmentStore: PackageLookup,
    environmentName: string,
    packageName: string,
-   versionId?: unknown,
+   versionId: VersionRef = VersionRef.LATEST,
 ): Promise<Package> {
    const environment = await environmentStore.getEnvironment(
-      environmentName,
+      parseEnvironmentName(environmentName),
       false,
    );
-   return environment.getPackage(packageName, false, { versionId });
+   return environment.getPackage(parsePackageName(packageName), false, {
+      versionId,
+   });
 }

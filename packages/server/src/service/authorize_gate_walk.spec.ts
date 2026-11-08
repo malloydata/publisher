@@ -5,6 +5,7 @@ import { type ModelDef, type SourceDef } from "@malloydata/malloy";
 import { describe, expect, it } from "bun:test";
 
 import { Model } from "./model";
+import { governorOf } from "../test_helpers/governor";
 
 /**
  * Fail-closed branches of the entry-point gate walk, driven from synthetic
@@ -68,7 +69,7 @@ function walkerFor(modelDef: ModelDef): GateWalker {
       // Supplied so the constructor does not derive it from this partial def.
       modelInfo: {} as never,
    });
-   return model as unknown as GateWalker;
+   return governorOf(model) as unknown as GateWalker;
 }
 
 describe("gate walk fail-closed branches", () => {

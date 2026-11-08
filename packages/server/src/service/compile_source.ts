@@ -48,11 +48,16 @@ import {
    malloyGivenToApi,
    type MalloyGiven,
 } from "./given";
+import { VersionRef } from "./identity";
 import { Model } from "./model";
-import { notebookReaderProblem } from "./notebook";
+import { ModelPolicy } from "./model_policy";
 import { notebookLintProblems, reportedByDashboardLint } from "./notebook_lint";
 import { Package } from "./package";
-import { carriesArtifactTag, isReportEligiblePath } from "./report";
+import {
+   carriesArtifactTag,
+   isReportEligiblePath,
+   notebookReaderProblem,
+} from "./report";
 import { translatorMalloyError } from "./translator_error";
 import { overlayKey, overlayKeyOfPath } from "./overlay_key";
 import {
@@ -157,7 +162,7 @@ export interface CompileSourceHost {
     */
    versionedPackage(
       packageName: string,
-      versionId: unknown,
+      versionId: VersionRef,
       underLock: boolean,
    ): Promise<Package | undefined>;
 }
@@ -220,7 +225,7 @@ export async function compileSource(
    includeSql: boolean = false,
    givens?: Record<string, GivenValue>,
    scope: CompileScope = "append",
-   versionId?: unknown,
+   versionId: VersionRef = VersionRef.LATEST,
    overlay?: readonly OverlayFile[],
 ): Promise<CompileSourceResult> {
    const request: CompileRequest = {
@@ -424,12 +429,14 @@ async function openCompileContext(
                gateModel.assertQueryBoundaryEarly(undefined, undefined, source);
             },
             () =>
-               gateModel.assertAuthorizedForText(source, givens ?? {}, {
-                  // File and package scope compile a whole author file: a
-                  // locked name that is not the run statement must not
-                  // refuse it, and its joins are author joins.
-                  wholeFile: scope !== "append",
-               }),
+               gateModel
+                  .governance()
+                  .oracle.beforeCompileText(source, givens ?? {}, {
+                     // File and package scope compile a whole author file: a
+                     // locked name that is not the run statement must not
+                     // refuse it, and its joins are author joins.
+                     wholeFile: scope !== "append",
+                  }),
          );
       }
    };
@@ -558,6 +565,9 @@ async function resolveGateModel(
             {
                buildManifest: pkg.getBuildManifestEntries(),
                overlay: withTarget,
+               // Built outside the Package to decide the text's gates; it
+               // runs no query, and carries no Package curation.
+               policy: ModelPolicy.standalone(),
             },
          ),
          hasExactGateModel: true,
@@ -585,6 +595,8 @@ async function resolveGateModel(
                pkg.getMalloyConfig(),
                {
                   buildManifest: pkg.getBuildManifestEntries(),
+                  // Gates only, as for the overlay model above.
+                  policy: ModelPolicy.standalone(),
                },
             ),
             hasExactGateModel: true,
@@ -615,17 +627,18 @@ function gateCompiledRunnable(
       },
       () =>
          hasExactGateModel
-            ? gateModel.assertAuthorizedForRunnable(
-                 runnable,
-                 givens ?? {},
-                 callerRegion,
-              )
+            ? gateModel
+                 .governance()
+                 .assertAuthorizedForRunnable(
+                    runnable,
+                    givens ?? {},
+                    callerRegion,
+                 )
             : // No region: this gate model is another file's
               // namespace, so its source names cannot place a join.
-              gateModel.assertAuthorizedFromCompiledRunnable(
-                 runnable,
-                 givens ?? {},
-              ),
+              gateModel
+                 .governance()
+                 .assertAuthorizedFromCompiledRunnable(runnable, givens ?? {}),
    );
 }
 
@@ -801,7 +814,10 @@ async function compileAppendDocument(
                           text,
                        );
                     },
-                    () => gate.assertAuthorizedForText(text, givens ?? {}),
+                    () =>
+                       gate
+                          .governance()
+                          .oracle.beforeCompileText(text, givens ?? {}),
                  )
                : Promise.resolve(),
          compiled: (runnable) =>
@@ -810,20 +826,24 @@ async function compileAppendDocument(
                     () => gate.assertCompiledTargetQueryable(runnable),
                     () =>
                        exact
-                          ? gate.assertAuthorizedForRunnable(
-                               runnable,
-                               givens ?? {},
-                            )
-                          : gate.assertAuthorizedFromCompiledRunnable(
-                               runnable,
-                               givens ?? {},
-                            ),
+                          ? gate
+                               .governance()
+                               .assertAuthorizedForRunnable(
+                                  runnable,
+                                  givens ?? {},
+                               )
+                          : gate
+                               .governance()
+                               .assertAuthorizedFromCompiledRunnable(
+                                  runnable,
+                                  givens ?? {},
+                               ),
                  )
                : Promise.resolve(),
          constructs: (text) => refuseConstructs(ctx, baseModel, text, true),
          document: (text) => refuseConstructs(ctx, baseModel, text, false),
          nameVisible: (query, definitions) => {
-            gate?.assertTextNameVisible(query, definitions);
+            gate?.governance().assertTextNameVisible(query, definitions);
          },
          boundaryCompiled: async (
             runnable,
@@ -836,10 +856,12 @@ async function compileAppendDocument(
                query,
                definitions,
             );
-            await gate?.assertDocumentJoinsQueryable(
-               `${definitions}\n${query}`,
-               runnable,
-            );
+            await gate
+               ?.governance()
+               .assertDocumentJoinsQueryable(
+                  `${definitions}\n${query}`,
+                  runnable,
+               );
          },
          boundary: async (query, definitions) => {
             gate?.assertQueryBoundaryEarly(
@@ -848,9 +870,9 @@ async function compileAppendDocument(
                query,
                definitions,
             );
-            await gate?.assertDocumentJoinsQueryable(
-               `${definitions}\n${query}`,
-            );
+            await gate
+               ?.governance()
+               .assertDocumentJoinsQueryable(`${definitions}\n${query}`);
          },
       },
    });

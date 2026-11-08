@@ -14,6 +14,7 @@ import os from "os";
 import path from "path";
 import { Environment } from "./environment";
 import { writePackageFiles } from "../test_helpers/temp_package";
+import { parsePackageName } from "./identity";
 
 const crlf = (text: string) => text.replace(/\r?\n/g, "\r\n");
 
@@ -65,7 +66,7 @@ describe("report listing over CRLF text", () => {
             { manifest: { name, version: "1.0.0" } },
          ),
       );
-      const pkg = await env.getPackage(name, false);
+      const pkg = await env.getPackage(parsePackageName(name), false);
       return Object.fromEntries(
          pkg
             .listReports()

@@ -26,13 +26,13 @@ import {
 } from "./filter_deprecation";
 import { logger } from "./logger";
 import { registerDeprecatedRoutes } from "./routes/deprecated";
+import { QuerySlots } from "./query_concurrency";
 import { registerLegacyRoutes, type LegacyControllerSet } from "./server-old";
 import { recordDeprecatedFormatUsage } from "./service/deprecated/lints";
 import {
    declaredDeprecatedManifestKeys,
    recordDeprecatedManifestKeys,
 } from "./service/deprecated/manifest_keys";
-import type { EnvironmentStore } from "./service/environment_store";
 import {
    isLegacyReportAlias,
    recordConsoleAliasUse,
@@ -45,6 +45,12 @@ import {
    startMetricsHarness,
    type MetricsHarness,
 } from "./test_helpers/metrics_harness";
+import { fakeOf } from "./test_helpers/store_fakes";
+import type {
+   EnvironmentAdmin,
+   PackageAdmin,
+} from "./service/environment_ports";
+import { testRetrieval } from "./test_helpers/test_retrieval";
 
 describe("publisher_deprecated_usage_total", () => {
    let harness: MetricsHarness;
@@ -67,13 +73,13 @@ describe("publisher_deprecated_usage_total", () => {
          fail: (name: string) => Error = (name) =>
             new EnvironmentNotFoundError(`Environment ${name} does not exist`),
       ) => {
-         const store = {
+         const store = fakeOf<EnvironmentAdmin & PackageAdmin>({
             getEnvironment: async (name: string) => {
                throw fail(name);
             },
-         } as unknown as EnvironmentStore;
+         });
          const server = express();
-         registerDeprecatedRoutes(server, "/api/v0", store);
+         registerDeprecatedRoutes(server, "/api/v0", store, new QuerySlots());
          return server;
       };
       const pkg = "/api/v0/environments/env/packages/pkg";
@@ -95,17 +101,18 @@ describe("publisher_deprecated_usage_total", () => {
       });
 
       it("counts the project-path notebook routes under the same features, once each", async () => {
-         const store = {
+         const store = fakeOf<EnvironmentAdmin & PackageAdmin>({
             getEnvironment: async (name: string) => {
                throw new EnvironmentNotFoundError(
                   `Environment ${name} does not exist`,
                );
             },
-         } as unknown as EnvironmentStore;
+         });
          const server = express();
-         registerDeprecatedRoutes(server, "/api/v0", store);
+         registerDeprecatedRoutes(server, "/api/v0", store, new QuerySlots());
          registerLegacyRoutes(server, {
             environmentStore: store,
+            querySlots: new QuerySlots(),
          } as unknown as LegacyControllerSet);
          const project = "/api/v0/projects/env/packages/pkg";
          await request(server).get(`${project}/notebooks`);
@@ -227,17 +234,20 @@ describe("publisher_deprecated_usage_total", () => {
    describe("the package PATCH", () => {
       /** Both PATCH paths over a real PackageController; every environment is missing. */
       const app = () => {
-         const store = {
+         const store = fakeOf<EnvironmentAdmin & PackageAdmin>({
             publisherConfigIsFrozen: false,
             getEnvironment: async (name: string) => {
                throw new EnvironmentNotFoundError(
                   `Environment ${name} does not exist`,
                );
             },
-         } as unknown as EnvironmentStore;
+         });
          return buildRouteApp({
             environmentStore: store,
-            packageController: new PackageController(store),
+            packageController: new PackageController(
+               store,
+               testRetrieval(store),
+            ),
          });
       };
 
@@ -277,7 +287,7 @@ describe("publisher_deprecated_usage_total", () => {
                throw new PackageNotFoundError(`Package ${name} not found`);
             },
          };
-         const store = {
+         const store = fakeOf<EnvironmentAdmin & PackageAdmin>({
             publisherConfigIsFrozen: false,
             getEnvironment: async (name: string) => {
                if (name === probe) return environment;
@@ -285,10 +295,13 @@ describe("publisher_deprecated_usage_total", () => {
                   `Environment ${name} does not exist`,
                );
             },
-         } as unknown as EnvironmentStore;
+         });
          const server = buildRouteApp({
             environmentStore: store,
-            packageController: new PackageController(store),
+            packageController: new PackageController(
+               store,
+               testRetrieval(store),
+            ),
          });
          const warn = spyOn(logger, "warn");
          try {

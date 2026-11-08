@@ -1,7 +1,7 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
-import type { EnvironmentStore } from "./service/environment_store";
+import type { LoadedEnvironmentsReader } from "./service/environment_ports";
 import { lazyCounter, lazyInstrument, publisherMeter } from "./telemetry";
 
 export type ReloadTrigger = "rest" | "mcp" | "watch";
@@ -19,7 +19,7 @@ export function recordPackageReload(
    reloads().add(1, { trigger, outcome });
 }
 
-let observedStore: EnvironmentStore | null = null;
+let observedStore: LoadedEnvironmentsReader | null = null;
 
 const packagesGauge = lazyInstrument(() => {
    const gauge = publisherMeter().createObservableGauge("publisher_packages", {
@@ -49,7 +49,7 @@ const packagesGauge = lazyInstrument(() => {
  * in-memory state at each scrape. A package that is both loaded and stale
  * counts under both, matching how /status lists it.
  */
-export function observePackageStates(store: EnvironmentStore): void {
+export function observePackageStates(store: LoadedEnvironmentsReader): void {
    observedStore = store;
    packagesGauge();
 }

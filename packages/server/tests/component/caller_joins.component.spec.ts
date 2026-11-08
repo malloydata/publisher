@@ -13,11 +13,13 @@ import { afterAll, beforeAll, describe, expect, it } from "bun:test";
 import fs from "fs/promises";
 import path from "path";
 import { AccessDeniedError, NotQueryableError } from "../../src/errors";
-import { Model } from "../../src/service/model";
+import { Model, ModelPolicy } from "../../src/service/model";
+import { governorOf } from "../../src/test_helpers/governor";
 import {
    seededDuckdb,
    writeTempPackage,
 } from "../../src/test_helpers/temp_package";
+import { QueryPrivileges } from "../../src/service/model_query_request";
 
 let PKG_DIR: string;
 let removePkgDir: () => void;
@@ -101,22 +103,25 @@ let plainModel: Model;
 let boundaryModel: Model;
 
 async function loadModel(boundary: boolean): Promise<Model> {
-   const model = await Model.create(
+   return Model.create(
       "test-pkg",
       PKG_DIR,
       "m.malloy",
       new Map<string, Connection>([["duckdb", duck as Connection]]),
+      {
+         policy: boundary
+            ? // What `Package` decides for a curated package (a root index.malloy).
+              ModelPolicy.fixed({
+                 discoveryCuration: true,
+                 queryBoundary: {
+                    mode: "declared",
+                    exploresDeclared: true,
+                    isQueryEntryPoint: true,
+                 },
+              })
+            : ModelPolicy.standalone(),
+      },
    );
-   if (boundary) {
-      // What `Package` does for a curated package (a root index.malloy).
-      model.setDiscoveryCuration(true);
-      model.setQueryBoundary({
-         mode: "declared",
-         exploresDeclared: true,
-         isQueryEntryPoint: true,
-      });
-   }
-   return model;
 }
 
 async function run(
@@ -125,18 +130,10 @@ async function run(
    givens: Record<string, GivenValue>,
    bypassAuthorize = false,
 ): Promise<{ rows: Record<string, unknown>[]; sql: string }> {
-   const { compactResult, result } = await model.getQueryResults(
+   const { compactResult, result } = await model.runQuery(
       unrecordedAudit(),
-      undefined,
-      undefined,
-      query,
-      undefined,
-      undefined,
-      givens,
-      undefined,
-      undefined,
-      "full",
-      bypassAuthorize,
+      { query, givens, responseShape: "full" },
+      QueryPrivileges.of({ bypassAuthorize }),
    );
    return {
       rows: compactResult as unknown as Record<string, unknown>[],
@@ -1151,10 +1148,10 @@ describe("record and array literals are not joins", () => {
 describe("caller joins are resolved once per request", () => {
    it("walks the compiled query once for the boundary and authorize passes", async () => {
       const model = await loadModel(true);
-      const internals = model as unknown as {
+      const internals = governorOf(model) as unknown as {
          computeCallerJoins: (...args: unknown[]) => Promise<unknown>;
       };
-      const original = internals.computeCallerJoins.bind(model);
+      const original = internals.computeCallerJoins.bind(internals);
       let calls = 0;
       internals.computeCallerJoins = (...args: unknown[]) => {
          calls++;

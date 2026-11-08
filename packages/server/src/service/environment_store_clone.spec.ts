@@ -10,8 +10,10 @@ import {
    stubStorageManager,
 } from "../test_helpers/storage_manager_stub";
 import { logger } from "../logger";
-import { EnvironmentStore, GIT_CLONE_OPTIONS } from "./environment_store";
+import { EnvironmentStore } from "./environment_store";
+import { GIT_CLONE_OPTIONS } from "./package_sources";
 import type { simpleGit } from "simple-git";
+import { startedStore } from "../test_helpers/started_store";
 
 /**
  * Wiring coverage for the package git clone: the shallow-clone options must
@@ -97,10 +99,12 @@ const storageManager = stubStorageManager({
 });
 
 const newStore = () =>
-   new EnvironmentStore(serverRootPath, {
-      storageManager,
-      simpleGit: fakeSimpleGit,
-   });
+   startedStore(
+      new EnvironmentStore(serverRootPath, {
+         storageManager,
+         simpleGit: fakeSimpleGit,
+      }),
+   );
 
 describe("git clone wiring", () => {
    let stderrWrites: string[];
@@ -239,13 +243,15 @@ describe("git clone wiring", () => {
    });
 
    it("direct download extracts the subdirectory and labels by repo alone", async () => {
-      // The controller add-package path: downloadGitHubDirectory is called
+      // The controller add-package path: downloadPackageInto clones
       // with the raw /tree/... location and no progress context.
       const store = newStore();
       await store.finishedInitialization;
 
       const target = path.join(serverRootPath, "publisher_data", "direct");
-      await store.downloadGitHubDirectory(
+      await store.downloadPackageInto(
+         ENV_NAME,
+         PKG_NAME,
          `https://github.com/example/repo/tree/main/${PKG_NAME}`,
          target,
       );
@@ -271,7 +277,9 @@ describe("git clone wiring", () => {
       const target = path.join(serverRootPath, "publisher_data", "direct");
       let caught: Error | undefined;
       try {
-         await store.downloadGitHubDirectory(
+         await store.downloadPackageInto(
+            ENV_NAME,
+            PKG_NAME,
             "https://github.com/example/repo",
             target,
          );

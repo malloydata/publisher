@@ -26,17 +26,15 @@ import {
    startMetricsHarness,
    type MetricsHarness,
 } from "../test_helpers/metrics_harness";
-import type { EnvironmentStore } from "../service/environment_store";
 import { getNotFoundError } from "./error_messages";
 import { initializeMcpServer } from "./server";
 import { instrumentTool, registerGuardedTool } from "./register_tool";
 import type { ToolResult } from "./tool_response";
+import { mcpServicesFor } from "../test_helpers/mcp_services";
 
 /** A real server over the in-memory transport, its store answering `getStatus`. */
 async function connectedClient(getStatus: () => Promise<unknown>) {
-   const server = initializeMcpServer({
-      getStatus,
-   } as unknown as EnvironmentStore);
+   const server = initializeMcpServer(mcpServicesFor({ getStatus }));
    const [clientTransport, serverTransport] =
       InMemoryTransport.createLinkedPair();
    await server.connect(serverTransport);

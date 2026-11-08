@@ -33,6 +33,8 @@ import { Environment } from "./environment";
 import { Model } from "./model";
 import type { Package } from "./package";
 import { installSettings } from "../test_helpers/settings_env";
+import { parsePackageName } from "./identity";
+import { QueryPrivileges } from "./model_query_request";
 
 /** Puts back the settings the current test installed. */
 let restoreSettings: (() => void) | undefined;
@@ -149,7 +151,7 @@ describe("one QueryModel per hydrated model", () => {
       await fs.writeFile(path.join(dir, "m.malloy"), MODEL);
       const env = await Environment.create("testEnv", envPath, []);
       await env.addPackage("pkg");
-      return env.getPackage("pkg", false);
+      return env.getPackage(parsePackageName("pkg"), false);
    }
 
    async function answers(model: Model) {
@@ -165,12 +167,11 @@ describe("one QueryModel per hydrated model", () => {
             "run: nums -> { group_by: two; aggregate: total_one }",
          ],
       ] as const) {
-         const r = await model.getQueryResults(
-            unrecordedAudit(),
-            source,
-            view,
+         const r = await model.runQuery(unrecordedAudit(), {
+            sourceName: source,
+            queryName: view,
             query,
-         );
+         });
          out.push({ sql: r.result.sql, data: r.compactResult });
       }
       return out;
@@ -275,14 +276,10 @@ describe("one QueryModel per materializer a query compiles against", () => {
       query: string,
       givens?: Record<string, unknown>,
    ): Promise<unknown> {
-      const r = await model.getQueryResults(
+      const r = await model.runQuery(
          unrecordedAudit(),
-         undefined,
-         undefined,
-         query,
-         {},
-         true,
-         givens as never,
+         { query, filterParams: {}, givens: givens as never },
+         QueryPrivileges.of({ bypassFilters: true }),
       );
       return r.compactResult;
    }

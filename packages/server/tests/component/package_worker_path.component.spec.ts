@@ -103,12 +103,10 @@ describe("Package.create via worker pool", () => {
          // recompile, then runs the SQL against the *main thread's*
          // DuckDB connection (the only one with the in-memory `nums`
          // source loaded via duckdb.sql()).
-         const { result } = await model!.getQueryResults(
-            unrecordedAudit(),
-            "nums",
-            "total_v",
-            undefined,
-         );
+         const { result } = await model!.runQuery(unrecordedAudit(), {
+            sourceName: "nums",
+            queryName: "total_v",
+         });
          expect(result.data).toBeDefined();
       } finally {
          await duckdb.close();
@@ -566,15 +564,10 @@ run: mid_ungated -> { aggregate: c }`,
          const pkg = await Package.create("env", "pkg", tempDir, malloyConfig);
          const err = await pkg
             .getModel("og_entry.malloy")!
-            .getQueryResults(
-               unrecordedAudit(),
-               undefined,
-               undefined,
-               "run: mid_ungated -> { aggregate: c }",
-               undefined,
-               undefined,
-               { HIDE: "a" },
-            )
+            .runQuery(unrecordedAudit(), {
+               query: "run: mid_ungated -> { aggregate: c }",
+               givens: { HIDE: "a" },
+            })
             .catch((e: unknown) => e);
          expect((err as Error).message).toMatch(/unknown given 'HIDE'/);
       } finally {
@@ -1246,7 +1239,7 @@ source: orders is duckdb.sql("""
             );
 
             const { computePackageBuildPlan } = await import(
-               "../../src/service/build_plan_compile"
+               "../../src/service/materialization/plan/build_plan_compile"
             );
             const mainThread = await computePackageBuildPlan(pkg);
             expect(workerPlan.outcome).toEqual(mainThread);

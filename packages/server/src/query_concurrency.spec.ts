@@ -7,16 +7,18 @@ import type { NextFunction, Request, Response } from "express";
 
 import { ServiceUnavailableError } from "./errors";
 import {
-   getActiveQueryCount,
-   queryConcurrencyMiddleware,
-   resetActiveQueryCountForTesting,
+   meterQuerySlots,
+   QuerySlots,
+   resetQueryConcurrencyTelemetryForTesting,
 } from "./query_concurrency";
-import { resetInstrumentsForTesting } from "./telemetry";
 import {
    startMetricsHarness,
    type MetricsHarness,
 } from "./test_helpers/metrics_harness";
 import { installSettings } from "./test_helpers/settings_env";
+
+/** The pool under test; each case starts from a fresh one. */
+let slots = new QuerySlots();
 
 /** Puts back the settings the current case installed. */
 let restoreSettings: (() => void) | undefined;
@@ -76,19 +78,19 @@ function callMiddleware(
    const next: NextFunction = (err) => {
       errorBox.value = err;
    };
-   queryConcurrencyMiddleware(req, res, next);
+   slots.middleware(req, res, next);
    return { next, error: errorBox };
 }
 
-describe("queryConcurrencyMiddleware", () => {
+describe("QuerySlots.middleware", () => {
    beforeEach(() => {
-      // Belt-and-suspenders: every test starts from a clean gauge.
-      resetActiveQueryCountForTesting();
+      // Every test starts from an empty pool.
+      slots = new QuerySlots();
       setCap();
    });
    afterEach(() => {
       restoreCap();
-      resetActiveQueryCountForTesting();
+      slots = new QuerySlots();
    });
 
    it("passes through when the limit is 0 (opt-out)", () => {
@@ -98,14 +100,14 @@ describe("queryConcurrencyMiddleware", () => {
       expect(error.value).toBeUndefined();
       // Crucially: the counter stays at zero so opt-out really is
       // opt-out — not "still tracks, just never rejects".
-      expect(getActiveQueryCount()).toBe(0);
+      expect(slots.active).toBe(0);
    });
 
    it("admits the first request under the cap and increments the gauge", () => {
       setCap("2");
       const { error } = callMiddleware(makeReq(), makeRes());
       expect(error.value).toBeUndefined();
-      expect(getActiveQueryCount()).toBe(1);
+      expect(slots.active).toBe(1);
    });
 
    it("rejects the (cap+1)-th in-flight request with ServiceUnavailableError", () => {
@@ -121,16 +123,16 @@ describe("queryConcurrencyMiddleware", () => {
       // Gauge is unchanged by the rejection (we never claimed the
       // slot), so subsequent legitimate completions don't go
       // negative.
-      expect(getActiveQueryCount()).toBe(2);
+      expect(slots.active).toBe(2);
    });
 
    it("decrements on response 'finish' (normal completion)", () => {
       setCap("2");
       const res = makeRes();
       callMiddleware(makeReq(), res);
-      expect(getActiveQueryCount()).toBe(1);
+      expect(slots.active).toBe(1);
       res.fireFinish();
-      expect(getActiveQueryCount()).toBe(0);
+      expect(slots.active).toBe(0);
    });
 
    it("decrements on response 'close' (client disconnect)", () => {
@@ -141,7 +143,7 @@ describe("queryConcurrencyMiddleware", () => {
       const res = makeRes();
       callMiddleware(makeReq(), res);
       res.fireClose();
-      expect(getActiveQueryCount()).toBe(0);
+      expect(slots.active).toBe(0);
    });
 
    it("decrements only once even when both 'finish' and 'close' fire", () => {
@@ -154,7 +156,7 @@ describe("queryConcurrencyMiddleware", () => {
       callMiddleware(makeReq(), res);
       res.fireFinish();
       res.fireClose();
-      expect(getActiveQueryCount()).toBe(0);
+      expect(slots.active).toBe(0);
 
       // A second request after the double-fire must still be
       // admitted (proving the counter didn't underflow into a
@@ -162,7 +164,7 @@ describe("queryConcurrencyMiddleware", () => {
       const second = makeRes();
       const { error } = callMiddleware(makeReq(), second);
       expect(error.value).toBeUndefined();
-      expect(getActiveQueryCount()).toBe(1);
+      expect(slots.active).toBe(1);
    });
 
    it("decrements when the handler ends the response, even if neither 'finish' nor 'close' follows", () => {
@@ -175,7 +177,7 @@ describe("queryConcurrencyMiddleware", () => {
       const res = makeRes();
       callMiddleware(makeReq(), res);
       res.end();
-      expect(getActiveQueryCount()).toBe(0);
+      expect(slots.active).toBe(0);
 
       // On a runtime that does report the finish, the events that follow
       // the `end()` must not release a second time.
@@ -183,7 +185,7 @@ describe("queryConcurrencyMiddleware", () => {
       res.fireClose();
       const second = callMiddleware(makeReq(), makeRes());
       expect(second.error.value).toBeUndefined();
-      expect(getActiveQueryCount()).toBe(1);
+      expect(slots.active).toBe(1);
    });
 
    it("re-admits after an in-flight request completes (gauge rolls forward)", () => {
@@ -199,7 +201,7 @@ describe("queryConcurrencyMiddleware", () => {
       firstRes.fireFinish();
       const third = callMiddleware(makeReq(), makeRes());
       expect(third.error.value).toBeUndefined();
-      expect(getActiveQueryCount()).toBe(1);
+      expect(slots.active).toBe(1);
    });
 
    it("reads the cap from the current settings on every call, not once at module load", () => {
@@ -217,21 +219,33 @@ describe("queryConcurrencyMiddleware", () => {
       setCap("3");
       const admitted = callMiddleware(makeReq(), makeRes());
       expect(admitted.error.value).toBeUndefined();
-      expect(getActiveQueryCount()).toBe(2);
+      expect(slots.active).toBe(2);
    });
 
    describe("telemetry", () => {
       let harness: MetricsHarness;
       beforeEach(async () => {
          harness = await startMetricsHarness();
-         resetActiveQueryCountForTesting();
-         resetInstrumentsForTesting();
+         slots = new QuerySlots();
+         resetQueryConcurrencyTelemetryForTesting();
       });
       afterEach(async () => {
          restoreCap();
-         resetActiveQueryCountForTesting();
-         resetInstrumentsForTesting();
+         slots = new QuerySlots();
+         resetQueryConcurrencyTelemetryForTesting();
          await harness.shutdown();
+      });
+
+      it("reports the designated pool, not another pool that took a slot", async () => {
+         setCap("5");
+         const main = new QuerySlots();
+         meterQuerySlots(main);
+         main.tryAcquire("main");
+         main.tryAcquire("main");
+         new QuerySlots().tryAcquire("stray");
+         expect(
+            await harness.collectGauge("publisher_query_active_slots"),
+         ).toBe(2);
       });
 
       it("publisher_query_concurrency_rejections_total ticks on each 503", async () => {

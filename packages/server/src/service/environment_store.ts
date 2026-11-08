@@ -1,16 +1,10 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
-import { GetObjectCommand, S3 } from "@aws-sdk/client-s3";
-import { Storage } from "@google-cloud/storage";
 import { Mutex } from "async-mutex";
 import crypto from "crypto";
-import extract from "extract-zip";
 import * as fs from "fs";
-import * as os from "os";
 import * as path from "path";
-import { simpleGit, type SimpleGitProgressEvent } from "simple-git";
-import { Writable } from "stream";
 import { components } from "../api";
 import {
    getProcessedPublisherConfig,
@@ -31,7 +25,6 @@ import {
    PUBLISHER_DATA_DIR,
 } from "../constants";
 import {
-   BadRequestError,
    EnvironmentNotFoundError,
    FrozenConfigError,
    messageWithFilesystemCause,
@@ -40,35 +33,43 @@ import {
 } from "../errors";
 import { getOperationalState, markNotReady, markReady } from "../health";
 import { formatDuration, logger } from "../logger";
-import {
-   deleteEnvironmentEmbeddings,
-   deletePackageEmbeddings,
-} from "../mcp/tools/embedding_index";
 import { redactPgSecrets } from "../pg_helpers";
+import { assertSafePackageName, safeJoinUnderRoot } from "../path_safety";
 import {
-   assertSafeEnvironmentPath,
-   assertSafePackageName,
-   safeJoinUnderRoot,
-} from "../path_safety";
-import {
-   Connection,
-   type Environment as DbEnvironment,
+   type ConnectionRecord,
+   type EnvironmentRecord as DbEnvironment,
    type ResourceRepository,
 } from "../storage/DatabaseInterface";
 import { StorageConfig, StorageManager } from "../storage/StorageManager";
 import { extractErrorDataFromError, validateAzureUrl } from "./db_utils";
-import {
-   Environment,
-   type PackageListingOptions,
-   PackageStatus,
-} from "./environment";
+import { Environment, type PackageListingOptions } from "./environment";
 import { formatPublishRejections } from "./publish_checks";
-import { assertGoogleCredentialsIsNotADirectory } from "./google_credentials";
 import type { Package } from "./package";
+import { environmentResource } from "../api_resource";
+import { type EnvironmentName, parseEnvironmentName } from "./identity";
 import { VersionStore } from "./versions/version_store";
 import { storageBindingResolverFor } from "./versions/materialization_scope";
 import type { PackageMemoryGovernor } from "./package_memory_governor";
 import { SERVER_VERSION } from "../version";
+import type {
+   ConnectionAdmin,
+   EnvironmentAdmin,
+   EnvironmentPeek,
+   LoadedEnvironmentsReader,
+   McpExposureReader,
+   PackageAdmin,
+   ServerStatusBody,
+   StatusOptions,
+   StatusReader,
+} from "./environment_ports";
+import {
+   isGitHubURL,
+   isLocalPath,
+   PackageSources,
+   type PackageSourceClients,
+   parseGitHubUrl,
+   resolvePackageLocation,
+} from "./package_sources";
 type ApiEnvironment = components["schemas"]["Environment"];
 type ApiConnection = components["schemas"]["Connection"];
 type LoadError = NonNullable<
@@ -105,254 +106,6 @@ async function clearMountTarget(targetPath: string): Promise<void> {
    } catch {
       // Nothing there, fine.
    }
-}
-
-/**
- * Absolute on-disk path for a local package `location`.
- *
- * `~/` (POSIX form only) expands to the home directory. Anything still
- * relative resolves against `anchorDir`, the directory holding the active
- * config, so a config and the packages it points at can be moved or
- * committed together. Absolute locations are returned untouched.
- */
-export function resolvePackageLocation(
-   location: string,
-   anchorDir: string,
-   homeDir?: string,
-): string {
-   let expanded = location;
-   if (location.startsWith("~/")) {
-      // Lazily: os.homedir() can throw in a distroless container, and a
-      // location without `~` must never fail on that.
-      const home = homeDir ?? os.homedir();
-      if (!home) {
-         throw new Error(
-            `Cannot expand "~" in location "${location}": home directory is not set`,
-         );
-      }
-      expanded = path.join(home, location.slice(2));
-   }
-   return path.isAbsolute(expanded) ? expanded : path.join(anchorDir, expanded);
-}
-
-/**
- * Options for every package git clone. Shallow, because only the default
- * branch's working tree is served and a reload re-clones, so history is pure
- * download cost.
- */
-export const GIT_CLONE_OPTIONS: Record<string, string | number | null> = {
-   "--depth": 1,
-   "--single-branch": null,
-};
-
-/**
- * Drop git progress lines from a failed clone's error message (simple-git
- * forces `--progress` when a progress handler is set), since the message
- * reaches API error responses and logs. Returns the input rather than an
- * empty error when every line matched.
- */
-export function stripGitProgressNoise(message: string): string {
-   const kept = message
-      .split(/\r\n|\r|\n/)
-      .filter(
-         (line) =>
-            !/\d+% \(\d+\/\d+\)/.test(line) &&
-            // Also matches the "Error: Cloning into ..." shape V8 seeds
-            // into err.stack from the message's first line.
-            !/^(\w+: )?Cloning into /.test(line.trim()),
-      )
-      .join("\n")
-      .trim();
-   return kept.length > 0 ? kept : message.trim();
-}
-
-/** e.g. `[examples] cloning malloydata/publisher (storefront, +2 more)`. */
-export function cloneProgressLabel(
-   repo: string,
-   context?: { environmentName?: string; packageNames?: string[] },
-): string {
-   const env = context?.environmentName ? `[${context.environmentName}] ` : "";
-   const names = context?.packageNames ?? [];
-   const shown = names.length > 4 ? names.slice(0, 3) : names;
-   const more = names.length - shown.length;
-   const pkgs =
-      shown.length > 0
-         ? ` (${shown.join(", ")}${more > 0 ? `, +${more} more` : ""})`
-         : "";
-   return `${env}cloning ${repo}${pkgs}`;
-}
-
-/**
- * Streams git clone progress to stderr, not winston (whose level can hide it)
- * or stdout (which an MCP stdio transport would own). A TTY gets one line
- * rewritten in place; anything else gets a line per stage and per 25-point
- * step.
- */
-export class CloneProgressReporter {
-   private lastStage: string | undefined;
-   private lastMilestone = -1;
-   private wroteInPlace = false;
-   private finished = false;
-   /**
-    * One reporter at a time owns a TTY's in-place line: environments load
-    * concurrently at boot, and two reporters `\r`-rewriting the same line
-    * would overwrite each other. Later reporters fall back to milestone
-    * lines until the owner finishes. Keyed by stream so tests with fake
-    * streams cannot collide.
-    */
-   private static ttyOwners = new WeakMap<object, CloneProgressReporter>();
-
-   constructor(
-      private readonly label: string,
-      private readonly out: NodeJS.WriteStream = process.stderr,
-   ) {}
-
-   onProgress(event: SimpleGitProgressEvent): void {
-      if (this.finished) {
-         // A late event after done() must not re-claim the TTY line the
-         // finishing newline just released.
-         return;
-      }
-      const { stage, progress, processed, total } = event;
-      const counts = total > 0 ? ` (${processed}/${total})` : "";
-      const text = `${this.label}: ${stage} ${progress}%${counts}`;
-      if (this.out.isTTY === true && this.claimTtyLine()) {
-         // Clamped to the terminal width, since a wrapped line breaks the \r
-         // rewrite; the label is shortened first to keep the percentage
-         // visible. \x1b[K clears the tail of a longer previous line.
-         const budget = Math.max(1, (this.out.columns || 80) - 1);
-         const suffix = `: ${stage} ${progress}%${counts}`;
-         let line: string;
-         if (text.length <= budget) {
-            line = text;
-         } else if (suffix.length + 4 <= budget) {
-            const labelBudget = budget - suffix.length;
-            line = `${this.label.slice(0, labelBudget - 3)}...${suffix}`;
-         } else {
-            line = text.slice(0, budget);
-         }
-         this.out.write(`\r${line}\x1b[K`);
-         this.wroteInPlace = true;
-         return;
-      }
-      const milestone = Math.floor(progress / 25);
-      if (stage !== this.lastStage || milestone < this.lastMilestone) {
-         // A new stage, or a percentage restart inside one reported stage:
-         // git's server-side counting and compressing phases both arrive as
-         // stage "remote:", so a drop in progress marks the next sub-phase.
-         this.lastStage = stage;
-         this.lastMilestone = milestone;
-      } else if (milestone > this.lastMilestone) {
-         this.lastMilestone = milestone;
-      } else {
-         return;
-      }
-      if (this.out.isTTY === true) {
-         // A non-owner on a TTY: the cursor may sit mid-line on the owner's
-         // in-place output, so take over the row cleanly and scroll it.
-         this.out.write(`\r${text}\x1b[K\n`);
-         return;
-      }
-      this.out.write(`${text}\n`);
-   }
-
-   done(): void {
-      this.finished = true;
-      if (this.wroteInPlace) {
-         this.out.write("\n");
-      }
-      if (CloneProgressReporter.ttyOwners.get(this.out) === this) {
-         CloneProgressReporter.ttyOwners.delete(this.out);
-      }
-   }
-
-   private claimTtyLine(): boolean {
-      const owner = CloneProgressReporter.ttyOwners.get(this.out);
-      if (owner === undefined) {
-         CloneProgressReporter.ttyOwners.set(this.out, this);
-         return true;
-      }
-      return owner === this;
-   }
-}
-
-/**
- * The last `/segment` of the run of non-empty path segments at the start of
- * `afterRepo`, or undefined (the capture semantics of a `(\/[^/]+)*` group).
- */
-function lastGitHubPathSegment(afterRepo: string): string | undefined {
-   if (!afterRepo.startsWith("/")) return undefined;
-   const run: string[] = [];
-   for (const seg of afterRepo.slice(1).split("/")) {
-      if (seg === "") break;
-      run.push(seg);
-   }
-   return run.length > 0 ? `/${run[run.length - 1]}` : undefined;
-}
-
-/**
- * Parse a GitHub package location into owner, repo, and (optionally) the
- * subdirectory path segment.
- *
- * String ops rather than a `(\/[^/]+)*` regex, which backtracks
- * polynomially (ReDoS) on a user-supplied location. `packagePath` is only the
- * LAST path segment after the repo, a quirk callers rely on;
- * environment_store.spec.ts fuzzes this against the reference regexes.
- */
-export function parseGitHubUrl(
-   githubUrl: string,
-): { owner: string; repoName: string; packagePath?: string } | null {
-   // HTTPS: https://github.com/owner/repo/tree/branch/subdir; unanchored.
-   const httpsMatch = /github\.com\/([^/]+)\/([^/]+)/.exec(githubUrl);
-   if (httpsMatch) {
-      const afterRepo = githubUrl.slice(
-         httpsMatch.index + httpsMatch[0].length,
-      );
-      return {
-         owner: httpsMatch[1],
-         repoName: httpsMatch[2],
-         packagePath: lastGitHubPathSegment(afterRepo),
-      };
-   }
-
-   // SSH: git@github.com:owner/repo(.git)?(/subdir)*, unanchored at the start
-   // but $-anchored: a trailing slash or empty segment fails the parse.
-   const SSH_PREFIX = "git@github.com:";
-   const sshAt = githubUrl.indexOf(SSH_PREFIX);
-   if (sshAt !== -1) {
-      const rest = githubUrl.slice(sshAt + SSH_PREFIX.length);
-      const firstSlash = rest.indexOf("/");
-      if (firstSlash > 0) {
-         const owner = rest.slice(0, firstSlash);
-         const afterOwner = rest.slice(firstSlash + 1);
-         const secondSlash = afterOwner.indexOf("/");
-         const repoSeg =
-            secondSlash === -1 ? afterOwner : afterOwner.slice(0, secondSlash);
-         const afterRepo =
-            secondSlash === -1 ? "" : afterOwner.slice(secondSlash);
-         // A repo segment containing whitespace is not a GitHub URL.
-         if (repoSeg.length > 0 && !/\s/.test(repoSeg)) {
-            const repoName =
-               repoSeg.length > 4 && repoSeg.endsWith(".git")
-                  ? repoSeg.slice(0, -4)
-                  : repoSeg;
-            if (afterRepo === "") {
-               return { owner, repoName };
-            }
-            const segments = afterRepo.slice(1).split("/");
-            // $-anchored: every trailing segment must be non-empty.
-            if (!segments.includes("")) {
-               return {
-                  owner,
-                  repoName,
-                  packagePath: `/${segments[segments.length - 1]}`,
-               };
-            }
-         }
-      }
-   }
-
-   return null;
 }
 
 /** `0.0.0.0`/`::` bind every interface; a script needs a host it can dial. */
@@ -417,11 +170,25 @@ interface EnvironmentHooks {
            versionId: string,
         ) => Promise<void>)
       | null;
+   /**
+    * A package left the store (deleted, or replaced by a publish that dropped
+    * it): retrieval drops what it derived from it. Fired by the store itself,
+    * not handed to an Environment. Best effort: a rejection is logged.
+    */
+   packageDeleted:
+      | ((environmentName: string, packageName: string) => Promise<void>)
+      | null;
+   /** An environment was deleted; like {@link packageDeleted}, for all of it. */
+   environmentDeleted: ((environmentName: string) => Promise<void>) | null;
 }
+
+/** The hooks the store fires itself rather than handing to an Environment. */
+type StoreLevelHook = "packageDeleted" | "environmentDeleted";
+type EnvironmentLevelHook = Exclude<keyof EnvironmentHooks, StoreLevelHook>;
 
 /** How each hook is handed to one Environment; `null` detaches it. */
 const ATTACH_HOOK: {
-   [K in keyof EnvironmentHooks]: (
+   [K in EnvironmentLevelHook]: (
       env: Environment,
       hook: EnvironmentHooks[K],
    ) => void;
@@ -456,13 +223,24 @@ const VERSION_HOOKS = [
    "owedReclaim",
 ] as const;
 
-/** Seams for tests: replace the metadata store or the git client. */
-export interface EnvironmentStoreDeps {
+/**
+ * Seams for tests: replace the metadata store, or the git, GCS or S3 client
+ * the package sources use.
+ */
+export interface EnvironmentStoreDeps extends PackageSourceClients {
    storageManager?: StorageManager;
-   simpleGit?: typeof simpleGit;
 }
 
-export class EnvironmentStore {
+export class EnvironmentStore
+   implements
+      EnvironmentAdmin,
+      EnvironmentPeek,
+      PackageAdmin,
+      ConnectionAdmin,
+      McpExposureReader,
+      LoadedEnvironmentsReader,
+      StatusReader
+{
    public serverRootPath: string;
    private environments: Map<string, Environment> = new Map();
    /**
@@ -491,19 +269,22 @@ export class EnvironmentStore {
     * re-parse the config each time.
     */
    public readonly mcpIncludeHiddenFilesAndSources: boolean;
-   public finishedInitialization: Promise<void>;
+   /** Settles when initialization has finished; see {@link finishedInitialization}. */
+   private readonly initialization: Promise<void>;
+   private settleInitialization!: (outcome: Promise<void>) => void;
+   private started = false;
    private isInitialized: boolean = false;
    public storageManager: StorageManager;
-   private s3Client = new S3({
-      followRegionRedirects: true,
-   });
-   private gcsClient: Storage;
+   /** Brings a package location (git, GCS, S3, local, zip) to disk. */
+   private packageSources: PackageSources;
    private memoryGovernor: PackageMemoryGovernor | null = null;
    private hooks: EnvironmentHooks = {
       packageLoaded: null,
       versionArchived: null,
       versionDeleted: null,
       owedReclaim: null,
+      packageDeleted: null,
+      environmentDeleted: null,
    };
 
    /**
@@ -514,14 +295,17 @@ export class EnvironmentStore {
     */
    private inPlaceEnvs = new Set<string>();
 
-   private readonly simpleGit: typeof simpleGit;
-
+   /**
+    * Does no I/O: the metadata store is opened and the configured
+    * environments loaded by {@link start}, which the composition root calls.
+    */
    constructor(serverRootPath: string, deps: EnvironmentStoreDeps = {}) {
       this.serverRootPath = serverRootPath;
-      this.simpleGit = deps.simpleGit ?? simpleGit;
+      this.packageSources = new PackageSources(deps, (location) =>
+         this.resolveLocalPath(location),
+      );
       this.mcpIncludeHiddenFilesAndSources =
          isMcpIncludeHiddenFilesAndSources();
-      this.gcsClient = new Storage();
 
       for (const envName of settings.get("watchEnvironments")) {
          this.inPlaceEnvs.add(envName);
@@ -536,7 +320,34 @@ export class EnvironmentStore {
       this.storageManager =
          deps.storageManager ?? new StorageManager(storageConfig);
 
-      this.finishedInitialization = this.initialize();
+      this.initialization = new Promise<void>((resolve) => {
+         this.settleInitialization = resolve;
+      });
+   }
+
+   /**
+    * Settles when initialization has finished, successfully or not (a failure
+    * is recorded, not thrown). Reading it starts the store if nothing has
+    * yet, so a store built outside the composition root initializes on first
+    * use instead of leaving every lookup pending. The root still calls
+    * {@link start} itself, after installing its hooks.
+    */
+   public get finishedInitialization(): Promise<void> {
+      return this.start();
+   }
+
+   /**
+    * Open the metadata store and load the configured (or persisted)
+    * environments. Idempotent: a later call returns the first one's
+    * promise. Never rejects; a failure is logged,
+    * printed as `PUBLISHER_INIT_FAILED`, and reported on `/status`.
+    */
+   public start(): Promise<void> {
+      if (!this.started) {
+         this.started = true;
+         this.settleInitialization(this.initialize());
+      }
+      return this.initialization;
    }
 
    /** True if this env should mount package dirs in place (symlinks). */
@@ -602,10 +413,28 @@ export class EnvironmentStore {
    }
 
    /**
+    * Attach (or detach with `null`) the callback run when a package is
+    * deleted, which drops what retrieval derived from it (its embeddings and
+    * search-index rows).
+    */
+   public setPackageDeletedHook(
+      hook: EnvironmentHooks["packageDeleted"],
+   ): void {
+      this.hooks.packageDeleted = hook;
+   }
+
+   /** Environment-wide variant of {@link setPackageDeletedHook}. */
+   public setEnvironmentDeletedHook(
+      hook: EnvironmentHooks["environmentDeleted"],
+   ): void {
+      this.hooks.environmentDeleted = hook;
+   }
+
+   /**
     * Remember `hook` and hand it to every Environment already here. One
     * created later gets it when it is attached ({@link attachHooks}).
     */
-   private setHook<K extends keyof EnvironmentHooks>(
+   private setHook<K extends EnvironmentLevelHook>(
       name: K,
       hook: EnvironmentHooks[K],
    ): void {
@@ -617,7 +446,7 @@ export class EnvironmentStore {
 
    private attachHooks(
       env: Environment,
-      names: readonly (keyof EnvironmentHooks)[],
+      names: readonly EnvironmentLevelHook[],
    ): void {
       for (const name of names) {
          ATTACH_HOOK[name](env, this.hooks[name] as never);
@@ -641,7 +470,7 @@ export class EnvironmentStore {
          const added = await this.addEnvironment(
             {
                name: environment.name,
-               resource: `${API_PREFIX}/environments/${environment.name}`,
+               resource: environmentResource(environment.name),
                connections: environment.connections,
                // Only asserted when the config declares destinations: an empty
                // list is an instruction to clear, and this call reaches
@@ -689,7 +518,7 @@ export class EnvironmentStore {
             // downloadPackageInto stages only an absolute local path, and the
             // recorded source location has to name the same folder when a
             // later boot restores the version from it.
-            const location = this.isLocalPath(configured.location)
+            const location = isLocalPath(configured.location)
                ? this.resolveLocalPath(configured.location)
                : configured.location;
             await versions.publish(
@@ -778,7 +607,7 @@ export class EnvironmentStore {
                const environmentInstance = await this.addEnvironment(
                   {
                      name: environmentConfig.name,
-                     resource: `${API_PREFIX}/environments/${environmentConfig.name}`,
+                     resource: environmentResource(environmentConfig.name),
                      connections: environmentConfig.connections,
                      storageDestinations: environmentConfig.storageDestinations,
                      packages: environmentConfig.packages,
@@ -857,12 +686,11 @@ export class EnvironmentStore {
          // environments created at runtime still do not.
          environmentInstance.restoreUnversionedBindingsFromLocalStore();
 
+         // Registered as configured, not serving: none is loaded yet, and
+         // the first listing or request loads each.
          const packages = await repository.listPackages(dbEnvironment.id);
          packages.forEach((pkg) => {
-            environmentInstance.setPackageStatus(
-               pkg.name,
-               PackageStatus.SERVING,
-            );
+            environmentInstance.registerConfiguredPackage(pkg.name);
          });
 
          this.environments.set(dbEnvironment.name, environmentInstance);
@@ -1106,42 +934,12 @@ export class EnvironmentStore {
       packageLocation: string,
       targetPath: string,
    ): Promise<void> {
-      const isCompressedFile = packageLocation.endsWith(".zip");
-      if (
-         packageLocation.startsWith("https://") ||
-         packageLocation.startsWith("git@")
-      ) {
-         await this.downloadGitHubDirectory(packageLocation, targetPath);
-      } else if (packageLocation.startsWith("gs://")) {
-         await this.downloadGcsDirectory(
-            packageLocation,
-            environmentName,
-            targetPath,
-            isCompressedFile,
-         );
-      } else if (packageLocation.startsWith("s3://")) {
-         await this.downloadS3Directory(
-            packageLocation,
-            environmentName,
-            targetPath,
-            isCompressedFile,
-         );
-      }
-
-      if (packageLocation.startsWith("/") || path.isAbsolute(packageLocation)) {
-         // Absolute paths from the publisher.config could be placed outside of
-         // /etc/publisher, so they are mounted in the right place.
-         // `path.isAbsolute` is what catches a Windows drive-letter path
-         // (`D:\pkgs\sales`), which no other branch claims either; without it
-         // the install stages nothing and fails with a bare ENOENT rename.
-         // Same pairing as isLocalPath.
-         await this.mountLocalDirectory(
-            packageLocation,
-            targetPath,
-            environmentName,
-            packageName,
-         );
-      }
+      await this.packageSources.fetchForPublish(
+         environmentName,
+         packageName,
+         packageLocation,
+         targetPath,
+      );
    }
 
    public async addEnvironmentToDatabase(
@@ -1425,9 +1223,9 @@ export class EnvironmentStore {
    }
 
    public async addConnection(
-      conn: ReturnType<Environment["listApiConnections"]>[number],
+      conn: ApiConnection,
       environmentId: string,
-      repository: ReturnType<typeof this.storageManager.getRepository>,
+      repository: ResourceRepository,
    ): Promise<void> {
       if (!conn.name) {
          logger.warn("Skipping connection with undefined name");
@@ -1437,7 +1235,7 @@ export class EnvironmentStore {
       const connectionData = {
          environmentId,
          name: conn.name,
-         type: conn.type as Connection["type"],
+         type: conn.type as ConnectionRecord["type"],
          config: conn,
       };
 
@@ -1452,9 +1250,9 @@ export class EnvironmentStore {
    }
 
    public async updateConnection(
-      conn: ReturnType<Environment["listApiConnections"]>[number],
+      conn: ApiConnection,
       environmentId: string,
-      repository: ReturnType<typeof this.storageManager.getRepository>,
+      repository: ResourceRepository,
    ): Promise<void> {
       if (!conn.name) {
          throw new Error("Connection name is required for update");
@@ -1470,7 +1268,7 @@ export class EnvironmentStore {
       }
 
       const connectionData = {
-         type: conn.type as Connection["type"],
+         type: conn.type as ConnectionRecord["type"],
          config: conn,
       };
 
@@ -1490,7 +1288,10 @@ export class EnvironmentStore {
       environmentName: string,
       packageName: string,
    ): Promise<void> {
-      const environment = await this.getEnvironment(environmentName, false);
+      const environment = await this.getEnvironment(
+         parseEnvironmentName(environmentName),
+         false,
+      );
       const repository = this.storageManager.getRepository();
 
       const dbEnvironment =
@@ -1557,21 +1358,20 @@ export class EnvironmentStore {
    }
 
    /**
-    * Best-effort, non-blocking: drop a deleted package's cached embeddings so
-    * churn does not grow publisher.db forever. Not awaited: it queues behind
-    * the package's sync mutex, which a bulk embed can hold for minutes. An
-    * orphaned row is inert, so failure is logged, never propagated.
+    * Best-effort, non-blocking: fire the packageDeleted hook, which drops a
+    * deleted package's cached embeddings so churn does not grow publisher.db
+    * forever. Not awaited: it queues behind the package's sync mutex, which a
+    * bulk embed can hold for minutes. An orphaned row is inert, so failure is
+    * logged, never propagated.
     */
    public cleanupPackageEmbeddings(
       environmentName: string,
       packageName: string,
    ): void {
+      const hook = this.hooks.packageDeleted;
+      if (!hook) return;
       try {
-         deletePackageEmbeddings(
-            this.storageManager.getDuckDbConnection(),
-            environmentName,
-            packageName,
-         ).catch((error: unknown) => {
+         hook(environmentName, packageName).catch((error: unknown) => {
             logger.warn("Failed to clean up entity embeddings for package", {
                environmentName,
                packageName,
@@ -1589,11 +1389,10 @@ export class EnvironmentStore {
 
    /** Environment-wide variant of {@link cleanupPackageEmbeddings}. */
    private cleanupEnvironmentEmbeddings(environmentName: string): void {
+      const hook = this.hooks.environmentDeleted;
+      if (!hook) return;
       try {
-         deleteEnvironmentEmbeddings(
-            this.storageManager.getDuckDbConnection(),
-            environmentName,
-         ).catch((error: unknown) => {
+         hook(environmentName).catch((error: unknown) => {
             logger.warn(
                "Failed to clean up entity embeddings for environment",
                {
@@ -1661,7 +1460,9 @@ export class EnvironmentStore {
       );
    }
 
-   public async getStatus(options: { includeLoading?: boolean } = {}) {
+   public async getStatus(
+      options: StatusOptions = {},
+   ): Promise<ServerStatusBody> {
       // Back-pressure reads as "throttled" so the control plane can stop
       // routing to this worker; "draining" takes precedence.
       const baseState = getOperationalState();
@@ -1670,22 +1471,9 @@ export class EnvironmentStore {
          (this.memoryGovernor?.isBackpressured() ?? false)
             ? "throttled"
             : baseState
-      ) as components["schemas"]["ServerStatus"]["operationalState"];
+      ) as ServerStatusBody["operationalState"];
 
-      const status: {
-         timestamp: number;
-         environments: Array<components["schemas"]["ServerStatusEnvironment"]>;
-         initialized: boolean;
-         frozenConfig: boolean;
-         operationalState: components["schemas"]["ServerStatus"]["operationalState"];
-         version: string;
-         packageVersioning?: components["schemas"]["ServerStatus"]["packageVersioning"];
-         versionPromotion?: components["schemas"]["ServerStatus"]["versionPromotion"];
-         modelPage?: components["schemas"]["ServerStatus"]["modelPage"];
-         emptyReason?: string;
-         initError?: string;
-         loadErrors?: LoadError[];
-      } = {
+      const status: ServerStatusBody = {
          timestamp: Date.now(),
          environments: [],
          initialized: this.isInitialized,
@@ -1815,10 +1603,11 @@ export class EnvironmentStore {
    }
 
    public async getEnvironment(
-      environmentName: string,
+      environmentName: EnvironmentName,
       reload: boolean = false,
    ): Promise<Environment> {
       await this.finishedInitialization;
+      // The sink-side check (path_safety.ts); the brand says it already ran.
       assertSafePackageName(environmentName);
 
       const environment = this.environments.get(environmentName);
@@ -1868,7 +1657,7 @@ export class EnvironmentStore {
          }
          return await this.addEnvironment({
             name: environmentName,
-            resource: `${API_PREFIX}/environments/${environmentName}`,
+            resource: environmentResource(environmentName),
             connections: environmentConfig?.connections || [],
             // Only asserted when the config declares destinations: an empty
             // list reads as "clear them", wiping API-registered ones on reload.
@@ -1954,8 +1743,8 @@ export class EnvironmentStore {
       if (!newEnvironment.metadata) newEnvironment.metadata = {};
       newEnvironment.metadata.location = absoluteEnvironmentPath;
 
-      // Attach before the SERVING seeding below: those packages are configured
-      // but un-mounted, and this is the only record of why.
+      // Attach before registering the packages below: those packages are
+      // configured but un-mounted, and this is the only record of why.
       for (const [packageName, message] of mountErrors) {
          newEnvironment.setPackageMountError(packageName, message);
       }
@@ -1966,10 +1755,7 @@ export class EnvironmentStore {
 
       environment?.packages?.forEach((_package) => {
          if (_package.name) {
-            newEnvironment.setPackageStatus(
-               _package.name,
-               PackageStatus.SERVING,
-            );
+            newEnvironment.registerConfiguredPackage(_package.name);
          }
       });
 
@@ -1979,85 +1765,6 @@ export class EnvironmentStore {
       await this.addEnvironmentToDatabase(newEnvironment);
 
       return newEnvironment;
-   }
-
-   public async unzipEnvironment(absoluteEnvironmentPath: string) {
-      assertSafeEnvironmentPath(absoluteEnvironmentPath);
-      // Extracts to a sibling directory named for the archive. The check is in
-      // the one shape CodeQL's js/path-injection accepts as a barrier (an
-      // unconditional startsWith on the resolved value it later sinks).
-      const archiveDir = path.resolve(path.dirname(absoluteEnvironmentPath));
-      const unzippedEnvironmentPath = path.resolve(
-         archiveDir,
-         path.basename(absoluteEnvironmentPath, ".zip"),
-      );
-      if (!unzippedEnvironmentPath.startsWith(archiveDir + path.sep)) {
-         throw new BadRequestError(
-            `Refusing to unzip "${absoluteEnvironmentPath}": target escapes its directory`,
-         );
-      }
-      await this.extractZipInto(
-         absoluteEnvironmentPath,
-         unzippedEnvironmentPath,
-      );
-      return unzippedEnvironmentPath;
-   }
-
-   /**
-    * Extract `archivePath` into `targetDir`, replacing whatever is there.
-    *
-    * `targetDir` is removed first, so it must be a directory the server owns.
-    * Never pass a path derived from an operator-supplied location: a sibling of
-    * an operator's zip is the operator's directory, not ours.
-    */
-   private async extractZipInto(archivePath: string, targetDir: string) {
-      const startedAt = Date.now();
-      logger.info(`Detected zip file at "${archivePath}". Unzipping...`);
-      await fs.promises.rm(targetDir, {
-         recursive: true,
-         force: true,
-      });
-      await fs.promises.mkdir(targetDir, { recursive: true });
-
-      // Stream-extract off the main thread (yauzl via extract-zip): a
-      // synchronous inflate of a large archive blocks the event loop long
-      // enough to fail Kubernetes liveness probes.
-      let entryCount = 0;
-      let totalUncompressedBytes = 0;
-      try {
-         await extract(archivePath, {
-            dir: path.resolve(targetDir),
-            onEntry: (entry) => {
-               // extract-zip 2.0.1 never validates a symlink entry's target, so a
-               // crafted archive can write outside `dir` (CVE-2026-19693,
-               // CVE-2026-56876, no upstream fix). Throwing here cancels the extract.
-               if (
-                  ((entry.externalFileAttributes >>> 16) & 0o170000) ===
-                  0o120000
-               ) {
-                  throw new BadRequestError(
-                     `Refusing to unzip "${archivePath}": entry "${entry.fileName}" is a symbolic link`,
-                  );
-               }
-               entryCount += 1;
-               totalUncompressedBytes += entry.uncompressedSize ?? 0;
-            },
-         });
-      } catch (error) {
-         // Leave no partial extract behind for a later load to pick up.
-         await fs.promises.rm(targetDir, {
-            recursive: true,
-            force: true,
-         });
-         throw error;
-      }
-
-      const mib = (totalUncompressedBytes / (1024 * 1024)).toFixed(1);
-      logger.info(
-         `Unzipped "${archivePath}" -> "${targetDir}" ` +
-            `(${entryCount} entries, ${mib} MiB uncompressed) in ` +
-            `${formatDuration(Date.now() - startedAt)}`,
-      );
    }
 
    public async updateEnvironment(environment: ApiEnvironment) {
@@ -2188,16 +1895,6 @@ export class EnvironmentStore {
       return absoluteEnvironmentPath;
    }
 
-   private isLocalPath(location: string) {
-      return (
-         location.startsWith("./") ||
-         location.startsWith("../") ||
-         location.startsWith("~/") ||
-         location.startsWith("/") ||
-         path.isAbsolute(location)
-      );
-   }
-
    /**
     * Absolute on-disk path for a local package `location` (including one
     * POSTed at runtime), anchored at the active config's directory, else the
@@ -2208,21 +1905,6 @@ export class EnvironmentStore {
          location,
          getPublisherConfigDir(this.serverRootPath) ?? this.serverRootPath,
       );
-   }
-
-   private isGitHubURL(location: string) {
-      return (
-         location.startsWith("https://github.com/") ||
-         location.startsWith("git@github.com:")
-      );
-   }
-
-   private isGCSURL(location: string) {
-      return location.startsWith("gs://");
-   }
-
-   private isS3URL(location: string) {
-      return location.startsWith("s3://");
    }
 
    /**
@@ -2289,7 +1971,7 @@ export class EnvironmentStore {
 
          // GitHub locations group by repository, in HTTPS form.
          let locationKey = _package.location;
-         if (this.isGitHubURL(_package.location)) {
+         if (isGitHubURL(_package.location)) {
             const githubInfo = parseGitHubUrl(_package.location);
             if (githubInfo) {
                locationKey = `https://github.com/${githubInfo.owner}/${githubInfo.repoName}`;
@@ -2353,10 +2035,10 @@ export class EnvironmentStore {
                   packageDir,
                );
                const isLocalArchive =
-                  this.isLocalPath(_package.location) &&
+                  isLocalPath(_package.location) &&
                   _package.location.endsWith(".zip");
                let sourcePath: string;
-               if (this.isGitHubURL(_package.location)) {
+               if (isGitHubURL(_package.location)) {
                   const githubInfo = parseGitHubUrl(_package.location);
                   if (githubInfo && githubInfo.packagePath) {
                      // The subdirectory after /tree/<branch>/.
@@ -2378,7 +2060,7 @@ export class EnvironmentStore {
                   if (isLocalArchive) {
                      // The archive was extracted into the download dir.
                      sourcePath = tempDownloadPath;
-                  } else if (this.isLocalPath(_package.location)) {
+                  } else if (isLocalPath(_package.location)) {
                      // Resolved as in `downloadOrMountLocation`, so a relative
                      // location can reach the in-place mount branch.
                      sourcePath = this.resolveLocalPath(_package.location);
@@ -2401,7 +2083,7 @@ export class EnvironmentStore {
                   // removed after this loop.
                   const isInPlace =
                      this.inPlaceEnvs.has(environmentName) &&
-                     this.isLocalPath(_package.location) &&
+                     isLocalPath(_package.location) &&
                      !isLocalArchive;
                   if (isInPlace) {
                      await clearMountTarget(absolutePackagePath);
@@ -2442,7 +2124,7 @@ export class EnvironmentStore {
                   } else {
                      if (
                         this.inPlaceEnvs.has(environmentName) &&
-                        !this.isLocalPath(_package.location)
+                        !isLocalPath(_package.location)
                      ) {
                         logger.warn(
                            `Watch mode: package "${packageDir}" has remote location "${_package.location}" — falling back to copy. Source-edit live reload won't work for this package; clone the source locally and use a local-dir location to enable it.`,
@@ -2521,396 +2203,32 @@ export class EnvironmentStore {
       packageName: string,
       packageNames?: string[],
    ) {
-      const loader = this.locationLoader(
+      const selected = this.packageSources.forConfiguredLocation(
          location,
          targetPath,
-         environmentName,
-         packageName,
-         packageNames,
       );
-      if (!loader) {
+      if (!selected) {
          const errorMsg = `Invalid package path: "${location}". Must be an absolute mounted path or a GCS/S3/GitHub URI.`;
          logger.error(errorMsg, { environmentName, location });
          throw new PackageNotFoundError(errorMsg);
       }
       try {
-         logger.info(loader.starting);
-         await loader.load();
+         logger.info(selected.starting);
+         await selected.source.fetch(selected.location, targetPath, {
+            environmentName,
+            packageName,
+            progress: { environmentName, packageNames },
+         });
       } catch (error) {
          const errorData = extractErrorDataFromError(error);
          logger.error(
-            `Failed to ${loader.action} "${loader.subject}"`,
+            `Failed to ${selected.action} "${selected.subject}"`,
             errorData,
          );
          throw new PackageNotFoundError(
-            `Failed to ${loader.action}: ${loader.subject}`,
+            `Failed to ${selected.action}: ${selected.subject}`,
             { cause: error },
          );
       }
-   }
-
-   /**
-    * How to bring `location` to `targetPath`, chosen by its scheme: GCS,
-    * GitHub, S3, then an absolute or relative local path. Undefined for any
-    * other form.
-    */
-   private locationLoader(
-      location: string,
-      targetPath: string,
-      environmentName: string,
-      packageName: string,
-      packageNames?: string[],
-   ):
-      | {
-           /** What failed, for the log line and the 404. */
-           action: string;
-           subject: string;
-           starting: string;
-           load: () => Promise<void>;
-        }
-      | undefined {
-      const isCompressedFile = location.endsWith(".zip");
-      if (this.isGCSURL(location)) {
-         return {
-            action: "download GCS directory",
-            subject: location,
-            starting: `Downloading GCS directory from "${location}" to "${targetPath}"`,
-            load: () =>
-               this.downloadGcsDirectory(
-                  location,
-                  environmentName,
-                  targetPath,
-                  isCompressedFile,
-               ),
-         };
-      }
-
-      if (this.isGitHubURL(location)) {
-         return {
-            action: "clone GitHub repository",
-            subject: location,
-            starting: `Cloning GitHub repository from "${location}" to "${targetPath}"`,
-            load: () =>
-               this.downloadGitHubDirectory(location, targetPath, {
-                  environmentName,
-                  packageNames,
-               }),
-         };
-      }
-
-      if (this.isS3URL(location)) {
-         return {
-            action: "download S3 directory",
-            subject: location,
-            starting: `Downloading S3 directory from "${location}" to "${targetPath}"`,
-            load: () =>
-               this.downloadS3Directory(
-                  location,
-                  environmentName,
-                  targetPath,
-                  isCompressedFile,
-               ),
-         };
-      }
-
-      if (this.isLocalPath(location)) {
-         const packagePath: string = this.resolveLocalPath(location);
-         return {
-            action: "mount local directory",
-            subject: packagePath,
-            starting: `Mounting local directory at "${packagePath}" to "${targetPath}"`,
-            load: () =>
-               this.mountLocalDirectory(
-                  packagePath,
-                  targetPath,
-                  environmentName,
-                  packageName,
-               ),
-         };
-      }
-
-      return undefined;
-   }
-
-   public async mountLocalDirectory(
-      environmentPath: string,
-      absoluteTargetPath: string,
-      environmentName: string,
-      packageName: string,
-   ) {
-      // `environmentPath` is the operator-supplied mount source and may
-      // legitimately be a relative path that resolves outside the
-      // server root; only the target is asserted.
-      assertSafeEnvironmentPath(absoluteTargetPath);
-      const notFound = () =>
-         new PackageNotFoundError(
-            `Package ${packageName} for environment ${environmentName} not found in "${environmentPath}"`,
-         );
-      const source = await fs.promises.stat(environmentPath).catch((error) => {
-         if ((error as NodeJS.ErrnoException).code === "ENOENT") {
-            throw notFound();
-         }
-         throw error;
-      });
-      if (environmentPath.endsWith(".zip") && source.isFile()) {
-         // Extract straight into the server-owned target: nothing is written
-         // beside the archive, so a read-only mount works.
-         await this.extractZipInto(environmentPath, absoluteTargetPath);
-      } else if (source.isDirectory()) {
-         await fs.promises.rm(absoluteTargetPath, {
-            recursive: true,
-            force: true,
-         });
-         await fs.promises.mkdir(absoluteTargetPath, { recursive: true });
-         await fs.promises.cp(environmentPath, absoluteTargetPath, {
-            recursive: true,
-         });
-      } else {
-         throw notFound();
-      }
-   }
-
-   async downloadGcsDirectory(
-      gcsPath: string,
-      environmentName: string,
-      absoluteDirPath: string,
-      isCompressedFile: boolean,
-   ) {
-      assertSafeEnvironmentPath(absoluteDirPath);
-      assertGoogleCredentialsIsNotADirectory();
-      const trimmedPath = gcsPath.slice(5);
-      const [bucketName, ...prefixParts] = trimmedPath.split("/");
-      const prefix = prefixParts.join("/");
-      const [files] = await this.gcsClient.bucket(bucketName).getFiles({
-         prefix,
-      });
-      if (files.length === 0) {
-         throw new EnvironmentNotFoundError(
-            `Environment ${environmentName} not found in ${gcsPath}`,
-         );
-      }
-      if (!isCompressedFile) {
-         await fs.promises.rm(absoluteDirPath, {
-            recursive: true,
-            force: true,
-         });
-         await fs.promises.mkdir(absoluteDirPath, { recursive: true });
-      } else {
-         absoluteDirPath = `${absoluteDirPath}.zip`;
-      }
-      await Promise.all(
-         files.map(async (file) => {
-            // Strip a leading `/` (prefix without trailing slash), which
-            // `safeJoinUnderRoot` would reject as absolute.
-            const relativeFilePath = file.name
-               .replace(prefix, "")
-               .replace(/^\/+/, "");
-            const absoluteFilePath = isCompressedFile
-               ? absoluteDirPath
-               : safeJoinUnderRoot(absoluteDirPath, relativeFilePath);
-            if (file.name.endsWith("/")) {
-               return;
-            }
-            await fs.promises.mkdir(path.dirname(absoluteFilePath), {
-               recursive: true,
-            });
-            return fs.promises.writeFile(
-               absoluteFilePath,
-               await file.download(),
-            );
-         }),
-      );
-      if (isCompressedFile) {
-         await this.unzipEnvironment(absoluteDirPath);
-      }
-      logger.info(`Downloaded GCS directory ${gcsPath} to ${absoluteDirPath}`);
-   }
-
-   async downloadS3Directory(
-      s3Path: string,
-      environmentName: string,
-      absoluteDirPath: string,
-      isCompressedFile: boolean = false,
-   ) {
-      assertSafeEnvironmentPath(absoluteDirPath);
-      const trimmedPath = s3Path.slice(5);
-      const [bucketName, ...prefixParts] = trimmedPath.split("/");
-      const prefix = prefixParts.join("/");
-
-      if (isCompressedFile) {
-         const zipFilePath = `${absoluteDirPath}.zip`;
-         await fs.promises.mkdir(path.dirname(zipFilePath), {
-            recursive: true,
-         });
-
-         const command = new GetObjectCommand({
-            Bucket: bucketName,
-            Key: prefix,
-         });
-         const item = await this.s3Client.send(command);
-         if (!item.Body) {
-            throw new EnvironmentNotFoundError(
-               `Environment ${environmentName} not found in ${s3Path}`,
-            );
-         }
-         const file = fs.createWriteStream(zipFilePath);
-         item.Body.transformToWebStream().pipeTo(Writable.toWeb(file));
-         await new Promise<void>((resolve, reject) => {
-            file.on("error", reject);
-            file.on("finish", resolve);
-         });
-
-         await this.unzipEnvironment(zipFilePath);
-         logger.info(`Downloaded S3 zip file ${s3Path} to ${absoluteDirPath}`);
-         return;
-      }
-
-      const objects = await this.s3Client.listObjectsV2({
-         Bucket: bucketName,
-         Prefix: prefix,
-      });
-      await fs.promises.rm(absoluteDirPath, { recursive: true, force: true });
-      await fs.promises.mkdir(absoluteDirPath, { recursive: true });
-
-      if (!objects.Contents || objects.Contents.length === 0) {
-         throw new EnvironmentNotFoundError(
-            `Environment ${environmentName} not found in ${s3Path}`,
-         );
-      }
-      await Promise.all(
-         objects.Contents?.map(async (object) => {
-            const key = object.Key;
-            if (!key) {
-               return;
-            }
-            // Strip a leading `/`, as for GCS above.
-            const relativeFilePath = key
-               .replace(prefix, "")
-               .replace(/^\/+/, "");
-            if (!relativeFilePath || relativeFilePath.endsWith("/")) {
-               return;
-            }
-            const absoluteFilePath = safeJoinUnderRoot(
-               absoluteDirPath,
-               relativeFilePath,
-            );
-            await fs.promises.mkdir(path.dirname(absoluteFilePath), {
-               recursive: true,
-            });
-            const command = new GetObjectCommand({
-               Bucket: bucketName,
-               Key: key,
-            });
-            const item = await this.s3Client.send(command);
-            if (!item.Body) {
-               return;
-            }
-            const file = fs.createWriteStream(absoluteFilePath);
-            item.Body.transformToWebStream().pipeTo(Writable.toWeb(file));
-            await new Promise<void>((resolve, reject) => {
-               file.on("error", reject);
-               file.on("finish", resolve);
-            });
-         }),
-      );
-      logger.info(`Downloaded S3 directory ${s3Path} to ${absoluteDirPath}`);
-   }
-
-   async downloadGitHubDirectory(
-      githubUrl: string,
-      absoluteDirPath: string,
-      progressContext?: { environmentName?: string; packageNames?: string[] },
-   ) {
-      assertSafeEnvironmentPath(absoluteDirPath);
-      // Clone the whole repo, then hoist the package subdirectory (if any).
-      const githubInfo = parseGitHubUrl(githubUrl);
-      if (!githubInfo) {
-         throw new Error(`Invalid GitHub URL: ${githubUrl}`);
-      }
-      const { owner, repoName, packagePath } = githubInfo;
-      // `packagePath` is captured with a leading `/`; strip it so the
-      // value is a relative segment usable with `safeJoinUnderRoot`.
-      const cleanPackagePath = (
-         packagePath?.replace("/tree/main", "") || ""
-      ).replace(/^\/+/, "");
-
-      await fs.promises.rm(absoluteDirPath, {
-         recursive: true,
-         force: true,
-      });
-      await fs.promises.mkdir(absoluteDirPath, { recursive: true });
-      const repoUrl = `https://github.com/${owner}/${repoName}`;
-      const reporter = new CloneProgressReporter(
-         cloneProgressLabel(`${owner}/${repoName}`, progressContext),
-      );
-
-      await new Promise<void>((resolve, reject) => {
-         this.simpleGit({
-            progress: (event) => reporter.onProgress(event),
-         }).clone(repoUrl, absoluteDirPath, GIT_CLONE_OPTIONS, (err) => {
-            reporter.done();
-            if (err) {
-               err.message = stripGitProgressNoise(err.message);
-               if (err.stack) {
-                  // V8 captures the message into the stack at construction,
-                  // so the spew survives there unless stripped too.
-                  err.stack = stripGitProgressNoise(err.stack);
-               }
-               const errorData = extractErrorDataFromError(err);
-               logger.error(
-                  `Failed to clone GitHub repository "${repoUrl}"`,
-                  errorData,
-               );
-               reject(err);
-               return;
-            }
-            resolve();
-         });
-      });
-
-      if (!cleanPackagePath) {
-         logger.info(
-            `Successfully cloned entire repository to: ${absoluteDirPath}`,
-         );
-         return;
-      }
-
-      // Replace the clone with the subdirectory's contents, e.g.
-      // <dir>/imdb/publisher.json becomes <dir>/publisher.json.
-      const packageFullPath = safeJoinUnderRoot(
-         absoluteDirPath,
-         cleanPackagePath,
-      );
-
-      const packageExists = await fs.promises
-         .access(packageFullPath)
-         .then(() => true)
-         .catch(() => false);
-
-      if (!packageExists) {
-         throw new Error(
-            `Package path "${cleanPackagePath}" does not exist in the cloned repository.`,
-         );
-      }
-
-      const dirContents = await fs.promises.readdir(absoluteDirPath);
-      for (const entry of dirContents) {
-         if (entry !== cleanPackagePath.replace(/^\/+/, "").split("/")[0]) {
-            await fs.promises.rm(safeJoinUnderRoot(absoluteDirPath, entry), {
-               recursive: true,
-               force: true,
-            });
-         }
-      }
-
-      const packageContents = await fs.promises.readdir(packageFullPath);
-      for (const entry of packageContents) {
-         await fs.promises.rename(
-            safeJoinUnderRoot(packageFullPath, entry),
-            safeJoinUnderRoot(absoluteDirPath, entry),
-         );
-      }
-
-      await fs.promises.rm(packageFullPath, { recursive: true, force: true });
    }
 }

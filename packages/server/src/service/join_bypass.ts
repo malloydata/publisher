@@ -43,17 +43,18 @@ import {
    type AuthorizeGrammarParsedTerm,
 } from "./authorize_grammar";
 import { ACCESS_FILTER_ROUTE, AUTHORIZE_ROUTE } from "./authorize_routes";
-import { isDeniedToAll, isDenyAll, packageSources } from "./classification";
+import { isDeniedToAll, isDenyAll } from "./classification";
+import { packageSources } from "./classification_report";
 import {
    MAX_JOIN_PATHS,
    MAX_JOIN_RECURSION_DEPTH,
    stageJoins,
 } from "./filter_binding_guard";
+import { gateExprsForRoute } from "./gate_registry_walk";
 import {
-   gateExprsForRoute,
    resolveCompositeResolvedBase,
    resolveQuerySourceBase,
-} from "./gate_registry_walk";
+} from "./governance/ir/source_graph";
 import type { Model } from "./model";
 
 /** The warning code a join bypass carries. */

@@ -58,8 +58,13 @@ import {
    type QueryMetadata,
 } from "../service/query_metadata";
 import type { Environment } from "../service/environment";
-import { EnvironmentStore } from "../service/environment_store";
+import type { ConnectionAdmin } from "../service/environment_ports";
 import { isStreamingConnection, streamSqlWithBudget } from "../stream_helpers";
+import {
+   parseEnvironmentName,
+   parsePackageName,
+   VersionRef,
+} from "../service/identity";
 
 type ApiConnection = components["schemas"]["Connection"];
 type ApiConnectionStatus = components["schemas"]["ConnectionStatus"];
@@ -291,9 +296,9 @@ async function metered<T>(
 }
 
 export class ConnectionController {
-   private environmentStore: EnvironmentStore;
+   private environmentStore: ConnectionAdmin;
    private connectionService: ConnectionService;
-   constructor(environmentStore: EnvironmentStore) {
+   constructor(environmentStore: ConnectionAdmin) {
       this.environmentStore = environmentStore;
       this.connectionService = new ConnectionService(environmentStore);
    }
@@ -351,7 +356,7 @@ export class ConnectionController {
    }> {
       try {
          const environment = await this.environmentStore.getEnvironment(
-            environmentName,
+            parseEnvironmentName(environmentName),
             false,
          );
          const connection = this.getApiConnectionForLookup(
@@ -386,7 +391,7 @@ export class ConnectionController {
       environmentName: string,
       connectionName: string,
       packageName?: string,
-      versionId?: unknown,
+      versionId: VersionRef = VersionRef.LATEST,
    ): Promise<Connection> {
       try {
          return await this.lookupMalloyConnection(
@@ -409,10 +414,10 @@ export class ConnectionController {
       environmentName: string,
       connectionName: string,
       packageName?: string,
-      versionId?: unknown,
+      versionId: VersionRef = VersionRef.LATEST,
    ): Promise<Connection> {
       const environment = await this.environmentStore.getEnvironment(
-         environmentName,
+         parseEnvironmentName(environmentName),
          false,
       );
 
@@ -431,9 +436,13 @@ export class ConnectionController {
                   `Package "${packageName}" not found in environment "${environmentName}"`,
                );
             }
-            const pkg = await environment.getPackage(packageName, false, {
-               versionId,
-            });
+            const pkg = await environment.getPackage(
+               parsePackageName(packageName),
+               false,
+               {
+                  versionId,
+               },
+            );
             return await pkg.getMalloyConnection(connectionName);
          }
          if (packages.length === 0) {
@@ -447,7 +456,9 @@ export class ConnectionController {
                   callerSafe: true,
                });
             }
-            const pkg = await environment.getPackage(onlyPackage);
+            const pkg = await environment.getPackage(
+               parsePackageName(onlyPackage),
+            );
             return await pkg.getMalloyConnection(connectionName);
          }
          throw new BadRequestError(
@@ -466,7 +477,7 @@ export class ConnectionController {
          if (packageName) {
             await environment
                .getVersionService()
-               ?.resolve(packageName, versionId);
+               ?.resolve(packageName, versionId.requested());
          }
          return await environment.getMalloyConnection(connectionName);
       }
@@ -562,7 +573,7 @@ export class ConnectionController {
       // The in-memory API connection carries `attributes`; the DB row stores
       // raw config and FK columns, which are not the ApiConnection shape.
       const environment = await this.environmentStore.getEnvironment(
-         environmentName,
+         parseEnvironmentName(environmentName),
          false,
       );
       return toPublicConnection(environment.getApiConnection(connectionName));
@@ -572,7 +583,7 @@ export class ConnectionController {
       environmentName: string,
    ): Promise<ApiConnection[]> {
       const environment = await this.environmentStore.getEnvironment(
-         environmentName,
+         parseEnvironmentName(environmentName),
          false,
       );
       return toPublicConnections(environment.listApiConnections());
@@ -585,10 +596,10 @@ export class ConnectionController {
       environmentName: string,
       connectionName: string,
       packageName?: string,
-      versionId?: unknown,
+      versionId: VersionRef = VersionRef.LATEST,
    ): Promise<ApiSchema[]> {
       const environment = await this.environmentStore.getEnvironment(
-         environmentName,
+         parseEnvironmentName(environmentName),
          false,
       );
       const connection = this.getApiConnectionForLookup(
@@ -615,10 +626,10 @@ export class ConnectionController {
       schemaName: string,
       tableNames?: string[],
       packageName?: string,
-      versionId?: unknown,
+      versionId: VersionRef = VersionRef.LATEST,
    ): Promise<ApiTable[]> {
       const environment = await this.environmentStore.getEnvironment(
-         environmentName,
+         parseEnvironmentName(environmentName),
          false,
       );
       const connection = this.getApiConnectionForLookup(
@@ -647,11 +658,11 @@ export class ConnectionController {
       connectionName: string,
       sqlStatement: string,
       packageName?: string,
-      versionId?: unknown,
+      versionId: VersionRef = VersionRef.LATEST,
    ): Promise<ApiSqlSource> {
       // A managed database runs one SELECT and nothing else (single_select.ts).
       const environment = await this.environmentStore.getEnvironment(
-         environmentName,
+         parseEnvironmentName(environmentName),
          false,
       );
       if (this.isManagedConnection(environment, connectionName)) {
@@ -698,7 +709,7 @@ export class ConnectionController {
       schemaName: string,
       tablePath: string,
       packageName?: string,
-      versionId?: unknown,
+      versionId: VersionRef = VersionRef.LATEST,
    ): Promise<ApiTable> {
       const malloyConnection = await this.getMalloyConnection(
          environmentName,
@@ -707,7 +718,7 @@ export class ConnectionController {
          versionId,
       );
       const environment = await this.environmentStore.getEnvironment(
-         environmentName,
+         parseEnvironmentName(environmentName),
          false,
       );
       const connection = this.getApiConnectionForLookup(
@@ -793,7 +804,7 @@ export class ConnectionController {
       options: string,
       packageName: string | undefined,
       metadata: { queryMetadata?: unknown; queryClass?: unknown } | undefined,
-      versionId: unknown,
+      versionId: VersionRef = VersionRef.LATEST,
       identity: AccessIdentity,
    ): Promise<ApiQueryData> {
       return withAccessRecord(
@@ -831,7 +842,7 @@ export class ConnectionController {
        * connector refuse the statement at dispatch.
        */
       metadata?: { queryMetadata?: unknown; queryClass?: unknown },
-      versionId?: unknown,
+      versionId: VersionRef = VersionRef.LATEST,
    ): Promise<ApiQueryData> {
       // Express parses repeated query parameters (?sqlStatement=a&sqlStatement=b)
       // and array-shaped JSON bodies as `string[]`, not `string`. The route
@@ -851,7 +862,10 @@ export class ConnectionController {
       // Shed load before any disk / DB work. The env-fetch is cached, so this
       // is an O(1) read on the hot path.
       const environmentForAdmission =
-         await this.environmentStore.getEnvironment(environmentName, false);
+         await this.environmentStore.getEnvironment(
+            parseEnvironmentName(environmentName),
+            false,
+         );
       environmentForAdmission.assertCanAdmitQuery();
 
       // A managed database runs one SELECT and nothing else (single_select.ts).
@@ -1013,7 +1027,7 @@ export class ConnectionController {
       connectionName: string,
       sqlStatement: string,
       packageName: string | undefined,
-      versionId: unknown,
+      versionId: VersionRef = VersionRef.LATEST,
       identity: AccessIdentity,
    ): Promise<ApiTemporaryTable> {
       return withAccessRecord(
@@ -1042,7 +1056,7 @@ export class ConnectionController {
       connectionName: string,
       sqlStatement: string,
       packageName?: string,
-      versionId?: unknown,
+      versionId: VersionRef = VersionRef.LATEST,
    ): Promise<ApiTemporaryTable> {
       // Re-validated for the same reason as in getConnectionQueryData.
       if (typeof sqlStatement !== "string") {
@@ -1052,7 +1066,10 @@ export class ConnectionController {
       // `manifestTemporaryTable` runs a real `CREATE TEMPORARY TABLE AS`, so
       // a back-pressured publisher must 503 these like ad-hoc SELECTs.
       const environmentForAdmission =
-         await this.environmentStore.getEnvironment(environmentName, false);
+         await this.environmentStore.getEnvironment(
+            parseEnvironmentName(environmentName),
+            false,
+         );
       environmentForAdmission.assertCanAdmitQuery();
 
       // A CREATE is not a SELECT: refused on a managed database outright.

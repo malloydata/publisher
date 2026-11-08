@@ -37,22 +37,24 @@ import {
    recordGateRefusal,
    wildcardParam,
 } from "./routes/json_route";
-import { queryConcurrency } from "./query_concurrency";
+import type { QuerySlots } from "./query_concurrency";
 import { normalizeQueryArray } from "./query_param_utils";
 import {
    assertListingTakesNoVersionId,
    booleanParam,
-   queryVersionIdOf,
+   queryVersionRefOf,
    assertNoCollectionReload,
+   versionRefOf,
 } from "./route_params";
 import { processStorageDestinationsOrThrow } from "./service/connection_config";
-import { EnvironmentStore } from "./service/environment_store";
+import type { EnvironmentAdmin } from "./service/environment_ports";
+import { parseEnvironmentName } from "./service/identity";
 
 const LEGACY_API_PREFIX = "/api/v0";
 
 /** Bag of controllers shared with the new server. */
 export interface LegacyControllerSet {
-   environmentStore: EnvironmentStore;
+   environmentStore: EnvironmentAdmin;
    connectionController: ConnectionController;
    modelController: ModelController;
    packageController: PackageController;
@@ -60,6 +62,8 @@ export interface LegacyControllerSet {
    queryController: QueryController;
    compileController: CompileController;
    materializationController: MaterializationController;
+   /** The process's one query-slot pool, shared with the new routes. */
+   querySlots: QuerySlots;
 }
 
 // ─── response/body field mappers ───────────────────────────────────────────
@@ -92,6 +96,7 @@ export function registerLegacyRoutes(
       queryController,
       compileController,
       materializationController,
+      querySlots,
    } = controllers;
    const legacyReportController = new LegacyReportController(environmentStore);
    // ── projects (== environments) ──────────────────────────────────────────
@@ -125,7 +130,7 @@ export function registerLegacyRoutes(
       apiRoute(async (req) => {
          const reload = booleanParam(req, "reload");
          const environment = await environmentStore.getEnvironment(
-            req.params.projectName,
+            parseEnvironmentName(req.params.projectName),
             reload,
          );
          return environment.serialize();
@@ -248,7 +253,7 @@ export function registerLegacyRoutes(
       );
       app.post(
          `${prefix}/sqlSource`,
-         queryConcurrency(),
+         querySlots.middleware,
          apiRoute((req) =>
             connectionController.getConnectionSqlSource(
                req.params.projectName,
@@ -261,7 +266,7 @@ export function registerLegacyRoutes(
       // queryData (GET) was removed from the modern surface.
       app.get(
          `${prefix}/queryData`,
-         queryConcurrency(),
+         querySlots.middleware,
          apiRoute((req) =>
             connectionController.getConnectionQueryData(
                req.params.projectName,
@@ -277,7 +282,7 @@ export function registerLegacyRoutes(
       );
       app.post(
          `${prefix}/sqlQuery`,
-         queryConcurrency(),
+         querySlots.middleware,
          apiRoute((req) =>
             connectionController.getConnectionQueryData(
                req.params.projectName,
@@ -293,7 +298,7 @@ export function registerLegacyRoutes(
       );
       app.post(
          `${prefix}/sqlTemporaryTable`,
-         queryConcurrency(),
+         querySlots.middleware,
          apiRoute((req) =>
             connectionController.getConnectionTemporaryTable(
                req.params.projectName,
@@ -339,7 +344,7 @@ export function registerLegacyRoutes(
             req.params.projectName,
             req.params.packageName,
             reload,
-            req.query.versionId,
+            versionRefOf(req),
          );
       }),
    );
@@ -373,7 +378,7 @@ export function registerLegacyRoutes(
          return modelController.listModels(
             req.params.projectName,
             req.params.packageName,
-            { versionId: req.query.versionId },
+            { versionId: versionRefOf(req) },
          );
       }),
    );
@@ -386,7 +391,7 @@ export function registerLegacyRoutes(
             req.params.projectName,
             req.params.packageName,
             modelPath,
-            { versionId: req.query.versionId },
+            { versionId: versionRefOf(req) },
          );
       }),
    );
@@ -396,7 +401,7 @@ export function registerLegacyRoutes(
    // authorize_bypass_wiring.
    app.post(
       `${LEGACY_API_PREFIX}/projects/:projectName/packages/:packageName/models/*?/query`,
-      queryConcurrency(),
+      querySlots.middleware,
       apiRoute(async (req) => {
          return queryController.getQuery({
             environmentName: req.params.projectName,
@@ -408,7 +413,7 @@ export function registerLegacyRoutes(
             compactJson: req.body.compactJson === true,
             filterParams: req.body.filterParams ?? req.body.sourceFilters,
             bypassFilters: req.body.bypassFilters === true ? true : undefined,
-            versionId: queryVersionIdOf(req),
+            versionId: queryVersionRefOf(req),
             identity: accessIdentityOf(req.headers),
          });
       }),
@@ -427,7 +432,7 @@ export function registerLegacyRoutes(
    app.post(
       `${LEGACY_API_PREFIX}/projects/:projectName/packages/:packageName/models/:modelName/compile`,
       // Gated like the modern compile route.
-      queryConcurrency(),
+      querySlots.middleware,
       apiRoute(async (req) => {
          return compileController.compile(
             req.params.projectName,
@@ -446,7 +451,7 @@ export function registerLegacyRoutes(
          return legacyReportController.listNotebooks(
             req.params.projectName,
             req.params.packageName,
-            req.query.versionId,
+            versionRefOf(req),
          );
       }),
    );
@@ -457,6 +462,7 @@ export function registerLegacyRoutes(
       ...notebookCellHandlers(legacyReportController, {
          environmentParam: "projectName",
          legacy: true,
+         querySlots,
       }),
    );
 
@@ -468,7 +474,7 @@ export function registerLegacyRoutes(
             req.params.projectName,
             req.params.packageName,
             notebookPath,
-            req.query.versionId,
+            versionRefOf(req),
          );
       }),
    );
@@ -480,7 +486,7 @@ export function registerLegacyRoutes(
          return databaseController.listDatabases(
             req.params.projectName,
             req.params.packageName,
-            req.query.versionId,
+            versionRefOf(req),
          );
       }),
    );

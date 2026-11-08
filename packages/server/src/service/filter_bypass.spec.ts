@@ -35,6 +35,7 @@ import path from "path";
 import { BadRequestError } from "../errors";
 import { Model } from "./model";
 import type { FilterParams } from "./filter";
+import { QueryPrivileges } from "./model_query_request";
 
 const TEST_DIR = path.join(os.tmpdir(), "filter-bypass-tests");
 const TEST_DB_DIR = path.join(TEST_DIR, "db");
@@ -191,13 +192,10 @@ async function runAdHoc(
    query: string,
    filterParams?: FilterParams,
 ): Promise<Row[]> {
-   const { compactResult } = await model.getQueryResults(
-      unrecordedAudit(),
-      undefined,
-      undefined,
+   const { compactResult } = await model.runQuery(unrecordedAudit(), {
       query,
       filterParams,
-   );
+   });
    return asRows(compactResult);
 }
 
@@ -215,13 +213,10 @@ async function expectFilterRejected(
 ): Promise<void> {
    let leakedRows: number | undefined;
    try {
-      const { compactResult } = await model.getQueryResults(
-         unrecordedAudit(),
-         undefined,
-         undefined,
+      const { compactResult } = await model.runQuery(unrecordedAudit(), {
          query,
          filterParams,
-      );
+      });
       leakedRows = asRows(compactResult).length;
    } catch (error) {
       expect(error).toBeInstanceOf(BadRequestError);
@@ -522,11 +517,10 @@ async function expectNamedInjectionRejected(
 ): Promise<void> {
    let leaked: Row[] | undefined;
    try {
-      const { compactResult } = await model.getQueryResults(
-         unrecordedAudit(),
+      const { compactResult } = await model.runQuery(unrecordedAudit(), {
          sourceName,
          queryName,
-      );
+      });
       leaked = asRows(compactResult);
    } catch {
       return;
@@ -568,7 +562,10 @@ describe("a name field cannot smuggle a statement past filter injection", () => 
       const model = await makeModel("mixed.malloy");
       let rejected = false;
       try {
-         await model.getQueryResults(unrecordedAudit(), "products", "by_org");
+         await model.runQuery(unrecordedAudit(), {
+            sourceName: "products",
+            queryName: "by_org",
+         });
       } catch (error) {
          rejected = true;
          expect(error).toBeInstanceOf(BadRequestError);
@@ -576,13 +573,11 @@ describe("a name field cannot smuggle a statement past filter injection", () => 
       }
       expect(rejected).toBe(true);
 
-      const { compactResult } = await model.getQueryResults(
-         unrecordedAudit(),
-         "products",
-         "by_org",
-         undefined,
-         { Organization: "acme" },
-      );
+      const { compactResult } = await model.runQuery(unrecordedAudit(), {
+         sourceName: "products",
+         queryName: "by_org",
+         filterParams: { Organization: "acme" },
+      });
       expectAcmeScoped(asRows(compactResult), 2);
    });
 });
@@ -604,13 +599,13 @@ describe("regressions", () => {
 
    it("bypassFilters short-circuits filter enforcement on a derivation", async () => {
       const model = await makeModel("products.malloy");
-      const { compactResult } = await model.getQueryResults(
+      const { compactResult } = await model.runQuery(
          unrecordedAudit(),
-         undefined,
-         undefined,
-         "source: a is products\nrun: a -> { group_by: org_id; aggregate: n is count() }",
-         {},
-         true,
+         {
+            query: "source: a is products\nrun: a -> { group_by: org_id; aggregate: n is count() }",
+            filterParams: {},
+         },
+         QueryPrivileges.of({ bypassFilters: true }),
       );
       expect(asRows(compactResult).length).toBe(3);
    });

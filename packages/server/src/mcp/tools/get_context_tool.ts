@@ -3,17 +3,18 @@
 
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { registerTool } from "../register_tool";
-import { EnvironmentStore } from "../../service/environment_store";
+import type { EnvironmentCatalog } from "../../service/environment_ports";
 import { InvalidArgumentError } from "../../errors";
-import { buildMalloyUri } from "../handler_utils";
+import { buildMalloyUri, classifyToolError } from "../handler_utils";
 import {
    type AccessIdentity,
    accessIdentityOf,
 } from "../../service/access_record";
 import type { RequestExtra } from "../request_extra";
-import { jsonResource } from "../tool_response";
+import { jsonResource, jsonToolError } from "../tool_response";
 import { logger } from "../../logger";
-import { runFcjQuery, type TraceMode } from "../context/engine";
+import type { TraceMode } from "../../retrieval/search/engine";
+import type { RetrievalService } from "../../retrieval/service";
 import {
    convergedContextShape,
    matchesScope,
@@ -21,7 +22,6 @@ import {
    type GetContextParams,
 } from "./get_context_request";
 import {
-   contextError,
    listingPageWarning,
    makeWarningsFor,
    projectEntity,
@@ -29,13 +29,14 @@ import {
    toSourceResults,
    truncationWarning,
    unsupportedTargetWarnings,
-} from "./get_context_response";
+} from "../../retrieval/search/response";
 import type {
    ListingContext,
    PackageIndex,
    ResolvedRequest,
-} from "./get_context_types";
-import { getPackageIndex, sourceContextKey } from "./package_entities";
+   SearchResult,
+} from "../../retrieval/model/types";
+import { sourceContextKey } from "../../retrieval/model/package_entities";
 import { lockedForCaller } from "../../service/discovery_lock";
 import {
    packageInfoOf,
@@ -43,6 +44,7 @@ import {
    type LevelOutcome,
 } from "./get_context_levels";
 import type { GivenValue } from "@malloydata/malloy";
+import { parseEnvironmentName } from "../../service/identity";
 
 /**
  * Contract rules first, reference last, because a tail-truncating client drops
@@ -68,10 +70,33 @@ sources[], best first; a source repeats once per model_path resolving it, query 
 ranking, returned of total_available sources, next_offset: more pages (35,000 chars each), warnings[], clusters, unresolved_targets. retrieval "indexing": still building, retry soon. Errors carry retrieval_reason ("llm-stage-failed" names retrieval_stage).`;
 
 /**
+ * An error payload keeps the success shape's empty `sources: []`, so a caller
+ * can read it unconditionally. Routed through classifyToolError so each error
+ * class carries real remediation (e.g. an unknown package says so).
+ */
+function contextError(uri: string, identifier: string, error: unknown) {
+   return jsonToolError(
+      uri,
+      classifyToolError("getContext", identifier, error),
+      { sources: [] },
+   );
+}
+
+/** The MCP result for a ranked search: the one place it gets its envelope. */
+function searchResource(
+   uri: string,
+   result: SearchResult,
+): ReturnType<typeof jsonResource> {
+   return result.ok
+      ? jsonResource(uri, result.payload)
+      : jsonToolError(uri, result.error, result.payload);
+}
+
+/**
  * Whether the package's most recent reload failed, as a warning to attach.
  */
 async function staleNoteFor(
-   environmentStore: EnvironmentStore,
+   environmentStore: EnvironmentCatalog,
    environmentName: string,
    packageName: string,
 ): Promise<string | undefined> {
@@ -81,7 +106,7 @@ async function staleNoteFor(
    let staleNote: string | undefined;
    try {
       const environment = await environmentStore.getEnvironment(
-         environmentName,
+         parseEnvironmentName(environmentName),
          false,
       );
       const stale = environment.getStaleCompileErrors().get(packageName);
@@ -198,7 +223,7 @@ function runListing(
          ? { next_offset: consumed }
          : {}),
    };
-   // The package loaded (a failed load throws from getPackageIndex), so an
+   // The package loaded (a failed load throws from packageIndex), so an
    // empty listing is a curation gap, not an empty database; say so. Not when
    // `kinds` is empty: then every target named an unindexed type and
    // unsupportedTargetWarnings has already explained it.
@@ -229,11 +254,12 @@ function runListing(
 /**
  * One call, resolved: a request with no search text enumerates what its
  * targets name (a listing, answered here from the package's entity index);
- * anything else is ranked by the find, list, judge engine (../context/engine.ts).
+ * anything else is ranked by the find, list, judge engine (retrieval/search/engine.ts).
  */
 async function runContextQuery(
    resolved: ResolvedRequest,
-   environmentStore: EnvironmentStore,
+   environmentStore: EnvironmentCatalog,
+   retrieval: RetrievalService,
    extraWarnings: string[] = [],
    traceMode: TraceMode = "none",
    withPackageInfo = false,
@@ -251,11 +277,7 @@ async function runContextQuery(
 
    let pkgIndex: PackageIndex;
    try {
-      pkgIndex = await getPackageIndex(
-         environmentStore,
-         environmentName,
-         packageName,
-      );
+      pkgIndex = await retrieval.packageIndex(environmentName, packageName);
    } catch (error) {
       logger.warn("[MCP Tool getContext] index build failed", {
          environmentName,
@@ -278,7 +300,7 @@ async function runContextQuery(
       "get-context",
    );
 
-   // A ranked result is held for a while (../context/pages.ts), so `offset`
+   // A ranked result is held for a while (retrieval/search/pages.ts), so `offset`
    // resumes it. A listing other than the catalog browse has no order to
    // resume from.
    if (
@@ -343,16 +365,17 @@ async function runContextQuery(
    // Nothing to rank -> enumerate what the targets name.
    if (resolved.listingOnly) return runListing(ctx, uri);
 
-   return runFcjQuery({
-      request: resolved,
-      environmentStore,
-      pkgIndex,
+   return searchResource(
       uri,
-      warnings: ctx.warnings,
-      traceMode,
-      ...(identity ? { identity } : {}),
-      ...(clientSignal ? { clientSignal } : {}),
-   });
+      await retrieval.search({
+         request: resolved,
+         pkgIndex,
+         warnings: ctx.warnings,
+         traceMode,
+         ...(identity ? { identity } : {}),
+         ...(clientSignal ? { clientSignal } : {}),
+      }),
+   );
 }
 
 /**
@@ -375,7 +398,8 @@ function traceModeOf(extra: RequestExtra | undefined): TraceMode {
 
 export function registerGetContextTool(
    mcpServer: McpServer,
-   environmentStore: EnvironmentStore,
+   environmentStore: EnvironmentCatalog,
+   retrieval: RetrievalService,
 ): void {
    registerTool(
       mcpServer,
@@ -410,6 +434,7 @@ export function registerGetContextTool(
          return runContextQuery(
             request,
             environmentStore,
+            retrieval,
             [...level.warnings, ...unsupportedTargetWarnings(request)],
             traceModeOf(extra),
             level.withPackageInfo === true,

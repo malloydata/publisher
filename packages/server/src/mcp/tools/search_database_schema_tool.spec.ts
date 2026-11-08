@@ -30,6 +30,7 @@ import {
    malloySourceSnippet,
    registerSearchDatabaseSchemaTool,
 } from "./search_database_schema_tool";
+import { testRetrieval } from "../../test_helpers/test_retrieval";
 
 type Handler = (params: Record<string, unknown>) => Promise<{
    isError?: boolean;
@@ -47,6 +48,7 @@ function captureHandler(store: Partial<EnvironmentStore>): Handler {
       fakeServer as never,
       store as EnvironmentStore,
       fakeController,
+      testRetrieval(store as EnvironmentStore),
    );
    if (!handler) throw new Error("handler was not registered");
    return handler;

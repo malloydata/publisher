@@ -12,6 +12,7 @@ import { Environment } from "./environment";
 import { Package } from "./package";
 import type { PackageMemoryGovernor } from "./package_memory_governor";
 import { writePackageFiles } from "../test_helpers/temp_package";
+import { parsePackageName } from "./identity";
 
 /**
  * `Package.status` and the listing rules behind it.
@@ -132,7 +133,7 @@ describe("Package.status: serving and loading", () => {
       await env.addPackage("pkg");
 
       const compile = holdCompile();
-      const reload = env.getPackage("pkg", true);
+      const reload = env.getPackage(parsePackageName("pkg"), true);
       await compile.entered;
 
       const during = (await env.listPackages()).find((p) => p.name === "pkg");
@@ -597,7 +598,7 @@ describe("Package.status: serving and loading", () => {
       expect(manifest.location).toBeUndefined();
 
       // An in-place reload rebuilds the metadata from disk.
-      const reloaded = await env.getPackage("pkg", true);
+      const reloaded = await env.getPackage(parsePackageName("pkg"), true);
       expect(reloaded.getPackageMetadata().location).toBe(location);
    });
 

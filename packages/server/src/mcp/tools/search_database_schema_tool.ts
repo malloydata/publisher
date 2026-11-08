@@ -3,15 +3,20 @@
 
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod/v3";
-import { ConnectionController } from "../../controller/connection.controller";
-import { EnvironmentStore } from "../../service/environment_store";
+import type { ConnectionController } from "../../controller/connection.controller";
+import type { EnvironmentCatalog } from "../../service/environment_ports";
 import { schemaEmbeddingEnabled } from "../../config";
-import { getEmbeddingProvider } from "../../service/embedding_provider";
+import { getEmbeddingProvider } from "../../retrieval/llm/embedding_provider";
 import { buildMalloyUri } from "../handler_utils";
 import { registerGuardedTool } from "../register_tool";
 import { jsonResource, jsonToolError } from "../tool_response";
 import { logger } from "../../logger";
-import { RankingMode, SchemaTableEntity, rankTables } from "./schema_index";
+import type {
+   RankingMode,
+   SchemaTableEntity,
+} from "../../retrieval/index/schema_index";
+import type { RetrievalService } from "../../retrieval/service";
+import { parseEnvironmentName } from "../../service/identity";
 
 /** Tables returned when the caller does not ask for a specific number. */
 const DEFAULT_LIMIT = 20;
@@ -303,10 +308,11 @@ Then paste that table's malloySource verbatim, e.g. source: \`orders\` is \`ware
  */
 export function registerSearchDatabaseSchemaTool(
    mcpServer: McpServer,
-   environmentStore: EnvironmentStore,
-   connectionController = new ConnectionController(environmentStore),
+   environmentStore: EnvironmentCatalog,
+   connectionController: ConnectionController,
+   retrieval: RetrievalService,
 ): void {
-   const deps: TierDeps = { environmentStore, connectionController };
+   const deps: TierDeps = { environmentStore, connectionController, retrieval };
 
    registerGuardedTool(mcpServer, {
       name: "search_database_schema",
@@ -384,8 +390,10 @@ export function registerSearchDatabaseSchemaTool(
 
 /** What the tiers that reach a store or a warehouse need. */
 interface TierDeps {
-   environmentStore: EnvironmentStore;
+   environmentStore: EnvironmentCatalog;
    connectionController: ConnectionController;
+   /** Ranks a schema's tables, through the process's schema caches. */
+   retrieval: RetrievalService;
 }
 
 /**
@@ -525,11 +533,14 @@ function withWarnings(warnings: string[]): { warnings?: string[] } {
  * pull 100k rows, and the memory governor otherwise cannot see this traffic.
  */
 async function assertCanAdmit(
-   environmentStore: EnvironmentStore,
+   environmentStore: EnvironmentCatalog,
    environmentName: string,
 ): Promise<void> {
    (
-      await environmentStore.getEnvironment(environmentName, false)
+      await environmentStore.getEnvironment(
+         parseEnvironmentName(environmentName),
+         false,
+      )
    ).assertCanAdmitQuery();
 }
 
@@ -582,7 +593,7 @@ async function listEnvironmentsTier(
          let connections: ResponseConnection[] = [];
          try {
             const environment = await environmentStore.getEnvironment(
-               name,
+               parseEnvironmentName(name),
                false,
             );
             connections = await listConnectionsFor(environment);
@@ -612,7 +623,7 @@ async function listConnectionsTier(
    warnings: string[],
 ) {
    const environment = await environmentStore.getEnvironment(
-      environmentName,
+      parseEnvironmentName(environmentName),
       false,
    );
    const connections = await listConnectionsFor(environment);
@@ -724,7 +735,7 @@ async function describeTableTier(
 
 /** Tier 4: a schema's tables, listed or ranked. */
 async function listTablesTier(
-   { environmentStore, connectionController }: TierDeps,
+   { environmentStore, connectionController, retrieval }: TierDeps,
    uri: string,
    {
       environmentName,
@@ -765,7 +776,7 @@ async function listTablesTier(
 
    if (searchQuery !== undefined) {
       const provider = resolveProvider();
-      const ranked = await rankTables({
+      const ranked = await retrieval.rankSchemaTables({
          tables: entities,
          query: searchQuery,
          limit: max,

@@ -8,6 +8,9 @@ import * as path from "path";
 import { PackageController } from "../controller/package.controller";
 import { EnvironmentStore } from "./environment_store";
 import { installSettings } from "../test_helpers/settings_env";
+import { parseEnvironmentName, parsePackageName } from "./identity";
+import { startedStore } from "../test_helpers/started_store";
+import { testRetrieval } from "../test_helpers/test_retrieval";
 
 /**
  * Where an UNVERSIONED package restores its serve bindings from the worker's
@@ -55,7 +58,7 @@ async function openStore(): Promise<EnvironmentStore> {
    restoreSettings = installSettings({
       cwd: path.join(root, "server"),
    }).restore;
-   store = new EnvironmentStore(path.join(root, "server"));
+   store = startedStore(new EnvironmentStore(path.join(root, "server")));
    await store.finishedInitialization;
    return store;
 }
@@ -75,7 +78,9 @@ async function closeStore() {
  * with an entry for the package's base source.
  */
 async function commitLocalRun(current: EnvironmentStore) {
-   const pkg = await current.getEnvironment(ENV).then((e) => e.getPackage(PKG));
+   const pkg = await current
+      .getEnvironment(parseEnvironmentName(ENV))
+      .then((e) => e.getPackage(parsePackageName(PKG)));
    const sources = Object.values(
       (pkg.getBuildPlan() as { sources?: Record<string, unknown> } | undefined)
          ?.sources ?? {},
@@ -128,7 +133,7 @@ describe("restoring an unversioned package's bindings from the local store", () 
    it("an environment created at runtime serves a reinstalled package live, as main does", async () => {
       const current = await openStore();
       await current.addEnvironment({ name: ENV, connections: [] } as never);
-      const packages = new PackageController(current);
+      const packages = new PackageController(current, testRetrieval(current));
       const install = () =>
          packages.addPackage(ENV, {
             name: PKG,
@@ -152,11 +157,14 @@ describe("restoring an unversioned package's bindings from the local store", () 
    it("an environment reloaded from the database at startup restores them", async () => {
       const current = await openStore();
       await current.addEnvironment({ name: ENV, connections: [] } as never);
-      await new PackageController(current).addPackage(ENV, {
-         name: PKG,
-         location: source,
-         manifestLocation: null,
-      } as never);
+      await new PackageController(current, testRetrieval(current)).addPackage(
+         ENV,
+         {
+            name: PKG,
+            location: source,
+            manifestLocation: null,
+         } as never,
+      );
       await commitLocalRun(current);
       await closeStore();
 
@@ -164,8 +172,8 @@ describe("restoring an unversioned package's bindings from the local store", () 
       // package's last ready run is bound again on load.
       const restarted = await openStore();
       const pkg = await restarted
-         .getEnvironment(ENV)
-         .then((e) => e.getPackage(PKG));
+         .getEnvironment(parseEnvironmentName(ENV))
+         .then((e) => e.getPackage(parsePackageName(PKG)));
       const metadata = pkg.getPackageMetadata();
       expect(metadata.manifestBindingStatus).toBe("bound");
       expect(metadata.manifestEntryCount).toBe(1);

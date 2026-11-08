@@ -15,10 +15,10 @@ import type express from "express";
 import { LegacyReportController } from "../controller/legacy_report.controller";
 import { setFilterDeprecationHeaders } from "../filter_deprecation";
 import { BadRequestError, internalErrorToHttpError } from "../errors";
-import { queryConcurrency } from "../query_concurrency";
-import { optionalBooleanParam } from "../route_params";
+import type { QuerySlots } from "../query_concurrency";
+import { optionalBooleanParam, versionRefOf } from "../route_params";
 import { accessIdentityOf } from "../service/access_record";
-import type { EnvironmentStore } from "../service/environment_store";
+import type { PackageLookup } from "../service/environment_ports";
 import { apiRoute, recordGateRefusal, wildcardParam } from "./json_route";
 
 /** A cell request refused before the controller ran, and the body it answers. */
@@ -78,7 +78,12 @@ export function notebookCellHandlers(
    {
       environmentParam,
       legacy,
-   }: { environmentParam: "environmentName" | "projectName"; legacy: boolean },
+      querySlots,
+   }: {
+      environmentParam: "environmentName" | "projectName";
+      legacy: boolean;
+      querySlots: QuerySlots;
+   },
 ): (express.RequestHandler | express.ErrorRequestHandler)[] {
    const recordCellRefusal = (req: express.Request, error: Error) =>
       controller.recordCellRefusal(
@@ -106,19 +111,20 @@ export function notebookCellHandlers(
          cell.filterParams,
          cell.bypassFilters,
          cell.givens,
-         req.query.versionId,
+         versionRefOf(req),
          accessIdentityOf(req.headers),
       );
       if (!legacy) setFilterDeprecationHeaders(res, cell);
       return result;
    });
-   return [queryConcurrency(), run, recordGateRefusal(recordCellRefusal)];
+   return [querySlots.middleware, run, recordGateRefusal(recordCellRefusal)];
 }
 
 export function registerDeprecatedRoutes(
    app: express.Express,
    apiPrefix: string,
-   environmentStore: EnvironmentStore,
+   environmentStore: PackageLookup,
+   querySlots: QuerySlots,
 ): void {
    const controller = new LegacyReportController(environmentStore);
    const pkg = `${apiPrefix}/environments/:environmentName/packages/:packageName`;
@@ -128,7 +134,7 @@ export function registerDeprecatedRoutes(
          controller.listDashboards(
             req.params.environmentName,
             req.params.packageName,
-            req.query.versionId,
+            versionRefOf(req),
          ),
       ),
    );
@@ -140,7 +146,7 @@ export function registerDeprecatedRoutes(
             req.params.environmentName,
             req.params.packageName,
             req.params.dashboardName,
-            req.query.versionId,
+            versionRefOf(req),
          ),
       ),
    );
@@ -151,7 +157,7 @@ export function registerDeprecatedRoutes(
          controller.listNotebooks(
             req.params.environmentName,
             req.params.packageName,
-            req.query.versionId,
+            versionRefOf(req),
          ),
       ),
    );
@@ -166,6 +172,7 @@ export function registerDeprecatedRoutes(
       ...notebookCellHandlers(controller, {
          environmentParam: "environmentName",
          legacy: false,
+         querySlots,
       }),
    );
 
@@ -176,7 +183,7 @@ export function registerDeprecatedRoutes(
             req.params.environmentName,
             req.params.packageName,
             wildcardParam(req),
-            req.query.versionId,
+            versionRefOf(req),
          ),
       ),
    );

@@ -1,0 +1,2962 @@
+{
+  "PackageVersionError MANIFEST_VERSION_MISSING": {
+    "class": "PackageVersionError",
+    "http": {
+      "status": 400,
+      "json": {
+        "code": 400,
+        "message": "version refused: MANIFEST_VERSION_MISSING",
+        "reason": "MANIFEST_VERSION_MISSING"
+      },
+      "logged": false,
+      "logs": []
+    },
+    "mcp": {
+      "message": "version refused: MANIFEST_VERSION_MISSING",
+      "suggestions": [
+        "This is not transient: retrying fails the same way until the package's versions change.",
+        "The MCP tools serve the package's latest version. A package whose versions have no latest yet must have one made latest (PUT .../packages/{package}/latest) before these tools can read it."
+      ],
+      "logs": []
+    },
+    "mcpSetup": {
+      "message": "version refused: MANIFEST_VERSION_MISSING",
+      "suggestions": [
+        "This is not transient: retrying fails the same way until the package's versions change.",
+        "The MCP tools serve the package's latest version. A package whose versions have no latest yet must have one made latest (PUT .../packages/{package}/latest) before these tools can read it."
+      ],
+      "logs": [
+        [
+          "warn",
+          "[MCP Tool executeQuery] model setup refused"
+        ]
+      ]
+    }
+  },
+  "PackageVersionError MANIFEST_VERSION_INVALID": {
+    "class": "PackageVersionError",
+    "http": {
+      "status": 400,
+      "json": {
+        "code": 400,
+        "message": "version refused: MANIFEST_VERSION_INVALID",
+        "reason": "MANIFEST_VERSION_INVALID"
+      },
+      "logged": false,
+      "logs": []
+    },
+    "mcp": {
+      "message": "version refused: MANIFEST_VERSION_INVALID",
+      "suggestions": [
+        "This is not transient: retrying fails the same way until the package's versions change.",
+        "The MCP tools serve the package's latest version. A package whose versions have no latest yet must have one made latest (PUT .../packages/{package}/latest) before these tools can read it."
+      ],
+      "logs": []
+    },
+    "mcpSetup": {
+      "message": "version refused: MANIFEST_VERSION_INVALID",
+      "suggestions": [
+        "This is not transient: retrying fails the same way until the package's versions change.",
+        "The MCP tools serve the package's latest version. A package whose versions have no latest yet must have one made latest (PUT .../packages/{package}/latest) before these tools can read it."
+      ],
+      "logs": [
+        [
+          "warn",
+          "[MCP Tool executeQuery] model setup refused"
+        ]
+      ]
+    }
+  },
+  "PackageVersionError VERSION_ID_INVALID": {
+    "class": "PackageVersionError",
+    "http": {
+      "status": 400,
+      "json": {
+        "code": 400,
+        "message": "version refused: VERSION_ID_INVALID",
+        "reason": "VERSION_ID_INVALID"
+      },
+      "logged": false,
+      "logs": []
+    },
+    "mcp": {
+      "message": "version refused: VERSION_ID_INVALID",
+      "suggestions": [
+        "This is not transient: retrying fails the same way until the package's versions change.",
+        "The MCP tools serve the package's latest version. A package whose versions have no latest yet must have one made latest (PUT .../packages/{package}/latest) before these tools can read it."
+      ],
+      "logs": []
+    },
+    "mcpSetup": {
+      "message": "version refused: VERSION_ID_INVALID",
+      "suggestions": [
+        "This is not transient: retrying fails the same way until the package's versions change.",
+        "The MCP tools serve the package's latest version. A package whose versions have no latest yet must have one made latest (PUT .../packages/{package}/latest) before these tools can read it."
+      ],
+      "logs": [
+        [
+          "warn",
+          "[MCP Tool executeQuery] model setup refused"
+        ]
+      ]
+    }
+  },
+  "PackageVersionError VERSION_NOT_FOUND": {
+    "class": "PackageVersionError",
+    "http": {
+      "status": 404,
+      "json": {
+        "code": 404,
+        "message": "version refused: VERSION_NOT_FOUND",
+        "reason": "VERSION_NOT_FOUND"
+      },
+      "logged": false,
+      "logs": []
+    },
+    "mcp": {
+      "message": "version refused: VERSION_NOT_FOUND",
+      "suggestions": [
+        "This is not transient: retrying fails the same way until the package's versions change.",
+        "The MCP tools serve the package's latest version. A package whose versions have no latest yet must have one made latest (PUT .../packages/{package}/latest) before these tools can read it."
+      ],
+      "logs": []
+    },
+    "mcpSetup": {
+      "message": "version refused: VERSION_NOT_FOUND",
+      "suggestions": [
+        "This is not transient: retrying fails the same way until the package's versions change.",
+        "The MCP tools serve the package's latest version. A package whose versions have no latest yet must have one made latest (PUT .../packages/{package}/latest) before these tools can read it."
+      ],
+      "logs": [
+        [
+          "warn",
+          "[MCP Tool executeQuery] model setup refused"
+        ]
+      ]
+    }
+  },
+  "PackageVersionError VERSION_CONFLICT": {
+    "class": "PackageVersionError",
+    "http": {
+      "status": 409,
+      "json": {
+        "code": 409,
+        "message": "version refused: VERSION_CONFLICT",
+        "reason": "VERSION_CONFLICT"
+      },
+      "logged": false,
+      "logs": []
+    },
+    "mcp": {
+      "message": "version refused: VERSION_CONFLICT",
+      "suggestions": [
+        "This is not transient: retrying fails the same way until the package's versions change.",
+        "The MCP tools serve the package's latest version. A package whose versions have no latest yet must have one made latest (PUT .../packages/{package}/latest) before these tools can read it."
+      ],
+      "logs": []
+    },
+    "mcpSetup": {
+      "message": "version refused: VERSION_CONFLICT",
+      "suggestions": [
+        "This is not transient: retrying fails the same way until the package's versions change.",
+        "The MCP tools serve the package's latest version. A package whose versions have no latest yet must have one made latest (PUT .../packages/{package}/latest) before these tools can read it."
+      ],
+      "logs": [
+        [
+          "warn",
+          "[MCP Tool executeQuery] model setup refused"
+        ]
+      ]
+    }
+  },
+  "PackageVersionError PACKAGE_IS_VERSIONED": {
+    "class": "PackageVersionError",
+    "http": {
+      "status": 409,
+      "json": {
+        "code": 409,
+        "message": "version refused: PACKAGE_IS_VERSIONED",
+        "reason": "PACKAGE_IS_VERSIONED"
+      },
+      "logged": false,
+      "logs": []
+    },
+    "mcp": {
+      "message": "version refused: PACKAGE_IS_VERSIONED",
+      "suggestions": [
+        "This is not transient: retrying fails the same way until the package's versions change.",
+        "The MCP tools serve the package's latest version. A package whose versions have no latest yet must have one made latest (PUT .../packages/{package}/latest) before these tools can read it."
+      ],
+      "logs": []
+    },
+    "mcpSetup": {
+      "message": "version refused: PACKAGE_IS_VERSIONED",
+      "suggestions": [
+        "This is not transient: retrying fails the same way until the package's versions change.",
+        "The MCP tools serve the package's latest version. A package whose versions have no latest yet must have one made latest (PUT .../packages/{package}/latest) before these tools can read it."
+      ],
+      "logs": [
+        [
+          "warn",
+          "[MCP Tool executeQuery] model setup refused"
+        ]
+      ]
+    }
+  },
+  "PackageVersionError VERSION_IS_LATEST": {
+    "class": "PackageVersionError",
+    "http": {
+      "status": 409,
+      "json": {
+        "code": 409,
+        "message": "version refused: VERSION_IS_LATEST",
+        "reason": "VERSION_IS_LATEST"
+      },
+      "logged": false,
+      "logs": []
+    },
+    "mcp": {
+      "message": "version refused: VERSION_IS_LATEST",
+      "suggestions": [
+        "This is not transient: retrying fails the same way until the package's versions change.",
+        "The MCP tools serve the package's latest version. A package whose versions have no latest yet must have one made latest (PUT .../packages/{package}/latest) before these tools can read it."
+      ],
+      "logs": []
+    },
+    "mcpSetup": {
+      "message": "version refused: VERSION_IS_LATEST",
+      "suggestions": [
+        "This is not transient: retrying fails the same way until the package's versions change.",
+        "The MCP tools serve the package's latest version. A package whose versions have no latest yet must have one made latest (PUT .../packages/{package}/latest) before these tools can read it."
+      ],
+      "logs": [
+        [
+          "warn",
+          "[MCP Tool executeQuery] model setup refused"
+        ]
+      ]
+    }
+  },
+  "PackageVersionError VERSION_IS_LAST_ACTIVE": {
+    "class": "PackageVersionError",
+    "http": {
+      "status": 409,
+      "json": {
+        "code": 409,
+        "message": "version refused: VERSION_IS_LAST_ACTIVE",
+        "reason": "VERSION_IS_LAST_ACTIVE"
+      },
+      "logged": false,
+      "logs": []
+    },
+    "mcp": {
+      "message": "version refused: VERSION_IS_LAST_ACTIVE",
+      "suggestions": [
+        "This is not transient: retrying fails the same way until the package's versions change.",
+        "The MCP tools serve the package's latest version. A package whose versions have no latest yet must have one made latest (PUT .../packages/{package}/latest) before these tools can read it."
+      ],
+      "logs": []
+    },
+    "mcpSetup": {
+      "message": "version refused: VERSION_IS_LAST_ACTIVE",
+      "suggestions": [
+        "This is not transient: retrying fails the same way until the package's versions change.",
+        "The MCP tools serve the package's latest version. A package whose versions have no latest yet must have one made latest (PUT .../packages/{package}/latest) before these tools can read it."
+      ],
+      "logs": [
+        [
+          "warn",
+          "[MCP Tool executeQuery] model setup refused"
+        ]
+      ]
+    }
+  },
+  "PackageVersionError VERSION_BUILDING": {
+    "class": "PackageVersionError",
+    "http": {
+      "status": 409,
+      "json": {
+        "code": 409,
+        "message": "version refused: VERSION_BUILDING",
+        "reason": "VERSION_BUILDING"
+      },
+      "logged": false,
+      "logs": []
+    },
+    "mcp": {
+      "message": "version refused: VERSION_BUILDING",
+      "suggestions": [
+        "This is not transient: retrying fails the same way until the package's versions change.",
+        "The MCP tools serve the package's latest version. A package whose versions have no latest yet must have one made latest (PUT .../packages/{package}/latest) before these tools can read it."
+      ],
+      "logs": []
+    },
+    "mcpSetup": {
+      "message": "version refused: VERSION_BUILDING",
+      "suggestions": [
+        "This is not transient: retrying fails the same way until the package's versions change.",
+        "The MCP tools serve the package's latest version. A package whose versions have no latest yet must have one made latest (PUT .../packages/{package}/latest) before these tools can read it."
+      ],
+      "logs": [
+        [
+          "warn",
+          "[MCP Tool executeQuery] model setup refused"
+        ]
+      ]
+    }
+  },
+  "PackageVersionError VERSION_NOT_LATEST": {
+    "class": "PackageVersionError",
+    "http": {
+      "status": 400,
+      "json": {
+        "code": 400,
+        "message": "version refused: VERSION_NOT_LATEST",
+        "reason": "VERSION_NOT_LATEST"
+      },
+      "logged": false,
+      "logs": []
+    },
+    "mcp": {
+      "message": "version refused: VERSION_NOT_LATEST",
+      "suggestions": [
+        "This is not transient: retrying fails the same way until the package's versions change.",
+        "The MCP tools serve the package's latest version. A package whose versions have no latest yet must have one made latest (PUT .../packages/{package}/latest) before these tools can read it."
+      ],
+      "logs": []
+    },
+    "mcpSetup": {
+      "message": "version refused: VERSION_NOT_LATEST",
+      "suggestions": [
+        "This is not transient: retrying fails the same way until the package's versions change.",
+        "The MCP tools serve the package's latest version. A package whose versions have no latest yet must have one made latest (PUT .../packages/{package}/latest) before these tools can read it."
+      ],
+      "logs": [
+        [
+          "warn",
+          "[MCP Tool executeQuery] model setup refused"
+        ]
+      ]
+    }
+  },
+  "PackageVersionError VERSION_ARCHIVED": {
+    "class": "PackageVersionError",
+    "http": {
+      "status": 410,
+      "json": {
+        "code": 410,
+        "message": "version refused: VERSION_ARCHIVED",
+        "reason": "VERSION_ARCHIVED"
+      },
+      "logged": false,
+      "logs": []
+    },
+    "mcp": {
+      "message": "version refused: VERSION_ARCHIVED",
+      "suggestions": [
+        "This is not transient: retrying fails the same way until the package's versions change.",
+        "The MCP tools serve the package's latest version. A package whose versions have no latest yet must have one made latest (PUT .../packages/{package}/latest) before these tools can read it."
+      ],
+      "logs": []
+    },
+    "mcpSetup": {
+      "message": "version refused: VERSION_ARCHIVED",
+      "suggestions": [
+        "This is not transient: retrying fails the same way until the package's versions change.",
+        "The MCP tools serve the package's latest version. A package whose versions have no latest yet must have one made latest (PUT .../packages/{package}/latest) before these tools can read it."
+      ],
+      "logs": [
+        [
+          "warn",
+          "[MCP Tool executeQuery] model setup refused"
+        ]
+      ]
+    }
+  },
+  "BuildPlanUnavailableError": {
+    "class": "BuildPlanUnavailableError",
+    "http": {
+      "status": 409,
+      "json": {
+        "code": 409,
+        "message": "build plan could not be derived",
+        "reason": "BUILD_PLAN_UNAVAILABLE"
+      },
+      "logged": false,
+      "logs": []
+    },
+    "mcp": {
+      "message": "An unexpected internal error occurred during executeQuery.: build plan could not be derived",
+      "suggestions": [
+        "Try the request again later.",
+        "If the problem persists, check server logs or contact support."
+      ],
+      "logs": []
+    },
+    "mcpSetup": {
+      "message": "An unexpected internal error occurred during executeQuery (Setup).: build plan could not be derived",
+      "suggestions": [
+        "Try the request again later.",
+        "If the problem persists, check server logs or contact support."
+      ],
+      "logs": [
+        [
+          "error",
+          "[MCP Server Error] Error accessing package/model for query"
+        ]
+      ]
+    }
+  },
+  "NotImplementedError": {
+    "class": "NotImplementedError",
+    "http": {
+      "status": 501,
+      "json": {
+        "code": 501,
+        "message": "versionId is not supported"
+      },
+      "logged": false,
+      "logs": []
+    },
+    "mcp": {
+      "message": "An unexpected internal error occurred during executeQuery.: versionId is not supported",
+      "suggestions": [
+        "Try the request again later.",
+        "If the problem persists, check server logs or contact support."
+      ],
+      "logs": []
+    },
+    "mcpSetup": {
+      "message": "An unexpected internal error occurred during executeQuery (Setup).: versionId is not supported",
+      "suggestions": [
+        "Try the request again later.",
+        "If the problem persists, check server logs or contact support."
+      ],
+      "logs": [
+        [
+          "error",
+          "[MCP Server Error] Error accessing package/model for query"
+        ]
+      ]
+    }
+  },
+  "BadRequestError": {
+    "class": "BadRequestError",
+    "http": {
+      "status": 400,
+      "json": {
+        "code": 400,
+        "message": "bad request"
+      },
+      "logged": false,
+      "logs": []
+    },
+    "mcp": {
+      "message": "Error during executeQuery for resource 'env/pkg/m.malloy': bad request",
+      "suggestions": [
+        "Verify the structure and syntax within the Malloy file: env/pkg/m.malloy. Check for typos in source, query, or view names (e.g., 'source: my_source is ...', 'query: my_query is ...', 'view: my_view is { ... }'). See Model Structure: https://docs.malloydata.dev/documentation/language/statement",
+        "Ensure all referenced sources, queries, or views are correctly defined within the model or imported files using expected keywords (e.g., 'source:', 'query:', 'view:'). See Sources: https://docs.malloydata.dev/documentation/language/source",
+        "Check the database connection configuration used by the model, if applicable.",
+        "Consult the Malloy language documentation for syntax rules: https://docs.malloydata.dev/documentation/"
+      ],
+      "logs": []
+    },
+    "mcpSetup": {
+      "message": "An unexpected internal error occurred during executeQuery (Setup).: bad request",
+      "suggestions": [
+        "Try the request again later.",
+        "If the problem persists, check server logs or contact support."
+      ],
+      "logs": [
+        [
+          "error",
+          "[MCP Server Error] Error accessing package/model for query"
+        ]
+      ]
+    }
+  },
+  "BadRequestError view not found": {
+    "class": "BadRequestError",
+    "http": {
+      "status": 400,
+      "json": {
+        "code": 400,
+        "message": "View 'by_month' not found in source 'orders'"
+      },
+      "logged": false,
+      "logs": []
+    },
+    "mcp": {
+      "message": "Error during executeQuery for resource 'env/pkg/m.malloy': View 'by_month' not found in source 'orders'",
+      "suggestions": [
+        "Suggestion: View 'by_month' was not found in source 'orders'. Check the view name spelling, or list that source's views with get_context: pass search_targets [{\"target_type\": \"view\"}] and a scopes entry whose source is 'orders'. Views are defined within sources like 'source: orders is ... extend { view: by_month is { ... } }'.",
+        "Verify the structure and syntax within the Malloy file: env/pkg/m.malloy. Check for typos in source, query, or view names (e.g., 'source: my_source is ...', 'query: my_query is ...', 'view: my_view is { ... }'). See Model Structure: https://docs.malloydata.dev/documentation/language/statement",
+        "Ensure all referenced sources, queries, or views are correctly defined within the model or imported files using expected keywords (e.g., 'source:', 'query:', 'view:'). See Sources: https://docs.malloydata.dev/documentation/language/source",
+        "Check the database connection configuration used by the model, if applicable.",
+        "Consult the Malloy language documentation for syntax rules: https://docs.malloydata.dev/documentation/"
+      ],
+      "logs": []
+    },
+    "mcpSetup": {
+      "message": "An unexpected internal error occurred during executeQuery (Setup).: View 'by_month' not found in source 'orders'",
+      "suggestions": [
+        "Try the request again later.",
+        "If the problem persists, check server logs or contact support."
+      ],
+      "logs": [
+        [
+          "error",
+          "[MCP Server Error] Error accessing package/model for query"
+        ]
+      ]
+    }
+  },
+  "BadRequestError source not found": {
+    "class": "BadRequestError",
+    "http": {
+      "status": 400,
+      "json": {
+        "code": 400,
+        "message": "Source 'orderz' not found"
+      },
+      "logged": false,
+      "logs": []
+    },
+    "mcp": {
+      "message": "Error during executeQuery for resource 'env/pkg/m.malloy': Source 'orderz' not found",
+      "suggestions": [
+        "Suggestion: Source 'orderz' was not found or could not be accessed. Verify its definition (e.g., `source: orderz is table('...')` or `duckdb.sql(\"...\")`) and ensure any associated connections are valid.",
+        "Suggestion: Check the spelling of 'orderz'. List the package's sources with get_context: pass search_targets [{\"target_type\": \"source\"}] and a scopes entry naming the environment and package.",
+        "Verify the structure and syntax within the Malloy file: env/pkg/m.malloy. Check for typos in source, query, or view names (e.g., 'source: my_source is ...', 'query: my_query is ...', 'view: my_view is { ... }'). See Model Structure: https://docs.malloydata.dev/documentation/language/statement",
+        "Ensure all referenced sources, queries, or views are correctly defined within the model or imported files using expected keywords (e.g., 'source:', 'query:', 'view:'). See Sources: https://docs.malloydata.dev/documentation/language/source",
+        "Check the database connection configuration used by the model, if applicable.",
+        "Consult the Malloy language documentation for syntax rules: https://docs.malloydata.dev/documentation/"
+      ],
+      "logs": []
+    },
+    "mcpSetup": {
+      "message": "An unexpected internal error occurred during executeQuery (Setup).: Source 'orderz' not found",
+      "suggestions": [
+        "Try the request again later.",
+        "If the problem persists, check server logs or contact support."
+      ],
+      "logs": [
+        [
+          "error",
+          "[MCP Server Error] Error accessing package/model for query"
+        ]
+      ]
+    }
+  },
+  "BadRequestError query not found": {
+    "class": "BadRequestError",
+    "http": {
+      "status": 400,
+      "json": {
+        "code": 400,
+        "message": "Query 'top_ten' not found"
+      },
+      "logged": false,
+      "logs": []
+    },
+    "mcp": {
+      "message": "Error during executeQuery for resource 'env/pkg/m.malloy': Query 'top_ten' not found",
+      "suggestions": [
+        "Suggestion: Named query 'top_ten' was not found. Verify its definition (e.g., `query: top_ten is source_name -> { ... }`) within the model 'env/pkg/m.malloy'.",
+        "Suggestion: Check the spelling of 'top_ten'. Ensure it's a named query (defined with `query:`), not a view. List them with get_context: pass search_targets [{\"target_type\": \"view\"}], which covers named queries too.",
+        "Verify the structure and syntax within the Malloy file: env/pkg/m.malloy. Check for typos in source, query, or view names (e.g., 'source: my_source is ...', 'query: my_query is ...', 'view: my_view is { ... }'). See Model Structure: https://docs.malloydata.dev/documentation/language/statement",
+        "Ensure all referenced sources, queries, or views are correctly defined within the model or imported files using expected keywords (e.g., 'source:', 'query:', 'view:'). See Sources: https://docs.malloydata.dev/documentation/language/source",
+        "Check the database connection configuration used by the model, if applicable.",
+        "Consult the Malloy language documentation for syntax rules: https://docs.malloydata.dev/documentation/"
+      ],
+      "logs": []
+    },
+    "mcpSetup": {
+      "message": "An unexpected internal error occurred during executeQuery (Setup).: Query 'top_ten' not found",
+      "suggestions": [
+        "Try the request again later.",
+        "If the problem persists, check server logs or contact support."
+      ],
+      "logs": [
+        [
+          "error",
+          "[MCP Server Error] Error accessing package/model for query"
+        ]
+      ]
+    }
+  },
+  "BadRequestError field not found": {
+    "class": "BadRequestError",
+    "http": {
+      "status": 400,
+      "json": {
+        "code": 400,
+        "message": "Field 'revenu' not found in source 'orders'"
+      },
+      "logged": false,
+      "logs": []
+    },
+    "mcp": {
+      "message": "Error during executeQuery for resource 'env/pkg/m.malloy': Field 'revenu' not found in source 'orders'",
+      "suggestions": [
+        "Suggestion: Field 'revenu' was not found in source 'orders'. Check the spelling of the field name within the definition of 'orders'.",
+        "Suggestion: Ensure the field is defined directly or inherited correctly in the 'orders' source. Inspect its fields with get_context: pass search_targets [{\"target_type\": \"dimension\"}, {\"target_type\": \"measure\"}], scoped to the source that holds it.",
+        "Verify the structure and syntax within the Malloy file: env/pkg/m.malloy. Check for typos in source, query, or view names (e.g., 'source: my_source is ...', 'query: my_query is ...', 'view: my_view is { ... }'). See Model Structure: https://docs.malloydata.dev/documentation/language/statement",
+        "Ensure all referenced sources, queries, or views are correctly defined within the model or imported files using expected keywords (e.g., 'source:', 'query:', 'view:'). See Sources: https://docs.malloydata.dev/documentation/language/source",
+        "Check the database connection configuration used by the model, if applicable.",
+        "Consult the Malloy language documentation for syntax rules: https://docs.malloydata.dev/documentation/"
+      ],
+      "logs": []
+    },
+    "mcpSetup": {
+      "message": "An unexpected internal error occurred during executeQuery (Setup).: Field 'revenu' not found in source 'orders'",
+      "suggestions": [
+        "Try the request again later.",
+        "If the problem persists, check server logs or contact support."
+      ],
+      "logs": [
+        [
+          "error",
+          "[MCP Server Error] Error accessing package/model for query"
+        ]
+      ]
+    }
+  },
+  "BadRequestError undefined reference": {
+    "class": "BadRequestError",
+    "http": {
+      "status": 400,
+      "json": {
+        "code": 400,
+        "message": "Reference to undefined object 'revenu'"
+      },
+      "logged": false,
+      "logs": []
+    },
+    "mcp": {
+      "message": "Error during executeQuery for resource 'env/pkg/m.malloy': Reference to undefined object 'revenu'",
+      "suggestions": [
+        "Suggestion: Check if the referenced object 'revenu' (source, query, view, field, dimension, measure) is defined correctly and spelled correctly (e.g., 'source: my_source is ...', 'query: my_query is ...'). Ensure it's defined *before* being used in the model file.",
+        "Verify the structure and syntax within the Malloy file: env/pkg/m.malloy. Check for typos in source, query, or view names (e.g., 'source: my_source is ...', 'query: my_query is ...', 'view: my_view is { ... }'). See Model Structure: https://docs.malloydata.dev/documentation/language/statement",
+        "Ensure all referenced sources, queries, or views are correctly defined within the model or imported files using expected keywords (e.g., 'source:', 'query:', 'view:'). See Sources: https://docs.malloydata.dev/documentation/language/source",
+        "Check the database connection configuration used by the model, if applicable.",
+        "Consult the Malloy language documentation for syntax rules: https://docs.malloydata.dev/documentation/"
+      ],
+      "logs": []
+    },
+    "mcpSetup": {
+      "message": "An unexpected internal error occurred during executeQuery (Setup).: Reference to undefined object 'revenu'",
+      "suggestions": [
+        "Try the request again later.",
+        "If the problem persists, check server logs or contact support."
+      ],
+      "logs": [
+        [
+          "error",
+          "[MCP Server Error] Error accessing package/model for query"
+        ]
+      ]
+    }
+  },
+  "BadRequestError syntax": {
+    "class": "BadRequestError",
+    "http": {
+      "status": 400,
+      "json": {
+        "code": 400,
+        "message": "no viable alternative at input 'run: ->'"
+      },
+      "logged": false,
+      "logs": []
+    },
+    "mcp": {
+      "message": "Error during executeQuery for resource 'env/pkg/m.malloy': no viable alternative at input 'run: ->'",
+      "suggestions": [
+        "Suggestion: There seems to be a syntax error near the location indicated in the error message. Check for misplaced/missing keywords (like 'is', '->', 'extend', 'where', 'aggregate', 'group_by', 'nest'), commas, brackets '{ }', or parentheses '( )'. See Query Syntax: https://docs.malloydata.dev/documentation/language/query",
+        "Verify the structure and syntax within the Malloy file: env/pkg/m.malloy. Check for typos in source, query, or view names (e.g., 'source: my_source is ...', 'query: my_query is ...', 'view: my_view is { ... }'). See Model Structure: https://docs.malloydata.dev/documentation/language/statement",
+        "Ensure all referenced sources, queries, or views are correctly defined within the model or imported files using expected keywords (e.g., 'source:', 'query:', 'view:'). See Sources: https://docs.malloydata.dev/documentation/language/source",
+        "Check the database connection configuration used by the model, if applicable.",
+        "Consult the Malloy language documentation for syntax rules: https://docs.malloydata.dev/documentation/"
+      ],
+      "logs": []
+    },
+    "mcpSetup": {
+      "message": "An unexpected internal error occurred during executeQuery (Setup).: no viable alternative at input 'run: ->'",
+      "suggestions": [
+        "Try the request again later.",
+        "If the problem persists, check server logs or contact support."
+      ],
+      "logs": [
+        [
+          "error",
+          "[MCP Server Error] Error accessing package/model for query"
+        ]
+      ]
+    }
+  },
+  "BadRequestError cannot connect": {
+    "class": "BadRequestError",
+    "http": {
+      "status": 400,
+      "json": {
+        "code": 400,
+        "message": "Cannot connect to database duckdb"
+      },
+      "logged": false,
+      "logs": []
+    },
+    "mcp": {
+      "message": "Error during executeQuery for resource 'env/pkg/m.malloy': Cannot connect to database duckdb",
+      "suggestions": [
+        "Suggestion: Verify the database connection details (credentials, host, database name, connection name in Malloy) associated with this model.",
+        "Verify the structure and syntax within the Malloy file: env/pkg/m.malloy. Check for typos in source, query, or view names (e.g., 'source: my_source is ...', 'query: my_query is ...', 'view: my_view is { ... }'). See Model Structure: https://docs.malloydata.dev/documentation/language/statement",
+        "Ensure all referenced sources, queries, or views are correctly defined within the model or imported files using expected keywords (e.g., 'source:', 'query:', 'view:'). See Sources: https://docs.malloydata.dev/documentation/language/source",
+        "Check the database connection configuration used by the model, if applicable.",
+        "Consult the Malloy language documentation for syntax rules: https://docs.malloydata.dev/documentation/",
+        "Ensure the database server is running and accessible from the publisher server."
+      ],
+      "logs": []
+    },
+    "mcpSetup": {
+      "message": "An unexpected internal error occurred during executeQuery (Setup).: Cannot connect to database duckdb",
+      "suggestions": [
+        "Try the request again later.",
+        "If the problem persists, check server logs or contact support."
+      ],
+      "logs": [
+        [
+          "error",
+          "[MCP Server Error] Error accessing package/model for query"
+        ]
+      ]
+    }
+  },
+  "BadRequestError invalid query request": {
+    "class": "InvalidQueryRequestError",
+    "http": {
+      "status": 400,
+      "json": {
+        "code": 400,
+        "message": "Invalid query request. Query OR queryName must be defined"
+      },
+      "logged": false,
+      "logs": []
+    },
+    "mcp": {
+      "message": "Error during executeQuery for resource 'env/pkg/m.malloy': Invalid query request. Query OR queryName must be defined",
+      "suggestions": [
+        "Suggestion: This error can occur when specifying a view using 'sourceName' and 'queryName'. Try providing the full query string directly in the 'query' parameter instead (e.g., 'query': 'run: your_source_name->your_view_name').",
+        "Suggestion: Also verify you are providing either the 'query' parameter OR the correct combination of 'queryName' (and optionally 'sourceName' for views).",
+        "Verify the structure and syntax within the Malloy file: env/pkg/m.malloy. Check for typos in source, query, or view names (e.g., 'source: my_source is ...', 'query: my_query is ...', 'view: my_view is { ... }'). See Model Structure: https://docs.malloydata.dev/documentation/language/statement",
+        "Ensure all referenced sources, queries, or views are correctly defined within the model or imported files using expected keywords (e.g., 'source:', 'query:', 'view:'). See Sources: https://docs.malloydata.dev/documentation/language/source",
+        "Check the database connection configuration used by the model, if applicable.",
+        "Consult the Malloy language documentation for syntax rules: https://docs.malloydata.dev/documentation/"
+      ],
+      "logs": []
+    },
+    "mcpSetup": {
+      "message": "An unexpected internal error occurred during executeQuery (Setup).: Invalid query request. Query OR queryName must be defined",
+      "suggestions": [
+        "Try the request again later.",
+        "If the problem persists, check server logs or contact support."
+      ],
+      "logs": [
+        [
+          "error",
+          "[MCP Server Error] Error accessing package/model for query"
+        ]
+      ]
+    }
+  },
+  "BadRequestError restricted by message": {
+    "class": "BadRequestError",
+    "http": {
+      "status": 400,
+      "json": {
+        "code": 400,
+        "message": "import statements cannot be used in a restricted query"
+      },
+      "logged": false,
+      "logs": []
+    },
+    "mcp": {
+      "message": "Error during executeQuery for resource 'env/pkg/m.malloy': import statements cannot be used in a restricted query",
+      "suggestions": [
+        "Suggestion: This query ran in restricted mode: ad-hoc query text may not use raw SQL (duckdb.sql(...) / connection.sql(...)), direct SQL function calls (name!type(...)), the sql_* function family (sql_number, sql_string, sql_date, sql_timestamp, sql_boolean), import statements, ##! flags, or new sources from connection.table(...). These constructs ARE allowed in the package's model files (.malloy): add the definition to a model file, validate it with compile_model, save, call reload_package, then query the new source or view by name. Any other diagnostics this compile produced are fallout from the refused construct, not separate problems."
+      ],
+      "logs": []
+    },
+    "mcpSetup": {
+      "message": "An unexpected internal error occurred during executeQuery (Setup).: import statements cannot be used in a restricted query",
+      "suggestions": [
+        "Try the request again later.",
+        "If the problem persists, check server logs or contact support."
+      ],
+      "logs": [
+        [
+          "error",
+          "[MCP Server Error] Error accessing package/model for query"
+        ]
+      ]
+    }
+  },
+  "InvalidArgumentError": {
+    "class": "InvalidArgumentError",
+    "http": {
+      "status": 400,
+      "json": {
+        "code": 400,
+        "message": "givens must be an object"
+      },
+      "logged": false,
+      "logs": []
+    },
+    "mcp": {
+      "message": "givens must be an object",
+      "suggestions": [
+        "This is not transient. The same arguments will fail the same way, so change them rather than retrying.",
+        "The message above names what was wrong. If it names an expected format, use that format exactly."
+      ],
+      "logs": []
+    },
+    "mcpSetup": {
+      "message": "An unexpected internal error occurred during executeQuery (Setup).: givens must be an object",
+      "suggestions": [
+        "Try the request again later.",
+        "If the problem persists, check server logs or contact support."
+      ],
+      "logs": [
+        [
+          "error",
+          "[MCP Server Error] Error accessing package/model for query"
+        ]
+      ]
+    }
+  },
+  "CompileRefusedError": {
+    "class": "CompileRefusedError",
+    "http": {
+      "status": 400,
+      "json": {
+        "code": 400,
+        "message": "append text may not declare a given"
+      },
+      "logged": false,
+      "logs": []
+    },
+    "mcp": {
+      "message": "Error during executeQuery for resource 'env/pkg/m.malloy': append text may not declare a given",
+      "suggestions": [
+        "Verify the structure and syntax within the Malloy file: env/pkg/m.malloy. Check for typos in source, query, or view names (e.g., 'source: my_source is ...', 'query: my_query is ...', 'view: my_view is { ... }'). See Model Structure: https://docs.malloydata.dev/documentation/language/statement",
+        "Ensure all referenced sources, queries, or views are correctly defined within the model or imported files using expected keywords (e.g., 'source:', 'query:', 'view:'). See Sources: https://docs.malloydata.dev/documentation/language/source",
+        "Check the database connection configuration used by the model, if applicable.",
+        "Consult the Malloy language documentation for syntax rules: https://docs.malloydata.dev/documentation/"
+      ],
+      "logs": []
+    },
+    "mcpSetup": {
+      "message": "An unexpected internal error occurred during executeQuery (Setup).: append text may not declare a given",
+      "suggestions": [
+        "Try the request again later.",
+        "If the problem persists, check server logs or contact support."
+      ],
+      "logs": [
+        [
+          "error",
+          "[MCP Server Error] Error accessing package/model for query"
+        ]
+      ]
+    }
+  },
+  "InvalidModelPathError": {
+    "class": "InvalidModelPathError",
+    "http": {
+      "status": 400,
+      "json": {
+        "code": 400,
+        "message": "model path escapes the package"
+      },
+      "logged": false,
+      "logs": []
+    },
+    "mcp": {
+      "message": "Error during executeQuery for resource 'env/pkg/m.malloy': model path escapes the package",
+      "suggestions": [
+        "Verify the structure and syntax within the Malloy file: env/pkg/m.malloy. Check for typos in source, query, or view names (e.g., 'source: my_source is ...', 'query: my_query is ...', 'view: my_view is { ... }'). See Model Structure: https://docs.malloydata.dev/documentation/language/statement",
+        "Ensure all referenced sources, queries, or views are correctly defined within the model or imported files using expected keywords (e.g., 'source:', 'query:', 'view:'). See Sources: https://docs.malloydata.dev/documentation/language/source",
+        "Check the database connection configuration used by the model, if applicable.",
+        "Consult the Malloy language documentation for syntax rules: https://docs.malloydata.dev/documentation/"
+      ],
+      "logs": []
+    },
+    "mcpSetup": {
+      "message": "An unexpected internal error occurred during executeQuery (Setup).: model path escapes the package",
+      "suggestions": [
+        "Try the request again later.",
+        "If the problem persists, check server logs or contact support."
+      ],
+      "logs": [
+        [
+          "error",
+          "[MCP Server Error] Error accessing package/model for query"
+        ]
+      ]
+    }
+  },
+  "RenderTagRefusedError": {
+    "class": "RenderTagRefusedError",
+    "http": {
+      "status": 400,
+      "json": {
+        "code": 400,
+        "message": "# link is refused in a document"
+      },
+      "logged": false,
+      "logs": []
+    },
+    "mcp": {
+      "message": "Error during executeQuery for resource 'env/pkg/m.malloy': # link is refused in a document",
+      "suggestions": [
+        "Verify the structure and syntax within the Malloy file: env/pkg/m.malloy. Check for typos in source, query, or view names (e.g., 'source: my_source is ...', 'query: my_query is ...', 'view: my_view is { ... }'). See Model Structure: https://docs.malloydata.dev/documentation/language/statement",
+        "Ensure all referenced sources, queries, or views are correctly defined within the model or imported files using expected keywords (e.g., 'source:', 'query:', 'view:'). See Sources: https://docs.malloydata.dev/documentation/language/source",
+        "Check the database connection configuration used by the model, if applicable.",
+        "Consult the Malloy language documentation for syntax rules: https://docs.malloydata.dev/documentation/"
+      ],
+      "logs": []
+    },
+    "mcpSetup": {
+      "message": "An unexpected internal error occurred during executeQuery (Setup).: # link is refused in a document",
+      "suggestions": [
+        "Try the request again later.",
+        "If the problem persists, check server logs or contact support."
+      ],
+      "logs": [
+        [
+          "error",
+          "[MCP Server Error] Error accessing package/model for query"
+        ]
+      ]
+    }
+  },
+  "UnparseableTextError": {
+    "class": "UnparseableTextError",
+    "http": {
+      "status": 400,
+      "json": {
+        "code": 400,
+        "message": "the text could not be parsed"
+      },
+      "logged": false,
+      "logs": []
+    },
+    "mcp": {
+      "message": "Error during executeQuery for resource 'env/pkg/m.malloy': the text could not be parsed",
+      "suggestions": [
+        "Verify the structure and syntax within the Malloy file: env/pkg/m.malloy. Check for typos in source, query, or view names (e.g., 'source: my_source is ...', 'query: my_query is ...', 'view: my_view is { ... }'). See Model Structure: https://docs.malloydata.dev/documentation/language/statement",
+        "Ensure all referenced sources, queries, or views are correctly defined within the model or imported files using expected keywords (e.g., 'source:', 'query:', 'view:'). See Sources: https://docs.malloydata.dev/documentation/language/source",
+        "Check the database connection configuration used by the model, if applicable.",
+        "Consult the Malloy language documentation for syntax rules: https://docs.malloydata.dev/documentation/"
+      ],
+      "logs": []
+    },
+    "mcpSetup": {
+      "message": "An unexpected internal error occurred during executeQuery (Setup).: the text could not be parsed",
+      "suggestions": [
+        "Try the request again later.",
+        "If the problem persists, check server logs or contact support."
+      ],
+      "logs": [
+        [
+          "error",
+          "[MCP Server Error] Error accessing package/model for query"
+        ]
+      ]
+    }
+  },
+  "EnvironmentNotFoundError": {
+    "class": "EnvironmentNotFoundError",
+    "http": {
+      "status": 404,
+      "json": {
+        "code": 404,
+        "message": "Environment env not found"
+      },
+      "logged": false,
+      "logs": []
+    },
+    "mcp": {
+      "message": "Resource not found: env/pkg/m.malloy",
+      "suggestions": [
+        "Verify the identifier (env/pkg/m.malloy) is spelled correctly and exists. Check capitalization and path separators.",
+        "Check if the resource exists and is correctly named in your Malloy environment structure or the specific model file."
+      ],
+      "logs": []
+    },
+    "mcpSetup": {
+      "message": "Resource not found: environment 'env'",
+      "suggestions": [
+        "Verify the identifier (environment 'env') is spelled correctly and exists. Check capitalization and path separators.",
+        "Check if the resource exists and is correctly named in your Malloy environment structure or the specific model file."
+      ],
+      "logs": [
+        [
+          "warn",
+          "[MCP Tool executeQuery] model setup refused"
+        ]
+      ]
+    }
+  },
+  "EnvironmentNotFoundError with lookup": {
+    "class": "EnvironmentNotFoundError",
+    "http": {
+      "status": 404,
+      "json": {
+        "code": 404,
+        "message": "Environment env not found"
+      },
+      "logged": false,
+      "logs": []
+    },
+    "mcp": {
+      "message": "Environment 'env' not found. Available environments: examples, other. Use a name from list_packages.",
+      "suggestions": [
+        "Environment names must match exactly, including case. Retrying with the same name fails the same way."
+      ],
+      "logs": []
+    },
+    "mcpSetup": {
+      "message": "Environment 'env' not found. Available environments: examples, other. Use a name from list_packages.",
+      "suggestions": [
+        "Environment names must match exactly, including case. Retrying with the same name fails the same way."
+      ],
+      "logs": [
+        [
+          "warn",
+          "[MCP Tool executeQuery] model setup refused"
+        ]
+      ]
+    }
+  },
+  "EnvironmentNotFoundError with empty lookup": {
+    "class": "EnvironmentNotFoundError",
+    "http": {
+      "status": 404,
+      "json": {
+        "code": 404,
+        "message": "Environment env not found"
+      },
+      "logged": false,
+      "logs": []
+    },
+    "mcp": {
+      "message": "Environment 'env' not found. This server has no environments loaded. Use a name from list_packages.",
+      "suggestions": [
+        "Environment names must match exactly, including case. Retrying with the same name fails the same way."
+      ],
+      "logs": []
+    },
+    "mcpSetup": {
+      "message": "Environment 'env' not found. This server has no environments loaded. Use a name from list_packages.",
+      "suggestions": [
+        "Environment names must match exactly, including case. Retrying with the same name fails the same way."
+      ],
+      "logs": [
+        [
+          "warn",
+          "[MCP Tool executeQuery] model setup refused"
+        ]
+      ]
+    }
+  },
+  "PackageNotFoundError": {
+    "class": "PackageNotFoundError",
+    "http": {
+      "status": 404,
+      "json": {
+        "code": 404,
+        "message": "Package pkg not found"
+      },
+      "logged": false,
+      "logs": []
+    },
+    "mcp": {
+      "message": "Resource not found: env/pkg/m.malloy",
+      "suggestions": [
+        "Verify the identifier (env/pkg/m.malloy) is spelled correctly and exists. Check capitalization and path separators.",
+        "Check if the resource exists and is correctly named in your Malloy environment structure or the specific model file."
+      ],
+      "logs": []
+    },
+    "mcpSetup": {
+      "message": "Resource not found: package 'pkg' in environment 'env'",
+      "suggestions": [
+        "Verify the identifier (package 'pkg' in environment 'env') is spelled correctly and exists. Check capitalization and path separators.",
+        "Check if the resource exists and is correctly named in your Malloy environment structure or the specific model file."
+      ],
+      "logs": [
+        [
+          "warn",
+          "[MCP Tool executeQuery] model setup refused"
+        ]
+      ]
+    }
+  },
+  "PackageNotFoundError caused by EACCES": {
+    "class": "PackageNotFoundError",
+    "http": {
+      "status": 500,
+      "json": {
+        "code": 500,
+        "message": "The server cannot access a path it needs (EACCES: permission denied, open '/srv/publisher_data/env/pkg'). Give the user the server runs as access to it."
+      },
+      "logged": true,
+      "logs": [
+        [
+          "warn",
+          "Filesystem access refused"
+        ]
+      ]
+    },
+    "mcp": {
+      "message": "Resource not found: env/pkg/m.malloy",
+      "suggestions": [
+        "Verify the identifier (env/pkg/m.malloy) is spelled correctly and exists. Check capitalization and path separators.",
+        "Check if the resource exists and is correctly named in your Malloy environment structure or the specific model file."
+      ],
+      "logs": []
+    },
+    "mcpSetup": {
+      "message": "Resource not found: package 'pkg' in environment 'env'",
+      "suggestions": [
+        "Verify the identifier (package 'pkg' in environment 'env') is spelled correctly and exists. Check capitalization and path separators.",
+        "Check if the resource exists and is correctly named in your Malloy environment structure or the specific model file."
+      ],
+      "logs": [
+        [
+          "warn",
+          "[MCP Tool executeQuery] model setup refused"
+        ]
+      ]
+    }
+  },
+  "ModelNotFoundError": {
+    "class": "ModelNotFoundError",
+    "http": {
+      "status": 404,
+      "json": {
+        "code": 404,
+        "message": "Model not found"
+      },
+      "logged": false,
+      "logs": []
+    },
+    "mcp": {
+      "message": "Resource not found: env/pkg/m.malloy",
+      "suggestions": [
+        "Verify the identifier (env/pkg/m.malloy) is spelled correctly and exists. Check capitalization and path separators.",
+        "Check if the resource exists and is correctly named in your Malloy environment structure or the specific model file."
+      ],
+      "logs": []
+    },
+    "mcpSetup": {
+      "message": "Resource not found: model 'm.malloy' in package 'pkg' for environment 'env'",
+      "suggestions": [
+        "Verify the identifier (model 'm.malloy' in package 'pkg' for environment 'env') is spelled correctly and exists. Check capitalization and path separators.",
+        "Check if the resource exists and is correctly named in your Malloy environment structure or the specific model file."
+      ],
+      "logs": [
+        [
+          "warn",
+          "[MCP Tool executeQuery] model setup refused"
+        ]
+      ]
+    }
+  },
+  "DashboardNotFoundError": {
+    "class": "DashboardNotFoundError",
+    "http": {
+      "status": 404,
+      "json": {
+        "code": 404,
+        "message": "Report not found"
+      },
+      "logged": false,
+      "logs": []
+    },
+    "mcp": {
+      "message": "An unexpected internal error occurred during executeQuery.: Report not found",
+      "suggestions": [
+        "Try the request again later.",
+        "If the problem persists, check server logs or contact support."
+      ],
+      "logs": []
+    },
+    "mcpSetup": {
+      "message": "An unexpected internal error occurred during executeQuery (Setup).: Report not found",
+      "suggestions": [
+        "Try the request again later.",
+        "If the problem persists, check server logs or contact support."
+      ],
+      "logs": [
+        [
+          "error",
+          "[MCP Server Error] Error accessing package/model for query"
+        ]
+      ]
+    }
+  },
+  "SkillNotFoundError": {
+    "class": "SkillNotFoundError",
+    "http": {
+      "status": 404,
+      "json": {
+        "code": 404,
+        "message": "Skill not found"
+      },
+      "logged": false,
+      "logs": []
+    },
+    "mcp": {
+      "message": "An unexpected internal error occurred during executeQuery.: Skill not found",
+      "suggestions": [
+        "Try the request again later.",
+        "If the problem persists, check server logs or contact support."
+      ],
+      "logs": []
+    },
+    "mcpSetup": {
+      "message": "An unexpected internal error occurred during executeQuery (Setup).: Skill not found",
+      "suggestions": [
+        "Try the request again later.",
+        "If the problem persists, check server logs or contact support."
+      ],
+      "logs": [
+        [
+          "error",
+          "[MCP Server Error] Error accessing package/model for query"
+        ]
+      ]
+    }
+  },
+  "AgentNotFoundError": {
+    "class": "AgentNotFoundError",
+    "http": {
+      "status": 404,
+      "json": {
+        "code": 404,
+        "message": "Agent not found"
+      },
+      "logged": false,
+      "logs": []
+    },
+    "mcp": {
+      "message": "An unexpected internal error occurred during executeQuery.: Agent not found",
+      "suggestions": [
+        "Try the request again later.",
+        "If the problem persists, check server logs or contact support."
+      ],
+      "logs": []
+    },
+    "mcpSetup": {
+      "message": "An unexpected internal error occurred during executeQuery (Setup).: Agent not found",
+      "suggestions": [
+        "Try the request again later.",
+        "If the problem persists, check server logs or contact support."
+      ],
+      "logs": [
+        [
+          "error",
+          "[MCP Server Error] Error accessing package/model for query"
+        ]
+      ]
+    }
+  },
+  "ConflictError": {
+    "class": "ConflictError",
+    "http": {
+      "status": 409,
+      "json": {
+        "code": 409,
+        "message": "already exists"
+      },
+      "logged": false,
+      "logs": []
+    },
+    "mcp": {
+      "message": "An unexpected internal error occurred during executeQuery.: already exists",
+      "suggestions": [
+        "Try the request again later.",
+        "If the problem persists, check server logs or contact support."
+      ],
+      "logs": []
+    },
+    "mcpSetup": {
+      "message": "An unexpected internal error occurred during executeQuery (Setup).: already exists",
+      "suggestions": [
+        "Try the request again later.",
+        "If the problem persists, check server logs or contact support."
+      ],
+      "logs": [
+        [
+          "error",
+          "[MCP Server Error] Error accessing package/model for query"
+        ]
+      ]
+    }
+  },
+  "ConnectionNotFoundError": {
+    "class": "ConnectionNotFoundError",
+    "http": {
+      "status": 404,
+      "json": {
+        "code": 404,
+        "message": "Connection pg not found"
+      },
+      "logged": false,
+      "logs": []
+    },
+    "mcp": {
+      "message": "Resource not found: env/pkg/m.malloy",
+      "suggestions": [
+        "Verify the identifier (env/pkg/m.malloy) is spelled correctly and exists. Check capitalization and path separators.",
+        "Check if the resource exists and is correctly named in your Malloy environment structure or the specific model file."
+      ],
+      "logs": []
+    },
+    "mcpSetup": {
+      "message": "An unexpected internal error occurred during executeQuery (Setup).: Connection pg not found",
+      "suggestions": [
+        "Try the request again later.",
+        "If the problem persists, check server logs or contact support."
+      ],
+      "logs": [
+        [
+          "error",
+          "[MCP Server Error] Error accessing package/model for query"
+        ]
+      ]
+    }
+  },
+  "TableNotFoundError": {
+    "class": "TableNotFoundError",
+    "http": {
+      "status": 404,
+      "json": {
+        "code": 404,
+        "message": "relation \"orders\" does not exist",
+        "reason": "TABLE_NOT_FOUND"
+      },
+      "logged": false,
+      "logs": []
+    },
+    "mcp": {
+      "message": "An unexpected internal error occurred during executeQuery.: relation \"orders\" does not exist",
+      "suggestions": [
+        "Try the request again later.",
+        "If the problem persists, check server logs or contact support."
+      ],
+      "logs": []
+    },
+    "mcpSetup": {
+      "message": "An unexpected internal error occurred during executeQuery (Setup).: relation \"orders\" does not exist",
+      "suggestions": [
+        "Try the request again later.",
+        "If the problem persists, check server logs or contact support."
+      ],
+      "logs": [
+        [
+          "error",
+          "[MCP Server Error] Error accessing package/model for query"
+        ]
+      ]
+    }
+  },
+  "ConnectionError": {
+    "class": "ConnectionError",
+    "http": {
+      "status": 502,
+      "json": {
+        "code": 502,
+        "message": "Upstream connection error."
+      },
+      "logged": true,
+      "logs": [
+        [
+          "warn",
+          "Upstream connection error"
+        ]
+      ]
+    },
+    "mcp": {
+      "message": "An unexpected internal error occurred during executeQuery.: Upstream connection error.",
+      "suggestions": [
+        "Try the request again later.",
+        "If the problem persists, check server logs or contact support."
+      ],
+      "logs": [
+        [
+          "warn",
+          "Upstream connection error during executeQuery"
+        ]
+      ]
+    },
+    "mcpSetup": {
+      "message": "An unexpected internal error occurred during executeQuery (Setup).: Upstream connection error.",
+      "suggestions": [
+        "Try the request again later.",
+        "If the problem persists, check server logs or contact support."
+      ],
+      "logs": [
+        [
+          "error",
+          "[MCP Server Error] Error accessing package/model for query"
+        ],
+        [
+          "warn",
+          "Upstream connection error during executeQuery (Setup)"
+        ]
+      ]
+    }
+  },
+  "ConnectionError callerSafe": {
+    "class": "ConnectionError",
+    "http": {
+      "status": 502,
+      "json": {
+        "code": 502,
+        "message": "The connection is read-only."
+      },
+      "logged": false,
+      "logs": []
+    },
+    "mcp": {
+      "message": "An unexpected internal error occurred during executeQuery.: The connection is read-only.",
+      "suggestions": [
+        "Try the request again later.",
+        "If the problem persists, check server logs or contact support."
+      ],
+      "logs": []
+    },
+    "mcpSetup": {
+      "message": "An unexpected internal error occurred during executeQuery (Setup).: The connection is read-only.",
+      "suggestions": [
+        "Try the request again later.",
+        "If the problem persists, check server logs or contact support."
+      ],
+      "logs": [
+        [
+          "error",
+          "[MCP Server Error] Error accessing package/model for query"
+        ]
+      ]
+    }
+  },
+  "ConnectionFailedError": {
+    "class": "ConnectionFailedError",
+    "http": {
+      "status": 502,
+      "json": {
+        "code": 502,
+        "message": "The database connection is down: the database could not be reached, so the query did not run.",
+        "reason": "CONNECTION_FAILED"
+      },
+      "logged": true,
+      "logs": [
+        [
+          "warn",
+          "Database unreachable"
+        ]
+      ]
+    },
+    "mcp": {
+      "message": "The database connection for env/pkg/m.malloy is down: the database could not be reached, so the query never ran.",
+      "suggestions": [
+        "The query and the model are fine. Do not rewrite them.",
+        "Retry once. If it fails again, report that the database connection is down rather than changing the query."
+      ],
+      "logs": [
+        [
+          "warn",
+          "Database unreachable during executeQuery"
+        ]
+      ]
+    },
+    "mcpSetup": {
+      "message": "An unexpected internal error occurred during executeQuery (Setup).: Upstream connection error.",
+      "suggestions": [
+        "Try the request again later.",
+        "If the problem persists, check server logs or contact support."
+      ],
+      "logs": [
+        [
+          "error",
+          "[MCP Server Error] Error accessing package/model for query"
+        ],
+        [
+          "warn",
+          "Upstream connection error during executeQuery (Setup)"
+        ]
+      ]
+    }
+  },
+  "UnconfiguredConnectionError": {
+    "class": "UnconfiguredConnectionError",
+    "http": {
+      "status": 424,
+      "json": {
+        "code": 424,
+        "message": "No connection named \"pg\" found in config",
+        "reason": "CONNECTION_NOT_FOUND"
+      },
+      "logged": false,
+      "logs": []
+    },
+    "mcp": {
+      "message": "No connection named \"pg\" found in config. The model for env/pkg/m.malloy uses a connection this environment does not have, so the query never ran.",
+      "suggestions": [
+        "The query is fine. Do not rewrite it, and do not retry: it fails the same way until the connection exists.",
+        "Report that the environment is missing this connection; it was likely deleted or renamed."
+      ],
+      "logs": []
+    },
+    "mcpSetup": {
+      "message": "An unexpected internal error occurred during executeQuery (Setup).: No connection named \"pg\" found in config",
+      "suggestions": [
+        "Try the request again later.",
+        "If the problem persists, check server logs or contact support."
+      ],
+      "logs": [
+        [
+          "error",
+          "[MCP Server Error] Error accessing package/model for query"
+        ]
+      ]
+    }
+  },
+  "ConnectionPoolExhaustedError": {
+    "class": "ConnectionPoolExhaustedError",
+    "http": {
+      "status": 502,
+      "json": {
+        "code": 502,
+        "message": "The connection pool is full."
+      },
+      "logged": false,
+      "logs": []
+    },
+    "mcp": {
+      "message": "The connection pool is full.",
+      "suggestions": [
+        "Retry shortly; this clears as other queries on the connection finish.",
+        "If it persists, run fewer queries at once on this connection, or ask the operator to raise PUBLISHER_POSTGRES_POOL_MAX."
+      ],
+      "logs": []
+    },
+    "mcpSetup": {
+      "message": "An unexpected internal error occurred during executeQuery (Setup).: The connection pool is full.",
+      "suggestions": [
+        "Try the request again later.",
+        "If the problem persists, check server logs or contact support."
+      ],
+      "logs": [
+        [
+          "error",
+          "[MCP Server Error] Error accessing package/model for query"
+        ]
+      ]
+    }
+  },
+  "DestinationNotFoundError": {
+    "class": "DestinationNotFoundError",
+    "http": {
+      "status": 422,
+      "json": {
+        "code": 422,
+        "message": "No destination named warehouse"
+      },
+      "logged": false,
+      "logs": []
+    },
+    "mcp": {
+      "message": "An unexpected internal error occurred during executeQuery.: No destination named warehouse",
+      "suggestions": [
+        "Try the request again later.",
+        "If the problem persists, check server logs or contact support."
+      ],
+      "logs": []
+    },
+    "mcpSetup": {
+      "message": "An unexpected internal error occurred during executeQuery (Setup).: No destination named warehouse",
+      "suggestions": [
+        "Try the request again later.",
+        "If the problem persists, check server logs or contact support."
+      ],
+      "logs": [
+        [
+          "error",
+          "[MCP Server Error] Error accessing package/model for query"
+        ]
+      ]
+    }
+  },
+  "StorageDestinationNotFoundError": {
+    "class": "StorageDestinationNotFoundError",
+    "http": {
+      "status": 404,
+      "json": {
+        "code": 404,
+        "message": "No storage destination"
+      },
+      "logged": false,
+      "logs": []
+    },
+    "mcp": {
+      "message": "An unexpected internal error occurred during executeQuery.: No storage destination",
+      "suggestions": [
+        "Try the request again later.",
+        "If the problem persists, check server logs or contact support."
+      ],
+      "logs": []
+    },
+    "mcpSetup": {
+      "message": "An unexpected internal error occurred during executeQuery (Setup).: No storage destination",
+      "suggestions": [
+        "Try the request again later.",
+        "If the problem persists, check server logs or contact support."
+      ],
+      "logs": [
+        [
+          "error",
+          "[MCP Server Error] Error accessing package/model for query"
+        ]
+      ]
+    }
+  },
+  "StorageCatalogNotFoundError": {
+    "class": "StorageCatalogNotFoundError",
+    "http": {
+      "status": 404,
+      "json": {
+        "code": 404,
+        "message": "No storage catalog"
+      },
+      "logged": false,
+      "logs": []
+    },
+    "mcp": {
+      "message": "An unexpected internal error occurred during executeQuery.: No storage catalog",
+      "suggestions": [
+        "Try the request again later.",
+        "If the problem persists, check server logs or contact support."
+      ],
+      "logs": []
+    },
+    "mcpSetup": {
+      "message": "An unexpected internal error occurred during executeQuery (Setup).: No storage catalog",
+      "suggestions": [
+        "Try the request again later.",
+        "If the problem persists, check server logs or contact support."
+      ],
+      "logs": [
+        [
+          "error",
+          "[MCP Server Error] Error accessing package/model for query"
+        ]
+      ]
+    }
+  },
+  "ConnectionAuthError": {
+    "class": "ConnectionAuthError",
+    "http": {
+      "status": 424,
+      "json": {
+        "code": 424,
+        "message": "The database rejected the connection's credentials. Check the connection's user, password, key or token.",
+        "reason": "CONNECTION_AUTH_FAILED"
+      },
+      "logged": true,
+      "logs": [
+        [
+          "warn",
+          "Connection credentials rejected"
+        ]
+      ]
+    },
+    "mcp": {
+      "message": "The database rejected the connection's credentials for env/pkg/m.malloy. The query never ran.",
+      "suggestions": [
+        "The query and the model are fine. Do not rewrite them, and do not retry: it fails the same way until the credentials are fixed.",
+        "Report that the connection's user, password, key or token needs updating."
+      ],
+      "logs": [
+        [
+          "warn",
+          "Connection credentials rejected during executeQuery"
+        ]
+      ]
+    },
+    "mcpSetup": {
+      "message": "An unexpected internal error occurred during executeQuery (Setup).: password authentication failed for user \"analytics\"",
+      "suggestions": [
+        "Try the request again later.",
+        "If the problem persists, check server logs or contact support."
+      ],
+      "logs": [
+        [
+          "error",
+          "[MCP Server Error] Error accessing package/model for query"
+        ]
+      ]
+    }
+  },
+  "UnsupportedCatalogFormatError": {
+    "class": "UnsupportedCatalogFormatError",
+    "http": {
+      "status": 422,
+      "json": {
+        "code": 422,
+        "message": "iceberg is not supported"
+      },
+      "logged": false,
+      "logs": []
+    },
+    "mcp": {
+      "message": "An unexpected internal error occurred during executeQuery.: iceberg is not supported",
+      "suggestions": [
+        "Try the request again later.",
+        "If the problem persists, check server logs or contact support."
+      ],
+      "logs": []
+    },
+    "mcpSetup": {
+      "message": "An unexpected internal error occurred during executeQuery (Setup).: iceberg is not supported",
+      "suggestions": [
+        "Try the request again later.",
+        "If the problem persists, check server logs or contact support."
+      ],
+      "logs": [
+        [
+          "error",
+          "[MCP Server Error] Error accessing package/model for query"
+        ]
+      ]
+    }
+  },
+  "ModelCompilationError": {
+    "class": "ModelCompilationError",
+    "http": {
+      "status": 424,
+      "json": {
+        "code": 424,
+        "message": "model does not compile"
+      },
+      "logged": false,
+      "logs": []
+    },
+    "mcp": {
+      "message": "Error during executeQuery for resource 'env/pkg/m.malloy': model does not compile",
+      "suggestions": [
+        "Verify the structure and syntax within the Malloy file: env/pkg/m.malloy. Check for typos in source, query, or view names (e.g., 'source: my_source is ...', 'query: my_query is ...', 'view: my_view is { ... }'). See Model Structure: https://docs.malloydata.dev/documentation/language/statement",
+        "Ensure all referenced sources, queries, or views are correctly defined within the model or imported files using expected keywords (e.g., 'source:', 'query:', 'view:'). See Sources: https://docs.malloydata.dev/documentation/language/source",
+        "Check the database connection configuration used by the model, if applicable.",
+        "Consult the Malloy language documentation for syntax rules: https://docs.malloydata.dev/documentation/"
+      ],
+      "logs": []
+    },
+    "mcpSetup": {
+      "message": "Error during executeQuery (load model) for resource 'env/pkg/m.malloy': model does not compile",
+      "suggestions": [
+        "Verify the structure and syntax within the Malloy file: env/pkg/m.malloy. Check for typos in source, query, or view names (e.g., 'source: my_source is ...', 'query: my_query is ...', 'view: my_view is { ... }'). See Model Structure: https://docs.malloydata.dev/documentation/language/statement",
+        "Ensure all referenced sources, queries, or views are correctly defined within the model or imported files using expected keywords (e.g., 'source:', 'query:', 'view:'). See Sources: https://docs.malloydata.dev/documentation/language/source",
+        "Check the database connection configuration used by the model, if applicable.",
+        "Consult the Malloy language documentation for syntax rules: https://docs.malloydata.dev/documentation/"
+      ],
+      "logs": [
+        [
+          "warn",
+          "[MCP Tool executeQuery] model setup refused"
+        ]
+      ]
+    }
+  },
+  "VersionFilesMissingError": {
+    "class": "VersionFilesMissingError",
+    "http": {
+      "status": 424,
+      "json": {
+        "code": 424,
+        "message": "version files are missing"
+      },
+      "logged": false,
+      "logs": []
+    },
+    "mcp": {
+      "message": "An unexpected internal error occurred during executeQuery.: version files are missing",
+      "suggestions": [
+        "Try the request again later.",
+        "If the problem persists, check server logs or contact support."
+      ],
+      "logs": []
+    },
+    "mcpSetup": {
+      "message": "An unexpected internal error occurred during executeQuery (Setup).: version files are missing",
+      "suggestions": [
+        "Try the request again later.",
+        "If the problem persists, check server logs or contact support."
+      ],
+      "logs": [
+        [
+          "error",
+          "[MCP Server Error] Error accessing package/model for query"
+        ]
+      ]
+    }
+  },
+  "PackageManifestError": {
+    "class": "PackageManifestError",
+    "http": {
+      "status": 424,
+      "json": {
+        "code": 424,
+        "message": "publisher.json: version is not semver"
+      },
+      "logged": false,
+      "logs": []
+    },
+    "mcp": {
+      "message": "publisher.json: version is not semver",
+      "suggestions": [
+        "This is not transient. The package's publisher.json is invalid, so retrying fails the same way until the file is fixed.",
+        "Fix the field the message names in publisher.json, then call reload_package."
+      ],
+      "logs": []
+    },
+    "mcpSetup": {
+      "message": "publisher.json: version is not semver",
+      "suggestions": [
+        "This is not transient. The package's publisher.json is invalid, so retrying fails the same way until the file is fixed.",
+        "Fix the field the message names in publisher.json, then call reload_package."
+      ],
+      "logs": [
+        [
+          "warn",
+          "[MCP Tool executeQuery] model setup refused"
+        ]
+      ]
+    }
+  },
+  "MaterializationEligibilityError": {
+    "class": "MaterializationEligibilityError",
+    "http": {
+      "status": 422,
+      "json": {
+        "code": 422,
+        "message": "source reads a given"
+      },
+      "logged": false,
+      "logs": []
+    },
+    "mcp": {
+      "message": "An unexpected internal error occurred during executeQuery.: source reads a given",
+      "suggestions": [
+        "Try the request again later.",
+        "If the problem persists, check server logs or contact support."
+      ],
+      "logs": []
+    },
+    "mcpSetup": {
+      "message": "An unexpected internal error occurred during executeQuery (Setup).: source reads a given",
+      "suggestions": [
+        "Try the request again later.",
+        "If the problem persists, check server logs or contact support."
+      ],
+      "logs": [
+        [
+          "error",
+          "[MCP Server Error] Error accessing package/model for query"
+        ]
+      ]
+    }
+  },
+  "ChainedUpstreamMissingError": {
+    "class": "ChainedUpstreamMissingError",
+    "http": {
+      "status": 500,
+      "json": {
+        "code": 500,
+        "message": "Internal server error."
+      },
+      "logged": true,
+      "logs": [
+        [
+          "error",
+          "Unhandled internal error"
+        ]
+      ]
+    },
+    "mcp": {
+      "message": "An unexpected internal error occurred during executeQuery.: upstream orders missing",
+      "suggestions": [
+        "Try the request again later.",
+        "If the problem persists, check server logs or contact support."
+      ],
+      "logs": []
+    },
+    "mcpSetup": {
+      "message": "An unexpected internal error occurred during executeQuery (Setup).: upstream orders missing",
+      "suggestions": [
+        "Try the request again later.",
+        "If the problem persists, check server logs or contact support."
+      ],
+      "logs": [
+        [
+          "error",
+          "[MCP Server Error] Error accessing package/model for query"
+        ]
+      ]
+    }
+  },
+  "ChainedShapeNotCarriedError": {
+    "class": "ChainedShapeNotCarriedError",
+    "http": {
+      "status": 500,
+      "json": {
+        "code": 500,
+        "message": "Internal server error."
+      },
+      "logged": true,
+      "logs": [
+        [
+          "error",
+          "Unhandled internal error"
+        ]
+      ]
+    },
+    "mcp": {
+      "message": "An unexpected internal error occurred during executeQuery.: shape not carried",
+      "suggestions": [
+        "Try the request again later.",
+        "If the problem persists, check server logs or contact support."
+      ],
+      "logs": []
+    },
+    "mcpSetup": {
+      "message": "An unexpected internal error occurred during executeQuery (Setup).: shape not carried",
+      "suggestions": [
+        "Try the request again later.",
+        "If the problem persists, check server logs or contact support."
+      ],
+      "logs": [
+        [
+          "error",
+          "[MCP Server Error] Error accessing package/model for query"
+        ]
+      ]
+    }
+  },
+  "PublisherConfigError": {
+    "class": "PublisherConfigError",
+    "http": {
+      "status": 500,
+      "json": {
+        "code": 500,
+        "message": "Internal server error."
+      },
+      "logged": true,
+      "logs": [
+        [
+          "error",
+          "Unhandled internal error"
+        ]
+      ]
+    },
+    "mcp": {
+      "message": "An unexpected internal error occurred during executeQuery.: Could not read publisher.config.json: Unexpected token } in JSON. Fix the file, or move it aside to fall back to the bundled default.",
+      "suggestions": [
+        "Try the request again later.",
+        "If the problem persists, check server logs or contact support."
+      ],
+      "logs": []
+    },
+    "mcpSetup": {
+      "message": "An unexpected internal error occurred during executeQuery (Setup).: Could not read publisher.config.json: Unexpected token } in JSON. Fix the file, or move it aside to fall back to the bundled default.",
+      "suggestions": [
+        "Try the request again later.",
+        "If the problem persists, check server logs or contact support."
+      ],
+      "logs": [
+        [
+          "error",
+          "[MCP Server Error] Error accessing package/model for query"
+        ]
+      ]
+    }
+  },
+  "ServerConfigurationError": {
+    "class": "ServerConfigurationError",
+    "http": {
+      "status": 500,
+      "json": {
+        "code": 500,
+        "message": "credentials path is a directory"
+      },
+      "logged": true,
+      "logs": [
+        [
+          "warn",
+          "Server configuration error"
+        ]
+      ]
+    },
+    "mcp": {
+      "message": "An unexpected internal error occurred during executeQuery.: credentials path is a directory",
+      "suggestions": [
+        "Try the request again later.",
+        "If the problem persists, check server logs or contact support."
+      ],
+      "logs": []
+    },
+    "mcpSetup": {
+      "message": "An unexpected internal error occurred during executeQuery (Setup).: credentials path is a directory",
+      "suggestions": [
+        "Try the request again later.",
+        "If the problem persists, check server logs or contact support."
+      ],
+      "logs": [
+        [
+          "error",
+          "[MCP Server Error] Error accessing package/model for query"
+        ]
+      ]
+    }
+  },
+  "FrozenConfigError": {
+    "class": "FrozenConfigError",
+    "http": {
+      "status": 403,
+      "json": {
+        "code": 403,
+        "message": "Publisher config can't be updated when publisher.config.json has { \"frozenConfig\": true }"
+      },
+      "logged": false,
+      "logs": []
+    },
+    "mcp": {
+      "message": "An unexpected internal error occurred during executeQuery.: Publisher config can't be updated when publisher.config.json has { \"frozenConfig\": true }",
+      "suggestions": [
+        "Try the request again later.",
+        "If the problem persists, check server logs or contact support."
+      ],
+      "logs": []
+    },
+    "mcpSetup": {
+      "message": "An unexpected internal error occurred during executeQuery (Setup).: Publisher config can't be updated when publisher.config.json has { \"frozenConfig\": true }",
+      "suggestions": [
+        "Try the request again later.",
+        "If the problem persists, check server logs or contact support."
+      ],
+      "logs": [
+        [
+          "error",
+          "[MCP Server Error] Error accessing package/model for query"
+        ]
+      ]
+    }
+  },
+  "AccessDeniedError": {
+    "class": "AccessDeniedError",
+    "http": {
+      "status": 403,
+      "json": {
+        "code": 403,
+        "message": "access refused"
+      },
+      "logged": false,
+      "logs": []
+    },
+    "mcp": {
+      "message": "Error during executeQuery for resource 'env/pkg/m.malloy': access refused",
+      "suggestions": [
+        "Verify the structure and syntax within the Malloy file: env/pkg/m.malloy. Check for typos in source, query, or view names (e.g., 'source: my_source is ...', 'query: my_query is ...', 'view: my_view is { ... }'). See Model Structure: https://docs.malloydata.dev/documentation/language/statement",
+        "Ensure all referenced sources, queries, or views are correctly defined within the model or imported files using expected keywords (e.g., 'source:', 'query:', 'view:'). See Sources: https://docs.malloydata.dev/documentation/language/source",
+        "Check the database connection configuration used by the model, if applicable.",
+        "Consult the Malloy language documentation for syntax rules: https://docs.malloydata.dev/documentation/"
+      ],
+      "logs": []
+    },
+    "mcpSetup": {
+      "message": "Error during executeQuery (load model) for resource 'env/pkg/m.malloy': access refused",
+      "suggestions": [
+        "Verify the structure and syntax within the Malloy file: env/pkg/m.malloy. Check for typos in source, query, or view names (e.g., 'source: my_source is ...', 'query: my_query is ...', 'view: my_view is { ... }'). See Model Structure: https://docs.malloydata.dev/documentation/language/statement",
+        "Ensure all referenced sources, queries, or views are correctly defined within the model or imported files using expected keywords (e.g., 'source:', 'query:', 'view:'). See Sources: https://docs.malloydata.dev/documentation/language/source",
+        "Check the database connection configuration used by the model, if applicable.",
+        "Consult the Malloy language documentation for syntax rules: https://docs.malloydata.dev/documentation/"
+      ],
+      "logs": [
+        [
+          "warn",
+          "[MCP Tool executeQuery] model setup refused"
+        ]
+      ]
+    }
+  },
+  "AccessDeniedError authorize denial": {
+    "class": "AccessDeniedError",
+    "http": {
+      "status": 403,
+      "json": {
+        "code": 403,
+        "message": "Access denied for source \"orders\": its authorize gate was not satisfied."
+      },
+      "logged": false,
+      "logs": []
+    },
+    "mcp": {
+      "message": "Error during executeQuery for resource 'env/pkg/m.malloy': Access denied for source \"orders\": its authorize gate was not satisfied.",
+      "suggestions": [
+        "Suggestion: Access to source 'orders' is restricted by an authorize gate. Supply the givens its authorize expression requires (e.g. a role/region given) and retry. This is an authorization denial, not a syntax error."
+      ],
+      "logs": []
+    },
+    "mcpSetup": {
+      "message": "Error during executeQuery (load model) for resource 'env/pkg/m.malloy': Access denied for source \"orders\": its authorize gate was not satisfied.",
+      "suggestions": [
+        "Suggestion: Access to source 'orders' is restricted by an authorize gate. Supply the givens its authorize expression requires (e.g. a role/region given) and retry. This is an authorization denial, not a syntax error."
+      ],
+      "logs": [
+        [
+          "warn",
+          "[MCP Tool executeQuery] model setup refused"
+        ]
+      ]
+    }
+  },
+  "QueryCompileError": {
+    "class": "QueryCompileError",
+    "http": {
+      "status": 400,
+      "json": {
+        "code": 400,
+        "message": "query does not compile",
+        "problems": [
+          {
+            "message": "'revenu' is not defined",
+            "severity": "error",
+            "code": "field-not-found",
+            "at": {
+              "range": {
+                "start": {
+                  "line": 0,
+                  "character": 6
+                },
+                "end": {
+                  "line": 0,
+                  "character": 12
+                }
+              }
+            }
+          }
+        ]
+      },
+      "logged": false,
+      "logs": []
+    },
+    "mcp": {
+      "message": "Error during executeQuery for resource 'env/pkg/m.malloy': query does not compile",
+      "suggestions": [
+        "Verify the structure and syntax within the Malloy file: env/pkg/m.malloy. Check for typos in source, query, or view names (e.g., 'source: my_source is ...', 'query: my_query is ...', 'view: my_view is { ... }'). See Model Structure: https://docs.malloydata.dev/documentation/language/statement",
+        "Ensure all referenced sources, queries, or views are correctly defined within the model or imported files using expected keywords (e.g., 'source:', 'query:', 'view:'). See Sources: https://docs.malloydata.dev/documentation/language/source",
+        "Check the database connection configuration used by the model, if applicable.",
+        "Consult the Malloy language documentation for syntax rules: https://docs.malloydata.dev/documentation/"
+      ],
+      "logs": []
+    },
+    "mcpSetup": {
+      "message": "An unexpected internal error occurred during executeQuery (Setup).: query does not compile",
+      "suggestions": [
+        "Try the request again later.",
+        "If the problem persists, check server logs or contact support."
+      ],
+      "logs": [
+        [
+          "error",
+          "[MCP Server Error] Error accessing package/model for query"
+        ]
+      ]
+    }
+  },
+  "QueryCompileError restricted": {
+    "class": "QueryCompileError",
+    "http": {
+      "status": 400,
+      "json": {
+        "code": 400,
+        "message": "query does not compile",
+        "problems": [
+          {
+            "message": "import statements cannot be used in a restricted query",
+            "severity": "error",
+            "code": "restricted-construct-forbidden",
+            "at": {
+              "range": {
+                "start": {
+                  "line": 0,
+                  "character": 6
+                },
+                "end": {
+                  "line": 0,
+                  "character": 12
+                }
+              }
+            }
+          },
+          {
+            "message": "'x' is not defined",
+            "severity": "error",
+            "code": "field-not-found",
+            "at": {
+              "range": {
+                "start": {
+                  "line": 0,
+                  "character": 6
+                },
+                "end": {
+                  "line": 0,
+                  "character": 12
+                }
+              }
+            }
+          }
+        ]
+      },
+      "logged": false,
+      "logs": []
+    },
+    "mcp": {
+      "message": "Error during executeQuery for resource 'env/pkg/m.malloy': import statements cannot be used in a restricted query",
+      "suggestions": [
+        "Suggestion: This query ran in restricted mode: ad-hoc query text may not use raw SQL (duckdb.sql(...) / connection.sql(...)), direct SQL function calls (name!type(...)), the sql_* function family (sql_number, sql_string, sql_date, sql_timestamp, sql_boolean), import statements, ##! flags, or new sources from connection.table(...). These constructs ARE allowed in the package's model files (.malloy): add the definition to a model file, validate it with compile_model, save, call reload_package, then query the new source or view by name. Any other diagnostics this compile produced are fallout from the refused construct, not separate problems."
+      ],
+      "logs": []
+    },
+    "mcpSetup": {
+      "message": "An unexpected internal error occurred during executeQuery (Setup).: query does not compile",
+      "suggestions": [
+        "Try the request again later.",
+        "If the problem persists, check server logs or contact support."
+      ],
+      "logs": [
+        [
+          "error",
+          "[MCP Server Error] Error accessing package/model for query"
+        ]
+      ]
+    }
+  },
+  "NotQueryableError": {
+    "class": "NotQueryableError",
+    "http": {
+      "status": 404,
+      "json": {
+        "code": 404,
+        "message": "No queryable source named orders"
+      },
+      "logged": false,
+      "logs": []
+    },
+    "mcp": {
+      "message": "Resource not found: env/pkg/m.malloy",
+      "suggestions": [
+        "Verify the identifier (env/pkg/m.malloy) is spelled correctly and exists. Check capitalization and path separators.",
+        "Check if the resource exists and is correctly named in your Malloy environment structure or the specific model file."
+      ],
+      "logs": []
+    },
+    "mcpSetup": {
+      "message": "An unexpected internal error occurred during executeQuery (Setup).: No queryable source named orders",
+      "suggestions": [
+        "Try the request again later.",
+        "If the problem persists, check server logs or contact support."
+      ],
+      "logs": [
+        [
+          "error",
+          "[MCP Server Error] Error accessing package/model for query"
+        ]
+      ]
+    }
+  },
+  "OffSurfaceError": {
+    "class": "OffSurfaceError",
+    "http": {
+      "status": 404,
+      "json": {
+        "code": 404,
+        "message": "Model staging.malloy is not published by this package."
+      },
+      "logged": false,
+      "logs": []
+    },
+    "mcp": {
+      "message": "Model staging.malloy is not published by this package.",
+      "suggestions": [
+        "This is curation, not a typo: the name is real and the package does not publish it. Retrying with a different spelling will not help.",
+        "To query what IS published, call get_context for this package and use the model_path it returns, verbatim."
+      ],
+      "logs": []
+    },
+    "mcpSetup": {
+      "message": "Model staging.malloy is not published by this package.",
+      "suggestions": [
+        "This is curation, not a typo: the name is real and the package does not publish it. Retrying with a different spelling will not help.",
+        "To query what IS published, call get_context for this package and use the model_path it returns, verbatim."
+      ],
+      "logs": [
+        [
+          "warn",
+          "[MCP Tool executeQuery] model setup refused"
+        ]
+      ]
+    }
+  },
+  "MaterializationNotFoundError": {
+    "class": "MaterializationNotFoundError",
+    "http": {
+      "status": 404,
+      "json": {
+        "code": 404,
+        "message": "No materialization m1"
+      },
+      "logged": false,
+      "logs": []
+    },
+    "mcp": {
+      "message": "An unexpected internal error occurred during executeQuery.: No materialization m1",
+      "suggestions": [
+        "Try the request again later.",
+        "If the problem persists, check server logs or contact support."
+      ],
+      "logs": []
+    },
+    "mcpSetup": {
+      "message": "An unexpected internal error occurred during executeQuery (Setup).: No materialization m1",
+      "suggestions": [
+        "Try the request again later.",
+        "If the problem persists, check server logs or contact support."
+      ],
+      "logs": [
+        [
+          "error",
+          "[MCP Server Error] Error accessing package/model for query"
+        ]
+      ]
+    }
+  },
+  "MaterializationConflictError": {
+    "class": "MaterializationConflictError",
+    "http": {
+      "status": 409,
+      "json": {
+        "code": 409,
+        "message": "a build is running"
+      },
+      "logged": false,
+      "logs": []
+    },
+    "mcp": {
+      "message": "An unexpected internal error occurred during executeQuery.: a build is running",
+      "suggestions": [
+        "Try the request again later.",
+        "If the problem persists, check server logs or contact support."
+      ],
+      "logs": []
+    },
+    "mcpSetup": {
+      "message": "An unexpected internal error occurred during executeQuery (Setup).: a build is running",
+      "suggestions": [
+        "Try the request again later.",
+        "If the problem persists, check server logs or contact support."
+      ],
+      "logs": [
+        [
+          "error",
+          "[MCP Server Error] Error accessing package/model for query"
+        ]
+      ]
+    }
+  },
+  "WriteConflictError": {
+    "class": "WriteConflictError",
+    "http": {
+      "status": 409,
+      "json": {
+        "code": 409,
+        "message": "file changed"
+      },
+      "logged": false,
+      "logs": []
+    },
+    "mcp": {
+      "message": "An unexpected internal error occurred during executeQuery.: file changed",
+      "suggestions": [
+        "Try the request again later.",
+        "If the problem persists, check server logs or contact support."
+      ],
+      "logs": []
+    },
+    "mcpSetup": {
+      "message": "An unexpected internal error occurred during executeQuery (Setup).: file changed",
+      "suggestions": [
+        "Try the request again later.",
+        "If the problem persists, check server logs or contact support."
+      ],
+      "logs": [
+        [
+          "error",
+          "[MCP Server Error] Error accessing package/model for query"
+        ]
+      ]
+    }
+  },
+  "WriteRolledBackError": {
+    "class": "WriteRolledBackError",
+    "http": {
+      "status": 500,
+      "json": {
+        "code": 500,
+        "message": "the reload failed; restored"
+      },
+      "logged": false,
+      "logs": []
+    },
+    "mcp": {
+      "message": "An unexpected internal error occurred during executeQuery.: the reload failed; restored",
+      "suggestions": [
+        "Try the request again later.",
+        "If the problem persists, check server logs or contact support."
+      ],
+      "logs": []
+    },
+    "mcpSetup": {
+      "message": "An unexpected internal error occurred during executeQuery (Setup).: the reload failed; restored",
+      "suggestions": [
+        "Try the request again later.",
+        "If the problem persists, check server logs or contact support."
+      ],
+      "logs": [
+        [
+          "error",
+          "[MCP Server Error] Error accessing package/model for query"
+        ]
+      ]
+    }
+  },
+  "WriteRollbackFailedError": {
+    "class": "WriteRollbackFailedError",
+    "http": {
+      "status": 500,
+      "json": {
+        "code": 500,
+        "message": "the restore failed"
+      },
+      "logged": false,
+      "logs": []
+    },
+    "mcp": {
+      "message": "An unexpected internal error occurred during executeQuery.: the restore failed",
+      "suggestions": [
+        "Try the request again later.",
+        "If the problem persists, check server logs or contact support."
+      ],
+      "logs": []
+    },
+    "mcpSetup": {
+      "message": "An unexpected internal error occurred during executeQuery (Setup).: the restore failed",
+      "suggestions": [
+        "Try the request again later.",
+        "If the problem persists, check server logs or contact support."
+      ],
+      "logs": [
+        [
+          "error",
+          "[MCP Server Error] Error accessing package/model for query"
+        ]
+      ]
+    }
+  },
+  "WriteVerifyError": {
+    "class": "WriteVerifyError",
+    "http": {
+      "status": 500,
+      "json": {
+        "code": 500,
+        "message": "Internal server error."
+      },
+      "logged": true,
+      "logs": [
+        [
+          "error",
+          "Unhandled internal error"
+        ]
+      ]
+    },
+    "mcp": {
+      "message": "An unexpected internal error occurred during executeQuery.: written text differs",
+      "suggestions": [
+        "Try the request again later.",
+        "If the problem persists, check server logs or contact support."
+      ],
+      "logs": []
+    },
+    "mcpSetup": {
+      "message": "An unexpected internal error occurred during executeQuery (Setup).: written text differs",
+      "suggestions": [
+        "Try the request again later.",
+        "If the problem persists, check server logs or contact support."
+      ],
+      "logs": [
+        [
+          "error",
+          "[MCP Server Error] Error accessing package/model for query"
+        ]
+      ]
+    }
+  },
+  "InvalidStateTransitionError": {
+    "class": "InvalidStateTransitionError",
+    "http": {
+      "status": 409,
+      "json": {
+        "code": 409,
+        "message": "cannot go from built to pending"
+      },
+      "logged": false,
+      "logs": []
+    },
+    "mcp": {
+      "message": "An unexpected internal error occurred during executeQuery.: cannot go from built to pending",
+      "suggestions": [
+        "Try the request again later.",
+        "If the problem persists, check server logs or contact support."
+      ],
+      "logs": []
+    },
+    "mcpSetup": {
+      "message": "An unexpected internal error occurred during executeQuery (Setup).: cannot go from built to pending",
+      "suggestions": [
+        "Try the request again later.",
+        "If the problem persists, check server logs or contact support."
+      ],
+      "logs": [
+        [
+          "error",
+          "[MCP Server Error] Error accessing package/model for query"
+        ]
+      ]
+    }
+  },
+  "ServiceUnavailableError": {
+    "class": "ServiceUnavailableError",
+    "http": {
+      "status": 503,
+      "json": {
+        "code": 503,
+        "message": "memory limit reached"
+      },
+      "logged": false,
+      "logs": []
+    },
+    "mcp": {
+      "message": "memory limit reached",
+      "suggestions": [
+        "Retry once the publisher is below its configured memory or concurrency limit.",
+        "If this persists, raise the limit or scale up the pod."
+      ],
+      "logs": []
+    },
+    "mcpSetup": {
+      "message": "memory limit reached",
+      "suggestions": [
+        "Retry once the publisher is below its configured memory or concurrency limit.",
+        "If this persists, raise the limit or scale up the pod."
+      ],
+      "logs": [
+        [
+          "warn",
+          "[MCP Tool executeQuery] model setup refused"
+        ]
+      ]
+    }
+  },
+  "PackageAdmissionRefusedError": {
+    "class": "PackageAdmissionRefusedError",
+    "http": {
+      "status": 503,
+      "json": {
+        "code": 503,
+        "message": "package load refused"
+      },
+      "logged": false,
+      "logs": []
+    },
+    "mcp": {
+      "message": "package load refused",
+      "suggestions": [
+        "Retry once the publisher is below its configured memory or concurrency limit.",
+        "If this persists, raise the limit or scale up the pod."
+      ],
+      "logs": []
+    },
+    "mcpSetup": {
+      "message": "package load refused",
+      "suggestions": [
+        "Retry once the publisher is below its configured memory or concurrency limit.",
+        "If this persists, raise the limit or scale up the pod."
+      ],
+      "logs": [
+        [
+          "warn",
+          "[MCP Tool executeQuery] model setup refused"
+        ]
+      ]
+    }
+  },
+  "DryRunCapacityError": {
+    "class": "DryRunCapacityError",
+    "http": {
+      "status": 503,
+      "json": {
+        "code": 503,
+        "message": "dry-run capacity reached"
+      },
+      "logged": false,
+      "logs": []
+    },
+    "mcp": {
+      "message": "dry-run capacity reached",
+      "suggestions": [
+        "Retry once the publisher is below its configured memory or concurrency limit.",
+        "If this persists, raise the limit or scale up the pod."
+      ],
+      "logs": []
+    },
+    "mcpSetup": {
+      "message": "dry-run capacity reached",
+      "suggestions": [
+        "Retry once the publisher is below its configured memory or concurrency limit.",
+        "If this persists, raise the limit or scale up the pod."
+      ],
+      "logs": [
+        [
+          "warn",
+          "[MCP Tool executeQuery] model setup refused"
+        ]
+      ]
+    }
+  },
+  "PayloadTooLargeError": {
+    "class": "PayloadTooLargeError",
+    "http": {
+      "status": 413,
+      "json": {
+        "code": 413,
+        "message": "result exceeds the byte cap"
+      },
+      "logged": false,
+      "logs": []
+    },
+    "mcp": {
+      "message": "result exceeds the byte cap",
+      "suggestions": [
+        "This is not transient. The same query will fail the same way, so change the query rather than retrying it.",
+        "If it is already minimal, raise the configured cap named in the message."
+      ],
+      "logs": []
+    },
+    "mcpSetup": {
+      "message": "An unexpected internal error occurred during executeQuery (Setup).: result exceeds the byte cap",
+      "suggestions": [
+        "Try the request again later.",
+        "If the problem persists, check server logs or contact support."
+      ],
+      "logs": [
+        [
+          "error",
+          "[MCP Server Error] Error accessing package/model for query"
+        ]
+      ]
+    }
+  },
+  "ResponseUnserializableError": {
+    "class": "ResponseUnserializableError",
+    "http": {
+      "status": 413,
+      "json": {
+        "code": 413,
+        "message": "result cannot be serialized"
+      },
+      "logged": false,
+      "logs": []
+    },
+    "mcp": {
+      "message": "result cannot be serialized",
+      "suggestions": [
+        "This is not transient. The same query will fail the same way, so change the query rather than retrying it.",
+        "Raising the byte cap will not help, because the response cannot be serialized at any cap. Shrink it instead: project fewer columns, add a LIMIT, or filter out the wide values."
+      ],
+      "logs": []
+    },
+    "mcpSetup": {
+      "message": "An unexpected internal error occurred during executeQuery (Setup).: result cannot be serialized",
+      "suggestions": [
+        "Try the request again later.",
+        "If the problem persists, check server logs or contact support."
+      ],
+      "logs": [
+        [
+          "error",
+          "[MCP Server Error] Error accessing package/model for query"
+        ]
+      ]
+    }
+  },
+  "QueryTimeoutError": {
+    "class": "QueryTimeoutError",
+    "http": {
+      "status": 504,
+      "json": {
+        "code": 504,
+        "message": "query timed out"
+      },
+      "logged": false,
+      "logs": []
+    },
+    "mcp": {
+      "message": "query timed out",
+      "suggestions": [
+        "This is not transient. The same query will fail the same way, so change the query rather than retrying it.",
+        "If it is already minimal, raise the configured cap named in the message."
+      ],
+      "logs": []
+    },
+    "mcpSetup": {
+      "message": "An unexpected internal error occurred during executeQuery (Setup).: query timed out",
+      "suggestions": [
+        "Try the request again later.",
+        "If the problem persists, check server logs or contact support."
+      ],
+      "logs": [
+        [
+          "error",
+          "[MCP Server Error] Error accessing package/model for query"
+        ]
+      ]
+    }
+  },
+  "AuthorizeGrammarError (service/authorize_grammar.ts)": {
+    "class": "AuthorizeGrammarError",
+    "http": {
+      "status": 424,
+      "json": {
+        "code": 424,
+        "message": "authorize: or"
+      },
+      "logged": false,
+      "logs": []
+    },
+    "mcp": {
+      "message": "Error during executeQuery for resource 'env/pkg/m.malloy': authorize: or",
+      "suggestions": [
+        "Verify the structure and syntax within the Malloy file: env/pkg/m.malloy. Check for typos in source, query, or view names (e.g., 'source: my_source is ...', 'query: my_query is ...', 'view: my_view is { ... }'). See Model Structure: https://docs.malloydata.dev/documentation/language/statement",
+        "Ensure all referenced sources, queries, or views are correctly defined within the model or imported files using expected keywords (e.g., 'source:', 'query:', 'view:'). See Sources: https://docs.malloydata.dev/documentation/language/source",
+        "Check the database connection configuration used by the model, if applicable.",
+        "Consult the Malloy language documentation for syntax rules: https://docs.malloydata.dev/documentation/"
+      ],
+      "logs": []
+    },
+    "mcpSetup": {
+      "message": "Error during executeQuery (load model) for resource 'env/pkg/m.malloy': authorize: or",
+      "suggestions": [
+        "Verify the structure and syntax within the Malloy file: env/pkg/m.malloy. Check for typos in source, query, or view names (e.g., 'source: my_source is ...', 'query: my_query is ...', 'view: my_view is { ... }'). See Model Structure: https://docs.malloydata.dev/documentation/language/statement",
+        "Ensure all referenced sources, queries, or views are correctly defined within the model or imported files using expected keywords (e.g., 'source:', 'query:', 'view:'). See Sources: https://docs.malloydata.dev/documentation/language/source",
+        "Check the database connection configuration used by the model, if applicable.",
+        "Consult the Malloy language documentation for syntax rules: https://docs.malloydata.dev/documentation/"
+      ],
+      "logs": [
+        [
+          "warn",
+          "[MCP Tool executeQuery] model setup refused"
+        ]
+      ]
+    }
+  },
+  "MalloyError": {
+    "class": "MalloyError",
+    "http": {
+      "status": 400,
+      "json": {
+        "code": 400,
+        "message": "model error"
+      },
+      "logged": false,
+      "logs": []
+    },
+    "mcp": {
+      "message": "Error during executeQuery for resource 'env/pkg/m.malloy': model error",
+      "suggestions": [
+        "Verify the structure and syntax within the Malloy file: env/pkg/m.malloy. Check for typos in source, query, or view names (e.g., 'source: my_source is ...', 'query: my_query is ...', 'view: my_view is { ... }'). See Model Structure: https://docs.malloydata.dev/documentation/language/statement",
+        "Ensure all referenced sources, queries, or views are correctly defined within the model or imported files using expected keywords (e.g., 'source:', 'query:', 'view:'). See Sources: https://docs.malloydata.dev/documentation/language/source",
+        "Check the database connection configuration used by the model, if applicable.",
+        "Consult the Malloy language documentation for syntax rules: https://docs.malloydata.dev/documentation/"
+      ],
+      "logs": []
+    },
+    "mcpSetup": {
+      "message": "An unexpected internal error occurred during executeQuery (Setup).: model error",
+      "suggestions": [
+        "Try the request again later.",
+        "If the problem persists, check server logs or contact support."
+      ],
+      "logs": [
+        [
+          "error",
+          "[MCP Server Error] Error accessing package/model for query"
+        ]
+      ]
+    }
+  },
+  "Error": {
+    "class": "Error",
+    "http": {
+      "status": 500,
+      "json": {
+        "code": 500,
+        "message": "Internal server error."
+      },
+      "logged": true,
+      "logs": [
+        [
+          "error",
+          "Unhandled internal error"
+        ]
+      ]
+    },
+    "mcp": {
+      "message": "An unexpected internal error occurred during executeQuery.: something broke at /srv/secret/path",
+      "suggestions": [
+        "Try the request again later.",
+        "If the problem persists, check server logs or contact support."
+      ],
+      "logs": []
+    },
+    "mcpSetup": {
+      "message": "An unexpected internal error occurred during executeQuery (Setup).: something broke at /srv/secret/path",
+      "suggestions": [
+        "Try the request again later.",
+        "If the problem persists, check server logs or contact support."
+      ],
+      "logs": [
+        [
+          "error",
+          "[MCP Server Error] Error accessing package/model for query"
+        ]
+      ]
+    }
+  },
+  "Error EACCES": {
+    "class": "Error",
+    "http": {
+      "status": 500,
+      "json": {
+        "code": 500,
+        "message": "The server cannot access a path it needs (EACCES: permission denied, mkdir '/srv/publisher_data/env'). Give the user the server runs as access to it."
+      },
+      "logged": true,
+      "logs": [
+        [
+          "warn",
+          "Filesystem access refused"
+        ]
+      ]
+    },
+    "mcp": {
+      "message": "An unexpected internal error occurred during executeQuery.: EACCES: refused, mkdir '/srv/publisher_data/env'",
+      "suggestions": [
+        "Try the request again later.",
+        "If the problem persists, check server logs or contact support."
+      ],
+      "logs": []
+    },
+    "mcpSetup": {
+      "message": "An unexpected internal error occurred during executeQuery (Setup).: EACCES: refused, mkdir '/srv/publisher_data/env'",
+      "suggestions": [
+        "Try the request again later.",
+        "If the problem persists, check server logs or contact support."
+      ],
+      "logs": [
+        [
+          "error",
+          "[MCP Server Error] Error accessing package/model for query"
+        ]
+      ]
+    }
+  },
+  "body-parser entity.too.large": {
+    "class": "Error",
+    "http": {
+      "status": 413,
+      "json": {
+        "code": 413,
+        "message": "request entity too large"
+      },
+      "logged": false,
+      "logs": []
+    },
+    "mcp": {
+      "message": "An unexpected internal error occurred during executeQuery.: request entity too large",
+      "suggestions": [
+        "Try the request again later.",
+        "If the problem persists, check server logs or contact support."
+      ],
+      "logs": []
+    },
+    "mcpSetup": {
+      "message": "An unexpected internal error occurred during executeQuery (Setup).: request entity too large",
+      "suggestions": [
+        "Try the request again later.",
+        "If the problem persists, check server logs or contact support."
+      ],
+      "logs": [
+        [
+          "error",
+          "[MCP Server Error] Error accessing package/model for query"
+        ]
+      ]
+    }
+  },
+  "non-Error value": {
+    "class": null,
+    "http": null,
+    "mcp": {
+      "message": "An unexpected internal error occurred during executeQuery.: a thrown string",
+      "suggestions": [
+        "Try the request again later.",
+        "If the problem persists, check server logs or contact support."
+      ],
+      "logs": []
+    },
+    "mcpSetup": {
+      "message": "An unexpected internal error occurred during executeQuery (Setup).: a thrown string",
+      "suggestions": [
+        "Try the request again later.",
+        "If the problem persists, check server logs or contact support."
+      ],
+      "logs": [
+        [
+          "error",
+          "[MCP Server Error] Error accessing package/model for query"
+        ]
+      ]
+    }
+  }
+}

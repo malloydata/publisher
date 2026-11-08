@@ -35,14 +35,24 @@
  */
 
 import type { EligibilityRefusalReason } from "../materialization_metrics";
-import type { BuildPlanOutcome } from "../service/build_plan";
+import type { BuildPlanOutcome } from "../service/materialization/plan/build_plan";
 import type { SQLSourceDef, TableSourceDef } from "@malloydata/malloy";
 import type {
    PackageMaterializationConfig,
    PackageScope,
 } from "../service/package_manifest";
-import type { PackageRetrievalSettings } from "../service/package_retrieval";
+import type { PackageRetrievalSettings } from "../service/package_retrieval_settings";
 import type { DeprecatedManifestKey } from "../service/deprecated/manifest_keys";
+
+/**
+ * Version of this wire protocol. The worker stamps it on every
+ * {@link LoadPackageResult}, and the pool refuses a result carrying any other
+ * value (see `checkLoadPackageResult`), so a worker bundle built from another
+ * revision fails its load loudly instead of being hydrated through a blind
+ * cast. Bump it whenever a change to these shapes would make an older or newer
+ * peer misread a message.
+ */
+export const PACKAGE_LOAD_PROTOCOL_VERSION = 1;
 
 // ──────────────────────────────────────────────────────────────────────
 // Direction: main ──▶ worker (load-package job)
@@ -197,6 +207,8 @@ export interface SerializedNotebookCell {
 export interface LoadPackageResult {
    type: "load-package-result";
    requestId: string;
+   /** The sender's {@link PACKAGE_LOAD_PROTOCOL_VERSION}. */
+   protocolVersion: number;
    packageMetadata: {
       name?: string;
       description?: string;

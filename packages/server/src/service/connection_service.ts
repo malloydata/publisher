@@ -6,7 +6,8 @@ import { ConnectionNotFoundError, FrozenConfigError } from "../errors";
 import { logger } from "../logger";
 import { buildEnvironmentMalloyConfig } from "./connection";
 import { mergeConnectionUpdate } from "./connection_public_view";
-import { EnvironmentStore } from "./environment_store";
+import type { ConnectionAdmin } from "./environment_ports";
+import { parseEnvironmentName } from "./identity";
 
 type ApiConnection = components["schemas"]["Connection"];
 type ReleaseCallback = () => Promise<void>;
@@ -67,9 +68,9 @@ function buildDeletedConnectionCleanup(
 }
 
 export class ConnectionService {
-   private environmentStore: EnvironmentStore;
+   private environmentStore: ConnectionAdmin;
 
-   constructor(environmentStore: EnvironmentStore) {
+   constructor(environmentStore: ConnectionAdmin) {
       this.environmentStore = environmentStore;
    }
 
@@ -137,7 +138,7 @@ export class ConnectionService {
       }
 
       const environment = await this.environmentStore.getEnvironment(
-         environmentName,
+         parseEnvironmentName(environmentName),
          false,
       );
       await runEnvironmentConnectionUpdate(environment, async () => {
@@ -180,7 +181,7 @@ export class ConnectionService {
          await this.getConnection(environmentName, connectionName);
 
       const environment = await this.environmentStore.getEnvironment(
-         environmentName,
+         parseEnvironmentName(environmentName),
          false,
       );
       await runEnvironmentConnectionUpdate(environment, async () => {
@@ -245,7 +246,7 @@ export class ConnectionService {
       );
 
       const environment = await this.environmentStore.getEnvironment(
-         environmentName,
+         parseEnvironmentName(environmentName),
          false,
       );
       await runEnvironmentConnectionUpdate(environment, async () => {

@@ -20,10 +20,11 @@ import {
    Runtime,
 } from "@malloydata/malloy";
 import { afterEach, describe, expect, it } from "bun:test";
-import type { ServeBinding } from "./materialization_serve_transform";
+import type { ServeBinding } from "./materialization/serve/materialization_serve_transform";
 import { malloyGivenToApi } from "./given";
 import { Model } from "./model";
 import { installSettings } from "../test_helpers/settings_env";
+import { QueryPrivileges } from "./model_query_request";
 
 /** Puts back the settings the current test installed. */
 let restoreSettings: (() => void) | undefined;
@@ -120,14 +121,14 @@ async function sumFor(
    model: Model,
    givens?: Record<string, number>,
 ): Promise<number> {
-   const res = await model.getQueryResults(
+   const res = await model.runQuery(
       unrecordedAudit(),
-      undefined,
-      undefined,
-      "run: scoped -> { aggregate: t is amount.sum() }",
-      {},
-      true,
-      givens,
+      {
+         query: "run: scoped -> { aggregate: t is amount.sum() }",
+         filterParams: {},
+         givens,
+      },
+      QueryPrivileges.of({ bypassFilters: true }),
    );
    const rows = res.compactResult as unknown as { t: number | null }[];
    return Number(rows[0].t ?? 0);

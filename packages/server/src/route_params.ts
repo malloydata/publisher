@@ -9,6 +9,7 @@
 import type { Request } from "express";
 import { BadRequestError, PackageVersionError } from "./errors";
 import { invalidBooleanMessage, parseBooleanParam } from "./query_param_utils";
+import { VersionRef } from "./service/identity";
 import { LATEST_VERSION_ALIAS } from "./service/versions/version_service";
 
 /**
@@ -56,10 +57,22 @@ export function assertNoCollectionReload(
 }
 
 /**
+ * The version a package route names in its query string (`?versionId=`),
+ * parsed once here; absent means `latest`. Never throws: a malformed value is
+ * refused only where versions are consulted (see {@link VersionRef}).
+ */
+export function versionRefOf(req: Pick<Request, "query">): VersionRef {
+   return VersionRef.parse(req.query.versionId);
+}
+
+/**
  * Refuse a version on a package listing. Listing is not package-scoped and
  * takes no version. An empty one is what a proxy forwarding a page's query
  * string may send: no version. `latest` is what the listing answers with
  * anyway.
+ *
+ * Takes the raw value, not a {@link VersionRef}: a malformed versionId is
+ * refused here too, which parsing would defer.
  */
 export function assertListingTakesNoVersionId(versionId: unknown): void {
    if (versionId && versionId !== LATEST_VERSION_ALIAS) {
@@ -73,9 +86,9 @@ export function assertListingTakesNoVersionId(versionId: unknown): void {
  * The version a model query names: in the body, or in the URL as on every
  * other package route. Both may be given only if they agree.
  */
-export function queryVersionIdOf(
+export function queryVersionRefOf(
    req: Pick<Request, "body" | "query">,
-): unknown {
+): VersionRef {
    const fromBody = req.body?.versionId;
    const fromUrl = req.query.versionId;
    const named = (value: unknown) =>
@@ -86,5 +99,5 @@ export function queryVersionIdOf(
          "The body and the URL name different versions; name one, or the same one.",
       );
    }
-   return named(fromBody) ? fromBody : fromUrl;
+   return VersionRef.parse(named(fromBody) ? fromBody : fromUrl);
 }

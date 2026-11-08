@@ -4,11 +4,11 @@
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import type * as Malloy from "@malloydata/malloy-interfaces";
 import { buildQueryEnvelope } from "./mcp/query_envelope";
-import type { ServeBinding } from "./service/materialization_serve_transform";
+import type { ServeBinding } from "./service/materialization/serve/materialization_serve_transform";
 import {
    StorageServeShape,
    type ServeShapeHost,
-} from "./service/model_serve_shape";
+} from "./service/materialization/serve/model_serve_shape";
 import { resetInstrumentsForTesting } from "./telemetry";
 import {
    startMetricsHarness,

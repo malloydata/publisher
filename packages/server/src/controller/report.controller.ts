@@ -30,9 +30,17 @@ import {
    reportWritePathProblem,
 } from "../service/report";
 import { formatProblem } from "../service/query_text";
-import { EnvironmentStore } from "../service/environment_store";
+import type {
+   ConfigFreezeReader,
+   PackageLookup,
+} from "../service/environment_ports";
 import type { Package } from "../service/package";
 import { loadedPackage } from "./loaded_package";
+import {
+   parseEnvironmentName,
+   parsePackageName,
+   VersionRef,
+} from "../service/identity";
 
 type ApiReport = components["schemas"]["Report"];
 type ApiReportManifest = components["schemas"]["ReportManifest"];
@@ -110,9 +118,9 @@ export const contentHashOf = (text: string): string =>
  * applies.
  */
 export class ReportController {
-   private environmentStore: EnvironmentStore;
+   private environmentStore: PackageLookup & ConfigFreezeReader;
 
-   constructor(environmentStore: EnvironmentStore) {
+   constructor(environmentStore: PackageLookup & ConfigFreezeReader) {
       this.environmentStore = environmentStore;
    }
 
@@ -120,7 +128,7 @@ export class ReportController {
    public async listReports(
       environmentName: string,
       packageName: string,
-      versionId?: unknown,
+      versionId: VersionRef = VersionRef.LATEST,
    ): Promise<ApiReport[]> {
       const p = await loadedPackage(
          this.environmentStore,
@@ -136,7 +144,7 @@ export class ReportController {
       environmentName: string,
       packageName: string,
       reportPath: string,
-      versionId?: unknown,
+      versionId: VersionRef = VersionRef.LATEST,
    ): Promise<ApiReportManifest> {
       const p = await loadedPackage(
          this.environmentStore,
@@ -173,7 +181,7 @@ export class ReportController {
       packageName: string,
       modelPath: string,
       body: ApiModelSourceWrite,
-      versionId?: unknown,
+      versionId: VersionRef = VersionRef.LATEST,
    ): Promise<ApiModelSourceWriteResult> {
       // One record per attempt, including the throws.
       const startedAt = Date.now();
@@ -215,7 +223,7 @@ export class ReportController {
       packageName: string,
       modelPath: string,
       body: ApiModelSourceWrite,
-      versionId?: unknown,
+      versionId: VersionRef = VersionRef.LATEST,
    ): Promise<ApiModelSourceWriteResult> {
       if (this.environmentStore.publisherConfigIsFrozen) {
          throw new FrozenConfigError(
@@ -251,7 +259,7 @@ export class ReportController {
          );
       }
       const environment = await this.environmentStore.getEnvironment(
-         environmentName,
+         parseEnvironmentName(environmentName),
          false,
       );
       // A published version is immutable, so a package that has versions takes
@@ -264,9 +272,9 @@ export class ReportController {
             `Package ${packageName} has published versions, which are immutable. Change the file in the package's source and publish a new version.`,
          );
       }
-      await versions?.resolve(packageName, versionId);
+      await versions?.resolve(packageName, versionId.requested());
       // Loads the package, or 404s.
-      await environment.getPackage(packageName, false);
+      await environment.getPackage(parsePackageName(packageName), false);
 
       const { problems } = await environment.compileSource(
          packageName,

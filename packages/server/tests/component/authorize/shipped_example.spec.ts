@@ -27,6 +27,7 @@ import * as path from "path";
 import { AccessDeniedError } from "../../../src/errors";
 import { Model } from "../../../src/service/model";
 import { compilationErrorOf } from "../../../src/test_helpers/authorize_fixture";
+import { QueryPrivileges } from "../../../src/service/model_query_request";
 
 /** The tracked example package, not the gitignored `publisher_data/` copy. */
 const GOVERNED_ANALYTICS = path.resolve(
@@ -40,14 +41,14 @@ describe("examples/governed-analytics ships a working gate", () => {
       model: Model,
       givens: Record<string, string[]>,
    ): Promise<number> {
-      const result = await model.getQueryResults(
+      const result = await model.runQuery(
          unrecordedAudit(),
-         undefined,
-         undefined,
-         "run: orders_secured -> { aggregate: n is count() group_by: tenant }",
-         {},
-         true,
-         givens,
+         {
+            query: "run: orders_secured -> { aggregate: n is count() group_by: tenant }",
+            filterParams: {},
+            givens,
+         },
+         QueryPrivileges.of({ bypassFilters: true }),
       );
       return (result.compactResult as unknown as unknown[]).length;
    }
@@ -130,14 +131,14 @@ describe("the Playwright notebook-authorize fixture model", () => {
          expect(compilationErrorOf(model)).toBeUndefined();
 
          const run = (givens: Record<string, string>) =>
-            model.getQueryResults(
+            model.runQuery(
                unrecordedAudit(),
-               undefined,
-               undefined,
-               "run: gated_products -> spotlight",
-               {},
-               true,
-               givens,
+               {
+                  query: "run: gated_products -> spotlight",
+                  filterParams: {},
+                  givens,
+               },
+               QueryPrivileges.of({ bypassFilters: true }),
             );
 
          // `role` has no default, so an unsupplied given cannot resolve and the

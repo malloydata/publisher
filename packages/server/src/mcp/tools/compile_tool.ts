@@ -5,14 +5,10 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod/v3";
 import type { GivenValue } from "@malloydata/malloy";
 import { logger } from "../../logger";
-import { EnvironmentStore } from "../../service/environment_store";
-import { CompileController } from "../../controller/compile.controller";
+import type { CompileController } from "../../controller/compile.controller";
 import { buildMalloyUri } from "../handler_utils";
 import { registerGuardedTool } from "../register_tool";
-import {
-   type QuerySlotHandle,
-   tryAcquireQuerySlot,
-} from "../../query_concurrency";
+import type { QuerySlotHandle, QuerySlots } from "../../query_concurrency";
 import { jsonResource } from "../tool_response";
 
 const compileShape = {
@@ -108,10 +104,9 @@ export function formatDiagnosticsText(
  */
 export function registerCompileTool(
    mcpServer: McpServer,
-   environmentStore: EnvironmentStore,
+   compileController: CompileController,
+   querySlots: QuerySlots,
 ): void {
-   const compileController = new CompileController(environmentStore);
-
    registerGuardedTool(mcpServer, {
       name: "compile_model",
       description: COMPILE_DESCRIPTION,
@@ -162,7 +157,7 @@ export function registerCompileTool(
          // the bypass. A refusal throws, answered as a classified error.
          let querySlot: QuerySlotHandle | null = null;
          try {
-            querySlot = tryAcquireQuerySlot("mcp:compile");
+            querySlot = querySlots.tryAcquire("mcp:compile");
             const result = await compileController.compile(
                environmentName,
                packageName,

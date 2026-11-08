@@ -37,6 +37,7 @@ import { AccessDeniedError } from "../../src/errors";
 import { Environment } from "../../src/service/environment";
 import type { Package } from "../../src/service/package";
 import { writePackageFiles } from "../../src/test_helpers/temp_package";
+import { parsePackageName } from "../../src/service/identity";
 
 let rootDir: string;
 let envPath: string;
@@ -66,7 +67,7 @@ async function loadPackageFiles(
    );
    const env = await Environment.create("testEnv", envPath, []);
    await env.addPackage("pkg");
-   return env.getPackage("pkg", false);
+   return env.getPackage(parsePackageName("pkg"), false);
 }
 
 /** Run `query` against `model.malloy` with the given `givens` and return rows. */
@@ -77,15 +78,10 @@ async function run(
 ) {
    const model = pkg.getModel("model.malloy");
    if (!model) throw new Error("model.malloy did not load");
-   const { compactResult } = await model.getQueryResults(
-      unrecordedAudit(),
-      undefined,
-      undefined,
+   const { compactResult } = await model.runQuery(unrecordedAudit(), {
       query,
-      undefined,
-      undefined,
-      givens as never,
-   );
+      givens: givens as never,
+   });
    return (compactResult as Record<string, unknown>[]).map((row) =>
       Object.fromEntries(
          Object.entries(row).map(([k, v]) => [
@@ -323,7 +319,7 @@ source: orders is base -> { select: org_id, amount } extend {}
          // not fall through to serving every row unfiltered. It refuses
          // OPAQUELY — Malloy's own binding failure names the gate's given
          // ("Given 'ORG' has no value and no default"), which a denied caller
-         // must never learn (`docs/authorize.md`), so `getQueryResults` maps
+         // must never learn (`docs/authorize.md`), so `runQuery` maps
          // it back to the same 403 a whole-source gate always returned.
          const denial = await run(
             pkg,

@@ -24,8 +24,8 @@ import {
    BuildPlanUnavailableError,
 } from "../errors";
 import { logger } from "../logger";
-import { getPackageEmbeddingStatus } from "../mcp/tools/package_embedding";
-import { EnvironmentStore } from "../service/environment_store";
+import type { RetrievalService } from "../retrieval/service";
+import type { PackageAdmin } from "../service/environment_ports";
 import type { Environment } from "../service/environment";
 import type { Package } from "../service/package";
 import { formatPublishRejections } from "../service/publish_checks";
@@ -37,6 +37,11 @@ import type { VersionService } from "../service/versions/version_service";
 import { versionManifestLocation } from "./manifest_location";
 import { changedFields } from "./versioned_patch";
 import { loadedPackage } from "./loaded_package";
+import {
+   parseEnvironmentName,
+   parsePackageName,
+   VersionRef,
+} from "../service/identity";
 
 type ApiPackage = components["schemas"]["Package"];
 type ApiModelEntities = components["schemas"]["ModelEntities"];
@@ -108,19 +113,25 @@ export function setPackagePatchDeprecationHeaders(res: HeaderSetter): void {
 }
 
 export class PackageController {
-   private environmentStore: EnvironmentStore;
+   private environmentStore: PackageAdmin;
+   private retrieval: RetrievalService;
    /** Packages (`env/pkg`) already warned that versioning is off, this run. */
    private warnedVersioningOff = new Set<string>();
    /** Packages with versions (`env/pkg`) already warned that their PATCH is deprecated, this run. */
    private warnedPackagePatch = new Set<string>();
 
-   constructor(environmentStore: EnvironmentStore) {
+   /**
+    * `retrieval` is the composition root's one instance; a spec that builds a
+    * controller alone gets a store-backed one.
+    */
+   constructor(environmentStore: PackageAdmin, retrieval: RetrievalService) {
       this.environmentStore = environmentStore;
+      this.retrieval = retrieval;
    }
 
    public async listPackages(environmentName: string): Promise<ApiPackage[]> {
       const environment = await this.environmentStore.getEnvironment(
-         environmentName,
+         parseEnvironmentName(environmentName),
          false,
       );
       return environment.listPackages();
@@ -130,7 +141,7 @@ export class PackageController {
       environmentName: string,
       packageName: string,
       reload: boolean,
-      versionId?: unknown,
+      versionId: VersionRef = VersionRef.LATEST,
    ): Promise<ApiPackage> {
       let metadata: ApiPackage;
       if (reload) {
@@ -150,12 +161,16 @@ export class PackageController {
          };
       } else {
          const environment = await this.environmentStore.getEnvironment(
-            environmentName,
+            parseEnvironmentName(environmentName),
             false,
          );
-         const _package = await environment.getPackage(packageName, false, {
-            versionId,
-         });
+         const _package = await environment.getPackage(
+            parsePackageName(packageName),
+            false,
+            {
+               versionId,
+            },
+         );
          metadata = _package.getPackageMetadata();
          // Serving state (`GET …/status`), on a package response only while
          // PUBLISHER_PACKAGE_INLINE_FIELDS is on.
@@ -202,7 +217,7 @@ export class PackageController {
    private async inlineClassification(
       environmentName: string,
       packageName: string,
-      versionId?: unknown,
+      versionId: VersionRef = VersionRef.LATEST,
    ): Promise<ApiClassificationSummary | undefined> {
       try {
          const pkg = await this.loadedPackage(
@@ -222,14 +237,17 @@ export class PackageController {
    }
 
    private environment(environmentName: string) {
-      return this.environmentStore.getEnvironment(environmentName, false);
+      return this.environmentStore.getEnvironment(
+         parseEnvironmentName(environmentName),
+         false,
+      );
    }
 
    /** The loaded package `versionId` names, for a sub-resource read. */
    private loadedPackage(
       environmentName: string,
       packageName: string,
-      versionId?: unknown,
+      versionId: VersionRef = VersionRef.LATEST,
    ) {
       return loadedPackage(
          this.environmentStore,
@@ -246,7 +264,7 @@ export class PackageController {
    public async getPackageServingState(
       environmentName: string,
       packageName: string,
-      versionId?: unknown,
+      versionId: VersionRef = VersionRef.LATEST,
    ): Promise<ApiPackageServingState> {
       const environment = await this.environment(environmentName);
       return environment.describeServingState(packageName, versionId);
@@ -260,7 +278,7 @@ export class PackageController {
    public async getPackageEntities(
       environmentName: string,
       packageName: string,
-      versionId?: unknown,
+      versionId: VersionRef = VersionRef.LATEST,
       includeHiddenFilesAndSources = false,
    ): Promise<ApiModelEntities[]> {
       const pkg = await this.loadedPackage(
@@ -281,7 +299,7 @@ export class PackageController {
    public async getPackageBuildPlan(
       environmentName: string,
       packageName: string,
-      versionId?: unknown,
+      versionId: VersionRef = VersionRef.LATEST,
    ): Promise<ApiBuildPlan> {
       const pkg = await this.loadedPackage(
          environmentName,
@@ -304,7 +322,7 @@ export class PackageController {
    public async getPackageClassification(
       environmentName: string,
       packageName: string,
-      versionId?: unknown,
+      versionId: VersionRef = VersionRef.LATEST,
    ): Promise<ApiClassificationSummary> {
       const pkg = await this.loadedPackage(
          environmentName,
@@ -318,7 +336,7 @@ export class PackageController {
    public async getPackageEmbeddingIndex(
       environmentName: string,
       packageName: string,
-      versionId?: unknown,
+      versionId: VersionRef = VersionRef.LATEST,
    ): Promise<NonNullable<ApiPackage["embeddingIndex"]>> {
       // The version named, so an unknown one is a 404 and a pinned read
       // describes that version's index, not latest's.
@@ -327,12 +345,7 @@ export class PackageController {
          packageName,
          versionId,
       );
-      return getPackageEmbeddingStatus(
-         this.environmentStore,
-         environmentName,
-         packageName,
-         pkg,
-      );
+      return this.retrieval.status(environmentName, packageName, pkg);
    }
 
    /**
@@ -343,7 +356,7 @@ export class PackageController {
    private async embeddingIndexStatus(
       environmentName: string,
       packageName: string,
-      versionId?: unknown,
+      versionId: VersionRef = VersionRef.LATEST,
    ): Promise<ApiPackage["embeddingIndex"] | undefined> {
       try {
          // The version named, as `GET …/embedding-index` reads it.
@@ -352,12 +365,7 @@ export class PackageController {
             packageName,
             versionId,
          );
-         return await getPackageEmbeddingStatus(
-            this.environmentStore,
-            environmentName,
-            packageName,
-            pkg,
-         );
+         return await this.retrieval.status(environmentName, packageName, pkg);
       } catch (error) {
          logger.debug("Could not read the package's embedding index state", {
             environmentName,
@@ -377,7 +385,7 @@ export class PackageController {
       environmentName: string,
       packageName: string,
       trigger: ReloadTrigger = "rest",
-      versionId?: unknown,
+      versionId: VersionRef = VersionRef.LATEST,
    ): Promise<ReloadedPackage> {
       try {
          const reloaded = await this.reloadPackageFrom(
@@ -396,10 +404,10 @@ export class PackageController {
    private async reloadPackageFrom(
       environmentName: string,
       packageName: string,
-      versionId?: unknown,
+      versionId: VersionRef = VersionRef.LATEST,
    ): Promise<ReloadedPackage> {
       const environment = await this.environmentStore.getEnvironment(
-         environmentName,
+         parseEnvironmentName(environmentName),
          false,
       );
 
@@ -408,10 +416,17 @@ export class PackageController {
       // version is immutable, so it has nothing to reload: it is answered as
       // it is.
       const versions = environment.getVersionService();
-      if (versions && (await versions.resolve(packageName, versionId))) {
-         const version = await environment.getPackage(packageName, false, {
-            versionId,
-         });
+      if (
+         versions &&
+         (await versions.resolve(packageName, versionId.requested()))
+      ) {
+         const version = await environment.getPackage(
+            parsePackageName(packageName),
+            false,
+            {
+               versionId,
+            },
+         );
          return {
             metadata: await environment.describePackage(version),
             operational: version.getOperationalFields(),
@@ -424,7 +439,10 @@ export class PackageController {
       // otherwise reload the on-disk tree in place.
       let resident: ApiPackage | undefined;
       try {
-         const cached = await environment.getPackage(packageName, false);
+         const cached = await environment.getPackage(
+            parsePackageName(packageName),
+            false,
+         );
          resident = cached.getPackageMetadata();
       } catch {
          // Not previously loaded, so there is nothing to reinstall from.
@@ -460,7 +478,10 @@ export class PackageController {
             mode: "reinstalled",
          };
       }
-      const _package = await environment.getPackage(packageName, true);
+      const _package = await environment.getPackage(
+         parsePackageName(packageName),
+         true,
+      );
       return {
          metadata: _package.getPackageMetadata(),
          operational: _package.getOperationalFields(),
@@ -495,7 +516,7 @@ export class PackageController {
       }
       const packageName = body.name;
       const environment = await this.environmentStore.getEnvironment(
-         environmentName,
+         parseEnvironmentName(environmentName),
          false,
       );
       const versioned = Boolean(
@@ -549,7 +570,7 @@ export class PackageController {
       }
       const packageName = body.name;
       const environment = await this.environmentStore.getEnvironment(
-         environmentName,
+         parseEnvironmentName(environmentName),
          false,
       );
       const versions = environment.getVersionService();
@@ -716,7 +737,7 @@ export class PackageController {
          throw new FrozenConfigError();
       }
       const environment = await this.environmentStore.getEnvironment(
-         environmentName,
+         parseEnvironmentName(environmentName),
          false,
       );
       // The rows are removed by the environment, under the package's lock
@@ -754,7 +775,7 @@ export class PackageController {
          throw new FrozenConfigError();
       }
       const environment = await this.environmentStore.getEnvironment(
-         environmentName,
+         parseEnvironmentName(environmentName),
          false,
       );
       const versions = environment.getVersionService();
@@ -865,8 +886,8 @@ export class PackageController {
       }
       const version = await versions.getVersion(packageName, latest);
       const current = (await environment.describePackage(
-         await environment.getPackage(packageName, false, {
-            versionId: latest,
+         await environment.getPackage(parsePackageName(packageName), false, {
+            versionId: VersionRef.parse(latest),
          }),
       )) as Record<string, unknown>;
       const changed = changedFields(
@@ -896,8 +917,8 @@ export class PackageController {
       // binding is PUT .../versions/{version}/manifest's.
       const loaded = manifestLocation
          ? await versions.setManifest(packageName, latest, manifestLocation)
-         : await environment.getPackage(packageName, false, {
-              versionId: latest,
+         : await environment.getPackage(parsePackageName(packageName), false, {
+              versionId: VersionRef.parse(latest),
            });
       return environment.describePackage(loaded);
    }

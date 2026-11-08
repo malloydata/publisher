@@ -11,6 +11,11 @@ import { afterAll, afterEach, beforeAll, describe, expect, it } from "bun:test";
 import type { GivenValue } from "@malloydata/malloy";
 import { expectAccessDenied } from "../test_helpers/authorize_fixture";
 import {
+   importedScalarGivenPackage,
+   indexGivensPackage,
+   stringGivenSiblingsPackage,
+} from "../test_helpers/gate_shape_fixtures";
+import {
    loadTempPackage,
    type LoadedTempPackage,
 } from "../test_helpers/temp_package";
@@ -19,6 +24,7 @@ import {
    __setPackageLoadPoolForTests,
 } from "../package_load/package_load_pool";
 import { unrecordedAudit } from "./access_record";
+import { QueryPrivileges } from "./model_query_request";
 
 beforeAll(async () => {
    await __setPackageLoadPoolForTests(new PackageLoadPool(1));
@@ -32,10 +38,6 @@ afterEach(async () => {
    await temp?.cleanup();
    temp = undefined;
 });
-
-const GIVENS = "##! experimental.givens\n";
-
-const rows = (sql: string) => `duckdb.sql("${sql}")`;
 
 async function load(files: Record<string, string>) {
    temp = await loadTempPackage(files, { prefix: "publisher-shapes-" });
@@ -54,48 +56,17 @@ async function run(
 ) {
    const model = pkg.getModel(modelPath);
    if (!model) throw new Error(`no model ${modelPath}`);
-   const { compactResult } = await model.getQueryResults(
+   const { compactResult } = await model.runQuery(
       unrecordedAudit(),
-      undefined,
-      undefined,
-      query,
-      undefined,
-      true,
-      givens,
+      { query, givens },
+      QueryPrivileges.of({ bypassFilters: true }),
    );
    return compactResult as unknown as Array<Record<string, unknown>>;
 }
 
 describe("a plain scalar given shared through an imported metadata model", () => {
-   const REPORTS = rows(
-      "select * from (values (1,'a'),(2,'b'),(1,'c')) as t(internal_report_id, label)",
-   );
-   const model = (name: string, extra = "") => `import "metadata.malloy"
-
-#(access_filter) internal_report_id = $INTERNAL_REPORT_ID
-source: ${name} is ${REPORTS} extend {
-   measure: n is count()
-${extra}}
-`;
-
-   const files = () => ({
-      "metadata.malloy": `${GIVENS}given: INTERNAL_REPORT_ID :: number\n`,
-      "campaigns.malloy": model("campaigns"),
-      "creatives.malloy": model("creatives"),
-      "placements.malloy": `import "metadata.malloy"
-import "campaigns.malloy"
-
-#(access_filter) internal_report_id = $INTERNAL_REPORT_ID
-source: placements is ${REPORTS} extend {
-   join_one: c is campaigns on c.internal_report_id = internal_report_id
-   measure: n is count()
-}
-`,
-      "summary.malloy": model("summary"),
-   });
-
    it("loads, filters to the supplied report, and refuses a caller with none", async () => {
-      const pkg = await load(files());
+      const pkg = await load(importedScalarGivenPackage());
       expect(
          await run(
             pkg,
@@ -119,21 +90,8 @@ source: placements is ${REPORTS} extend {
 });
 
 describe("a plain string given gating eight sources", () => {
-   const ORGS = rows(
-      "select * from (values ('o1', 1), ('o2', 2), ('o1', 3)) as t(org_id, v)",
-   );
-
    it("loads, filters to the org, and refuses a caller with none", async () => {
-      const sources = Array.from({ length: 8 }, (_, i) => i)
-         .map(
-            (i) => `#(access_filter) org_id = $AFFINITY_ORG_ID
-source: s${i} is ${ORGS} extend { measure: n is count() }
-`,
-         )
-         .join("\n");
-      const pkg = await load({
-         "index.malloy": `${GIVENS}given: AFFINITY_ORG_ID :: string\n\n${sources}`,
-      });
+      const pkg = await load(stringGivenSiblingsPackage(8));
       for (const i of [0, 7]) {
          expect(
             await run(pkg, "index.malloy", `run: s${i} -> { aggregate: n }`, {
@@ -148,31 +106,8 @@ source: s${i} is ${ORGS} extend { measure: n is count() }
 });
 
 describe("scalar, list and role givens declared in the index model", () => {
-   const CAMPS = rows(
-      "select * from (values (1, 'x'), (2, 'y'), (3, 'z')) as t(camp_id, label)",
-   );
-   const INDEX = `${GIVENS}given: CAMP_ID :: number
-given: CAMPS :: number[]
-given: ROLES :: string[]
-
-#(access_filter) camp_id = $CAMP_ID
-source: one_camp is ${CAMPS} extend { measure: n is count() }
-
-#(access_filter) camp_id in $CAMPS
-source: many_camps is ${CAMPS} extend { measure: n is count() }
-
-#(authorize) 'director' in $ROLES
-source: directors is ${CAMPS} extend { measure: n is count() }
-
-#(access_filter) camp_id = $CAMP_ID
-source: audit is ${CAMPS} extend {
-   join_one: c is one_camp on c.camp_id = camp_id
-   measure: n is count()
-}
-`;
-
    it("loads, filters each gate, and refuses a caller missing its given", async () => {
-      const pkg = await load({ "index.malloy": INDEX });
+      const pkg = await load(indexGivensPackage());
       const n = async (source: string, givens: Record<string, GivenValue>) =>
          run(pkg, "index.malloy", `run: ${source} -> { aggregate: n }`, givens);
       expect(await n("one_camp", { CAMP_ID: 2 })).toEqual([{ n: 1 }]);

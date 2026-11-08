@@ -17,6 +17,8 @@ import { Environment } from "./environment";
 import { Model } from "./model";
 import * as loadGates from "./package_load_gates";
 import { writePackageFiles } from "../test_helpers/temp_package";
+import { parsePackageName } from "./identity";
+import { QueryPrivileges } from "./model_query_request";
 
 const ROWS = `duckdb.sql("select * from (values (1,'org-a'),(2,'org-b')) as t(id, org)")`;
 
@@ -75,7 +77,9 @@ source: bridge is ${ROWS} extend {
    });
 
    const metadata = async () =>
-      (await env.getPackage("pkg", false)).getPackageMetadata();
+      (
+         await env.getPackage(parsePackageName("pkg"), false)
+      ).getPackageMetadata();
 
    it("refuses switching to queryableSources all over a hidden #(carries) leak, and keeps the old metadata", async () => {
       const before = await metadata();
@@ -100,7 +104,7 @@ source: bridge is ${ROWS} extend {
    });
 
    it("keeps the package's name when a PATCH that renames it is refused", async () => {
-      const pkg = await env.getPackage("pkg", false);
+      const pkg = await env.getPackage(parsePackageName("pkg"), false);
       await expect(
          env.updatePackage("pkg", { name: "renamed", queryableSources: "all" }),
       ).rejects.toBeInstanceOf(BadRequestError);
@@ -198,7 +202,9 @@ source: bridge is ${ROWS} extend {
       });
       expect(updated.queryableSources).toBe("all");
       const warnings = (
-         await (await env.getPackage("gates", false)).getPackageMetadata()
+         await (
+            await env.getPackage(parsePackageName("gates"), false)
+         ).getPackageMetadata()
       ).warnings;
       expect(warnings?.filter((w) => w.code === "join-bypass")).toHaveLength(1);
    });
@@ -270,15 +276,15 @@ source: bridge is ${ROWS} extend {
 
       const OFF_SURFACE = 'No queryable model "hidden.malloy"';
       const queryHidden = async () =>
-         (await env.getPackage("pkg", false))
+         (await env.getPackage(parsePackageName("pkg"), false))
             .getModel("hidden.malloy")!
-            .getQueryResults(
+            .runQuery(
                unrecordedAudit(),
-               undefined,
-               undefined,
-               "run: leaky -> { aggregate: c is count() }",
-               {},
-               true,
+               {
+                  query: "run: leaky -> { aggregate: c is count() }",
+                  filterParams: {},
+               },
+               QueryPrivileges.of({ bypassFilters: true }),
             );
 
       const patchToAll = () =>

@@ -14,8 +14,9 @@ import {
    StorageDestinationNotFoundError,
 } from "../errors";
 import { storageDestinationRoot } from "../service/connection_config";
-import type { EnvironmentStore } from "../service/environment_store";
 import { StorageDestinationController } from "./storage_destination.controller";
+import { fakeOf } from "../test_helpers/store_fakes";
+import type { PackageLookup } from "../service/environment_ports";
 
 type ApiConnection = components["schemas"]["Connection"];
 
@@ -37,9 +38,9 @@ describe("StorageDestinationController", () => {
             return { name: "lake", type: "duckdb" } as ApiConnection;
          },
       };
-      const store = {
+      const store = fakeOf<PackageLookup>({
          getEnvironment: async () => environment,
-      } as unknown as EnvironmentStore;
+      });
       controller = new StorageDestinationController(store);
    });
    afterEach(() => rmSync(envPath, { recursive: true, force: true }));

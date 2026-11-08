@@ -68,7 +68,7 @@ import {
    type PackageRetrievalSettings,
    ignoredRetrievalWarnings,
    readPackageRetrieval,
-} from "../service/package_retrieval";
+} from "../service/package_retrieval_settings";
 import { errMessage, ignoreDotfiles } from "../utils";
 import { RpcWaitAccountant } from "./rpc_wait_accountant";
 import { acceptBundledExperimentalDialects } from "../service/experimental_dialects";
@@ -81,7 +81,7 @@ import {
    tryCompileSynthesizedPreaggregation,
    type SynthesizedPreaggregation,
    type SynthesizedRuntimeFactory,
-} from "../service/preaggregation_compile";
+} from "../service/materialization/plan/preaggregation_compile";
 import { type InFlightAnswer, SchemaCache } from "./schema_cache";
 import { plainLogEntry } from "./worker_log";
 import { renderTagTargets } from "../service/render_tag_targets";
@@ -94,7 +94,7 @@ import {
    resolvePackageConnections,
    type BuildPlanParts,
    type WirePackageMaterialization,
-} from "../service/build_plan";
+} from "../service/materialization/plan/build_plan";
 import type {
    ConnectionMetadata,
    ConnectionMetadataRequest,
@@ -114,6 +114,7 @@ import type {
    WorkerBuildPlan,
    WorkerLogMessage,
 } from "./protocol";
+import { PACKAGE_LOAD_PROTOCOL_VERSION } from "./protocol";
 
 if (!parentPort) {
    throw new Error(
@@ -1264,6 +1265,7 @@ async function loadPackage(
    return {
       type: "load-package-result",
       requestId: job.requestId,
+      protocolVersion: PACKAGE_LOAD_PROTOCOL_VERSION,
       packageMetadata,
       models,
       replacementMatchedExisting,

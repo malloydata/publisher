@@ -9,7 +9,7 @@
  * a swapped-in joined source, changes which child row each parent row reaches
  * without touching `child.org_id` itself. These pin that the filter-binding
  * check compares those columns too, through the real `Model.create` /
- * `getQueryResults` path. The unrecorded-inputs cases are hand-built
+ * `runQuery` path. The unrecorded-inputs cases are hand-built
  * `SourceDef`s calling the assert directly, because the real compiler always
  * records a join's ON and `where:` inputs.
  *
@@ -34,6 +34,7 @@ import {
    createTempModel,
    seededDuckdb,
 } from "../../src/test_helpers/temp_package";
+import { QueryPrivileges } from "../../src/service/model_query_request";
 
 const SEED_SQL = `
 CREATE OR REPLACE TABLE orgtable (id INTEGER, org_id INTEGER);
@@ -203,14 +204,10 @@ async function rows(
    queryText: string,
    givens: Record<string, GivenValue>,
 ): Promise<Record<string, unknown>[]> {
-   const result = await model.getQueryResults(
+   const result = await model.runQuery(
       unrecordedAudit(),
-      undefined,
-      undefined,
-      queryText,
-      {},
-      true,
-      givens,
+      { query: queryText, filterParams: {}, givens },
+      QueryPrivileges.of({ bypassFilters: true }),
    );
    return result.compactResult as unknown as Record<string, unknown>[];
 }

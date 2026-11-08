@@ -23,9 +23,10 @@ import * as fs from "fs/promises";
 import * as os from "os";
 import * as path from "path";
 import { pathToFileURL } from "url";
-import type { ServeBinding } from "./materialization_serve_transform";
+import type { ServeBinding } from "./materialization/serve/materialization_serve_transform";
 import { Model } from "./model";
 import { installSettings } from "../test_helpers/settings_env";
+import { QueryPrivileges } from "./model_query_request";
 
 /** Puts back the settings the current test installed. */
 let restoreSettings: (() => void) | undefined;
@@ -123,13 +124,10 @@ async function buildModel(): Promise<Model> {
 }
 
 async function rows(model: Model, query: string): Promise<unknown[]> {
-   const res = await model.getQueryResults(
+   const res = await model.runQuery(
       unrecordedAudit(),
-      undefined,
-      undefined,
-      query,
-      {},
-      true,
+      { query, filterParams: {} },
+      QueryPrivileges.of({ bypassFilters: true }),
    );
    return res.compactResult as unknown as unknown[];
 }

@@ -5,8 +5,13 @@ import { describe, expect, it } from "bun:test";
 import sinon from "sinon";
 import type { components } from "../api";
 import { DashboardNotFoundError, PackageNotFoundError } from "../errors";
-import type { EnvironmentStore } from "../service/environment_store";
+import { VersionRef } from "../service/identity";
 import { ReportController } from "./report.controller";
+import { fakeOf } from "../test_helpers/store_fakes";
+import type {
+   ConfigFreezeReader,
+   PackageLookup,
+} from "../service/environment_ports";
 
 /**
  * The two report read routes, against a stubbed package: each serves what the
@@ -37,9 +42,9 @@ function harness(options: { noPackage?: boolean } = {}) {
          ? sinon.stub().rejects(new PackageNotFoundError("no package"))
          : sinon.stub().resolves(pkg),
    };
-   const store = {
+   const store = fakeOf<PackageLookup & ConfigFreezeReader>({
       getEnvironment: sinon.stub().resolves(environment),
-   } as unknown as EnvironmentStore;
+   });
    return {
       controller: new ReportController(store),
       store,
@@ -59,7 +64,7 @@ describe("ReportController read routes", () => {
       expect(environment.getPackage.firstCall.args).toEqual([
          "pkg",
          false,
-         { versionId: undefined },
+         { versionId: VersionRef.LATEST },
       ]);
    });
 

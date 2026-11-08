@@ -3,12 +3,16 @@
 
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod/v3";
-import { EnvironmentStore } from "../../service/environment_store";
+import type { PackageLookup } from "../../service/environment_ports";
 import { buildMalloyUri } from "../handler_utils";
 import { registerGuardedTool } from "../register_tool";
-import { type SkillEntry } from "../skills/build_skills_bundle";
-import { resolveSkills, type ResolvedSkill } from "../skills/package_skills";
+import { type SkillEntry } from "../../service/skills/build_skills_bundle";
+import {
+   resolveSkills,
+   type ResolvedSkill,
+} from "../../service/skills/package_skills";
 import { jsonResource } from "../tool_response";
+import { parseEnvironmentName, parsePackageName } from "../../service/identity";
 
 const GET_SKILL_DESCRIPTION = `Fetch a task guide, or list the guides available. Guides are concise procedural instructions for working with Malloy and this server: query patterns, chart and rendering tags, analysis pitfalls, how to build or review a model.
 
@@ -78,7 +82,7 @@ function summarize(skills: ResolvedSkill[]) {
  */
 export function registerGetSkillTool(
    mcpServer: McpServer,
-   environmentStore: EnvironmentStore,
+   environmentStore: PackageLookup,
    bundledSkills: SkillEntry[],
 ): void {
    registerGuardedTool(mcpServer, {
@@ -110,10 +114,13 @@ export function registerGetSkillTool(
          let resolved = resolveSkills(bundledSkills, []);
          if (scope) {
             const environment = await environmentStore.getEnvironment(
-               scope.environment,
+               parseEnvironmentName(scope.environment),
                false,
             );
-            const pkg = await environment.getPackage(scope.package, false);
+            const pkg = await environment.getPackage(
+               parsePackageName(scope.package),
+               false,
+            );
             resolved = resolveSkills(bundledSkills, pkg.listSkills());
          }
 

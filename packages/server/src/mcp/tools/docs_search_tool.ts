@@ -5,12 +5,12 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { registerTool } from "../register_tool";
 import { z } from "zod/v3";
 import lunr from "lunr";
-import { EnvironmentStore } from "../../service/environment_store";
+import type { PackageLookup } from "../../service/environment_ports";
 import { buildMalloyUri } from "../handler_utils";
 import { jsonResource } from "../tool_response";
 import { logger } from "../../logger";
 import rawIndex from "./docs_search/malloy_docs_index.json";
-import { sanitizeLunrQuery } from "./retrieval_shared";
+import { sanitizeLunrQuery } from "../../retrieval/shared";
 
 interface DocEntry {
    title: string;
@@ -110,7 +110,7 @@ A JSON array of matches, each with title, url (a docs.malloydata.dev link), and 
  */
 export function registerDocsSearchTool(
    mcpServer: McpServer,
-   _environmentStore: EnvironmentStore,
+   _environmentStore: PackageLookup,
 ): void {
    registerTool(
       mcpServer,
