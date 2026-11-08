@@ -36,6 +36,8 @@ import {
    routeOptions,
 } from "./routes";
 import { toUnit } from "../index/vectors";
+import { RetrievalRegistry } from "../registry";
+import { valueFetcherFor } from "./values";
 
 const SETTINGS = {
    ...CLUSTER_SETTINGS,
@@ -507,6 +509,7 @@ describe("a picked route in the response", () => {
          verdicts: verdicts(connected.clusters[0].home),
          targets: TARGETS,
          environmentStore: {} as never,
+         valueFetcher: valueFetcherFor(new RetrievalRegistry()),
       });
       const cards = out.sources as Array<{
          source_info: { resource_id: { source: string } };
@@ -607,6 +610,7 @@ describe("a picked route in the response", () => {
          verdicts: routePick,
          targets,
          environmentStore: {} as never,
+         valueFetcher: valueFetcherFor(new RetrievalRegistry()),
       });
       expect(
          (

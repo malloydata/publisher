@@ -225,7 +225,7 @@ describe("import-direction rule: fixtures", () => {
          ruleIds(
             lint(
                "service/package.ts",
-               `import { a } from "../retrieval/llm/active";`,
+               `import { a } from "../retrieval/llm/chat_model_slot";`,
             ),
          ),
       ).toEqual(["R4"]);

@@ -44,7 +44,6 @@ import {
    _setEmbeddingProviderForTests,
 } from "../../retrieval/llm/embedding_provider";
 import type { EnvironmentStore } from "../../service/environment_store";
-import { _setFcjValueFetcherForTests } from "../../retrieval/index/engine_state";
 import { compileFcjFixture } from "../../test_helpers/fcj_fixture";
 import { fcjValueFetcher } from "../../test_helpers/fcj_index_fixture";
 import {
@@ -353,10 +352,10 @@ describe("get_context payload pin: ranked answers", () => {
    let harness: SemanticHarness;
    beforeAll(async () => {
       harness = await semanticHarness();
-      _setFcjValueFetcherForTests(fcjValueFetcher);
+      harness.registry.valueFetcherOverride = fcjValueFetcher;
    });
    afterAll(async () => {
-      _setFcjValueFetcherForTests(undefined);
+      harness.registry.valueFetcherOverride = undefined;
       await harness.close();
    });
    beforeEach(() => harness.reset());

@@ -31,7 +31,6 @@ import {
    sourceContextKey,
 } from "./package_entities";
 import { entityId } from "../search/response";
-import { retrievalRegistry } from "../registry";
 import { type Entity, type JoinTopology, type PackageIndex } from "./types";
 
 type NodeKind = Entity["kind"];
@@ -524,15 +523,17 @@ function parentIdOf(compiled: CompiledSource | undefined): string | undefined {
    return compiled?.extends ?? compiled?.referenceID;
 }
 
-/** Start lines of compiled sources per model list (RetrievalRegistry.sourceStarts). */
-export type SourceStartsCache = WeakMap<
+/**
+ * Start lines of compiled sources, memoized per model list. A list is read,
+ * never changed, so this is a pure function's memo, not retrieval state.
+ */
+const sourceStartsCache = new WeakMap<
    readonly CatalogModel[],
    Map<string, number[]>
->;
+>();
 
 /** Start lines of every compiled source definition, by file URL. */
 function sourceStarts(models: readonly CatalogModel[]): Map<string, number[]> {
-   const sourceStartsCache = retrievalRegistry().sourceStarts;
    const cached = sourceStartsCache.get(models);
    if (cached) return cached;
    const out = new Map<string, Set<number>>();

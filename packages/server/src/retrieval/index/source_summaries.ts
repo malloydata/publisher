@@ -34,7 +34,7 @@ import {
    sourceSummaryPromptHash,
    undocumentedOneLine,
 } from "../llm/prompts/source_summary";
-import { activeLlmSettings, getChatModel } from "../llm/active";
+import type { ChatModelSlot } from "../llm/chat_model_slot";
 import type { Package } from "../../service/package";
 import {
    DEFAULT_PACKAGE_RETRIEVAL,
@@ -50,7 +50,6 @@ import {
    runPooled,
 } from "../llm/llm_calls";
 import { scrubForEgress } from "../shared";
-import { retrievalRegistry } from "../registry";
 
 /** Most fields rendered for one source (and for each joined source). */
 export const SOURCE_SUMMARY_MAX_FIELDS = 200;
@@ -114,20 +113,22 @@ export interface SourceSummarySettings {
  * It combines the package's own `retrieval.sourceSummary` (publisher.json,
  * a SourceSummaryConfig) with what the operator allows
  * (publisher.config.json). Resolved once per call from the loaded package,
- * never derived in a loop.
+ * never derived in a loop. `chatSlot` is the registry's chat model slot: the LLM
+ * settings in force and the model built from them.
  */
 export function resolveSourceSummarySettings(
    pkg: Package | undefined,
+   chatSlot: ChatModelSlot,
 ): SourceSummarySettings | undefined {
    const retrieval =
       (pkg as Partial<Package> | undefined)?.getRetrievalSettings?.() ??
       DEFAULT_PACKAGE_RETRIEVAL;
    if (sourceSummaryConfigOf(retrieval).enabled === false) return undefined;
-   const llm = activeLlmSettings();
+   const llm = chatSlot.settings();
    if (!llm) return undefined;
    let chat;
    try {
-      chat = getChatModel();
+      chat = chatSlot.model();
    } catch (error) {
       logger.warn(
          "[get_context] The LLM is configured but its client could not be built; source summaries are off",
@@ -518,7 +519,7 @@ export type SummaryHashesCache = WeakMap<
 /**
  * The input hash a stored summary must carry to be current, by summaryKey.
  * Read per request, so for a frozen entity list (the package index's) it is
- * cached per prompt and model.
+ * cached per prompt and model in `hashesCache`.
  */
 export function currentSummaryHashes(
    entities: readonly SummaryEntity[],
@@ -526,9 +527,9 @@ export function currentSummaryHashes(
       SourceSummarySettings,
       "promptHash" | "modelId" | "maxPromptChars"
    >,
+   hashesCache: SummaryHashesCache,
 ): ReadonlyMap<string, string> {
    const frozen = Object.isFrozen(entities);
-   const hashesCache = retrievalRegistry().summaryHashes;
    const variant = `${settings.promptHash}\u0000${settings.modelId}\u0000${settings.maxPromptChars ?? ""}`;
    const cached = frozen ? hashesCache.get(entities)?.get(variant) : undefined;
    if (cached) return cached;

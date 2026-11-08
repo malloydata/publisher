@@ -9,13 +9,13 @@ import {
    MAX_COLUMNS_IN_INDEX_TEXT,
    MAX_CACHED_SCHEMAS,
    MAX_INDEXED_TABLES,
+   SchemaIndexCaches,
    SchemaTableEntity,
    rankLexically,
    rankTables,
    schemaFingerprint,
    tableIndexText,
 } from "./schema_index";
-import { installRetrievalRegistry, RetrievalRegistry } from "../registry";
 
 function table(
    resource: string,
@@ -80,9 +80,10 @@ function fakeProvider(
    } as unknown as EmbeddingProvider;
 }
 
-// A fresh registry per case: no cached index or cooldown carries over.
+// Fresh caches per case: no cached index or cooldown carries over.
+let caches: SchemaIndexCaches;
 beforeEach(() => {
-   installRetrievalRegistry(new RetrievalRegistry());
+   caches = new SchemaIndexCaches();
 });
 
 describe("tableIndexText", () => {
@@ -214,6 +215,7 @@ describe("rankTables", () => {
          query: "customers",
          limit: 10,
          provider: null,
+         caches,
          cacheKey: "k",
       });
       expect(result.ranking).toBe("lexical");
@@ -226,6 +228,7 @@ describe("rankTables", () => {
          query: "shipment",
          limit: 10,
          provider: fakeProvider(),
+         caches,
          cacheKey: "k",
       });
       expect(result.ranking).toBe("semantic");
@@ -240,6 +243,7 @@ describe("rankTables", () => {
          query: "photosynthesis",
          limit: 10,
          provider: fakeProvider(),
+         caches,
          cacheKey: "k",
       });
       expect(result.ranking).toBe("semantic");
@@ -261,6 +265,7 @@ describe("rankTables", () => {
          query: "orders",
          limit: 10,
          provider,
+         caches,
          cacheKey: "k",
       });
       await rankTables({
@@ -268,6 +273,7 @@ describe("rankTables", () => {
          query: "customers",
          limit: 10,
          provider,
+         caches,
          cacheKey: "k",
       });
       // First call: 3 tables + 1 query. Second: query only.
@@ -287,6 +293,7 @@ describe("rankTables", () => {
          query: "orders",
          limit: 10,
          provider,
+         caches,
          cacheKey: "k",
       });
       await rankTables({
@@ -294,6 +301,7 @@ describe("rankTables", () => {
          query: "orders",
          limit: 10,
          provider,
+         caches,
          cacheKey: "k",
       });
       expect(batchSizes).toEqual([3, 1, 4, 1]);
@@ -310,6 +318,7 @@ describe("rankTables", () => {
          query: "customers",
          limit: 10,
          provider,
+         caches,
          cacheKey: "k",
       });
       expect(result.ranking).toBe("lexical");
@@ -329,6 +338,7 @@ describe("rankTables", () => {
          query: "customers",
          limit: 10,
          provider,
+         caches,
          cacheKey: "k",
       };
       await rankTables(args);
@@ -353,6 +363,7 @@ describe("rankTables", () => {
          query: "customers",
          limit: 10,
          provider,
+         caches,
          cacheKey: "schema-a",
       });
       const second = await rankTables({
@@ -360,6 +371,7 @@ describe("rankTables", () => {
          query: "customers",
          limit: 10,
          provider,
+         caches,
          cacheKey: "schema-b",
       });
       expect(first.ranking).toBe("lexical");
@@ -382,6 +394,7 @@ describe("rankTables", () => {
          query: "orders",
          limit: 5,
          provider,
+         caches,
          cacheKey: "big",
       });
       expect(result.ranking).toBe("lexical");
@@ -405,6 +418,7 @@ describe("rankTables", () => {
          query: "   ",
          limit: 10,
          provider,
+         caches,
          cacheKey: "k",
       });
       const lexical = await rankTables({
@@ -412,6 +426,7 @@ describe("rankTables", () => {
          query: "   ",
          limit: 10,
          provider: null,
+         caches,
          cacheKey: "k",
       });
       expect(semantic.hits).toEqual([]);
@@ -434,6 +449,7 @@ describe("rankTables", () => {
             query: "orders",
             limit: 10,
             provider,
+            caches,
             cacheKey: `schema-${i}`,
          });
       }
@@ -444,6 +460,7 @@ describe("rankTables", () => {
          query: "orders",
          limit: 10,
          provider,
+         caches,
          cacheKey: "schema-0",
       });
       expect(embedded.slice(embedsBefore)).toContain(3);
@@ -456,6 +473,7 @@ describe("rankTables", () => {
          query: "orders",
          limit: 10,
          provider,
+         caches,
          cacheKey: `schema-${MAX_CACHED_SCHEMAS}`,
       });
       // Query embed only (1), no re-embed of the 3 tables.
@@ -474,6 +492,7 @@ describe("rankTables", () => {
          query: "customers",
          limit: 10,
          provider,
+         caches,
          cacheKey: "k",
       });
       expect(result.ranking).toBe("lexical");
@@ -489,6 +508,7 @@ describe("empty-query honesty", () => {
          query: "  ^~ ",
          limit: 10,
          provider: fakeProvider(),
+         caches,
          cacheKey: "k",
       });
       expect(result.ranking).toBe("lexical");
@@ -502,6 +522,7 @@ describe("empty-query honesty", () => {
          query: "photosynthesis",
          limit: 10,
          provider: null,
+         caches,
          cacheKey: "k",
       });
       expect(result.emptyQuery).toBeUndefined();
@@ -513,14 +534,14 @@ describe("lexical index caching", () => {
    // The default path. Rebuilding per call blocks the event loop for hundreds
    // of ms on a large schema, on every search.
    it("reuses a built index for the same schema, and rebuilds when it changes", () => {
-      const first = rankLexically(ALL, "customers", 10, "k");
-      const second = rankLexically(ALL, "orders", 10, "k");
+      const first = rankLexically(ALL, "customers", 10, { caches, key: "k" });
+      const second = rankLexically(ALL, "orders", 10, { caches, key: "k" });
       expect(first.hits[0]?.resource).toBe("sales.customers");
       expect(second.hits[0]?.resource).toBe("sales.orders");
 
       // A changed schema must not be answered from the cached index.
       const grown = [...ALL, table("sales.refunds", ["refund_id", "reason"])];
-      const third = rankLexically(grown, "refunds", 10, "k");
+      const third = rankLexically(grown, "refunds", 10, { caches, key: "k" });
       expect(third.hits[0]?.resource).toBe("sales.refunds");
    });
 

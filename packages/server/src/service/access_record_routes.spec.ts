@@ -19,8 +19,11 @@ import { QueryUseCase } from "../usecases/query";
 import { AccessDeniedError, PayloadTooLargeError } from "../errors";
 import { logger } from "../logger";
 import { registerExecuteQueryTool } from "../mcp/tools/execute_query_tool";
-import { defaultIndexValueFetcher } from "../retrieval/index/values_index";
-import { queryDistinctValues } from "../retrieval/search/values";
+import { indexValueFetcherFor } from "../retrieval/index/values_index";
+import {
+   queryDistinctValues,
+   type ValueQueryDeps,
+} from "../retrieval/search/values";
 import { QuerySlots } from "../query_concurrency";
 import { withAuthorizeModel } from "../test_helpers/authorize_fixture";
 import type { QueryRequest } from "./model_query_request";
@@ -347,19 +350,27 @@ describe("MCP execute_query writes exactly one record", () => {
 });
 
 describe("value search writes exactly one record per lookup", () => {
+   // A pool of its own and the plain model resolver, as a spec's registry has.
+   const valueQuery: ValueQueryDeps = {
+      querySlots: new QuerySlots(),
+      queryModelResolver: undefined,
+   };
    const lookup = (store: AccessStore, source: string) =>
-      queryDistinctValues({
-         environmentStore: store,
-         environmentName: "env",
-         packageName: "pkg",
-         modelPath: "m.malloy",
-         source,
-         dimension: "label",
-         limit: 5,
-         timeoutMs: 5000,
-         counted: false,
-         routeLabel: "mcp:getContext:values",
-      });
+      queryDistinctValues(
+         {
+            environmentStore: store,
+            environmentName: "env",
+            packageName: "pkg",
+            modelPath: "m.malloy",
+            source,
+            dimension: "label",
+            limit: 5,
+            timeoutMs: 5000,
+            counted: false,
+            routeLabel: "mcp:getContext:values",
+         },
+         valueQuery,
+      );
 
    it("when it reads", async () => {
       await withAuthorizeModel(MODEL, async ({ model }) => {
@@ -372,19 +383,22 @@ describe("value search writes exactly one record per lookup", () => {
 
    it("carrying the caller and trace the request named", async () => {
       await withAuthorizeModel(MODEL, async ({ model }) => {
-         await queryDistinctValues({
-            environmentStore: storeOf(model),
-            environmentName: "env",
-            packageName: "pkg",
-            modelPath: "m.malloy",
-            source: "open_src",
-            dimension: "label",
-            limit: 5,
-            timeoutMs: 5000,
-            counted: false,
-            routeLabel: "mcp:getContext:values",
-            identity: accessIdentityOf(EXTRA.requestInfo.headers),
-         });
+         await queryDistinctValues(
+            {
+               environmentStore: storeOf(model),
+               environmentName: "env",
+               packageName: "pkg",
+               modelPath: "m.malloy",
+               source: "open_src",
+               dimension: "label",
+               limit: 5,
+               timeoutMs: 5000,
+               counted: false,
+               routeLabel: "mcp:getContext:values",
+               identity: accessIdentityOf(EXTRA.requestInfo.headers),
+            },
+            valueQuery,
+         );
          expect(records()).toMatchObject([
             {
                caller: "agent@example.com",
@@ -410,7 +424,7 @@ describe("value search writes exactly one record per lookup", () => {
 
    it("not at all when the index build reads, which is the system's and not a caller's", async () => {
       await withAuthorizeModel(MODEL, async ({ model }) => {
-         const read = await defaultIndexValueFetcher({
+         const read = await indexValueFetcherFor(valueQuery)({
             environmentStore: storeOf(model),
             environmentName: "env",
             packageName: "pkg",

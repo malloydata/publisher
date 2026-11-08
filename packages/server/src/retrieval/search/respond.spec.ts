@@ -22,6 +22,8 @@ import type { JudgeVerdict } from "./judge";
 import { populationNote, queryGroups, respond } from "./respond";
 import { ValueIndex } from "../index/values_index";
 import { toUnit } from "../index/vectors";
+import { RetrievalRegistry } from "../registry";
+import { valueFetcherFor } from "./values";
 
 let f: FcjIndexFixture;
 beforeAll(async () => {
@@ -98,6 +100,7 @@ async function answer(
       verdicts,
       targets,
       environmentStore: {} as never,
+      valueFetcher: valueFetcherFor(new RetrievalRegistry()),
       ...extra,
    });
 }

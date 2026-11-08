@@ -41,7 +41,7 @@ async function indexWithHiddenJoinTarget() {
       modelText: MODEL_TEXT,
       apiSources: [{ name: HIDDEN, authorize: ["false"] }, { name: "orders" }],
    });
-   return getPackageIndex(storeServing(pkg), "env", "pkg");
+   return getPackageIndex(new WeakMap(), storeServing(pkg), "env", "pkg");
 }
 
 describe("a deny-all source joined under an alias", () => {
@@ -99,7 +99,7 @@ source: orders is duckdb.sql("select 1 as id, 1 as ledger_id, 1 as c_id") extend
          modelText: MODEL,
          hiddenSources: [UNLISTED],
       });
-      return getPackageIndex(storeServing(pkg), "env", "pkg");
+      return getPackageIndex(new WeakMap(), storeServing(pkg), "env", "pkg");
    }
 
    it("is not named by the join entity or the summary prompt", async () => {
@@ -162,7 +162,7 @@ async function indexWithDocumentedHiddenTarget() {
          [COUNTRY_SQL]: { table: "Country codes." },
       },
    });
-   return getPackageIndex(storeServing(pkg), "env", "pkg");
+   return getPackageIndex(new WeakMap(), storeServing(pkg), "env", "pkg");
 }
 
 describe("a deny-all source with a #(doc) and database descriptions, joined", () => {

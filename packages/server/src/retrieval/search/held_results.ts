@@ -4,7 +4,7 @@
 /**
  * The complete get_context results held for their later pages. Its own module
  * so the RetrievalRegistry can build a HeldResults without loading the paging
- * code (./pages.ts), whose imports read the registry.
+ * code (./pages.ts).
  */
 
 import type { SourceCard } from "./response";

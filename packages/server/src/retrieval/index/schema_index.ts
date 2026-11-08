@@ -12,7 +12,6 @@ import {
 // Shared with the package index so a query is humanized the same way
 // whichever index answers it.
 import { humanizeName } from "./embedding_index";
-import { retrievalRegistry } from "../registry";
 import {
    PROVIDER_FAILURE_COOLDOWN_MS,
    providerKeyFor,
@@ -149,13 +148,16 @@ export function rankLexically(
    tables: SchemaTableEntity[],
    query: string,
    limit: number,
-   cacheKey?: string,
+   /** Where a built index is kept between calls, and under which key. */
+   cache?: { caches: SchemaIndexCaches; key: string },
 ): RankedResult {
    const sanitized = sanitizeLunrQuery(query);
    if (!sanitized || tables.length === 0) return { hits: [], matched: 0 };
 
+   const lexicalCache = cache?.caches.lexical;
+   const cacheKey = cache?.key;
    const fingerprint = cacheKey ? schemaFingerprint(tables) : "";
-   let cached = cacheKey ? lexicalCache().get(cacheKey) : undefined;
+   let cached = cacheKey ? lexicalCache?.get(cacheKey) : undefined;
    if (cached && cached.fingerprint !== fingerprint) cached = undefined;
 
    const byResource =
@@ -171,18 +173,18 @@ export function rankLexically(
             this.add({ resource: table.resource, text: tableIndexText(table) });
          }
       });
-   if (cacheKey && !cached) {
-      lexicalCache().delete(cacheKey);
-      lexicalCache().set(cacheKey, { index, byResource, fingerprint });
-      while (lexicalCache().size > MAX_CACHED_SCHEMAS) {
-         const oldest = lexicalCache().keys().next();
+   if (lexicalCache && cacheKey && !cached) {
+      lexicalCache.delete(cacheKey);
+      lexicalCache.set(cacheKey, { index, byResource, fingerprint });
+      while (lexicalCache.size > MAX_CACHED_SCHEMAS) {
+         const oldest = lexicalCache.keys().next();
          if (oldest.done) break;
-         lexicalCache().delete(oldest.value);
+         lexicalCache.delete(oldest.value);
       }
-   } else if (cacheKey && cached) {
+   } else if (lexicalCache && cacheKey && cached) {
       // Mark most-recently-used.
-      lexicalCache().delete(cacheKey);
-      lexicalCache().set(cacheKey, cached);
+      lexicalCache.delete(cacheKey);
+      lexicalCache.set(cacheKey, cached);
    }
 
    let hits: lunr.Index.Result[];
@@ -228,14 +230,6 @@ export interface VectorCacheEntry {
    providerKey: string;
 }
 
-/**
- * Embedded schema vectors, in memory only. Deliberately NOT persisted:
- * rebuilding is one batch call per schema, and writing a customer's warehouse
- * identifiers to disk is a separate disclosure decision.
- */
-const vectorCache = (): Map<string, VectorCacheEntry> =>
-   retrievalRegistry().schemaIndex.vectors;
-
 export interface LexicalCacheEntry {
    index: lunr.Index;
    byResource: Map<string, SchemaTableEntity>;
@@ -243,34 +237,54 @@ export interface LexicalCacheEntry {
 }
 
 /**
- * Built lunr indexes, keyed and bounded like the vector cache. This is the
- * DEFAULT path, and the largest schemas (above MAX_INDEXED_TABLES) land on it.
- * Rebuilding per call blocks the event loop (roughly 180ms for 5,000 tables,
- * growing linearly). Keyed by fingerprint so a changed schema rebuilds.
+ * search_database_schema's caches, in memory only, keyed by schema and
+ * bounded by MAX_CACHED_SCHEMAS. The RetrievalRegistry holds the process's
+ * one set.
  */
-const lexicalCache = (): Map<string, LexicalCacheEntry> =>
-   retrievalRegistry().schemaIndex.lexical;
-const cooldownUntilMs = (): Map<string, number> =>
-   retrievalRegistry().schemaIndex.cooldownUntilMs;
+export class SchemaIndexCaches {
+   /**
+    * Embedded schema vectors. Deliberately NOT persisted: rebuilding is one
+    * batch call per schema, and writing a customer's warehouse identifiers to
+    * disk is a separate disclosure decision.
+    */
+   readonly vectors = new Map<string, VectorCacheEntry>();
+   /**
+    * Built lunr indexes, keyed and bounded like the vectors. This is the
+    * DEFAULT path, and the largest schemas (above MAX_INDEXED_TABLES) land on
+    * it. Rebuilding per call blocks the event loop (roughly 180ms for 5,000
+    * tables, growing linearly). Keyed by fingerprint so a changed schema
+    * rebuilds.
+    */
+   readonly lexical = new Map<string, LexicalCacheEntry>();
+   /** Until when a schema whose embedding failed ranks lexically. */
+   readonly cooldownUntilMs = new Map<string, number>();
+}
 
 /** Read an entry and mark it most-recently-used (Map insertion order is the LRU). */
-function touchCacheEntry(key: string): VectorCacheEntry | undefined {
-   const entry = vectorCache().get(key);
+function touchCacheEntry(
+   vectorCache: Map<string, VectorCacheEntry>,
+   key: string,
+): VectorCacheEntry | undefined {
+   const entry = vectorCache.get(key);
    if (entry) {
-      vectorCache().delete(key);
-      vectorCache().set(key, entry);
+      vectorCache.delete(key);
+      vectorCache.set(key, entry);
    }
    return entry;
 }
 
 /** Store an entry, evicting the least-recently-used until within the cap. */
-function storeCacheEntry(key: string, entry: VectorCacheEntry): void {
-   vectorCache().delete(key);
-   vectorCache().set(key, entry);
-   while (vectorCache().size > MAX_CACHED_SCHEMAS) {
-      const oldest = vectorCache().keys().next();
+function storeCacheEntry(
+   vectorCache: Map<string, VectorCacheEntry>,
+   key: string,
+   entry: VectorCacheEntry,
+): void {
+   vectorCache.delete(key);
+   vectorCache.set(key, entry);
+   while (vectorCache.size > MAX_CACHED_SCHEMAS) {
+      const oldest = vectorCache.keys().next();
       if (oldest.done) break;
-      vectorCache().delete(oldest.value);
+      vectorCache.delete(oldest.value);
    }
 }
 
@@ -279,11 +293,11 @@ function storeCacheEntry(key: string, entry: VectorCacheEntry): void {
  * grows this map: a persistently failing provider never reaches the success
  * path, so pruning there would let it add an entry per schema forever.
  */
-function pruneCooldowns(): void {
-   if (cooldownUntilMs().size <= MAX_CACHED_SCHEMAS * 4) return;
+function pruneCooldowns(cooldownUntilMs: Map<string, number>): void {
+   if (cooldownUntilMs.size <= MAX_CACHED_SCHEMAS * 4) return;
    const now = Date.now();
-   for (const [k, until] of cooldownUntilMs()) {
-      if (until <= now) cooldownUntilMs().delete(k);
+   for (const [k, until] of cooldownUntilMs) {
+      if (until <= now) cooldownUntilMs.delete(k);
    }
 }
 
@@ -296,9 +310,10 @@ async function tryRankSemantically(args: {
    query: string;
    limit: number;
    provider: EmbeddingModel;
+   caches: SchemaIndexCaches;
    cacheKey: string;
 }): Promise<RankedResult | null> {
-   const { tables, query, limit, provider, cacheKey } = args;
+   const { tables, query, limit, provider, caches, cacheKey } = args;
 
    if (tables.length === 0) {
       // Nothing to embed. An unknown schema name (several dialects answer
@@ -316,12 +331,12 @@ async function tryRankSemantically(args: {
       return null;
    }
 
-   const until = cooldownUntilMs().get(cacheKey);
+   const until = caches.cooldownUntilMs.get(cacheKey);
    if (until !== undefined && Date.now() < until) return null;
 
    const fingerprint = schemaFingerprint(tables);
    const providerKey = providerKeyFor(provider);
-   let entry = touchCacheEntry(cacheKey);
+   let entry = touchCacheEntry(caches.vectors, cacheKey);
 
    try {
       if (
@@ -348,7 +363,7 @@ async function tryRankSemantically(args: {
             fingerprint,
             providerKey,
          };
-         storeCacheEntry(cacheKey, entry);
+         storeCacheEntry(caches.vectors, cacheKey, entry);
       }
 
       const [queryVector] = await provider.embedBatch(
@@ -369,11 +384,11 @@ async function tryRankSemantically(args: {
       scored.sort((a, b) => b.score - a.score);
       return { hits: scored.slice(0, limit), matched: scored.length };
    } catch (error) {
-      cooldownUntilMs().set(
+      caches.cooldownUntilMs.set(
          cacheKey,
          Date.now() + PROVIDER_FAILURE_COOLDOWN_MS,
       );
-      pruneCooldowns();
+      pruneCooldowns(caches.cooldownUntilMs);
       // The message can carry a provider body excerpt but never the API key,
       // which stays in the Authorization header.
       logger.warn(
@@ -398,9 +413,11 @@ export async function rankTables(args: {
    query: string;
    limit: number;
    provider: EmbeddingModel | null;
+   /** Where built indexes and vectors are kept between calls. */
+   caches: SchemaIndexCaches;
    cacheKey: string;
 }): Promise<RankedResult & { ranking: RankingMode }> {
-   const { tables, query, limit, provider, cacheKey } = args;
+   const { tables, query, limit, provider, caches, cacheKey } = args;
 
    // Checked here, not only in rankLexically: the embedding provider
    // substitutes a placeholder for empty input, so a whitespace-only query
@@ -416,12 +433,13 @@ export async function rankTables(args: {
          query,
          limit,
          provider,
+         caches,
          cacheKey,
       });
       if (semantic !== null) return { ...semantic, ranking: "semantic" };
    }
    return {
-      ...rankLexically(tables, query, limit, cacheKey),
+      ...rankLexically(tables, query, limit, { caches, key: cacheKey }),
       ranking: "lexical",
    };
 }

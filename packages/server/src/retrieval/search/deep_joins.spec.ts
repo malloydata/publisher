@@ -30,6 +30,8 @@ import { judgeOptions, renderJudgePrompt, type JudgeVerdict } from "./judge";
 import { respond } from "./respond";
 import { routesOf } from "./routes";
 import { toUnit } from "../index/vectors";
+import { RetrievalRegistry } from "../registry";
+import { valueFetcherFor } from "./values";
 
 const hop = (to: string, alias: string, fanout: JoinHop["fanout"] = "one") => ({
    to,
@@ -389,6 +391,7 @@ describe("routes in the judge's list, the response and the trace", () => {
          verdicts,
          targets: TARGETS,
          environmentStore: {} as never,
+         valueFetcher: valueFetcherFor(new RetrievalRegistry()),
       });
       const cards = out.sources as Array<{
          source_info: { resource_id: { source: string } };

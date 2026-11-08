@@ -20,6 +20,7 @@ import {
 } from "./engine_state";
 import type { EmbeddingIndexStatus } from "./embedding_index";
 import { getPackageIndex, packageIndexOf } from "../model/package_entities";
+import type { RetrievalRegistry } from "../registry";
 
 /**
  * The search index state for one package: the build state of the find, list,
@@ -29,6 +30,7 @@ import { getPackageIndex, packageIndexOf } from "../model/package_entities";
  * resolved; without it, the served package's.
  */
 export async function getPackageEmbeddingStatus(
+   registry: RetrievalRegistry,
    environmentStore: PackageLookup,
    environmentName: string,
    packageName: string,
@@ -55,13 +57,18 @@ export async function getPackageEmbeddingStatus(
    }
    if (!provider) return { status: "lexical", ...empty };
    const pkgIndex = loaded
-      ? await packageIndexOf(loaded, packageName)
-      : await getPackageIndex(environmentStore, environmentName, packageName);
-   const fcj = fcjStatusOf(pkgIndex.pkg);
-   const lastSyncedAt = fcjLastSyncedAtOf(pkgIndex.pkg);
+      ? await packageIndexOf(registry.packageIndexes, loaded, packageName)
+      : await getPackageIndex(
+           registry.packageIndexes,
+           environmentStore,
+           environmentName,
+           packageName,
+        );
+   const fcj = fcjStatusOf(registry, pkgIndex.pkg);
+   const lastSyncedAt = fcjLastSyncedAtOf(registry, pkgIndex.pkg);
    return {
       status: fcj.status as EmbeddingIndexStatus["status"],
-      ...fcjVectorProgressOf(pkgIndex.pkg),
+      ...fcjVectorProgressOf(registry, pkgIndex.pkg),
       ...(lastSyncedAt ? { lastSyncedAt } : {}),
       fcj,
    };
@@ -74,12 +81,14 @@ export async function getPackageEmbeddingStatus(
  * at server start.
  */
 export function startPackageEmbeddingSync(
+   registry: RetrievalRegistry,
    environmentStore: PackageLookup & Partial<EnvironmentPeek>,
    catalog: CatalogDatabase,
    environmentName: string,
    pkg: Package,
 ): void {
    kickFcjBuild({
+      registry,
       environmentStore,
       catalog,
       environmentName,

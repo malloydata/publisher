@@ -28,7 +28,11 @@ export class ChatModelSlot {
       settings?: LlmSettings;
    } | null = null;
 
-   /** See {@link activeLlmSettings}. */
+   /**
+    * The LLM settings in force, or null when every LLM feature is off: no
+    * `retrieval.llm.provider`, or a provider that needs `LLM_API_KEY` and has
+    * none. Nothing errors when it is off.
+    */
    settings(): LlmSettings | null {
       if (this.testOverride)
          return this.testOverride.model
@@ -37,7 +41,7 @@ export class ChatModelSlot {
       return getLlmSettings(loadedRetrievalConfig()?.llm);
    }
 
-   /** See {@link getChatModel}. */
+   /** The process-wide chat model, or null when the LLM is off. */
    model(): ChatModel | null {
       if (this.testOverride) return this.testOverride.model;
       const settings = getLlmSettings(loadedRetrievalConfig()?.llm);

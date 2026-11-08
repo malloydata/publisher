@@ -25,18 +25,15 @@ import {
    semanticHarness,
    stubEmbeddingProvider,
    untilSemantic,
-   useChat,
    type SemanticHarness,
 } from "../../test_helpers/get_context_llm_harness";
-import { _clearChatModelForTests, _setChatModelForTests } from "../llm/active";
 import { ServiceUnavailableError } from "../../errors";
 import { pollFor, pollUntil } from "../../test_helpers/poll";
 import { PROVIDER_FAILURE_COOLDOWN_MS } from "../shared";
-import { _setFcjDeadlineForTests, inScope } from "./engine";
+import { inScope } from "./engine";
 import { getPackageEmbeddingStatus } from "../index/package_embedding";
 import { sourceContextKey } from "../model/package_entities";
 import {
-   _setFcjValueFetcherForTests,
    fcjJudgeChat,
    fcjLastSyncedAtOf,
    fcjStateOf,
@@ -53,7 +50,6 @@ import type {
 import type { Environment } from "../../service/environment";
 import type { IndexValueFetcher } from "../index/values_index";
 import type { Package } from "../../service/package";
-import { retrievalRegistry } from "../registry";
 import type { ChatModel } from "../llm/types";
 import {
    DEFAULT_FCJ_SETTINGS,
@@ -64,10 +60,10 @@ let harness: SemanticHarness;
 beforeAll(async () => {
    harness = await semanticHarness();
    await createCatalogTables(harness.db);
-   _setFcjValueFetcherForTests(fcjValueFetcher);
+   harness.registry.valueFetcherOverride = fcjValueFetcher;
 });
 afterAll(async () => {
-   _setFcjValueFetcherForTests(undefined);
+   harness.registry.valueFetcherOverride = undefined;
    await harness.close();
 });
 beforeEach(() => harness.reset());
@@ -118,6 +114,7 @@ describe("the search engine", () => {
    it("reports the built index's vectors as the embedding status counts", async () => {
       const pkg = (await compileFcjFixture()).pkg as Package;
       const before = await getPackageEmbeddingStatus(
+         harness.registry,
          {} as PackageLookup,
          "env",
          "fixture",
@@ -131,10 +128,11 @@ describe("the search engine", () => {
          ],
          scopes,
       });
-      const state = fcjStateOf(pkg);
+      const state = fcjStateOf(harness.registry, pkg);
       if (state?.status !== "ready") throw new Error("expected a ready index");
       const rows = state.index.report.vectors.rows;
       const status = await getPackageEmbeddingStatus(
+         harness.registry,
          {} as PackageLookup,
          "env",
          "fixture",
@@ -173,21 +171,28 @@ describe("the search engine", () => {
       };
       try {
          await callPayload(handler, request);
-         await pollUntil(() => fcjVectorProgressOf(pkg).embeddedRows === 20);
-         expect(fcjStateOf(pkg)?.status).toBe("building");
-         expect(fcjVectorProgressOf(pkg)).toMatchObject({
+         await pollUntil(
+            () =>
+               fcjVectorProgressOf(harness.registry, pkg).embeddedRows === 20,
+         );
+         expect(fcjStateOf(harness.registry, pkg)?.status).toBe("building");
+         expect(fcjVectorProgressOf(harness.registry, pkg)).toMatchObject({
             embeddedRows: 20,
             embeddedEntities: 20,
          });
-         expect(fcjVectorProgressOf(pkg).totalRows).toBeGreaterThan(20);
-         expect(Date.parse(fcjLastSyncedAtOf(pkg) ?? "")).not.toBeNaN();
+         expect(
+            fcjVectorProgressOf(harness.registry, pkg).totalRows,
+         ).toBeGreaterThan(20);
+         expect(
+            Date.parse(fcjLastSyncedAtOf(harness.registry, pkg) ?? ""),
+         ).not.toBeNaN();
       } finally {
          release();
       }
-      const midBuild = fcjLastSyncedAtOf(pkg) ?? "";
+      const midBuild = fcjLastSyncedAtOf(harness.registry, pkg) ?? "";
       await untilSemantic(handler, request);
       // The ready index keeps the time of the build's last stored batch.
-      expect(fcjLastSyncedAtOf(pkg)! >= midBuild).toBe(true);
+      expect(fcjLastSyncedAtOf(harness.registry, pkg)! >= midBuild).toBe(true);
    });
 
    it("keeps the original write time when a rebuild reuses every vector", async () => {
@@ -199,18 +204,20 @@ describe("the search engine", () => {
       };
       const first = (await compileFcjFixture()).pkg as Package;
       await untilSemantic(harness.handlerFor(first), request);
-      const written = fcjLastSyncedAtOf(first);
+      const written = fcjLastSyncedAtOf(harness.registry, first);
       expect(written).toBeDefined();
       await new Promise((resolve) => setTimeout(resolve, 20));
       // A fresh package instance builds again, reusing the stored vectors.
       const second = (await compileFcjFixture()).pkg as Package;
       await untilSemantic(harness.handlerFor(second), request);
-      expect(fcjLastSyncedAtOf(second)).toBe(written);
+      expect(fcjLastSyncedAtOf(harness.registry, second)).toBe(written);
    });
 
    it("has no last sync time before any vector is written", async () => {
       const { pkg } = await compileFcjFixture();
-      expect(fcjLastSyncedAtOf(pkg as Package)).toBeUndefined();
+      expect(
+         fcjLastSyncedAtOf(harness.registry, pkg as Package),
+      ).toBeUndefined();
    });
 
    it("says lexical, not semantic, when no embedding provider is configured", async () => {
@@ -282,7 +289,7 @@ describe("the search engine", () => {
             caveats: ["start_date is the scheduled date"],
          }),
       );
-      _setChatModelForTests(chat.model);
+      harness.registry.chat.override(chat.model);
       try {
          const { pkg } = await compileFcjFixture(undefined, undefined, {
             ...DEFAULT_PACKAGE_RETRIEVAL,
@@ -316,7 +323,7 @@ describe("the search engine", () => {
             "start_date is the scheduled date",
          ]);
       } finally {
-         _clearChatModelForTests();
+         harness.registry.chat.reset();
       }
    });
 
@@ -392,7 +399,10 @@ describe("the search engine", () => {
       const chat = scriptedChat(() =>
          JSON.stringify({ picks: [], caveats: [] }),
       );
-      useChat(chat.model, { maxCallsPerRequest: 1, concurrency: 1 });
+      harness.registry.chat.override(chat.model, {
+         maxCallsPerRequest: 1,
+         concurrency: 1,
+      });
       try {
          // Three measures in three unrelated sources: connect: clusters makes
          // three clusters, and the judge makes one call for each.
@@ -419,7 +429,7 @@ describe("the search engine", () => {
          expect(payload.error).toContain("maxCallsPerRequest");
          expect(chat.prompts.length - before).toBeLessThanOrEqual(1);
       } finally {
-         _clearChatModelForTests();
+         harness.registry.chat.reset();
       }
    });
 
@@ -431,7 +441,7 @@ describe("the search engine", () => {
          }),
       );
       // The operator's provider needs a key and has none.
-      _setChatModelForTests(chat.model, { provider: "anthropic" });
+      harness.registry.chat.override(chat.model, { provider: "anthropic" });
       try {
          const { pkg } = await compileFcjFixture(undefined, undefined, {
             ...DEFAULT_PACKAGE_RETRIEVAL,
@@ -452,22 +462,24 @@ describe("the search engine", () => {
          // The index build may have used the chat model; the judge never did.
          expect(chat.prompts.some((p) => p.includes("Target 1 ("))).toBe(false);
       } finally {
-         _clearChatModelForTests();
+         harness.registry.chat.reset();
       }
    });
 
    it("builds the judgeLlm model on the operator's provider, host and key", () => {
-      _setChatModelForTests(scriptedChat(() => "{}").model, {
+      harness.registry.chat.override(scriptedChat(() => "{}").model, {
          provider: "anthropic",
          apiKey: "operator-key",
          baseUrl: "https://llm.operator.example",
       });
       try {
-         const judgeModel = fcjJudgeChat({ model: "claude-haiku-5-5" });
+         const judgeModel = fcjJudgeChat(harness.registry, {
+            model: "claude-haiku-5-5",
+         });
          expect(judgeModel?.provider).toBe("anthropic");
          expect(judgeModel?.model).toBe("claude-haiku-5-5");
       } finally {
-         _clearChatModelForTests();
+         harness.registry.chat.reset();
       }
    });
 });
@@ -484,7 +496,7 @@ describe("fcj request deadline", () => {
             ? new Promise((resolve) => setTimeout(() => resolve(reply), 1_000))
             : reply,
       );
-      _setChatModelForTests(chat.model);
+      harness.registry.chat.override(chat.model);
       try {
          const { pkg } = await compileFcjFixture();
          const handler = harness.handlerFor(pkg);
@@ -496,7 +508,7 @@ describe("fcj request deadline", () => {
             scopes,
          };
          await pollUntilBuilt(handler, request);
-         _setFcjDeadlineForTests(200);
+         harness.registry.searchDeadlineMs = 200;
          const { payload } = await callPayload(handler, request);
          expect(payload.sources).toEqual([]);
          expect(payload.unresolved_targets).toEqual([
@@ -515,10 +527,10 @@ describe("fcj request deadline", () => {
             "The search ran out of time after 0.2 seconds, so no target was answered. Search again with a narrower scope: name the source in scopes[].source, and for a value its field in scopes[].entity_name, or send fewer targets.",
          );
       } finally {
-         _setFcjDeadlineForTests(undefined);
+         harness.registry.searchDeadlineMs = undefined;
          // Let the abandoned judge call finish before the next test.
          await new Promise((resolve) => setTimeout(resolve, 1_100));
-         _clearChatModelForTests();
+         harness.registry.chat.reset();
       }
    });
 
@@ -542,7 +554,7 @@ describe("fcj request deadline", () => {
             );
          },
       };
-      _setChatModelForTests(hanging);
+      harness.registry.chat.override(hanging);
       try {
          const { pkg } = await compileFcjFixture();
          const handler = harness.handlerFor(pkg);
@@ -552,14 +564,14 @@ describe("fcj request deadline", () => {
             ],
             scopes,
          };
-         _setFcjDeadlineForTests(200);
+         harness.registry.searchDeadlineMs = 200;
          await pollUntilBuilt(handler, request);
          const { payload } = await callPayload(handler, request);
          expect(payload.unresolved_targets).toHaveLength(1);
          expect(judgeSignal?.aborted).toBe(true);
       } finally {
-         _setFcjDeadlineForTests(undefined);
-         _clearChatModelForTests();
+         harness.registry.searchDeadlineMs = undefined;
+         harness.registry.chat.reset();
       }
    });
 
@@ -581,7 +593,7 @@ describe("fcj request deadline", () => {
             );
          },
       };
-      _setChatModelForTests(hanging);
+      harness.registry.chat.override(hanging);
       try {
          const { pkg } = await compileFcjFixture();
          const handler = harness.handlerFor(pkg);
@@ -592,9 +604,9 @@ describe("fcj request deadline", () => {
             scopes,
          };
          // A hanging judge holds a built index's answer until the deadline.
-         _setFcjDeadlineForTests(200);
+         harness.registry.searchDeadlineMs = 200;
          await pollUntilBuilt(handler, request);
-         _setFcjDeadlineForTests(undefined);
+         harness.registry.searchDeadlineMs = undefined;
          const before = judgeSignals.length;
          const client = new AbortController();
          const call = callPayload(handler, request, { signal: client.signal });
@@ -607,8 +619,8 @@ describe("fcj request deadline", () => {
             "The call was cancelled before the search finished, so no target was answered.",
          );
       } finally {
-         _setFcjDeadlineForTests(undefined);
-         _clearChatModelForTests();
+         harness.registry.searchDeadlineMs = undefined;
+         harness.registry.chat.reset();
       }
    });
 
@@ -616,7 +628,7 @@ describe("fcj request deadline", () => {
       const reply = JSON.stringify({ picks: [], caveats: [] });
       const base = scriptedChat(() => reply).model;
       let judged = 0;
-      _setChatModelForTests({
+      harness.registry.chat.override({
          ...base,
          completeJson: (req) => {
             if (req.prompt.includes("<targets>")) judged += 1;
@@ -644,7 +656,7 @@ describe("fcj request deadline", () => {
             "The call was cancelled before the search finished, so no target was answered.",
          );
       } finally {
-         _clearChatModelForTests();
+         harness.registry.chat.reset();
       }
    });
 });
@@ -700,7 +712,7 @@ const entityIds = (p: Payload) =>
 describe("fcj paging", () => {
    /** A ready handler and the complete result, all on one page. */
    async function ready() {
-      retrievalRegistry().heldResults.clear();
+      harness.registry.heldResults.clear();
       const { pkg } = await compileFcjFixture();
       const handler = harness.handlerFor(pkg);
       const call = async (extra: Record<string, unknown>) =>
@@ -720,7 +732,7 @@ describe("fcj paging", () => {
       ).payload as Payload;
       expect(complete.next_offset).toBeUndefined();
       // Nothing to come back for, so nothing is held.
-      expect(retrievalRegistry().heldResults.size).toBe(0);
+      expect(harness.registry.heldResults.size).toBe(0);
       return { call, complete, half: Math.ceil(complete.sources.length / 2) };
    }
 
@@ -760,7 +772,7 @@ describe("fcj paging", () => {
    it("runs the search again, and says so, when the held result is gone", async () => {
       const { call, complete, half } = await ready();
       const one = await call({ limit: half });
-      retrievalRegistry().heldResults.clear();
+      harness.registry.heldResults.clear();
       const two = await call({ limit: half, offset: one.next_offset });
       expect(stageNames(two)).toContain("judge");
       expect(two.warnings!.join(" ")).toContain(
@@ -842,7 +854,7 @@ describe("splitBundles", () => {
             caveats: ["No customer email field exists."],
          }),
       );
-      _setChatModelForTests(chat.model);
+      harness.registry.chat.override(chat.model);
       try {
          const { pkg } = await compileFcjFixture(
             undefined,
@@ -883,7 +895,7 @@ describe("splitBundles", () => {
          );
          expect(named).toEqual([]);
       } finally {
-         _clearChatModelForTests();
+         harness.registry.chat.reset();
       }
    });
 
@@ -915,7 +927,7 @@ describe("splitBundles", () => {
 });
 
 describe("a package removed while its index builds", () => {
-   afterAll(() => _setFcjValueFetcherForTests(fcjValueFetcher));
+   afterAll(() => (harness.registry.valueFetcherOverride = fcjValueFetcher));
 
    it("stops the build, keeps no state, and leaves no stored value behind", async () => {
       const { pkg } = await compileFcjFixture();
@@ -930,13 +942,14 @@ describe("a package removed while its index builds", () => {
          peekEnvironment: () => environment as unknown as Environment,
       };
       const asked: string[] = [];
-      _setFcjValueFetcherForTests(async (req) => {
+      harness.registry.valueFetcherOverride = async (req) => {
          asked.push(req.source);
          // The package is deleted during its first value read.
          served = undefined;
          return fcjValueFetcher(req);
-      });
+      };
       kickFcjBuild({
+         registry: harness.registry,
          environmentStore: store,
          catalog: { getDuckDbConnection: () => harness.db },
          environmentName: "env",
@@ -944,7 +957,10 @@ describe("a package removed while its index builds", () => {
          pkg: pkg as Package,
       });
       expect(
-         await pollUntil(() => fcjStateOf(pkg as Package) === undefined, 5_000),
+         await pollUntil(
+            () => fcjStateOf(harness.registry, pkg as Package) === undefined,
+            5_000,
+         ),
       ).toBe(true);
       // The read in flight finished; no other dimension was read.
       expect(asked).toEqual(["cities"]);
@@ -960,7 +976,8 @@ describe("a package removed while its index builds", () => {
 describe("a value read the server refused", () => {
    const CITY = "dimension:cities@travel.malloy:city";
    /** The fixture's Package is typed unknown; the state is keyed by it. */
-   const stateOf = (pkg: unknown) => fcjStateOf(pkg as Package);
+   const stateOf = (pkg: unknown) =>
+      fcjStateOf(harness.registry, pkg as Package);
    const ask = {
       search_targets: [
          { target_type: "measure", search_text: "number of flights" },
@@ -1014,12 +1031,12 @@ describe("a value read the server refused", () => {
 
    afterAll(() => {
       setSystemTime();
-      _setFcjValueFetcherForTests(fcjValueFetcher);
+      harness.registry.valueFetcherOverride = fcjValueFetcher;
    });
 
    it("serves without the values, then reads them again after the cool-down when the first read failed", async () => {
       const { reads, fetcher } = refusing(1);
-      _setFcjValueFetcherForTests(fetcher);
+      harness.registry.valueFetcherOverride = fetcher;
       const { pkg } = await compileFcjFixture();
       const handler = harness.handlerFor(pkg);
       await untilSemantic(handler, ask);
@@ -1060,7 +1077,7 @@ describe("a value read the server refused", () => {
 
    it("keeps serving, reads only the failed dimension again, and doubles the wait each time it fails", async () => {
       const { reads, fetcher } = refusing(Number.POSITIVE_INFINITY);
-      _setFcjValueFetcherForTests(fetcher);
+      harness.registry.valueFetcherOverride = fetcher;
       const { pkg } = await compileFcjFixture();
       const handler = harness.handlerFor(pkg);
       await untilSemantic(handler, ask);
@@ -1098,13 +1115,13 @@ describe("a value read the server refused", () => {
 
    it("does not read an empty dimension again: no values is an answer, not a failure", async () => {
       let reads = 0;
-      _setFcjValueFetcherForTests(async (req) => {
+      harness.registry.valueFetcherOverride = async (req) => {
          if (req.source === "cities") {
             reads += 1;
             return { values: [], truncated: false };
          }
          return fcjValueFetcher(req);
-      });
+      };
       const { pkg } = await compileFcjFixture();
       const handler = harness.handlerFor(pkg);
       await untilSemantic(handler, ask);

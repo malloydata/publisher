@@ -15,6 +15,8 @@ import { find, KINDS_BY_FIND_TARGET, type FindTarget } from "./find";
 import type { JudgeVerdict } from "./judge";
 import { respond } from "./respond";
 import { toUnit } from "../index/vectors";
+import { RetrievalRegistry } from "../registry";
+import { valueFetcherFor } from "./values";
 
 const SETTINGS = {
    ...CLUSTER_SETTINGS,
@@ -243,6 +245,7 @@ describe("also likely: in the response", () => {
          verdicts,
          targets: TARGETS,
          environmentStore: {} as never,
+         valueFetcher: valueFetcherFor(new RetrievalRegistry()),
          alsoLikely,
       });
       const cards = out.sources as Array<{

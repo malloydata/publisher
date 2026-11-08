@@ -24,7 +24,6 @@ import {
 import * as fs from "fs";
 import * as os from "os";
 import * as path from "path";
-import { _clearChatModelForTests, _setChatModelForTests } from "../llm/active";
 import { setRetrievalConfig } from "../config";
 import type { Package } from "../../service/package";
 import { DuckDBConnection } from "../../storage/duckdb/DuckDBConnection";
@@ -38,6 +37,7 @@ import {
    summaryReply,
 } from "../../test_helpers/get_context_llm_harness";
 import { getPackageIndex } from "../model/package_entities";
+import { RetrievalRegistry } from "../registry";
 import {
    currentSummaryHashes,
    loadSourceSummaries,
@@ -82,12 +82,14 @@ afterAll(async () => {
    fs.rmSync(tempDir, { recursive: true, force: true });
 });
 
+// The chat model and memo caches of the build, fresh per case.
+let registry: RetrievalRegistry;
 beforeEach(async () => {
+   registry = new RetrievalRegistry();
    await db.run("DELETE FROM source_summaries");
 });
 
 afterEach(() => {
-   _clearChatModelForTests();
    setRetrievalConfig(undefined);
 });
 
@@ -99,13 +101,17 @@ describe("source summaries in the index build, over the real compiler's entities
    it("summarizes every source in every file, and the request accepts what the build stored", async () => {
       const { pkg: compiled } = await compileModelFiles(FILES);
       const index = await getPackageIndex(
+         new WeakMap(),
          storeServing(compiled),
          "env",
          "build",
       );
       const chat = scriptedChat(summaryReply);
-      _setChatModelForTests(chat.model, { concurrency: 1 });
-      const settings = resolveSourceSummarySettings(settingsPkg())!;
+      registry.chat.override(chat.model, { concurrency: 1 });
+      const settings = resolveSourceSummarySettings(
+         settingsPkg(),
+         registry.chat,
+      )!;
 
       // The build hands the step the package's own list.
       const outcome = await resolveSourceSummaries({
@@ -122,7 +128,11 @@ describe("source summaries in the index build, over the real compiler's entities
       expect(asked.sort()).toEqual(["cust", "cust", "orders"]);
 
       // Each file's rows are there under its own key.
-      const current = currentSummaryHashes(index.directEntities, settings);
+      const current = currentSummaryHashes(
+         index.directEntities,
+         settings,
+         registry.summaryHashes,
+      );
       expect([...current.keys()].sort()).toEqual(
          [
             summaryKey("a.malloy", "cust"),

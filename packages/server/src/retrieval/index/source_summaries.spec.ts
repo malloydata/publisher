@@ -52,8 +52,11 @@ import {
    summaryKey,
    validateSourceSummary,
    type SourceSummarySettings,
+   type SummaryHashesCache,
 } from "./source_summaries";
 
+// The current-hash memo a registry holds, shared across this file's cases.
+const summaryHashes: SummaryHashesCache = new WeakMap();
 let tempDir: string;
 let db: DuckDBConnection;
 
@@ -915,12 +918,20 @@ describe("a local model's smaller context window", () => {
          sourceSummaryInputHash(b, settings),
       );
       expect(
-         currentSummaryHashes(Object.freeze(manyFields()), {
-            ...settings,
-            maxPromptChars: SOURCE_SUMMARY_SMALL_CONTEXT_PROMPT_CHARS,
-         }),
+         currentSummaryHashes(
+            Object.freeze(manyFields()),
+            {
+               ...settings,
+               maxPromptChars: SOURCE_SUMMARY_SMALL_CONTEXT_PROMPT_CHARS,
+            },
+            summaryHashes,
+         ),
       ).not.toEqual(
-         currentSummaryHashes(Object.freeze(manyFields()), settings),
+         currentSummaryHashes(
+            Object.freeze(manyFields()),
+            settings,
+            summaryHashes,
+         ),
       );
    });
 });
@@ -1038,7 +1049,7 @@ describe("reading stored summaries against the current inputs", () => {
          db,
          "env",
          "pkg",
-         currentSummaryHashes(shop(), settings),
+         currentSummaryHashes(shop(), settings, summaryHashes),
       );
       expect(rows.size).toBe(3);
    });
@@ -1053,7 +1064,7 @@ describe("reading stored summaries against the current inputs", () => {
          db,
          "env",
          "pkg",
-         currentSummaryHashes(reloaded, settings),
+         currentSummaryHashes(reloaded, settings, summaryHashes),
       );
       expect(rows.has(summaryKey(MODEL, "orders"))).toBe(false);
       // The sources the change did not reach are still served.
@@ -1070,7 +1081,7 @@ describe("reading stored summaries against the current inputs", () => {
             db,
             "env",
             "pkg",
-            currentSummaryHashes(shop(), changed),
+            currentSummaryHashes(shop(), changed, summaryHashes),
          );
          expect(rows.size).toBe(0);
       }
@@ -1083,15 +1094,15 @@ describe("reading stored summaries against the current inputs", () => {
          db,
          "env",
          "pkg",
-         currentSummaryHashes(without, settings),
+         currentSummaryHashes(without, settings, summaryHashes),
       );
       expect(rows.has(summaryKey(MODEL, "bare"))).toBe(false);
    });
 
    it("computes the current hashes once for one entity list and one setting", () => {
       const list = Object.freeze(shop());
-      expect(currentSummaryHashes(list, settings)).toBe(
-         currentSummaryHashes(list, settings),
+      expect(currentSummaryHashes(list, settings, summaryHashes)).toBe(
+         currentSummaryHashes(list, settings, summaryHashes),
       );
    });
 });

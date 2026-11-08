@@ -40,7 +40,6 @@ import {
    fcjSettingsOf,
 } from "../../service/package_retrieval_settings";
 import { logger } from "../../logger";
-import { activeLlmSettings } from "../llm/active";
 import { settings } from "../../settings";
 import type { ChatModel } from "../llm/types";
 import { LlmMeter } from "../llm/llm_calls";
@@ -55,12 +54,8 @@ import {
 import { alsoLikelyFields, type AlsoLikelyField } from "./also_likely";
 import { dateRangeFields } from "./date_range";
 import type { CatalogNode } from "../model/catalog";
-import {
-   fcjJudgeChat,
-   fcjStateOf,
-   kickFcjBuild,
-   type FcjState,
-} from "../index/engine_state";
+import { fcjJudgeChat, fcjStateOf, kickFcjBuild } from "../index/engine_state";
+import type { FcjState } from "../index/fcj_state";
 import {
    find,
    KINDS_BY_FIND_TARGET,
@@ -70,11 +65,12 @@ import {
 import type { AccessIdentity } from "../../service/access_record";
 import type { FcjIndex } from "../index/index_build";
 import { connect, type ConnectResult } from "./connect";
-import { retrievalRegistry } from "../registry";
+import type { RetrievalRegistry } from "../registry";
 import { dropBesideRoutes, dropTwins, judge, type JudgeVerdict } from "./judge";
 import { FCJ_RESULT_TTL_MS, type HeldResult } from "./held_results";
 import { FCJ_MAX_CHARS, FCJ_RESERVE_CHARS, pageAt, resultKey } from "./pages";
 import { respond } from "./respond";
+import { valueFetcherFor } from "./values";
 import { optionId, routesOf } from "./routes";
 import { toUnit } from "../index/vectors";
 import { phraseCheckerOf } from "./split";
@@ -90,8 +86,10 @@ import {
 } from "./split_targets";
 
 /** Whether the package behind `index` uses a phrase as written (split.ts), memoized per index. */
-function knownPhraseOf(index: FcjIndex): (phrase: string) => boolean {
-   const phraseCheckers = retrievalRegistry().phraseCheckers;
+function knownPhraseOf(
+   index: FcjIndex,
+   phraseCheckers: RetrievalRegistry["phraseCheckers"],
+): (phrase: string) => boolean {
    let check = phraseCheckers.get(index);
    if (!check) {
       check = phraseCheckerOf(
@@ -230,17 +228,14 @@ export function findTrace(index: FcjIndex, results: readonly FindResult[]) {
 
 /** How long one `get_context` search may run before its targets are answered as unresolved. */
 const FCJ_REQUEST_DEADLINE_MS = 90_000;
-/** Tests only: a shorter deadline (undefined restores the default). */
-export function _setFcjDeadlineForTests(ms: number | undefined): void {
-   retrievalRegistry().searchDeadlineMs = ms;
-}
-
 export type FcjQueryArgs = {
    /** Aborted when the deadline passes or the client cancels; set by runFcjQuery. */
    signal?: AbortSignal;
    /** Aborted when the MCP client cancels the call. */
    clientSignal?: AbortSignal;
    request: ResolvedRequest;
+   /** Retrieval's state: index builds, held pages, the chat model, value lookups. */
+   registry: RetrievalRegistry;
    environmentStore: PackageLookup & Partial<EnvironmentPeek>;
    /** Where a search that starts an index build has it write. */
    catalog: CatalogDatabase;
@@ -264,7 +259,7 @@ export type FcjQueryArgs = {
 export async function runFcjQuery(args: FcjQueryArgs): Promise<SearchResult> {
    // Already cancelled: start no search for an answer nobody reads.
    if (args.clientSignal?.aborted) return cancelledResult(args);
-   const ms = retrievalRegistry().searchDeadlineMs ?? FCJ_REQUEST_DEADLINE_MS;
+   const ms = args.registry.searchDeadlineMs ?? FCJ_REQUEST_DEADLINE_MS;
    const controller = new AbortController();
    const search = runFcjSearch({ ...args, signal: controller.signal });
    // Once it is abandoned nobody awaits it; a later failure is not unhandled.
@@ -308,7 +303,7 @@ function cancelledResult(args: FcjQueryArgs): SearchResult {
 
 /** Every target answered as unresolved, with `warning` saying why. */
 function unansweredResult(args: FcjQueryArgs, warning: string): SearchResult {
-   const state = fcjStateOf(args.pkgIndex.pkg);
+   const state = fcjStateOf(args.registry, args.pkgIndex.pkg);
    const index = state?.status === "ready" ? state.index : undefined;
    return searchAnswer({
       sources: [],
@@ -331,12 +326,14 @@ function unansweredResult(args: FcjQueryArgs, warning: string): SearchResult {
 }
 
 async function runFcjSearch(args: FcjQueryArgs): Promise<SearchResult> {
-   const { request, environmentStore, catalog, pkgIndex, traceMode } = args;
+   const { request, registry, environmentStore, catalog, pkgIndex, traceMode } =
+      args;
    const pkg = pkgIndex.pkg;
-   const state = fcjStateOf(pkg);
+   const state = fcjStateOf(registry, pkg);
    // Starts a build when there is none, and on a ready index rebuilds one
    // whose value reads failed once its cool-down is over; otherwise a no-op.
    kickFcjBuild({
+      registry,
       environmentStore,
       catalog,
       environmentName: request.environmentName,
@@ -345,7 +342,7 @@ async function runFcjSearch(args: FcjQueryArgs): Promise<SearchResult> {
    });
    if (state?.status !== "ready") return unreadyAnswer(args, state);
    const index = state.index;
-   const held = retrievalRegistry().heldResults;
+   const held = registry.heldResults;
    const key = resultKey(request);
    const leading = [...args.warnings];
    if (request.offset > 0) {
@@ -369,7 +366,11 @@ async function runFcjSearch(args: FcjQueryArgs): Promise<SearchResult> {
    const allow = inScope(request, pkgIndex.droppedSources);
    // `splitBundles`: a list target is also searched item by item.
    const plan: SplitPlan | undefined = settings.splitBundles
-      ? planSplit(targets, settings.listTopK, knownPhraseOf(index))
+      ? planSplit(
+           targets,
+           settings.listTopK,
+           knownPhraseOf(index, registry.phraseCheckers),
+        )
       : undefined;
    const split = plan && plan.items.size > 0 ? plan : undefined;
    const searched = split ? split.targets : targets;
@@ -507,6 +508,7 @@ async function runFcjSearch(args: FcjQueryArgs): Promise<SearchResult> {
       verdicts,
       targets,
       environmentStore,
+      valueFetcher: valueFetcherFor(registry),
       alsoLikely: [...alsoLikely, ...dateRange],
       ...(args.signal ? { signal: args.signal } : {}),
       ...(args.identity ? { identity: args.identity } : {}),
@@ -638,11 +640,12 @@ async function judgeStage(stage: {
    } = stage;
    const pkg = args.pkgIndex.pkg;
    const started = performance.now();
-   const meter = new LlmMeter(activeLlmSettings()?.maxCallsPerRequest ?? null);
+   const llm = args.registry.chat;
+   const meter = new LlmMeter(llm.settings()?.maxCallsPerRequest ?? null);
    let chat: ChatModel | null = null;
-   if (settings.judge !== false && activeLlmSettings()) {
+   if (settings.judge !== false && llm.settings()) {
       try {
-         chat = fcjJudgeChat(settings.judgeLlm);
+         chat = fcjJudgeChat(args.registry, settings.judgeLlm);
       } catch (error) {
          logger.warn("[get_context fcj] The judge model could not be built", {
             error: error instanceof Error ? error.message : String(error),
@@ -665,7 +668,7 @@ async function judgeStage(stage: {
                        pkg.getRetrievalSettings().prompts.judge!.text,
                  }
                : {}),
-            concurrency: Math.max(1, activeLlmSettings()?.concurrency ?? 1),
+            concurrency: Math.max(1, llm.settings()?.concurrency ?? 1),
             listRoutes: settings.listRoutes,
             // Only a request with a list target reads the split rules, so
             // every other request's judge prompt is the same text as before.

@@ -334,6 +334,7 @@ export async function compileFcjFixture(
       },
    };
    const pkgIndex = await getPackageIndex(
+      new WeakMap(),
       storeServing(pkg),
       FCJ_ENVIRONMENT,
       FCJ_PACKAGE,

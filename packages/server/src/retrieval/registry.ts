@@ -4,13 +4,13 @@
 /**
  * Everything retrieval remembers between calls, in one owner.
  *
- * Retrieval's state used to be a dozen module-level variables (index build
- * states, the entity index cache, held result pages, the embedding sync
- * queue, memo caches, the chat model, the value-lookup resolver). They now
- * live on one RetrievalRegistry. The composition root (buildApp) builds one
- * and hands it to the RetrievalService, which makes it the registry
- * retrieval's modules read ({@link retrievalRegistry}); a spec that wants a
- * clean slate installs a fresh one instead of calling a reset per cache.
+ * Retrieval's state (index build states, the entity index cache, held result
+ * pages, the embedding sync queue, memo caches, the chat model, the
+ * value-lookup resolver and slot pool) lives on one RetrievalRegistry. The
+ * composition root (buildApp) builds one and hands it to the
+ * RetrievalService, which passes it, or the one field a callee needs, to
+ * retrieval's modules as an argument. No module reads a registry it was not
+ * given: a spec that wants a clean slate builds a fresh one.
  *
  * Caches keyed by a Package (or by something a Package owns) stay WeakMaps:
  * a reload builds a new Package, so a stale entry drops out on its own.
@@ -18,19 +18,17 @@
 
 import { QuerySlots } from "../query_concurrency";
 import type { Package } from "../service/package";
-import type { FcjState } from "./index/engine_state";
 import { SerialQueue } from "./index/embedding_sync_queue";
+import type { FcjState } from "./index/fcj_state";
 import type { FcjIndex } from "./index/index_build";
-import { SchemaIndexCaches } from "./index/schema_index_caches";
+import { SchemaIndexCaches } from "./index/schema_index";
 import type { SummaryHashesCache } from "./index/source_summaries";
 import type { IndexValueFetcher } from "./index/values_index";
 import { ChatModelSlot } from "./llm/chat_model_slot";
 import type { ChatModel } from "./llm/types";
-import type { SourceStartsCache } from "./model/catalog";
-import type { PackageIndex } from "./model/types";
+import type { PackageIndexCache } from "./model/package_entities";
 import { HeldResults } from "./search/held_results";
-import type { ReverseJoinsCache } from "./search/routes";
-import type { QueryModelResolver } from "./search/values";
+import type { QueryModelResolver, ValueQueryDeps } from "./search/values";
 
 export interface RetrievalRegistryOptions {
    /**
@@ -46,27 +44,23 @@ export interface RetrievalRegistryOptions {
    queryModelResolver?: QueryModelResolver;
 }
 
-export class RetrievalRegistry {
+export class RetrievalRegistry implements ValueQueryDeps {
    /** Each package's search index build: building, ready or failed (engine_state.ts). */
    readonly engineStates = new WeakMap<Package, FcjState>();
    /** Test seam: stands in for the warehouse when the value index reads data. */
    valueFetcherOverride: IndexValueFetcher | undefined;
    /** The judge's chat model, cached on its settings so its cooldown survives (engine_state.ts). */
    judgeChat: { fingerprint: string; model: ChatModel } | null = null;
-   /** The process-wide chat model (llm/active.ts). */
+   /** The process-wide chat model and the LLM settings in force. */
    readonly chat = new ChatModelSlot();
    /** Each package's entity index, built once per Package (package_entities.ts). */
-   readonly packageIndexes = new WeakMap<Package, PackageIndex>();
+   readonly packageIndexes: PackageIndexCache = new WeakMap();
    /** Result pages a paged get_context answer holds for its later offsets. */
    readonly heldResults = new HeldResults();
    /** The one queue every embedding sync goes through: the provider's rate limit is the process's. */
    readonly embeddingSyncQueue = new SerialQueue();
    /** Current source-summary input hashes per frozen entity list (source_summaries.ts). */
    readonly summaryHashes: SummaryHashesCache = new WeakMap();
-   /** Start lines of compiled sources per model list (catalog.ts). */
-   readonly sourceStarts: SourceStartsCache = new WeakMap();
-   /** Reverse join walks per catalog (routes.ts). */
-   readonly reverseJoins: ReverseJoinsCache = new WeakMap();
    /** Per index, whether the package uses a phrase as written (engine.ts). */
    readonly phraseCheckers = new WeakMap<
       FcjIndex,
@@ -83,27 +77,4 @@ export class RetrievalRegistry {
       this.querySlots = options.querySlots ?? new QuerySlots();
       this.queryModelResolver = options.queryModelResolver;
    }
-}
-
-// Built on first use, not at import. The classes it builds live in leaf
-// modules that do not import this one (src/import_cycles.spec.ts keeps it so);
-// the modules that read the registry are named here by type only.
-let current: RetrievalRegistry | undefined;
-
-/** The registry retrieval's modules read: the RetrievalService's, or a default one. */
-export function retrievalRegistry(): RetrievalRegistry {
-   return (current ??= new RetrievalRegistry());
-}
-
-/**
- * Make `next` the registry retrieval reads, and return the one it replaces.
- * RetrievalService calls it with the registry it is given; a spec calls it
- * with a fresh one for a clean slate, and puts the previous one back after.
- */
-export function installRetrievalRegistry(
-   next: RetrievalRegistry | undefined,
-): RetrievalRegistry | undefined {
-   const previous = current;
-   current = next;
-   return previous;
 }

@@ -202,7 +202,8 @@ export async function buildFcjIndex(args: {
    /** Where `#(index)` dimensions are read from; absent: doc value lists only. */
    valueRead?: {
       environmentStore: PackageLookup;
-      fetcher?: IndexValueFetcher;
+      /** The read; indexValueFetcherFor in production, a stand-in in a spec. */
+      fetcher: IndexValueFetcher;
    };
    /**
     * The build's LLM request budget, shared with the steps that ran before
@@ -313,9 +314,7 @@ export async function buildFcjIndex(args: {
                     environmentStore: args.valueRead.environmentStore,
                     environmentName,
                     packageName,
-                    ...(args.valueRead.fetcher
-                       ? { fetcher: args.valueRead.fetcher }
-                       : {}),
+                    fetcher: args.valueRead.fetcher,
                  },
               }
             : {}),

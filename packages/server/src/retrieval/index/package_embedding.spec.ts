@@ -16,6 +16,7 @@ import {
 } from "../llm/embedding_provider";
 import { withSettings } from "../../test_helpers/settings_env";
 import { getPackageEmbeddingStatus } from "./package_embedding";
+import { RetrievalRegistry } from "../registry";
 import { fakeOf } from "../../test_helpers/store_fakes";
 import type {
    EnvironmentPeek,
@@ -73,6 +74,7 @@ describe("getPackageEmbeddingStatus", () => {
    it("is lexical, by design, when no provider is configured", async () => {
       _setEmbeddingProviderForTests(null);
       const status = await getPackageEmbeddingStatus(
+         new RetrievalRegistry(),
          storeHolding("any"),
          "env",
          "any",
@@ -89,6 +91,7 @@ describe("getPackageEmbeddingStatus", () => {
             },
             async () => {
                const status = await getPackageEmbeddingStatus(
+                  new RetrievalRegistry(),
                   storeHolding("any"),
                   "env",
                   "any",
@@ -120,6 +123,7 @@ describe("getPackageEmbeddingStatus", () => {
       // No build has started for this package instance, so the engine reports
       // it as indexing with nothing embedded yet.
       const status = await getPackageEmbeddingStatus(
+         new RetrievalRegistry(),
          storeHolding("fresh"),
          "env",
          "fresh",

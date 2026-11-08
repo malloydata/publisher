@@ -34,7 +34,7 @@ import type { Model } from "../../service/model";
 import type { Package } from "../../service/package";
 import { resolveQueryModel } from "../../service/run_model_query";
 import type { SearchErrorDetails } from "../model/types";
-import { retrievalRegistry } from "../registry";
+import type { QuerySlots } from "../../query_concurrency";
 
 /**
  * The model a value lookup queries, or why there is none: `error` is the
@@ -51,6 +51,16 @@ export type QueryModelResolver = (
    packageName: string,
    modelPath: string,
 ) => Promise<QueryModelResolution>;
+
+/**
+ * What a value lookup runs on: the query-slot pool it takes a slot from, and
+ * the resolver of the model it queries (undefined: the plain resolver). The
+ * RetrievalRegistry is one.
+ */
+export interface ValueQueryDeps {
+   readonly querySlots: QuerySlots;
+   readonly queryModelResolver: QueryModelResolver | undefined;
+}
 
 /**
  * The resolver with no adapter installed: a failure is its own error, unworded.
@@ -151,11 +161,11 @@ interface DistinctValueQuery {
  */
 export async function queryDistinctValues(
    request: DistinctValueQuery,
+   deps: ValueQueryDeps,
 ): Promise<Array<Record<string, unknown>>> {
    let refusal: SearchErrorDetails | undefined;
-   const registry = retrievalRegistry();
    const queryModelResolver =
-      registry.queryModelResolver ?? plainQueryModelResolver;
+      deps.queryModelResolver ?? plainQueryModelResolver;
    try {
       const run = async (audit: QueryAudit) => {
          const found = await queryModelResolver(
@@ -179,7 +189,7 @@ export async function queryDistinctValues(
             ? `where: ${where} group_by: v is ${dim} aggregate: n is count() order_by: n desc limit: ${request.limit + 1}`
             : `where: ${where} group_by: v is ${dim} limit: ${request.limit + 1}`;
          const query = `run: ${quoteMalloyIdentifier(request.source)} -> { ${body} }`;
-         const slot = registry.querySlots.tryAcquire(request.routeLabel);
+         const slot = deps.querySlots.tryAcquire(request.routeLabel);
          try {
             const { compactResult } = await runWithQueryTimeout(
                (signal) =>
@@ -228,19 +238,24 @@ export async function queryDistinctValues(
  * The lookup query: read up to `limit + 1` distinct non-null values of one
  * dimension, through the normal query path with the caller's givens.
  */
-export const defaultValueFetcher: ValueFetcher = async (request) => {
-   const rows = await queryDistinctValues({
-      ...request,
-      counted: false,
-      routeLabel: "mcp:getContext:values",
-   });
-   const values: string[] = [];
-   for (const row of rows) {
-      const text = usableValue(row.v);
-      if (text !== undefined) values.push(text);
-   }
-   return {
-      values: values.slice(0, request.limit),
-      truncated: rows.length > request.limit,
+export const valueFetcherFor =
+   (deps: ValueQueryDeps): ValueFetcher =>
+   async (request) => {
+      const rows = await queryDistinctValues(
+         {
+            ...request,
+            counted: false,
+            routeLabel: "mcp:getContext:values",
+         },
+         deps,
+      );
+      const values: string[] = [];
+      for (const row of rows) {
+         const text = usableValue(row.v);
+         if (text !== undefined) values.push(text);
+      }
+      return {
+         values: values.slice(0, request.limit),
+         truncated: rows.length > request.limit,
+      };
    };
-};

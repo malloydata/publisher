@@ -691,6 +691,7 @@ source: imported_ext is authorized extend {
          getModel: (p: string) => models.get(p),
       };
       const pkgIndex = await getPackageIndex(
+         new WeakMap(),
          storeServing(pkg),
          "env",
          "fixture",

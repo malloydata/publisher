@@ -41,7 +41,12 @@ source: encounters is duckdb.sql("select 1 as id, 1 as patient_id") extend {
 let index: PackageIndex;
 beforeAll(async () => {
    const { pkg } = await compileModelFiles({ "m.malloy": MODEL });
-   index = await getPackageIndex(storeServing(pkg), "env", "pkg");
+   index = await getPackageIndex(
+      new WeakMap(),
+      storeServing(pkg),
+      "env",
+      "pkg",
+   );
 });
 
 function entity(source: string, name: string): Entity {

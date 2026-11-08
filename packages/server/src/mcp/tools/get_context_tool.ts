@@ -36,10 +36,7 @@ import type {
    ResolvedRequest,
    SearchResult,
 } from "../../retrieval/model/types";
-import {
-   getPackageIndex,
-   sourceContextKey,
-} from "../../retrieval/model/package_entities";
+import { sourceContextKey } from "../../retrieval/model/package_entities";
 import { lockedForCaller } from "../../service/discovery_lock";
 import {
    packageInfoOf,
@@ -226,7 +223,7 @@ function runListing(
          ? { next_offset: consumed }
          : {}),
    };
-   // The package loaded (a failed load throws from getPackageIndex), so an
+   // The package loaded (a failed load throws from packageIndex), so an
    // empty listing is a curation gap, not an empty database; say so. Not when
    // `kinds` is empty: then every target named an unindexed type and
    // unsupportedTargetWarnings has already explained it.
@@ -280,11 +277,7 @@ async function runContextQuery(
 
    let pkgIndex: PackageIndex;
    try {
-      pkgIndex = await getPackageIndex(
-         environmentStore,
-         environmentName,
-         packageName,
-      );
+      pkgIndex = await retrieval.packageIndex(environmentName, packageName);
    } catch (error) {
       logger.warn("[MCP Tool getContext] index build failed", {
          environmentName,

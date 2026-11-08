@@ -72,6 +72,7 @@ export function initializeMcpServer(services: McpServices): McpServer {
       mcpServer,
       environmentStore,
       connectionController,
+      retrieval,
    );
    registerGetStatusTool(mcpServer, environmentStore);
    registerGetSkillTool(mcpServer, environmentStore, BUNDLED_SKILLS);

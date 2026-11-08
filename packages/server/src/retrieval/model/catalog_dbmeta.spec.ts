@@ -84,7 +84,12 @@ async function catalogWithDbmeta() {
          },
       },
    });
-   const pkgIndex = await getPackageIndex(storeServing(pkg), "env", "pkg");
+   const pkgIndex = await getPackageIndex(
+      new WeakMap(),
+      storeServing(pkg),
+      "env",
+      "pkg",
+   );
    return buildCatalog({
       ...(await catalogInputOf(pkgIndex)),
       unservedCopies: 10,

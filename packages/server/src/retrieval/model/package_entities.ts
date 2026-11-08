@@ -32,7 +32,6 @@ import type {
    SourceContextGiven,
 } from "./types";
 import { parseEnvironmentName, parsePackageName } from "../../service/identity";
-import { retrievalRegistry } from "../registry";
 
 /**
  * Caps on doc text carried as CONTEXT alongside a field hit, where the point
@@ -1217,8 +1216,15 @@ function directEntitiesOf(
    return Object.freeze(retrievalEntities.filter((e) => !rebuilt(e)));
 }
 
-/** Get, or lazily build and cache, the entity index for a package. */
+/**
+ * Each package's entity index, by Package instance: a reload swaps in a new
+ * instance, so a stale entry drops out of the WeakMap on its own.
+ */
+export type PackageIndexCache = WeakMap<Package, PackageIndex>;
+
+/** Get, or lazily build and cache in `indexes`, the entity index for a package. */
 export async function getPackageIndex(
+   indexes: PackageIndexCache,
    environmentStore: PackageLookup,
    environmentName: string,
    packageName: string,
@@ -1231,18 +1237,16 @@ export async function getPackageIndex(
       parsePackageName(packageName),
       false,
    );
-   return packageIndexOf(pkg, packageName);
+   return packageIndexOf(indexes, pkg, packageName);
 }
 
 /** The entity index for `pkg` itself, built once per Package instance. */
 export async function packageIndexOf(
+   indexes: PackageIndexCache,
    pkg: Package,
    packageName: string,
 ): Promise<PackageIndex> {
-   // Per Package instance (RetrievalRegistry.packageIndexes): a reload swaps in
-   // a new instance, so a stale entry drops out of the WeakMap on its own.
-   const indexCache = retrievalRegistry().packageIndexes;
-   const cached = indexCache.get(pkg);
+   const cached = indexes.get(pkg);
    if (cached) return cached;
 
    const collected = await collectEntities(pkg);
@@ -1263,7 +1267,7 @@ export async function packageIndexOf(
       sourceContext: buildSourceContext(collected),
       droppedSources: collected.droppedSources,
    };
-   indexCache.set(pkg, built);
+   indexes.set(pkg, built);
    logger.debug("[MCP Tool getContext] Built and cached entity index", {
       packageName,
       entityCount: entities.length,

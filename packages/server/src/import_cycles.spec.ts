@@ -33,36 +33,8 @@ import * as path from "path";
 /** Empty: the value graph has no cycle. Keep it so. */
 const RUNTIME_CYCLES: Array<{ files: string[]; why: string }> = [];
 
-const REGISTRY_READERS =
-   "RetrievalRegistry owns retrieval's state as typed fields (one per module " +
-   "that reads it through retrievalRegistry()); it names each field's type. " +
-   "The classes it builds come from leaves, so the cycle is types only.";
-
-const TYPE_BACK_EDGES: Array<{ from: string; to: string; why: string }> = [
-   ...[
-      "retrieval/index/engine_state.ts",
-      "retrieval/index/index_build.ts",
-      "retrieval/index/source_summaries.ts",
-      "retrieval/index/values_index.ts",
-      "retrieval/model/catalog.ts",
-      "retrieval/search/routes.ts",
-      "retrieval/search/values.ts",
-   ].map((to) => ({
-      from: "retrieval/registry.ts",
-      to,
-      why: REGISTRY_READERS,
-   })),
-   {
-      from: "retrieval/index/schema_index_caches.ts",
-      to: "retrieval/index/schema_index.ts",
-      why: "the registry's schema caches hold schema_index's cache entry types",
-   },
-   {
-      from: "retrieval/search/held_results.ts",
-      to: "retrieval/search/response.ts",
-      why: "the registry's held results hold response's SourceCard",
-   },
-];
+/** Empty: no module is typed against its caller. Keep it so. */
+const TYPE_BACK_EDGES: Array<{ from: string; to: string; why: string }> = [];
 
 const SRC_DIR = __dirname;
 

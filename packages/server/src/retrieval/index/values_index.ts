@@ -48,7 +48,11 @@ import {
    scoreValue,
    VALUE_MATCH_FLOOR,
 } from "../search/value_match";
-import { queryDistinctValues, usableValue } from "../search/values";
+import {
+   queryDistinctValues,
+   usableValue,
+   type ValueQueryDeps,
+} from "../search/values";
 import type { Catalog, CatalogNode } from "../model/catalog";
 import type { DocParts } from "./doc_parts";
 import { dot } from "./vectors";
@@ -105,21 +109,26 @@ const VALUE_READ_BUDGET_MS = 300_000;
  * through the normal query path, with no givens (an ungated source needs
  * none) and no `#(authorize)` bypass.
  */
-export const defaultIndexValueFetcher: IndexValueFetcher = async (request) => {
-   const rows = await queryDistinctValues({
-      ...request,
-      counted: true,
-      system: true,
-      routeLabel: "mcp:getContext:valueIndex",
-   });
-   const values: Array<{ value: string; count: number }> = [];
-   for (const row of rows.slice(0, request.limit)) {
-      const text = usableValue(row.v);
-      if (text === undefined) continue;
-      values.push({ value: text, count: Number(row.n) || 0 });
-   }
-   return { values, truncated: rows.length > request.limit };
-};
+export const indexValueFetcherFor =
+   (deps: ValueQueryDeps): IndexValueFetcher =>
+   async (request) => {
+      const rows = await queryDistinctValues(
+         {
+            ...request,
+            counted: true,
+            system: true,
+            routeLabel: "mcp:getContext:valueIndex",
+         },
+         deps,
+      );
+      const values: Array<{ value: string; count: number }> = [];
+      for (const row of rows.slice(0, request.limit)) {
+         const text = usableValue(row.v);
+         if (text === undefined) continue;
+         values.push({ value: text, count: Number(row.n) || 0 });
+      }
+      return { values, truncated: rows.length > request.limit };
+   };
 
 /** One value that matched, and how. */
 export interface ValueMatch {
@@ -533,7 +542,8 @@ export async function buildValueIndex(args: {
       environmentStore: PackageLookup;
       environmentName: string;
       packageName: string;
-      fetcher?: IndexValueFetcher;
+      /** The read; indexValueFetcherFor in production, a stand-in in a spec. */
+      fetcher: IndexValueFetcher;
    };
    db?: DuckDBConnection;
    shouldStop?: () => boolean;
@@ -616,7 +626,7 @@ export async function buildValueIndex(args: {
          });
          continue;
       }
-      const fetcher = args.read.fetcher ?? defaultIndexValueFetcher;
+      const fetcher = args.read.fetcher;
       try {
          const got = await fetcher({
             environmentStore: args.read.environmentStore,

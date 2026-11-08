@@ -22,7 +22,7 @@ import {
 
 async function indexOfFixture() {
    const { pkg } = await compileJoinFixture();
-   return getPackageIndex(storeServing(pkg), "env", "pkg");
+   return getPackageIndex(new WeakMap(), storeServing(pkg), "env", "pkg");
 }
 
 /** "path -> target" strings for one root, sorted, so a test reads as a table. */
@@ -138,6 +138,7 @@ describe("join topology", () => {
       ).getModel(JOIN_FIXTURE_MODEL_PATH);
       delete model.getModelDef;
       const { topology } = await getPackageIndex(
+         new WeakMap(),
          storeServing(pkg),
          "env",
          "no-ir",

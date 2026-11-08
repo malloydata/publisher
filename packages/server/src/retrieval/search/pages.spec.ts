@@ -17,6 +17,8 @@ import { HeldResults, type HeldResult } from "./held_results";
 import { pageAt, resultKey, shrinkCard } from "./pages";
 import { respond } from "./respond";
 import { toUnit } from "../index/vectors";
+import { RetrievalRegistry } from "../registry";
+import { valueFetcherFor } from "./values";
 
 let f: FcjIndexFixture;
 beforeAll(async () => {
@@ -94,6 +96,7 @@ async function completeAnswer() {
       verdicts,
       targets,
       environmentStore: {} as never,
+      valueFetcher: valueFetcherFor(new RetrievalRegistry()),
    });
    return { answer, verdicts };
 }

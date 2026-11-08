@@ -20,7 +20,7 @@ import {
 import * as fs from "fs";
 import * as os from "os";
 import * as path from "path";
-import { _clearChatModelForTests, _setChatModelForTests } from "../llm/active";
+import { ChatModelSlot } from "../llm/chat_model_slot";
 import { setRetrievalConfig } from "../config";
 import type { Package } from "../../service/package";
 import type { PackageRetrievalSettings } from "../../service/package_retrieval_settings";
@@ -67,12 +67,14 @@ afterAll(async () => {
    fs.rmSync(tempDir, { recursive: true, force: true });
 });
 
+// The chat model in force, as a registry holds it; fresh per case.
+let chatSlot: ChatModelSlot;
 beforeEach(async () => {
+   chatSlot = new ChatModelSlot();
    await db.run("DELETE FROM source_summaries");
 });
 
 afterEach(() => {
-   _clearChatModelForTests();
    setRetrievalConfig(undefined);
 });
 
@@ -138,7 +140,7 @@ async function step(
    pkg: Package,
    ents: readonly EmbeddableEntity[] = entities(),
 ) {
-   const settings = resolveSourceSummarySettings(pkg);
+   const settings = resolveSourceSummarySettings(pkg, chatSlot);
    if (!settings) return undefined;
    return resolveSourceSummaries({
       db,
@@ -163,8 +165,9 @@ const rows = async () =>
 describe("source summaries for a local model", () => {
    it("use the smaller prompt cap only when the provider is ollama", () => {
       const cap = (provider: "ollama" | "openai") => {
-         _setChatModelForTests(chatFor().model, { provider });
-         return resolveSourceSummarySettings(pkgWith())?.maxPromptChars;
+         chatSlot.override(chatFor().model, { provider });
+         return resolveSourceSummarySettings(pkgWith(), chatSlot)
+            ?.maxPromptChars;
       };
       expect(cap("ollama")).toBe(SOURCE_SUMMARY_SMALL_CONTEXT_PROMPT_CHARS);
       expect(cap("openai")).toBeUndefined();
@@ -174,7 +177,7 @@ describe("source summaries for a local model", () => {
 describe("source summaries in the index build", () => {
    it("writes one summary per documented source and reports its progress", async () => {
       const chat = chatFor();
-      _setChatModelForTests(chat.model, { concurrency: 1 });
+      chatSlot.override(chat.model, { concurrency: 1 });
       const outcome = await step(pkgWith());
       expect(sourcesAsked(chat)).toEqual(["orders", "customers"]);
       expect([...(await rows()).keys()]).toEqual(["orders", "customers"]);
@@ -183,7 +186,7 @@ describe("source summaries in the index build", () => {
 
    it("a rebuild of the same content makes no call", async () => {
       const chat = chatFor();
-      _setChatModelForTests(chat.model, { concurrency: 1 });
+      chatSlot.override(chat.model, { concurrency: 1 });
       await step(pkgWith());
       const calls = chat.prompts.length;
       await step(pkgWith());
@@ -192,7 +195,7 @@ describe("source summaries in the index build", () => {
 
    it("editing one source's doc rewrites that source only", async () => {
       const chat = chatFor();
-      _setChatModelForTests(chat.model, { concurrency: 1 });
+      chatSlot.override(chat.model, { concurrency: 1 });
       await step(pkgWith());
       const before = chat.prompts.length;
 
@@ -211,7 +214,7 @@ describe("source summaries in the index build", () => {
 
    it("a change only the model is shown (a field's type) rewrites its source", async () => {
       const chat = chatFor();
-      _setChatModelForTests(chat.model, { concurrency: 1 });
+      chatSlot.override(chat.model, { concurrency: 1 });
       await step(pkgWith());
       const before = chat.prompts.length;
       const retyped = entities((e) =>
@@ -224,7 +227,7 @@ describe("source summaries in the index build", () => {
 
    it("editing the prompt file rewrites every summary", async () => {
       const chat = chatFor();
-      _setChatModelForTests(chat.model, { concurrency: 1 });
+      chatSlot.override(chat.model, { concurrency: 1 });
       await step(pkgWith());
       const before = chat.prompts.length;
       await step(
@@ -243,11 +246,11 @@ describe("source summaries in the index build", () => {
 
    it("a different model rewrites every summary", async () => {
       const chat = chatFor();
-      _setChatModelForTests(chat.model, { concurrency: 1 });
+      chatSlot.override(chat.model, { concurrency: 1 });
       await step(pkgWith());
       const before = chat.prompts.length;
       const other = chatFor();
-      _setChatModelForTests(other.model, { concurrency: 1, model: "other" });
+      chatSlot.override(other.model, { concurrency: 1, model: "other" });
       await step(pkgWith());
       expect(chat.prompts).toHaveLength(before);
       expect(summaryPrompts(other)).toHaveLength(2);
@@ -256,7 +259,7 @@ describe("source summaries in the index build", () => {
    it("an LLM failure is an error with the stage named, and a retry resumes", async () => {
       let down = true;
       const chat = chatFor((p) => down && /^Source name: customers$/m.test(p));
-      _setChatModelForTests(chat.model, { concurrency: 1 });
+      chatSlot.override(chat.model, { concurrency: 1 });
       const pkg = pkgWith();
       const error = (await step(pkg).then(
          () => undefined,
@@ -280,7 +283,7 @@ describe("source summaries in the index build", () => {
 
    it("stops at maxCallsPerSync and says so", async () => {
       const chat = chatFor();
-      _setChatModelForTests(chat.model, {
+      chatSlot.override(chat.model, {
          concurrency: 1,
          maxCallsPerSync: 1,
       });
@@ -292,7 +295,7 @@ describe("source summaries in the index build", () => {
 
    it("enabled: false makes no call", async () => {
       const chat = chatFor();
-      _setChatModelForTests(chat.model, { concurrency: 1 });
+      chatSlot.override(chat.model, { concurrency: 1 });
       expect(
          await step(pkgWith({ sourceSummary: { enabled: false } })),
       ).toBeUndefined();
@@ -301,20 +304,20 @@ describe("source summaries in the index build", () => {
    });
 
    it("with no LLM configured, auto acts as off", async () => {
-      _setChatModelForTests(null);
+      chatSlot.override(null);
       expect(await step(pkgWith())).toBeUndefined();
       expect([...(await rows()).keys()]).toEqual([]);
    });
 
    it("enabled: true with an LLM runs the step like auto", async () => {
       const chat = chatFor();
-      _setChatModelForTests(chat.model, { concurrency: 1 });
+      chatSlot.override(chat.model, { concurrency: 1 });
       await step(pkgWith({ sourceSummary: { enabled: true } }));
       expect(summaryPrompts(chat)).toHaveLength(2);
    });
 
    it("deleting the package deletes its summaries", async () => {
-      _setChatModelForTests(chatFor().model, { concurrency: 1 });
+      chatSlot.override(chatFor().model, { concurrency: 1 });
       await step(pkgWith());
       expect((await rows()).size).toBe(2);
       await deletePackageEmbeddings(db, "env", "build");

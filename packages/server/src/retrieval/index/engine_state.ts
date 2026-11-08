@@ -19,7 +19,6 @@
  * cool-down, and only while requests arrive.
  */
 
-import { activeLlmSettings, getChatModel } from "../llm/active";
 import { createChatModel } from "../llm/registry";
 import type { ChatModel, LlmSettings } from "../llm/types";
 import { deleteEngineRows } from "./catalog_store";
@@ -39,7 +38,7 @@ import {
 } from "../../service/package_retrieval_settings";
 import { logger } from "../../logger";
 import { PROVIDER_FAILURE_COOLDOWN_MS } from "../shared";
-import { retrievalRegistry } from "../registry";
+import type { RetrievalRegistry } from "../registry";
 import { SyncRequestBudget } from "../llm/llm_calls";
 import { getPackageIndex } from "../model/package_entities";
 import {
@@ -48,53 +47,26 @@ import {
    loadSourceSummaries,
    resolveSourceSummaries,
 } from "./source_summaries";
+import type { FcjState } from "./fcj_state";
 import { buildFcjIndex, type FcjIndex } from "./index_build";
 import type { VectorProgress } from "./vectors";
-import type {
-   IndexValueFetcher,
-   ValueBuildReport,
-   ValueIndex,
+import {
+   indexValueFetcherFor,
+   type ValueBuildReport,
+   type ValueIndex,
 } from "./values_index";
 
-export type FcjState =
-   | {
-        status: "building";
-        startedAt: number;
-        /** Set once the vectors step starts. */
-        progress?: VectorProgress;
-        /** When a vector this build keeps was last written. */
-        lastSyncedAt?: number;
-     }
-   | {
-        status: "ready";
-        index: FcjIndex;
-        /** When this index's vectors were last written; unset when it has none. */
-        lastSyncedAt?: number;
-        /** Set when value reads failed: when to build again for them. */
-        rebuildAt?: number;
-        /**
-         * Builds in a row that left values unread. Each doubles the wait
-         * before the next ({@link valueRetryDelayMs}).
-         */
-        valueFailures?: number;
-        /** A rebuild for failed value reads is queued; this index serves until it lands. */
-        rebuilding?: boolean;
-     }
-   | { status: "error"; message: string; failedAt: number };
-
-/** Test seam: stand in for the warehouse when the value index reads data. */
-export function _setFcjValueFetcherForTests(f: IndexValueFetcher | undefined) {
-   retrievalRegistry().valueFetcherOverride = f;
-}
-
-export function fcjStateOf(pkg: Package): FcjState | undefined {
-   return retrievalRegistry().engineStates.get(pkg);
+export function fcjStateOf(
+   registry: RetrievalRegistry,
+   pkg: Package,
+): FcjState | undefined {
+   return registry.engineStates.get(pkg);
 }
 
 /** The chat model the index-time steps and the judge use, or null when the LLM is off. */
-function fcjChat(): ChatModel | null {
+function fcjChat(registry: RetrievalRegistry): ChatModel | null {
    try {
-      return getChatModel();
+      return registry.chat.model();
    } catch (error) {
       logger.warn("[get_context fcj] The LLM client could not be built", {
          error: error instanceof Error ? error.message : String(error),
@@ -110,15 +82,17 @@ function fcjChat(): ChatModel | null {
  * that client cannot be built: a judge that was asked for must not be
  * skipped quietly, so the request fails instead.
  */
-export function fcjJudgeChat(judgeLlm: FcjJudgeLlm | null): ChatModel | null {
-   if (!judgeLlm) return fcjChat();
-   const base = activeLlmSettings();
+export function fcjJudgeChat(
+   registry: RetrievalRegistry,
+   judgeLlm: FcjJudgeLlm | null,
+): ChatModel | null {
+   if (!judgeLlm) return fcjChat(registry);
+   const base = registry.chat.settings();
    if (!base) return null;
    const settings: LlmSettings = { ...base, model: judgeLlm.model };
    const fingerprint = JSON.stringify(settings);
-   // Cached on the settings, as getChatModel is, so the model's cooldown
-   // state survives between requests.
-   const registry = retrievalRegistry();
+   // Cached on the settings, as the chat model slot is, so the model's
+   // cooldown state survives between requests.
    if (!registry.judgeChat || registry.judgeChat.fingerprint !== fingerprint) {
       try {
          registry.judgeChat = { fingerprint, model: createChatModel(settings) };
@@ -137,6 +111,8 @@ export function fcjJudgeChat(judgeLlm: FcjJudgeLlm | null): ChatModel | null {
  * inside the cool-down. Never throws; the outcome lands in the state.
  */
 export function kickFcjBuild(args: {
+   /** Holds the build state, the sync queue and what the build reads with. */
+   registry: RetrievalRegistry;
    environmentStore: PackageLookup & Partial<EnvironmentPeek>;
    /** Where the build writes, and where a dropped package's rows are deleted. */
    catalog: CatalogDatabase;
@@ -144,8 +120,7 @@ export function kickFcjBuild(args: {
    packageName: string;
    pkg: Package;
 }): void {
-   const { environmentName, packageName, pkg } = args;
-   const registry = retrievalRegistry();
+   const { registry, environmentName, packageName, pkg } = args;
    const states = registry.engineStates;
    const state = states.get(pkg);
    if (state?.status === "building") return;
@@ -316,8 +291,7 @@ function rebuildForValues(
    args: Parameters<typeof kickFcjBuild>[0],
    state: Extract<FcjState, { status: "ready" }>,
 ): void {
-   const { environmentName, packageName, pkg } = args;
-   const registry = retrievalRegistry();
+   const { registry, environmentName, packageName, pkg } = args;
    const states = registry.engineStates;
    states.set(pkg, { ...state, rebuilding: true });
    void registry.embeddingSyncQueue.enqueue(async () => {
@@ -368,6 +342,7 @@ function rebuildForValues(
 
 async function buildFor(
    args: {
+      registry: RetrievalRegistry;
       environmentStore: PackageLookup;
       catalog: CatalogDatabase;
       environmentName: string;
@@ -380,8 +355,10 @@ async function buildFor(
       lastWrittenAt?: number,
    ) => void,
 ): Promise<FcjIndex> {
-   const { environmentStore, environmentName, packageName, pkg } = args;
+   const { registry, environmentStore, environmentName, packageName, pkg } =
+      args;
    const pkgIndex = await getPackageIndex(
+      registry.packageIndexes,
       environmentStore,
       environmentName,
       packageName,
@@ -390,18 +367,19 @@ async function buildFor(
    const retrieval = pkg.getRetrievalSettings?.();
    const settings = fcjSettingsOf(retrieval);
    const provider = embeddingConfigured() ? getEmbeddingProvider() : null;
-   const llmSettings = activeLlmSettings();
-   const chat = llmSettings ? fcjChat() : null;
+   const llmSettings = registry.chat.settings();
+   const chat = llmSettings ? fcjChat(registry) : null;
    // One retrieval.llm.maxCallsPerSync for the whole build: summaries, doc
    // parts and questions all draw on it.
    const budget = new SyncRequestBudget(llmSettings?.maxCallsPerSync ?? 0);
    const shouldStop = () => !stillServed(args);
-   const fetcherOverride = retrievalRegistry().valueFetcherOverride;
+   const fetcher =
+      registry.valueFetcherOverride ?? indexValueFetcherFor(registry);
 
    // Source summaries: written by the summary step when the package has them
    // on, then read back. A failure to write them is reported, not fatal:
    // a summary only adds a line to a source's search text.
-   const summarySettings = resolveSourceSummarySettings(pkg);
+   const summarySettings = resolveSourceSummarySettings(pkg, registry.chat);
    let storedSummaries;
    if (summarySettings) {
       try {
@@ -428,7 +406,11 @@ async function buildFor(
          db,
          environmentName,
          packageName,
-         currentSummaryHashes(pkgIndex.directEntities, summarySettings),
+         currentSummaryHashes(
+            pkgIndex.directEntities,
+            summarySettings,
+            registry.summaryHashes,
+         ),
       );
    }
    return buildFcjIndex({
@@ -457,10 +439,7 @@ async function buildFor(
            }
          : {}),
       ...(storedSummaries ? { storedSummaries } : {}),
-      valueRead: {
-         environmentStore,
-         ...(fetcherOverride ? { fetcher: fetcherOverride } : {}),
-      },
+      valueRead: { environmentStore, fetcher },
       budget,
       ...(previousValues ? { previousValues } : {}),
       // A package removed mid-build stops reading values and embedding.
@@ -474,8 +453,11 @@ async function buildFor(
  * vectors step has got (zero before it starts); once ready, what the index
  * serves. Zero with no build, or after a failed one.
  */
-export function fcjVectorProgressOf(pkg: Package): VectorProgress {
-   const state = retrievalRegistry().engineStates.get(pkg);
+export function fcjVectorProgressOf(
+   registry: RetrievalRegistry,
+   pkg: Package,
+): VectorProgress {
+   const state = registry.engineStates.get(pkg);
    if (state?.status === "building" && state.progress) return state.progress;
    if (state?.status !== "ready") {
       return {
@@ -499,8 +481,11 @@ export function fcjVectorProgressOf(pkg: Package): VectorProgress {
 }
 
 /** When the package's vectors were last written, as ISO 8601; undefined before any were. */
-export function fcjLastSyncedAtOf(pkg: Package): string | undefined {
-   const state = retrievalRegistry().engineStates.get(pkg);
+export function fcjLastSyncedAtOf(
+   registry: RetrievalRegistry,
+   pkg: Package,
+): string | undefined {
+   const state = registry.engineStates.get(pkg);
    const at =
       state?.status === "building" || state?.status === "ready"
          ? state.lastSyncedAt
@@ -509,8 +494,11 @@ export function fcjLastSyncedAtOf(pkg: Package): string | undefined {
 }
 
 /** The state as the REST Package resource reports it, under `embeddingIndex.fcj`. */
-export function fcjStatusOf(pkg: Package): Record<string, unknown> {
-   const state = retrievalRegistry().engineStates.get(pkg);
+export function fcjStatusOf(
+   registry: RetrievalRegistry,
+   pkg: Package,
+): Record<string, unknown> {
+   const state = registry.engineStates.get(pkg);
    if (!state) return { engine: "fcj", status: "indexing" };
    if (state.status === "building") {
       return {

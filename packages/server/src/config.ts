@@ -694,9 +694,9 @@ export function getLlmSettings(file?: RetrievalLlmConfig): LlmSettings | null {
  * Whether the operator has an LLM configured: the publisher.config.json
  * `retrieval.llm` block in force resolves to settings (see
  * {@link getLlmSettings}). Reads settings only, so package loading can ask it
- * without depending on the retrieval engine; retrieval's own `llmConfigured`
- * (retrieval/llm/active.ts) answers the same question through its chat-model
- * slot, which a test may override.
+ * without depending on the retrieval engine; retrieval's chat-model slot
+ * (retrieval/llm/chat_model_slot.ts, `settings()`) answers the same question,
+ * and a test may override it.
  */
 export function operatorLlmConfigured(): boolean {
    return getLlmSettings(loadedRetrievalConfig()?.llm) !== null;

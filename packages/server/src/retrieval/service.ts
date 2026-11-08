@@ -16,18 +16,22 @@ import {
    getPackageEmbeddingStatus,
    startPackageEmbeddingSync,
 } from "./index/package_embedding";
-import type { SearchResult } from "./model/types";
-import {
-   installRetrievalRegistry,
-   type RetrievalRegistry,
-   retrievalRegistry,
-} from "./registry";
+import { rankTables } from "./index/schema_index";
+import { getPackageIndex } from "./model/package_entities";
+import type { PackageIndex, SearchResult } from "./model/types";
+import { RetrievalRegistry } from "./registry";
 import { type FcjQueryArgs, runFcjQuery } from "./search/engine";
 
-/** One ranked search: everything runFcjQuery takes but the store, the catalog and its own signal. */
+/** One ranked search: everything runFcjQuery takes but the registry, the store, the catalog and its own signal. */
 export type SearchArgs = Omit<
    FcjQueryArgs,
-   "environmentStore" | "catalog" | "signal"
+   "registry" | "environmentStore" | "catalog" | "signal"
+>;
+
+/** One search_database_schema ranking: everything rankTables takes but the caches. */
+export type RankSchemaTablesArgs = Omit<
+   Parameters<typeof rankTables>[0],
+   "caches"
 >;
 
 /**
@@ -55,10 +59,10 @@ export const NO_CATALOG: CatalogDatabase = {
  * (index builds, caches, held pages, the embedding queue, the chat model,
  * the value-lookup resolver and slot pool).
  *
- * The registry is also the one retrieval's modules read: given one, the
- * service installs it (the composition root builds one per process); given
- * none, it adopts the registry already in force, which is how a spec that
- * builds a service over a stub store shares the state its own seams set.
+ * The service passes the registry, or the one field a callee needs, to
+ * retrieval's modules; none reads a registry it was not given. The
+ * composition root builds one per process; a service built without one (a
+ * spec's, or a tool's default) gets a fresh one of its own.
  *
  * A search answers a domain SearchResult; turning it into an MCP result is
  * the get_context tool's job, not retrieval's.
@@ -69,16 +73,32 @@ export class RetrievalService {
    constructor(
       private readonly environmentStore: RetrievalStore,
       private readonly catalog: CatalogDatabase,
-      registry?: RetrievalRegistry,
+      registry: RetrievalRegistry = new RetrievalRegistry(),
    ) {
-      if (registry) installRetrievalRegistry(registry);
-      this.registry = registry ?? retrievalRegistry();
+      this.registry = registry;
+   }
+
+   /**
+    * One package's entity index (what get_context lists and searches), built
+    * once per loaded Package. Throws when the package does not load.
+    */
+   packageIndex(
+      environmentName: string,
+      packageName: string,
+   ): Promise<PackageIndex> {
+      return getPackageIndex(
+         this.registry.packageIndexes,
+         this.environmentStore,
+         environmentName,
+         packageName,
+      );
    }
 
    /** A ranked get_context search over one package's index. */
    search(args: SearchArgs): Promise<SearchResult> {
       return runFcjQuery({
          ...args,
+         registry: this.registry,
          environmentStore: this.environmentStore,
          catalog: this.catalog,
       });
@@ -91,6 +111,7 @@ export class RetrievalService {
       loaded?: Package,
    ): Promise<EmbeddingIndexStatus> {
       return getPackageEmbeddingStatus(
+         this.registry,
          this.environmentStore,
          environmentName,
          packageName,
@@ -105,11 +126,17 @@ export class RetrievalService {
     */
    onPackageLoaded(environmentName: string, pkg: Package): void {
       startPackageEmbeddingSync(
+         this.registry,
          this.environmentStore,
          this.catalog,
          environmentName,
          pkg,
       );
+   }
+
+   /** Rank a schema's tables for search_database_schema, through the process's schema caches. */
+   rankSchemaTables(args: RankSchemaTablesArgs): ReturnType<typeof rankTables> {
+      return rankTables({ ...args, caches: this.registry.schemaIndex });
    }
 
    /**

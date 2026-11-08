@@ -68,7 +68,12 @@ async function indexWithDbmeta() {
          },
       },
    });
-   const index = await getPackageIndex(storeServing(pkg), "env", "pkg");
+   const index = await getPackageIndex(
+      new WeakMap(),
+      storeServing(pkg),
+      "env",
+      "pkg",
+   );
    const find = (kind: string, source: string, name: string) =>
       [...index.byId.values()].find(
          (e) => e.kind === kind && e.source === source && e.name === name,

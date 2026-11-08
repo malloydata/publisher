@@ -43,7 +43,7 @@
 
 import type { AccessIdentity } from "../../service/access_record";
 import type { PackageLookup } from "../../service/environment_ports";
-import { defaultValueFetcher, type ValueFetcher } from "./values";
+import type { ValueFetcher } from "./values";
 import { matchValues } from "./value_match";
 import {
    projectEntity,
@@ -114,8 +114,8 @@ export async function respond(args: {
    verdicts: readonly JudgeVerdict[];
    targets: readonly FindTarget[];
    environmentStore: PackageLookup;
-   /** Test seam for the gated lookup; the query path otherwise. */
-   valueFetcher?: ValueFetcher;
+   /** The gated lookup: valueFetcherFor (the query path) in production, a stand-in in a spec. */
+   valueFetcher: ValueFetcher;
    /** Fields returned beside the picks, marked "also likely" (also_likely.ts). */
    alsoLikely?: readonly AlsoLikelyField[];
    /** Aborted at the request's deadline: no gated lookup starts after it. */
@@ -663,7 +663,7 @@ async function valuesFor(
    // Past the request's deadline nobody reads the answer: do not take a query slot.
    if (args.signal?.aborted) return [];
    try {
-      const got = await (args.valueFetcher ?? defaultValueFetcher)({
+      const got = await args.valueFetcher({
          environmentStore: args.environmentStore,
          environmentName: request.environmentName,
          packageName: request.packageName,

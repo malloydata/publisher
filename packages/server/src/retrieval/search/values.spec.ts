@@ -19,9 +19,9 @@ import * as path from "path";
 import { AccessDeniedError } from "../../errors";
 import { parseRetrievalConfig } from "../config";
 import { Model } from "../../service/model";
-import { defaultIndexValueFetcher } from "../index/values_index";
-import { defaultValueFetcher } from "./values";
-import { installRetrievalRegistry, RetrievalRegistry } from "../registry";
+import { indexValueFetcherFor } from "../index/values_index";
+import { valueFetcherFor } from "./values";
+import { RetrievalRegistry } from "../registry";
 import {
    editDistance,
    filterStem,
@@ -191,7 +191,7 @@ describe("the lookup query over a real model (gates are the query path's)", () =
    });
 
    const read = (source: string, givens?: Record<string, unknown>) =>
-      defaultValueFetcher({
+      valueFetcherFor(new RetrievalRegistry())({
          environmentStore: store,
          environmentName: "env",
          packageName: "pkg",
@@ -245,7 +245,7 @@ describe("the lookup query over a real model (gates are the query path's)", () =
    });
 
    it("reads only the values containing a stem, when one is given", async () => {
-      const filtered = await defaultValueFetcher({
+      const filtered = await valueFetcherFor(new RetrievalRegistry())({
          environmentStore: store,
          environmentName: "env",
          packageName: "pkg",
@@ -264,7 +264,7 @@ describe("the lookup query over a real model (gates are the query path's)", () =
 
    it("reads the index's counted values through the same query, gates included", async () => {
       const indexRead = (source: string, dimension: string, limit: number) =>
-         defaultIndexValueFetcher({
+         indexValueFetcherFor(new RetrievalRegistry())({
             environmentStore: store,
             environmentName: "env",
             packageName: "pkg",
@@ -294,29 +294,23 @@ describe("the lookup query over a real model (gates are the query path's)", () =
 
 describe("the model resolver a lookup reads through", () => {
    it("throws the installed resolver's worded refusal, not its cause", async () => {
-      const previous = installRetrievalRegistry(
-         new RetrievalRegistry({
-            queryModelResolver: async () => ({
-               error: { message: "worded by the adapter", suggestions: [] },
-               cause: new Error("raw cause"),
-            }),
+      const registry = new RetrievalRegistry({
+         queryModelResolver: async () => ({
+            error: { message: "worded by the adapter", suggestions: [] },
+            cause: new Error("raw cause"),
          }),
-      );
-      try {
-         await expect(
-            defaultValueFetcher({
-               environmentStore: {} as PackageLookup,
-               environmentName: "env",
-               packageName: "pkg",
-               modelPath: "m.malloy",
-               source: "s",
-               dimension: "d",
-               limit: 5,
-               timeoutMs: 1000,
-            }),
-         ).rejects.toThrow("worded by the adapter");
-      } finally {
-         installRetrievalRegistry(previous);
-      }
+      });
+      await expect(
+         valueFetcherFor(registry)({
+            environmentStore: {} as PackageLookup,
+            environmentName: "env",
+            packageName: "pkg",
+            modelPath: "m.malloy",
+            source: "s",
+            dimension: "d",
+            limit: 5,
+            timeoutMs: 1000,
+         }),
+      ).rejects.toThrow("worded by the adapter");
    });
 });

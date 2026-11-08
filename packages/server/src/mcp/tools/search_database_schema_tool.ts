@@ -11,11 +11,11 @@ import { buildMalloyUri } from "../handler_utils";
 import { registerGuardedTool } from "../register_tool";
 import { jsonResource, jsonToolError } from "../tool_response";
 import { logger } from "../../logger";
-import {
+import type {
    RankingMode,
    SchemaTableEntity,
-   rankTables,
 } from "../../retrieval/index/schema_index";
+import { NO_CATALOG, RetrievalService } from "../../retrieval/service";
 import { parseEnvironmentName } from "../../service/identity";
 
 /** Tables returned when the caller does not ask for a specific number. */
@@ -310,8 +310,12 @@ export function registerSearchDatabaseSchemaTool(
    mcpServer: McpServer,
    environmentStore: EnvironmentCatalog,
    connectionController: ConnectionController,
+   retrieval: RetrievalService = new RetrievalService(
+      environmentStore,
+      NO_CATALOG,
+   ),
 ): void {
-   const deps: TierDeps = { environmentStore, connectionController };
+   const deps: TierDeps = { environmentStore, connectionController, retrieval };
 
    registerGuardedTool(mcpServer, {
       name: "search_database_schema",
@@ -391,6 +395,8 @@ export function registerSearchDatabaseSchemaTool(
 interface TierDeps {
    environmentStore: EnvironmentCatalog;
    connectionController: ConnectionController;
+   /** Ranks a schema's tables, through the process's schema caches. */
+   retrieval: RetrievalService;
 }
 
 /**
@@ -732,7 +738,7 @@ async function describeTableTier(
 
 /** Tier 4: a schema's tables, listed or ranked. */
 async function listTablesTier(
-   { environmentStore, connectionController }: TierDeps,
+   { environmentStore, connectionController, retrieval }: TierDeps,
    uri: string,
    {
       environmentName,
@@ -773,7 +779,7 @@ async function listTablesTier(
 
    if (searchQuery !== undefined) {
       const provider = resolveProvider();
-      const ranked = await rankTables({
+      const ranked = await retrieval.rankSchemaTables({
          tables: entities,
          query: searchQuery,
          limit: max,
