@@ -5,7 +5,7 @@
  * Makes the compile / sqlSource admission claim behavioural instead of textual.
  *
  * `/query`, `/sqlQuery` and `/sqlTemporaryTable` pass through
- * `queryConcurrency()`, which caps concurrent work at
+ * `QuerySlots.middleware`, which caps concurrent work at
  * PUBLISHER_MAX_CONCURRENT_QUERIES so a flood cannot saturate the pod. `/compile`
  * and both `/sqlSource` routes reach the same controllers -- compile resolves
  * source schemas against the connection, sqlSource runs a live introspection --
