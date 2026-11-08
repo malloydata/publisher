@@ -9,6 +9,8 @@ import { MalloyError } from "@malloydata/malloy";
 import { isMcpIncludeHiddenFilesAndSources } from "../../config";
 import { logger } from "../../logger";
 import { registerExecuteQueryTool } from "./execute_query_tool";
+import { QuerySlots } from "../../query_concurrency";
+import { QueryUseCase } from "../../usecases/query";
 import {
    PackageLoadPool,
    __setPackageLoadPoolForTests,
@@ -84,18 +86,19 @@ function captureTool(
    };
    // Registered with the settings read from this server root, so a tool that
    // read the config itself, rather than the store, would see it.
-   withSettings({ cwd: serverRootPath }, () =>
+   withSettings({ cwd: serverRootPath }, () => {
+      const registered = {
+         // What EnvironmentStore's constructor reads from the config, once.
+         mcpIncludeHiddenFilesAndSources: isMcpIncludeHiddenFilesAndSources(),
+         ...store,
+         serverRootPath,
+      } as EnvironmentStore;
       registerExecuteQueryTool(
          fakeServer as never,
-         {
-            // What EnvironmentStore's constructor reads from the config, once.
-            mcpIncludeHiddenFilesAndSources:
-               isMcpIncludeHiddenFilesAndSources(),
-            ...store,
-            serverRootPath,
-         } as EnvironmentStore,
-      ),
-   );
+         registered,
+         new QueryUseCase(registered, new QuerySlots()),
+      );
+   });
    if (!handler || !shape) throw new Error("handler was not registered");
    return { handler, shape };
 }
@@ -115,7 +118,7 @@ function parse(result: { content: Array<{ resource?: { text: string } }> }) {
  * getModelForQuery already homes a back-pressure error from
  * `environment.assertCanAdmitQuery()`, which runs outside it, so a test that
  * trips that path passes even with the catch's classifyToolError call reverted.
- * Failing at getQueryResults puts the error where tryAcquireQuerySlot's
+ * Failing at getQueryResults puts the error where QuerySlots.tryAcquire's
  * ServiceUnavailableError lands, which is the case that was reported.
  */
 function storeWhoseQueryThrows(error: unknown): Partial<EnvironmentStore> {
@@ -246,7 +249,7 @@ describe("execute_query error classification", () => {
    });
 
    it("tells an at-capacity caller to retry, not to check its Malloy", async () => {
-      // The reported bug. tryAcquireQuerySlot runs inside the tool's try, so at
+      // The reported bug. The slot is taken inside the tool's try, so at
       // the concurrency cap its ServiceUnavailableError landed in a catch that
       // funnelled everything through the Malloy helper: a 503 told the agent to
       // go verify its syntax. This is the assertion that fails if the catch

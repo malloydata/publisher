@@ -21,7 +21,8 @@ import { parseRetrievalConfig } from "../config";
 import type { EnvironmentStore } from "../../service/environment_store";
 import { Model } from "../../service/model";
 import { defaultIndexValueFetcher } from "../index/values_index";
-import { defaultValueFetcher, setQueryModelResolver } from "./values";
+import { defaultValueFetcher } from "./values";
+import { installRetrievalRegistry, RetrievalRegistry } from "../registry";
 import {
    editDistance,
    filterStem,
@@ -292,10 +293,14 @@ describe("the lookup query over a real model (gates are the query path's)", () =
 
 describe("the model resolver a lookup reads through", () => {
    it("throws the installed resolver's worded refusal, not its cause", async () => {
-      setQueryModelResolver(async () => ({
-         error: { message: "worded by the adapter", suggestions: [] },
-         cause: new Error("raw cause"),
-      }));
+      const previous = installRetrievalRegistry(
+         new RetrievalRegistry({
+            queryModelResolver: async () => ({
+               error: { message: "worded by the adapter", suggestions: [] },
+               cause: new Error("raw cause"),
+            }),
+         }),
+      );
       try {
          await expect(
             defaultValueFetcher({
@@ -310,7 +315,7 @@ describe("the model resolver a lookup reads through", () => {
             }),
          ).rejects.toThrow("worded by the adapter");
       } finally {
-         setQueryModelResolver(undefined);
+         installRetrievalRegistry(previous);
       }
    });
 });

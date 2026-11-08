@@ -5,6 +5,7 @@ import type { McpServices } from "../app_services";
 import { CompileController } from "../controller/compile.controller";
 import { ConnectionController } from "../controller/connection.controller";
 import { PackageController } from "../controller/package.controller";
+import { QuerySlots } from "../query_concurrency";
 import { RetrievalService } from "../retrieval/service";
 import type { EnvironmentStore } from "../service/environment_store";
 import { QueryUseCase } from "../usecases/query";
@@ -17,10 +18,12 @@ import { QueryUseCase } from "../usecases/query";
 export function mcpServicesFor(store: unknown): McpServices {
    const environmentStore = store as EnvironmentStore;
    const retrieval = new RetrievalService(environmentStore);
+   const querySlots = new QuerySlots();
    return {
       environmentStore,
       retrieval,
-      queryUseCase: new QueryUseCase(environmentStore),
+      querySlots,
+      queryUseCase: new QueryUseCase(environmentStore, querySlots),
       compileController: new CompileController(environmentStore),
       packageController: new PackageController(environmentStore, retrieval),
       connectionController: new ConnectionController(environmentStore),

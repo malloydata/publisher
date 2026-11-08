@@ -31,6 +31,7 @@ import {
    sourceContextKey,
 } from "./package_entities";
 import { entityId } from "../search/response";
+import { retrievalRegistry } from "../registry";
 import { type Entity, type JoinTopology, type PackageIndex } from "./types";
 
 type NodeKind = Entity["kind"];
@@ -210,7 +211,7 @@ export interface Catalog {
 }
 
 /** The part of a compiled model the catalog reads. */
-interface CatalogModel {
+export interface CatalogModel {
    modelPath: string;
    modelDef?: ModelDef;
    /** The model's SourceInfo list, for `#(index)` tags and view outputs. */
@@ -523,12 +524,15 @@ function parentIdOf(compiled: CompiledSource | undefined): string | undefined {
    return compiled?.extends ?? compiled?.referenceID;
 }
 
-/** Start lines of every compiled source definition, by file URL. */
-const sourceStartsCache = new WeakMap<
+/** Start lines of compiled sources per model list (RetrievalRegistry.sourceStarts). */
+export type SourceStartsCache = WeakMap<
    readonly CatalogModel[],
    Map<string, number[]>
->();
+>;
+
+/** Start lines of every compiled source definition, by file URL. */
 function sourceStarts(models: readonly CatalogModel[]): Map<string, number[]> {
+   const sourceStartsCache = retrievalRegistry().sourceStarts;
    const cached = sourceStartsCache.get(models);
    if (cached) return cached;
    const out = new Map<string, Set<number>>();

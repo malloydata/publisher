@@ -63,12 +63,12 @@ import {
 import type { AccessIdentity } from "../../service/access_record";
 import type { FcjIndex } from "../index/index_build";
 import { connect, type ConnectResult } from "./connect";
+import { retrievalRegistry } from "../registry";
 import { dropBesideRoutes, dropTwins, judge, type JudgeVerdict } from "./judge";
 import {
    FCJ_MAX_CHARS,
    FCJ_RESERVE_CHARS,
    FCJ_RESULT_TTL_MS,
-   heldResults,
    pageAt,
    resultKey,
    type HeldResult,
@@ -88,9 +88,9 @@ import {
    type SplitPlan,
 } from "./split_targets";
 
-/** Per index, whether the package uses a phrase as written (split.ts). */
-const phraseCheckers = new WeakMap<FcjIndex, (phrase: string) => boolean>();
+/** Whether the package behind `index` uses a phrase as written (split.ts), memoized per index. */
 function knownPhraseOf(index: FcjIndex): (phrase: string) => boolean {
+   const phraseCheckers = retrievalRegistry().phraseCheckers;
    let check = phraseCheckers.get(index);
    if (!check) {
       check = phraseCheckerOf(
@@ -229,10 +229,9 @@ export function findTrace(index: FcjIndex, results: readonly FindResult[]) {
 
 /** How long one `get_context` search may run before its targets are answered as unresolved. */
 const FCJ_REQUEST_DEADLINE_MS = 90_000;
-let deadlineForTests: number | undefined;
 /** Tests only: a shorter deadline (undefined restores the default). */
 export function _setFcjDeadlineForTests(ms: number | undefined): void {
-   deadlineForTests = ms;
+   retrievalRegistry().searchDeadlineMs = ms;
 }
 
 export type FcjQueryArgs = {
@@ -262,7 +261,7 @@ export type FcjQueryArgs = {
 export async function runFcjQuery(args: FcjQueryArgs): Promise<SearchResult> {
    // Already cancelled: start no search for an answer nobody reads.
    if (args.clientSignal?.aborted) return cancelledResult(args);
-   const ms = deadlineForTests ?? FCJ_REQUEST_DEADLINE_MS;
+   const ms = retrievalRegistry().searchDeadlineMs ?? FCJ_REQUEST_DEADLINE_MS;
    const controller = new AbortController();
    const search = runFcjSearch({ ...args, signal: controller.signal });
    // Once it is abandoned nobody awaits it; a later failure is not unhandled.
@@ -342,7 +341,7 @@ async function runFcjSearch(args: FcjQueryArgs): Promise<SearchResult> {
    });
    if (state?.status !== "ready") return unreadyAnswer(args, state);
    const index = state.index;
-   const held = heldResults;
+   const held = retrievalRegistry().heldResults;
    const key = resultKey(request);
    const leading = [...args.warnings];
    if (request.offset > 0) {

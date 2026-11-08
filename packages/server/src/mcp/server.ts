@@ -56,6 +56,7 @@ export function initializeMcpServer(services: McpServices): McpServer {
       compileController,
       packageController,
       connectionController,
+      querySlots,
    } = services;
    const mcpServer = new McpServer(testServerInfo, {
       instructions: MCP_INSTRUCTIONS,
@@ -65,7 +66,7 @@ export function initializeMcpServer(services: McpServices): McpServer {
    registerGetContextTool(mcpServer, environmentStore, retrieval);
    registerListPackagesTool(mcpServer, environmentStore);
    registerDocsSearchTool(mcpServer, environmentStore);
-   registerCompileTool(mcpServer, compileController);
+   registerCompileTool(mcpServer, compileController, querySlots);
    registerReloadPackageTool(mcpServer, packageController);
    registerSearchDatabaseSchemaTool(
       mcpServer,

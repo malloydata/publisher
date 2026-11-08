@@ -49,7 +49,7 @@ import { deleteEngineRows, ENGINE_TABLES } from "../index/catalog_store";
 import type { EnvironmentStore } from "../../service/environment_store";
 import type { IndexValueFetcher } from "../index/values_index";
 import type { Package } from "../../service/package";
-import { heldResults } from "./pages";
+import { retrievalRegistry } from "../registry";
 import type { ChatModel } from "../llm/types";
 import {
    DEFAULT_FCJ_SETTINGS,
@@ -696,7 +696,7 @@ const entityIds = (p: Payload) =>
 describe("fcj paging", () => {
    /** A ready handler and the complete result, all on one page. */
    async function ready() {
-      heldResults.clear();
+      retrievalRegistry().heldResults.clear();
       const { pkg } = await compileFcjFixture();
       const handler = harness.handlerFor(pkg);
       const call = async (extra: Record<string, unknown>) =>
@@ -716,7 +716,7 @@ describe("fcj paging", () => {
       ).payload as Payload;
       expect(complete.next_offset).toBeUndefined();
       // Nothing to come back for, so nothing is held.
-      expect(heldResults.size).toBe(0);
+      expect(retrievalRegistry().heldResults.size).toBe(0);
       return { call, complete, half: Math.ceil(complete.sources.length / 2) };
    }
 
@@ -756,7 +756,7 @@ describe("fcj paging", () => {
    it("runs the search again, and says so, when the held result is gone", async () => {
       const { call, complete, half } = await ready();
       const one = await call({ limit: half });
-      heldResults.clear();
+      retrievalRegistry().heldResults.clear();
       const two = await call({ limit: half, offset: one.next_offset });
       expect(stageNames(two)).toContain("judge");
       expect(two.warnings!.join(" ")).toContain(

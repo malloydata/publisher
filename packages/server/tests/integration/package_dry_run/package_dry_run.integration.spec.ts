@@ -18,6 +18,7 @@ import { MalloyConfig } from "@malloydata/malloy";
 import { logger } from "../../../src/logger";
 import { Package } from "../../../src/service/package";
 import { startRestE2E } from "../../harness/rest_e2e";
+import { bootMainServer } from "../../harness/main_server";
 import { installVariables } from "../../../src/test_helpers/settings_env";
 import { parseEnvironmentName } from "../../../src/service/identity";
 
@@ -261,7 +262,7 @@ describe("a dry-run publish", () => {
    }, 60_000);
 
    it("refuses a dry run past the server's concurrent dry runs with 503, and admits one once a slot frees", async () => {
-      const { environmentStore } = await import("../../../src/main_server");
+      const { environmentStore } = await bootMainServer();
       const environment = await environmentStore.getEnvironment(
          parseEnvironmentName(ENV_NAME),
          false,

@@ -8,8 +8,8 @@ import { logger } from "../../logger";
  *
  * The embedding provider's rate limit belongs to the whole process, and a
  * restart loads every package at nearly the same moment, so all embedding
- * syncs share one queue. A job that throws is logged and does not stop the
- * jobs behind it.
+ * syncs share one queue (RetrievalRegistry.embeddingSyncQueue). A job that
+ * throws is logged and does not stop the jobs behind it.
  */
 export class SerialQueue {
    private tail: Promise<void> = Promise.resolve();
@@ -42,6 +42,3 @@ export class SerialQueue {
       return this.tail;
    }
 }
-
-/** The one queue every embedding sync in this process goes through. */
-export const embeddingSyncQueue = new SerialQueue();

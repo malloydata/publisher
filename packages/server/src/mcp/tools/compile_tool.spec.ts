@@ -3,6 +3,7 @@
 
 import { describe, expect, it } from "bun:test";
 import { formatDiagnosticsText, registerCompileTool } from "./compile_tool";
+import { QuerySlots } from "../../query_concurrency";
 import type { EnvironmentStore } from "../../service/environment_store";
 import {
    EnvironmentNotFoundError,
@@ -36,6 +37,7 @@ function captureHandler(store: Partial<EnvironmentStore>): Handler {
    registerCompileTool(
       fakeServer as never,
       new CompileController(store as EnvironmentStore),
+      new QuerySlots(),
    );
    if (!handler) throw new Error("handler was not registered");
    return handler;

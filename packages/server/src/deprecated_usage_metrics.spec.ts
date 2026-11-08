@@ -26,6 +26,7 @@ import {
 } from "./filter_deprecation";
 import { logger } from "./logger";
 import { registerDeprecatedRoutes } from "./routes/deprecated";
+import { QuerySlots } from "./query_concurrency";
 import { registerLegacyRoutes, type LegacyControllerSet } from "./server-old";
 import { recordDeprecatedFormatUsage } from "./service/deprecated/lints";
 import {
@@ -73,7 +74,7 @@ describe("publisher_deprecated_usage_total", () => {
             },
          } as unknown as EnvironmentStore;
          const server = express();
-         registerDeprecatedRoutes(server, "/api/v0", store);
+         registerDeprecatedRoutes(server, "/api/v0", store, new QuerySlots());
          return server;
       };
       const pkg = "/api/v0/environments/env/packages/pkg";
@@ -103,9 +104,10 @@ describe("publisher_deprecated_usage_total", () => {
             },
          } as unknown as EnvironmentStore;
          const server = express();
-         registerDeprecatedRoutes(server, "/api/v0", store);
+         registerDeprecatedRoutes(server, "/api/v0", store, new QuerySlots());
          registerLegacyRoutes(server, {
             environmentStore: store,
+            querySlots: new QuerySlots(),
          } as unknown as LegacyControllerSet);
          const project = "/api/v0/projects/env/packages/pkg";
          await request(server).get(`${project}/notebooks`);
