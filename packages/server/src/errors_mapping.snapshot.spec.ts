@@ -20,6 +20,7 @@ import {
    ConnectionFailedError,
    ConnectionNotFoundError,
    ConnectionPoolExhaustedError,
+   ConnectionSaveError,
    DashboardNotFoundError,
    DestinationNotFoundError,
    DryRunCapacityError,
@@ -404,6 +405,14 @@ const CASES: Array<[string, () => unknown]> = [
    [
       "WriteRollbackFailedError",
       () => new WriteRollbackFailedError("the restore failed"),
+   ],
+   [
+      "ConnectionSaveError",
+      () =>
+         new ConnectionSaveError(
+            'Environment "env" was updated, but the server could not save connection(s) "pg".',
+            ["pg"],
+         ),
    ],
    ["WriteVerifyError", () => new WriteVerifyError("written text differs")],
    [

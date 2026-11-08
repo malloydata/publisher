@@ -2484,6 +2484,39 @@
       ]
     }
   },
+  "ConnectionSaveError": {
+    "class": "ConnectionSaveError",
+    "http": {
+      "status": 500,
+      "json": {
+        "code": 500,
+        "message": "Environment \"env\" was updated, but the server could not save connection(s) \"pg\"."
+      },
+      "logged": false,
+      "logs": []
+    },
+    "mcp": {
+      "message": "An unexpected internal error occurred during executeQuery.: Environment \"env\" was updated, but the server could not save connection(s) \"pg\".",
+      "suggestions": [
+        "Try the request again later.",
+        "If the problem persists, check server logs or contact support."
+      ],
+      "logs": []
+    },
+    "mcpSetup": {
+      "message": "An unexpected internal error occurred during executeQuery (Setup).: Environment \"env\" was updated, but the server could not save connection(s) \"pg\".",
+      "suggestions": [
+        "Try the request again later.",
+        "If the problem persists, check server logs or contact support."
+      ],
+      "logs": [
+        [
+          "error",
+          "[MCP Server Error] Error accessing package/model for query"
+        ]
+      ]
+    }
+  },
   "WriteVerifyError": {
     "class": "WriteVerifyError",
     "http": {

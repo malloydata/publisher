@@ -6,6 +6,12 @@ import * as fs from "fs";
 import * as os from "os";
 import * as path from "path";
 import type { Mutex } from "async-mutex";
+import { ConnectionSaveError, internalErrorToHttpError } from "../errors";
+import { resetInstrumentsForTesting } from "../telemetry";
+import {
+   type MetricsHarness,
+   startMetricsHarness,
+} from "../test_helpers/metrics_harness";
 import { ConnectionService } from "./connection_service";
 import { Environment } from "./environment";
 import { EnvironmentStore } from "./environment_store";
@@ -226,14 +232,176 @@ describe("environment connection list persistence", () => {
       repository.createConnection = () =>
          Promise.reject(new Error("disk full"));
       try {
-         await expect(
-            first.updateEnvironment({
+         const failure = await first
+            .updateEnvironment({
                name: ENV,
                connections: [pg("a"), pg("b")],
-            } as never),
-         ).rejects.toThrow("disk full");
+            } as never)
+            .then(
+               () => undefined,
+               (error: unknown) => error,
+            );
+         expect(failure).toBeInstanceOf(ConnectionSaveError);
+         expect((failure as Error).message).toContain('"b"');
+         // The storage error is logged, not sent.
+         expect((failure as Error).message).not.toContain("disk full");
+         expect(
+            internalErrorToHttpError(failure as Error, { log: false }).status,
+         ).toBe(500);
       } finally {
          repository.createConnection = original;
       }
+   });
+});
+
+/**
+ * A connection row that fails to save must not cut the rest of the sync short:
+ * memory has already changed, and an environment whose package rows were
+ * never written comes back from a restart with no packages.
+ */
+describe("a connection row that fails to save", () => {
+   let harness: MetricsHarness;
+
+   beforeEach(async () => {
+      harness = await startMetricsHarness();
+      resetInstrumentsForTesting();
+   });
+
+   afterEach(async () => {
+      await harness.shutdown();
+      resetInstrumentsForTesting();
+   });
+
+   function packageDir(): string {
+      const dir = path.join(root, "sales_source");
+      fs.mkdirSync(dir, { recursive: true });
+      fs.writeFileSync(
+         path.join(dir, "publisher.json"),
+         JSON.stringify({ name: "sales", description: "Sales" }),
+      );
+      fs.writeFileSync(
+         path.join(dir, "sales.malloy"),
+         "source: one is duckdb.sql('select 1 as x')\n",
+      );
+      return dir;
+   }
+
+   const environmentPayload = () =>
+      ({
+         name: ENV,
+         connections: [pg("a"), pg("b")],
+         storageDestinations: [
+            {
+               name: "lake",
+               type: "ducklake",
+               ducklakeConnection: {
+                  catalog: {
+                     postgresConnection: {
+                        host: "catalog.internal",
+                        port: 5432,
+                        databaseName: "ducklake",
+                        userName: "publisher",
+                     },
+                  },
+                  storage: { bucketUrl: "gs://bucket/lake" },
+               },
+            },
+         ],
+         packages: [{ name: "sales", location: packageDir() }],
+      }) as never;
+
+   /** Fail the first write of connection "a"'s row; let every other through. */
+   function failRowOfAOnce(current: EnvironmentStore) {
+      const repository = current.storageManager.getRepository();
+      const original = repository.createConnection;
+      let failed = false;
+      repository.createConnection = (data) => {
+         if (!failed && data.name === "a") {
+            failed = true;
+            return Promise.reject(new Error("disk full"));
+         }
+         return original.call(repository, data);
+      };
+      return () => {
+         repository.createConnection = original;
+      };
+   }
+
+   async function storedRows(current: EnvironmentStore) {
+      const repository = current.storageManager.getRepository();
+      const dbEnvironment = await repository.getEnvironmentByName(ENV);
+      expect(dbEnvironment).toBeDefined();
+      const id = dbEnvironment!.id;
+      return {
+         connections: (await repository.listConnections(id))
+            .map((row) => row.name)
+            .sort(),
+         destinations: (await repository.listStorageDestinations(id)).map(
+            (row) => row.name,
+         ),
+         packages: (await repository.listPackages(id)).map((row) => row.name),
+      };
+   }
+
+   it("on a request, still writes the other rows, then fails naming the connection", async () => {
+      const current = await openStore();
+      const restore = failRowOfAOnce(current);
+      try {
+         const failure = await current
+            .addEnvironment(environmentPayload())
+            .then(
+               () => undefined,
+               (error: unknown) => error,
+            );
+         expect(failure).toBeInstanceOf(ConnectionSaveError);
+         expect((failure as ConnectionSaveError).connectionNames).toEqual([
+            "a",
+         ]);
+         expect((failure as Error).message).toContain('"a"');
+      } finally {
+         restore();
+      }
+
+      expect(await storedRows(current)).toEqual({
+         connections: ["b"],
+         destinations: ["lake"],
+         packages: ["sales"],
+      });
+      expect(
+         await harness.collectCounter(
+            "publisher_connection_save_failures_total",
+            { path: "request" },
+         ),
+      ).toBe(1);
+   });
+
+   it("at boot, loads the environment and writes the other rows", async () => {
+      const current = await openStore();
+      const restore = failRowOfAOnce(current);
+      let loaded: Environment;
+      try {
+         // The boot paths (config load, database restore) pass
+         // skipInitialization.
+         loaded = await current.addEnvironment(environmentPayload(), true);
+      } finally {
+         restore();
+      }
+
+      expect(loaded.listApiConnections().map((c) => c.name)).toEqual([
+         "a",
+         "b",
+      ]);
+      expect(current.getLoadedEnvironments()).toContain(loaded);
+      expect(await storedRows(current)).toEqual({
+         connections: ["b"],
+         destinations: ["lake"],
+         packages: ["sales"],
+      });
+      expect(
+         await harness.collectCounter(
+            "publisher_connection_save_failures_total",
+            { path: "boot" },
+         ),
+      ).toBe(1);
    });
 });

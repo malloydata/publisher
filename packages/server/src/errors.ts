@@ -1121,6 +1121,26 @@ export class WriteRollbackFailedError extends Error {
    }
 }
 
+/**
+ * An environment change that was applied, but whose connection rows could not
+ * all be saved: those connections serve now and are wrong after a restart.
+ * 500, the server's storage failing. The message is server-composed and names
+ * only the connections; each underlying failure was logged where it happened.
+ */
+export class ConnectionSaveError extends Error {
+   get kind(): "connection_save" {
+      return "connection_save";
+   }
+
+   constructor(
+      message: string,
+      readonly connectionNames: readonly string[],
+   ) {
+      super(message);
+      this.name = "ConnectionSaveError";
+   }
+}
+
 /** A refusal from a write's post-reload check, worded for the caller. */
 export class WriteVerifyError extends Error {
    get kind(): "write_verify" {
@@ -1307,6 +1327,7 @@ interface ErrorByKind {
    write_conflict: WriteConflictError;
    write_rolled_back: WriteRolledBackError;
    write_rollback_failed: WriteRollbackFailedError;
+   connection_save: ConnectionSaveError;
    write_verify: WriteVerifyError;
    invalid_state_transition: InvalidStateTransitionError;
    service_unavailable: ServiceUnavailableError;
@@ -1386,6 +1407,7 @@ const ERROR_CLASSES: {
    write_conflict: WriteConflictError,
    write_rolled_back: WriteRolledBackError,
    write_rollback_failed: WriteRollbackFailedError,
+   connection_save: ConnectionSaveError,
    write_verify: WriteVerifyError,
    invalid_state_transition: InvalidStateTransitionError,
    service_unavailable: ServiceUnavailableError,
@@ -1745,6 +1767,9 @@ export const ERROR_TABLE: { [K in ErrorKind]: ErrorMapping<ErrorByKind[K]> } = {
    invalid_state_transition: { status: 409, mcp: { advice: "internal" } },
    write_conflict: { status: 409, mcp: { advice: "internal" } },
    write_rollback_failed: { status: 500, mcp: { advice: "internal" } },
+   // Answered with its message, which names only connections; each failure
+   // was logged where it happened, so it is not logged again here.
+   connection_save: { status: 500, mcp: { advice: "internal" } },
    // Logged once, where the rollback happened, with the cause.
    write_rolled_back: { status: 500, mcp: { advice: "internal" } },
    service_unavailable: BACK_PRESSURE,

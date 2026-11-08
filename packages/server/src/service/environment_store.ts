@@ -25,6 +25,7 @@ import {
    PUBLISHER_DATA_DIR,
 } from "../constants";
 import {
+   ConnectionSaveError,
    EnvironmentNotFoundError,
    FrozenConfigError,
    messageWithFilesystemCause,
@@ -34,6 +35,7 @@ import {
 import { getOperationalState, markNotReady, markReady } from "../health";
 import { formatDuration, logger } from "../logger";
 import { redactPgSecrets } from "../pg_helpers";
+import { lazyCounter } from "../telemetry";
 import { assertSafePackageName, safeJoinUnderRoot } from "../path_safety";
 import {
    type ConnectionRecord,
@@ -75,6 +77,67 @@ type ApiConnection = components["schemas"]["Connection"];
 type LoadError = NonNullable<
    components["schemas"]["ServerStatus"]["loadErrors"]
 >[number];
+
+/**
+ * The connection rows one sync could not bring in line with memory. Each was
+ * logged where it failed; this is what the caller surfaces afterwards.
+ */
+interface ConnectionSaveFailures {
+   /** Connections whose row could not be written: lost on a restart. */
+   unsaved: string[];
+   /** Removed connections whose row could not be deleted: back on a restart. */
+   unremoved: string[];
+   /** The stored rows could not be listed, so none were pruned. */
+   unlisted: boolean;
+}
+
+function hasConnectionSaveFailures(failures: ConnectionSaveFailures): boolean {
+   return (
+      failures.unsaved.length > 0 ||
+      failures.unremoved.length > 0 ||
+      failures.unlisted
+   );
+}
+
+/**
+ * The answer to a sync whose connection rows did not all save. Composed here,
+ * from connection names only: the storage error itself is logged, not sent.
+ */
+function connectionSaveError(
+   environmentName: string,
+   failures: ConnectionSaveFailures,
+): ConnectionSaveError {
+   const quote = (names: string[]) => names.map((n) => `"${n}"`).join(", ");
+   const problems: string[] = [];
+   if (failures.unsaved.length > 0) {
+      problems.push(
+         `could not save connection(s) ${quote(failures.unsaved)}, which serve now but will be missing after a restart`,
+      );
+   }
+   if (failures.unremoved.length > 0) {
+      problems.push(
+         `could not delete removed connection(s) ${quote(failures.unremoved)}, which will return after a restart`,
+      );
+   }
+   if (failures.unlisted) {
+      problems.push(
+         "could not read its stored connections, so any connection this change removed will return after a restart",
+      );
+   }
+   return new ConnectionSaveError(
+      `Environment "${environmentName}" was updated, but the server ${problems.join("; and ")}. Retry the change to save them.`,
+      [...failures.unsaved, ...failures.unremoved],
+   );
+}
+
+/**
+ * Environment syncs whose connection rows did not all save. Counted because
+ * at boot nothing else reports it off-box: the environment loads and serves.
+ */
+const connectionSaveFailureCounter = lazyCounter(
+   "publisher_connection_save_failures_total",
+   "Environment syncs to the database whose connection rows did not all save, so the connections in memory will differ after a restart. Label: path ('request'|'boot').",
+);
 
 function validateEnvironmentAzureUrls(environment: ApiEnvironment): void {
    for (const conn of environment.connections || []) {
@@ -955,8 +1018,18 @@ export class EnvironmentStore
       );
    }
 
+   /**
+    * Mirror an environment into the database. Every step runs even when an
+    * earlier one could not save a connection row, because memory has already
+    * changed and a skipped package sync would bring the environment back with
+    * no packages after a restart. A connection that did not save is surfaced
+    * only after all of them: a request fails with a {@link ConnectionSaveError}
+    * naming it, while at boot (`atBoot`) the environment still loads and the
+    * failure is logged and counted, since nothing is waiting for an answer.
+    */
    public async addEnvironmentToDatabase(
       environment: Environment,
+      { atBoot = false }: { atBoot?: boolean } = {},
    ): Promise<void> {
       if (!environment) {
          logger.error("Cannot sync: environment is null or undefined");
@@ -979,7 +1052,11 @@ export class EnvironmentStore
       // not leave it without them.
       await this.bindVersionRegistry(environment, dbEnvironment.id);
 
-      await this.addConnections(environment, dbEnvironment.id, repository);
+      const connectionFailures = await this.addConnections(
+         environment,
+         dbEnvironment.id,
+         repository,
+      );
       await this.syncStorageDestinations(
          environment,
          dbEnvironment.id,
@@ -987,7 +1064,23 @@ export class EnvironmentStore
       );
       await this.addPackages(environment, dbEnvironment.id, repository);
 
-      logger.info(`Synced environment "${environmentName}" to database`);
+      if (!hasConnectionSaveFailures(connectionFailures)) {
+         logger.info(`Synced environment "${environmentName}" to database`);
+         return;
+      }
+      connectionSaveFailureCounter().add(1, {
+         path: atBoot ? "boot" : "request",
+      });
+      const error = connectionSaveError(environmentName, connectionFailures);
+      if (!atBoot) throw error;
+      logger.error(
+         `Loaded environment "${environmentName}", but its connections did not all save to the database`,
+         {
+            environmentName,
+            connections: error.connectionNames,
+            message: error.message,
+         },
+      );
    }
 
    public async deleteEnvironmentFromDatabase(
@@ -1150,8 +1243,12 @@ export class EnvironmentStore
     * a restart. The list has replace semantics (an environment PATCH replaces
     * it wholesale), so rows the environment no longer holds are deleted too:
     * a left-behind row would resurrect a removed connection on the next load,
-    * which restores connections from these rows. A failed write throws, so the
-    * request that changed the list does not answer success.
+    * which restores connections from these rows.
+    *
+    * A failed row write does not stop the others, nor the rest of the sync:
+    * the in-memory list has already changed, so each step still mirrors what
+    * it can. The failures come back for the caller to surface once every
+    * step has run (see {@link addEnvironmentToDatabase}).
     *
     * Runs under the environment's connection lock, which ConnectionService
     * holds while it writes a connection's row and then its in-memory entry.
@@ -1164,8 +1261,8 @@ export class EnvironmentStore
       environment: Environment,
       environmentId: string,
       repository: ReturnType<typeof this.storageManager.getRepository>,
-   ): Promise<void> {
-      await environment.runConnectionUpdateExclusive(() =>
+   ): Promise<ConnectionSaveFailures> {
+      return environment.runConnectionUpdateExclusive(() =>
          this.reconcileConnectionRows(environment, environmentId, repository),
       );
    }
@@ -1174,55 +1271,76 @@ export class EnvironmentStore
       environment: Environment,
       environmentId: string,
       repository: ReturnType<typeof this.storageManager.getRepository>,
-   ): Promise<void> {
-      try {
-         const connections = environment.listApiConnections();
-         const kept = new Set<string>();
-         for (const conn of connections) {
-            if (!conn.name) {
-               logger.warn("Skipping connection with undefined name");
-               continue;
-            }
-            kept.add(conn.name);
-
+   ): Promise<ConnectionSaveFailures> {
+      const environmentName = environment.metadata?.name;
+      const failures: ConnectionSaveFailures = {
+         unsaved: [],
+         unremoved: [],
+         unlisted: false,
+      };
+      const kept = new Set<string>();
+      for (const conn of environment.listApiConnections()) {
+         if (!conn.name) {
+            logger.warn("Skipping connection with undefined name");
+            continue;
+         }
+         kept.add(conn.name);
+         try {
             const existingConn = await repository.getConnectionByName(
                environmentId,
                conn.name,
             );
-
             if (existingConn) {
                await this.updateConnection(conn, environmentId, repository);
             } else {
                await this.addConnection(conn, environmentId, repository);
             }
-         }
-
-         // Prune only against a list that IS the desired state, as for
-         // destinations: a fallback list (the config standing in for a missing
-         // directory) would delete every connection registered over the API.
-         if (!environment.hasAuthoritativeConnections()) {
-            logger.warn(
-               `Not reconciling stored connections for "${environment.metadata?.name}": the in-memory list is a fallback, not the desired state`,
+         } catch (err: unknown) {
+            logger.error(
+               `Could not save connection "${conn.name}" of environment "${environmentName}"`,
+               extractErrorDataFromError(err),
             );
-            return;
+            failures.unsaved.push(conn.name);
          }
+      }
 
-         const stored = await repository.listConnections(environmentId);
-         for (const row of stored) {
-            if (!kept.has(row.name)) {
-               await repository.deleteConnection(row.id);
-               logger.info(
-                  `Removed connection ${row.name} from environment ${environment.metadata?.name}`,
-               );
-            }
-         }
+      // Prune only against a list that IS the desired state, as for
+      // destinations: a fallback list (the config standing in for a missing
+      // directory) would delete every connection registered over the API.
+      if (!environment.hasAuthoritativeConnections()) {
+         logger.warn(
+            `Not reconciling stored connections for "${environmentName}": the in-memory list is a fallback, not the desired state`,
+         );
+         return failures;
+      }
+
+      let stored: Awaited<ReturnType<typeof repository.listConnections>>;
+      try {
+         stored = await repository.listConnections(environmentId);
       } catch (err: unknown) {
          logger.error(
-            `Error syncing connections for "${environment.metadata?.name}":`,
-            err,
+            `Could not list the stored connections of environment "${environmentName}", so none it removed were deleted`,
+            extractErrorDataFromError(err),
          );
-         throw err;
+         failures.unlisted = true;
+         return failures;
       }
+      for (const row of stored) {
+         if (kept.has(row.name)) continue;
+         try {
+            await repository.deleteConnection(row.id);
+            logger.info(
+               `Removed connection ${row.name} from environment ${environmentName}`,
+            );
+         } catch (err: unknown) {
+            logger.error(
+               `Could not delete removed connection "${row.name}" of environment "${environmentName}"`,
+               extractErrorDataFromError(err),
+            );
+            failures.unremoved.push(row.name);
+         }
+      }
+      return failures;
    }
 
    /**
@@ -1740,6 +1858,12 @@ export class EnvironmentStore
     * `storageDestinationsAreFallback` marks the payload's destinations as a best
     * guess, so the database sync must not prune against them. It is a parameter
     * because this method syncs before it returns.
+    *
+    * `skipInitialization` is set only by the boot paths (the config load and
+    * the database restore), so it also decides how a connection row that did
+    * not save is surfaced: logged and counted at boot, where the environment
+    * must still load, and a failed request otherwise
+    * (see {@link addEnvironmentToDatabase}).
     */
    public async addEnvironment(
       environment: ApiEnvironment,
@@ -1776,7 +1900,9 @@ export class EnvironmentStore
          if (connectionsAreFallback) {
             updatedEnvironment.markConnectionsUnknown();
          }
-         await this.addEnvironmentToDatabase(updatedEnvironment);
+         await this.addEnvironmentToDatabase(updatedEnvironment, {
+            atBoot: skipInitialization,
+         });
          return updatedEnvironment;
       }
       const environmentManifest =
@@ -1837,7 +1963,9 @@ export class EnvironmentStore
       if (connectionsAreFallback) {
          newEnvironment.markConnectionsUnknown();
       }
-      await this.addEnvironmentToDatabase(newEnvironment);
+      await this.addEnvironmentToDatabase(newEnvironment, {
+         atBoot: skipInitialization,
+      });
 
       return newEnvironment;
    }
