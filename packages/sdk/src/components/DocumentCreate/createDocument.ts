@@ -181,8 +181,10 @@ async function writeNewReport(
             path = candidate;
             break;
          } catch (error) {
-            // A create-only write refused as a conflict means the listing was stale; the next name is free to try.
-            if (!isConflict(error)) throw error;
+            // A file already at the path means the listing was stale, and the
+            // next name is free to try. Any other refusal (a package that takes
+            // no write in place) fails every name alike, so it is thrown as is.
+            if (!isFileExists(error)) throw error;
          }
       }
       if (path === undefined) throw noFreeName(document.title, options.path);
@@ -228,8 +230,21 @@ async function writeNewReport(
    return found;
 }
 
-const isConflict = (error: unknown) =>
-   (error as { response?: { status?: number } })?.response?.status === 409;
+/**
+ * Whether a create-only write was refused because a file is already at the
+ * path: 409 with `reason` FILE_EXISTS. A 409 with no `reason` is read the same
+ * way, as a server from before the reason answers it; a create sends no
+ * `expectedHash`, so a stale one is not what it means. A 409 with any other
+ * reason (PACKAGE_IS_VERSIONED, PACKAGE_INSTALLED_FROM_LOCATION) is not.
+ */
+function isFileExists(error: unknown): boolean {
+   const response = (
+      error as { response?: { status?: number; data?: { reason?: unknown } } }
+   )?.response;
+   if (response?.status !== 409) return false;
+   const reason = response.data?.reason;
+   return reason === undefined || reason === null || reason === "FILE_EXISTS";
+}
 
 const noFreeName = (title: string, path?: string) =>
    new Error(
