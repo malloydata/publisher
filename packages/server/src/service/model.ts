@@ -184,6 +184,10 @@ import {
    sqlTargetRef,
    structRefName,
 } from "./governance/ir/prepared_query";
+import {
+   mintGovernedRunnable,
+   type GovernedRunnable,
+} from "./governance/governed_runnable";
 import { derivedStructsReachable } from "./governance/ir/source_graph";
 import {
    assertFilterDimensionBindsToDeclaringSource,
@@ -2615,16 +2619,24 @@ export class Model {
           * whole-file `/compile`). See {@link probeCallerJoinGates}.
           */
          callerJoins?: { runnable: QueryMaterializer; region: CallerRegion };
+         /**
+          * This request's bypass was already noted by an earlier bind (the
+          * degrade-to-live retry re-binds the live runnable): skip the second
+          * audit line and counter tick, nothing else.
+          */
+         bypassAlreadyNoted?: boolean;
       },
-   ): Promise<QueryMaterializer> {
+   ): Promise<GovernedRunnable> {
       // Bypass skips the gate walk but not the source-name resolution (the
       // audit trail) or the inherited-filter bind check: a misbound `where:` is
       // a wrong answer, not an authorization decision.
       if (options?.bypassAuthorize) {
-         this.noteAuthorizeBypass(
-            "runnable",
-            await this.resolveAuthorizeSourceFromRunnable(runnable),
-         );
+         if (!options.bypassAlreadyNoted) {
+            this.noteAuthorizeBypass(
+               "runnable",
+               await this.resolveAuthorizeSourceFromRunnable(runnable),
+            );
+         }
          await this.assertNoMisboundInheritedFilters(
             runnable,
             new Set(),
@@ -2640,7 +2652,8 @@ export class Model {
                enforcedGatesOf(inForce),
             );
          }
-         return runnable;
+         // The explicit bypass: governed by decision, nothing evaluated.
+         return mintGovernedRunnable(runnable);
       }
 
       const graftScope = options?.graftScope ?? this.defaultGraftScope();
@@ -2655,9 +2668,10 @@ export class Model {
          },
          evaluated,
       );
-      const bound = (result: QueryMaterializer): QueryMaterializer => {
+      // Every non-bypass exit: the runnable governance decided, branded.
+      const bound = (result: QueryMaterializer): GovernedRunnable => {
          this.enforcedGatesByRunnable.set(result, enforcedGatesOf(evaluated));
-         return result;
+         return mintGovernedRunnable(result);
       };
 
       // Keyed on the RUN TARGET's own gates, never on the caller-join grafts
@@ -6015,8 +6029,9 @@ export class Model {
       //
       // Do NOT guard on hasAuthorize(): it misses inherited gates. The recompile
       // stays restricted, as the original compile was.
-      runnable = await this.authorizeAndBindRunnable(runnable, givens ?? {}, {
-         recompile: (mm) => mm.loadRestrictedQuery(queryString),
+      const bindOptions = {
+         recompile: (mm: ModelMaterializer) =>
+            mm.loadRestrictedQuery(queryString),
          bypassAuthorize,
          // The caller's OWN text, not the synthesized/injected `queryString`.
          callerQueryText: query,
@@ -6024,7 +6039,13 @@ export class Model {
             callerRegion && liveRunnable
                ? { runnable: liveRunnable, region: callerRegion }
                : undefined,
-      });
+      };
+      const governed = await this.authorizeAndBindRunnable(
+         runnable,
+         givens ?? {},
+         bindOptions,
+      );
+      runnable = governed;
       if (!bypassAuthorize) {
          await this.assertWithinCarriesCeiling(
             audit,
@@ -6090,7 +6111,7 @@ export class Model {
          // Prepare yields the connection name, so its metadata layer resolves
          // before the statement is issued.
          run = await prepareAndRun(
-            runnable,
+            governed,
             {
                givens: effectiveGivens,
                buildManifest: effectiveBuildManifest,
@@ -6204,12 +6225,24 @@ export class Model {
             },
          );
          recordStorageServeRouting("runtime_live_fallback");
+         // The retry runs the LIVE compile, which `governed` is not (it is the
+         // serve shape), so it is governed in its own right here: the same
+         // bind, on the runnable that will execute. Today routing already
+         // refuses any gated entry point (`queryEntryPointHasRowLevelGate`),
+         // so this decides nothing new; it is what keeps an ungoverned live
+         // runnable from ever running if that refusal narrows. Outside the
+         // retry's try, so a denial answers 403, not a mapped run error.
+         const governedLive = await this.authorizeAndBindRunnable(
+            liveRunnable!,
+            givens ?? {},
+            { ...bindOptions, bypassAlreadyNoted: true },
+         );
          try {
             // A fresh prepare re-derives the row cap from the live shape (a
             // failure at storage prepare would leave it 0, an EMPTY answer).
             // `liveBuildManifest`: this runs on the author's model.
             run = await prepareAndRun(
-               liveRunnable!,
+               governedLive,
                { givens: querySurfaceGivens, buildManifest: liveBuildManifest },
                {
                   abortSignal,
@@ -7034,6 +7067,8 @@ export class Model {
             // (after refinement, so the graft composes with the `#(filter)`
             // refinement instead of dropping it). Cells are author-curated, so
             // the recompile uses `loadQuery`, not `loadRestrictedQuery`.
+            // What governance returned: the only thing this cell may run.
+            let cellGoverned: GovernedRunnable;
             if (cell.modelMaterializer) {
                const textForRecompile = textToExecute;
                // Own scope: graft the compiled queryDef (read off
@@ -7049,7 +7084,7 @@ export class Model {
                        graftScope!,
                     )
                   : undefined;
-               runnableToExecute = await this.authorizeAndBindRunnable(
+               cellGoverned = await this.authorizeAndBindRunnable(
                   runnableToExecute,
                   givens ?? {},
                   {
@@ -7060,11 +7095,17 @@ export class Model {
                      graftScope,
                   },
                );
+               runnableToExecute = cellGoverned;
             } else {
-               await this.assertAuthorizedForAllSources(
+               // No materializer to recompile against, so a row-level gate
+               // denies here (as `assertAuthorizedForAllSources` did); the
+               // same bind, kept so the cell runs what governance returned.
+               cellGoverned = await this.authorizeAndBindRunnable(
                   runnableToExecute,
                   givens ?? {},
+                  { bypassAuthorize: false },
                );
+               runnableToExecute = cellGoverned;
             }
             await this.assertWithinCarriesCeiling(
                audit,
@@ -7092,7 +7133,7 @@ export class Model {
                cellReadGivenNames,
                this.notebookCellDeclaredGivens[cellIndex],
             );
-            const cellRunnable = runnableToExecute;
+            const cellRunnable = cellGoverned;
             const { result } = await prepareAndRun(
                cellRunnable,
                { givens: cellSurfaceGivens, buildManifest },
