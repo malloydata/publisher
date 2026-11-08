@@ -172,6 +172,10 @@ function table(headers: string[], rows: string[][]): string {
 /** Histogram families worth cross-checking client timings against. */
 const SERVER_HISTOGRAMS = [
    /^malloy_package_load/,
+   // Where a load's time goes, by stage: worker compile, hydrate, render
+   // validation, discovery, lint, build plan, entities, total. Plus the whole
+   // install and reload, download and swap included.
+   /^publisher_package_(load_phase|install|reload)_duration_ms/,
    /^malloy_model_query_duration/,
    /^publisher_report_(discovery|read)_duration/,
    /^http_server_request_duration_ms/,
