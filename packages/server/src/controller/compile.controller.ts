@@ -3,7 +3,7 @@
 
 import type { GivenValue } from "@malloydata/malloy";
 import { BadRequestError } from "../errors";
-import { EnvironmentStore } from "../service/environment_store";
+import type { PackageLookup } from "../service/environment_ports";
 import {
    lazyCounter,
    lazyHistogram,
@@ -30,9 +30,9 @@ const compileDuration = lazyHistogram(
 );
 
 export class CompileController {
-   private environmentStore: EnvironmentStore;
+   private environmentStore: PackageLookup;
 
-   constructor(environmentStore: EnvironmentStore) {
+   constructor(environmentStore: PackageLookup) {
       this.environmentStore = environmentStore;
    }
 

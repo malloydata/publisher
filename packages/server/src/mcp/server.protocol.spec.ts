@@ -6,7 +6,6 @@ import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { initializeMcpServer } from "./server";
 import { RELOAD_FAILURE_IS_SAFE } from "./tools/reload_package_tool";
-import type { EnvironmentStore } from "../service/environment_store";
 import packageJson from "../../package.json";
 import { mcpServicesFor } from "../test_helpers/mcp_services";
 
@@ -50,7 +49,7 @@ describe("MCP server over the MCP protocol (in-memory)", () => {
             }
             throw new Error(`Environment not found: ${name}`);
          },
-      } as unknown as EnvironmentStore;
+      };
 
       const server = initializeMcpServer(mcpServicesFor(stubStore));
       const [clientTransport, serverTransport] =

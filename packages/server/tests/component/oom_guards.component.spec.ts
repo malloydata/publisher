@@ -41,8 +41,9 @@ import {
    resetQueryConcurrencyTelemetryForTesting,
 } from "../../src/query_concurrency";
 import { accessIdentityOf } from "../../src/service/access_record";
-import type { EnvironmentStore } from "../../src/service/environment_store";
 import { installSettings } from "../../src/test_helpers/settings_env";
+import { fakeOf } from "../../src/test_helpers/store_fakes";
+import type { ConnectionAdmin } from "../../src/service/environment_ports";
 
 function buildApp(
    runSQL: sinon.SinonStub,
@@ -60,9 +61,9 @@ function buildApp(
       // Not a managed database, so the single-SELECT check does not apply.
       getApiConnection: () => ({ name: "warehouse", type: "postgres" }),
    };
-   const fakeStore = {
+   const fakeStore = fakeOf<ConnectionAdmin>({
       getEnvironment: sinon.stub().resolves(fakeEnv),
-   } as unknown as EnvironmentStore;
+   });
    const controller = new ConnectionController(fakeStore);
    // Bypass the connector lookup; the test only cares about the
    // guardrail chain on top of a stub.

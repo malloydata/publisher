@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
-import { EnvironmentStore } from "../../service/environment_store";
+import type { StatusReader } from "../../service/environment_ports";
 import { buildMalloyUri } from "../handler_utils";
 import { registerGuardedTool } from "../register_tool";
 import { jsonResource } from "../tool_response";
@@ -31,7 +31,7 @@ No loadErrors key means everything configured loaded and nothing is stale.`;
  */
 export function registerGetStatusTool(
    mcpServer: McpServer,
-   environmentStore: EnvironmentStore,
+   environmentStore: StatusReader,
 ): void {
    registerGuardedTool(mcpServer, {
       name: "get_status",

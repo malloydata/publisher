@@ -12,18 +12,21 @@ import os from "os";
 import path from "path";
 import request from "supertest";
 import { logger } from "../logger";
-import type { EnvironmentStore } from "../service/environment_store";
 import { linesMentioning } from "../test_helpers/log_lines";
 import { API_PREFIX, buildRouteApp } from "../test_helpers/route_app";
 import { WatchModeController } from "./watch-mode.controller";
+import { fakeOf } from "../test_helpers/store_fakes";
+import type { PackageLookup } from "../service/environment_ports";
 
 const root = fs.mkdtempSync(path.join(os.tmpdir(), "watch-mode-spec-"));
 afterAll(() => fs.rmSync(root, { recursive: true, force: true }));
 
 function setup() {
-   const controller = new WatchModeController({
-      serverRootPath: root,
-   } as unknown as EnvironmentStore);
+   const controller = new WatchModeController(
+      fakeOf<PackageLookup & { serverRootPath: string }>({
+         serverRootPath: root,
+      }),
+   );
    return {
       controller,
       app: buildRouteApp({ watchModeController: controller }),

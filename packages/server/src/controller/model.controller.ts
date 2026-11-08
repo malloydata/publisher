@@ -4,7 +4,7 @@
 import { components } from "../api";
 import { ModelNotFoundError } from "../errors";
 import { logger } from "../logger";
-import { EnvironmentStore } from "../service/environment_store";
+import type { PackageLookup } from "../service/environment_ports";
 import { lockedForCaller } from "../service/discovery_lock";
 import type { GivenValue } from "@malloydata/malloy";
 import { loadedPackage } from "./loaded_package";
@@ -75,9 +75,9 @@ function withoutLockedSources(
 }
 
 export class ModelController {
-   private environmentStore: EnvironmentStore;
+   private environmentStore: PackageLookup;
 
-   constructor(environmentStore: EnvironmentStore) {
+   constructor(environmentStore: PackageLookup) {
       this.environmentStore = environmentStore;
    }
 

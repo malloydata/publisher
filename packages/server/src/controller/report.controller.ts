@@ -30,7 +30,10 @@ import {
    reportWritePathProblem,
 } from "../service/report";
 import { formatProblem } from "../service/query_text";
-import { EnvironmentStore } from "../service/environment_store";
+import type {
+   ConfigFreezeReader,
+   PackageLookup,
+} from "../service/environment_ports";
 import type { Package } from "../service/package";
 import { loadedPackage } from "./loaded_package";
 import { parseEnvironmentName, parsePackageName } from "../service/identity";
@@ -111,9 +114,9 @@ export const contentHashOf = (text: string): string =>
  * applies.
  */
 export class ReportController {
-   private environmentStore: EnvironmentStore;
+   private environmentStore: PackageLookup & ConfigFreezeReader;
 
-   constructor(environmentStore: EnvironmentStore) {
+   constructor(environmentStore: PackageLookup & ConfigFreezeReader) {
       this.environmentStore = environmentStore;
    }
 

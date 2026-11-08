@@ -11,7 +11,8 @@ import { ConnectionNotFoundError, FrozenConfigError } from "../errors";
 import { buildEnvironmentMalloyConfig } from "./connection";
 import { ConnectionService } from "./connection_service";
 import { Environment } from "./environment";
-import { EnvironmentStore } from "./environment_store";
+import { fakeOf } from "../test_helpers/store_fakes";
+import type { ConnectionAdmin } from "./environment_ports";
 
 type ApiConnection = components["schemas"]["Connection"];
 
@@ -39,7 +40,7 @@ describe("service/connection_service", () => {
       };
 
       connectionService = new ConnectionService(
-         mockEnvironmentStore as unknown as EnvironmentStore,
+         fakeOf<ConnectionAdmin>(mockEnvironmentStore),
       );
    });
 

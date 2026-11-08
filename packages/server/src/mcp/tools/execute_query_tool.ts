@@ -10,7 +10,10 @@ import type { GivenValue } from "@malloydata/malloy";
 import { logger } from "../../logger";
 import { accessIdentityOf } from "../../service/access_record";
 import type { Package } from "../../service/package";
-import { EnvironmentStore } from "../../service/environment_store";
+import type {
+   McpExposureReader,
+   PackageLookup,
+} from "../../service/environment_ports";
 import { QueryUseCase, type QueryTransportOptions } from "../../usecases/query";
 import { RESTRICTED_CONSTRUCTS, type ErrorDetails } from "../error_messages";
 import {
@@ -140,7 +143,7 @@ const MCP_QUERY_OPTIONS: QueryTransportOptions = {
 
 export function registerExecuteQueryTool(
    mcpServer: McpServer,
-   environmentStore: EnvironmentStore,
+   environmentStore: PackageLookup & Partial<McpExposureReader>,
    queryUseCase: QueryUseCase,
 ): void {
    const offerHidden =

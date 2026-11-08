@@ -15,7 +15,7 @@ import * as path from "path";
 import { internalErrorToHttpError } from "../errors";
 import { logger } from "../logger";
 import { safeJoinUnderRoot } from "../path_safety";
-import type { EnvironmentStore } from "../service/environment_store";
+import type { PackageLookup } from "../service/environment_ports";
 import { apiRoute } from "./json_route";
 import {
    parseEnvironmentName,
@@ -50,7 +50,7 @@ relative to <code>public/</code> and does not include it.</p>
 this server has.</p>`;
 
 async function serveFromPackage(
-   environmentStore: EnvironmentStore,
+   environmentStore: PackageLookup,
    req: express.Request,
    res: express.Response,
 ): Promise<void> {
@@ -154,7 +154,7 @@ export function withRequestQuery(req: express.Request, target: string): string {
  */
 export function registerDataAppStaticRoutes(
    app: express.Express,
-   environmentStore: EnvironmentStore,
+   environmentStore: PackageLookup,
    runtimePath: string,
 ): void {
    app.get("/sdk/publisher.js", (_req, res) => {
@@ -198,7 +198,7 @@ export function registerDataAppStaticRoutes(
 export function registerDataAppListRoute(
    app: express.Express,
    apiPrefix: string,
-   environmentStore: EnvironmentStore,
+   environmentStore: PackageLookup,
 ): void {
    app.get(
       `${apiPrefix}${DATA_APPS_ROUTE}`,

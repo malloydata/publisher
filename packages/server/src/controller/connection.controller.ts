@@ -58,7 +58,7 @@ import {
    type QueryMetadata,
 } from "../service/query_metadata";
 import type { Environment } from "../service/environment";
-import { EnvironmentStore } from "../service/environment_store";
+import type { ConnectionAdmin } from "../service/environment_ports";
 import { isStreamingConnection, streamSqlWithBudget } from "../stream_helpers";
 import {
    parseEnvironmentName,
@@ -296,9 +296,9 @@ async function metered<T>(
 }
 
 export class ConnectionController {
-   private environmentStore: EnvironmentStore;
+   private environmentStore: ConnectionAdmin;
    private connectionService: ConnectionService;
-   constructor(environmentStore: EnvironmentStore) {
+   constructor(environmentStore: ConnectionAdmin) {
       this.environmentStore = environmentStore;
       this.connectionService = new ConnectionService(environmentStore);
    }

@@ -291,6 +291,7 @@ export async function buildApp(settings: AppSettings): Promise<BuiltApp> {
    // the value index of #(index) dimensions, and skips only the vectors.
    const retrieval = new RetrievalService(
       environmentStore,
+      environmentStore.storageManager,
       new RetrievalRegistry({
          querySlots,
          // A gated value lookup words a refused model the way execute_query does.
@@ -360,9 +361,8 @@ export async function buildApp(settings: AppSettings): Promise<BuiltApp> {
       () => materializationService.reclaimArchivedVersions(),
       () => undefined,
    );
-   // C3 (EnvironmentStore split): once its constructor stops doing I/O, the
-   // store's `start()` is called HERE, after every hook above is installed and
-   // before anything awaits `finishedInitialization`.
+   // Every hook is installed: open storage and load the environments.
+   void environmentStore.start();
 
    // The sweep timer is unref'd, so it never keeps the process alive.
    startMaterializationSchedulerFromEnv(

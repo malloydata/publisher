@@ -9,6 +9,7 @@ import { PackageController } from "../controller/package.controller";
 import { EnvironmentStore } from "./environment_store";
 import { installSettings } from "../test_helpers/settings_env";
 import { parseEnvironmentName, parsePackageName } from "./identity";
+import { startedStore } from "../test_helpers/started_store";
 
 /**
  * Where an UNVERSIONED package restores its serve bindings from the worker's
@@ -56,7 +57,7 @@ async function openStore(): Promise<EnvironmentStore> {
    restoreSettings = installSettings({
       cwd: path.join(root, "server"),
    }).restore;
-   store = new EnvironmentStore(path.join(root, "server"));
+   store = startedStore(new EnvironmentStore(path.join(root, "server")));
    await store.finishedInitialization;
    return store;
 }

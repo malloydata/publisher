@@ -10,6 +10,7 @@ import { EnvironmentStore } from "./environment_store";
 import { installSettings } from "../test_helpers/settings_env";
 import { writePackageFiles } from "../test_helpers/temp_package";
 import { parseEnvironmentName, parsePackageName, VersionRef } from "./identity";
+import { startedStore } from "../test_helpers/started_store";
 
 /**
  * The startup cleanup of version folders, as a restart runs it: an
@@ -55,7 +56,7 @@ async function openStore(): Promise<EnvironmentStore> {
       env: { PUBLISHER_PACKAGE_VERSIONING: "on" },
       cwd: path.join(root, "server"),
    }).restore;
-   store = new EnvironmentStore(path.join(root, "server"));
+   store = startedStore(new EnvironmentStore(path.join(root, "server")));
    await store.finishedInitialization;
    return store;
 }

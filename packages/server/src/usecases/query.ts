@@ -27,7 +27,7 @@ import {
    withAccessRecord,
 } from "../service/access_record";
 import type { Environment } from "../service/environment";
-import type { EnvironmentStore } from "../service/environment_store";
+import type { PackageLookup } from "../service/environment_ports";
 import type { FilterParams } from "../service/filter";
 import type { Model } from "../service/model";
 import type { Package } from "../service/package";
@@ -73,7 +73,7 @@ export interface QueryCommand {
  * classifies.
  */
 export type QueryModelResolver = (
-   environmentStore: EnvironmentStore,
+   environmentStore: PackageLookup,
    command: QueryCommand,
 ) => Promise<{ environment: Environment; pkg: Package; model?: Model }>;
 
@@ -149,7 +149,7 @@ export type QueryResolutionOptions = Pick<
  * command's model, with the transport's early refusal and eager compile.
  */
 export async function resolveQueryTarget(
-   environmentStore: EnvironmentStore,
+   environmentStore: PackageLookup,
    command: QueryCommand,
    options: QueryResolutionOptions,
 ): Promise<{ environment: Environment; pkg: Package; model?: Model }> {
@@ -230,7 +230,7 @@ function accessBase({
 
 export class QueryUseCase {
    constructor(
-      private readonly environmentStore: EnvironmentStore,
+      private readonly environmentStore: PackageLookup,
       /** The process's slot pool; taken here when the transport names a label. */
       private readonly querySlots: QuerySlots,
    ) {}

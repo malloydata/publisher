@@ -3,9 +3,10 @@
 
 import { describe, expect, it } from "bun:test";
 import { z } from "zod/v3";
-import type { EnvironmentStore } from "../../service/environment_store";
 import { type SkillEntry } from "../../service/skills/build_skills_bundle";
 import { registerGetSkillTool } from "./get_skill_tool";
+import { fakeOf } from "../../test_helpers/store_fakes";
+import type { PackageLookup } from "../../service/environment_ports";
 
 type Handler = (params: unknown) => Promise<{
    isError?: boolean;
@@ -17,13 +18,13 @@ const bundled: SkillEntry[] = [
    { name: "malloy-review", description: "bundled", body: "BUNDLED REVIEW" },
 ];
 
-const storeWith = (skills: SkillEntry[]): EnvironmentStore =>
-   ({
+const storeWith = (skills: SkillEntry[]): PackageLookup =>
+   fakeOf<PackageLookup>({
       getEnvironment: async (name: string) => {
          if (name !== "env") throw new Error("unknown environment");
          return { getPackage: async () => ({ listSkills: () => skills }) };
       },
-   }) as unknown as EnvironmentStore;
+   });
 
 function register(skills: SkillEntry[]) {
    let handler: Handler | undefined;

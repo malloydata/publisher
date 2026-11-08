@@ -11,6 +11,7 @@ import { installSettings } from "../test_helpers/settings_env";
 import type { VersionService } from "./versions/version_service";
 import { writePackageFiles } from "../test_helpers/temp_package";
 import { parseEnvironmentName } from "./identity";
+import { startedStore } from "../test_helpers/started_store";
 
 /**
  * A publish of a version is a load in flight from its download until it
@@ -90,7 +91,7 @@ async function open(): Promise<{
    environment: Environment;
    versions: VersionService<unknown>;
 }> {
-   store = new EnvironmentStore(path.join(root, "server"));
+   store = startedStore(new EnvironmentStore(path.join(root, "server")));
    await store.finishedInitialization;
    const environment = await store.getEnvironment(
       parseEnvironmentName(ENV),

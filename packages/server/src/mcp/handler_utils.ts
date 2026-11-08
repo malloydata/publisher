@@ -1,7 +1,7 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
-import { EnvironmentStore } from "../service/environment_store";
+import type { PackageLookup } from "../service/environment_ports";
 import {
    EnvironmentNotFoundError,
    errorMapping,
@@ -148,7 +148,7 @@ export function mapQuerySetupError(
  * per-query metadata layers are read from. Value search's resolver.
  */
 export async function getModelForQuery(
-   environmentStore: EnvironmentStore,
+   environmentStore: PackageLookup,
    environmentName: string,
    packageName: string,
    modelPath: string,

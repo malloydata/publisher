@@ -1,7 +1,7 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
-import { EnvironmentStore } from "../../service/environment_store";
+import type { EnvironmentCatalog } from "../../service/environment_ports";
 import { logger } from "../../logger";
 import { parseEnvironmentName } from "../../service/identity";
 
@@ -38,7 +38,7 @@ export interface CatalogEnvironment {
  * `get_context` lists from it when a call names no package.
  */
 export async function readPackageCatalog(
-   environmentStore: EnvironmentStore,
+   environmentStore: EnvironmentCatalog,
    /**
     * Also list packages on their first load, marked `loading`. `get_context`
     * asks for them, so "the only package" is never said while another is

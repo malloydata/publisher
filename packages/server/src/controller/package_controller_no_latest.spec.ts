@@ -7,13 +7,14 @@ import * as os from "os";
 import * as path from "path";
 import { internalErrorToHttpError, PackageVersionError } from "../errors";
 import { Environment } from "../service/environment";
-import type { EnvironmentStore } from "../service/environment_store";
 import { DuckDBConnection } from "../storage/duckdb/DuckDBConnection";
 import { createDuckDBRepository } from "../storage/duckdb/DuckDBRepository";
 import type { ResourceRepository } from "../storage/DatabaseInterface";
 import { initializeSchema } from "../storage/duckdb/schema";
 import { PackageController } from "./package.controller";
 import { parsePackageName, VersionRef } from "../service/identity";
+import { fakeOf } from "../test_helpers/store_fakes";
+import type { PackageAdmin } from "../service/environment_ports";
 
 // A versioned package with no `latest` yet: published under explicit
 // promotion, and no version made latest. Through the package routes'
@@ -118,11 +119,12 @@ beforeEach(async () => {
          if (row) await repo.deletePackage(row.id);
       },
    });
-   controller = new PackageController({
-      publisherConfigIsFrozen: false,
-      serverRootPath: root,
-      getEnvironment: async () => env,
-   } as unknown as EnvironmentStore);
+   controller = new PackageController(
+      fakeOf<PackageAdmin>({
+         publisherConfigIsFrozen: false,
+         getEnvironment: async () => env,
+      }),
+   );
 
    await publishExplicit("1.0.0", 1);
    await publishExplicit("2.0.0", 2);

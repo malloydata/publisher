@@ -16,6 +16,8 @@ import {
 import { API_PREFIX, buildRouteApp } from "../test_helpers/route_app";
 import type { EnvironmentStore } from "../service/environment_store";
 import { ModelController } from "./model.controller";
+import { fakeOf } from "../test_helpers/store_fakes";
+import type { PackageLookup } from "../service/environment_ports";
 
 /**
  * `getModel` returns the compiled model AND the file's own Malloy text, so a
@@ -46,9 +48,9 @@ function buildController(
       getModelFileText,
    };
    const fakeEnv = { getPackage: sinon.stub().resolves(fakePackage) };
-   const fakeStore = {
+   const fakeStore = fakeOf<PackageLookup>({
       getEnvironment: sinon.stub().resolves(fakeEnv),
-   } as unknown as EnvironmentStore;
+   });
    return { controller: new ModelController(fakeStore), getModelFileText };
 }
 
