@@ -6,12 +6,13 @@ import {
    observePackageStates,
    recordPackageReload,
 } from "./package_state_metrics";
-import type { EnvironmentStore } from "./service/environment_store";
 import { resetInstrumentsForTesting } from "./telemetry";
 import {
    startMetricsHarness,
    type MetricsHarness,
 } from "./test_helpers/metrics_harness";
+import { fakeOf } from "./test_helpers/store_fakes";
+import type { LoadedEnvironmentsReader } from "./service/environment_ports";
 
 const environment = (loaded: number, failed: string[], stale: string[]) => ({
    getLoadedPackages: () => new Array(loaded).fill({}),
@@ -35,9 +36,11 @@ describe("package state metrics", () => {
          environment(2, ["broken"], ["edited"]),
          environment(1, [], []),
       ];
-      observePackageStates({
-         getLoadedEnvironments: () => environments,
-      } as unknown as EnvironmentStore);
+      observePackageStates(
+         fakeOf<LoadedEnvironmentsReader>({
+            getLoadedEnvironments: () => environments,
+         }),
+      );
       const values = async () => {
          const byState: Record<string, number> = {};
          for (const state of ["serving", "failed", "stale"]) {

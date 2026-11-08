@@ -27,7 +27,15 @@ import { runQueryPositional } from "../test_helpers/positional_query_args";
 import { buildRouteApp } from "../test_helpers/route_app";
 import { withSettings } from "../test_helpers/settings_env";
 import { accessIdentityOf, type AccessRecord } from "./access_record";
-import type { EnvironmentStore } from "./environment_store";
+import { fakeOf } from "../test_helpers/store_fakes";
+import type {
+   ConnectionAdmin,
+   McpExposureReader,
+   PackageLookup,
+} from "./environment_ports";
+
+/** What these routes read from the store. */
+type AccessStore = PackageLookup & McpExposureReader;
 
 const MODEL = `##! experimental.givens
 #(secure)
@@ -70,7 +78,7 @@ function records(): AccessRecord[] {
       .map(([, record]) => record as AccessRecord);
 }
 
-function storeOf(model: unknown, version?: string): EnvironmentStore {
+function storeOf(model: unknown, version?: string): AccessStore {
    const pkg = {
       getModel: (path: string) => (path === "m.malloy" ? model : undefined),
       getDeclaredQueryMetadata: () => null,
@@ -83,10 +91,10 @@ function storeOf(model: unknown, version?: string): EnvironmentStore {
          throw new Error("no such connection");
       },
    };
-   return {
+   return fakeOf<PackageLookup & McpExposureReader>({
       getEnvironment: async () => environment,
       mcpIncludeHiddenFilesAndSources: false,
-   } as unknown as EnvironmentStore;
+   });
 }
 
 /** A model whose query runs until it is aborted, by the client or the timeout. */
@@ -106,7 +114,7 @@ const HUNG = {
 const slots = new QuerySlots();
 
 function rest(
-   store: EnvironmentStore,
+   store: AccessStore,
    opts: {
       modelPath?: string;
       query?: string;
@@ -224,7 +232,7 @@ describe("REST query writes exactly one record", () => {
 });
 
 /** The MCP execute_query handler over a store, as the SDK would call it. */
-function mcpHandler(store: EnvironmentStore) {
+function mcpHandler(store: AccessStore) {
    let handler!: (
       params: Record<string, unknown>,
       extra?: unknown,
@@ -341,7 +349,7 @@ describe("MCP execute_query writes exactly one record", () => {
 });
 
 describe("value search writes exactly one record per lookup", () => {
-   const lookup = (store: EnvironmentStore, source: string) =>
+   const lookup = (store: AccessStore, source: string) =>
       queryDistinctValues({
          environmentStore: store,
          environmentName: "env",
@@ -473,7 +481,7 @@ describe("a request refused before its controller runs still writes one record",
    const cell = (prefix: string, index: string, query = "") =>
       `/api/v0/${prefix}/env/packages/pkg/notebooks/n.malloynb/cells/${index}${query}`;
    const CALLER = { "x-publisher-caller": "alice@example.com" };
-   const appOver = (store: EnvironmentStore) =>
+   const appOver = (store: AccessStore) =>
       buildRouteApp({
          environmentStore: store,
          queryController: new QueryController(new QueryUseCase(store, slots)),
@@ -601,9 +609,11 @@ describe("raw SQL writes exactly one record, as ungated", () => {
          assertCanAdmitQuery: () => {},
          getApiConnection: () => ({ name: "warehouse", type: "postgres" }),
       };
-      const controller = new ConnectionController({
-         getEnvironment: async () => environment,
-      } as unknown as EnvironmentStore);
+      const controller = new ConnectionController(
+         fakeOf<ConnectionAdmin>({
+            getEnvironment: async () => environment,
+         }),
+      );
       sinon
          .stub(
             controller as unknown as {

@@ -10,6 +10,7 @@
  */
 
 import type { components } from "../api";
+import type { ResourceRepository } from "../storage/DatabaseInterface";
 import type { DuckDBConnection } from "../storage/duckdb/DuckDBConnection";
 import type { Environment, PackageListingOptions } from "./environment";
 import type { EnvironmentStore } from "./environment_store";
@@ -87,6 +88,18 @@ export interface PackageAdmin extends PackageLookup, ConfigFreezeReader {
       packageLocation: string,
       targetPath: string,
    ): Promise<void>;
+}
+
+/**
+ * Connection create, update and delete, for ConnectionService: the
+ * environment's connection rows are written through the metadata repository
+ * and the environment's live Malloy config is rebuilt to match.
+ */
+export interface ConnectionAdmin extends PackageLookup, ConfigFreezeReader {
+   readonly finishedInitialization: Promise<void>;
+   readonly storageManager: { getRepository(): ResourceRepository };
+   addConnection: EnvironmentStore["addConnection"];
+   updateConnection: EnvironmentStore["updateConnection"];
 }
 
 /**

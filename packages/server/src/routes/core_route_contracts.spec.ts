@@ -11,13 +11,14 @@ import { afterAll, beforeAll, describe, expect, it } from "bun:test";
 import request from "supertest";
 import { ConnectionController } from "../controller/connection.controller";
 import { ReportController } from "../controller/report.controller";
-import type { EnvironmentStore } from "../service/environment_store";
 import {
    startClosingListener,
    type ClosingListener,
 } from "../test_helpers/closing_listener";
 import { API_PREFIX, buildRouteApp } from "../test_helpers/route_app";
 import { installSettings } from "../test_helpers/settings_env";
+import { fakeOf } from "../test_helpers/store_fakes";
+import type { ConnectionAdmin } from "../service/environment_ports";
 
 describe("PUT …/models/{path} (report write)", () => {
    it("answers 403 under frozenConfig", async () => {
@@ -53,7 +54,7 @@ describe("POST /connections/test", () => {
       request(
          buildRouteApp({
             connectionController: new ConnectionController(
-               {} as unknown as EnvironmentStore,
+               fakeOf<ConnectionAdmin>({}),
             ),
          }),
       )

@@ -18,9 +18,13 @@ import {
    startMetricsHarness,
    type MetricsHarness,
 } from "../test_helpers/metrics_harness";
-import type { EnvironmentStore } from "../service/environment_store";
 import { readReportTag } from "../service/report";
 import { contentHashOf, ReportController } from "./report.controller";
+import { fakeOf } from "../test_helpers/store_fakes";
+import type {
+   ConfigFreezeReader,
+   PackageLookup,
+} from "../service/environment_ports";
 
 /**
  * The write path, against a stubbed environment: what is refused before
@@ -126,10 +130,10 @@ function harness(
             },
          ),
    };
-   const store = {
+   const store = fakeOf<PackageLookup & ConfigFreezeReader>({
       publisherConfigIsFrozen: options.frozen ?? false,
       getEnvironment: sinon.stub().resolves(environment),
-   } as unknown as EnvironmentStore;
+   });
    return {
       controller: new ReportController(store),
       environment,
