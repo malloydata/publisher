@@ -81,12 +81,38 @@ export function runOp(
    }
 }
 
-/** Run slot `slot` of the schedule. */
+/** How many times each slot's op has come up earlier in the schedule. */
+const OCCURRENCE: number[] = (() => {
+   const seen = new Map<Op, number>();
+   return SCHEDULE.map((op) => {
+      const k = seen.get(op) ?? 0;
+      seen.set(op, k + 1);
+      return k;
+   });
+})();
+/** How often each op comes up in one pass of the schedule. */
+const PER_PASS = new Map<Op, number>(
+   MIX_OPS.map((op) => [op, SCHEDULE.filter((o) => o === op).length]),
+);
+
+/**
+ * Run slot `slot` of the schedule. Each op picks its query text or report by
+ * its own running count, not by the slot: the slot is tied to the schedule's
+ * period, so indexing by it would visit only some of an op's texts (every
+ * report_get slot is even, so it would always fetch the same report).
+ */
 export const runSlot = (
    w: Workload,
    slot: number,
    tags: Record<string, string>,
-): void => runOp(w, nth(SCHEDULE, slot), slot, tags);
+): void => {
+   const op = nth(SCHEDULE, slot);
+   const i = slot % SCHEDULE.length;
+   const n =
+      Math.floor(slot / SCHEDULE.length) * (PER_PASS.get(op) ?? 0) +
+      (OCCURRENCE[i] ?? 0);
+   runOp(w, op, n, tags);
+};
 
 /**
  * Warm caches before measuring: every query text and report once, then

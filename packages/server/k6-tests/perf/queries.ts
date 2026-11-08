@@ -49,6 +49,9 @@ export const options = {
 
 export function setup(): SetupData {
    warmUp(W, WARMUP_ROUNDS * VUS);
+   // profile/ctl.ts waits for this line to open its window on the measured
+   // phase rather than guessing how long warm-up takes.
+   console.log("PERF_MEASURE_START");
    return { measureStartMs: Date.now() };
 }
 

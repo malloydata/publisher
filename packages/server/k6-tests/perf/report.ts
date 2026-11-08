@@ -421,6 +421,11 @@ export function buildReport(dir: string): string {
                `- ${e.target} ${e.label}: k6 dropped ${dropped} iterations (arrival rate not sustained).`,
             );
          }
+         if (e.loadErrorsAfter > 0) {
+            notes.push(
+               `- ${e.target} ${e.label}: /status reported ${e.loadErrorsAfter} load error(s) after the run (a failed or stale package); its numbers may come from a broken server. See server.log.`,
+            );
+         }
          if (e.k6ExitCode !== 0) {
             notes.push(
                `- ${e.target} ${e.label}: k6 exited ${e.k6ExitCode}${e.k6ExitCode === 99 ? " (error-rate threshold crossed)" : ""}; see ${e.k6Log}.`,

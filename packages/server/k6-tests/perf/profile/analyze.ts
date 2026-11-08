@@ -15,7 +15,14 @@
 import { readFileSync } from "fs";
 
 const file = process.argv[2]!;
-const topN = Number(process.argv[3] ?? 30);
+// The count is optional: `analyze.ts x.cpuprofile --focus f` has none.
+const countArg = process.argv[3];
+const topN =
+   countArg !== undefined && !countArg.startsWith("--") ? Number(countArg) : 30;
+if (!Number.isInteger(topN) || topN < 1) {
+   console.error(`topN must be a positive integer, got ${countArg}`);
+   process.exit(2);
+}
 const focusIdx = process.argv.indexOf("--focus");
 const focus = focusIdx > 0 ? process.argv[focusIdx + 1] : undefined;
 const callersIdx = process.argv.indexOf("--callers");

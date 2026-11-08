@@ -11,7 +11,7 @@
 // It builds nothing: run `bun run build` at the repo root first. See
 // docs/performance.md for the options and how to read the output.
 
-import { spawnSync, type Subprocess } from "bun";
+import { spawn, spawnSync, type Subprocess } from "bun";
 import {
    cpSync,
    existsSync,
@@ -171,20 +171,29 @@ function parseArgs(argv: string[]): Options {
          );
       }
    }
+   /** A numeric option, refused at once rather than after the server has booted. */
+   const num = (k: string, fallback: number, min: number): number => {
+      const raw = one(k);
+      const n = raw === undefined ? fallback : Number(raw);
+      if (!Number.isFinite(n) || n < min) {
+         throw new Error(`--${k} must be a number >= ${min}, got ${raw}`);
+      }
+      return n;
+   };
    const stamp = new Date().toISOString().replace(/[:.]/g, "-").slice(0, 19);
    return {
       scenarios,
       preset,
-      rows: Number(one("rows") ?? DEFAULT_ROWS),
-      seed: Number(one("seed") ?? DEFAULT_SEED),
+      rows: num("rows", DEFAULT_ROWS, 1),
+      seed: num("seed", DEFAULT_SEED, 0),
       targets,
-      durationS: Number(one("duration") ?? 20),
-      warmupRounds: Number(one("warmup-rounds") ?? 1),
+      durationS: num("duration", 20, 1),
+      warmupRounds: num("warmup-rounds", 1, 0),
       loadOps,
       loadConcurrency: ints("load-concurrency", "1,2,4"),
       queryConcurrency: ints("query-concurrency", "1,4,16,32"),
-      rate: Number(one("rate") ?? 10),
-      loaderVus: Number(one("loader-vus") ?? 1),
+      rate: num("rate", 10, 1),
+      loaderVus: num("loader-vus", 1, 1),
       weights: one("weights"),
       port,
       mcpPort,
@@ -284,8 +293,8 @@ async function startServer(
       }
       await log.flush();
    };
-   void pump(proc.stdout);
-   void pump(proc.stderr);
+   // Kept so stop() can wait for the last chunks before ending the log sink.
+   const pumps = Promise.all([pump(proc.stdout), pump(proc.stderr)]);
 
    const stop = async (): Promise<void> => {
       if (!exited) {
@@ -297,6 +306,7 @@ async function startServer(
          if (!done) proc.kill("SIGKILL");
          await proc.exited;
       }
+      await pumps;
       await log.flush();
       await log.end();
    };
@@ -400,12 +410,15 @@ interface K6Run {
    env: Record<string, string>;
 }
 
-function runK6(
+// Async, not spawnSync: a blocked event loop would stop draining the server's
+// stdout/stderr, and once a pipe fills, the server's log writes stall the
+// very requests being measured.
+async function runK6(
    run: K6Run,
    opts: Options,
    server: Server,
    outDir: string,
-): { exitCode: number; summaryPath: string; logPath: string } {
+): Promise<{ exitCode: number; summaryPath: string; logPath: string }> {
    const base = `${run.scenario}-${run.target}-${run.label}`;
    const summaryPath = path.join(outDir, `${base}.summary.json`);
    const logPath = path.join(outDir, `${base}.k6.log`);
@@ -431,17 +444,39 @@ function runK6(
       TREND_STATS,
       path.join(import.meta.dir, run.script),
    ];
-   const res = spawnSync(args, {
+   const proc = spawn(args, {
       cwd: K6_DIR,
       env,
       stdout: "pipe",
       stderr: "pipe",
    });
-   writeFileSync(
-      logPath,
-      `$ ${args.join(" ")}\n\n${res.stdout.toString()}\n${res.stderr.toString()}`,
-   );
-   return { exitCode: res.exitCode ?? -1, summaryPath, logPath };
+   const [stdout, stderr, exitCode] = await Promise.all([
+      new Response(proc.stdout).text(),
+      new Response(proc.stderr).text(),
+      proc.exited,
+   ]);
+   writeFileSync(logPath, `$ ${args.join(" ")}\n\n${stdout}\n${stderr}`);
+   return { exitCode, summaryPath, logPath };
+}
+
+/**
+ * The tuning settings the server ran with, as it got them: the runner's own
+ * environment (which the server inherits) overridden by --server-env.
+ */
+function effectiveServerEnv(opts: Options): Record<string, string> {
+   const given = { ...process.env, ...opts.serverEnv } as Record<
+      string,
+      string | undefined
+   >;
+   const defaults: Record<string, string> = {
+      PACKAGE_LOAD_WORKERS: "1",
+      PUBLISHER_MAX_CONCURRENT_QUERIES: "32",
+   };
+   const out: Record<string, string> = {};
+   for (const [key, fallback] of Object.entries(defaults)) {
+      out[key] = given[key] ?? `${fallback} (default)`;
+   }
+   return { ...out, ...opts.serverEnv };
 }
 
 function k6Version(): string {
@@ -581,11 +616,7 @@ async function main(): Promise<void> {
             node: cmdOut(["node", "--version"]),
             k6: k6Version(),
          },
-         serverEnv: {
-            PACKAGE_LOAD_WORKERS: "1 (default)",
-            PUBLISHER_MAX_CONCURRENT_QUERIES: "32 (default)",
-            ...opts.serverEnv,
-         },
+         serverEnv: effectiveServerEnv(opts),
          bootMs,
          options: {
             durationS: opts.durationS,
@@ -682,7 +713,7 @@ async function main(): Promise<void> {
          const before = await (await fetch(`${server.baseUrl}/metrics`)).text();
          const loadAvgBefore = os.loadavg()[0]!;
          const started = Date.now();
-         const k6 = runK6(run, opts, server, opts.out);
+         const k6 = await runK6(run, opts, server, opts.out);
          const wallMs = Date.now() - started;
          const after = await (await fetch(`${server.baseUrl}/metrics`)).text();
          const base = `${run.scenario}-${run.target}-${run.label}`;

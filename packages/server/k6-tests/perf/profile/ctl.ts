@@ -77,18 +77,47 @@ async function waitServing(): Promise<void> {
 
 let seq = Date.now();
 async function window(line: string, expect: string): Promise<void> {
+   // Only lines written after this request count: hook.log grows for the whole
+   // serve session, so a window re-run under the same name would otherwise
+   // find the previous run's acknowledgement and return before the hook acts.
+   const readLog = () =>
+      existsSync(`${OUT}/hook.log`)
+         ? readFileSync(`${OUT}/hook.log`, "utf8")
+         : "";
+   const offset = readLog().length;
    appendFileSync(CTL, `${++seq} ${line}\n`);
    for (let i = 0; i < 100; i++) {
       await sleep(100);
-      const log = existsSync(`${OUT}/hook.log`)
-         ? readFileSync(`${OUT}/hook.log`, "utf8")
-         : "";
-      if (log.includes(expect)) return;
+      if (readLog().slice(offset).includes(expect)) return;
    }
    throw new Error(
       `hook did not acknowledge "${line}" (is the server running with the hook?)`,
    );
 }
+/**
+ * Resolve once k6 prints PERF_MEASURE_START (queries.ts setup() logs it after
+ * warm-up). Keeps reading to the end in the background, so k6 never blocks on a
+ * full stderr pipe.
+ */
+async function measureStarted(
+   stderr: ReadableStream<Uint8Array>,
+): Promise<void> {
+   const reader = stderr.getReader();
+   const decoder = new TextDecoder();
+   let tail = "";
+   for (;;) {
+      const { value, done } = await reader.read();
+      if (done) throw new Error("k6 exited before its measured phase began");
+      tail = (tail + decoder.decode(value)).slice(-4096);
+      if (tail.includes("PERF_MEASURE_START")) break;
+   }
+   void (async () => {
+      while (!(await reader.read()).done) {
+         // drain
+      }
+   })();
+}
+
 /** Snapshot /metrics as a window opens or closes, for `phases`. */
 async function snapshotMetrics(name: string, at: "start" | "stop") {
    const res = await fetch(`${BASE}/metrics`);
@@ -149,9 +178,15 @@ if (cmd === "serve") {
    }
    const sf = path.join(pkgs, "storefront");
    if (!existsSync(sf)) {
-      cpSync(path.join(REPO, "examples", "storefront"), sf, {
+      const storefrontSrc = path.join(REPO, "examples", "storefront");
+      cpSync(storefrontSrc, sf, {
          recursive: true,
-         filter: (src) => !/[/\\](evals|tests|node_modules)([/\\]|$)/.test(src),
+         // Relative to the package, so a checkout under a directory named
+         // `tests` or `evals` still copies.
+         filter: (src) =>
+            !/(^|[/\\])(evals|tests|node_modules)([/\\]|$)/.test(
+               path.relative(storefrontSrc, src),
+            ),
       });
    }
    const root = path.join(DIR, "root");
@@ -345,11 +380,14 @@ if (cmd === "serve") {
             PERF_DURATION: `${seconds}s`,
          },
          stdout: "ignore",
-         stderr: "ignore",
+         stderr: "pipe",
       },
    );
    const pid = serverPid();
-   await sleep(4000); // past setup()'s warm-up
+   // Open the window when setup() reports the measured phase has begun:
+   // warm-up length varies with the package (gen's 1M-row queries are slow).
+   await measureStarted(k6.stderr);
+   await sleep(1000);
    await open(name);
    const cpu0 = cpuSeconds(pid);
    const t0 = Date.now();
