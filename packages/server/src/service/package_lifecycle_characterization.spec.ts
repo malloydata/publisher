@@ -226,6 +226,35 @@ describe("package lifecycle (characterization)", () => {
       expect(env.getPackageStatus("missing")).toBeUndefined();
    });
 
+   it("deleting a configured package that was never loaded removes it and its folder", async () => {
+      const env = await Environment.create("e", envPath, []);
+      const dir = writePackageDir("pkg", GOOD_MODEL);
+      seed(env, "pkg");
+      let recordsRemoved = false;
+      await env.deletePackage("pkg", {
+         removeRecords: async () => {
+            recordsRemoved = true;
+         },
+      });
+      expect(recordsRemoved).toBe(true);
+      expect(env.getPackageStatus("pkg")).toBeUndefined();
+      expect(await env.listPackages()).toEqual([]);
+      expect(env.getLoadedPackages()).toHaveLength(0);
+      await expect(fs.stat(dir)).rejects.toThrow();
+   });
+
+   it("deleting a package whose lazy load failed keeps its folder", async () => {
+      const env = await Environment.create("e", envPath, []);
+      const dir = writePackageDir("pkg", BROKEN_MODEL);
+      seed(env, "pkg");
+      await env.listPackages();
+      expect(env.getFailedPackages().size).toBe(1);
+      await env.deletePackage("pkg");
+      expect(env.getFailedPackages().size).toBe(0);
+      expect(env.getPackageStatus("pkg")).toBeUndefined();
+      expect((await fs.stat(dir)).isDirectory()).toBe(true);
+   });
+
    it("deleting a serving package removes it", async () => {
       const env = await Environment.create("e", envPath, []);
       writePackageDir("pkg", GOOD_MODEL);
