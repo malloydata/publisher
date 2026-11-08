@@ -3,6 +3,7 @@
 
 import { components } from "../api";
 import type { PackageLookup } from "../service/environment_ports";
+import { VersionRef } from "../service/identity";
 import { loadedPackage } from "./loaded_package";
 
 type ApiDatabase = components["schemas"]["Database"];
@@ -17,7 +18,7 @@ export class DatabaseController {
    public async listDatabases(
       environmentName: string,
       packageName: string,
-      versionId?: unknown,
+      versionId: VersionRef = VersionRef.LATEST,
    ): Promise<ApiDatabase[]> {
       const p = await loadedPackage(
          this.environmentStore,

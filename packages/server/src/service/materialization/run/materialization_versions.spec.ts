@@ -308,7 +308,7 @@ describe('scope "version": each version builds and serves its own tables', () =>
       await publish("1.0.0", 1, "version");
       await publish("2.0.0", 2, "version");
 
-      const v1 = await build({ versionId: "1.0.0" });
+      const v1 = await build({ versionId: VersionRef.parse("1.0.0") });
       const v2 = await build({});
 
       expect([v1.status, v2.status]).toEqual([
@@ -335,8 +335,8 @@ describe('scope "version": each version builds and serves its own tables', () =>
    it("serves each version from its own table", async () => {
       await publish("1.0.0", 1, "version");
       await publish("2.0.0", 2, "version");
-      await build({ versionId: "1.0.0" });
-      await build({ versionId: "2.0.0" });
+      await build({ versionId: VersionRef.parse("1.0.0") });
+      await build({ versionId: VersionRef.parse("2.0.0") });
       await tamper(TABLE_V1, 101);
       await tamper(TABLE_V2, 102);
 
@@ -347,8 +347,8 @@ describe('scope "version": each version builds and serves its own tables', () =>
    it("binds each version to its own table again after a restart", async () => {
       await publish("1.0.0", 1, "version");
       await publish("2.0.0", 2, "version");
-      await build({ versionId: "1.0.0" });
-      await build({ versionId: "2.0.0" });
+      await build({ versionId: VersionRef.parse("1.0.0") });
+      await build({ versionId: VersionRef.parse("2.0.0") });
       await tamper(TABLE_V1, 101);
       await tamper(TABLE_V2, 102);
 
@@ -361,15 +361,15 @@ describe('scope "version": each version builds and serves its own tables', () =>
    it("reuses only the version's own runs", async () => {
       await publish("1.0.0", 1, "version");
       await publish("2.0.0", 1, "version"); // the same definition
-      await build({ versionId: "1.0.0" });
+      await build({ versionId: VersionRef.parse("1.0.0") });
 
       // Another version's run never counts as this version's reuse.
-      const first = await build({ versionId: "2.0.0" });
+      const first = await build({ versionId: VersionRef.parse("2.0.0") });
       expect(first.metadata).toMatchObject({
          sourcesBuilt: 1,
          sourcesReused: 0,
       });
-      const again = await build({ versionId: "2.0.0" });
+      const again = await build({ versionId: VersionRef.parse("2.0.0") });
       expect(again.metadata).toMatchObject({
          sourcesBuilt: 0,
          sourcesReused: 1,
@@ -382,12 +382,14 @@ describe('scope "version": each version builds and serves its own tables', () =>
       const release = holdRuns();
       try {
          const a = await service.createMaterialization(ENV, PKG, {
-            versionId: "1.0.0",
+            versionId: VersionRef.parse("1.0.0"),
          });
          const b = await service.createMaterialization(ENV, PKG, {});
          expect([a.version, b.version]).toEqual(["1.0.0", "2.0.0"]);
          const again = await service
-            .createMaterialization(ENV, PKG, { versionId: "1.0.0" })
+            .createMaterialization(ENV, PKG, {
+               versionId: VersionRef.parse("1.0.0"),
+            })
             .catch((err: unknown) => err);
          expect(again).toBeInstanceOf(MaterializationConflictError);
          expect((again as Error).message).toContain("building version 1.0.0");
@@ -437,7 +439,7 @@ describe('scope "version": each version builds and serves its own tables', () =>
          )[0];
          const clash = await service
             .createMaterialization(ENV, PKG, {
-               versionId: "1.0.0",
+               versionId: VersionRef.parse("1.0.0"),
                buildInstructions: [
                   {
                      sourceID: source.sourceID,
@@ -463,8 +465,8 @@ describe('scope "version": each version builds and serves its own tables', () =>
    it("archiving a version reclaims its own tables and runs, and nothing else", async () => {
       await publish("1.0.0", 1, "version");
       await publish("2.0.0", 2, "version");
-      const v1 = await build({ versionId: "1.0.0" });
-      await build({ versionId: "2.0.0" });
+      const v1 = await build({ versionId: VersionRef.parse("1.0.0") });
+      await build({ versionId: VersionRef.parse("2.0.0") });
 
       await env.getVersionService()!.setArchiveStatus(PKG, "1.0.0", "archive");
       await Promise.all(reclaims);
@@ -494,11 +496,11 @@ describe('scope "version": each version builds and serves its own tables', () =>
       );
       await publish("1.0.0", 1, "version");
       await publish("2.0.0", 2, "version");
-      await build({ versionId: "1.0.0" });
+      await build({ versionId: VersionRef.parse("1.0.0") });
       await settled(
          (
             await service.createMaterialization(ENV, OTHER, {
-               versionId: "1.0.0",
+               versionId: VersionRef.parse("1.0.0"),
             })
          ).id,
       );
@@ -529,7 +531,7 @@ describe('scope "version": each version builds and serves its own tables', () =>
    it("an unarchived version serves live until it is built again", async () => {
       await publish("1.0.0", 1, "version");
       await publish("2.0.0", 2, "version");
-      await build({ versionId: "1.0.0" });
+      await build({ versionId: VersionRef.parse("1.0.0") });
       await tamper(TABLE_V1, 101);
       expect(await answerOf("1.0.0")).toBe(101);
 
@@ -539,7 +541,7 @@ describe('scope "version": each version builds and serves its own tables', () =>
       await versions.setArchiveStatus(PKG, "1.0.0", "unarchive");
 
       expect(await answerOf("1.0.0")).toBe(1);
-      await build({ versionId: "1.0.0" });
+      await build({ versionId: VersionRef.parse("1.0.0") });
       await tamper(TABLE_V1, 111);
       expect(await answerOf("1.0.0")).toBe(111);
    });
@@ -552,7 +554,7 @@ describe('scope "version": each version builds and serves its own tables', () =>
       let run: Materialization;
       try {
          run = await service.createMaterialization(ENV, PKG, {
-            versionId: "1.0.0",
+            versionId: VersionRef.parse("1.0.0"),
          });
          expect(
             await refusal(versions.setArchiveStatus(PKG, "1.0.0", "archive")),
@@ -566,7 +568,9 @@ describe('scope "version": each version builds and serves its own tables', () =>
       await versions.setArchiveStatus(PKG, "1.0.0", "archive");
       expect(
          await refusal(
-            service.createMaterialization(ENV, PKG, { versionId: "1.0.0" }),
+            service.createMaterialization(ENV, PKG, {
+               versionId: VersionRef.parse("1.0.0"),
+            }),
          ),
       ).toEqual({ status: 410, reason: "VERSION_ARCHIVED" });
    });
@@ -592,7 +596,7 @@ describe('scope "version": each version builds and serves its own tables', () =>
       const archiving = versions.setArchiveStatus(PKG, "1.0.0", "archive");
       await writing;
       const creating = service.createMaterialization(ENV, PKG, {
-         versionId: "1.0.0",
+         versionId: VersionRef.parse("1.0.0"),
       });
       await new Promise((resolve) => setTimeout(resolve, 20));
       unlock();
@@ -608,7 +612,7 @@ describe('scope "version": each version builds and serves its own tables', () =>
    it("tries a table it could not drop once: the record goes, the table stays, and the next sweep tries nothing", async () => {
       await publish("1.0.0", 1, "version");
       await publish("2.0.0", 2, "version");
-      const v1 = await build({ versionId: "1.0.0" });
+      const v1 = await build({ versionId: VersionRef.parse("1.0.0") });
       const connection = await env.getMalloyConnection("warehouse");
       const runSQL = connection.runSQL.bind(connection);
       const failing = spyOn(connection, "runSQL").mockImplementation(
@@ -637,7 +641,9 @@ describe('scope "package": the versions share the package\'s tables', () => {
 
       expect(
          await refusal(
-            service.createMaterialization(ENV, PKG, { versionId: "1.0.0" }),
+            service.createMaterialization(ENV, PKG, {
+               versionId: VersionRef.parse("1.0.0"),
+            }),
          ),
       ).toEqual({ status: 400, reason: "VERSION_NOT_LATEST" });
       expect(await repo.listMaterializations(ENV_ID, PKG)).toEqual([]);
@@ -656,7 +662,7 @@ describe('scope "package": the versions share the package\'s tables', () => {
       // the shared table yet, so the version's auto-run is not refused.
       await publish("1.0.0", 1, "package", "explicit");
       expect(await env.getVersionService()!.latestOf(PKG)).toBeNull();
-      const built = await build({ versionId: "1.0.0" });
+      const built = await build({ versionId: VersionRef.parse("1.0.0") });
       expect(built.status).toBe("MANIFEST_FILE_READY");
       expect(built.version).toBe("1.0.0");
       await tamper("summary", 101);
@@ -928,7 +934,7 @@ describe('scope "package": the versions share the package\'s tables', () => {
       ).getBuildPlan()!;
       const source = Object.values(plan.sources)[0];
       await build({
-         versionId: "1.0.0",
+         versionId: VersionRef.parse("1.0.0"),
          buildInstructions: [
             {
                sourceID: source.sourceID,
@@ -956,7 +962,7 @@ describe('scope "package": the versions share the package\'s tables', () => {
          ).getBuildPlan()!;
          const source = Object.values(plan.sources)[0];
          return service.createMaterialization(ENV, PKG, {
-            versionId,
+            versionId: VersionRef.parse(versionId),
             buildInstructions: [
                {
                   sourceID: source.sourceID,
@@ -1049,7 +1055,7 @@ describe('scope "package": the versions share the package\'s tables', () => {
       const source = Object.values(plan.sources)[0];
       const refused = await service
          .createMaterialization(ENV, PKG, {
-            versionId: "1.0.0",
+            versionId: VersionRef.parse("1.0.0"),
             buildInstructions: [
                {
                   sourceID: source.sourceID,
@@ -1074,7 +1080,7 @@ describe('scope "package": the versions share the package\'s tables', () => {
          ).getBuildPlan()!;
          const source = Object.values(plan.sources)[0];
          return build({
-            versionId,
+            versionId: VersionRef.parse(versionId),
             buildInstructions: [
                {
                   sourceID: source.sourceID,
@@ -1113,7 +1119,7 @@ describe('scope "package": the versions share the package\'s tables', () => {
       const instruct = (physicalTableName: string) =>
          service
             .createMaterialization(ENV, PKG, {
-               versionId: "1.0.0",
+               versionId: VersionRef.parse("1.0.0"),
                buildInstructions: [
                   {
                      sourceID: source.sourceID,
@@ -1147,7 +1153,7 @@ describe('scope "package": the versions share the package\'s tables', () => {
       };
       const refused = await service
          .createMaterialization(ENV, PKG, {
-            versionId: "1.0.0",
+            versionId: VersionRef.parse("1.0.0"),
             buildInstructions: [
                { ...instruction, physicalTableName: "twice" },
                { ...instruction, physicalTableName: "TWICE" },
@@ -1252,7 +1258,7 @@ describe('scope "package": the versions share the package\'s tables', () => {
             await refusal(service.createMaterialization(ENV, PKG, {})),
          ).toEqual({ status: 409, reason: undefined });
          const instructed = await service.createMaterialization(ENV, PKG, {
-            versionId: "1.0.0",
+            versionId: VersionRef.parse("1.0.0"),
             buildInstructions: [
                {
                   sourceID: source.sourceID,
@@ -1291,7 +1297,7 @@ describe("naming a version on the materialization routes", () => {
    it("lists one version's runs, with those from before the first versioned publish", async () => {
       await publish("1.0.0", 1, "version");
       await publish("2.0.0", 2, "version");
-      const v1 = await build({ versionId: "1.0.0" });
+      const v1 = await build({ versionId: VersionRef.parse("1.0.0") });
       const v2 = await build({});
       const legacy = await repo.createMaterialization(
          ENV_ID,
@@ -1301,7 +1307,11 @@ describe("naming a version on the materialization routes", () => {
       );
 
       const ids = async (versionId?: unknown) =>
-         (await service.listMaterializations(ENV, PKG, { versionId }))
+         (
+            await service.listMaterializations(ENV, PKG, {
+               versionId: VersionRef.parse(versionId),
+            })
+         )
             .map((m) => m.id)
             .sort();
       expect(await ids("1.0.0")).toEqual([v1.id, legacy.id].sort());
@@ -1312,21 +1322,35 @@ describe("naming a version on the materialization routes", () => {
    it("finds a run by id whichever version built it, and refuses one of another named version", async () => {
       await publish("1.0.0", 1, "version");
       await publish("2.0.0", 2, "version");
-      const v1 = await build({ versionId: "1.0.0" });
+      const v1 = await build({ versionId: VersionRef.parse("1.0.0") });
 
       expect((await service.getMaterialization(ENV, PKG, v1.id)).id).toBe(
          v1.id,
       );
       expect(
-         (await service.getMaterialization(ENV, PKG, v1.id, "1.0.0")).id,
+         (
+            await service.getMaterialization(
+               ENV,
+               PKG,
+               v1.id,
+               VersionRef.parse("1.0.0"),
+            )
+         ).id,
       ).toBe(v1.id);
       expect(
-         await refusal(service.getMaterialization(ENV, PKG, v1.id, "2.0.0")),
+         await refusal(
+            service.getMaterialization(
+               ENV,
+               PKG,
+               v1.id,
+               VersionRef.parse("2.0.0"),
+            ),
+         ),
       ).toEqual({ status: 404, reason: undefined });
       expect(
          await refusal(
             service.deleteMaterialization(ENV, PKG, v1.id, {
-               versionId: "2.0.0",
+               versionId: VersionRef.parse("2.0.0"),
             }),
          ),
       ).toEqual({ status: 404, reason: undefined });
@@ -1344,16 +1368,27 @@ describe("naming a version on the materialization routes", () => {
       ] as const) {
          expect(
             await refusal(
-               service.listMaterializations(ENV, PKG, { versionId }),
+               service.listMaterializations(ENV, PKG, {
+                  versionId: VersionRef.parse(versionId),
+               }),
             ),
          ).toEqual(expected);
          expect(
             await refusal(
-               service.createMaterialization(ENV, PKG, { versionId }),
+               service.createMaterialization(ENV, PKG, {
+                  versionId: VersionRef.parse(versionId),
+               }),
             ),
          ).toEqual(expected);
          expect(
-            await refusal(service.getMaterialization(ENV, PKG, "x", versionId)),
+            await refusal(
+               service.getMaterialization(
+                  ENV,
+                  PKG,
+                  "x",
+                  VersionRef.parse(versionId),
+               ),
+            ),
          ).toEqual(expected);
       }
       expect(await repo.listMaterializations(ENV_ID, PKG)).toEqual([]);
@@ -1361,7 +1396,7 @@ describe("naming a version on the materialization routes", () => {
 
    it("lists every run of a versioned package that has no latest yet", async () => {
       await publish("1.0.0", 1, "version", "explicit");
-      const run = await build({ versionId: "1.0.0" });
+      const run = await build({ versionId: VersionRef.parse("1.0.0") });
       expect(
          (await service.listMaterializations(ENV, PKG)).map((m) => m.id),
       ).toEqual([run.id]);
@@ -1371,7 +1406,7 @@ describe("naming a version on the materialization routes", () => {
       expect(
          await refusal(
             service.listMaterializations(ENV, "unversioned", {
-               versionId: "1.0.0",
+               versionId: VersionRef.parse("1.0.0"),
             }),
          ),
       ).toEqual({ status: 404, reason: "VERSION_NOT_FOUND" });

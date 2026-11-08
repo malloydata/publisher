@@ -8,6 +8,7 @@ import { recordScheduledFire } from "../../../materialization_metrics";
 import { CronEvaluator } from "./cron_evaluator";
 import type { MaterializationEnvironment, MaterializationHost } from "../host";
 import type { MaterializationService } from "./materialization_service";
+import { VersionRef } from "../../identity";
 import { resolvePackageScope } from "../../package_manifest";
 import type { Version } from "../../../storage/DatabaseInterface";
 
@@ -397,7 +398,9 @@ export class MaterializationScheduler {
             {
                forceRefresh: true,
                trigger: "SCHEDULER",
-               ...(versionId !== undefined ? { versionId } : {}),
+               ...(versionId !== undefined
+                  ? { versionId: VersionRef.parse(versionId) }
+                  : {}),
             },
          );
          recordScheduledFire("fired");

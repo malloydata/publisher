@@ -64,7 +64,7 @@ describe("CompileController.compile", () => {
          { G: 1 },
          "file",
       );
-      expect(compileSource.firstCall.args.slice(3)).toEqual([
+      expect(compileSource.firstCall.args.slice(3, 6)).toEqual([
          true,
          { G: 1 },
          "file",

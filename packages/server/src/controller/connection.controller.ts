@@ -391,7 +391,7 @@ export class ConnectionController {
       environmentName: string,
       connectionName: string,
       packageName?: string,
-      versionId?: unknown,
+      versionId: VersionRef = VersionRef.LATEST,
    ): Promise<Connection> {
       try {
          return await this.lookupMalloyConnection(
@@ -414,7 +414,7 @@ export class ConnectionController {
       environmentName: string,
       connectionName: string,
       packageName?: string,
-      versionId?: unknown,
+      versionId: VersionRef = VersionRef.LATEST,
    ): Promise<Connection> {
       const environment = await this.environmentStore.getEnvironment(
          parseEnvironmentName(environmentName),
@@ -440,7 +440,7 @@ export class ConnectionController {
                parsePackageName(packageName),
                false,
                {
-                  versionId: VersionRef.parse(versionId),
+                  versionId,
                },
             );
             return await pkg.getMalloyConnection(connectionName);
@@ -477,7 +477,7 @@ export class ConnectionController {
          if (packageName) {
             await environment
                .getVersionService()
-               ?.resolve(packageName, versionId);
+               ?.resolve(packageName, versionId.requested());
          }
          return await environment.getMalloyConnection(connectionName);
       }
@@ -596,7 +596,7 @@ export class ConnectionController {
       environmentName: string,
       connectionName: string,
       packageName?: string,
-      versionId?: unknown,
+      versionId: VersionRef = VersionRef.LATEST,
    ): Promise<ApiSchema[]> {
       const environment = await this.environmentStore.getEnvironment(
          parseEnvironmentName(environmentName),
@@ -626,7 +626,7 @@ export class ConnectionController {
       schemaName: string,
       tableNames?: string[],
       packageName?: string,
-      versionId?: unknown,
+      versionId: VersionRef = VersionRef.LATEST,
    ): Promise<ApiTable[]> {
       const environment = await this.environmentStore.getEnvironment(
          parseEnvironmentName(environmentName),
@@ -658,7 +658,7 @@ export class ConnectionController {
       connectionName: string,
       sqlStatement: string,
       packageName?: string,
-      versionId?: unknown,
+      versionId: VersionRef = VersionRef.LATEST,
    ): Promise<ApiSqlSource> {
       // A managed database runs one SELECT and nothing else (single_select.ts).
       const environment = await this.environmentStore.getEnvironment(
@@ -709,7 +709,7 @@ export class ConnectionController {
       schemaName: string,
       tablePath: string,
       packageName?: string,
-      versionId?: unknown,
+      versionId: VersionRef = VersionRef.LATEST,
    ): Promise<ApiTable> {
       const malloyConnection = await this.getMalloyConnection(
          environmentName,
@@ -804,7 +804,7 @@ export class ConnectionController {
       options: string,
       packageName: string | undefined,
       metadata: { queryMetadata?: unknown; queryClass?: unknown } | undefined,
-      versionId: unknown,
+      versionId: VersionRef = VersionRef.LATEST,
       identity: AccessIdentity,
    ): Promise<ApiQueryData> {
       return withAccessRecord(
@@ -842,7 +842,7 @@ export class ConnectionController {
        * connector refuse the statement at dispatch.
        */
       metadata?: { queryMetadata?: unknown; queryClass?: unknown },
-      versionId?: unknown,
+      versionId: VersionRef = VersionRef.LATEST,
    ): Promise<ApiQueryData> {
       // Express parses repeated query parameters (?sqlStatement=a&sqlStatement=b)
       // and array-shaped JSON bodies as `string[]`, not `string`. The route
@@ -1027,7 +1027,7 @@ export class ConnectionController {
       connectionName: string,
       sqlStatement: string,
       packageName: string | undefined,
-      versionId: unknown,
+      versionId: VersionRef = VersionRef.LATEST,
       identity: AccessIdentity,
    ): Promise<ApiTemporaryTable> {
       return withAccessRecord(
@@ -1056,7 +1056,7 @@ export class ConnectionController {
       connectionName: string,
       sqlStatement: string,
       packageName?: string,
-      versionId?: unknown,
+      versionId: VersionRef = VersionRef.LATEST,
    ): Promise<ApiTemporaryTable> {
       // Re-validated for the same reason as in getConnectionQueryData.
       if (typeof sqlStatement !== "string") {

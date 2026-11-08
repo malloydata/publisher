@@ -145,7 +145,12 @@ describe("a versioned package with no latest yet", () => {
    it("answers a request that names no version with 404 VERSION_NOT_FOUND", async () => {
       for (const versionId of [undefined, null, ""]) {
          const refused = await answered(
-            controller.getPackage(ENV_NAME, PKG, false, versionId),
+            controller.getPackage(
+               ENV_NAME,
+               PKG,
+               false,
+               VersionRef.parse(versionId),
+            ),
          );
          expect(refused).toMatchObject({
             status: 404,
@@ -168,7 +173,12 @@ describe("a versioned package with no latest yet", () => {
    });
 
    it("serves a request that names a version", async () => {
-      const named = await controller.getPackage(ENV_NAME, PKG, false, "1.0.0");
+      const named = await controller.getPackage(
+         ENV_NAME,
+         PKG,
+         false,
+         VersionRef.parse("1.0.0"),
+      );
       expect(named).toMatchObject({ versionId: "1.0.0", latestVersion: null });
       const other = await env.getPackage(parsePackageName(PKG), false, {
          versionId: VersionRef.parse("2.0.0"),

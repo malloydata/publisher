@@ -18,13 +18,13 @@ export async function loadedPackage(
    environmentStore: PackageLookup,
    environmentName: string,
    packageName: string,
-   versionId?: unknown,
+   versionId: VersionRef = VersionRef.LATEST,
 ): Promise<Package> {
    const environment = await environmentStore.getEnvironment(
       parseEnvironmentName(environmentName),
       false,
    );
    return environment.getPackage(parsePackageName(packageName), false, {
-      versionId: VersionRef.parse(versionId),
+      versionId,
    });
 }

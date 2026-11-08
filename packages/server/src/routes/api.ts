@@ -26,8 +26,9 @@ import {
    assertListingTakesNoVersionId,
    booleanParam,
    optionalBooleanParam,
-   queryVersionIdOf,
+   queryVersionRefOf,
    assertNoCollectionReload,
+   versionRefOf,
 } from "../route_params";
 import { processStorageDestinationsOrThrow } from "../service/connection_config";
 import { registerDeprecatedRoutes } from "./deprecated";
@@ -43,7 +44,11 @@ import {
 import { registerStorageDestinationRoutes } from "./storage_destinations";
 import { reportWriteRoute } from "./report_write";
 import { registerVersionRoutes } from "./versions";
-import { parseEnvironmentName, parsePackageRef } from "../service/identity";
+import {
+   parseEnvironmentName,
+   parsePackageRef,
+   VersionRef,
+} from "../service/identity";
 
 // Caps long-lived SSE streams so they cannot exhaust sockets or memory.
 // Generous: legitimate use is one stream per open dashboard tab.
@@ -353,7 +358,7 @@ function registerConnectionRoutes(
          scoped ? req.params.packageName : undefined;
       // A package-scoped route reads the version its request names.
       const versionId = (req: express.Request) =>
-         scoped ? req.query.versionId : undefined;
+         scoped ? versionRefOf(req) : VersionRef.LATEST;
       app.get(
          `${prefix}/schemas`,
          apiRoute((req) =>
@@ -400,19 +405,19 @@ function registerConnectionRoutes(
       handler: (
          req: express.Request,
          packageName: string | undefined,
-         versionId: unknown,
+         versionId: VersionRef,
       ) => Promise<unknown>,
    ) => {
       app.post(
          `${conn}${suffix}`,
          querySlots.middleware,
-         apiRoute((req) => handler(req, undefined, undefined)),
+         apiRoute((req) => handler(req, undefined, VersionRef.LATEST)),
       );
       app.post(
          `${pkgConn}${suffix}`,
          querySlots.middleware,
          apiRoute((req) =>
-            handler(req, req.params.packageName, req.query.versionId),
+            handler(req, req.params.packageName, versionRefOf(req)),
          ),
       );
    };
@@ -537,7 +542,7 @@ function registerPackageRoutes(
             req.params.environmentName,
             req.params.packageName,
             reload,
-            req.query.versionId,
+            versionRefOf(req),
          );
       }),
    );
@@ -573,7 +578,7 @@ function registerPackageRoutes(
          return modelController.listModels(
             req.params.environmentName,
             req.params.packageName,
-            { includeHiddenFilesAndSources, versionId: req.query.versionId },
+            { includeHiddenFilesAndSources, versionId: versionRefOf(req) },
          );
       }),
    );
@@ -591,7 +596,7 @@ function registerPackageRoutes(
             wildcardParam(req),
             {
                includeHiddenFilesAndSources,
-               versionId: req.query.versionId,
+               versionId: versionRefOf(req),
                ...(givens ? { givens } : {}),
             },
          );
@@ -607,7 +612,7 @@ function registerPackageRoutes(
          skillController.listSkills(
             req.params.environmentName,
             req.params.packageName,
-            req.query.versionId,
+            versionRefOf(req),
          ),
       ),
    );
@@ -618,7 +623,7 @@ function registerPackageRoutes(
             req.params.environmentName,
             req.params.packageName,
             wildcardParam(req) ?? "",
-            req.query.versionId,
+            versionRefOf(req),
          ),
       ),
    );
@@ -628,7 +633,7 @@ function registerPackageRoutes(
       (
          environmentName: string,
          packageName: string,
-         versionId: unknown,
+         versionId: VersionRef,
       ) => Promise<unknown>,
    ][] = [
       [
@@ -658,7 +663,7 @@ function registerPackageRoutes(
          return packageController.getPackageEntities(
             req.params.environmentName,
             req.params.packageName,
-            req.query.versionId,
+            versionRefOf(req),
             includeHiddenFilesAndSources,
          );
       }),
@@ -670,7 +675,7 @@ function registerPackageRoutes(
             read(
                req.params.environmentName,
                req.params.packageName,
-               req.query.versionId,
+               versionRefOf(req),
             ),
          ),
       );
@@ -681,7 +686,7 @@ function registerPackageRoutes(
          skillController.listAgents(
             req.params.environmentName,
             req.params.packageName,
-            req.query.versionId,
+            versionRefOf(req),
          ),
       ),
    );
@@ -700,7 +705,7 @@ function registerPackageRoutes(
             req.params.packageName,
             req.params.agentName,
             skills,
-            req.query.versionId,
+            versionRefOf(req),
          );
       }),
    );
@@ -712,7 +717,7 @@ function registerPackageRoutes(
             req.params.packageName,
             req.params.agentName,
             wildcardParam(req) ?? "",
-            req.query.versionId,
+            versionRefOf(req),
          ),
       ),
    );
@@ -732,7 +737,7 @@ function registerPackageRoutes(
          reportController.listReports(
             req.params.environmentName,
             req.params.packageName,
-            req.query.versionId,
+            versionRefOf(req),
          ),
       ),
    );
@@ -744,7 +749,7 @@ function registerPackageRoutes(
             req.params.environmentName,
             req.params.packageName,
             wildcardParam(req),
-            req.query.versionId,
+            versionRefOf(req),
          ),
       ),
    );
@@ -819,7 +824,7 @@ function registerQueryRoutes(
                givens: req.body.givens,
                queryMetadata: req.body?.queryMetadata,
                queryClass: req.body?.queryClass,
-               versionId: queryVersionIdOf(req),
+               versionId: queryVersionRefOf(req),
                // Disables the author's `#(authorize)` gates. From a header, never
                // the body, and nothing here bounds who may send it: the
                // deployment must strip it at its edge. See
@@ -852,7 +857,7 @@ function registerQueryRoutes(
          databaseController.listDatabases(
             req.params.environmentName,
             req.params.packageName,
-            req.query.versionId,
+            versionRefOf(req),
          ),
       ),
    );
@@ -872,7 +877,7 @@ function registerQueryRoutes(
             req.body.givens as Record<string, GivenValue> | undefined,
             // compileSource rejects an invalid scope with a 400.
             req.body.scope ?? "append",
-            req.query.versionId,
+            versionRefOf(req),
             req.body.files,
          ),
       ),
@@ -910,7 +915,7 @@ function registerMaterializationRoutes(
             {
                limit: parseNonNegativeIntParam(req.query.limit),
                offset: parseNonNegativeIntParam(req.query.offset),
-               versionId: req.query.versionId,
+               versionId: versionRefOf(req),
             },
          ),
       ),
@@ -922,7 +927,7 @@ function registerMaterializationRoutes(
             req.params.environmentName,
             req.params.packageName,
             req.params.materializationId,
-            req.query.versionId,
+            versionRefOf(req),
          ),
       ),
    );
@@ -939,7 +944,7 @@ function registerMaterializationRoutes(
             req.params.environmentName,
             req.params.packageName,
             req.params.materializationId,
-            req.query.versionId,
+            versionRefOf(req),
          );
       }),
    );
@@ -951,7 +956,7 @@ function registerMaterializationRoutes(
             req.params.environmentName,
             req.params.packageName,
             req.params.materializationId,
-            { dropTables, versionId: req.query.versionId },
+            { dropTables, versionId: versionRefOf(req) },
          );
          res.status(204).send();
       }),

@@ -13,8 +13,29 @@ import type express from "express";
 import { isQuerySlotMiddleware, QuerySlots } from "../query_concurrency";
 import type { AppServices } from "../app_services";
 import { createMainApp } from "../routes/main_app";
+import { VersionRef } from "../service/identity";
 
 export { API_PREFIX } from "../routes/main_app";
+
+/**
+ * A stubbed controller's arguments with each version the routes parsed (a
+ * {@link VersionRef}, alone or as an options bag's `versionId`) read back as
+ * the version it names: the string, or undefined for `latest`.
+ */
+export function namedVersions(args: unknown[]): unknown[] {
+   return args.map((arg) => {
+      if (arg instanceof VersionRef) return arg.requested();
+      if (
+         arg !== null &&
+         typeof arg === "object" &&
+         (arg as { versionId?: unknown }).versionId instanceof VersionRef
+      ) {
+         const bag = arg as { versionId: VersionRef };
+         return { ...bag, versionId: bag.versionId.requested() };
+      }
+      return arg;
+   });
+}
 
 type Stubs = { [K in keyof AppServices]?: Partial<AppServices[K]> };
 

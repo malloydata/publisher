@@ -12,7 +12,7 @@ import { describe, expect, it } from "bun:test";
 import request from "supertest";
 import { PackageVersionError } from "./errors";
 import type { VersionRef } from "./service/identity";
-import { buildRouteApp } from "./test_helpers/route_app";
+import { buildRouteApp, namedVersions } from "./test_helpers/route_app";
 
 const PKG = "/api/v0/projects/env/packages/pkg";
 
@@ -22,7 +22,7 @@ function recordingApp() {
    const record =
       (name: string) =>
       async (...args: unknown[]) => {
-         calls[name] = args;
+         calls[name] = namedVersions(args);
          return {};
       };
    // The legacy notebook routes reach the package through the store.

@@ -64,7 +64,7 @@ export class LegacyReportController {
    private packageOf(
       environmentName: string,
       packageName: string,
-      versionId?: unknown,
+      versionId: VersionRef = VersionRef.LATEST,
    ) {
       return loadedPackage(
          this.environmentStore,
@@ -77,7 +77,7 @@ export class LegacyReportController {
    public async listDashboards(
       environmentName: string,
       packageName: string,
-      versionId?: unknown,
+      versionId: VersionRef = VersionRef.LATEST,
    ): Promise<ApiDashboard[]> {
       recordDeprecatedUsage("dashboards_list");
       return listDashboards(
@@ -90,7 +90,7 @@ export class LegacyReportController {
       environmentName: string,
       packageName: string,
       dashboardName: string,
-      versionId?: unknown,
+      versionId: VersionRef = VersionRef.LATEST,
    ): Promise<ApiDashboardManifest> {
       recordDeprecatedUsage("dashboard_get");
       // Throws AmbiguousReportNameError (409) when two grid reports share it.
@@ -110,7 +110,7 @@ export class LegacyReportController {
    public async listNotebooks(
       environmentName: string,
       packageName: string,
-      versionId?: unknown,
+      versionId: VersionRef = VersionRef.LATEST,
    ): Promise<ApiNotebook[]> {
       recordDeprecatedUsage("notebooks_list");
       return listNotebooks(
@@ -123,7 +123,7 @@ export class LegacyReportController {
       environmentName: string,
       packageName: string,
       notebookPath: string,
-      versionId?: unknown,
+      versionId: VersionRef = VersionRef.LATEST,
    ): Promise<ApiRawNotebook> {
       recordDeprecatedUsage("notebook_get");
       const p = await this.packageOf(environmentName, packageName, versionId);
@@ -146,7 +146,7 @@ export class LegacyReportController {
       filterParams: FilterParams | undefined,
       bypassFilters: boolean | undefined,
       givens: Record<string, GivenValue> | undefined,
-      versionId: unknown,
+      versionId: VersionRef = VersionRef.LATEST,
       identity: AccessIdentity,
    ): Promise<NotebookCellRunResult> {
       recordDeprecatedUsage("notebook_cell");
@@ -191,7 +191,7 @@ export class LegacyReportController {
       filterParams?: FilterParams,
       bypassFilters?: boolean,
       givens?: Record<string, GivenValue>,
-      versionId?: unknown,
+      versionId: VersionRef = VersionRef.LATEST,
    ): Promise<NotebookCellRunResult> {
       const environment = await this.environmentStore.getEnvironment(
          parseEnvironmentName(environmentName),
@@ -203,7 +203,7 @@ export class LegacyReportController {
       const p = await environment.getPackage(
          parsePackageName(packageName),
          false,
-         { versionId: VersionRef.parse(versionId) },
+         { versionId },
       );
       const version = p.getVersionId();
       if (version) audit.version = version;

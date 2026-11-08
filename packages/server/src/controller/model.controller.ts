@@ -7,6 +7,7 @@ import { logger } from "../logger";
 import type { PackageLookup } from "../service/environment_ports";
 import { lockedForCaller } from "../service/discovery_lock";
 import type { GivenValue } from "@malloydata/malloy";
+import type { VersionRef } from "../service/identity";
 import { loadedPackage } from "./loaded_package";
 
 type ApiModel = components["schemas"]["Model"];
@@ -20,7 +21,7 @@ type ApiCompiledModel = components["schemas"]["CompiledModel"];
 export interface ModelReadOptions {
    includeHiddenFilesAndSources?: boolean;
    /** The published version to read; absent, empty or null means `latest`. */
-   versionId?: unknown;
+   versionId?: VersionRef;
    /**
     * The caller's givens as the trusted tier set them. A source whose
     * `#(authorize)` lock cannot admit the caller on the `#(secure)` givens is

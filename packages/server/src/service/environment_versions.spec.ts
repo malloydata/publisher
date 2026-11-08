@@ -687,17 +687,26 @@ describe("a version's serving state", () => {
       expect(latest.sourceContentSha).toBeString();
 
       // Read, not refused: the state of an archived version is still a fact.
-      const archived = await env.describeServingState(PKG, "1.0.0");
+      const archived = await env.describeServingState(
+         PKG,
+         VersionRef.parse("1.0.0"),
+      );
       expect(archived).toMatchObject({
          versionId: "1.0.0",
          archiveStatus: "archive",
       });
 
-      expect(await refusal(env.describeServingState(PKG, "3.0.0"))).toEqual({
+      expect(
+         await refusal(
+            env.describeServingState(PKG, VersionRef.parse("3.0.0")),
+         ),
+      ).toEqual({
          status: 404,
          reason: "VERSION_NOT_FOUND",
       });
-      expect(await refusal(env.describeServingState(PKG, "two"))).toEqual({
+      expect(
+         await refusal(env.describeServingState(PKG, VersionRef.parse("two"))),
+      ).toEqual({
          status: 400,
          reason: "VERSION_ID_INVALID",
       });

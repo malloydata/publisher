@@ -17,7 +17,7 @@ import {
    withLegacyDocumentKind,
    type LegacyKind,
 } from "../service/legacy_report_views";
-import { parseEnvironmentName } from "../service/identity";
+import { parseEnvironmentName, VersionRef } from "../service/identity";
 
 const compiles = lazyCounter(
    "publisher_compiles_total",
@@ -44,7 +44,7 @@ export class CompileController {
       includeSql: boolean = false,
       givens?: Record<string, GivenValue>,
       scope: CompileScope = "append",
-      versionId?: unknown,
+      versionId: VersionRef = VersionRef.LATEST,
       /** The request's `files` overlay, unchecked (see `request_overlay.ts`). */
       files?: unknown,
    ): Promise<{
@@ -95,7 +95,7 @@ export class CompileController {
       includeSql: boolean,
       givens: Record<string, GivenValue> | undefined,
       scope: CompileScope,
-      versionId: unknown,
+      versionId: VersionRef,
       files: unknown,
    ): Promise<{
       status: string;

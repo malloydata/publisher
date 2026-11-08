@@ -35,7 +35,6 @@ import {
    versionTableSuffix,
    WRITES_TABLES_KEY,
 } from "../../versions/materialization_scope";
-import { requestedVersionId } from "../../versions/version_service";
 import type { MaterializationEnvironment, MaterializationHost } from "../host";
 import { CompiledBuildPlan } from "../plan/build_plan";
 import { compilePackageBuildPlan } from "../plan/build_plan_compile";
@@ -162,8 +161,9 @@ export class MaterializationService {
    async listMaterializations(
       environmentName: string,
       packageName: string,
-      options?: { limit?: number; offset?: number; versionId?: unknown },
+      options?: { limit?: number; offset?: number; versionId?: VersionRef },
    ): Promise<Materialization[]> {
+      const versionId = options?.versionId ?? VersionRef.LATEST;
       const environmentId = await this.resolveEnvironmentId(environmentName);
       // Naming no version of a package that has no `latest` yet (explicit
       // promotion, before the first move) lists every run, as before.
@@ -174,14 +174,14 @@ export class MaterializationService {
          )
       ).getVersionService();
       const version =
-         requestedVersionId(options?.versionId) === undefined &&
+         versionId.requested() === undefined &&
          versions !== null &&
          (await versions.latestOf(packageName)) === null
             ? null
             : await this.resolveRunVersion(
                  environmentName,
                  packageName,
-                 options?.versionId,
+                 versionId,
               );
       return this.repository.listMaterializations(environmentId, packageName, {
          limit: options?.limit,
@@ -199,7 +199,7 @@ export class MaterializationService {
    private async resolveRunVersion(
       environmentName: string,
       packageName: string,
-      versionId: unknown,
+      versionId: VersionRef,
    ): Promise<string | null> {
       const environment = await this.host.getEnvironment(
          parseEnvironmentName(environmentName),
@@ -207,7 +207,7 @@ export class MaterializationService {
       );
       const versions = environment.getVersionService();
       if (!versions) {
-         const named = requestedVersionId(versionId);
+         const named = versionId.requested();
          if (named !== undefined) {
             throw new PackageVersionError(
                "VERSION_NOT_FOUND",
@@ -217,7 +217,8 @@ export class MaterializationService {
          return null;
       }
       return (
-         (await versions.resolve(packageName, versionId))?.versionId ?? null
+         (await versions.resolve(packageName, versionId.requested()))
+            ?.versionId ?? null
       );
    }
 
@@ -249,13 +250,13 @@ export class MaterializationService {
       environmentName: string,
       packageName: string,
       id: string,
-      versionId?: unknown,
+      versionId: VersionRef = VersionRef.LATEST,
    ): Promise<Materialization> {
       const environmentId = await this.resolveEnvironmentId(environmentName);
       // The version first, so an unknown or archived one says so (404/410,
       // with its reason) whatever the id.
       const named =
-         requestedVersionId(versionId) !== undefined
+         versionId.requested() !== undefined
             ? await this.resolveRunVersion(
                  environmentName,
                  packageName,
@@ -325,7 +326,7 @@ export class MaterializationService {
           * Resolved once, here, and carried to the background run, so a
           * `latest` that moves meanwhile never changes what this run builds.
           */
-         versionId?: unknown;
+         versionId?: VersionRef;
       } = {},
    ): Promise<Materialization> {
       const environmentId = await this.resolveEnvironmentId(environmentName);
@@ -337,7 +338,7 @@ export class MaterializationService {
       const version = await this.resolveRunVersion(
          environmentName,
          packageName,
-         options.versionId,
+         options.versionId ?? VersionRef.LATEST,
       );
       const pkg = await environment.getPackage(
          parsePackageName(packageName),
@@ -1026,7 +1027,7 @@ export class MaterializationService {
       environmentName: string,
       packageName: string,
       id: string,
-      versionId?: unknown,
+      versionId: VersionRef = VersionRef.LATEST,
    ): Promise<Materialization> {
       const m = await this.getMaterialization(
          environmentName,
@@ -1065,7 +1066,7 @@ export class MaterializationService {
       environmentName: string,
       packageName: string,
       id: string,
-      options: { dropTables?: boolean; versionId?: unknown } = {},
+      options: { dropTables?: boolean; versionId?: VersionRef } = {},
    ): Promise<void> {
       const m = await this.getMaterialization(
          environmentName,

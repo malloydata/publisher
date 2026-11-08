@@ -10,6 +10,7 @@ import {
    ManifestReference,
 } from "../service/materialization/types";
 import { MaterializationService } from "../service/materialization/run/materialization_service";
+import { VersionRef } from "../service/identity";
 import { queryMetadataViolations } from "../service/query_metadata";
 
 type RunContext = components["schemas"]["RunContext"];
@@ -56,7 +57,7 @@ export class MaterializationController {
       strictUpstreams?: boolean;
       ledger?: LedgerEntry[];
       runContext?: RunContext;
-      versionId?: string;
+      versionId?: VersionRef;
    } {
       const result: {
          forceRefresh?: boolean;
@@ -67,7 +68,7 @@ export class MaterializationController {
          strictUpstreams?: boolean;
          ledger?: LedgerEntry[];
          runContext?: RunContext;
-         versionId?: string;
+         versionId?: VersionRef;
       } = {};
       // The version to build. Its format, existence and archive state are
       // the service's to check, the way every read checks them; this only
@@ -79,7 +80,9 @@ export class MaterializationController {
                'versionId must be a string, such as "1.2.0".',
             );
          }
-         if (body.versionId !== "") result.versionId = body.versionId;
+         if (body.versionId !== "") {
+            result.versionId = VersionRef.parse(body.versionId);
+         }
       }
       if (body.runContext !== undefined && body.runContext !== null) {
          result.runContext = this.validateRunContext(body.runContext);
@@ -394,7 +397,7 @@ export class MaterializationController {
       environmentName: string,
       packageName: string,
       materializationId: string,
-      versionId?: unknown,
+      versionId: VersionRef = VersionRef.LATEST,
    ) {
       return toWire(
          await this.materializationService.stopMaterialization(
@@ -409,7 +412,7 @@ export class MaterializationController {
    async listMaterializations(
       environmentName: string,
       packageName: string,
-      options?: { limit?: number; offset?: number; versionId?: unknown },
+      options?: { limit?: number; offset?: number; versionId?: VersionRef },
    ) {
       return (
          await this.materializationService.listMaterializations(
@@ -424,7 +427,7 @@ export class MaterializationController {
       environmentName: string,
       packageName: string,
       materializationId: string,
-      versionId?: unknown,
+      versionId: VersionRef = VersionRef.LATEST,
    ) {
       return toWire(
          await this.materializationService.getMaterialization(
@@ -440,7 +443,7 @@ export class MaterializationController {
       environmentName: string,
       packageName: string,
       materializationId: string,
-      options: { dropTables?: boolean; versionId?: unknown } = {},
+      options: { dropTables?: boolean; versionId?: VersionRef } = {},
    ) {
       return this.materializationService.deleteMaterialization(
          environmentName,

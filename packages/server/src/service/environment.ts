@@ -97,11 +97,7 @@ export {
    type CompileScope,
    type TaggedLogMessage,
 } from "./compile_source";
-import {
-   requestedVersionId,
-   VersionRegistry,
-   VersionService,
-} from "./versions/version_service";
+import { VersionRegistry, VersionService } from "./versions/version_service";
 import { readManifestVersion, VersionStore } from "./versions/version_store";
 import {
    ownedVersionOf,
@@ -588,7 +584,7 @@ export class Environment {
       includeSql: boolean = false,
       givens?: Record<string, GivenValue>,
       scope: CompileScope = "append",
-      versionId?: unknown,
+      versionId: VersionRef = VersionRef.LATEST,
       overlay?: readonly OverlayFile[],
    ): Promise<{
       problems: TaggedLogMessage[];
@@ -604,16 +600,17 @@ export class Environment {
             // An unversioned package compiles in its single slot; one with
             // published versions in the version the request names (`latest`
             // when none), resolved through the registry.
-            versionedPackage: async (name, requested, underLock) => {
+            versionedPackage: async (name, version, underLock) => {
                if (!this.versionService) return undefined;
                if (
                   this.packages.has(name) &&
-                  (underLock || requestedVersionId(requested) === undefined)
+                  (underLock || version.requested() === undefined)
                ) {
                   return undefined;
                }
-               return (await this.versionService.getLoaded(name, requested))
-                  ?.loaded;
+               return (
+                  await this.versionService.getLoaded(name, version.requested())
+               )?.loaded;
             },
          },
          packageName,
@@ -1110,19 +1107,19 @@ export class Environment {
     */
    public async describeServingState(
       packageName: string,
-      rawVersionId?: unknown,
+      versionId: VersionRef = VersionRef.LATEST,
    ): Promise<ApiPackageServingState> {
       assertSafePackageName(packageName);
       const resource = packageResource(this.environmentName, packageName);
       const versions = this.versionService;
       if (
          versions &&
-         (requestedVersionId(rawVersionId) !== undefined ||
+         (versionId.requested() !== undefined ||
             (!this.packages.has(packageName) &&
                (await versions.isVersioned(packageName))))
       ) {
-         let versionId = requestedVersionId(rawVersionId);
-         if (versionId === undefined) {
+         let named = versionId.requested();
+         if (named === undefined) {
             const latest = await versions.latestOf(packageName);
             if (latest === null) {
                return {
@@ -1132,10 +1129,10 @@ export class Environment {
                   status: this.describePackageStatus(packageName),
                };
             }
-            versionId = latest;
+            named = latest;
          }
-         // 400 for a malformed id, 404 for a version this package lacks.
-         const row = await versions.getVersion(packageName, versionId);
+         // 404 for a version this package lacks.
+         const row = await versions.getVersion(packageName, named);
          const loaded = versions.cache.peek(packageName, row.versionId);
          return {
             name: packageName,

@@ -48,6 +48,7 @@ import {
    malloyGivenToApi,
    type MalloyGiven,
 } from "./given";
+import { VersionRef } from "./identity";
 import { Model } from "./model";
 import { ModelPolicy } from "./model_policy";
 import { notebookLintProblems, reportedByDashboardLint } from "./notebook_lint";
@@ -161,7 +162,7 @@ export interface CompileSourceHost {
     */
    versionedPackage(
       packageName: string,
-      versionId: unknown,
+      versionId: VersionRef,
       underLock: boolean,
    ): Promise<Package | undefined>;
 }
@@ -224,7 +225,7 @@ export async function compileSource(
    includeSql: boolean = false,
    givens?: Record<string, GivenValue>,
    scope: CompileScope = "append",
-   versionId?: unknown,
+   versionId: VersionRef = VersionRef.LATEST,
    overlay?: readonly OverlayFile[],
 ): Promise<CompileSourceResult> {
    const request: CompileRequest = {

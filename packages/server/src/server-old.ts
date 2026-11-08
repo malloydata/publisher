@@ -42,8 +42,9 @@ import { normalizeQueryArray } from "./query_param_utils";
 import {
    assertListingTakesNoVersionId,
    booleanParam,
-   queryVersionIdOf,
+   queryVersionRefOf,
    assertNoCollectionReload,
+   versionRefOf,
 } from "./route_params";
 import { processStorageDestinationsOrThrow } from "./service/connection_config";
 import type { EnvironmentAdmin } from "./service/environment_ports";
@@ -343,7 +344,7 @@ export function registerLegacyRoutes(
             req.params.projectName,
             req.params.packageName,
             reload,
-            req.query.versionId,
+            versionRefOf(req),
          );
       }),
    );
@@ -377,7 +378,7 @@ export function registerLegacyRoutes(
          return modelController.listModels(
             req.params.projectName,
             req.params.packageName,
-            { versionId: req.query.versionId },
+            { versionId: versionRefOf(req) },
          );
       }),
    );
@@ -390,7 +391,7 @@ export function registerLegacyRoutes(
             req.params.projectName,
             req.params.packageName,
             modelPath,
-            { versionId: req.query.versionId },
+            { versionId: versionRefOf(req) },
          );
       }),
    );
@@ -412,7 +413,7 @@ export function registerLegacyRoutes(
             compactJson: req.body.compactJson === true,
             filterParams: req.body.filterParams ?? req.body.sourceFilters,
             bypassFilters: req.body.bypassFilters === true ? true : undefined,
-            versionId: queryVersionIdOf(req),
+            versionId: queryVersionRefOf(req),
             identity: accessIdentityOf(req.headers),
          });
       }),
@@ -450,7 +451,7 @@ export function registerLegacyRoutes(
          return legacyReportController.listNotebooks(
             req.params.projectName,
             req.params.packageName,
-            req.query.versionId,
+            versionRefOf(req),
          );
       }),
    );
@@ -473,7 +474,7 @@ export function registerLegacyRoutes(
             req.params.projectName,
             req.params.packageName,
             notebookPath,
-            req.query.versionId,
+            versionRefOf(req),
          );
       }),
    );
@@ -485,7 +486,7 @@ export function registerLegacyRoutes(
          return databaseController.listDatabases(
             req.params.projectName,
             req.params.packageName,
-            req.query.versionId,
+            versionRefOf(req),
          );
       }),
    );

@@ -6,6 +6,7 @@ import { MaterializationConflictError } from "../../../errors";
 import { logger } from "../../../logger";
 import type { CronEvaluator } from "./cron_evaluator";
 import type { EnvironmentStore } from "../../environment_store";
+import type { VersionRef } from "../../identity";
 import type { MaterializationService } from "./materialization_service";
 import { MaterializationScheduler } from "./materialization_scheduler";
 
@@ -106,9 +107,21 @@ function fakeService(
       createMaterialization: (
          env: string,
          pkg: string,
-         o: { forceRefresh?: boolean; trigger?: string; versionId?: string },
+         o: {
+            forceRefresh?: boolean;
+            trigger?: string;
+            versionId?: VersionRef;
+         },
       ) => {
-         calls.push({ env, pkg, opts: o });
+         // Recorded as the version it names.
+         const { versionId, ...rest } = o;
+         calls.push({
+            env,
+            pkg,
+            opts: versionId
+               ? { ...rest, versionId: versionId.toString() }
+               : rest,
+         });
          if (opts.throwConflict) {
             return Promise.reject(new MaterializationConflictError("busy"));
          }

@@ -291,7 +291,7 @@ describe("reclaiming an archived version's tables", () => {
       );
       expect(source).toBeDefined();
       return build({
-         versionId,
+         versionId: VersionRef.parse(versionId),
          buildInstructions: [
             {
                sourceID: source!.sourceID,
@@ -369,7 +369,7 @@ describe("reclaiming an archived version's tables", () => {
       // committed run of another version references that one table.
       await publish("1.0.0", 1, "version", { detail: true });
       await publish("2.0.0", 2, "version", { detail: true });
-      const v1 = await build({ versionId: "1.0.0" });
+      const v1 = await build({ versionId: VersionRef.parse("1.0.0") });
       expect(v1.status).toBe("MANIFEST_FILE_READY");
       const host = await buildInstructed("2.0.0", "summary", TABLE_V1);
       expect(host.status).toBe("MANIFEST_FILE_READY");
@@ -397,7 +397,7 @@ describe("reclaiming an archived version's tables", () => {
    it("never drops the tables an orchestrated run of the archived version built, and keeps its record", async () => {
       await publish("1.0.0", 1, "version");
       await publish("2.0.0", 2, "version");
-      const auto = await build({ versionId: "1.0.0" });
+      const auto = await build({ versionId: VersionRef.parse("1.0.0") });
       const orchestrated = await buildInstructed("1.0.0", "summary", "host_v1");
       expect([auto.status, orchestrated.status]).toEqual([
          "MANIFEST_FILE_READY",
@@ -458,7 +458,7 @@ describe("reclaiming an archived version's tables", () => {
       ).mockImplementationOnce(async () => {
          throw new Error("the store refused the commit");
       });
-      const failed = await build({ versionId: "1.0.0" });
+      const failed = await build({ versionId: VersionRef.parse("1.0.0") });
       commit.mockRestore();
       expect(failed.status).toBe("FAILED");
       expect(Object.keys(failed.manifest?.entries ?? {})).toEqual([]);
@@ -516,9 +516,12 @@ describe("reclaiming an archived version's tables", () => {
       await publish("2.0.0", 2, "version");
       await publish("1.0.0", 7, "version", { packageName: OTHER });
       await publish("2.0.0", 8, "version", { packageName: OTHER });
-      const v1 = await build({ versionId: "1.0.0" });
-      const v2 = await build({ versionId: "2.0.0" });
-      const other1 = await build({ versionId: "1.0.0" }, OTHER);
+      const v1 = await build({ versionId: VersionRef.parse("1.0.0") });
+      const v2 = await build({ versionId: VersionRef.parse("2.0.0") });
+      const other1 = await build(
+         { versionId: VersionRef.parse("1.0.0") },
+         OTHER,
+      );
       const otherTable = versionTable(ENV, "1.0.0", OTHER);
 
       // The process stops between each archive's commit and its reclaim.
@@ -547,7 +550,7 @@ describe("reclaiming an archived version's tables", () => {
    it("a reclaim that starts after the version was unarchived again drops nothing", async () => {
       await publish("1.0.0", 1, "version");
       await publish("2.0.0", 2, "version");
-      const v1 = await build({ versionId: "1.0.0" });
+      const v1 = await build({ versionId: VersionRef.parse("1.0.0") });
 
       // The archive's reclaim is started, but runs only after an unarchive.
       const started: [string, string][] = [];
@@ -570,9 +573,9 @@ describe("reclaiming an archived version's tables", () => {
    it("deleting a version drops its own tables once its row is gone, and keeps an orchestrated run's and other versions'", async () => {
       await publish("1.0.0", 1, "version", { detail: true });
       await publish("2.0.0", 2, "version");
-      const v1 = await build({ versionId: "1.0.0" });
+      const v1 = await build({ versionId: VersionRef.parse("1.0.0") });
       const orchestrated = await buildInstructed("1.0.0", "summary", "host_v1");
-      const v2 = await build({ versionId: "2.0.0" });
+      const v2 = await build({ versionId: VersionRef.parse("2.0.0") });
       expect((await tablesIn(env)).sort()).toEqual(
          [DETAIL_V1, "host_v1", TABLE_V1, TABLE_V2].sort(),
       );
@@ -598,7 +601,7 @@ describe("reclaiming an archived version's tables", () => {
 
    it("deleting a package's only version drops its tables and takes the package's records", async () => {
       await publish("1.0.0", 1, "version");
-      const v1 = await build({ versionId: "1.0.0" });
+      const v1 = await build({ versionId: VersionRef.parse("1.0.0") });
       expect(await tablesIn(env)).toEqual([TABLE_V1]);
 
       const deleted = await env
@@ -616,7 +619,7 @@ describe("reclaiming an archived version's tables", () => {
 
    it("the startup pass finishes a deleted version's cleanup that a crash cut short, its package gone with it", async () => {
       await publish("1.0.0", 1, "version");
-      const v1 = await build({ versionId: "1.0.0" });
+      const v1 = await build({ versionId: VersionRef.parse("1.0.0") });
       // The server stops before the cleanup starts.
       env.setVersionDeletedHook(null);
       await env.getVersionService()!.deleteVersion(PKG, "1.0.0");
@@ -745,7 +748,7 @@ describe("reclaiming an archived version's tables", () => {
    it("a publish of a deleted version's id, before the delete's cleanup has run, first reclaims what the deleted version owed", async () => {
       await publish("1.0.0", 1, "version");
       await publish("2.0.0", 2, "version");
-      const v1 = await build({ versionId: "1.0.0" });
+      const v1 = await build({ versionId: VersionRef.parse("1.0.0") });
       // A build of 1.0.0 still running (an orchestrated one, which a delete
       // leaves running) holds the delete's cleanup back.
       const release = env.registerVersionBuild(PKG, "1.0.0");
@@ -761,7 +764,7 @@ describe("reclaiming an archived version's tables", () => {
       release();
       await Promise.all(reclaims);
       // The new content builds its own table and serves from it.
-      await build({ versionId: "1.0.0" });
+      await build({ versionId: VersionRef.parse("1.0.0") });
       await tamper(TABLE_V1, 111);
       expect(await answerOf("1.0.0")).toBe(111);
    });
@@ -850,9 +853,9 @@ describe("reclaiming an archived version's tables", () => {
    it("deleting a versioned package cleans up each version as deleting it alone does: its own tables go, an orchestrated run's table stays", async () => {
       await publish("1.0.0", 1, "version", { detail: true });
       await publish("2.0.0", 2, "version");
-      const v1 = await build({ versionId: "1.0.0" });
+      const v1 = await build({ versionId: VersionRef.parse("1.0.0") });
       await buildInstructed("1.0.0", "summary", "host_v1");
-      const v2 = await build({ versionId: "2.0.0" });
+      const v2 = await build({ versionId: VersionRef.parse("2.0.0") });
       expect((await tablesIn(env)).sort()).toEqual(
          [DETAIL_V1, "host_v1", TABLE_V1, TABLE_V2].sort(),
       );
@@ -879,8 +882,8 @@ describe("reclaiming an archived version's tables", () => {
    it("the startup pass finishes a deleted package's cleanup that a crash cut short", async () => {
       await publish("1.0.0", 1, "version");
       await publish("2.0.0", 2, "version");
-      await build({ versionId: "1.0.0" });
-      await build({ versionId: "2.0.0" });
+      await build({ versionId: VersionRef.parse("1.0.0") });
+      await build({ versionId: VersionRef.parse("2.0.0") });
       // The server stops before the cleanup starts.
       env.setVersionDeletedHook(null);
       await env.deletePackage(PKG, {
@@ -901,8 +904,8 @@ describe("reclaiming an archived version's tables", () => {
    it("tries a table it could not drop once: it is named in a warning and left, and the startup pass tries nothing", async () => {
       await publish("1.0.0", 1, "version");
       await publish("2.0.0", 2, "version");
-      const v1 = await build({ versionId: "1.0.0" });
-      const v2 = await build({ versionId: "2.0.0" });
+      const v1 = await build({ versionId: VersionRef.parse("1.0.0") });
+      const v2 = await build({ versionId: VersionRef.parse("2.0.0") });
 
       // The delete's drop fails: every table is left.
       const drop = spyOn(
@@ -1068,7 +1071,7 @@ describe("the archive hook and the startup sweep, as main_server.ts wires them",
       versionId: string,
    ): Promise<Materialization> {
       const created = await server.service.createMaterialization(ENV, PKG, {
-         versionId,
+         versionId: VersionRef.parse(versionId),
       });
       return settledRun(
          server.store.storageManager.getRepository(),
@@ -1268,7 +1271,7 @@ describe("the archive hook and the startup sweep, as main_server.ts wires them",
          (s) => s.name === "summary",
       )!;
       const created = await server.service.createMaterialization(ENV, PKG, {
-         versionId: version,
+         versionId: VersionRef.parse(version),
          buildInstructions: [
             {
                sourceID: source.sourceID,

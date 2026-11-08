@@ -16,7 +16,7 @@ import { LegacyReportController } from "../controller/legacy_report.controller";
 import { setFilterDeprecationHeaders } from "../filter_deprecation";
 import { BadRequestError, internalErrorToHttpError } from "../errors";
 import type { QuerySlots } from "../query_concurrency";
-import { optionalBooleanParam } from "../route_params";
+import { optionalBooleanParam, versionRefOf } from "../route_params";
 import { accessIdentityOf } from "../service/access_record";
 import type { PackageLookup } from "../service/environment_ports";
 import { apiRoute, recordGateRefusal, wildcardParam } from "./json_route";
@@ -111,7 +111,7 @@ export function notebookCellHandlers(
          cell.filterParams,
          cell.bypassFilters,
          cell.givens,
-         req.query.versionId,
+         versionRefOf(req),
          accessIdentityOf(req.headers),
       );
       if (!legacy) setFilterDeprecationHeaders(res, cell);
@@ -134,7 +134,7 @@ export function registerDeprecatedRoutes(
          controller.listDashboards(
             req.params.environmentName,
             req.params.packageName,
-            req.query.versionId,
+            versionRefOf(req),
          ),
       ),
    );
@@ -146,7 +146,7 @@ export function registerDeprecatedRoutes(
             req.params.environmentName,
             req.params.packageName,
             req.params.dashboardName,
-            req.query.versionId,
+            versionRefOf(req),
          ),
       ),
    );
@@ -157,7 +157,7 @@ export function registerDeprecatedRoutes(
          controller.listNotebooks(
             req.params.environmentName,
             req.params.packageName,
-            req.query.versionId,
+            versionRefOf(req),
          ),
       ),
    );
@@ -183,7 +183,7 @@ export function registerDeprecatedRoutes(
             req.params.environmentName,
             req.params.packageName,
             wildcardParam(req),
-            req.query.versionId,
+            versionRefOf(req),
          ),
       ),
    );

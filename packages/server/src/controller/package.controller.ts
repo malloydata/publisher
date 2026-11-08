@@ -147,7 +147,7 @@ export class PackageController {
       environmentName: string,
       packageName: string,
       reload: boolean,
-      versionId?: unknown,
+      versionId: VersionRef = VersionRef.LATEST,
    ): Promise<ApiPackage> {
       let metadata: ApiPackage;
       if (reload) {
@@ -174,7 +174,7 @@ export class PackageController {
             parsePackageName(packageName),
             false,
             {
-               versionId: VersionRef.parse(versionId),
+               versionId,
             },
          );
          metadata = _package.getPackageMetadata();
@@ -223,7 +223,7 @@ export class PackageController {
    private async inlineClassification(
       environmentName: string,
       packageName: string,
-      versionId?: unknown,
+      versionId: VersionRef = VersionRef.LATEST,
    ): Promise<ApiClassificationSummary | undefined> {
       try {
          const pkg = await this.loadedPackage(
@@ -253,7 +253,7 @@ export class PackageController {
    private loadedPackage(
       environmentName: string,
       packageName: string,
-      versionId?: unknown,
+      versionId: VersionRef = VersionRef.LATEST,
    ) {
       return loadedPackage(
          this.environmentStore,
@@ -270,7 +270,7 @@ export class PackageController {
    public async getPackageServingState(
       environmentName: string,
       packageName: string,
-      versionId?: unknown,
+      versionId: VersionRef = VersionRef.LATEST,
    ): Promise<ApiPackageServingState> {
       const environment = await this.environment(environmentName);
       return environment.describeServingState(packageName, versionId);
@@ -284,7 +284,7 @@ export class PackageController {
    public async getPackageEntities(
       environmentName: string,
       packageName: string,
-      versionId?: unknown,
+      versionId: VersionRef = VersionRef.LATEST,
       includeHiddenFilesAndSources = false,
    ): Promise<ApiModelEntities[]> {
       const pkg = await this.loadedPackage(
@@ -305,7 +305,7 @@ export class PackageController {
    public async getPackageBuildPlan(
       environmentName: string,
       packageName: string,
-      versionId?: unknown,
+      versionId: VersionRef = VersionRef.LATEST,
    ): Promise<ApiBuildPlan> {
       const pkg = await this.loadedPackage(
          environmentName,
@@ -328,7 +328,7 @@ export class PackageController {
    public async getPackageClassification(
       environmentName: string,
       packageName: string,
-      versionId?: unknown,
+      versionId: VersionRef = VersionRef.LATEST,
    ): Promise<ApiClassificationSummary> {
       const pkg = await this.loadedPackage(
          environmentName,
@@ -342,7 +342,7 @@ export class PackageController {
    public async getPackageEmbeddingIndex(
       environmentName: string,
       packageName: string,
-      versionId?: unknown,
+      versionId: VersionRef = VersionRef.LATEST,
    ): Promise<NonNullable<ApiPackage["embeddingIndex"]>> {
       // The version named, so an unknown one is a 404 and a pinned read
       // describes that version's index, not latest's.
@@ -362,7 +362,7 @@ export class PackageController {
    private async embeddingIndexStatus(
       environmentName: string,
       packageName: string,
-      versionId?: unknown,
+      versionId: VersionRef = VersionRef.LATEST,
    ): Promise<ApiPackage["embeddingIndex"] | undefined> {
       try {
          // The version named, as `GET …/embedding-index` reads it.
@@ -391,7 +391,7 @@ export class PackageController {
       environmentName: string,
       packageName: string,
       trigger: ReloadTrigger = "rest",
-      versionId?: unknown,
+      versionId: VersionRef = VersionRef.LATEST,
    ): Promise<ReloadedPackage> {
       try {
          const reloaded = await this.reloadPackageFrom(
@@ -410,7 +410,7 @@ export class PackageController {
    private async reloadPackageFrom(
       environmentName: string,
       packageName: string,
-      versionId?: unknown,
+      versionId: VersionRef = VersionRef.LATEST,
    ): Promise<ReloadedPackage> {
       const environment = await this.environmentStore.getEnvironment(
          parseEnvironmentName(environmentName),
@@ -422,12 +422,15 @@ export class PackageController {
       // version is immutable, so it has nothing to reload: it is answered as
       // it is.
       const versions = environment.getVersionService();
-      if (versions && (await versions.resolve(packageName, versionId))) {
+      if (
+         versions &&
+         (await versions.resolve(packageName, versionId.requested()))
+      ) {
          const version = await environment.getPackage(
             parsePackageName(packageName),
             false,
             {
-               versionId: VersionRef.parse(versionId),
+               versionId,
             },
          );
          return {
