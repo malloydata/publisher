@@ -453,11 +453,13 @@ on reload (and a reload that changes nothing keeps the warm index):
 An unknown key is an error that names the valid keys, and the package is not served until it is
 fixed (HTTP 424, like any unusable publisher.json).
 
-**Keys that no longer do anything.** `engine`, `representation`, `keyphrases`, `refine`, `rerank`,
+**Deprecated: keys that no longer do anything.** `engine`, `representation`, `keyphrases`, `refine`, `rerank`,
 `sourceMatch`, and the prompts `prompts.keyphrase`, `prompts.refine`, `prompts.rerank` and
 `prompts.sourceMatch` belong to the search that this engine replaced. A package that still sets one
 loads, whatever the value; the key is ignored (a prompt file it names is not read), and the package's
-`warnings` carry one entry for each, naming the key and saying it no longer does anything. Remove them.
+`warnings` carry one entry for each, naming the key and saying it no longer does anything. Remove them:
+they are deprecated, and a later release refuses them like any other unknown `retrieval` key
+([#1540](https://github.com/malloydata/publisher/issues/1540)).
 The judge replaces `refine`, `rerank` and `sourceMatch`: turn it off with `fcj.judge: false`, or give
 it other instructions with `prompts.judge`.
 

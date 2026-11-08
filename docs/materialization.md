@@ -216,7 +216,7 @@ the joining source is withheld with it and serves live, from current grants. Wit
 field reading through the join would fail the shape compile, and the fallback that answers a failed
 compile would cost every sibling source in the model its joins, dimensions and measures.
 
-**A revoked grant stays visible until the grant table rebuilds.** Here the frozen row data *is* the
+**A revoked grant stays visible until the grant table rebuilds.** Here the frozen row data _is_ the
 access decision, so the grant table's freshness is the revocation latency — and the
 [gated-source staleness rules](#the-freshness-contract-for-a-gated-colocated-persist-source) apply to it in full:
 
@@ -315,8 +315,8 @@ nothing checks the column's cardinality for you — a partition per caller acros
 callers is the many-small-files case, and it is your judgement to make.
 
 That asymmetry is the argument for one shared artifact over one per tenant. Both have the same read
-cost; the per-tenant arrangement also has one build, one schedule and one freshness story *per
-tenant*, all of which can drift apart.
+cost; the per-tenant arrangement also has one build, one schedule and one freshness story _per
+tenant_, all of which can drift apart.
 
 **Build memory follows the table's width times the partitions in flight, not its row count.** The
 build is DuckDB's partitioned COPY, which buffers rows per partition inside the buffer manager and
@@ -429,7 +429,7 @@ Package-level persistence policy lives at the root of `publisher.json`:
 
 `scope` at the manifest root is the original home and still works, with a deprecation warning on the package. Declare it inside `materialization` alongside the other build knobs.
 
-Whenever the server rewrites a manifest — any package PATCH, including a description-only one — it writes **both** homes with the same value, so a package edited through the API keeps loading on an older Publisher that reads only the root. An author who moved to the envelope alone will see the root key reappear after such an edit; the two never disagree, and the root form goes away with the deprecation.
+Whenever the server rewrites a manifest — any package PATCH, including a description-only one — it writes **both** homes with the same value, so a package edited through the API keeps loading on an older Publisher that reads only the root. An author who moved to the envelope alone will see the root key reappear after such an edit; the two never disagree. This dual write is deprecated too: a later release writes only `materialization.scope`, and then the root form is removed ([#1540](https://github.com/malloydata/publisher/issues/1540)). The same holds for `queryMetadata`, written both at the root (canonical) and as the deprecated `materialization.queryMetadata`.
 
 Editing a manifest by hand, change `materialization.scope` and delete the root key rather than editing the root copy. Two homes holding different values is not a warning — the package fails to load, disappears from the server, and says so only in `/status` `loadErrors`. The rejection is deliberate (guessing which one the author meant could reuse a table across versions that was never meant to be shared), but it means the reappearing root key is a copy to delete, never one to edit.
 
@@ -605,7 +605,7 @@ The same package definition behaves differently depending on who drives material
 
 ## Attribute a build's cost
 
-`materialization.queryMetadata` (and the per-source `#@ persist queryMetadata.*`) tags every statement a build issues — the staging CTAS, the swap, the rename — and every statement a _query_ against the source issues, so the backend's own reporting can attribute both. Separating build cost from query traffic is the context layer's job, not the declaration's: publisher adds `class=materialize` plus the package, source, trigger and run id to a build, and `class=interactive` with none of those to a served query. The block is named for materialization historically; it declares what the source is, not only how it is built. See [query-metadata.md](query-metadata.md).
+`queryMetadata` at the `publisher.json` root (and the per-source `#@ persist queryMetadata.*`) tags every statement a build issues — the staging CTAS, the swap, the rename — and every statement a _query_ against the source issues, so the backend's own reporting can attribute both. Separating build cost from query traffic is the context layer's job, not the declaration's: publisher adds `class=materialize` plus the package, source, trigger and run id to a build, and `class=interactive` with none of those to a served query. Its old home, `materialization.queryMetadata`, still works and is deprecated: it declares what the source is, not only how it is built. See [query-metadata.md](query-metadata.md).
 
 ## Tune for cost and performance
 
