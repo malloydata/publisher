@@ -5,6 +5,9 @@ import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import * as fs from "fs";
 import * as os from "os";
 import * as path from "path";
+import type { Mutex } from "async-mutex";
+import { ConnectionService } from "./connection_service";
+import { Environment } from "./environment";
 import { EnvironmentStore } from "./environment_store";
 import { installSettings } from "../test_helpers/settings_env";
 import { parseEnvironmentName } from "./identity";
@@ -144,6 +147,69 @@ describe("environment connection list persistence", () => {
          false,
          { connectionsAreFallback: true },
       );
+
+      const second = await restart();
+      expect(await connectionNames(second)).toEqual(["a", "b"]);
+   });
+
+   it("keeps the row of a connection added while an environment PATCH syncs", async () => {
+      const first = await openStore();
+      await first.addEnvironment({
+         name: ENV,
+         connections: [pg("a")],
+      } as never);
+      const service = new ConnectionService(first);
+      const repository = first.storageManager.getRepository();
+
+      // Whether the POST's connection update found the lock taken, i.e. it
+      // waits for the PATCH's sync rather than running inside it.
+      let postBlocked!: () => void;
+      const blocked = new Promise<void>((resolve) => (postBlocked = resolve));
+      const originalExclusive =
+         Environment.prototype.runConnectionUpdateExclusive;
+      Environment.prototype.runConnectionUpdateExclusive = function <T>(
+         this: Environment,
+         fn: () => Promise<T>,
+      ): Promise<T> {
+         const mutex = (this as unknown as { connectionMutex: Mutex })
+            .connectionMutex;
+         if (mutex.isLocked()) postBlocked();
+         return originalExclusive.call(this, fn) as Promise<T>;
+      };
+
+      // The PATCH's sync reads row "a" after it has snapshotted the in-memory
+      // list. Right there, run the POST, and let it go as far as it can: to
+      // the end when nothing serializes it, which forces the bad interleaving
+      // (its row lands between the snapshot and the pruning listing).
+      let post: Promise<void> | undefined;
+      let armed = false;
+      const originalGet = repository.getConnectionByName;
+      repository.getConnectionByName = async (environmentId, name) => {
+         if (armed && name === "a") {
+            armed = false;
+            post = service.addConnection(ENV, "b", pg("b"));
+            await Promise.race([post, blocked]);
+         }
+         return originalGet.call(repository, environmentId, name);
+      };
+
+      try {
+         armed = true;
+         await first.updateEnvironment({
+            name: ENV,
+            connections: [pg("a")],
+         } as never);
+         expect(post).toBeDefined();
+         await post;
+      } finally {
+         repository.getConnectionByName = originalGet;
+         Environment.prototype.runConnectionUpdateExclusive = originalExclusive;
+      }
+
+      expect(await connectionNames(first)).toEqual(["a", "b"]);
+      const dbEnvironment = await repository.getEnvironmentByName(ENV);
+      const rows = await repository.listConnections(dbEnvironment!.id);
+      expect(rows.map((row) => row.name).sort()).toEqual(["a", "b"]);
 
       const second = await restart();
       expect(await connectionNames(second)).toEqual(["a", "b"]);

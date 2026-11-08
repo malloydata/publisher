@@ -1152,8 +1152,25 @@ export class EnvironmentStore
     * a left-behind row would resurrect a removed connection on the next load,
     * which restores connections from these rows. A failed write throws, so the
     * request that changed the list does not answer success.
+    *
+    * Runs under the environment's connection lock, which ConnectionService
+    * holds while it writes a connection's row and then its in-memory entry.
+    * Unlocked, a connection added between this snapshot of the list and the
+    * listing of stored rows would have its fresh row pruned: it would serve
+    * until the restart and then be gone. No caller holds the lock here, and
+    * it is taken before any package lock, per the order Environment declares.
     */
    private async addConnections(
+      environment: Environment,
+      environmentId: string,
+      repository: ReturnType<typeof this.storageManager.getRepository>,
+   ): Promise<void> {
+      await environment.runConnectionUpdateExclusive(() =>
+         this.reconcileConnectionRows(environment, environmentId, repository),
+      );
+   }
+
+   private async reconcileConnectionRows(
       environment: Environment,
       environmentId: string,
       repository: ReturnType<typeof this.storageManager.getRepository>,
