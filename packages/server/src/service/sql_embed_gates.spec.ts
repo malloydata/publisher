@@ -274,6 +274,36 @@ source: c is locked extend { }`,
       ).toEqual([]);
    });
 
+   it("finds a model-level run: statement, named by its line", async () => {
+      expect(
+         await findings(
+            `run: duckdb.sql("""select * from (%{ locked -> { select: * } })""") -> { select: * }
+run: open -> { select: * }
+run: duckdb.sql("""select * from (%{ open -> { select: * } })""") -> { select: * }`,
+         ),
+      ).toEqual([
+         "run: statement at line 3 (via <inline sql()>) › locked [authorize]",
+      ]);
+   });
+
+   it("reads only a notebook cell's own run: statements in cell scope", async () => {
+      const modelDef = await compile(
+         `source: s is duckdb.sql("""select * from (%{ locked -> { select: * } })""")
+run: duckdb.sql("""select * from (%{ scoped -> { select: * } })""") -> { select: * }`,
+      );
+      expect(
+         findSqlEmbedsOfGatedSources(modelDef, { notebookCell: 4 }).map(
+            (f) =>
+               `${f.embeddingKind}: ${f.embeddingSource} › ${f.embeddedSource}`,
+         ),
+      ).toEqual(["run: run: statement in notebook cell 4 (line 4) › scoped"]);
+      expect(() =>
+         assertNoSqlEmbedsOfGatedSources(modelDef, { notebookCell: 4 }),
+      ).toThrow(
+         /the run: statement in notebook cell 4 \(line 4\) \(through an inline sql\(\)\) embeds "scoped", which carries #\(access_filter\)/,
+      );
+   });
+
    it("fails closed on a structRef that names nothing in the model", async () => {
       const modelDef = await compile(
          `source: e is duckdb.sql("""select * from (%{ open -> { select: * } })""")`,
@@ -282,6 +312,7 @@ source: c is locked extend { }`,
       expect(findSqlEmbedsOfGatedSources(modelDef)).toEqual([
          {
             embeddingSource: "e",
+            embeddingKind: "source",
             via: undefined,
             embeddedSource: "no_such_source",
             routes: [],
@@ -325,6 +356,70 @@ source: reads_locked is duckdb.sql("""select * from (%{ locked -> { select: * } 
             expect(model.getSources()).toBeUndefined();
          },
          "m.malloy",
+      );
+   });
+
+   it("refuses a model-level run: statement, naming it", async () => {
+      await withAuthorizeModel(
+         {
+            "base.malloy": BASE,
+            "m.malloy": `import "base.malloy"
+run: duckdb.sql("""select * from (%{ locked -> { select: * } })""") -> { select: * }
+`,
+         },
+         async ({ error }) => {
+            expect(error).toBeInstanceOf(ModelCompilationError);
+            expect(error?.message).toContain(
+               `the run: statement at line 2 (through an inline sql()) embeds "locked", which carries #(authorize)`,
+            );
+         },
+         "m.malloy",
+      );
+   });
+
+   it("refuses a notebook cell's run: statement, naming the cell", async () => {
+      await withAuthorizeModel(
+         {
+            "base.malloy": BASE,
+            "nb.malloynb": `>>>markdown
+# Notebook
+>>>malloy
+import "base.malloy"
+>>>malloy
+run: open -> { aggregate: n is count() }
+>>>malloy
+run: duckdb.sql("""select * from (%{ scoped -> { select: * } })""") -> { aggregate: n is count() }
+`,
+         },
+         async ({ error }) => {
+            expect(error).toBeInstanceOf(ModelCompilationError);
+            expect(error?.message).toMatch(
+               /the run: statement in notebook cell 4 \(line \d+\) \(through an inline sql\(\)\) embeds "scoped", which carries #\(access_filter\)/,
+            );
+         },
+         "nb.malloynb",
+      );
+   });
+
+   it("refuses a source a notebook cell declares", async () => {
+      await withAuthorizeModel(
+         {
+            "base.malloy": BASE,
+            "nb.malloynb": `>>>malloy
+import "base.malloy"
+>>>malloy
+source: cell_sql is duckdb.sql("""select * from %{ inherits_lock }""")
+>>>malloy
+run: open -> { aggregate: n is count() }
+`,
+         },
+         async ({ error }) => {
+            expect(error).toBeInstanceOf(ModelCompilationError);
+            expect(error?.message).toContain(
+               `"cell_sql" embeds "inherits_lock", which carries #(authorize)`,
+            );
+         },
+         "nb.malloynb",
       );
    });
 
