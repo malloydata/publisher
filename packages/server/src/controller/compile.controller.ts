@@ -17,6 +17,7 @@ import {
    withLegacyDocumentKind,
    type LegacyKind,
 } from "../service/legacy_report_views";
+import { parseEnvironmentName } from "../service/identity";
 
 const compiles = lazyCounter(
    "publisher_compiles_total",
@@ -109,7 +110,7 @@ export class CompileController {
          throw new BadRequestError("`source` must be a string of Malloy text.");
       const overlay = parseOverlayFiles(files);
       const environment = await this.environmentStore.getEnvironment(
-         environmentName,
+         parseEnvironmentName(environmentName),
          false,
       );
       const { problems, sql, document } = await environment.compileSource(

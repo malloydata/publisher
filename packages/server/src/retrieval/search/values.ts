@@ -66,9 +66,7 @@ const plainQueryModelResolver: QueryModelResolver = async (
 ) => {
    const { environment, pkg, model } = await resolveQueryModel(
       environmentStore,
-      environmentName,
-      packageName,
-      modelPath,
+      { environmentName, packageName, modelPath },
    );
    if (!model || model.getType() === "notebook") {
       throw new ModelNotFoundError(

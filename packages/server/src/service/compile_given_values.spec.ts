@@ -10,6 +10,7 @@ import path from "path";
 import { AccessDeniedError, BadRequestError } from "../errors";
 import { Environment } from "./environment";
 import { writePackageFiles } from "../test_helpers/temp_package";
+import { parsePackageName } from "./identity";
 
 // /compile takes given values too (they bind when it builds SQL), so a value a
 // `filter<T>` given cannot read is refused there the same way the query route
@@ -143,7 +144,9 @@ describe("compileSource checks filter given values", () => {
          );
       expect(compileError).toBeInstanceOf(AccessDeniedError);
 
-      const model = (await env.getPackage("pkg")).getModel("model.malloy")!;
+      const model = (await env.getPackage(parsePackageName("pkg"))).getModel(
+         "model.malloy",
+      )!;
       const queryError = await model
          .getQueryResults(
             unrecordedAudit(),

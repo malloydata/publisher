@@ -7,6 +7,7 @@ import { logger } from "../logger";
 import { buildEnvironmentMalloyConfig } from "./connection";
 import { mergeConnectionUpdate } from "./connection_public_view";
 import { EnvironmentStore } from "./environment_store";
+import { parseEnvironmentName } from "./identity";
 
 type ApiConnection = components["schemas"]["Connection"];
 type ReleaseCallback = () => Promise<void>;
@@ -137,7 +138,7 @@ export class ConnectionService {
       }
 
       const environment = await this.environmentStore.getEnvironment(
-         environmentName,
+         parseEnvironmentName(environmentName),
          false,
       );
       await runEnvironmentConnectionUpdate(environment, async () => {
@@ -180,7 +181,7 @@ export class ConnectionService {
          await this.getConnection(environmentName, connectionName);
 
       const environment = await this.environmentStore.getEnvironment(
-         environmentName,
+         parseEnvironmentName(environmentName),
          false,
       );
       await runEnvironmentConnectionUpdate(environment, async () => {
@@ -245,7 +246,7 @@ export class ConnectionService {
       );
 
       const environment = await this.environmentStore.getEnvironment(
-         environmentName,
+         parseEnvironmentName(environmentName),
          false,
       );
       await runEnvironmentConnectionUpdate(environment, async () => {

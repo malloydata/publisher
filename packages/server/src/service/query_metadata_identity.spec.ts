@@ -8,6 +8,7 @@ import * as path from "path";
 
 import { Environment } from "./environment";
 import { writePackageFiles } from "../test_helpers/temp_package";
+import { parsePackageName } from "./identity";
 
 /**
  * Query metadata is observability, and it must never be identity.
@@ -84,7 +85,7 @@ describe("query metadata is excluded from persist identity", () => {
 
       const env = await Environment.create("testEnv", envPath, []);
       await env.addPackage("pkg");
-      const pkg = await env.getPackage("pkg", false);
+      const pkg = await env.getPackage(parsePackageName("pkg"), false);
       const plan = pkg.getBuildPlan();
       const sources = Object.values(plan?.sources ?? {});
       // Guard the guard: an empty plan would make the comparison below vacuous,
@@ -139,7 +140,7 @@ describe("query metadata is excluded from persist identity", () => {
 
          const env = await Environment.create("testEnv", envPath, []);
          await env.addPackage("pkg");
-         const pkg = await env.getPackage("pkg", false);
+         const pkg = await env.getPackage(parsePackageName("pkg"), false);
          const source = Object.values(pkg.getBuildPlan()?.sources ?? {})[0];
 
          expect(source.queryMetadata).toMatchObject({

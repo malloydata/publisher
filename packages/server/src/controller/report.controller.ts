@@ -33,6 +33,7 @@ import { formatProblem } from "../service/query_text";
 import { EnvironmentStore } from "../service/environment_store";
 import type { Package } from "../service/package";
 import { loadedPackage } from "./loaded_package";
+import { parseEnvironmentName, parsePackageName } from "../service/identity";
 
 type ApiReport = components["schemas"]["Report"];
 type ApiReportManifest = components["schemas"]["ReportManifest"];
@@ -251,7 +252,7 @@ export class ReportController {
          );
       }
       const environment = await this.environmentStore.getEnvironment(
-         environmentName,
+         parseEnvironmentName(environmentName),
          false,
       );
       // A published version is immutable, so a package that has versions takes
@@ -266,7 +267,7 @@ export class ReportController {
       }
       await versions?.resolve(packageName, versionId);
       // Loads the package, or 404s.
-      await environment.getPackage(packageName, false);
+      await environment.getPackage(parsePackageName(packageName), false);
 
       const { problems } = await environment.compileSource(
          packageName,

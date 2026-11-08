@@ -41,6 +41,7 @@ import {
    type QueryClass,
    type QueryMetadata,
 } from "../service/query_metadata";
+import type { VersionRef } from "../service/identity";
 import { resolveQueryModel, runModelQuery } from "../service/run_model_query";
 
 /** What a query asks for, and of whom, as either transport received it. */
@@ -57,8 +58,8 @@ export interface QueryCommand {
    /** Unvalidated: a bad bag becomes a 400 inside the record, not a connector refusal. */
    queryMetadata?: unknown;
    queryClass?: unknown;
-   /** The published version to query; absent, empty or `latest` means `latest`. */
-   versionId?: unknown;
+   /** The published version to query; absent means `latest`. */
+   version?: VersionRef;
    /** Honored only when {@link QueryTransportOptions.honorBypassAuthorize} is set. */
    bypassAuthorize?: boolean;
    includeHiddenFilesAndSources?: boolean;
@@ -82,15 +83,8 @@ export type QueryModelResolver = (
 /** The named version of the package (`latest` when none is named), unrefused. */
 export const resolveCommandModel: QueryModelResolver = (
    environmentStore,
-   { environmentName, packageName, modelPath, versionId },
-) =>
-   resolveQueryModel(
-      environmentStore,
-      environmentName,
-      packageName,
-      modelPath,
-      versionId,
-   );
+   command,
+) => resolveQueryModel(environmentStore, command);
 
 /** Each transport's documented differences, stated rather than re-coded. */
 export interface QueryTransportOptions {

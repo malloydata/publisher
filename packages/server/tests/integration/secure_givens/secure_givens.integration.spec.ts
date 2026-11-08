@@ -50,6 +50,10 @@ import "shared.malloy"
 
 source: orders is base extend { dimension: tagged is concat(role, $REGION) }
 `;
+import {
+   parseEnvironmentName,
+   parsePackageName,
+} from "../../../src/service/identity";
 
 /** A notebook whose cells declare a secure given no model declares. */
 const NOTEBOOK_ONLY = `>>>malloy
@@ -115,10 +119,10 @@ describe("secureGivens on the package responses", () => {
    async function getPackage(name: string): Promise<Package> {
       const { environmentStore } = await import("../../../src/main_server");
       const environment = await environmentStore.getEnvironment(
-         ENV_NAME,
+         parseEnvironmentName(ENV_NAME),
          false,
       );
-      return environment.getPackage(name, false);
+      return environment.getPackage(parsePackageName(name), false);
    }
 
    async function get(

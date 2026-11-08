@@ -25,6 +25,11 @@ import {
 } from "../service/legacy_report_views";
 import type { NotebookCellRunResult } from "../service/model";
 import { loadedPackage } from "./loaded_package";
+import {
+   parseEnvironmentName,
+   parsePackageName,
+   VersionRef,
+} from "../service/identity";
 
 type ApiDashboard = components["schemas"]["Dashboard"];
 type ApiDashboardManifest = components["schemas"]["DashboardManifest"];
@@ -189,13 +194,17 @@ export class LegacyReportController {
       versionId?: unknown,
    ): Promise<NotebookCellRunResult> {
       const environment = await this.environmentStore.getEnvironment(
-         environmentName,
+         parseEnvironmentName(environmentName),
          false,
       );
       // Shed load before any disk / DB work: loaded packages bypass the
       // package-load admission gate.
       environment.assertCanAdmitQuery();
-      const p = await environment.getPackage(packageName, false, { versionId });
+      const p = await environment.getPackage(
+         parsePackageName(packageName),
+         false,
+         { versionId: VersionRef.parse(versionId) },
+      );
       const version = p.getVersionId();
       if (version) audit.version = version;
       const model = p.getModel(notebookPath);
