@@ -17,8 +17,11 @@
 //       of the run; prints process CPU (cores used), k6 per-op results and the
 //       hook's event-loop and DuckDB summaries.
 //   bun perf/profile/ctl.ts phases  <dir> <window>
-//       Sum phases.log (patch-dist.ts timers) inside a window, and attribute
-//       each event-loop stall > 20 ms to the innermost phase it fell in.
+//       The server's own package-load phase timings inside a window
+//       (publisher_package_load_phase_duration_ms, plus the install and reload
+//       totals), from /metrics snapshots taken when the window opened and
+//       closed, and the event-loop summary. To see which code a stall is in,
+//       use the window's CPU profile with analyze.ts --focus.
 //
 // Output lands in <dir>/out; a window's name is printed when it closes.
 import { spawn, spawnSync } from "bun";
@@ -86,7 +89,13 @@ async function window(line: string, expect: string): Promise<void> {
       `hook did not acknowledge "${line}" (is the server running with the hook?)`,
    );
 }
+/** Snapshot /metrics as a window opens or closes, for `phases`. */
+async function snapshotMetrics(name: string, at: "start" | "stop") {
+   const res = await fetch(`${BASE}/metrics`);
+   if (res.ok) writeFileSync(`${OUT}/${name}.metrics.${at}`, await res.text());
+}
 const open = async (name: string) => {
+   await snapshotMetrics(name, "start");
    await window(
       `start ${name} ${prof ? "prof" : "noprof"}`,
       `main start ${name} `,
@@ -96,6 +105,7 @@ const open = async (name: string) => {
 const close = async (name: string) => {
    await window("stop", `main stop ${name} `);
    await sleep(300);
+   await snapshotMetrics(name, "stop");
 };
 
 async function timed(
@@ -374,32 +384,20 @@ if (cmd === "serve") {
    }
 } else if (cmd === "phases") {
    const name = args[0]!;
-   const hook = readFileSync(`${OUT}/hook.log`, "utf8").split("\n");
-   const at = (kind: string) =>
-      Number(
-         hook.find((l) => l.startsWith(`main ${kind} ${name} `))!.split(" ")[3],
-      );
-   const [t0, t1] = [at("start"), at("stop")];
-   const phases = readFileSync(`${OUT}/phases.log`, "utf8")
-      .trim()
-      .split("\n")
-      .map((l) => l.split(" "))
-      .map(([n, s, d]) => ({
-         n: n!,
-         s: Number(s),
-         e: Number(s) + Number(d),
-         d: Number(d),
-      }))
-      .filter((p) => p.s >= t0 && p.s <= t1);
-   const by = new Map<string, number[]>();
-   for (const p of phases) by.set(p.n, [...(by.get(p.n) ?? []), p.d]);
-   console.log(`window ${name}: ${t1 - t0} ms`);
-   for (const [n, ds] of [...by.entries()].sort(
-      (a, b) => sum(b[1]) - sum(a[1]),
-   )) {
-      ds.sort((a, b) => a - b);
+   const read = (at: "start" | "stop") =>
+      histograms(readFileSync(`${OUT}/${name}.metrics.${at}`, "utf8"));
+   const [before, after] = [read("start"), read("stop")];
+   console.log(`window ${name}: per-load phase time (server metrics)`);
+   const rows = [...after.entries()]
+      .map(([key, a]) => {
+         const b = before.get(key) ?? { sum: 0, count: 0 };
+         return { key, n: a.count - b.count, total: a.sum - b.sum };
+      })
+      .filter((r) => r.n > 0)
+      .sort((x, y) => y.total - x.total);
+   for (const r of rows) {
       console.log(
-         `  ${n.padEnd(20)} n=${String(ds.length).padStart(4)}  total=${sum(ds).toFixed(0).padStart(7)} ms  avg=${(sum(ds) / ds.length).toFixed(1).padStart(7)}  max=${ds[ds.length - 1]!.toFixed(1)}`,
+         `  ${r.key.padEnd(44)} n=${String(r.n).padStart(4)}  total=${r.total.toFixed(0).padStart(7)} ms  avg=${(r.total / r.n).toFixed(1).padStart(7)} ms`,
       );
    }
    const eldPath = `${OUT}/${name}.eld.json`;
@@ -408,28 +406,32 @@ if (cmd === "serve") {
       console.log(
          `event loop: p50 ${eld.p50.toFixed(2)}  p99 ${eld.p99.toFixed(1)}  p99.9 ${eld.p999.toFixed(1)}  max ${eld.max.toFixed(1)} ms; >50 ms ${eld.over50ms}, >100 ms ${eld.over100ms}; blocked ${(100 * eld.blockedFrac).toFixed(0)}%`,
       );
-      const attrib = new Map<string, { n: number; ms: number }>();
-      for (const [start, d] of eld.stalls as Array<[number, number]>) {
-         const inner = phases
-            .filter((p) => p.s <= start + 1 && p.e >= start + d - 2)
-            .sort((a, b) => a.e - a.s - (b.e - b.s))[0];
-         const e = attrib.get(inner?.n ?? "(none)") ?? { n: 0, ms: 0 };
-         e.n++;
-         e.ms += d;
-         attrib.set(inner?.n ?? "(none)", e);
-      }
-      console.log("stalls > 20 ms by innermost phase:");
-      for (const [n, v] of [...attrib.entries()].sort(
-         (a, b) => b[1].ms - a[1].ms,
-      )) {
-         console.log(`  ${n.padEnd(20)} n=${v.n}  ${v.ms} ms`);
-      }
    }
 } else {
    console.error(`unknown command ${cmd}`);
    process.exit(2);
 }
 
-function sum(xs: number[]): number {
-   return xs.reduce((a, b) => a + b, 0);
+/** The package-load duration histograms in a Prometheus text scrape: sum and count per series. */
+function histograms(text: string): Map<string, { sum: number; count: number }> {
+   const out = new Map<string, { sum: number; count: number }>();
+   const names = [
+      "publisher_package_load_phase_duration_ms",
+      "publisher_package_install_duration_ms",
+      "publisher_package_reload_duration_ms",
+   ];
+   for (const line of text.split("\n")) {
+      const m = /^([a-z_]+)_(sum|count)(\{[^}]*\})? ([0-9.eE+-]+)$/.exec(line);
+      if (!m || !names.includes(m[1]!)) continue;
+      const labels = (m[3] ?? "")
+         .replace(/[{}"]/g, "")
+         .split(",")
+         .filter((l) => /^(phase|outcome)=/.test(l))
+         .join(",");
+      const key = `${m[1]!.replace("publisher_package_", "")}${labels ? `{${labels}}` : ""}`;
+      const e = out.get(key) ?? { sum: 0, count: 0 };
+      e[m[2] as "sum" | "count"] += Number(m[4]);
+      out.set(key, e);
+   }
+   return out;
 }
