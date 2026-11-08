@@ -13,6 +13,11 @@ import { describe, expect, it } from "bun:test";
 import * as fs from "fs";
 import * as path from "path";
 
+/** Source text with LF line endings, whatever the checkout (Windows uses CRLF). */
+function readSource(file: string): string {
+   return fs.readFileSync(file, "utf8").replace(/\r\n/g, "\n");
+}
+
 const SRC = path.resolve(__dirname, "..", "..");
 const MODULE = path.join("service", "governance", "governed_runnable.ts");
 const GOVERNOR = path.join("service", "governance", "query_governor.ts");
@@ -31,7 +36,7 @@ const production = () =>
       .filter((file) => !file.startsWith("test_helpers"))
       .map((file) => ({
          file,
-         text: fs.readFileSync(path.join(SRC, file), "utf8"),
+         text: readSource(path.join(SRC, file)),
       }));
 
 /** The body of `QueryGovernor.authorizeAndBindRunnable`, up to its closing brace. */
@@ -55,7 +60,7 @@ describe("GovernedRunnable minting", () => {
    });
 
    it("every mint in the governor is inside authorizeAndBindRunnable", () => {
-      const text = fs.readFileSync(path.join(SRC, GOVERNOR), "utf8");
+      const text = readSource(path.join(SRC, GOVERNOR));
       const { start, end } = authorizeAndBindBody(text);
       const sites: number[] = [];
       for (
@@ -73,7 +78,7 @@ describe("GovernedRunnable minting", () => {
    });
 
    it("authorizeAndBindRunnable is private and called only by govern()", () => {
-      const text = fs.readFileSync(path.join(SRC, GOVERNOR), "utf8");
+      const text = readSource(path.join(SRC, GOVERNOR));
       expect(text).not.toContain("public async authorizeAndBindRunnable(");
       const govern = text.indexOf("   public async govern(");
       expect(govern).toBeGreaterThan(-1);
