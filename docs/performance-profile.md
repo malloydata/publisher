@@ -21,8 +21,8 @@ As of 2026-11-08:
    worker, and render-tag validation costs the main thread ~16 ms per medium load (October: 330 ms
    and 167 ms). During 10 medium registers the event loop is blocked 17 % of the time (October: 49 %),
    with no stall over 100 ms (October: 11). A large load's longest stall is 390 ms (October: 1.1 s).
-   A medium load is 604 ms server-side; a large one 2.9 s (October: ~950 ms and 5.4 s).
-2. **The worker is now the load's critical path**: 90 % of a medium load (542 of 604 ms) and 92 % of
+   A medium load is 637 ms server-side; a large one 3.0 s (October: ~950 ms and 5.4 s).
+2. **The worker is now the load's critical path**: ~89 % of a medium load (568 of 637 ms) and 92 % of
    a large one, almost all of it compiling. Loads still queue for the single worker. A shared compile
    cache (#7) and a second worker (#11) are what move load time and load throughput now.
 3. **One DuckDB connection per package still caps its queries.** Unchanged since October: from 4 VUs
@@ -30,7 +30,7 @@ As of 2026-11-08:
    the VU count, while the server uses 3.8 cores (storefront) to 10 cores (gen) of 18. A small
    connection pool per package (#6) is the only change that moves query throughput.
 4. **Report reads are the one thing loads still slow down a lot**: their p95 rises from 1–2 ms to
-   19–46 ms during loads, while cheap queries rise 2.5–7×. On the main thread a medium load spends
+   22–65 ms during loads, while cheap queries rise 3.7–10×. On the main thread a medium load spends
    about a third of its sampled time in entity extraction and the `get_context` index build
    (`entities/extract.ts`, `retrieval/index/index_build.ts`, `retrieval/model/catalog.ts`), which is
    the next thing to move off it or make yield.
@@ -349,7 +349,7 @@ the numbers that should move.
 | 4   | Memoize the report-tag facts              | Not re-measured.                                                                                         |
 | 5   | Time the main-thread tail                 | **Done**: `publisher_package_load_phase_duration_ms{phase}` times every stage, `total` included.         |
 | 6   | DuckDB connection pool per package        | **Open**, and now the only change that moves query throughput.                                           |
-| 7   | Compile cache per package load            | **Open**; the worker is 90 % of a load.                                                                  |
+| 7   | Compile cache per package load            | **Open**; the worker is ~89 % of a load.                                                                 |
 | 8   | Render-tag validation off the main thread | **Partly**: ~16 ms per medium load on the main thread (October: 167 ms).                                 |
 | 9   | Upstream: build the dialect table once    | Not checked.                                                                                             |
 | 10  | Cache render-tag validation at query time | Not re-measured.                                                                                         |

@@ -234,79 +234,86 @@ Raw files beside the report: per run, `*.summary.json` (k6 `--summary-export`), 
 
 Recorded on 2026-11-08 with `perf:baseline` (all three scenarios, medium preset, 60 s per run, 3
 warm-up rounds), against Publisher 0.12.5 at `main` (`3c3ef1bd8`, after the architecture refactor).
-The October column is the first baseline (Publisher 0.9.7, 2026-10-12, same machine). Latencies are
-client-side `http_req_duration` in ms; every run finished with 0 % errors and no dropped iterations.
+The October figures are the first baseline (Publisher 0.9.7, 2026-10-12, same machine). Latencies are
+client-side `http_req_duration` in ms; every run finished with 0 % errors, no dropped iterations and
+no load errors.
 
-| item         | value                                                                                                                                                                                              |
-| ------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| machine      | Apple M5 Pro, 18 cores, 48 GiB, macOS (Darwin 25.5.0 arm64)                                                                                                                                        |
-| runtimes     | Bun 1.4.2, Node v24.6.0, k6 v2.0.0                                                                                                                                                                 |
-| server knobs | defaults: `PACKAGE_LOAD_WORKERS=1`, `PUBLISHER_MAX_CONCURRENT_QUERIES=32`                                                                                                                          |
-| load average | 6.7 at the start, 3.4 at the end (1 min). Not idle: other sessions were open. One storefront step (16 VUs) overlapped a test run and stalled for ~90 s; it was re-run alone and that run is shown. |
-| boot → READY | 2.6 s (medium)                                                                                                                                                                                     |
-| packages     | storefront: 6 files, 0.9 MB. gen (medium): 10 Malloy files, 112 KB of Malloy, 1M fact rows (18 MB parquet)                                                                                         |
+| item         | value                                                                                                                     |
+| ------------ | ------------------------------------------------------------------------------------------------------------------------- |
+| machine      | Apple M5 Pro, 18 cores, 48 GiB, macOS (Darwin 25.5.0 arm64)                                                               |
+| runtimes     | Bun 1.4.2, Node v24.6.0, k6 v2.0.0                                                                                        |
+| server knobs | defaults: `PACKAGE_LOAD_WORKERS=1`, `PUBLISHER_MAX_CONCURRENT_QUERIES=32`                                                 |
+| load average | 3.3 at the start, 3.4 at the end (1 min). Not idle (other sessions were open), so treat differences under ~10 % as noise. |
+| packages     | storefront: 6 files, 0.9 MB. gen (medium): 10 Malloy files, 112 KB of Malloy, 1M fact rows (18 MB parquet)                |
+
+**Queries are not comparable with October.** Before this run the query mix picked each op's query
+text by its slot in the schedule, which skipped some texts entirely (gen's `report_get` always
+fetched the same report, and two of gen's eight sources never got a cheap or medium query). The mix
+now covers every text, which lowers throughput; October's query numbers had the same skew. Loads are
+unaffected and compare directly.
 
 ### Loads
 
 | target     | op       | c1 req/s | c1 avg (Oct) | c2 avg (Oct) | c4 avg (Oct) | c4 p95 (Oct) |
 | ---------- | -------- | -------: | -----------: | -----------: | -----------: | -----------: |
-| gen        | register |     1.28 |    728 (950) |  1108 (1377) |  2250 (2687) |  2389 (3584) |
-| gen        | reload   |     1.42 |    703 (940) |  1153 (1497) |  2234 (2766) |  2335 (3636) |
-| storefront | register |     4.95 |    194 (241) |    319 (408) |    651 (747) |          742 |
-| storefront | reload   |     5.28 |    189 (216) |    279 (374) |    545 (691) |          588 |
+| gen        | register |     1.28 |    726 (950) |  1107 (1377) |  2251 (2687) |  2395 (3584) |
+| gen        | reload   |     1.42 |    706 (940) |  1134 (1497) |  2221 (2766) |  2344 (3636) |
+| storefront | register |     5.12 |    187 (241) |    318 (408) |    636 (747) |          721 |
+| storefront | reload   |     5.66 |    177 (216) |    274 (374) |    548 (691) |          599 |
 
-A large-preset register (593 KB of Malloy), timed sequentially in a profiling window, takes 3.1 s
+A large-preset register (593 KB of Malloy), timed sequentially in a profiling window, takes 3.3 s
 (October: 5.6 s). Loads still serialize: throughput is nearly flat from 1 to 4 concurrent loads while
 latency grows with concurrency, because loads queue for the single package-load worker. The server's
-own phase metric (`publisher_package_load_phase_duration_ms`) puts 90 % of a medium load in that
-worker: 542 of 604 ms.
+own phase metric (`publisher_package_load_phase_duration_ms`) puts ~89 % of a medium load in that
+worker: 568 of 637 ms.
 
 ### Queries
 
 Closed loop (`constant-vus`), 60 s per row. Each cell is that op's `req/s · p95 ms`; `total` is every
-op together, with October's total in parentheses.
+op together.
 
-| target     | VUs | total req/s (Oct) |  query_cheap | query_medium |  query_heavy |  report_get |
-| ---------- | --: | ----------------: | -----------: | -----------: | -----------: | ----------: |
-| storefront |   1 |         343 (357) |  137.1 · 1.7 |  120.0 · 2.5 |  68.6 · 18.6 |   8.6 · 0.3 |
-| storefront |   4 |         499 (507) | 199.6 · 19.4 | 174.6 · 20.0 |  99.8 · 33.6 |  12.5 · 1.8 |
-| storefront |  16 |         525 (522) | 210.1 · 59.9 | 183.8 · 60.2 | 105.1 · 71.0 |  13.2 · 4.0 |
-| storefront |  32 |         527 (532) |  210.8 · 141 |  184.4 · 148 |  105.4 · 148 | 13.1 · 50.1 |
-| gen        |   1 |           61 (59) |   24.5 · 5.5 |  21.4 · 15.4 |   12.2 · 105 |   1.5 · 0.3 |
-| gen        |   4 |           72 (68) |   28.7 · 118 |   25.1 · 127 |   14.4 · 195 |   1.8 · 0.5 |
-| gen        |  16 |           72 (64) |   28.8 · 374 |   25.1 · 383 |   14.4 · 392 |   1.8 · 0.5 |
-| gen        |  32 |           71 (56) |   28.3 · 919 |   24.8 · 818 |   14.2 · 861 |   1.8 · 328 |
+| target     | VUs | total req/s |  query_cheap | query_medium | query_heavy |  report_get |
+| ---------- | --: | ----------: | -----------: | -----------: | ----------: | ----------: |
+| storefront |   1 |         288 |  115.2 · 1.8 |  100.8 · 2.8 | 57.6 · 19.4 |   7.2 · 0.3 |
+| storefront |   4 |         418 | 167.3 · 20.2 | 146.4 · 20.7 | 83.7 · 34.5 |  10.5 · 1.8 |
+| storefront |  16 |         437 | 174.9 · 70.1 | 153.1 · 71.5 | 87.5 · 75.6 |  10.9 · 3.6 |
+| storefront |  32 |         431 |  172.5 · 164 |  150.9 · 172 |  86.3 · 173 | 10.8 · 62.0 |
+| gen        |   1 |          53 |   21.3 · 5.6 |  18.7 · 15.8 |  10.7 · 107 |   1.3 · 0.4 |
+| gen        |   4 |          53 |   21.3 · 147 |   18.7 · 157 |  10.7 · 253 |   1.3 · 0.7 |
+| gen        |  16 |          52 |   21.0 · 479 |   18.3 · 494 |  10.5 · 611 |   1.3 · 0.6 |
+| gen        |  32 |          52 |  20.8 · 1271 |  18.2 · 1138 | 10.4 · 1159 |   1.3 · 452 |
 
-Query throughput is unchanged since October: storefront levels off at ~525 req/s from 4 VUs and gen
-at ~72 req/s from 4 VUs, and latency beyond that grows with the VU count.
+storefront levels off at ~435 req/s from 4 VUs; gen does not scale past one VU at all (~53 req/s at
+every concurrency), and its latency grows linearly with the VU count.
 
 ### Mixed
 
 Queries at 10 req/s (open model), 60 s without loads, then 60 s with one VU reloading the queried
 package and one VU registering, reloading and deleting a copy of the other package. p95 ms, with
-October's in parentheses.
+October's in parentheses where comparable.
 
 | target     | op           | p95 base | p95 under load (Oct) |  p95 × (Oct) |
 | ---------- | ------------ | -------: | -------------------: | -----------: |
-| storefront | query_cheap  |      8.7 |           60.6 (167) |  7.0× (26.7) |
-| storefront | query_medium |     11.7 |           54.0 (163) |  4.6× (18.1) |
-| storefront | query_heavy  |     49.2 |           70.0 (174) |   1.4× (4.5) |
-| storefront | report_get   |      1.8 |           19.0 (124) | 10.4× (72.9) |
-| gen        | query_cheap  |     23.1 |           58.6 (169) |  2.5× (12.2) |
-| gen        | report_get   |      1.4 |                 45.9 |        33.0× |
+| storefront | query_cheap  |      7.6 |           74.1 (167) |  9.8× (26.7) |
+| storefront | query_medium |      9.7 |           66.6 (163) |  6.9× (18.1) |
+| storefront | query_heavy  |     37.7 |           72.9 (174) |   1.9× (4.5) |
+| storefront | report_list  |      1.9 |          55.7 (97.9) | 28.8× (68.0) |
+| storefront | report_get   |      2.0 |           21.6 (124) | 11.0× (72.9) |
+| gen        | query_cheap  |     17.7 |           66.0 (169) |  3.7× (12.2) |
+| gen        | report_get   |      1.5 |                 65.0 |        42.9× |
 
 ### What the baseline shows
 
 - **Loads got faster, and they no longer stall the server.** A medium load is ~25 % faster, a large
-  one ~45 %. The persist build plan and render-tag validation, which ran on the main thread in
+  one ~40 %. The persist build plan and render-tag validation, which ran on the main thread in
   October and blocked it for up to 1.1 s, now cost the main thread almost nothing. During loads,
-  cheap-query p95 rises 2.5–7× (October: 12–27×). Report reads are the exception: they still rise
-  10–33× at p95, from 1–2 ms to 19–46 ms.
-- **Loads still serialize** on the single package-load worker, where compiling now accounts for
-  90 % of a load.
-- **Query throughput per package has not moved.** Both plateaus are the package's single DuckDB
-  connection: it has a query running 100 % of the time from 4 VUs up, while the server uses 4–10 of
-  18 cores.
+  cheap-query p95 rises 3.7–10× (October: 12–27×). Report reads are the exception: their p95 still
+  rises 11–43×, from 1–2 ms to 22–65 ms.
+- **Loads still serialize** on the single package-load worker, where compiling accounts for ~89 % of
+  a load.
+- **Query throughput per package is capped by its single DuckDB connection.** From 4 VUs up (gen:
+  from 1) the connection has a query running 100 % of the time and the in-flight count equals the
+  VU count, while the server uses 3.8 (storefront) to 10 (gen) of 18 cores.
 
 [performance-profile.md](performance-profile.md) attributes each of these to code, with the tooling
 to reproduce it, and ranks what to change.
