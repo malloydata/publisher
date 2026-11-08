@@ -13,10 +13,40 @@ import type { components } from "../api";
 import type { ResourceRepository } from "../storage/DatabaseInterface";
 import type { DuckDBConnection } from "../storage/duckdb/DuckDBConnection";
 import type { Environment, PackageListingOptions } from "./environment";
-import type { EnvironmentStore } from "./environment_store";
 import type { EnvironmentName } from "./identity";
 
 type ApiEnvironment = components["schemas"]["Environment"];
+type ApiConnection = components["schemas"]["Connection"];
+type ApiServerStatus = components["schemas"]["ServerStatus"];
+
+/** The body of `GET /status` and `get_status`, as the store builds it. */
+export interface ServerStatusBody {
+   timestamp: number;
+   environments: Array<components["schemas"]["ServerStatusEnvironment"]>;
+   initialized: boolean;
+   frozenConfig: boolean;
+   operationalState: ApiServerStatus["operationalState"];
+   version: string;
+   packageVersioning?: ApiServerStatus["packageVersioning"];
+   versionPromotion?: ApiServerStatus["versionPromotion"];
+   modelPage?: ApiServerStatus["modelPage"];
+   emptyReason?: string;
+   initError?: string;
+   loadErrors?: NonNullable<ApiServerStatus["loadErrors"]>;
+}
+
+/** What `getStatus` may include beyond the default. */
+export interface StatusOptions {
+   /** Report packages still loading, as well as those loaded. */
+   includeLoading?: boolean;
+}
+
+/** Write one connection row of an environment through `repository`. */
+export type ConnectionRowWriter = (
+   conn: ApiConnection,
+   environmentId: string,
+   repository: ResourceRepository,
+) => Promise<void>;
 
 /**
  * Resolve an environment by name, and through it its packages and models.
@@ -60,9 +90,7 @@ export interface McpExposureReader {
 
 /** The body of `GET /status` and `get_status`. */
 export interface StatusReader {
-   getStatus(
-      options?: Parameters<EnvironmentStore["getStatus"]>[0],
-   ): ReturnType<EnvironmentStore["getStatus"]>;
+   getStatus(options?: StatusOptions): Promise<ServerStatusBody>;
 }
 
 /** Environment CRUD, for the environment routes. */
@@ -98,8 +126,8 @@ export interface PackageAdmin extends PackageLookup, ConfigFreezeReader {
 export interface ConnectionAdmin extends PackageLookup, ConfigFreezeReader {
    readonly finishedInitialization: Promise<void>;
    readonly storageManager: { getRepository(): ResourceRepository };
-   addConnection: EnvironmentStore["addConnection"];
-   updateConnection: EnvironmentStore["updateConnection"];
+   addConnection: ConnectionRowWriter;
+   updateConnection: ConnectionRowWriter;
 }
 
 /**

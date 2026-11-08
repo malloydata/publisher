@@ -63,11 +63,6 @@ const TYPE_BACK_EDGES: Array<{ from: string; to: string; why: string }> = [
       why: "the registry's held results hold response's SourceCard",
    },
    {
-      from: "service/environment_ports.ts",
-      to: "service/environment_store.ts",
-      why: "the store's narrow roles take some signatures from the store itself",
-   },
-   {
       from: "service/package_load_gates.ts",
       to: "service/package.ts",
       why: "the load gates Package runs are typed against Package",

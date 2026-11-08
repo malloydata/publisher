@@ -58,6 +58,8 @@ import type {
    LoadedEnvironmentsReader,
    McpExposureReader,
    PackageAdmin,
+   ServerStatusBody,
+   StatusOptions,
    StatusReader,
 } from "./environment_ports";
 import {
@@ -1221,9 +1223,9 @@ export class EnvironmentStore
    }
 
    public async addConnection(
-      conn: ReturnType<Environment["listApiConnections"]>[number],
+      conn: ApiConnection,
       environmentId: string,
-      repository: ReturnType<typeof this.storageManager.getRepository>,
+      repository: ResourceRepository,
    ): Promise<void> {
       if (!conn.name) {
          logger.warn("Skipping connection with undefined name");
@@ -1248,9 +1250,9 @@ export class EnvironmentStore
    }
 
    public async updateConnection(
-      conn: ReturnType<Environment["listApiConnections"]>[number],
+      conn: ApiConnection,
       environmentId: string,
-      repository: ReturnType<typeof this.storageManager.getRepository>,
+      repository: ResourceRepository,
    ): Promise<void> {
       if (!conn.name) {
          throw new Error("Connection name is required for update");
@@ -1458,7 +1460,9 @@ export class EnvironmentStore
       );
    }
 
-   public async getStatus(options: { includeLoading?: boolean } = {}) {
+   public async getStatus(
+      options: StatusOptions = {},
+   ): Promise<ServerStatusBody> {
       // Back-pressure reads as "throttled" so the control plane can stop
       // routing to this worker; "draining" takes precedence.
       const baseState = getOperationalState();
@@ -1469,20 +1473,7 @@ export class EnvironmentStore
             : baseState
       ) as components["schemas"]["ServerStatus"]["operationalState"];
 
-      const status: {
-         timestamp: number;
-         environments: Array<components["schemas"]["ServerStatusEnvironment"]>;
-         initialized: boolean;
-         frozenConfig: boolean;
-         operationalState: components["schemas"]["ServerStatus"]["operationalState"];
-         version: string;
-         packageVersioning?: components["schemas"]["ServerStatus"]["packageVersioning"];
-         versionPromotion?: components["schemas"]["ServerStatus"]["versionPromotion"];
-         modelPage?: components["schemas"]["ServerStatus"]["modelPage"];
-         emptyReason?: string;
-         initError?: string;
-         loadErrors?: LoadError[];
-      } = {
+      const status: ServerStatusBody = {
          timestamp: Date.now(),
          environments: [],
          initialized: this.isInitialized,
