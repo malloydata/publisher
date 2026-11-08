@@ -231,19 +231,38 @@ async function writeNewReport(
 }
 
 /**
+ * What a server from before `reason` FILE_EXISTS said when a create found a
+ * file at its path: "`<path>` already exists in the package. Send the …" in
+ * the first release that had the write, then "`<path>` already exists in the
+ * package, so nothing was written. …". It answers other 409s on the same
+ * route with no `reason` too (a package loading or unloading, a
+ * materialization conflict), and those are not a taken name.
+ */
+const OLD_SERVER_FILE_EXISTS = /^`[^`]+` already exists in the package\b/;
+
+/**
  * Whether a create-only write was refused because a file is already at the
- * path: 409 with `reason` FILE_EXISTS. A 409 with no `reason` is read the same
- * way, as a server from before the reason answers it; a create sends no
- * `expectedHash`, so a stale one is not what it means. A 409 with any other
- * reason (PACKAGE_IS_VERSIONED, PACKAGE_INSTALLED_FROM_LOCATION) is not.
+ * path: 409 with `reason` FILE_EXISTS, or, from a server that predates the
+ * reason, a reasonless 409 whose message is that server's for a file at the
+ * path (OLD_SERVER_FILE_EXISTS). Any other 409, with another reason
+ * (PACKAGE_IS_VERSIONED, PACKAGE_INSTALLED_FROM_LOCATION) or none, is not:
+ * it would refuse every name alike, so it is shown at once.
  */
 function isFileExists(error: unknown): boolean {
    const response = (
-      error as { response?: { status?: number; data?: { reason?: unknown } } }
+      error as {
+         response?: {
+            status?: number;
+            data?: { reason?: unknown; message?: unknown };
+         };
+      }
    )?.response;
    if (response?.status !== 409) return false;
    const reason = response.data?.reason;
-   return reason === undefined || reason === null || reason === "FILE_EXISTS";
+   if (reason === "FILE_EXISTS") return true;
+   if (reason !== undefined && reason !== null) return false;
+   const message = response.data?.message;
+   return typeof message === "string" && OLD_SERVER_FILE_EXISTS.test(message);
 }
 
 const noFreeName = (title: string, path?: string) =>

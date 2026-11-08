@@ -259,7 +259,13 @@ describe("createDocument names", () => {
       expect(result.slug).toBe("sales-2");
    });
 
-   it("on the package route, moves to the next name when the server answers 409", async () => {
+   it("on the package route, moves to the next name when a server from before the reason says the file exists", async () => {
+      // Both wordings an older server answered a create collision with, as a
+      // 409 with no `reason`.
+      const said = [
+         "`sales.malloy` already exists in the package. Send the `expectedHash` of the text you opened to replace it.",
+         "`sales-2.malloy` already exists in the package, so nothing was written. Choose another path, or, to replace a report, send the `expectedHash` of the text you opened.",
+      ];
       const tried: string[] = [];
       const result = await createDocument({
          layout: "grid",
@@ -271,7 +277,10 @@ describe("createDocument names", () => {
                tried.push(path);
                if (tried.length < 3)
                   throw Object.assign(new Error("exists"), {
-                     response: { status: 409 },
+                     response: {
+                        status: 409,
+                        data: { code: 409, message: said[tried.length - 1] },
+                     },
                   });
             },
          },
@@ -283,6 +292,38 @@ describe("createDocument names", () => {
       ]);
       expect(result.slug).toBe("sales-3");
    });
+
+   it.each([
+      ["a package loading", "Package pkg is loading; try again shortly."],
+      [
+         "a materialization conflict",
+         "A materialization build of pkg is already running.",
+      ],
+      ["no message at all", undefined],
+   ])(
+      "on the package route, a reasonless 409 for %s is thrown at once, not read as a taken name",
+      async (_what, message) => {
+         let writes = 0;
+         const error = (await createDocument({
+            layout: "grid",
+            document: DOC,
+            target: {
+               route: "package",
+               existing: [],
+               write: async () => {
+                  writes++;
+                  throw Object.assign(new Error("Request failed with 409"), {
+                     response: { status: 409, data: { code: 409, message } },
+                  });
+               },
+            },
+         }).catch((e: unknown) => e)) as {
+            response?: { data?: { message?: string } };
+         };
+         expect(error.response?.data?.message).toBe(message);
+         expect(writes).toBe(1);
+      },
+   );
 
    it("on the package route, moves to the next name only when the 409 says the file exists", async () => {
       const tried: string[] = [];
@@ -481,7 +522,7 @@ describe("createDocument at a path", () => {
       expect(writes).toEqual([]);
    });
 
-   it("refuses a path the server answers 409 for, once", async () => {
+   it("refuses a path the server answers 409 FILE_EXISTS for, once", async () => {
       const tried: string[] = [];
       await expect(
          createDocument({
@@ -493,7 +534,7 @@ describe("createDocument at a path", () => {
                write: async (path) => {
                   tried.push(path);
                   throw Object.assign(new Error("exists"), {
-                     response: { status: 409 },
+                     response: { status: 409, data: { reason: "FILE_EXISTS" } },
                   });
                },
             },
