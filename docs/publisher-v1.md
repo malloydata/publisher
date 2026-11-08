@@ -36,7 +36,7 @@ v1 is the release that settles all four and promises them. Each surface is held 
 3. **One parser.** A value is read the same way from every source, `${VAR}` substitution included; a bad value, an unknown key or an unknown flag fails startup with a message naming the setting.
 4. **Settings are not resources.** `publisher.config.json` configures the process: ports, limits, retrieval, the admin API. Environments, connections and packages are resources, with the catalog as their one source of truth; they are created through the API, by a person, by an orchestrator, or by an init script that `malloy-pub apply` applies against a running server, and the server never reads a resource declaration from a file. Today's `environments` block is the one place the two are mixed, and it leaves the file. The one bootstrap is `--apply <file>`, which runs the same `apply` against the server's own API when the catalog is empty, so the zero-flag quick start and a single container keep working.
 
-**The storage** (#1560) is held to three:
+**The storage** (#1560) is held to four:
 
 1. **Storage mirrors the API, but is loosely coupled to it.** Stored entities match the API's resources; the stored formats are the storage layer's own, so either side can change without breaking the other.
 2. **A request touches only the storage it needs.** Reading or changing one resource reads or writes that resource. It does not load the environment, rewrite a large blob, or recompile a package.
