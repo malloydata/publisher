@@ -13,7 +13,27 @@ import { logger } from "../logger";
 import type { LoadPackageOutcome } from "../package_load/package_load_pool";
 import { PackageLoadProtocolError } from "../package_load/protocol_decode";
 import type { PreparedCeilingQueries } from "./classification_report";
-import type { ApiPackage, Package } from "./package";
+import type { components } from "../api";
+
+type ApiPackage = components["schemas"]["Package"];
+type ApiPackageWarning = NonNullable<ApiPackage["warnings"]>[number];
+/** The listing fields a load is judged under. */
+type Listing = Pick<ApiPackage, "explores" | "queryableSources">;
+
+/** What the load gates read from the package they judge. `Package` implements it. */
+export interface LoadGatedPackage {
+   getPackageName(): string;
+   prepareCeilingQueries(): Promise<PreparedCeilingQueries>;
+   underListing<T>(listing: Listing | undefined, judge: () => T): T;
+   formatInvalidExplores(exploresOverride?: string[]): string;
+   formatInvalidPersistencePolicy(): string;
+   formatInvalidIncrementalPolicy(): string;
+   formatInvalidPreaggregatePolicy(): string;
+   formatClassificationLeaks(): string;
+   formatCarriesCeilingLeaks(prepared: PreparedCeilingQueries): string;
+   preaggregateAccessWarnings(): ApiPackageWarning[];
+   persistenceCollisionWarnings(): string[];
+}
 import {
    DEFAULT_PACKAGE_RETRIEVAL,
    assertRequiredStagesAvailable,
@@ -74,7 +94,7 @@ export function assertOutcomeStagesAvailable(
  * never falls back to listing everything). Warn so the misconfig is
  * visible; the publish path rejects it outright (see package.controller).
  */
-export function warnInvalidExplores(pkg: Package): void {
+export function warnInvalidExplores(pkg: LoadGatedPackage): void {
    const packageName = pkg.getPackageName();
    const invalidMsg = pkg.formatInvalidExplores();
    if (invalidMsg) {
@@ -92,15 +112,18 @@ export function warnInvalidExplores(pkg: Package): void {
  * judged as that listing would serve it, and keeps its own.
  */
 export async function applyLoadGates(
-   pkg: Package,
-   listing?: Pick<ApiPackage, "explores" | "queryableSources">,
+   pkg: LoadGatedPackage,
+   listing?: Listing,
 ): Promise<void> {
    // The only await, ahead of the listing, so no request is served under one the gates have not judged.
    const prepared = await pkg.prepareCeilingQueries();
    pkg.underListing(listing, () => judgeLoadGates(pkg, prepared));
 }
 
-function judgeLoadGates(pkg: Package, prepared: PreparedCeilingQueries): void {
+function judgeLoadGates(
+   pkg: LoadGatedPackage,
+   prepared: PreparedCeilingQueries,
+): void {
    const packageName = pkg.getPackageName();
    warnInvalidExplores(pkg);
    // Same fail-safe split: warn at load, reject at publish.

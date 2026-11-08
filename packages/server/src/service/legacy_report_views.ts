@@ -23,7 +23,6 @@ import { API_PREFIX } from "../constants";
 import { recordDeprecatedUsage } from "../deprecated_usage_metrics";
 import { ConflictError } from "../errors";
 import type { CompiledDocument } from "./compile_document";
-import type { Package } from "./package";
 import { reportName, type ReportLayout } from "./report";
 
 type ApiDashboard = components["schemas"]["Dashboard"];
@@ -31,9 +30,25 @@ type ApiDashboardManifest = components["schemas"]["DashboardManifest"];
 type ApiNotebook = components["schemas"]["Notebook"];
 type ApiRawNotebook = components["schemas"]["RawNotebook"];
 type ApiReport = components["schemas"]["Report"];
+type ApiReportManifest = components["schemas"]["ReportManifest"];
 type ApiPackageWarning = NonNullable<
    components["schemas"]["Package"]["warnings"]
 >[number];
+
+/** What the deprecated projections read from a package. `Package` implements it. */
+export interface ReportViewPackage {
+   getPackageName(): string;
+   listReports(): ApiReport[];
+   getReport(reportPath: string): Promise<ApiReportManifest | undefined>;
+   isServedReport(modelPath: string): boolean;
+   servedReportPaths(): IterableIterator<string>;
+   getModel(modelPath: string):
+      | {
+           getNotebookListing(): { title?: string; description?: string };
+           getNotebookError(): Error | undefined;
+        }
+      | undefined;
+}
 
 /** The old name of a layout. */
 export type LegacyKind = "dashboard" | "notebook";
@@ -70,13 +85,13 @@ function dashboardResource(
 }
 
 /** The grid reports, in path order: what the dashboards routes serve. */
-function gridReports(pkg: Package): ApiReport[] {
+function gridReports(pkg: ReportViewPackage): ApiReport[] {
    return pkg.listReports().filter((report) => report.layout === "grid");
 }
 
 /** The grid reports, as list-dashboards lists them. */
 export function listDashboards(
-   pkg: Package,
+   pkg: ReportViewPackage,
    environmentName: string,
 ): ApiDashboard[] {
    return gridReports(pkg).map((report) => ({
@@ -104,7 +119,7 @@ const REPORT_NAME_AMBIGUOUS = "report-name-ambiguous";
  * asks. The report routes address by path and are unaffected.
  */
 export function ambiguousDashboardNameWarnings(
-   pkg: Package,
+   pkg: ReportViewPackage,
 ): ApiPackageWarning[] {
    const pathsByName = new Map<string, string[]>();
    for (const report of gridReports(pkg))
@@ -132,7 +147,7 @@ export function ambiguousDashboardNameWarnings(
  * ambiguous, and that is a 409 naming both rather than a guess.
  */
 export async function getDashboard(
-   pkg: Package,
+   pkg: ReportViewPackage,
    environmentName: string,
    name: string,
 ): Promise<ApiDashboardManifest | undefined> {
@@ -174,7 +189,7 @@ export async function getDashboard(
  * error a linear report that failed to compile or to read lists with.
  */
 export function listNotebooks(
-   pkg: Package,
+   pkg: ReportViewPackage,
    environmentName: string,
 ): ApiNotebook[] {
    return pkg
@@ -228,7 +243,7 @@ export function withLegacyDocumentKind(
  * report paths rather than the listing, which the fallback would otherwise
  * build on every candidate request.
  */
-function hasReportNamed(pkg: Package, name: string): boolean {
+function hasReportNamed(pkg: ReportViewPackage, name: string): boolean {
    for (const path of pkg.servedReportPaths()) {
       if (reportName(path) === name) return true;
    }
@@ -242,7 +257,10 @@ function hasReportNamed(pkg: Package, name: string): boolean {
  * reachable; and never when a report lives at `<routePath>.malloy`, since that
  * is the report's own route. Counts nothing: {@link recordConsoleAliasUse} does.
  */
-export function isLegacyReportAlias(pkg: Package, routePath: string): boolean {
+export function isLegacyReportAlias(
+   pkg: ReportViewPackage,
+   routePath: string,
+): boolean {
    const alias = /^(?:dashboards|notebooks)\/([^/]+)$/.exec(routePath);
    return (
       alias !== null &&
@@ -263,7 +281,7 @@ export function recordConsoleAliasUse(
    packageOf: (
       environmentName: string,
       packageName: string,
-   ) => Package | undefined,
+   ) => ReportViewPackage | undefined,
 ): void {
    const segments = requestPath.split("/").filter((s) => s.length > 0);
    if (segments.length !== 4) return;

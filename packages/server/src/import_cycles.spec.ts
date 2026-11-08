@@ -62,16 +62,6 @@ const TYPE_BACK_EDGES: Array<{ from: string; to: string; why: string }> = [
       to: "retrieval/search/response.ts",
       why: "the registry's held results hold response's SourceCard",
    },
-   {
-      from: "service/package_load_gates.ts",
-      to: "service/package.ts",
-      why: "the load gates Package runs are typed against Package",
-   },
-   {
-      from: "service/legacy_report_views.ts",
-      to: "service/package.ts",
-      why: "the deprecated report projections are typed against Package",
-   },
 ];
 
 const SRC_DIR = __dirname;
@@ -251,7 +241,7 @@ describe("import cycles", () => {
             (e) =>
                e.type &&
                e.from === "service/package_load_gates.ts" &&
-               e.to === "service/package.ts",
+               e.to === "package_load/package_load_pool.ts",
          ),
       ).toBe(true);
    });
