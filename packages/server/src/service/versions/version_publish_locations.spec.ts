@@ -282,10 +282,8 @@ beforeEach(async () => {
          getRepository: () => emptyRepository(),
       }),
       simpleGit: fakeSimpleGit,
-   });
-   Object.assign(downloads as unknown as Record<string, unknown>, {
-      gcsClient: fakeGcs,
-      s3Client: fakeS3,
+      gcsClient: fakeGcs as never,
+      s3Client: fakeS3 as never,
    });
    objects = new Map();
    repoFiles = {};

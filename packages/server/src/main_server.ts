@@ -360,9 +360,8 @@ export async function buildApp(settings: AppSettings): Promise<BuiltApp> {
       () => materializationService.reclaimArchivedVersions(),
       () => undefined,
    );
-   // C3 (EnvironmentStore split): once its constructor stops doing I/O, the
-   // store's `start()` is called HERE, after every hook above is installed and
-   // before anything awaits `finishedInitialization`.
+   // Every hook is installed: open storage and load the environments.
+   void environmentStore.start();
 
    // The sweep timer is unref'd, so it never keeps the process alive.
    startMaterializationSchedulerFromEnv(

@@ -25,6 +25,7 @@ import {
 } from "./versions/materialization_scope";
 import { writePackageFiles } from "../test_helpers/temp_package";
 import { parseEnvironmentName, parsePackageName, VersionRef } from "./identity";
+import { startedStore } from "../test_helpers/started_store";
 
 // What archiving a version reclaims, and what it must leave alone: the keep
 // rules of MaterializationService.reclaimVersionTables (a table another
@@ -971,7 +972,7 @@ describe("the archive hook and the startup sweep, as main_server.ts wires them",
     */
    async function openServer({ wired = true } = {}): Promise<Server> {
       restores.push(installSettings({ env, cwd: serverRoot }).restore);
-      const store = new EnvironmentStore(serverRoot);
+      const store = startedStore(new EnvironmentStore(serverRoot));
       opened.push(store);
       const materializationService = new MaterializationService(store);
       const calls: string[][] = [];

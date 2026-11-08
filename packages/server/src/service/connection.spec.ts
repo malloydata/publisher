@@ -64,6 +64,7 @@ import {
 import { installSettings } from "../test_helpers/settings_env";
 import { EnvironmentStore } from "./environment_store";
 import { parseEnvironmentName, parsePackageName } from "./identity";
+import { startedStore } from "../test_helpers/started_store";
 
 type ApiConnection = components["schemas"]["Connection"];
 type AttachedDatabase = components["schemas"]["AttachedDatabase"];
@@ -919,7 +920,9 @@ describe("connection integration tests", () => {
                });
 
                try {
-                  const envStore = new EnvironmentStore(tempServerRoot);
+                  const envStore = startedStore(
+                     new EnvironmentStore(tempServerRoot),
+                  );
                   await envStore.finishedInitialization;
 
                   // initialize() swallows top-level errors and just calls
