@@ -17,7 +17,12 @@ import { QueryUseCase } from "../usecases/query";
  */
 export function mcpServicesFor(store: unknown): McpServices {
    const environmentStore = store as EnvironmentStore;
-   const retrieval = new RetrievalService(environmentStore);
+   // Read lazily, as the root's catalog is: a fake store with no storage
+   // fails only when a build or purge reaches for it.
+   const retrieval = new RetrievalService(environmentStore, {
+      getDuckDbConnection: () =>
+         environmentStore.storageManager.getDuckDbConnection(),
+   });
    const querySlots = new QuerySlots();
    return {
       environmentStore,

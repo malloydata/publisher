@@ -22,7 +22,7 @@
 
 import type { ChatModel, EmbeddingModel } from "../llm/types";
 import { DEFAULT_FCJ_SETTINGS, type FcjSettings } from "../package_retrieval";
-import type { EnvironmentStore } from "../../service/environment_store";
+import type { PackageLookup } from "../../service/environment_ports";
 import type { DuckDBConnection } from "../../storage/duckdb/DuckDBConnection";
 import { logger } from "../../logger";
 import { humanizeName } from "./embedding_index";
@@ -198,7 +198,7 @@ export async function buildFcjIndex(args: {
    storedSummaries?: ReadonlyMap<string, StoredSourceSummary>;
    /** Where `#(index)` dimensions are read from; absent: doc value lists only. */
    valueRead?: {
-      environmentStore: EnvironmentStore;
+      environmentStore: PackageLookup;
       fetcher?: IndexValueFetcher;
    };
    /**

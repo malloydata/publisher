@@ -9,6 +9,7 @@ import { components } from "../api";
 import { EnvironmentNotFoundError } from "../errors";
 import { logger } from "../logger";
 import { assertSafePackageName } from "../path_safety";
+import type { PackageLookup } from "../service/environment_ports";
 import { EnvironmentStore } from "../service/environment_store";
 import { parseEnvironmentName, parsePackageName } from "../service/identity";
 
@@ -47,7 +48,11 @@ export class WatchModeController {
     */
    public events = new EventEmitter();
 
-   constructor(private environmentStore: EnvironmentStore) {
+   constructor(
+      private environmentStore: PackageLookup & {
+         readonly serverRootPath: string;
+      },
+   ) {
       this.watchingPath = null;
       this.watchingEnvironmentName = null;
       // One live-reload listener per open browser tab.

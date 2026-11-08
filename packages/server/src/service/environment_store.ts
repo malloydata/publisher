@@ -51,6 +51,14 @@ import { VersionStore } from "./versions/version_store";
 import { storageBindingResolverFor } from "./versions/materialization_scope";
 import type { PackageMemoryGovernor } from "./package_memory_governor";
 import { SERVER_VERSION } from "../version";
+import type {
+   EnvironmentAdmin,
+   EnvironmentPeek,
+   LoadedEnvironmentsReader,
+   McpExposureReader,
+   PackageAdmin,
+   StatusReader,
+} from "./environment_ports";
 import {
    isGitHubURL,
    isLocalPath,
@@ -220,7 +228,15 @@ export interface EnvironmentStoreDeps extends PackageSourceClients {
    storageManager?: StorageManager;
 }
 
-export class EnvironmentStore {
+export class EnvironmentStore
+   implements
+      EnvironmentAdmin,
+      EnvironmentPeek,
+      PackageAdmin,
+      McpExposureReader,
+      LoadedEnvironmentsReader,
+      StatusReader
+{
    public serverRootPath: string;
    private environments: Map<string, Environment> = new Map();
    /**

@@ -17,7 +17,7 @@
  */
 
 import { InvalidArgumentError } from "../../errors";
-import { EnvironmentStore } from "../../service/environment_store";
+import type { EnvironmentCatalog } from "../../service/environment_ports";
 import { FCJ_MAX_CHARS } from "../../retrieval/search/pages";
 import type { GetContextParams, ScopedParams } from "./get_context_request";
 import type { PackageInfo } from "../../retrieval/model/types";
@@ -186,7 +186,7 @@ const isWholePackage = (
  */
 export async function resolveLevel(
    params: GetContextParams,
-   environmentStore: EnvironmentStore,
+   environmentStore: EnvironmentCatalog,
 ): Promise<LevelOutcome> {
    const environment = params.environment?.trim() || undefined;
    const scope = params.scopes?.[0];

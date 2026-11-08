@@ -3119,7 +3119,7 @@ describe("EnvironmentStore embeddings cleanup wiring", () => {
       const store = startedStore(
          new EnvironmentStore(serverRootPath, { storageManager }),
       );
-      const retrieval = new RetrievalService(store);
+      const retrieval = new RetrievalService(store, store.storageManager);
       store.setPackageDeletedHook((environmentName, packageName) =>
          retrieval.purge(environmentName, packageName),
       );

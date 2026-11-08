@@ -46,7 +46,11 @@ import {
    valueRetryDelayMs,
 } from "../index/engine_state";
 import { deleteEngineRows, ENGINE_TABLES } from "../index/catalog_store";
-import type { EnvironmentStore } from "../../service/environment_store";
+import type {
+   EnvironmentPeek,
+   PackageLookup,
+} from "../../service/environment_ports";
+import type { Environment } from "../../service/environment";
 import type { IndexValueFetcher } from "../index/values_index";
 import type { Package } from "../../service/package";
 import { retrievalRegistry } from "../registry";
@@ -114,7 +118,7 @@ describe("the search engine", () => {
    it("reports the built index's vectors as the embedding status counts", async () => {
       const pkg = (await compileFcjFixture()).pkg as Package;
       const before = await getPackageEmbeddingStatus(
-         {} as EnvironmentStore,
+         {} as PackageLookup,
          "env",
          "fixture",
          pkg,
@@ -131,7 +135,7 @@ describe("the search engine", () => {
       if (state?.status !== "ready") throw new Error("expected a ready index");
       const rows = state.index.report.vectors.rows;
       const status = await getPackageEmbeddingStatus(
-         {} as EnvironmentStore,
+         {} as PackageLookup,
          "env",
          "fixture",
          pkg,
@@ -921,11 +925,10 @@ describe("a package removed while its index builds", () => {
          peekPackage: () => served,
          getStaleCompileErrors: () => new Map(),
       };
-      const store = {
-         getEnvironment: async () => environment,
-         peekEnvironment: () => environment,
-         storageManager: { getDuckDbConnection: () => harness.db },
-      } as unknown as EnvironmentStore;
+      const store: PackageLookup & EnvironmentPeek = {
+         getEnvironment: async () => environment as unknown as Environment,
+         peekEnvironment: () => environment as unknown as Environment,
+      };
       const asked: string[] = [];
       _setFcjValueFetcherForTests(async (req) => {
          asked.push(req.source);
@@ -935,6 +938,7 @@ describe("a package removed while its index builds", () => {
       });
       kickFcjBuild({
          environmentStore: store,
+         catalog: { getDuckDbConnection: () => harness.db },
          environmentName: "env",
          packageName: "fixture",
          pkg: pkg as Package,

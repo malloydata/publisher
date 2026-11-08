@@ -8,7 +8,7 @@ import {
    BUNDLED_SKILLS,
    resolveSkills,
 } from "../service/skills/package_skills";
-import { EnvironmentStore } from "../service/environment_store";
+import type { PackageLookup } from "../service/environment_ports";
 import { loadedPackage } from "./loaded_package";
 
 type ApiAgent = components["schemas"]["Agent"];
@@ -25,9 +25,9 @@ type ApiSkillSummary = components["schemas"]["SkillSummary"];
  * agents are served, never `latest`'s.
  */
 export class SkillController {
-   private environmentStore: EnvironmentStore;
+   private environmentStore: PackageLookup;
 
-   constructor(environmentStore: EnvironmentStore) {
+   constructor(environmentStore: PackageLookup) {
       this.environmentStore = environmentStore;
    }
 

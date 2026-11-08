@@ -27,7 +27,11 @@ import {
    embeddingConfigured,
    getEmbeddingProvider,
 } from "../../service/embedding_provider";
-import type { EnvironmentStore } from "../../service/environment_store";
+import type {
+   CatalogDatabase,
+   EnvironmentPeek,
+   PackageLookup,
+} from "../../service/environment_ports";
 import type { Package } from "../../service/package";
 import { type FcjJudgeLlm, fcjSettingsOf } from "../package_retrieval";
 import { logger } from "../../logger";
@@ -130,7 +134,9 @@ export function fcjJudgeChat(judgeLlm: FcjJudgeLlm | null): ChatModel | null {
  * inside the cool-down. Never throws; the outcome lands in the state.
  */
 export function kickFcjBuild(args: {
-   environmentStore: EnvironmentStore;
+   environmentStore: PackageLookup & Partial<EnvironmentPeek>;
+   /** Where the build writes, and where a dropped package's rows are deleted. */
+   catalog: CatalogDatabase;
    environmentName: string;
    packageName: string;
    pkg: Package;
@@ -224,7 +230,7 @@ async function droppedDuringBuild(
    states.delete(args.pkg);
    try {
       await deleteEngineRows(
-         args.environmentStore.storageManager.getDuckDbConnection(),
+         args.catalog.getDuckDbConnection(),
          args.environmentName,
          args.packageName,
       );
@@ -359,7 +365,8 @@ function rebuildForValues(
 
 async function buildFor(
    args: {
-      environmentStore: EnvironmentStore;
+      environmentStore: PackageLookup;
+      catalog: CatalogDatabase;
       environmentName: string;
       packageName: string;
       pkg: Package;
@@ -376,7 +383,7 @@ async function buildFor(
       environmentName,
       packageName,
    );
-   const db = environmentStore.storageManager.getDuckDbConnection();
+   const db = args.catalog.getDuckDbConnection();
    const retrieval = pkg.getRetrievalSettings?.();
    const settings = fcjSettingsOf(retrieval);
    const provider = embeddingConfigured() ? getEmbeddingProvider() : null;

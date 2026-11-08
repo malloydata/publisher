@@ -1,7 +1,11 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
-import type { EnvironmentStore } from "../service/environment_store";
+import type {
+   CatalogDatabase,
+   EnvironmentPeek,
+   PackageLookup,
+} from "../service/environment_ports";
 import type { Package } from "../service/package";
 import type { EmbeddingIndexStatus } from "./index/embedding_index";
 import {
@@ -20,15 +24,36 @@ import {
 } from "./registry";
 import { type FcjQueryArgs, runFcjQuery } from "./search/engine";
 
-/** One ranked search: everything runFcjQuery takes but the store and its own signal. */
-export type SearchArgs = Omit<FcjQueryArgs, "environmentStore" | "signal">;
+/** One ranked search: everything runFcjQuery takes but the store, the catalog and its own signal. */
+export type SearchArgs = Omit<
+   FcjQueryArgs,
+   "environmentStore" | "catalog" | "signal"
+>;
+
+/**
+ * What retrieval reads from the environment store: packages by name, and
+ * (when the store can say) whether a package is still the one served.
+ */
+export type RetrievalStore = PackageLookup & Partial<EnvironmentPeek>;
+
+/**
+ * The catalog for a RetrievalService that never builds or purges an index
+ * (a spec's controller): every read fails as storage that has not
+ * initialized does.
+ */
+export const NO_CATALOG: CatalogDatabase = {
+   getDuckDbConnection() {
+      throw new Error("Storage not initialized");
+   },
+};
 
 /**
  * The one door into retrieval for the rest of the server: the get_context
  * search, a package's index status, the build a load starts, and the purge a
- * delete owes. Holds the store and the RetrievalRegistry that owns every
- * piece of state retrieval keeps (index builds, caches, held pages, the
- * embedding queue, the chat model, the value-lookup resolver and slot pool).
+ * delete owes. Holds the store, the catalog database the index lives in,
+ * and the RetrievalRegistry that owns every piece of state retrieval keeps
+ * (index builds, caches, held pages, the embedding queue, the chat model,
+ * the value-lookup resolver and slot pool).
  *
  * The registry is also the one retrieval's modules read: given one, the
  * service installs it (the composition root builds one per process); given
@@ -42,7 +67,8 @@ export class RetrievalService {
    readonly registry: RetrievalRegistry;
 
    constructor(
-      private readonly environmentStore: EnvironmentStore,
+      private readonly environmentStore: RetrievalStore,
+      private readonly catalog: CatalogDatabase,
       registry?: RetrievalRegistry,
    ) {
       if (registry) installRetrievalRegistry(registry);
@@ -51,7 +77,11 @@ export class RetrievalService {
 
    /** A ranked get_context search over one package's index. */
    search(args: SearchArgs): Promise<SearchResult> {
-      return runFcjQuery({ ...args, environmentStore: this.environmentStore });
+      return runFcjQuery({
+         ...args,
+         environmentStore: this.environmentStore,
+         catalog: this.catalog,
+      });
    }
 
    /** How far one package's search index has got. */
@@ -74,7 +104,12 @@ export class RetrievalService {
     * schedules work.
     */
    onPackageLoaded(environmentName: string, pkg: Package): void {
-      startPackageEmbeddingSync(this.environmentStore, environmentName, pkg);
+      startPackageEmbeddingSync(
+         this.environmentStore,
+         this.catalog,
+         environmentName,
+         pkg,
+      );
    }
 
    /**
@@ -84,7 +119,7 @@ export class RetrievalService {
     * the caller decides whether that matters.
     */
    async purge(environmentName: string, packageName?: string): Promise<void> {
-      const db = this.environmentStore.storageManager.getDuckDbConnection();
+      const db = this.catalog.getDuckDbConnection();
       if (packageName === undefined) {
          await deleteEnvironmentEmbeddings(db, environmentName);
       } else {

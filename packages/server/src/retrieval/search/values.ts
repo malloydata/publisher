@@ -25,7 +25,7 @@ import {
    withAccessRecord,
 } from "../../service/access_record";
 import { quoteMalloyIdentifier } from "../../service/authorize";
-import type { EnvironmentStore } from "../../service/environment_store";
+import type { PackageLookup } from "../../service/environment_ports";
 import { QueryPrivileges } from "../../service/model_query_request";
 import { runWithQueryTimeout } from "../../query_timeout";
 import { ModelNotFoundError } from "../../errors";
@@ -46,7 +46,7 @@ export type QueryModelResolution =
 
 /** Resolves the model a value lookup queries (the package's `latest`). */
 export type QueryModelResolver = (
-   environmentStore: EnvironmentStore,
+   environmentStore: PackageLookup,
    environmentName: string,
    packageName: string,
    modelPath: string,
@@ -86,7 +86,7 @@ interface DistinctValues {
 
 /** One lookup query. A seam so a test can stand in for the warehouse. */
 interface ValueFetchRequest {
-   environmentStore: EnvironmentStore;
+   environmentStore: PackageLookup;
    environmentName: string;
    packageName: string;
    modelPath: string;
@@ -120,7 +120,7 @@ export function usableValue(raw: unknown): string | undefined {
 
 /** One read of a dimension's distinct values: the query and how it is run. */
 interface DistinctValueQuery {
-   environmentStore: EnvironmentStore;
+   environmentStore: PackageLookup;
    environmentName: string;
    packageName: string;
    modelPath: string;

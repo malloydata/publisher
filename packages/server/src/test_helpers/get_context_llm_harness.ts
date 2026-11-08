@@ -19,7 +19,9 @@ import {
    EmbeddingProvider,
    _setEmbeddingProviderForTests,
 } from "../service/embedding_provider";
-import type { EnvironmentStore } from "../service/environment_store";
+import type { Environment } from "../service/environment";
+import type { EnvironmentCatalog } from "../service/environment_ports";
+import { RetrievalService } from "../retrieval/service";
 import type { RetryPolicy } from "../service/http_retry";
 import { DuckDBConnection } from "../storage/duckdb/DuckDBConnection";
 import {
@@ -200,13 +202,14 @@ export async function semanticHarness(): Promise<SemanticHarness> {
       },
       handlerFor(pkg, stale = new Map()) {
          let handler: Handler | undefined;
-         const store = {
-            getEnvironment: async () => ({
-               getPackage: async () => pkg,
-               getStaleCompileErrors: () => stale,
-            }),
-            storageManager: { getDuckDbConnection: () => db },
-         } as unknown as EnvironmentStore;
+         const environment = {
+            getPackage: async () => pkg,
+            getStaleCompileErrors: () => stale,
+         } as unknown as Environment;
+         const store: EnvironmentCatalog = {
+            getEnvironment: async () => environment,
+            listEnvironments: async () => [],
+         };
          registerGetContextTool(
             {
                registerTool: (name: string, _config: unknown, h: Handler) => {
@@ -214,6 +217,7 @@ export async function semanticHarness(): Promise<SemanticHarness> {
                },
             } as never,
             store,
+            new RetrievalService(store, { getDuckDbConnection: () => db }),
          );
          return handler as Handler;
       },
