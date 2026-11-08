@@ -4,10 +4,14 @@
 import { describe, expect, it } from "bun:test";
 import express from "express";
 import request from "supertest";
-import type { EnvironmentStore } from "../service/environment_store";
 import type { Version } from "../storage/DatabaseInterface";
 import { registerVersionRoutes } from "../routes/versions";
 import { VersionController } from "./version.controller";
+import { fakeOf } from "../test_helpers/store_fakes";
+import type {
+   ConfigFreezeReader,
+   PackageLookup,
+} from "../service/environment_ports";
 
 // A frozen config (`frozenConfig: true` in publisher.config.json) refuses
 // every write to a package's version lifecycle with 403, before the version
@@ -66,10 +70,10 @@ function serverWith(frozen: boolean) {
       getPackageStatus: () => ({}),
       describePackage: async () => ({ name: "pkg", versionId: "1.0.0" }),
    };
-   const environmentStore = {
+   const environmentStore = fakeOf<PackageLookup & ConfigFreezeReader>({
       publisherConfigIsFrozen: frozen,
       getEnvironment: async () => environment,
-   } as unknown as EnvironmentStore;
+   });
    const app = express();
    app.use(express.json());
    registerVersionRoutes(

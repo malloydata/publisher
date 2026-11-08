@@ -22,7 +22,6 @@ import { BadRequestError, ModelNotFoundError } from "../errors";
 import { logger } from "../logger";
 import { QuerySlots } from "../query_concurrency";
 import type { AccessRecord } from "../service/access_record";
-import type { EnvironmentStore } from "../service/environment_store";
 import type { Model } from "../service/model";
 import { positionalQueryArgs } from "../test_helpers/positional_query_args";
 import { withSettings } from "../test_helpers/settings_env";
@@ -36,6 +35,8 @@ import {
    QueryUseCase,
    REST_QUERY_OPTIONS,
 } from "./query";
+import { fakeOf } from "../test_helpers/store_fakes";
+import type { PackageLookup } from "../service/environment_ports";
 
 let temp: LoadedTempPackage;
 let model: Model;
@@ -84,9 +85,9 @@ function useCaseOver(version?: string) {
          throw new Error("no such connection");
       },
    };
-   const store = {
+   const store = fakeOf<PackageLookup>({
       getEnvironment: async () => environment,
-   } as unknown as EnvironmentStore;
+   });
    return new QueryUseCase(store, slots);
 }
 

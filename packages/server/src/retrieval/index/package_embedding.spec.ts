@@ -14,9 +14,13 @@ import {
    _clearEmbeddingProviderForTests,
    _setEmbeddingProviderForTests,
 } from "../../service/embedding_provider";
-import type { EnvironmentStore } from "../../service/environment_store";
 import { withSettings } from "../../test_helpers/settings_env";
 import { getPackageEmbeddingStatus } from "./package_embedding";
+import { fakeOf } from "../../test_helpers/store_fakes";
+import type {
+   EnvironmentPeek,
+   PackageLookup,
+} from "../../service/environment_ports";
 
 afterEach(() => {
    _setEmbeddingProviderForTests(null);
@@ -59,10 +63,10 @@ function storeHolding(name: string) {
       peekPackage: () => pkg,
       getStaleCompileErrors: () => new Map(),
    };
-   return {
+   return fakeOf<PackageLookup & EnvironmentPeek>({
       getEnvironment: async () => environment,
       peekEnvironment: () => environment,
-   } as unknown as EnvironmentStore;
+   });
 }
 
 describe("getPackageEmbeddingStatus", () => {

@@ -52,6 +52,7 @@ import { storageBindingResolverFor } from "./versions/materialization_scope";
 import type { PackageMemoryGovernor } from "./package_memory_governor";
 import { SERVER_VERSION } from "../version";
 import type {
+   ConnectionAdmin,
    EnvironmentAdmin,
    EnvironmentPeek,
    LoadedEnvironmentsReader,
@@ -233,6 +234,7 @@ export class EnvironmentStore
       EnvironmentAdmin,
       EnvironmentPeek,
       PackageAdmin,
+      ConnectionAdmin,
       McpExposureReader,
       LoadedEnvironmentsReader,
       StatusReader

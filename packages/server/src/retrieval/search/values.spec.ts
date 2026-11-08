@@ -18,7 +18,6 @@ import * as os from "os";
 import * as path from "path";
 import { AccessDeniedError } from "../../errors";
 import { parseRetrievalConfig } from "../config";
-import type { EnvironmentStore } from "../../service/environment_store";
 import { Model } from "../../service/model";
 import { defaultIndexValueFetcher } from "../index/values_index";
 import { defaultValueFetcher } from "./values";
@@ -30,6 +29,8 @@ import {
    normalizeText,
    scoreValue,
 } from "./value_match";
+import { fakeOf } from "../../test_helpers/store_fakes";
+import type { PackageLookup } from "../../service/environment_ports";
 
 // ---------------------------------------------------------------------------
 // 1. The matcher
@@ -155,7 +156,7 @@ source: tenant_segments is seg_data extend {
 describe("the lookup query over a real model (gates are the query path's)", () => {
    let dir: string;
    let duckdb: DuckDBConnection;
-   let store: EnvironmentStore;
+   let store: PackageLookup;
 
    beforeAll(async () => {
       dir = fs.mkdtempSync(path.join(os.tmpdir(), "values-real-"));
@@ -175,13 +176,13 @@ describe("the lookup query over a real model (gates are the query path's)", () =
          getModel: (p: string) => (p === "m.malloy" ? model : undefined),
          getVersionId: () => undefined,
       };
-      store = {
+      store = fakeOf<PackageLookup>({
          getEnvironment: async () => ({
             assertCanAdmitQuery: () => undefined,
             getPackage: async () => pkg,
             getStaleCompileErrors: () => new Map(),
          }),
-      } as unknown as EnvironmentStore;
+      });
    });
 
    afterAll(async () => {
@@ -304,7 +305,7 @@ describe("the model resolver a lookup reads through", () => {
       try {
          await expect(
             defaultValueFetcher({
-               environmentStore: {} as EnvironmentStore,
+               environmentStore: {} as PackageLookup,
                environmentName: "env",
                packageName: "pkg",
                modelPath: "m.malloy",

@@ -6,7 +6,6 @@ import type * as Malloy from "@malloydata/malloy-interfaces";
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
 import sinon from "sinon";
 import { BadRequestError, ModelNotFoundError } from "../errors";
-import type { EnvironmentStore } from "../service/environment_store";
 import {
    loadTempPackage,
    type LoadedTempPackage,
@@ -15,6 +14,8 @@ import { runQueryPositional } from "../test_helpers/positional_query_args";
 import { QueryUseCase } from "../usecases/query";
 import { QuerySlots } from "../query_concurrency";
 import { QueryController, type QueryRequest } from "./query.controller";
+import { fakeOf } from "../test_helpers/store_fakes";
+import type { PackageLookup } from "../service/environment_ports";
 
 /**
  * Real Malloy results, so the render-tag validator reads what a model really
@@ -88,7 +89,7 @@ function controllerWith({
          throw new Error("no such connection");
       },
    });
-   const store = { getEnvironment } as unknown as EnvironmentStore;
+   const store = fakeOf<PackageLookup>({ getEnvironment });
    return {
       controller: new QueryController(
          new QueryUseCase(store, new QuerySlots()),
