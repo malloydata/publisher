@@ -336,7 +336,7 @@ const JOIN_BYPASS_NOTE =
    "otherwise apply the fix above.";
 
 export class Package {
-   private environmentName: string;
+   private readonly environmentName: string;
    private packageName: string;
    private packageMetadata: ApiPackage;
    private databases: ApiDatabase[];
@@ -4017,10 +4017,6 @@ export class Package {
 
    public setName(name: string) {
       this.packageName = name;
-   }
-
-   public setEnvironmentName(environmentName: string) {
-      this.environmentName = environmentName;
    }
 
    /**
