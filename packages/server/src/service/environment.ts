@@ -3627,9 +3627,23 @@ export class Environment {
                );
                this.transition(packageName, { type: "unregister" });
             } else {
+               // Registered but never loaded (configured at boot, not yet
+               // listed): it goes as a loaded one does, registration and
+               // folder, or the next listing loads and serves it again. One
+               // whose load failed is already unregistered, and keeps its
+               // folder as before.
+               let retiredPath: string | null = null;
+               if (this.lifecycle.phaseOf(packageName) === "configured") {
+                  retiredPath = await this.retirePackageDirectory(packageName);
+                  this.transition(packageName, { type: "unregister" });
+                  await fs.promises
+                     .rm(this.installRecordPath(packageName), { force: true })
+                     .catch(() => {});
+               }
                // Not loaded, and no versions: its rows go under the lock too,
                // so a first versioned publish cannot land between.
                await options.removeRecords?.();
+               if (retiredPath) this.removeRetiredInBackground(retiredPath);
             }
             return;
          }
@@ -3653,29 +3667,7 @@ export class Environment {
             _package.getMalloyConfig().shutdown("close"),
          );
 
-         // Rename aside under the lock; the slow recursive remove is deferred.
-         const canonicalPath = safeJoinUnderRoot(
-            this.environmentPath,
-            packageName,
-         );
-         const retiredPath = this.allocateRetiredPath(packageName);
-         let renamed = false;
-         try {
-            await fs.promises.mkdir(path.dirname(retiredPath), {
-               recursive: true,
-            });
-            await fs.promises.rename(canonicalPath, retiredPath);
-            renamed = true;
-         } catch (err) {
-            logger.error(
-               "Error renaming package directory to retired during unload",
-               {
-                  error: err,
-                  environmentName: this.environmentName,
-                  packageName,
-               },
-            );
-         }
+         const retiredPath = await this.retirePackageDirectory(packageName);
 
          this.packages.delete(packageName);
          this.transition(packageName, { type: "unregister" });
@@ -3686,18 +3678,7 @@ export class Environment {
          // waited for it must find the package gone, rows and all.
          await options.removeRecords?.();
 
-         if (renamed) {
-            setImmediate(() => {
-               void fs.promises
-                  .rm(retiredPath, { recursive: true, force: true })
-                  .catch((err) => {
-                     logger.warn(
-                        `Failed to clean up retired package directory ${retiredPath}`,
-                        { error: err },
-                     );
-                  });
-            });
-         }
+         if (retiredPath) this.removeRetiredInBackground(retiredPath);
       });
       // The delete is committed; cleaning up must not turn it into a failure.
       for (const versionId of deletedVersions) {
@@ -3712,6 +3693,54 @@ export class Environment {
             });
          }
       }
+   }
+
+   /**
+    * Rename a deleted package's directory aside, under the caller's lock, so
+    * the slow recursive remove can be deferred. Null when there was nothing
+    * to rename (a configured package whose location never mounted) or the
+    * rename failed.
+    */
+   private async retirePackageDirectory(
+      packageName: string,
+   ): Promise<string | null> {
+      const canonicalPath = safeJoinUnderRoot(
+         this.environmentPath,
+         packageName,
+      );
+      const retiredPath = this.allocateRetiredPath(packageName);
+      try {
+         await fs.promises.mkdir(path.dirname(retiredPath), {
+            recursive: true,
+         });
+         await fs.promises.rename(canonicalPath, retiredPath);
+         return retiredPath;
+      } catch (err) {
+         if ((err as NodeJS.ErrnoException).code !== "ENOENT") {
+            logger.error(
+               "Error renaming package directory to retired during unload",
+               {
+                  error: err,
+                  environmentName: this.environmentName,
+                  packageName,
+               },
+            );
+         }
+         return null;
+      }
+   }
+
+   private removeRetiredInBackground(retiredPath: string): void {
+      setImmediate(() => {
+         void fs.promises
+            .rm(retiredPath, { recursive: true, force: true })
+            .catch((err) => {
+               logger.warn(
+                  `Failed to clean up retired package directory ${retiredPath}`,
+                  { error: err },
+               );
+            });
+      });
    }
 
    /**
