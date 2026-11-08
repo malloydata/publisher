@@ -13,7 +13,7 @@ import {
    _clearEmbeddingProviderForTests,
    embeddingConfigured,
    getEmbeddingProvider,
-} from "../service/embedding_provider";
+} from "./llm/embedding_provider";
 import { installSettings, withSettings } from "../test_helpers/settings_env";
 
 describe("retrieval.llm validation", () => {

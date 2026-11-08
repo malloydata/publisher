@@ -10,7 +10,7 @@ import * as path from "path";
  * defined in eslint.config.mjs) two ways:
  *
  *  1. Fixtures: deliberately violating (and deliberately allowed) imports,
- *     linted as if they lived at a path under src/, prove each of R1-R3
+ *     linted as if they lived at a path under src/, prove each of R1-R4
  *     fires, and that type-only, non-relative and look-alike imports do not.
  *  2. The allowlist is exact: linting the real tree with an EMPTY allowlist
  *     reports precisely the pairs IMPORT_DIRECTION_ALLOWLIST names. A new
@@ -217,6 +217,61 @@ describe("import-direction rule: fixtures", () => {
             "service/governance/x.ts",
             `import { y } from "../model_policy";`,
          ),
+      ).toEqual([]);
+   });
+
+   it("R4: the domain may not import the retrieval module, by value or by type", () => {
+      expect(
+         ruleIds(
+            lint(
+               "service/package.ts",
+               `import { a } from "../retrieval/llm/active";`,
+            ),
+         ),
+      ).toEqual(["R4"]);
+      expect(
+         ruleIds(
+            lint(
+               "service/entities/x.ts",
+               `import type { T } from "../../retrieval/model/types";`,
+            ),
+         ),
+      ).toEqual(["R4"]);
+      expect(
+         ruleIds(lint("service/x.ts", `export * from "../retrieval";`)),
+      ).toEqual(["R4"]);
+      expect(
+         ruleIds(
+            lint(
+               "service/x.ts",
+               `export type T = import("../retrieval/config").RetrievalConfig;`,
+            ),
+         ),
+      ).toEqual(["R4"]);
+      expect(
+         ruleIds(
+            lint(
+               "service/x.ts",
+               `export async function f() { return import("../retrieval/registry"); }`,
+            ),
+         ),
+      ).toEqual(["R4"]);
+      // The other direction is the intended one.
+      expect(
+         lint(
+            "retrieval/index/x.ts",
+            `import { s } from "../../service/package_retrieval_settings";`,
+         ),
+      ).toEqual([]);
+      // Look-alikes and layers outside service/ are not R4's business.
+      expect(
+         lint(
+            "service/x.ts",
+            `import { r } from "./retrieval_local";\nimport { c } from "../retrieval_config";`,
+         ),
+      ).toEqual([]);
+      expect(
+         lint("package_load/x.ts", `import { r } from "../retrieval/config";`),
       ).toEqual([]);
    });
 

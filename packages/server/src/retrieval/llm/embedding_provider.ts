@@ -1,24 +1,25 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
-import { EmbeddingConfig, getEmbeddingSettings } from "../config";
-import { createEmbeddingModel } from "../retrieval/llm/registry";
-import { loadedRetrievalConfig } from "../retrieval/config";
-import { BatchEmbeddingModel } from "../retrieval/llm/embedding_http";
-import { openAiEmbedChunk } from "../retrieval/llm/openai_compatible";
+import { getEmbeddingSettings } from "../../config";
 import {
    DEFAULT_RETRY,
    HttpRequestError,
    RetryPolicy,
    withRetry,
-} from "./http_retry";
-import type { EmbeddingModel, FetchFn } from "../retrieval/llm/types";
+} from "../../service/http_retry";
+import { loadedRetrievalConfig } from "../config";
+import { createEmbeddingModel } from "./registry";
+import type { EmbeddingModel } from "./types";
 
 export {
    EMBEDDING_BATCH_TIMEOUT_MS,
    MAX_EMBED_INPUT_CHARS,
    prepareEmbeddingInput,
-} from "../retrieval/llm/embedding_http";
+} from "./embedding_http";
+// The OpenAI-compatible client lives in a leaf, so ./registry can build it
+// without importing this module (which imports ./registry).
+export { EmbeddingProvider, MAX_EMBED_BATCH_SIZE } from "./openai_embedding";
 
 /**
  * Timeout for the per-request query embedding. Shorter than the bulk timeout
@@ -26,8 +27,6 @@ export {
  * endpoint must degrade to lexical quickly.
  */
 export const EMBEDDING_QUERY_TIMEOUT_MS = 5_000;
-/** Inputs per HTTP request; large packages embed in several requests. */
-export const MAX_EMBED_BATCH_SIZE = 512;
 
 /** Embedding-named aliases of the shared ./http_retry machinery. */
 export const EmbeddingRequestError = HttpRequestError;
@@ -41,34 +40,6 @@ export function withEmbeddingRetry<T>(
    policy: RetryPolicy,
 ): Promise<T> {
    return withRetry(attempt, policy, "Embedding request");
-}
-
-/**
- * The OpenAI-compatible `/embeddings` client: {@link openAiEmbedChunk} under
- * the shared batching, retry and metrics of {@link BatchEmbeddingModel}.
- */
-export class EmbeddingProvider extends BatchEmbeddingModel {
-   constructor(config: EmbeddingConfig, fetchFn: FetchFn = fetch) {
-      super(
-         config.provider ?? "openai-compatible",
-         {
-            provider: config.provider ?? "openai-compatible",
-            model: config.model,
-            dimensions: config.dimensions,
-            minSimilarity: config.minSimilarity,
-            queryPrefix: config.queryPrefix ?? "",
-            documentPrefix: config.documentPrefix ?? "",
-         },
-         MAX_EMBED_BATCH_SIZE,
-         openAiEmbedChunk({
-            baseUrl: config.baseUrl,
-            apiKey: config.apiKey,
-            model: config.model,
-            dimensions: config.dimensions,
-            fetchFn,
-         }),
-      );
-   }
 }
 
 // Cached on a settings fingerprint, never on null, so a call after the env

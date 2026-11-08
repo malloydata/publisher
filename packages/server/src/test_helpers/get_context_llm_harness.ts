@@ -18,7 +18,7 @@ import type { ChatModel, LlmSettings } from "../retrieval/llm/types";
 import {
    EmbeddingProvider,
    _setEmbeddingProviderForTests,
-} from "../service/embedding_provider";
+} from "../retrieval/llm/embedding_provider";
 import type { Environment } from "../service/environment";
 import type { EnvironmentCatalog } from "../service/environment_ports";
 import { RetrievalService } from "../retrieval/service";

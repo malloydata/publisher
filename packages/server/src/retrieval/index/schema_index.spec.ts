@@ -3,7 +3,7 @@
 
 import { beforeEach, describe, expect, it } from "bun:test";
 import { sanitizeLunrQuery as sanitizeQuery } from "../shared";
-import type { EmbeddingProvider } from "../../service/embedding_provider";
+import type { EmbeddingProvider } from "../llm/embedding_provider";
 import { DEFAULT_EMBEDDING_MIN_SIMILARITY } from "../../config";
 import {
    MAX_COLUMNS_IN_INDEX_TEXT,

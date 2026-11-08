@@ -195,6 +195,10 @@ const LEGACY_MALLOYNB_IMPORT = {
 //       use-case instance it calls, it does not construct one. `import type`
 //       (or an import whose every specifier is `type`) is allowed.
 //   R3  service/governance/** never imports service/model.ts.
+//   R4  service/** never imports retrieval/** -- not even for a type. The
+//       domain loads packages; retrieval indexes them. What package loading
+//       reads from a package's `retrieval` manifest block lives in
+//       service/package_retrieval_settings.ts, which retrieval imports.
 //
 // A local rule rather than `no-restricted-imports`: the core rule matches the
 // specifier text, so `../mcp/x` and `../../mcp/x` need a pattern per directory
@@ -235,6 +239,14 @@ const IMPORT_DIRECTION_RULES = [
       to: (m) => m === "service/model",
       allowTypeImports: false,
       message: "governance/** must not depend on service/model.ts",
+   },
+   {
+      id: "R4",
+      from: (f) => /^service\//.test(f),
+      to: (m) => /^retrieval(\/|$)/.test(m),
+      allowTypeImports: false,
+      message:
+         "the domain (service/**) must not depend on the retrieval module (retrieval/**); retrieval depends on the domain",
    },
 ];
 export const IMPORT_DIRECTION_ALLOWLIST = {};

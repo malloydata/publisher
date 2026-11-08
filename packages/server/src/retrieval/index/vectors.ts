@@ -27,7 +27,7 @@ import {
    DEFAULT_EMBEDDING_RETRY,
    EMBEDDING_BATCH_TIMEOUT_MS,
    prepareEmbeddingInput,
-} from "../../service/embedding_provider";
+} from "../llm/embedding_provider";
 import type { DuckDBConnection } from "../../storage/duckdb/DuckDBConnection";
 import { sha256 } from "../llm/llm_cache";
 

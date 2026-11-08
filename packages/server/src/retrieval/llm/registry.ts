@@ -1,7 +1,7 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
-import { EmbeddingProvider } from "../../service/embedding_provider";
+import { EmbeddingProvider } from "./openai_embedding";
 import { ANTHROPIC_BASE_URL, AnthropicChat } from "./anthropic";
 import { ChatModelImpl, type RawChat } from "./chat_model";
 import { BatchEmbeddingModel } from "./embedding_http";
