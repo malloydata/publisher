@@ -15,6 +15,7 @@ import { logger } from "../logger";
 import { modelInfoOf } from "./model_info";
 import { type NotebookCellKind } from "./notebook";
 import { collectSourceInfos } from "./source_extraction";
+import { assertNoSqlEmbedsOfGatedSources } from "./sql_embed_gates";
 
 /** Registry ids and declaration names of every given a cell's closure declares. */
 export interface CellDeclaredGivens {
@@ -154,6 +155,12 @@ export async function compileNotebookCells(
             ? runtime.loadModel(statement.text, { importBaseURL })
             : materializer.extendModel(statement.text, { importBaseURL });
       const modelDef = (await materializer.getModel())._modelDef;
+      // This cell's own `run:` statements: an author's `sql()` there must not
+      // read a gated source either (`sql_embed_gates.ts`). Its sources are
+      // checked with the notebook's final model.
+      assertNoSqlEmbedsOfGatedSources(modelDef, {
+         notebookCell: cells.length + 1,
+      });
       const newSources = collectSourceInfos(modelDef).filter(
          (source) => !surfaced.has(source.name),
       );
