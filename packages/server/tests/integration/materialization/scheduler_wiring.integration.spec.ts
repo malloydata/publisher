@@ -6,8 +6,8 @@
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
 import path from "path";
 import { fileURLToPath } from "url";
-import type { MaterializationScheduler } from "../../../src/service/materialization_scheduler";
-import { MaterializationService } from "../../../src/service/materialization_service";
+import type { MaterializationScheduler } from "../../../src/service/materialization/run/materialization_scheduler";
+import { MaterializationService } from "../../../src/service/materialization/run/materialization_service";
 import { startMaterializationSchedulerFromEnv } from "../../../src/main_server";
 import { bootMainServer } from "../../harness/main_server";
 import { withSettings } from "../../../src/test_helpers/settings_env";

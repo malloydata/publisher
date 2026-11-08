@@ -4,7 +4,7 @@
 import type { PersistSource } from "@malloydata/malloy";
 import { Materialization } from "../storage/DatabaseInterface";
 import { BuildInstruction, BuildPlan } from "../service/materialization/types";
-import { CompiledBuildPlan } from "../service/build_plan";
+import { CompiledBuildPlan } from "../service/materialization/plan/build_plan";
 
 /**
  * Shared fixtures for the materialization unit specs (service, controller,

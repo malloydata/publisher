@@ -49,13 +49,13 @@ import { getPersistStorageMode } from "../config";
 import {
    planModelPreaggregation,
    type RollupPlan,
-} from "./preaggregation_synthesis";
-import { tryCompileSynthesizedPreaggregation } from "./preaggregation_compile";
+} from "./materialization/plan/preaggregation_synthesis";
+import { tryCompileSynthesizedPreaggregation } from "./materialization/plan/preaggregation_compile";
 import {
    RollupCoverageError,
    rollupCoverageViolation,
    rollupMeasuresByMember,
-} from "./preaggregation_coverage";
+} from "./materialization/plan/preaggregation_coverage";
 import { type RenderTagTarget, renderTagTargets } from "./render_tag_targets";
 import { modelInfoOf } from "./model_info";
 import { logger } from "../logger";
@@ -69,7 +69,7 @@ import { ceilingRefusal, modelDeclaresCarries } from "./classification";
 import {
    type ServeBinding,
    serveShapeDiagnostics,
-} from "./materialization_serve_transform";
+} from "./materialization/serve/materialization_serve_transform";
 import { deserializeError } from "../package_load/package_load_pool";
 import type { SerializedModel } from "../package_load/protocol";
 import { decodeSerializedModel } from "../package_load/protocol_decode";
@@ -82,7 +82,10 @@ import {
    ownModelNotes,
    type AnnotationNote,
 } from "./annotations";
-import { composeDeclaredQueryMetadata, type ReadableTag } from "./build_plan";
+import {
+   composeDeclaredQueryMetadata,
+   type ReadableTag,
+} from "./materialization/plan/build_plan";
 import {
    assertNoAuthorizeTagLike,
    assertNoCallerAuthorizeAnnotation,
@@ -176,7 +179,7 @@ import {
 import {
    validateModelPreaggregation,
    type PreaggregateViolation,
-} from "./preaggregation_validation";
+} from "./materialization/plan/preaggregation_validation";
 import {
    preparedQueryView,
    readPreparedQuery,
@@ -250,7 +253,7 @@ import {
    runStatementCount,
 } from "./model_query_compile";
 import { runReadsPublished, scrubHiddenIds } from "./model_projection";
-import { StorageServeShape } from "./model_serve_shape";
+import { StorageServeShape } from "./materialization/serve/model_serve_shape";
 
 export type { ModelConnectionInput, ModelType } from "./model_runtime";
 export type {

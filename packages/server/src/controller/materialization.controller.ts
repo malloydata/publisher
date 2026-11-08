@@ -9,7 +9,7 @@ import {
    LedgerEntry,
    ManifestReference,
 } from "../service/materialization/types";
-import { MaterializationService } from "../service/materialization_service";
+import { MaterializationService } from "../service/materialization/run/materialization_service";
 import { queryMetadataViolations } from "../service/query_metadata";
 
 type RunContext = components["schemas"]["RunContext"];

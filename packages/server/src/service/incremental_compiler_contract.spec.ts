@@ -29,8 +29,11 @@ import {
    TrinoDialect,
 } from "@malloydata/malloy";
 import { beforeAll, describe, expect, it } from "bun:test";
-import { deriveAnnotationFields, deriveColumns } from "./build_plan";
-import { renderSqlBound } from "./incremental_apply";
+import {
+   deriveAnnotationFields,
+   deriveColumns,
+} from "./materialization/plan/build_plan";
+import { renderSqlBound } from "./materialization/run/incremental_apply";
 import {
    compilePersistSources,
    duckdbTestConnections,

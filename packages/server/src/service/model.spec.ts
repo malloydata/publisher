@@ -22,7 +22,7 @@ import {
    type MetricsHarness,
 } from "../test_helpers/metrics_harness";
 import { Model, ModelType } from "./model";
-import { StorageServeShape } from "./model_serve_shape";
+import { StorageServeShape } from "./materialization/serve/model_serve_shape";
 import { installSettings } from "../test_helpers/settings_env";
 
 /**

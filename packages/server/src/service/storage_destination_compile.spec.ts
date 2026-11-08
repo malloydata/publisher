@@ -52,7 +52,7 @@ import {
 } from "./connection";
 import { Environment } from "./environment";
 import { Model } from "./model";
-import { StorageServeShape } from "./model_serve_shape";
+import { StorageServeShape } from "./materialization/serve/model_serve_shape";
 import { Package } from "./package";
 import {
    writeTempPackage,

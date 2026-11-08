@@ -81,7 +81,7 @@ import {
    tryCompileSynthesizedPreaggregation,
    type SynthesizedPreaggregation,
    type SynthesizedRuntimeFactory,
-} from "../service/preaggregation_compile";
+} from "../service/materialization/plan/preaggregation_compile";
 import { type InFlightAnswer, SchemaCache } from "./schema_cache";
 import { plainLogEntry } from "./worker_log";
 import { renderTagTargets } from "../service/render_tag_targets";
@@ -94,7 +94,7 @@ import {
    resolvePackageConnections,
    type BuildPlanParts,
    type WirePackageMaterialization,
-} from "../service/build_plan";
+} from "../service/materialization/plan/build_plan";
 import type {
    ConnectionMetadata,
    ConnectionMetadataRequest,
