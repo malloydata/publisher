@@ -5,11 +5,11 @@ SPDX-License-Identifier: MIT
 
 # Publisher v1: the first major release
 
-**Status: plan of record, proposed.** Publisher v1 is the first major release, version 1.0.0. It ships a new API at `/api/v1`, rebuilds the storage underneath it, moves every client we own to the new API, and removes `/api/v0` and every deprecated feature. The work lands over a series of 0.x releases and finishes with the 1.0.0 release, after a 90-day window announced in advance. This document is the plan, consolidated from six issues and one merged design: [#1562](https://github.com/malloydata/publisher/issues/1562) (the API review and the decisions behind the new API), [#1560](https://github.com/malloydata/publisher/issues/1560) (the storage redesign) [#1540](https://github.com/malloydata/publisher/issues/1540) (shipping the new API, moving every client, and retiring v0 and every deprecated feature) [#1539](https://github.com/malloydata/publisher/issues/1539) (which reads may load a package), [#1538](https://github.com/malloydata/publisher/issues/1538) (one implementation for queryability and gates) [ms2data/service#7479](https://github.com/ms2data/service/issues/7479) (the Publisher half of cutting load time for draft checkpoints), and the configuration design ([#1474](https://github.com/malloydata/publisher/pull/1474)), whose text is [Appendix F](#appendix-f-the-configuration-registry-and-mapping) and whose remaining steps are sequenced here. The three issues are closed; everything they held is here, and they remain as history. Tracking happens against this document's steps. The new API's spec is [`api-doc.v1.yaml`](../api-doc.v1.yaml), drafted in [#1563](https://github.com/malloydata/publisher/pull/1563); its reference is [api-overview.md](api-overview.md).
+**Status: plan of record, proposed.** Publisher v1 is the first major release, version 1.0.0. It ships a new API at `/api/v1`, rebuilds the storage underneath it, moves every client we own to the new API, and removes `/api/v0` and every deprecated feature. The work lands over a series of 0.x releases and finishes with the 1.0.0 release, after a 90-day window announced in advance. This document is the plan, consolidated from six issues and one merged design: [#1562](https://github.com/malloydata/publisher/issues/1562) (the API review and the decisions behind the new API), [#1560](https://github.com/malloydata/publisher/issues/1560) (the storage redesign) [#1540](https://github.com/malloydata/publisher/issues/1540) (shipping the new API, moving every client, and retiring v0 and every deprecated feature) [#1539](https://github.com/malloydata/publisher/issues/1539) (which reads may load a package), [#1538](https://github.com/malloydata/publisher/issues/1538) (one implementation for queryability and gates) [ms2data/service#7479](https://github.com/ms2data/service/issues/7479) (the Publisher half of cutting load time for draft checkpoints), and the configuration design ([#1474](https://github.com/malloydata/publisher/pull/1474)), whose text is [Appendix C](#appendix-c-the-configuration-registry-and-mapping) and whose remaining steps are sequenced here. The three issues are closed; everything they held is here, and they remain as history. Tracking happens against this document's steps. The new API's spec is [`api-doc.v1.yaml`](../api-doc.v1.yaml), drafted in [#1563](https://github.com/malloydata/publisher/pull/1563); its reference is [api-overview.md](api-overview.md).
 
-"Today" means `fix/server-bugs` at `ccd659a64` (2026-11-08). Every claim about today in the storage sections carries a `path:line` under `packages/server/src/`, collected in [Appendix A](#appendix-a-evidence); the API review's findings, with their evidence, are [Appendix C](#appendix-c-the-api-reviews-findings), and the route-by-consumer usage matrix is [Appendix D](#appendix-d-the-usage-matrix).
+"Today" means `fix/server-bugs` at `ccd659a64` (2026-11-08). Every claim about today in the storage sections carries a `path:line` under `packages/server/src/`, collected in [Appendix D](#appendix-d-storage-evidence); the API review's findings, with their evidence, are [Appendix A](#appendix-a-the-api-reviews-findings), and the route-by-consumer usage matrix is [Appendix B](#appendix-b-the-usage-matrix).
 
-**How to read it.** [The goal](#1-the-goal) says what v1 is for and what 1.0 promises. [Today](#2-today) says what exists and where it falls short. [The target](#3-the-target) is the design: one resource model, the API over it, the storage under it, and the configuration the process starts from. [The order of work](#4-the-order-of-work) is the single sequence everything is built in, with each step's scope and acceptance; it is the part to come back to. [What the 1.0.0 release removes](#5-what-10-removes) is the inventory of everything deprecated. [Decisions](#6-decisions) and [Open questions](#7-open-questions) are the record.
+**How to read it.** [The goal](#1-the-goal) says what v1 is for and what 1.0 promises. [Today](#2-today) says what exists and where it falls short. [The target](#3-the-target) is the design, surface by surface: one resource model, then the API, the package, the configuration and the storage. [The order of work](#4-the-order-of-work) is the single sequence everything is built in, with each step's scope and acceptance; it is the part to come back to. [What 1.0 removes](#5-what-10-removes) is the inventory of everything deprecated, by surface. [Decisions](#6-decisions) and [Open questions](#7-open-questions) are the record.
 
 ## 1. The goal
 
@@ -29,7 +29,7 @@ v1 is the release that settles all four and promises them. Each surface is held 
 2. **A deprecated form is a warning with its rewrite, then a refusal with its rewrite, then gone.** Every deprecated key and annotation is counted before it goes, and the migration guide maps each old form to its new one.
 3. **An invalid form fails loudly, at publish.** A malformed annotation, a name that resolves to nothing, or a tag on the wrong kind of field refuses the publish with a coded message; nothing loads clean with part of its meaning silently dropped, and nothing that would fail open is ever accepted.
 
-**The configuration** ([Appendix F](#appendix-f-the-configuration-registry-and-mapping)) is held to three:
+**The configuration** ([Appendix C](#appendix-c-the-configuration-registry-and-mapping)) is held to three:
 
 1. **One registry.** Every setting is declared once, with one key, one type, one default and one description, and `--help` and the configuration reference are generated from it.
 2. **Three sources, one precedence.** Any setting can be given in the file, as `PUBLISHER_<KEY>` or as `--<key>`, with the variable and flag derived from the key; a flag wins over a variable, which wins over the file.
@@ -50,7 +50,7 @@ From 1.0.0 on, every 1.x release keeps these contracts, and anything that breaks
 - **The API.** `/api/v1` changes additively: new optional fields, new routes, new enum members where clients are told to tolerate unknowns. Nothing is removed or retyped. The MCP tools' arguments and results follow the same schemas.
 - **The package format.** Every `publisher.json` key and model annotation the 1.0 docs describe is read by every 1.x release. A key or annotation deprecated in 1.x warns, with its rewrite, for the rest of 1.x; its reader goes in 2.0.
 - **The store.** Every 1.x release opens a store a 1.0 release wrote, through recorded migrations, and a 1.x release opens the store the next 1.x release wrote until a migration says otherwise. Rollback is running the previous release.
-- **Configuration.** Every setting's key, derived variable and derived flag are the names ([Appendix F](#appendix-f-the-configuration-registry-and-mapping)), and `publisher.config.json` holds settings only; resources are created through the API and an init script, never read from the file. Today's variable and flag names are aliases that warn through 0.x and are removed in 1.0.0.
+- **Configuration.** Every setting's key, derived variable and derived flag are the names ([Appendix C](#appendix-c-the-configuration-registry-and-mapping)), and `publisher.config.json` holds settings only; resources are created through the API and an init script, never read from the file. Today's variable and flag names are aliases that warn through 0.x and are removed in 1.0.0.
 
 The 0.x releases before 1.0.0 are where the contracts are built; they carry the usual release notes and may still change what they ship.
 
@@ -62,15 +62,55 @@ A note on names. "v1" below means Publisher v1, the program and the 1.0 release;
 
 ### 2.1 The API
 
-The REST API at `/api/v0` has 57 paths, 76 operations and 132 schemas (`api-doc.yaml`), plus 42 legacy `/projects` aliases in no spec (`server-old.ts`), a 13-route admin API on its own port (`admin-api-doc.yaml`) and ten MCP tools. Of the 76 operations, the CLI calls 27, the Console 38, the skills and `docs/ai-agents.md` 24 (ten of them used by nothing else), Credible's control plane 17 and its router 34 as customer passthrough; **21 have no first-party caller**, and six of those exist only for Credible. The CLI's generated client is stale and the Python client is a stub. The full route-by-consumer matrix is [Appendix D](#appendix-d-the-usage-matrix).
+The REST API at `/api/v0` has 57 paths, 76 operations and 132 schemas (`api-doc.yaml`), plus 42 legacy `/projects` aliases in no spec (`server-old.ts`), a 13-route admin API on its own port (`admin-api-doc.yaml`) and ten MCP tools. Of the 76 operations, the CLI calls 27, the Console 38, the skills and `docs/ai-agents.md` 24 (ten of them used by nothing else), Credible's control plane 17 and its router 34 as customer passthrough; **21 have no first-party caller**, and six of those exist only for Credible. The CLI's generated client is stale and the Python client is a stub. The full route-by-consumer matrix is [Appendix B](#appendix-b-the-usage-matrix).
 
-Measured against the three expectations, the findings group as follows (the tables with line references are [Appendix C](#appendix-c-the-api-reviews-findings)):
+Measured against the three expectations, the findings group as follows (the tables with line references are [Appendix A](#appendix-a-the-api-reviews-findings)):
 
 - **Consistency.** Three casings coexist in paths and parameters (`build-plan` beside `sqlSource` and `storageDestinations`; `filter_params` beside `versionId`), and again on MCP. Path parameters name a file four ways. GETs change state (`?reload=true`, the notebook cell runner). `PATCH` means four different things on four resources. Create answers 200 or 201 by route; connection writes return anonymous objects; `QueryResult.result` is a JSON string whose shape a flag toggles; only one list pages; nothing carries an `ETag`; `reason` is an open string documented centrally; the deprecated report routes set no `Deprecation` header.
 - **The domain model.** Package status lives in four places, including 14 inline `Package` fields behind a flag. `Package` echoes the version's fields under different names. Reports exist as three schema sets. Five things are "a database". A persisted table has three names across four lifecycle schemas, with `sourceEntityId` the only stable identity. The run exposes the store's row id as `environmentId` and a `metadata` blob the server queries by JSON path. Givens and filters, schedule, "manifest", "artifact", "index" and "stale" each mean two things. Skill, classification, embedding index and watch mode have no Console label.
 - **Surface against need.** Package `PATCH` is deprecated and #1552 removes it, yet it is the Console's and the CLI's only way to edit a package's description, schedule and scope. The notebooks route is the only runner for `.malloynb` cells. The Console composes N+1 reads for a source catalog, polls for build completion, re-parses JSON strings and detects server versions by 404. Credible's control plane tolerates extra response fields but breaks on enum additions, new required fields or type narrowing, parses the `resource` path positionally, gates one feature on a semver check, and proxies most reads to customers, so their shapes are customer-facing for Credible.
 
-### 2.2 The storage
+### 2.2 The package
+
+A package is a directory with a `publisher.json` manifest and Malloy models whose annotations declare reports, access gates, runtime parameters, classification, indexing and persistence. Both the manifest and the annotations grew by addition, and both carry forms that are read but no longer the documented one.
+
+- **Two homes for one key.** `scope` is read from the manifest root and from `materialization.scope`, `queryMetadata` from the root and from `materialization.queryMetadata`, and the server writes both homes on every package `PATCH` so an older Publisher still finds one. `manifestLocation`, a server-side binding, lives inside the author's `publisher.json` because `PATCH` writes it there.
+- **Keys with a replacement that still work.** `explores` and `queryableSources` are superseded by a root `index.malloy`; the retired `retrieval` keys (`engine`, `representation`, `keyphrases`, `refine`, `rerank`, `sourceMatch` and their prompts) are accepted, ignored and named in the package's warnings.
+- **Annotations with a replacement that still work.** `#(filter)` for `given:`, the model-level `##(filters)`, `#(index_values …)` for `#(index)`, the query-level `# artifact` for a model-level `## artifact { layout=grid }`, `dashboard_columns=` in the artifact tag, a `"` note below the tag, `#(description=…)` on a given, `## materialization.queryMetadata.*`, and the `.malloynb` notebook format for `.malloy` with `## artifact { layout=linear }`. Two are counted (`filter_annotation`, `malloynb`); the rest warn nowhere.
+- **Invalid annotations that load anyway.** A malformed `#(filter)` drops every filter on its source, required ones included, with no log line; a block-form `#|(filter)` is ignored without a word; a render tag malformed for its field, an `## artifact` that does not parse (the file silently stops being a report), a tile that does not resolve, a `#@ persist` key misspelled so merge becomes range-replace, a `#@ persist` tag that fails to parse, a given control that does not parse: each is a warning, a log line, or nothing, and the package loads. Malloy's own tag-parse warnings reach `POST …/compile` and are dropped at load.
+- **Guards that must stay.** Four refusals exist because Malloy still parses the form and the package would otherwise load clean with its access control missing: file-level `##(authorize)` and `##(access_filter)`, the string-form gates, `#(partition)`, and `#(authorize)` misplaced on a query or a field.
+
+The full inventory, with each form's replacement and what counts it today, is [section 5](#5-what-10-removes); the invalid forms and the plan for each are [track C](#track-c-invalid-annotations-that-warn-today-should-fail-loudly).
+
+### 2.3 The configuration
+
+Publisher reads its settings from three places, and which place a setting lives in follows no rule:
+
+- **`publisher.config.json`** began as the list of what to serve, and grew server-wide settings one at a
+  time: `frozenConfig`, `theme`, `mcp.includeHiddenFilesAndSources` and the `retrieval` block. With the
+  admin API, `servingApiEnabled` and `adminApiEnabled` arrive already following this design: each is a
+  key in the file, a derived variable and a derived flag, read with the precedence section 3.4 describes.
+- **Environment variables** carry everything else, about 60 of them, most added for container
+  deployments.
+- **Command-line flags** exist for about a dozen of those variables, the ones a local user reaches for:
+  ports, hosts, the server root, the config path, shutdown timing, watch mode and `--init`.
+
+Every string in the config file may reference a variable as `${VAR}`, which is how a file names a
+credential without holding it.
+
+#### What that costs
+
+| Problem | Example |
+|---|---|
+| The same kind of setting lives in different places | MCP's port and host are variables, but what MCP exposes (`mcp.includeHiddenFilesAndSources`) is in the file |
+| A setting can be given in two places with no general rule for which wins | the `retrieval.embedding` keys override the `EMBEDDING_*` variables; nothing else overlaps |
+| Booleans are read five ways | most variables accept `1/true/yes/on` and `0/false/no/off` and refuse anything else; `INITIALIZE_STORAGE`, `PUBLISHER_USE_BUNDLED_DEFAULT` and `PUBLISHER_ALLOW_PROXY_CONNECTIONS` are on only for exactly `true`; `DISABLE_RESPONSE_LOGGING` for `true` or `1`; `PUBLISHER_ALLOW_UNVERIFIED_SSH_HOST_KEY` reads an unrecognised value as off where it is used, because one reader runs inside ssh2's synchronous host-key callback, where a throw would escape; and `frozenConfig` is read with `Boolean()`, so `"frozenConfig": "false"` freezes the server |
+| A typo is silent | an unknown key in the file is ignored (only `retrieval.llm`, `retrieval.embedding` and `retrieval.egress` refuse one), so a misspelled `adminApiEnable` runs the API it meant to turn off; an unknown flag, and a flag given without its value, are ignored too |
+| A `${VAR}` cannot supply a number or a boolean | substitution always yields a string |
+| Names do not follow a pattern | about 20 Publisher settings lack the `PUBLISHER_` prefix (`MCP_PORT`, `SERVER_ROOT`, `LOG_LEVEL`, `EMBEDDING_MODEL`, …); flags mix `--mcp_port` with `--watch-env`; a flag and its variable can differ (`--watch-env` is `PUBLISHER_WATCH`, `--init` is `INITIALIZE_STORAGE`); two switches are negative (`--no-mcp-config`, `DISABLE_RESPONSE_LOGGING`) |
+| The reference drifts from the code | `--config` and `PERSIST_COLLISION_ENFORCE` are not in the configuration table |
+
+### 2.4 The storage
 
 #### One file, fifteen tables, one lock
 
@@ -124,7 +164,7 @@ No schema version is recorded. DDL is `CREATE TABLE IF NOT EXISTS`, then a colum
 
 - **`fix/server-bugs`**: interrupted runs settled at open; colocated swap renames aside; connection rows pruned on environment PATCH; `frozenConfig` enforced from the first store; a never-loaded configured package can be deleted; the interim 409 on report writes and content PATCH for location-installed packages.
 - **#1552** (draft): every package is a published version. Removes the in-place install with its stage-and-swap and rollback, `.install-records`, `addPackageToDatabase`, package PATCH, the `<pkg>___<version>` split and `PUBLISHER_PACKAGE_VERSIONING`. Configured packages are staged and published as versions. Watch mode becomes the one in-place path and the only place a report write or a reload does anything; elsewhere a reload answers the version unchanged and a write answers 409 `PACKAGE_IS_VERSIONED`. B2 lifts that refusal.
-- **The configuration design** ([Appendix F](#appendix-f-the-configuration-registry-and-mapping)): one registry for the process's settings, one half of today's `publisher.config.json`. This design takes the other half (the `environments` block) out of the file; see [Settings and resources](#settings-and-resources).
+- **The configuration design** ([Appendix C](#appendix-c-the-configuration-registry-and-mapping)): one registry for the process's settings, one half of today's `publisher.config.json`. This design takes the other half (the `environments` block) out of the file; see [Settings and resources](#settings-and-resources).
 - **Credible's M0a numbers** (service #5514, 2,506 loads): mean load 3.4 s, of which schema fetch 55% and compile 19%; p95 19.9 s. A persisted compiled model skips both, because the schema is baked into the `ModelDef`. Credible's workers have no disk today, so nothing a worker persists survives a pod restart until the service work under [Deployments](#deployments).
 
 ## 3. The target
@@ -199,7 +239,29 @@ Every content read is of exactly one version, named in the path. A publish, a re
 
 **Two things v1 carries that the spec draft had to settle.** A live (watched) package has no stored versions, so it exposes one reserved pseudo-version, `live`, which `latest` resolves to; it is accepted by every content route, never listed, and refuses `PATCH` and `DELETE` with 409 `PACKAGE_IS_LIVE`. And v0's `GET /status` keeps its own shape and gains only additive fields (`hostname`, the warm-start telemetry): the v1 shape nests versions under packages and drops the per-version `resource` string Credible's control plane parses by position, so it is not a superset, and this is the one exception to the v0 freeze.
 
-### 3.3 The storage
+### 3.3 The package
+
+The package format is the author's surface and the one the server never writes. v1 settles it to one documented form per thing an author can say, read the same way by every 1.x release.
+
+**The manifest, `publisher.json`.** One home per key: `version` (a semantic version; every package is a published version), `description`, `materialization` (`scope`, and either `schedule` or `freshness`), root `queryMetadata`, `agents`, `retrieval`. Curation is a root `index.malloy`, which imports the files the package publishes and exports what they expose; `explores` and `queryableSources` are gone, with no like-for-like replacement for `queryableSources: "all"` (curation is `index.malloy`, access is `#(authorize)`). Server-owned state is never in the file: a version's manifest binding is a field of the version (`manifestLocation`, set with `PATCH`), a package's description set over the API lives on the package record, and nothing the server does rewrites `publisher.json` ([Settings and resources](#settings-and-resources), [Package content](#package-content)).
+
+**The annotations.** One spelling per family, each documented in its own reference: `## artifact { layout=grid|linear … }` makes a model a report, with `tiles=[…]`, `dashboard { columns=N }`, `# label`, `# drill` and the `##|(markdown)` blocks ([reports.md](reports.md)); `given:` declares a runtime parameter, `#(secure)` marks one a host sets ([givens.md](givens.md)); `#(authorize)` and `#(access_filter)` gate a source ([authorize.md](authorize.md), [row-level-access.md](row-level-access.md)); `#(classification)` and `#(carries)` say what a field is and what a source may expose ([classification.md](classification.md)); `#(index)` and `#(doc)` feed discovery ([discovery-and-access.md](discovery-and-access.md)); `#@ persist` and `#@ preaggregate` declare materialization ([materialization.md](materialization.md), [preaggregation.md](preaggregation.md)). Every deprecated spelling in [section 5](#5-what-10-removes) is removed in 1.0.0; `.malloynb` is not a document kind in v1.
+
+**The rules the format is held to.** A deprecated form warns with a stable `code` and its rewrite, is counted, and is listed in the migration guide; at 1.0.0 it is refused with the same rewrite for one release and its reader is deleted in 1.1. An invalid form (malformed, naming nothing, on the wrong kind of field) is refused at publish with a coded message through the `publish_checks.ts` pattern, and then at load once its counter reads zero; packages already published keep loading in between. Every finding a load reports is also reported by `POST …/compile` at `package` scope, so an author sees it before publishing. Nothing that would fail open is ever accepted: the four guards in [section 5](#kept-refused-permanently) are permanent, and a test asserts each survives. `malloy-pub migrate` rewrites a package's manifest and models where the rewrite is mechanical, so the 90-day window is spent on the forms that are not (`#(filter)` to `given:`).
+
+**How the format reaches the server.** A publish fetches a package's source and makes an immutable version of it; the only server-made changes to content are the versions the report write and a reload make, each a new version with the author's files untouched beneath an overlay. A live (watched) package is the exception: the author's directory is read in place and the report write writes through to it.
+
+### 3.4 The configuration
+
+The design merged as [#1474](https://github.com/malloydata/publisher/pull/1474) and is retired into this document: its full text, the registry rules and the setting-by-setting mapping, is [Appendix C](#appendix-c-the-configuration-registry-and-mapping). This is its shape and where it stands.
+
+- **One registry** declares every setting once: key, type, default, description, whether it is secret, and the deprecated names it still answers to. Parsing, validation, `--help`, the configuration reference and the startup log are generated from it; code reads a setting through one typed accessor, never from `process.env`, and a lint rule enforces that.
+- **Three sources, one precedence.** A setting may be given in the file by its key, as `PUBLISHER_<KEY>` in upper snake case, or as `--<key>` in kebab case; the variable and flag are derived, never chosen by hand. Precedence is flag, then variable, then file, then default, for every setting. Three exceptions, marked in the registry: structured settings (`theme`, `retrieval.llm`) are file-only as a whole though their scalar leaves still get a variable and a flag; launch settings (`root`, `config`, `initializeStorage`, `watchEnvironments`) cannot be in the file; secrets never take a flag and never log.
+- **One parser and validator.** Each type is read the same way from every source, `${VAR}` substitution included. A value that does not parse, an unknown key, an unknown flag, or an old and a new name given different values fails startup with one message naming the setting, the source and what was expected.
+- **Where it stands.** Step 1 of its migration (the registry, behaviour unchanged, the reference generated from it) is built. Step 2 (the derived names, today's names as aliases that warn and count) is in [#1481](https://github.com/malloydata/publisher/pull/1481) and [#1556](https://github.com/malloydata/publisher/pull/1556). Step 3 (strict: the step-1 warnings become refusals) and the removal of the aliases are sequenced below.
+- **Its boundary with this plan.** The design covers the process's settings, one half of today's `publisher.config.json`. The other half, the `environments` block, leaves the file under [Settings and resources](#settings-and-resources): resources are created through the API and `malloy-pub apply`. The two migrations ship together in step 5.
+
+### 3.5 The storage
 
 #### In one picture
 
@@ -478,7 +540,7 @@ Nothing was mutated, so `WriteRolledBackError` disappears. The write path's refu
 
 #### Settings and resources
 
-Today `publisher.config.json` mixes settings for the process (`frozenConfig`, `theme`, `mcp.*`, `retrieval.*`, the admin flags) with a declaration of resources (`environments`, each with `packages`, `connections`, `storageDestinations`). The settings half is [Appendix F](#appendix-f-the-configuration-registry-and-mapping)'s and stays in the file. The resources half leaves it.
+Today `publisher.config.json` mixes settings for the process (`frozenConfig`, `theme`, `mcp.*`, `retrieval.*`, the admin flags) with a declaration of resources (`environments`, each with `packages`, `connections`, `storageDestinations`). The settings half is [Appendix C](#appendix-c-the-configuration-registry-and-mapping)'s and stays in the file. The resources half leaves it.
 
 **Resources are created through the API, by whoever owns them.** The server reads no resource declaration at boot. The catalog is populated the way Credible's control plane already populates a worker: `POST /environments` (or `PUT` for an orchestrator's whole push), `POST …/connections`, `POST …/packages`, `PATCH …/packages/{packageName}` with `latestVersionId`, each idempotent (the same content again is a placement). Three drivers:
 
@@ -620,35 +682,25 @@ Three rules the table implies, each with a violation today: a catalog write and 
   With S2 in place the replica-local catalog, content store and derived store persist across a restart, and warm start makes the worker return as the same replica. After this phase, not in it: lazy placement and idle unload on the control-plane side (#5523), CP-HA (#6507), a publisher-side error state for a version that cannot load once warm start has no caller to hand the error to.
 - **Self-hosted HA** (not in scope to build): Postgres `Catalog`, object-store `ContentStore`, more than one process. Leases, conditional writes and the outbox are designed so that this needs a backend, not a redesign.
 
-### 3.4 The configuration
-
-The design merged as [#1474](https://github.com/malloydata/publisher/pull/1474) and is retired into this document: its full text, the registry rules and the setting-by-setting mapping, is [Appendix F](#appendix-f-the-configuration-registry-and-mapping). This is its shape and where it stands.
-
-- **One registry** declares every setting once: key, type, default, description, whether it is secret, and the deprecated names it still answers to. Parsing, validation, `--help`, the configuration reference and the startup log are generated from it; code reads a setting through one typed accessor, never from `process.env`, and a lint rule enforces that.
-- **Three sources, one precedence.** A setting may be given in the file by its key, as `PUBLISHER_<KEY>` in upper snake case, or as `--<key>` in kebab case; the variable and flag are derived, never chosen by hand. Precedence is flag, then variable, then file, then default, for every setting. Three exceptions, marked in the registry: structured settings (`theme`, `retrieval.llm`) are file-only as a whole though their scalar leaves still get a variable and a flag; launch settings (`root`, `config`, `initializeStorage`, `watchEnvironments`) cannot be in the file; secrets never take a flag and never log.
-- **One parser and validator.** Each type is read the same way from every source, `${VAR}` substitution included. A value that does not parse, an unknown key, an unknown flag, or an old and a new name given different values fails startup with one message naming the setting, the source and what was expected.
-- **Where it stands.** Step 1 of its migration (the registry, behaviour unchanged, the reference generated from it) is built. Step 2 (the derived names, today's names as aliases that warn and count) is in [#1481](https://github.com/malloydata/publisher/pull/1481) and [#1556](https://github.com/malloydata/publisher/pull/1556). Step 3 (strict: the step-1 warnings become refusals) and the removal of the aliases are sequenced below.
-- **Its boundary with this plan.** The design covers the process's settings, one half of today's `publisher.config.json`. The other half, the `environments` block, leaves the file under [Settings and resources](#settings-and-resources): resources are created through the API and `malloy-pub apply`. The two migrations ship together in step 5.
-
 ## 4. The order of work
 
-One sequence, numbered 1 to 8, with two tracks beside it. Steps 1 to 7 ship as 0.x releases; step 8 is the 1.0.0 release. The storage design's phases and the rollout's stages are folded into these steps; [Appendix B](#appendix-b-where-things-came-from) maps the old labels.
+One sequence, numbered 1 to 8, with two tracks beside it. Steps 1 to 7 ship as 0.x releases; step 8 is the 1.0.0 release. The storage design's phases and the rollout's stages are folded into these steps; [Appendix E](#appendix-e-where-things-came-from) maps the old labels.
 
-| Step | Work | Needs | Unblocks |
-|---|---|---|---|
-| **1** | #1552 merges (every package is a published version). Kyle lands the load harness, #1378, with a `perf:smoke` job in CI. | | everything |
-| **2** | Storage quick wins; the eight open durability bugs and the crash matrix; the silent `#(filter)` drop fix. | 1 | |
-| **3** | The catalog becomes the system of record: migration runner, storage-owned records, `revision`, the version columns, v0 mappers. | 1 | 4, B1, B2 |
-| **4** | v1, built over today's storage, served beside v0; the admin v1 spec; v0 frozen with `Deprecation` headers and counted; the migration guide. | 3 | 5, 6 |
-| **5** | Resources through the API: the config split and `malloy-pub apply`, `resources.readOnly`; the configuration design's step 2 (derived names, aliases that warn and count); unload and warm start. | 4 | Credible's S1 |
-| **6** | Everything we own moves to v1: Console and SDK, CLI, MCP tools with the skills, docs and scripts, generated clients. Every deprecated manifest key and annotation warns and is counted. Credible's dated plan to switch. | 4 | 7 |
-| **7** | Release R, the last 0.x minor before 1.0, announces the 1.0.0 date; the 90-day window. The configuration design's step 3 (strict validation) ships in a 0.x no later than R. | 5, 6, Credible's plan | 8 |
-| **8** | The 1.0.0 release, no earlier than R + 90 days: v0, every deprecated feature and every deprecated setting name removed, the 1.0 contracts in force. | 7 | |
-| **B1** | The materialization commit protocol: generational tables, manifest entries, bindings, leases, reclaim. | 3 | B3 |
-| **B2** | Content-addressed package storage: blobs, trees, overlays, server-made versions as versions, retention, the loaded-version LRU. | 3 | B3 |
-| **B3** | The derived store split out; the compiled-model store; bindings leave the compile; incremental recompile. | B1, B2 | B4 |
-| **B4** | One reconciler and GC service. | B1, B2 | |
-| **C** | Invalid annotations that warn today fail loudly. | | |
+| Step | Work | Surface | Needs | Unblocks |
+|---|---|---|---|---|
+| **1** | #1552 merges (every package is a published version). Kyle lands the load harness, #1378, with a `perf:smoke` job in CI. | storage, package | | everything |
+| **2** | Storage quick wins and load-time quick wins; the eight open durability bugs and the crash matrix; the silent `#(filter)` drop fix. | storage, package | 1 | |
+| **3** | The catalog becomes the system of record: migration runner, storage-owned records, `revision`, the version columns, v0 mappers. | storage | 1 | 4, B1, B2 |
+| **4** | `/api/v1`, built over today's storage, served beside v0; the admin v1 spec; v0 frozen with `Deprecation` headers and counted; the migration guide. | API | 3 | 5, 6 |
+| **5** | Resources through the API: the config split and `malloy-pub apply`, `resources.readOnly`; the configuration design's step 2 (derived names, aliases that warn and count); unload and warm start. | configuration, API | 4 | Credible's S1 |
+| **6** | Everything we own moves to `/api/v1`: Console and SDK, CLI, MCP tools with the skills, docs and scripts, generated clients. Every deprecated manifest key and annotation warns and is counted; `malloy-pub migrate`. Credible's dated plan to switch. | API, package | 4 | 7 |
+| **7** | Release R, the last 0.x minor before 1.0, announces the 1.0.0 date; the 90-day window. The configuration design's step 3 (strict validation) ships in a 0.x no later than R. | all | 5, 6, Credible's plan | 8 |
+| **8** | The 1.0.0 release, no earlier than R + 90 days: v0, every deprecated feature and every deprecated setting name removed, the 1.0 contracts in force. | all | 7 | |
+| **B1** | The materialization commit protocol: generational tables, manifest entries, bindings, leases, reclaim. | storage | 3 | B3 |
+| **B2** | Content-addressed package storage: blobs, trees, overlays, server-made versions as versions, retention, the loaded-version LRU. | storage | 3 | B3 |
+| **B3** | The derived store split out; the compiled-model store; bindings leave the compile; incremental recompile. | storage | B1, B2 | B4 |
+| **B4** | One reconciler and GC service. | storage | B1, B2 | |
+| **C** | Invalid annotations that warn today fail loudly. | package | | |
 
 **The critical path to the window** is 1 → 3 → 4 → 6 → 7: v1 waits only on step 3, because it is built over today's storage. Step 5 depends on v1 (`apply` uses `If-Match`) and is needed before R because Credible's warm-start work reads its fields. **Track B** is the rest of the storage design; it changes no route shape in either API, so it can land at any point after step 3, in a 0.x release or a 1.x release. Landing B1 and B2 before 1.0.0 means extending the v0 mappers to their records; landing them in 1.x spares that work at the cost of their benefits arriving later, and the 1.0 store promise then covers their migrations. **Track C** is independent and can start now, with its first item (the `#(filter)` fix) in step 2.
 
@@ -686,7 +738,7 @@ Acceptance: a package POST reads one row and loads one package (spec on the repo
 
 Acceptance: a connection write never reads or writes another resource (repository call log); the store from the previous release migrates in place with no row lost and a store too new is refused; the previous release still opens this release's store (downgrade test); `environments`, `connections`, `packages` rows carry no wire-shaped JSON; every v0 route answers as before over the new records (the existing contract and hammer suites, unchanged).
 
-### Step 4: ship v1
+### Step 4: ship `/api/v1`
 
 Built over today's storage through v1 mappers, once step 3 has landed. The v1 changes below name the storage each one needs; everything not marked arrives with step 4.
 
@@ -761,7 +813,7 @@ The first major release, which removes `/api/v0` and every deprecated feature: o
 
 ### Track B: the rest of the storage design
 
-Four steps that change no route shape in either API; each can land any time after step 3. Landing B1 and B2 before step 8 also extends the v0 mappers to their records.
+Four steps that change no route shape in either API; each can land any time after step 3. Landing B1 and B2 before 1.0.0 also extends the v0 mappers to their records.
 
 #### B1: the materialization commit protocol
 
@@ -906,7 +958,7 @@ Steps 4 and 6 add what is missing, so that every deprecated thing is counted bef
 
 The counters are the evidence for the community's progress, not a gate: the 1.0.0 release ships on the announced date. If a known host reports a blocker during the window, the date moves by release-notes announcement, never silently.
 
-### The v0 API and its code, deprecated fields, flags and schemas
+### The API
 
 One release, one **BREAKING** section in `RELEASE_NOTES.md`, the spec, clients and docs updated in the same PRs.
 
@@ -931,7 +983,8 @@ One release, one **BREAKING** section in `RELEASE_NOTES.md`, the spec, clients a
 - [ ] Every manifest key and annotation in the step 6 tables is refused at load, with its rewrite in the message.
 - [ ] In 1.1: their readers are deleted, the already-refused artifact-tag forms drop to plain parse errors, and the migration rows stay in the docs for reference.
 
-### Package manifest keys
+### The package
+#### Package manifest keys
 
 Each key below gets, in step 6: a load warning with a stable `code` and the rewrite, a usage label, and a row in the migration guide. At the 1.0.0 release each is refused at load for one release with the same rewrite, then its reader is deleted.
 
@@ -945,7 +998,7 @@ Each key below gets, in step 6: a load warning with a stable `code` and the rewr
 | `manifestLocation` | `PATCH …/versions/{versionId} {"manifestLocation": …}` in v1 | Written by package `PATCH`, read back at load (`package_load_worker.ts`) | Stops being written with `PATCH` (#1552); warn and count (`manifest_location`) when a package still carries it |
 | Retired `retrieval` keys: `retrieval.engine`, `representation`, `keyphrases`, `refine`, `rerank`, `sourceMatch`, and `retrieval.prompts.keyphrase`, `refine`, `rerank`, `sourceMatch` | Delete them | Accepted, ignored, named in `warnings` (`ignoredRetrievalWarnings`); every other unknown `retrieval` key already fails the load | Count them (`retrieval_ignored_keys`); at removal they fail the load like any other unknown key and leave `docs/configuration.md` |
 
-### Model annotations
+#### Model annotations
 
 Annotations live in users' model files, so each gets the same treatment: in step 6, a load warning with a stable `code` and the rewrite, a usage label, and a row in the migration guide; at the 1.0.0 release, a refusal at load with the rewrite for one release, then the reader is deleted.
 
@@ -975,7 +1028,7 @@ Annotations live in users' model files, so each gets the same treatment: in step
 - [ ] `docs/migration.md` (or a section of `docs/api-migration.md`) maps each old manifest key and annotation to its new form, linked from each warning's message.
 - [ ] A `malloy-pub migrate` command, or a skill, that rewrites a package's `publisher.json` and models mechanically where the rewrite is mechanical (`#(filter)` to `given:` is not; the rest mostly are), so the window is spent on the hard cases.
 
-### Kept refused permanently
+#### Kept refused permanently
 
 Malloy still parses each of these, and without the refusal the package would load clean with its access control missing. They are not deprecated features; they are guards, and the 1.0.0 release does not touch them.
 
@@ -988,15 +1041,15 @@ Malloy still parses each of these, and without the refusal the package would loa
 
 - [ ] A test asserts every one of these refusals survives, so the removal PR cannot take one out by accident.
 
-### Setting names
+### The configuration
 
-Every deprecated variable and flag name the registry lists as an alias (the mapping in [Appendix F](#appendix-f-the-configuration-registry-and-mapping): `MCP_PORT`, `SERVER_ROOT`, `LOG_LEVEL`, the `EMBEDDING_*` and `LLM_*` variables, `--mcp_port`, `--watch-env` for `PUBLISHER_WATCH`, `INITIALIZE_STORAGE`, `DISABLE_RESPONSE_LOGGING`, `--no-mcp-config`, and the rest), `frozenConfig` for `resources.readOnly`, and the `environments` block of `publisher.config.json`. From 1.0.0 a setting has exactly one key, one variable and one flag, and the release notes carry the mapping table once more.
+Every deprecated variable and flag name the registry lists as an alias (the mapping in [Appendix C](#appendix-c-the-configuration-registry-and-mapping): `MCP_PORT`, `SERVER_ROOT`, `LOG_LEVEL`, the `EMBEDDING_*` and `LLM_*` variables, `--mcp_port`, `--watch-env` for `PUBLISHER_WATCH`, `INITIALIZE_STORAGE`, `DISABLE_RESPONSE_LOGGING`, `--no-mcp-config`, and the rest), `frozenConfig` for `resources.readOnly`, and the `environments` block of `publisher.config.json`. From 1.0.0 a setting has exactly one key, one variable and one flag, and the release notes carry the mapping table once more.
 
 ## 6. Decisions
 
-The register, in five groups: **A** for the API (#1562), **S** for storage (#1560), **D** for the durability program folded into the storage design (settled with Kyle on 2026-10-24, from ms2data/service PR 7237), **R** for the rollout (#1540), and the configuration design's own decisions (#1474, [Appendix F](#appendix-f-the-configuration-registry-and-mapping)). Dates are when Kyle decided.
+The register, by surface and then the rollout. **A** numbers the API decisions (#1562); the package, configuration and rollout decisions are from #1540 and #1474; **S** and **D** are the storage design's own and the durability program folded into it (D settled with Kyle on 2026-10-24, from ms2data/service PR 7237). Dates are when Kyle decided.
 
-### API (A1 to A26, 2026-11-08)
+### The API (A1 to A26, 2026-11-08)
 
 Each on the recommended option except A22, which Kyle called directly, A4, which Kyle revised to leave `.malloynb` out, and A2 and A6, revised when the spec was drafted. They are the rules the v1 spec is drafted from.
 
@@ -1027,7 +1080,22 @@ Each on the recommended option except A22, which Kyle called directly, A4, which
 25. **A25. One implementation for queryability and gates.** The entities resource reports what the query route enforces, from the same code: the server's gate resolution (`gate_classification.ts`, `authorize_grammar.ts`) and one public queryability predicate on `Model` or `Package`. The entities extraction's own copies (`access_gates.ts`, `query_surface.ts`) and the parity fixtures that kept them in agreement are deleted. The one rule that differs on purpose stays explicit: a source a served report declares is reported `queryable: false` with `servedFrom`, although the query route runs it inside that report. Landed behind a before/after diff of the full entities response over the existing fixtures (`to_api.snapshot.spec.ts`). ([#1538](https://github.com/malloydata/publisher/issues/1538); decided 2026-11-08.)
 26. **A26. A lighter load profile for drafts.** `POST …/packages` takes `?profile=full|light` (default `full`). `light` compiles and runs the authorize validation, so a broken model still answers 4xx, and defers everything a draft checkpoint does not need to serve: the build plan and preaggregation companions, render-tag prepares, report lint, the discovery-index build, and the per-file row counts of `data-files`. A deferred part is derived on its first read (`build-plan` answers `state: "deferred"` until then; the index reports `lexical`; `data-files` omits `info`), so the profile changes when work happens, never what the API can answer. Credible's control plane sets it for draft checkpoints, whose every edit publishes a new version. ([ms2data/service#7479](https://github.com/ms2data/service/issues/7479), item 6; decided 2026-11-08.)
 
-### Storage (S) and the durability program (D)
+### The package (2026-11-08)
+
+- **`.malloynb` is not carried into v1** (decision A4, as revised). Its users have v0 and the 90-day window; the `malloy-pub migrate` rewrite to `.malloy` with `## artifact { layout=linear }` is a step 6 task.
+- **`explores` and `queryableSources` are deprecated, both values included,** and go at the 1.0.0 release with no exception. `queryableSources: "all"`, the one way today to hide an `#(authorize)`-gated source from listings while authorized callers query it by name, has no like-for-like replacement and does not get one: curation is `index.malloy`, access is `#(authorize)`, and the migration guide says so.
+- **One documented form per key and annotation; a deprecated form warns, then refuses, then goes; an invalid form fails at publish; nothing fails open.** The rules in [section 3.3](#33-the-package), applied to every row of [section 5](#5-what-10-removes) and [track C](#track-c-invalid-annotations-that-warn-today-should-fail-loudly).
+
+### The configuration (from the configuration design, #1474; [Appendix C](#appendix-c-the-configuration-registry-and-mapping))
+
+- **The file and the environment are equals, not layers with different jobs.** With every setting available everywhere, the only rule is precedence.
+- **The file's top level is the server's own section**, so `port`, `host` and the most-used names do not change.
+- **One precedence, flag over variable over file**, for every setting; the one case it reverses (`retrieval.embedding` keys winning over `EMBEDDING_*`) fails startup during step 2 when both are set differently.
+- **Positive booleans.** `--no-mcp-config` and `DISABLE_RESPONSE_LOGGING` become `Enabled` settings that default to on.
+- **Secrets never take a flag**, and are never logged, reported or echoed in an error.
+- **The aliases are removed in 1.0.0** (this plan, 2026-11-08), not "a release after step 3" as the design first said: they are deprecated features and go with the rest.
+
+### The storage (S) and the durability program (D)
 
 From the original storage sketch: version naming by parent plus counter, ordered by `seq`; identical reloads make no version; undo is pointing `latestVersionId` back at the parent; `publisher.json` is never written by the server; storage destinations become connections with a role; the derived store is separate.
 
@@ -1053,36 +1121,30 @@ From the durability program, settled with Kyle on 2026-10-24, with two revisions
 - **D6**: the service phase is Sagar's. D7–D9 (the worker disk, its retention, the restart budget) are under [Deployments](#deployments).
 - Revised: the manifest stops being a key term once bindings leave the compile (until then it is one, as 7237 says).
 
-### Rollout (R, 2026-11-08)
+### The rollout (2026-11-08)
 
 - **v1 is built over today's storage** (Kyle, 2026-11-08), so the window waits only on step 3. #1560 track B change no route shape.
 - **The catalog work is split** into step 3 (records, migrations, `revision`, the version columns, v0 mappers), which v1 needs, and step 5 (the config split and `apply`, unload and warm start), which needs v1. That breaks the loop between them.
-- **Live packages** expose the pseudo-version `live` (decision A23).
-- **`.malloynb` is not carried into v1** (decision A4, as revised). Its users have v0 and the 90-day window; the `malloy-pub migrate` rewrite to `.malloy` with `## artifact { layout=linear }` is a step 6 task.
-- **`explores` and `queryableSources` are deprecated, both values included,** and go at the 1.0.0 release with no exception. `queryableSources: "all"`, the one way today to hide an `#(authorize)`-gated source from listings while authorized callers query it by name, has no like-for-like replacement and does not get one: curation is `index.malloy`, access is `#(authorize)`, and the migration guide says so.
 - **The clock waits for Credible's dated plan.** Release R is the first release in which steps 4, 5 and 6 are complete and Credible has a dated plan to switch its control plane and router inside the window, because its router's passthrough makes the switch customer-facing for Credible.
-
-### Configuration (from the configuration design, #1474; [Appendix F](#appendix-f-the-configuration-registry-and-mapping))
-
-- **The file and the environment are equals, not layers with different jobs.** With every setting available everywhere, the only rule is precedence.
-- **The file's top level is the server's own section**, so `port`, `host` and the most-used names do not change.
-- **One precedence, flag over variable over file**, for every setting; the one case it reverses (`retrieval.embedding` keys winning over `EMBEDDING_*`) fails startup during step 2 when both are set differently.
-- **Positive booleans.** `--no-mcp-config` and `DISABLE_RESPONSE_LOGGING` become `Enabled` settings that default to on.
-- **Secrets never take a flag**, and are never logged, reported or echoed in an error.
-- **The aliases are removed in 1.0.0** (this plan, 2026-11-08), not "a release after step 3" as the design first said: they are deprecated features and go with the rest.
 
 ## 7. Open questions
 
-Each with a recommendation; the first two are Kyle's to call, the rest are settled by work.
+Each with a recommendation. Numbering is continuous so the steps can cite one; the two Kyle still has to call come first.
+
+### Calls for Kyle
 
 1. **The server-side `--apply` bootstrap.** It keeps the zero-flag `npx` quick start and single-container Docker working without a CLI beside the server, at the cost of the server carrying a driver for its own API. Recommendation: keep it, restricted to an empty catalog.
 2. **Package `PATCH` and #1552.** #1552 removes package `PATCH` now, but the plan removes nothing deprecated before the window, and the Console and CLI call `PATCH` until step 6. Recommendation: #1552 keeps v0's `PATCH …/packages/{pkg}` for what still works on a versioned package (the `description` and the `manifestLocation` rebind) until step 8, and removes the rest as planned.
+
+### The storage
 
 3. **How many server-made versions are retained, and can an author pin one?** Recommendation: 20 per package, a setting; `pinned` on the version record, set with `PATCH …/versions/{versionId} {"pinned": true}`; `latest`, pinned and bound versions are always kept.
 4. **Is more than one process per catalog in scope?** Recommendation: not to build, yes to not preclude. Leases, conditional writes, CAS on `latest` and the outbox are what single-process crash recovery needs anyway; the one-process-per-store rule stays in the docs until a Postgres catalog exists and a hammer scenario runs two processes.
 5. **Does secret encryption belong in the open-source catalog?** Recommendation: yes, optional. `PUBLISHER_SECRETS_KEY` (a 32-byte key through the settings registry, never a flag) enables AES-GCM envelope encryption of `secrets.ciphertext`; without it rows are stored as today and startup logs one warning. Rotation is a migration-shaped admin command.
 6. **Should a reload diff against the previous source and fetch only what changed?** Recommendation: compare `source_fingerprint` first (a git commit sha, an object etag or md5, a local tree hash) and skip the fetch when equal; when it differs, fetch the whole tree. `importDirectory` stores only new blobs, so a partial fetch would save network only, and git already gives it for free.
 7. **Can the compiled-model store seed Malloy's `InMemoryModelCache` across load jobs?** Malloy's `CacheManager` is the hook ([ms2data/service#7479](https://github.com/ms2data/service/issues/7479)); the spike under [Compiled models](#compiled-models) confirms it, settles the warnings caveat, and picks the version-independent URL root. Until it does, incremental recompile is per changed import closure rather than per changed file.
+
+### The configuration
 
 8. **Should `GET /status` report the effective non-secret settings and their sources?** It would make a misconfigured deployment visible from outside, but the serving API is unauthenticated and it would publish ports, hosts and limits. Recommendation: no on the serving API; the startup log line covers the operator, and the admin API may carry it if a deployment asks.
 9. **Should the config file accept JSON with comments?** Every reader of the file is ours. Recommendation: yes, in step 5, when the file changes anyway.
@@ -1098,77 +1160,9 @@ Each with a recommendation; the first two are Kyle's to call, the rest are settl
 - A separate schema cache or schema snapshot artifact (schema rides inside the compiled model); any fleet-facing artifact endpoint or coordinator (the compiled-model store is the seam); a runtime OpenAPI validator; decomposing `model.ts`, `connection.ts` or the materialization planner.
 - Credible's service-side work (S1 to S5), CP-HA and lazy placement, which live in the service repo and are summarized under [Deployments](#deployments) so the publisher side knows what it is for.
 
-## Appendix A: evidence
+## Appendix A: the API review's findings
 
-Every claim about today's storage, with the file and lines it rests on, under `packages/server/src/`. The API review's evidence is inline in [Appendix C](#appendix-c-the-api-reviews-findings) and [Appendix D](#appendix-d-the-usage-matrix).
-
-| Claim | Where |
-|---|---|
-| One DuckDB file, one connection, one mutex per statement | `storage/StorageManager.ts:76-78`; `storage/duckdb/DuckDBConnection.ts:72-76, 145-162` |
-| Retrieval tables share the file | `storage/duckdb/schema.ts:275-278, 687-870` |
-| No schema version; additive column reconcile; targeted drops; `--init` drop list | `schema.ts:372-441, 601-660, 662-685, 899-932` |
-| Transactions only in the version registry | `storage/duckdb/VersionRepository.ts:99, 168, 201, 256, 301` |
-| Un-transacted cascades | `storage/duckdb/DuckDBRepository.ts:38-46, 54-62`; `StorageDestinationRepository.ts:46-78`; `retrieval/index/catalog_store.ts:38-121` |
-| Bulk sync and its callers | `service/environment_store.ts:958-989, 1050-1070, 1289, 1762, 1823, 1847` |
-| Database wins over config after first boot; `frozenConfig` checks | `environment_store.ts:737-759, 607-640, 1745-1853` |
-| `listPackages` loads non-resident packages and latest versions | `service/environment.ts:947-1010, 1883-1905` |
-| Connection config stored as the wire object, plaintext | `environment_store.ts:1225-1229`; `storage/duckdb/ConnectionRepository.ts:60`; `storage/DatabaseInterface.ts:307` |
-| `environmentId` public on `Materialization` | `api-doc.yaml:9864`; `controller/materialization.controller.ts:26-29` |
-| Run metadata keys and `json_extract` queries | `service/materialization/run/materialization_service.ts:411-435, 828-847`; `storage/duckdb/MaterializationRepository.ts:119`; `VersionRepository.ts:25-32` |
-| Status transitions as plain UPDATEs; `active_key` unique | `run/run_lifecycle.ts:49-76`; `MaterializationRepository.ts:33-41, 199-248, 295-298` |
-| Interrupted runs failed at open | `MaterializationRepository.ts:259-270`; `StorageManager.ts:31-50, 79` |
-| Serving manifest is a fold over unbounded history | `service/versions/materialization_scope.ts:135-180, 206-214`; `MaterializationRepository.ts:66-67, 308-343`; callers `environment.ts:1726-1759`, `run/manifest_committer.ts:160-165, 338-353`, `run/table_claims.ts:63, 173`, `run/reclaimer.ts:197, 317, 685` |
-| Per-version filtering of shared entries | `service/materialization/package_materialization.ts:500-512` |
-| External manifest binding | `controller/version.controller.ts:112-139`; `version_service.ts:1163-1218`; `environment.ts:2283-2314, 3145-3190` |
-| Table naming, staging and backup suffixes, version suffix | `run/materialization_run_support.ts:382-406`; `run/run_instructions.ts:161-173`; `materialization_scope.ts:222-275` |
-| Colocated swap by rename | `run/colocated_build_strategy.ts:15-23, 172-280` |
-| Reclaim checks only runs of the same package | `run/reclaimer.ts:172-178, 310-332` |
-| DuckLake expiry on demand only; temp dirs leak on crash | `run/materialization_build_session.ts:551, 600, 1429-1473` |
-| Incremental ledger keyed by table; lineage gates | `schema.ts:220-259`; `run/incremental_build.ts:296-300, 350-351, 371-430` |
-| Commit recompiles every model | `environment.ts:2983-3019, 3074-3076`; `package.ts:2261-2282` |
-| On-disk layout, install swap, startup sweeps | `environment_store.ts:2050-2059, 2149-2158, 2198-2213`; `environment.ts:112-121, 1493-1519, 2692-2949`; `versions/version_store.ts:19-26, 55-61, 290-342` |
-| Install record written, never read | `environment.ts:3278-3290` (deletes at `:3640, 3675`) |
-| Reload re-fetches and discards API writes; interim 409 | `controller/package.controller.ts:439-493, 815-822, 858-885`; `controller/report.controller.ts:291-299` |
-| Report write path and whole-package recompile | `report.controller.ts:228-427`; `environment.ts:1374-1475` |
-| PATCH rewrites `publisher.json` in place | `environment.ts:189-290, 3252-3296` |
-| Publish ordering and content hash | `version_service.ts:572-711`; `versions/package_content_hash.ts:8-62` |
-| Version cache is not an LRU | `versions/version_cache.ts:30-39` |
-| Watch mode symlink, write-through, no debounce | `environment_store.ts:2143-2213`; `environment.ts:1275-1312`; `controller/watch-mode.controller.ts:18-36, 103-169` |
-| Derived rows keyed by name; versions collide; rewritten on reload | `retrieval/model/package_embedding.ts:91-98`; `catalog_store.ts:45-83`; `retrieval/search/values_index.ts:690-717` |
-| `get_context` kicks a build per call | `retrieval/search/engine.ts:331-342` |
-| Per-file `Runtime`, imports re-parsed, no on-disk model cache | `package_load/package_load_worker.ts:843-903, 1211-1250` |
-| Import graph available | `package.ts:3005-3015, 2444-2452` |
-| Query path reads no storage for a resident package | `environment.ts:2340-2345`; `usecases/run_model_query.ts:61-84`; first read of a versioned package `version_service.ts:367-399` |
-| Control plane publishes, rebinds, reloads | `~/service/controlplane/.../services/WorkerCalls.java:251-349, 410-431`; `WorkerPool.java:2602-2650, 4432-4452`; `daos/VersionDao.java:98` |
-| Load path symbols for the compiled-model store | `service/package.ts` `Package.create` → `loadViaWorker` → `hydrateWorkerModels`; `Environment.bindManifest` → `Package.reloadAllModels`; `package_load/protocol.ts`; `package_load/package_load_pool.ts` (`handleConnectionMetadata`); `service/model.ts` `Model.fromSerialized`, `MALLOY_VERSION`; `connection.ts` `applyConnectionFingerprint`; `package_load/schema_cache.ts`; `service/package_memory_governor.ts`; `health.ts` (drain on SIGTERM) |
-
-## Appendix B: where things came from
-
-**The configuration design** (merged as #1474 as `docs/configuration-design.md`, now retired) is carried whole: its shape in section 3.4, its steps 2 and 3 and the alias removal in steps 5, 7 and 8, its decisions and open questions in sections 6 and 7, and its text, the registry rules and the mapping, as [Appendix F](#appendix-f-the-configuration-registry-and-mapping).
-
-**The issues, now closed.** #1562 held the API review's findings (Appendix C), the usage matrix (Appendix D) and decisions A1 to A24; #1539 (per-package reads loading a package not in memory) is decision A24; #1538 (the entities extraction's duplicate gate and queryability rules) is decision A25 and a step 4 item; ms2data/service#7479's Publisher half is decision A26 (the light load profile), the load-time quick wins in step 2, and the cross-version reuse and Malloy cache notes in track B3. #1560 held the storage design, decisions S and D, and the hand-off checklist (Appendix E); its phases are steps 1 to 3, 5 and track B here. #1540 held the rollout and decisions R; its stages are steps 4 and 6 to 8 here, and its side track is track C.
-
-| Old label | Here |
-|---|---|
-| step 1 | step 1 |
-| step 2 | step 2 |
-| step 3 | step 3 |
-| step 4 | step 4 |
-| step 5 | step 5 |
-| step 6 | step 6 |
-| step 7 | step 7 |
-| step 8 | step 8 |
-| B1 | B1 |
-| B2 | B2 |
-| B3 | B3 |
-| B4 | B4 |
-| #1540 side track (H0 to H6) | track C |
-
-**The durability program** (ms2data/service PR 7237, closed in favour of #1560) landed as follows: its PR 0 (land #1354) is done and #1552 is now the prerequisite (step 1); PR 0b, the load harness, is step 1; PR 1, the migration runner, is step 3; PR 2, the recovery contract, crash matrix and the eight bugs, is step 2 with the contract under [Lifecycle](#lifecycle); PR 3, the compiled-model store, is B3; PR 4, unload, telemetry, `hostname` and warm start, is step 5; PR 5, the `/projects` removal and the controller-to-storage audit, is step 8 and step 3; PR 3b, the cache load test, is B3's acceptance; S1 to S5 and D7 to D9 are under [Deployments](#deployments) and stay service work.
-
-## Appendix C: the API review's findings
-
-The review that produced decisions A1 to A23 (from #1562), as written on 2026-11-08 against `fix/server-bugs` at `ccd659a64`. Line numbers are into `api-doc.yaml` (v0) and the client sources at that commit.
+The review that produced decisions A1 to A26 (from #1562), as written on 2026-11-08 against `fix/server-bugs` at `ccd659a64`. Line numbers are into `api-doc.yaml` (v0) and the client sources at that commit.
 
 ### The surface today
 
@@ -1196,7 +1190,7 @@ The Python client (`packages/python-client`) is a stub: only `__init__.py` is ch
 
 ### Findings
 
-###### 1. Consistency
+#### 1. Consistency
 
 **Naming.** Three casings coexist in paths and parameters, and the choice follows when a route was added, not a rule.
 
@@ -1287,7 +1281,7 @@ The Python client (`packages/python-client`) is a stub: only `__init__.py` is ch
 - Older-worker fallbacks (404 on `entities` and `build-plan`, null `status`) mean a route rename must keep answering on the old path for one pin cycle.
 - Direct e2e coverage of worker routes is thin: `/status`, `/environments` and a `?reload=true` rejection (`e2e/src/security/f8-unauth-reload.spec.ts:10-44`).
 
-## Appendix D: the usage matrix
+## Appendix B: the usage matrix
 
 U = used (one representative call site), – = unused. Credible column: CP = control plane calls it on a worker, R = router proxies it to customers.
 
@@ -1357,48 +1351,9 @@ U = used (one representative call site), – = unused. Credible column: CP = con
 | `…/materializations/{id}` DELETE | U `materializations.ts:171` | U `Materializations.tsx:193` | – | – |
 | `…/storageDestinations/*` (3 ops, deprecated) | – | – | – | – |
 
-## Appendix E: hand-off checklist
+## Appendix C: the configuration registry and mapping
 
-- [ ] Kyle decides the `--apply` bootstrap (the one item still flagged).
-- [ ] #1552 merges (step 1); Kyle lands the load harness #1378 (step 1, in progress 2026-11-08).
-- [ ] step 2 PRs, each small, against `main`; the lint specs land with them so later phases cannot regress.
-- [ ] step 3 opens with `storage/records/`, the migration runner and migration 0001 before any record moves, so every later PR is a migration. step 5 opens with the config split (`malloy-pub apply`, `--apply`, the deprecated `environments` block), coordinated with the configuration design's step 2 so the two migrations ship in one release note.
-- [ ] Each phase's hammer scenarios are written before its code, from the acceptance lists above.
-- [ ] The compiler spike (open question 5) runs during B1 so B3 is scoped when it starts.
-- [ ] Service #5521 points at this issue; S1 follows the release that carries step 5 `/status` fields and the unload verb.
-- [ ] `docs/local-state.md`, `docs/migrations.md` and `docs/compiled-model-cache.md` exist and match the code when their phases land; `docs/package-versions.md`, `docs/materialization.md`, `docs/configuration.md` and `docs/security-posture.md` are updated in the phase that changes what they describe; `RELEASE_NOTES.md` gets a section per phase that changes a visible behaviour (generational names, `ETag`, the lifted 409, retention, the schema-refresh rule).
-
-## Appendix F: the configuration registry and mapping
-
-The text of the configuration design (merged as #1474 as `docs/configuration-design.md`, retired into this document on 2026-11-08), as it stood with step 1 built. "Today" in this appendix means before step 1. Its decisions are in [section 6](#6-decisions), its open questions in [section 7](#7-open-questions), and its steps are sequenced in [section 4](#4-the-order-of-work): step 2 with step 5, step 3 no later than release R, the aliases removed in 1.0.0.
-
-### What exists today
-
-Publisher reads its settings from three places, and which place a setting lives in follows no rule:
-
-- **`publisher.config.json`** began as the list of what to serve, and grew server-wide settings one at a
-  time: `frozenConfig`, `theme`, `mcp.includeHiddenFilesAndSources` and the `retrieval` block. With the
-  admin API, `servingApiEnabled` and `adminApiEnabled` arrive already following this design: each is a
-  key in the file, a derived variable and a derived flag, read with the precedence below.
-- **Environment variables** carry everything else, about 60 of them, most added for container
-  deployments.
-- **Command-line flags** exist for about a dozen of those variables, the ones a local user reaches for:
-  ports, hosts, the server root, the config path, shutdown timing, watch mode and `--init`.
-
-Every string in the config file may reference a variable as `${VAR}`, which is how a file names a
-credential without holding it.
-
-#### What that costs
-
-| Problem | Example |
-|---|---|
-| The same kind of setting lives in different places | MCP's port and host are variables, but what MCP exposes (`mcp.includeHiddenFilesAndSources`) is in the file |
-| A setting can be given in two places with no general rule for which wins | the `retrieval.embedding` keys override the `EMBEDDING_*` variables; nothing else overlaps |
-| Booleans are read five ways | most variables accept `1/true/yes/on` and `0/false/no/off` and refuse anything else; `INITIALIZE_STORAGE`, `PUBLISHER_USE_BUNDLED_DEFAULT` and `PUBLISHER_ALLOW_PROXY_CONNECTIONS` are on only for exactly `true`; `DISABLE_RESPONSE_LOGGING` for `true` or `1`; `PUBLISHER_ALLOW_UNVERIFIED_SSH_HOST_KEY` reads an unrecognised value as off where it is used, because one reader runs inside ssh2's synchronous host-key callback, where a throw would escape; and `frozenConfig` is read with `Boolean()`, so `"frozenConfig": "false"` freezes the server |
-| A typo is silent | an unknown key in the file is ignored (only `retrieval.llm`, `retrieval.embedding` and `retrieval.egress` refuse one), so a misspelled `adminApiEnable` runs the API it meant to turn off; an unknown flag, and a flag given without its value, are ignored too |
-| A `${VAR}` cannot supply a number or a boolean | substitution always yields a string |
-| Names do not follow a pattern | about 20 Publisher settings lack the `PUBLISHER_` prefix (`MCP_PORT`, `SERVER_ROOT`, `LOG_LEVEL`, `EMBEDDING_MODEL`, …); flags mix `--mcp_port` with `--watch-env`; a flag and its variable can differ (`--watch-env` is `PUBLISHER_WATCH`, `--init` is `INITIALIZE_STORAGE`); two switches are negative (`--no-mcp-config`, `DISABLE_RESPONSE_LOGGING`) |
-| The reference drifts from the code | `--config` and `PERSIST_COLLISION_ENFORCE` are not in the configuration table |
+The design text of the configuration design (merged as #1474 as `docs/configuration-design.md`, retired into this document on 2026-11-08), as it stood with step 1 built; its account of today is [section 2.3](#23-the-configuration). "Today" in this appendix means before step 1. Its decisions are in [section 6](#6-decisions), its open questions in [section 7](#7-open-questions), and its steps are sequenced in [section 4](#4-the-order-of-work): step 2 with step 5, step 3 no later than release R, the aliases removed in 1.0.0.
 
 ### Design
 
@@ -1697,3 +1652,82 @@ does, so it never needs an alias.
 An orchestrator moves to the new names when it adopts step 2's release. Nothing it sets today stops
 working before step 3, which refuses only the values step 1 warned about; the old names keep working
 until step 3's second release.
+
+## Appendix D: storage evidence
+
+Every claim about today's storage, with the file and lines it rests on, under `packages/server/src/`. The API review's evidence is inline in [Appendix A](#appendix-a-the-api-reviews-findings) and [Appendix B](#appendix-b-the-usage-matrix).
+
+| Claim | Where |
+|---|---|
+| One DuckDB file, one connection, one mutex per statement | `storage/StorageManager.ts:76-78`; `storage/duckdb/DuckDBConnection.ts:72-76, 145-162` |
+| Retrieval tables share the file | `storage/duckdb/schema.ts:275-278, 687-870` |
+| No schema version; additive column reconcile; targeted drops; `--init` drop list | `schema.ts:372-441, 601-660, 662-685, 899-932` |
+| Transactions only in the version registry | `storage/duckdb/VersionRepository.ts:99, 168, 201, 256, 301` |
+| Un-transacted cascades | `storage/duckdb/DuckDBRepository.ts:38-46, 54-62`; `StorageDestinationRepository.ts:46-78`; `retrieval/index/catalog_store.ts:38-121` |
+| Bulk sync and its callers | `service/environment_store.ts:958-989, 1050-1070, 1289, 1762, 1823, 1847` |
+| Database wins over config after first boot; `frozenConfig` checks | `environment_store.ts:737-759, 607-640, 1745-1853` |
+| `listPackages` loads non-resident packages and latest versions | `service/environment.ts:947-1010, 1883-1905` |
+| Connection config stored as the wire object, plaintext | `environment_store.ts:1225-1229`; `storage/duckdb/ConnectionRepository.ts:60`; `storage/DatabaseInterface.ts:307` |
+| `environmentId` public on `Materialization` | `api-doc.yaml:9864`; `controller/materialization.controller.ts:26-29` |
+| Run metadata keys and `json_extract` queries | `service/materialization/run/materialization_service.ts:411-435, 828-847`; `storage/duckdb/MaterializationRepository.ts:119`; `VersionRepository.ts:25-32` |
+| Status transitions as plain UPDATEs; `active_key` unique | `run/run_lifecycle.ts:49-76`; `MaterializationRepository.ts:33-41, 199-248, 295-298` |
+| Interrupted runs failed at open | `MaterializationRepository.ts:259-270`; `StorageManager.ts:31-50, 79` |
+| Serving manifest is a fold over unbounded history | `service/versions/materialization_scope.ts:135-180, 206-214`; `MaterializationRepository.ts:66-67, 308-343`; callers `environment.ts:1726-1759`, `run/manifest_committer.ts:160-165, 338-353`, `run/table_claims.ts:63, 173`, `run/reclaimer.ts:197, 317, 685` |
+| Per-version filtering of shared entries | `service/materialization/package_materialization.ts:500-512` |
+| External manifest binding | `controller/version.controller.ts:112-139`; `version_service.ts:1163-1218`; `environment.ts:2283-2314, 3145-3190` |
+| Table naming, staging and backup suffixes, version suffix | `run/materialization_run_support.ts:382-406`; `run/run_instructions.ts:161-173`; `materialization_scope.ts:222-275` |
+| Colocated swap by rename | `run/colocated_build_strategy.ts:15-23, 172-280` |
+| Reclaim checks only runs of the same package | `run/reclaimer.ts:172-178, 310-332` |
+| DuckLake expiry on demand only; temp dirs leak on crash | `run/materialization_build_session.ts:551, 600, 1429-1473` |
+| Incremental ledger keyed by table; lineage gates | `schema.ts:220-259`; `run/incremental_build.ts:296-300, 350-351, 371-430` |
+| Commit recompiles every model | `environment.ts:2983-3019, 3074-3076`; `package.ts:2261-2282` |
+| On-disk layout, install swap, startup sweeps | `environment_store.ts:2050-2059, 2149-2158, 2198-2213`; `environment.ts:112-121, 1493-1519, 2692-2949`; `versions/version_store.ts:19-26, 55-61, 290-342` |
+| Install record written, never read | `environment.ts:3278-3290` (deletes at `:3640, 3675`) |
+| Reload re-fetches and discards API writes; interim 409 | `controller/package.controller.ts:439-493, 815-822, 858-885`; `controller/report.controller.ts:291-299` |
+| Report write path and whole-package recompile | `report.controller.ts:228-427`; `environment.ts:1374-1475` |
+| PATCH rewrites `publisher.json` in place | `environment.ts:189-290, 3252-3296` |
+| Publish ordering and content hash | `version_service.ts:572-711`; `versions/package_content_hash.ts:8-62` |
+| Version cache is not an LRU | `versions/version_cache.ts:30-39` |
+| Watch mode symlink, write-through, no debounce | `environment_store.ts:2143-2213`; `environment.ts:1275-1312`; `controller/watch-mode.controller.ts:18-36, 103-169` |
+| Derived rows keyed by name; versions collide; rewritten on reload | `retrieval/model/package_embedding.ts:91-98`; `catalog_store.ts:45-83`; `retrieval/search/values_index.ts:690-717` |
+| `get_context` kicks a build per call | `retrieval/search/engine.ts:331-342` |
+| Per-file `Runtime`, imports re-parsed, no on-disk model cache | `package_load/package_load_worker.ts:843-903, 1211-1250` |
+| Import graph available | `package.ts:3005-3015, 2444-2452` |
+| Query path reads no storage for a resident package | `environment.ts:2340-2345`; `usecases/run_model_query.ts:61-84`; first read of a versioned package `version_service.ts:367-399` |
+| Control plane publishes, rebinds, reloads | `~/service/controlplane/.../services/WorkerCalls.java:251-349, 410-431`; `WorkerPool.java:2602-2650, 4432-4452`; `daos/VersionDao.java:98` |
+| Load path symbols for the compiled-model store | `service/package.ts` `Package.create` → `loadViaWorker` → `hydrateWorkerModels`; `Environment.bindManifest` → `Package.reloadAllModels`; `package_load/protocol.ts`; `package_load/package_load_pool.ts` (`handleConnectionMetadata`); `service/model.ts` `Model.fromSerialized`, `MALLOY_VERSION`; `connection.ts` `applyConnectionFingerprint`; `package_load/schema_cache.ts`; `service/package_memory_governor.ts`; `health.ts` (drain on SIGTERM) |
+
+## Appendix E: where things came from
+
+**The configuration design** (merged as #1474 as `docs/configuration-design.md`, now retired) is carried whole: its shape in section 3.4, its steps 2 and 3 and the alias removal in steps 5, 7 and 8, its decisions and open questions in sections 6 and 7, and its text, the registry rules and the mapping, as [Appendix C](#appendix-c-the-configuration-registry-and-mapping).
+
+**The issues, now closed.** #1562 held the API review's findings (Appendix A), the usage matrix (Appendix B) and decisions A1 to A26; #1539 (per-package reads loading a package not in memory) is decision A24; #1538 (the entities extraction's duplicate gate and queryability rules) is decision A25 and a step 4 item; ms2data/service#7479's Publisher half is decision A26 (the light load profile), the load-time quick wins in step 2, and the cross-version reuse and Malloy cache notes in track B3. #1560 held the storage design, decisions S and D, and the hand-off checklist (Appendix F); its phases are steps 1 to 3, 5 and track B here. #1540 held the rollout and decisions R; its stages are steps 4 and 6 to 8 here, and its side track is track C.
+
+| Old label | Here |
+|---|---|
+| step 1 | step 1 |
+| step 2 | step 2 |
+| step 3 | step 3 |
+| step 4 | step 4 |
+| step 5 | step 5 |
+| step 6 | step 6 |
+| step 7 | step 7 |
+| step 8 | step 8 |
+| B1 | B1 |
+| B2 | B2 |
+| B3 | B3 |
+| B4 | B4 |
+| #1540 side track (H0 to H6) | track C |
+
+**The durability program** (ms2data/service PR 7237, closed in favour of #1560) landed as follows: its PR 0 (land #1354) is done and #1552 is now the prerequisite (step 1); PR 0b, the load harness, is step 1; PR 1, the migration runner, is step 3; PR 2, the recovery contract, crash matrix and the eight bugs, is step 2 with the contract under [Lifecycle](#lifecycle); PR 3, the compiled-model store, is B3; PR 4, unload, telemetry, `hostname` and warm start, is step 5; PR 5, the `/projects` removal and the controller-to-storage audit, is step 8 and step 3; PR 3b, the cache load test, is B3's acceptance; S1 to S5 and D7 to D9 are under [Deployments](#deployments) and stay service work.
+
+## Appendix F: hand-off checklist
+
+- [ ] Kyle decides the `--apply` bootstrap (the one item still flagged).
+- [ ] #1552 merges (step 1); Kyle lands the load harness #1378 (step 1, in progress 2026-11-08).
+- [ ] step 2 PRs, each small, against `main`; the lint specs land with them so later phases cannot regress.
+- [ ] step 3 opens with `storage/records/`, the migration runner and migration 0001 before any record moves, so every later PR is a migration. step 5 opens with the config split (`malloy-pub apply`, `--apply`, the deprecated `environments` block), coordinated with the configuration design's step 2 so the two migrations ship in one release note.
+- [ ] Each phase's hammer scenarios are written before its code, from the acceptance lists above.
+- [ ] The compiler spike (open question 5) runs during B1 so B3 is scoped when it starts.
+- [ ] Service #5521 points at this issue; S1 follows the release that carries step 5 `/status` fields and the unload verb.
+- [ ] `docs/local-state.md`, `docs/migrations.md` and `docs/compiled-model-cache.md` exist and match the code when their phases land; `docs/package-versions.md`, `docs/materialization.md`, `docs/configuration.md` and `docs/security-posture.md` are updated in the phase that changes what they describe; `RELEASE_NOTES.md` gets a section per phase that changes a visible behaviour (generational names, `ETag`, the lifted 409, retention, the schema-refresh rule).
