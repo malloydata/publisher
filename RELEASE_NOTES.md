@@ -52,6 +52,8 @@ A rebuild of a materialized table in the source's own warehouse no longer drops 
 
 **`/entities` reads every gate the server accepts.** A source gated by an expression that starts with a string literal, such as `#(authorize) "admin" = $ROLE`, used to be reported as locked (`false`) by `GET …/packages/{pkg}/entities`, because its reader took the leading quote for the legacy quoted-string form. It now reports the gate as written, telling the two forms apart the way the load does: only a payload that is one string literal is the legacy form.
 
+**`frozenConfig` no longer refuses a reload.** On a server with `"frozenConfig": true`, `GET /environments/{env}?reload=true`, and the first `GET` that loads an environment from the config, answered with the frozen-config error, because they went through the same check as a create. They re-read what the config already says, so they now answer; creating or changing an environment over the API is still refused.
+
 ## [0.12.5] — `--help` and the configuration reference come from the settings registry, and startup logs the settings given
 
 Every setting is described once, in the settings registry 0.12.2 added, and three things are now generated from it:

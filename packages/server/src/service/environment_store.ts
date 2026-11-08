@@ -1902,7 +1902,14 @@ export class EnvironmentStore
       if (!skipInitialization) {
          await this.finishedInitialization;
       }
-      if (!skipInitialization && this.publisherConfigIsFrozen) {
+      // frozenConfig refuses writes. A load or reload from the config (a GET
+      // that resolves or `?reload=true`s an environment) re-reads what the
+      // config already says, so it is not refused.
+      if (
+         !skipInitialization &&
+         syncPath === "request" &&
+         this.publisherConfigIsFrozen
+      ) {
          throw new FrozenConfigError();
       }
       assertSafePackageName(environment.name);
