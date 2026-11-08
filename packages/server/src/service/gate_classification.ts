@@ -63,9 +63,11 @@ import { expandRefSummaryGivenIds } from "./gate_dimension";
 import {
    ANCESTOR_WALK_MAX_DEPTH,
    ancestorGateExprs,
+} from "./gate_registry_walk";
+import {
    resolveDeclaredSource,
    resolveQuerySourceBase,
-} from "./gate_registry_walk";
+} from "./governance/ir/source_graph";
 
 /** One reachable authorize gate found by {@link collectEntryPointGates}. */
 export type GateEntry = {
@@ -782,10 +784,8 @@ async function liftGateCondition(
    const probe = materializer.loadQuery(
       buildRowLevelProbe(graftTarget, filterText),
    );
-   const prepared = (await probe.getPreparedQuery()) as {
-      _query?: { structRef?: { filterList?: FilterCondition[] } };
-   };
-   return liftProbeFilterCondition(
+   const prepared = await probe.getPreparedQuery();
+   return liftProbeFilterCondition<FilterCondition>(
       prepared,
       `lifted probe for "${graftTarget}"`,
       filterText,

@@ -36,6 +36,7 @@ import { logger, traceIdOf } from "../logger";
 import { redactConnectionSecretShapes } from "../pg_helpers";
 import { settings } from "../settings";
 import { readQueryFieldReads } from "./classification";
+import { readPreparedQuery } from "./governance/ir/prepared_query";
 
 const MAX_RECORDED_ERROR_CHARS = 2000;
 
@@ -145,14 +146,11 @@ export async function summarizeQueryAccess(args: {
    let fieldsRead: FieldRead[] = [];
    let fieldsReadComplete = false;
    try {
-      const prepared = (await args.runnable.getPreparedQuery()) as {
-         _query?: unknown;
-         _modelDef?: ModelDef;
-      };
+      const prepared = await readPreparedQuery(args.runnable);
       // The compiled model, which holds a source the caller declared in the query.
       const reads = readQueryFieldReads(
-         prepared._modelDef ?? args.modelDef,
-         prepared._query,
+         prepared.modelDef ?? args.modelDef,
+         prepared.query,
       );
       if (reads) {
          const { lineage, paths } = reads;

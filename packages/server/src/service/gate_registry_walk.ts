@@ -25,9 +25,14 @@
  * imports to `@malloydata/malloy` types and pure annotation helpers.
  */
 
-import { isSourceDef, type ModelDef, type SourceDef } from "@malloydata/malloy";
+import type { ModelDef, SourceDef } from "@malloydata/malloy";
 import { type AnnotationsDef, ownLevelNotes } from "./annotations";
 import { collectAuthorizeExprsForRoute } from "./authorize";
+import {
+   resolveCompositeResolvedBase,
+   resolveDeclaredSource,
+   resolveQuerySourceBase,
+} from "./governance/ir/source_graph";
 
 /**
  * Link budget for {@link ancestorGateExprs}'s derivation walk. Exceeding it
@@ -35,44 +40,6 @@ import { collectAuthorizeExprsForRoute } from "./authorize";
  * larger than any real chain.
  */
 export const ANCESTOR_WALK_MAX_DEPTH = 32;
-
-/**
- * The declared source a struct was created from, via `ModelDef.sourceRegistry`
- * (`referenceID` first, then `sourceID`).
- *
- * Collapsing the last two outcomes would fail open:
- *  - `resolved`: the declaration this struct derives from.
- *  - `none`: nothing to follow (no id, no registry, or the entry is `struct`
- *    itself). The common case for a top-level source; means "no gate here".
- *  - `unresolvable`: an entry exists but does not yield a usable `SourceDef`.
- *    The base exists and cannot be read, so the caller denies.
- */
-export function resolveDeclaredSource(
-   struct: SourceDef,
-   modelDef: ModelDef | undefined,
-):
-   | { kind: "resolved"; source: SourceDef }
-   | { kind: "none" }
-   | { kind: "unresolvable" } {
-   if (!modelDef) return { kind: "none" };
-   let sawBrokenEntry = false;
-   for (const id of [struct.referenceID, struct.sourceID]) {
-      const entry = id ? modelDef.sourceRegistry?.[id]?.entry : undefined;
-      if (!entry) continue;
-      const declared =
-         entry.type === "source_registry_reference"
-            ? modelDef.contents[entry.name]
-            : entry;
-      // Its own declaration — nothing to inherit from, and not a failure.
-      if (declared === struct) continue;
-      if (!declared || !isSourceDef(declared)) {
-         sawBrokenEntry = true;
-         continue;
-      }
-      return { kind: "resolved", source: declared };
-   }
-   return sawBrokenEntry ? { kind: "unresolvable" } : { kind: "none" };
-}
 
 /** The gate exprs of one level's own notes, for one route. */
 function gateAtLevel(
@@ -150,45 +117,6 @@ export function ancestorGateExprs(
    return exprs.length > 0
       ? exprs
       : ancestorGateExprs(declared.source, modelDef, route, seen);
-}
-
-/**
- * The `SourceDef` a `query_source` (`Z is X -> {...}`) derives from, via
- * `query.structRef`; `undefined` if `struct` is not a `query_source` or the
- * ref does not resolve to a `SourceDef`.
- *
- * Duck-typed because `QuerySourceDef` is not exported from the package root.
- */
-export function resolveQuerySourceBase(
-   struct: SourceDef,
-   modelDef: ModelDef | undefined,
-): SourceDef | undefined {
-   const duck = struct as unknown as {
-      type: string;
-      query?: { structRef?: SourceDef | string };
-   };
-   if (duck.type !== "query_source") return undefined;
-   const ref = duck.query?.structRef;
-   const base = typeof ref === "string" ? modelDef?.contents[ref] : ref;
-   return base && isSourceDef(base) ? base : undefined;
-}
-
-/**
- * For a `query_source` whose base is a composite (`qs is compose(a, b) ->
- * {...}`), the member Malloy resolved for this derivation. It is carried on
- * `query.compositeResolvedSourceDef`, not `query.structRef` (the raw
- * composite).
- */
-export function resolveCompositeResolvedBase(
-   struct: SourceDef,
-): SourceDef | undefined {
-   const duck = struct as unknown as {
-      type: string;
-      query?: { compositeResolvedSourceDef?: SourceDef };
-   };
-   return duck.type === "query_source"
-      ? duck.query?.compositeResolvedSourceDef
-      : undefined;
 }
 
 /**
@@ -275,36 +203,4 @@ export function gateExprsForRoute(
    return struct.type === "query_source"
       ? [own, ...effectiveAncestorGateExprs(struct, modelDef, route, new Set())]
       : [own];
-}
-
-/**
- * Every struct reachable from `roots` (excluded) by the two hops
- * {@link effectiveAncestorGateExprs} takes, transitively.
- *
- * `modelDef.contents` plus `sourceRegistry` does not cover everything the
- * gate walks reach: an imported `query_source`'s base arrives inline on
- * `query.structRef`, and a composite's resolved member lives in neither. A
- * sweep asking "is there a gate anywhere the walks look" must follow both or
- * it answers `false` for a gated model. Identity-guarded against cycles.
- */
-export function derivedStructsReachable(
-   roots: readonly SourceDef[],
-   modelDef: ModelDef | undefined,
-): SourceDef[] {
-   const seen = new Set<SourceDef>(roots);
-   const found: SourceDef[] = [];
-   const worklist: SourceDef[] = [...roots];
-   for (let i = 0; i < worklist.length; i++) {
-      const struct = worklist[i];
-      for (const next of [
-         resolveQuerySourceBase(struct, modelDef),
-         resolveCompositeResolvedBase(struct),
-      ]) {
-         if (!next || seen.has(next)) continue;
-         seen.add(next);
-         found.push(next);
-         worklist.push(next);
-      }
-   }
-   return found;
 }

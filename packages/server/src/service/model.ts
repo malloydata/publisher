@@ -172,7 +172,14 @@ import {
    validateModelPreaggregation,
    type PreaggregateViolation,
 } from "./preaggregation_validation";
-import { derivedStructsReachable } from "./gate_registry_walk";
+import {
+   preparedQueryView,
+   readPreparedQuery,
+   resolveStructRef,
+   sqlTargetRef,
+   structRefName,
+} from "./governance/ir/prepared_query";
+import { derivedStructsReachable } from "./governance/ir/source_graph";
 import {
    assertFilterDimensionBindsToDeclaringSource,
    assertGraftedGateBindsToDeclaringSource,
@@ -1982,11 +1989,8 @@ export class Model {
    ): Promise<void> {
       // Only a model that declares a ceiling pays for reading the query.
       if (!modelDeclaresCarries(this.modelDef)) return;
-      const prepared = (await live.getPreparedQuery()) as {
-         _query?: unknown;
-         _modelDef?: ModelDef;
-      };
-      const modelDef = prepared._modelDef ?? this.modelDef;
+      const prepared = await readPreparedQuery(live);
+      const modelDef = prepared.modelDef ?? this.modelDef;
       let refusal: string | undefined;
       try {
          const joins = region
@@ -1994,7 +1998,7 @@ export class Model {
                  (r) => r.callerJoin.join,
               )
             : [];
-         refusal = ceilingRefusal(modelDef, prepared._query, joins);
+         refusal = ceilingRefusal(modelDef, prepared.query, joins);
       } catch (err) {
          if (!(err instanceof CallerJoinWalkError)) throw err;
          refusal = "this query's joins cannot be read completely";
@@ -2730,16 +2734,8 @@ export class Model {
       pipeline: readonly StageLike[] | undefined;
    }> {
       try {
-         const prepared = (await runnable.getPreparedQuery()) as {
-            _query?: {
-               structRef?: unknown;
-               compositeResolvedSourceDef?: SourceDef;
-               location?: DocumentLocationLike;
-               pipeline?: readonly StageLike[];
-            };
-            _modelDef?: ModelDef;
-         };
-         const modelDef = prepared._modelDef ?? this.modelDef;
+         const view = await readPreparedQuery(runnable);
+         const modelDef = view.modelDef ?? this.modelDef;
          if (!modelDef)
             return {
                struct: undefined,
@@ -2749,26 +2745,20 @@ export class Model {
                queryLocation: undefined,
                pipeline: undefined,
             };
-         const structRef = prepared._query?.structRef;
-         const struct =
-            typeof structRef === "string"
-               ? modelDef.contents[structRef]
-               : structRef;
+         const location = view.location as DocumentLocationLike | undefined;
          return {
-            struct:
-               struct && typeof struct === "object"
-                  ? (struct as SourceDef)
-                  : undefined,
+            struct: resolveStructRef(view.structRef, modelDef),
             modelDef,
-            compositeResolvedSourceDef:
-               prepared._query?.compositeResolvedSourceDef,
+            compositeResolvedSourceDef: view.compositeResolvedSourceDef as
+               | SourceDef
+               | undefined,
             compiledUrl:
-               typeof prepared._query?.location?.url === "string" &&
-               prepared._query.location.url.startsWith("internal://")
-                  ? prepared._query.location.url
+               typeof location?.url === "string" &&
+               location.url.startsWith("internal://")
+                  ? location.url
                   : undefined,
-            queryLocation: prepared._query?.location,
-            pipeline: prepared._query?.pipeline,
+            queryLocation: location,
+            pipeline: view.pipeline as readonly StageLike[] | undefined,
          };
       } catch {
          // Not fail-open: if getPreparedQuery() throws here, execution's own
@@ -3184,29 +3174,14 @@ export class Model {
          callerJoinPath?: CallerJoinPath;
       }>,
    ): Promise<void> {
-      const prepared = (await recompiled.getPreparedQuery()) as {
-         _query?: {
-            structRef?: unknown;
-            compositeResolvedSourceDef?: unknown;
-         };
-         _modelDef?: ModelDef;
-      };
-      const modelDef = prepared._modelDef ?? this.modelDef;
+      const prepared = await recompiled.getPreparedQuery();
+      const view = preparedQueryView(prepared);
+      const modelDef = view.modelDef ?? this.modelDef;
       // MIRROR the compiler's precedence (`compositeResolvedSourceDef ??
       // structRef`), never a union: checking the struct that does not
       // generate SQL would let unfiltered rows pass behind a green proof.
-      const structRef =
-         prepared._query?.compositeResolvedSourceDef ??
-         prepared._query?.structRef;
-      const resolvedRef =
-         typeof structRef === "string"
-            ? modelDef?.contents[structRef]
-            : structRef;
       // A string `structRef` names a `contents` entry; an object one IS it.
-      const struct =
-         resolvedRef && typeof resolvedRef === "object"
-            ? (resolvedRef as SourceDef)
-            : undefined;
+      const struct = resolveStructRef(sqlTargetRef(view), modelDef);
       for (const { condition, callerJoinPath } of grafts) {
          // A caller join's graft is proven on that join, found again by the
          // path the walk recorded; the run target's on the run target.
@@ -3315,10 +3290,9 @@ export class Model {
                await this.assertGateLanded(recompiled, appliedGrafts);
                return;
             }
-            const prepared = (await recompiled.getPreparedQuery()) as {
-               _query?: { structRef?: unknown };
-            };
-            if (prepared._query?.structRef !== graftedStruct) {
+            if (
+               (await readPreparedQuery(recompiled)).structRef !== graftedStruct
+            ) {
                throw new Error(
                   "the grafted run target is not the one the query will execute",
                );
@@ -3500,15 +3474,8 @@ export class Model {
       getPreparedQuery(): Promise<unknown>;
    }): Promise<string | undefined> {
       try {
-         const prepared = (await runnable.getPreparedQuery()) as {
-            _query?: { structRef?: unknown };
-         };
-         const structRef = prepared._query?.structRef;
-         if (typeof structRef === "string") return structRef;
-         if (structRef && typeof structRef === "object") {
-            const s = structRef as { as?: string; name?: string };
-            return s.as || s.name;
-         }
+         // `as || name`: an empty alias falls through to the name.
+         return structRefName((await readPreparedQuery(runnable)).structRef);
       } catch {
          // Can't resolve — caller simply has no name to gate on here.
       }
