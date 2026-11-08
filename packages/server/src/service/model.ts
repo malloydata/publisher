@@ -1357,15 +1357,50 @@ export class Model {
     * query is not shown either.
     */
    public assertFileOnSurface(): void {
-      const { mode, exploresDeclared, isQueryEntryPoint } = this.queryBoundary;
-      if (mode === "all" || !exploresDeclared) return;
-      if (!isQueryEntryPoint && !this.isNotebook()) {
+      if (!this.fileOnSurface()) {
          throw this.notQueryable(
             `No queryable model "${this.modelPath}".`,
             true,
             "model",
          );
       }
+   }
+
+   /** {@link assertFileOnSurface}'s test: no boundary, or this file is an entry point. */
+   private fileOnSurface(): boolean {
+      const { mode, exploresDeclared, isQueryEntryPoint } = this.queryBoundary;
+      if (mode === "all" || !exploresDeclared) return true;
+      return isQueryEntryPoint || this.isNotebook();
+   }
+
+   /**
+    * Whether the query boundary admits a query that names `name` as its source
+    * in this file, by `sourceName` or as `run: name -> …`: the query route's
+    * queryability rule, before any gate (`#(authorize)`, `#(access_filter)`)
+    * is asked. True everywhere when the package has no boundary.
+    *
+    * The one rule: {@link assertQueryBoundaryEarly} admits a named source by
+    * {@link sourceAdmission} after {@link assertFileOnSurface}, as this does,
+    * and the entities behind `GET …/entities` report a source queryable by
+    * asking this.
+    */
+   public admitsSourceByName(name: string): boolean {
+      const { mode, exploresDeclared } = this.queryBoundary;
+      if (mode === "all" || !exploresDeclared) return true;
+      return this.fileOnSurface() && this.sourceAdmission(name) !== undefined;
+   }
+
+   /**
+    * How the boundary admits a source named in a query to this file, which is
+    * on the surface: `curated` when it is on the surface itself (cleared),
+    * `report` when this served report builds it on the surface (deferred to
+    * the compiled check, which settles it the same way), undefined when it is
+    * refused.
+    */
+   private sourceAdmission(name: string): "curated" | "report" | undefined {
+      if (this.isCuratedSource(name)) return "curated";
+      if (this.isReportSourceOnSurface(name)) return "report";
+      return undefined;
    }
 
    /**
@@ -1616,10 +1651,11 @@ export class Model {
          // with an exported top-level query's name, and clearing skips the
          // compiled backstop.
          if (!sourceName && this.isCuratedQuery(queryName)) return "cleared";
-         if (sourceName && this.isCuratedSource(sourceName)) return "cleared";
-         if (sourceName && this.isReportSourceOnSurface(sourceName)) {
-            return "deferred";
-         }
+         const admission = sourceName
+            ? this.sourceAdmission(sourceName)
+            : undefined;
+         if (admission === "curated") return "cleared";
+         if (admission === "report") return "deferred";
          // A dashboard's own named query (a single-query dashboard, or a
          // control's `suggest { query= }`) is decided by the compiled check, by
          // the source it reads.
@@ -1649,8 +1685,9 @@ export class Model {
       // An explicitly-named source: admit iff curated, or a served report's
       // own source over the surface (settled again by the compiled check).
       if (sourceName) {
-         if (this.isCuratedSource(sourceName)) return "cleared";
-         if (this.isReportSourceOnSurface(sourceName)) return "deferred";
+         const admission = this.sourceAdmission(sourceName);
+         if (admission === "curated") return "cleared";
+         if (admission === "report") return "deferred";
          throw this.notQueryable(
             `No queryable source "${sourceName}".`,
             this.declaresSource(sourceName),
@@ -2004,6 +2041,23 @@ export class Model {
       query?: string,
       derivationContext?: string,
    ): boolean {
+      return this.curatedBasesOf(name, query, derivationContext) !== undefined;
+   }
+
+   /**
+    * The curated names `name` is, or derives from: `{name}` when it is
+    * curated itself, else the union over every declared base, each of which
+    * must prove out ({@link derivesFromCurated} is "this is defined").
+    * Undefined when the walk proves nothing.
+    *
+    * Public, for the entities: a served report's own source is reported in
+    * the place of the served source it is built on, and this names it.
+    */
+   public curatedBasesOf(
+      name: string,
+      query?: string,
+      derivationContext?: string,
+   ): ReadonlySet<string> | undefined {
       const own = this.ownCuratedSourceNames();
       const packageCurated = this.queryBoundary.packageCuratedSources;
       // A dashboard's own declarations are edges too, merged (never replacing)
@@ -2025,27 +2079,38 @@ export class Model {
          else basesOf.set(derived, new Set(bases));
       }
       // Only positive results are memoized: a name proven curated is proven
-      // wherever it appears, while a `false` may be the local verdict of the
+      // wherever it appears, while a failure may be the local verdict of the
       // in-progress cycle guard rather than a property of the name.
-      const proven = new Set<string>();
+      const proven = new Map<string, Set<string>>();
       const inProgress = new Set<string>();
-      const proves = (current: string): boolean => {
+      const proves = (current: string): Set<string> | undefined => {
          if (
             own.has(current) ||
             this.admittedByPackage(current, packageCurated)
          )
-            return true;
-         if (proven.has(current)) return true;
+            return new Set([current]);
+         const known = proven.get(current);
+         if (known) return known;
          // A back-edge or an over-long chain grounds nothing: deny.
-         if (inProgress.has(current)) return false;
-         if (inProgress.size >= REQUEST_CHAIN_MAX_NAMES) return false;
+         if (inProgress.has(current)) return undefined;
+         if (inProgress.size >= REQUEST_CHAIN_MAX_NAMES) return undefined;
          const bases = basesOf.get(current);
-         if (!bases || bases.size === 0) return false;
+         if (!bases || bases.size === 0) return undefined;
          inProgress.add(current);
-         const ok = Array.from(bases).every((base) => proves(base));
+         const roots = new Set<string>();
+         let ok = true;
+         for (const base of bases) {
+            const reached = proves(base);
+            if (!reached) {
+               ok = false;
+               break;
+            }
+            for (const root of reached) roots.add(root);
+         }
          inProgress.delete(current);
-         if (ok) proven.add(current);
-         return ok;
+         if (!ok) return undefined;
+         proven.set(current, roots);
+         return roots;
       };
       return proves(name);
    }

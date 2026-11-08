@@ -34,14 +34,7 @@ import {
    RequiredFilterMissingDimensionError,
    RequiredFilterNonPublicDimensionError,
 } from "./source_extraction";
-import {
-   buildPackageQuerySurface,
-   nonQueryableSources,
-   type PackageManifest,
-   type PackageQuerySurface,
-   servedFrom,
-   type SurfaceModelFile,
-} from "./query_surface";
+import type { SourceAddress } from "./internal_types";
 import { serializeExploreToSourceInfo } from "./source_info_serializer";
 
 /** A `.malloy` file of the package: compiled, or the reason it did not. */
@@ -57,6 +50,29 @@ export type EntitiesModelFile =
      }
    | { relativePath: string; absolutePath: string; error: string };
 
+/**
+ * The query route's answers the entities report, asked of the package that
+ * serves them (`Package.entitiesQueryRoute`). The extraction never re-derives
+ * the queryability rule; it asks.
+ */
+export interface EntitiesQueryRoute {
+   /** Whether the package's query boundary restricts anything: a surface, and `queryableSources` not `"all"`. */
+   boundaryActive: boolean;
+   /** Whether the query route runs a query naming `sourceName` in `modelPath` (`Model.admitsSourceByName`). */
+   admitsSource(modelPath: string, sourceName: string): boolean;
+   /** Whether `modelPath` is a served report, of either layout. */
+   isServedReport(modelPath: string): boolean;
+   /**
+    * The served source `sourceName` in `modelPath` is, or is built on: the
+    * listed non-report file that exports that declaration, and the name it
+    * exports it under. Undefined when there is none.
+    */
+   servedSourceOf(
+      modelPath: string,
+      sourceName: string,
+   ): SourceAddress | undefined;
+}
+
 export interface ExtractPackageEntitiesInput {
    /** Absolute path of the package root. */
    packageRoot: string;
@@ -64,8 +80,8 @@ export interface ExtractPackageEntitiesInput {
    packageName?: string;
    /** Every `.malloy` file of the package, listed files or not. */
    modelFiles: EntitiesModelFile[];
-   /** The package's discovery surface; absent when it curates nothing. */
-   manifest?: PackageManifest;
+   /** Which sources the query route runs, asked per source. */
+   queryRoute: EntitiesQueryRoute;
    /**
     * Connections the `#(index)` fingerprint queries compile against. They read
     * the compiled model's schemas, so a compile asks a connection for its
@@ -78,10 +94,9 @@ export interface ExtractPackageEntitiesInput {
  * Compute every model file's entities: its fields, the facts about each of its
  * sources, and the schema of each source.
  *
- * Two passes, because whether a source is queryable in one file depends on
- * what the other files export (see `query_surface.ts`): the package's query
- * surface is resolved from every compiled file first, then each file is
- * extracted against it.
+ * Whether a source is queryable is the query route's answer
+ * ({@link EntitiesQueryRoute}), with one deliberate difference: see
+ * {@link advertisedQueryability}.
  *
  * An annotation an index cannot honor (a required `#(filter)` on a dimension
  * that does not exist or is not public, an `#(index)` the index cannot use) is
@@ -115,29 +130,6 @@ export interface PackageEntitiesExtraction {
 async function extractAll(
    input: ExtractPackageEntitiesInput,
 ): Promise<PackageEntitiesExtraction> {
-   const compiled = input.modelFiles.filter(
-      (f): f is Extract<EntitiesModelFile, { model: Model }> => "model" in f,
-   );
-   // A file whose part of the surface cannot be read is reported on its own,
-   // as a compile failure is, rather than failing the whole package.
-   const surfaceErrors = new Map<string, string>();
-   const surface = buildPackageQuerySurface(
-      input.manifest,
-      compiled as SurfaceModelFile[],
-      (file, error) => {
-         const detail = errMessage(error);
-         logger.warn("Could not read a model's part of the query surface", {
-            packageName: input.packageName,
-            modelPath: file.relativePath,
-            error: detail,
-         });
-         recordEntitiesDegraded("surface_read_failed");
-         surfaceErrors.set(
-            file.relativePath,
-            `Error reading the query surface of ${file.relativePath}: ${detail}`,
-         );
-      },
-   );
    const results: ModelCompileResult[] = [];
    const findings: EntitiesFinding[] = [];
    for (const file of input.modelFiles) {
@@ -145,18 +137,11 @@ async function extractAll(
          results.push(errorResult(file.relativePath, file.error));
          continue;
       }
-      const surfaceError = surfaceErrors.get(file.relativePath);
-      if (surfaceError !== undefined) {
-         results.push(
-            errorResult(file.relativePath, surfaceError, "extraction"),
-         );
-         continue;
-      }
       try {
          const extracted = await extractModelFile(
             file,
             input.packageRoot,
-            surface,
+            input.queryRoute,
             input.connections,
             input.packageName,
          );
@@ -213,11 +198,50 @@ function errorResult(
    };
 }
 
+/**
+ * Which of the sources in `modelPath` the entities advertise as queryable,
+ * and, for those a served report reads, the served source to advertise in
+ * each one's place.
+ *
+ * A source is advertised exactly when the query route runs it, with ONE
+ * deliberate difference: under an active query boundary, nothing a served
+ * report declares or imports is advertised, although the route runs a query
+ * addressed to the report that names its re-import of a served source
+ * (`orders`) or a source it builds on one (`open_orders is orders extend
+ * {...}`). Each such source is marked NOT_QUERYABLE and names its served
+ * source (`servedFrom`), so a search shows one `orders`, from the file that
+ * serves it, rather than one per report that reads it. A report is a view onto
+ * the served surface, not an addition to it. Without a boundary no file is
+ * read as a report, and everything compiled is advertised.
+ */
+export function advertisedQueryability(
+   route: EntitiesQueryRoute,
+   modelPath: string,
+   sourceNames: readonly string[],
+): {
+   notQueryable: Set<string>;
+   servedFrom: Map<string, SourceAddress>;
+} {
+   const servedReport = route.boundaryActive && route.isServedReport(modelPath);
+   const notQueryable = new Set<string>();
+   const servedFrom = new Map<string, SourceAddress>();
+   for (const name of sourceNames) {
+      if (servedReport) {
+         notQueryable.add(name);
+         const served = route.servedSourceOf(modelPath, name);
+         if (served) servedFrom.set(name, served);
+      } else if (!route.admitsSource(modelPath, name)) {
+         notQueryable.add(name);
+      }
+   }
+   return { notQueryable, servedFrom };
+}
+
 /** Extract a compiled file's entities and source metadata. */
 async function extractModelFile(
    file: Extract<EntitiesModelFile, { model: Model }>,
    packageRoot: string,
-   surface: PackageQuerySurface,
+   queryRoute: EntitiesQueryRoute,
    connections: LookupConnection<InfoConnection>,
    packageName: string | undefined,
 ): Promise<{ result: ModelCompileResult; findings: EntitiesFinding[] }> {
@@ -242,9 +266,13 @@ async function extractModelFile(
       compiledModel,
       file.relativePath,
    );
-   // The sources this server refuses to run a query against, read from the
-   // same rule the query path enforces (see query_surface.ts).
-   const nonQueryableSourceNames = nonQueryableSources(file, surface);
+   // Asked of the query route, never re-derived (see advertisedQueryability).
+   const { notQueryable: nonQueryableSourceNames, servedFrom } =
+      advertisedQueryability(
+         queryRoute,
+         file.relativePath,
+         explores.map((explore) => explore.name),
+      );
    const sourceMetadataEntries = sourceExtraction.extractMetadataFromExplores(
       explores,
       file.relativePath,
@@ -255,7 +283,7 @@ async function extractModelFile(
       nonQueryableSourceNames,
       source,
       packageRoot,
-      servedFrom(file, surface),
+      servedFrom,
       refuse,
    );
 

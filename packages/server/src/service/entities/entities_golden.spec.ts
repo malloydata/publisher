@@ -17,7 +17,7 @@
  */
 
 import { expect, test } from "bun:test";
-import { QUERY_SURFACE_FILES } from "./__fixtures__/query_surface_cases";
+import { REPORT_SURFACE_FILES } from "./__fixtures__/report_surface_package";
 import { compileFixture } from "./test_support";
 import { toApiEntities } from "./to_api";
 
@@ -161,11 +161,11 @@ source: derived_gate is scalar_gate extend {}
 
 const PACKAGES: Record<string, GoldenPackage> = {
    "query-surface": {
-      files: QUERY_SURFACE_FILES,
+      files: REPORT_SURFACE_FILES,
       manifest: { explores: ["index.malloy"] },
    },
    "query-surface-all": {
-      files: QUERY_SURFACE_FILES,
+      files: REPORT_SURFACE_FILES,
       manifest: { explores: ["index.malloy"], queryableSources: "all" },
    },
    "listed-dashboards": {

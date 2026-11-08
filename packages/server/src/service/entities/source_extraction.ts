@@ -982,8 +982,8 @@ const extractMetadataFromExplores = (
       // queryable under a declared model file and not under another.
       // A report's import of a served source, or a source the report derives
       // from one, also says which served source stands for it
-      // (query_surface.ts `servedFrom`), so a search scoped to the report can
-      // return that source instead.
+      // (extract.ts `advertisedQueryability`), so a search scoped to the
+      // report can return that source instead.
       if (nonQueryableSourceNames.has(explore.name)) {
          const servedFrom = servedFromBySource.get(explore.name);
          metadataEntries.push({

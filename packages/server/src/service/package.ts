@@ -22,9 +22,11 @@ import {
 import { lazyHistogram, withSpan } from "../telemetry";
 import {
    type EntitiesModelFile,
+   type EntitiesQueryRoute,
    entitiesFindingCode,
    extractPackageEntities,
 } from "./entities/extract";
+import type { SourceAddress } from "./entities/internal_types";
 import { toApiEntities } from "./entities/to_api";
 import { isUnconditionalDenyAuthorize } from "./entities/access_gates";
 import { splitSourcePath } from "./entities/explore_walk";
@@ -384,6 +386,13 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
    private reports = new Map<string, ServedReport>();
    /** Every file discovery found carrying an artifact tag, with its status. */
    private reportFiles = new Map<string, ReportFile>();
+   /**
+    * Under an active query boundary, each declaration a listed non-report file
+    * exports (keyed by {@link Model.definitionIdentity}), with the first such
+    * file by path and the name it exports it under: where the surface serves
+    * it. Set with the boundary; empty without one.
+    */
+   private servedSourceAddresses = new Map<string, SourceAddress>();
    /** The last discovery, which the lint re-runs over. */
    private discovery?: ReportDiscovery;
    /** Manifest deprecations the load tolerated, reported at publish and in `warnings`. */
@@ -679,6 +688,7 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
       let packageCuratedQueries:
          | ReadonlyMap<string, ReadonlySet<string>>
          | undefined;
+      const servedSourceAddresses = new Map<string, SourceAddress>();
       if (mode === "declared" && exploresDeclared && exploreSet) {
          const sources = new Map<string, Set<string>>();
          const queries = new Map<string, Set<string>>();
@@ -694,7 +704,12 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
             if (existing) existing.add(identity);
             else into.set(name, new Set([identity]));
          };
-         for (const [modelPath, model] of this.models) {
+         // In path order, so the first file to export a declaration is the
+         // one its served address names.
+         const byPath = [...this.models].sort(([a], [b]) =>
+            a < b ? -1 : a > b ? 1 : 0,
+         );
+         for (const [modelPath, model] of byPath) {
             // Only .malloy files curate a surface; a listed notebook is invalid
             // and contributes nothing (as in listModels).
             if (!modelPath.endsWith(MODEL_FILE_SUFFIX)) continue;
@@ -703,7 +718,18 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
             // never adds to it.
             if (this.isServedReport(modelPath)) continue;
             for (const source of model.getSources() ?? []) {
-               add(sources, source.name, model.definitionIdentity(source.name));
+               const identity = model.definitionIdentity(source.name);
+               add(sources, source.name, identity);
+               if (
+                  source.name &&
+                  identity &&
+                  !servedSourceAddresses.has(identity)
+               ) {
+                  servedSourceAddresses.set(identity, {
+                     modelFilePath: modelPath,
+                     sourceName: source.name,
+                  });
+               }
             }
             for (const query of model.getQueries() ?? []) {
                add(queries, query.name, model.definitionIdentity(query.name));
@@ -743,6 +769,7 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
          });
       }
       this.modelPolicy.setQueryBoundaries(boundaries);
+      this.servedSourceAddresses = servedSourceAddresses;
    }
 
    /**
@@ -1567,6 +1594,48 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
    }
 
    /**
+    * What the entities extraction asks this package's query route, so it
+    * reports what the route decides rather than a copy of the rule: each
+    * source's queryability is {@link Model.admitsSourceByName}, and a served
+    * report's sources name the served source they are or are built on.
+    *
+    * A file this package holds no model for (the extraction is only ever
+    * handed this package's models; a spec may hand it others) is answered as
+    * a standalone model is: admitted without a boundary, refused under one,
+    * where it is no entry point.
+    */
+   public entitiesQueryRoute(): EntitiesQueryRoute {
+      const boundaryActive = this.queryBoundaryActive();
+      return {
+         boundaryActive,
+         admitsSource: (modelPath, sourceName) => {
+            const model = this.models.get(modelPath);
+            if (!model) return !boundaryActive;
+            return model.admitsSourceByName(sourceName);
+         },
+         isServedReport: (modelPath) => this.isServedReport(modelPath),
+         servedSourceOf: (modelPath, sourceName) => {
+            const model = this.models.get(modelPath);
+            if (!model) return undefined;
+            const served = (name: string) => {
+               const identity = model.definitionIdentity(name);
+               return identity
+                  ? this.servedSourceAddresses.get(identity)
+                  : undefined;
+            };
+            // The very declaration a listed file exports, under any name
+            // (`import { o is orders }` included)...
+            const direct = served(sourceName);
+            if (direct) return direct;
+            // ...else the one served source it is built on. A compiled file
+            // declares each name once, so the chain reaches one base.
+            const [base] = model.curatedBasesOf(sourceName) ?? [];
+            return base === undefined ? undefined : served(base);
+         },
+      };
+   }
+
+   /**
     * Compute {@link entities} from the models now installed. An annotation an
     * index cannot honor is left out of them and reported as a package warning
     * with a stable code, so the package still loads and a host that indexes can
@@ -1602,10 +1671,7 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
          packageRoot: this.packagePath,
          packageName: this.packageName,
          modelFiles,
-         manifest: {
-            explores: this.packageMetadata.explores,
-            queryableSources: this.packageMetadata.queryableSources,
-         },
+         queryRoute: this.entitiesQueryRoute(),
          connections: this.malloyConfig.connections,
       });
       this.entitiesWarnings = findings.map((finding) => ({

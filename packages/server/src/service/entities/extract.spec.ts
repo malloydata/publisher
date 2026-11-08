@@ -12,6 +12,7 @@ import {
    ConnectionLookup,
    type FilePointer,
    packageCompilationService,
+   UNCURATED_QUERY_ROUTE,
    type Workspace,
    writeWorkspace,
 } from "./test_support";
@@ -114,6 +115,7 @@ describe("extractPackageEntities", () => {
       const fromDefinition = await extractPackageEntities({
          packageRoot: ws!.dir,
          modelFiles: [rebuilt],
+         queryRoute: UNCURATED_QUERY_ROUTE,
          connections: lookup,
       });
 

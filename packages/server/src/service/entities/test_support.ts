@@ -6,7 +6,8 @@
  * package, an in-process DuckDB connection, and a one-call "compile these
  * files and extract their entities" that compiles each file with Malloy the
  * way a load does and hands the compiled models to {@link
- * extractPackageEntities}.
+ * extractPackageEntities}. Which sources are queryable is asked of a real
+ * {@link Package} loaded over the same files, as a load asks it.
  */
 
 import { DuckDBConnection } from "@malloydata/db-duckdb";
@@ -19,18 +20,50 @@ import {
    Runtime,
 } from "@malloydata/malloy";
 import { readFileSync } from "node:fs";
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import {
+   mkdir,
+   mkdtemp,
+   readFile,
+   rename,
+   rm,
+   stat,
+   writeFile,
+} from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { errMessage } from "../../utils";
+import { Package } from "../package";
 import {
    type EntitiesModelFile,
+   type EntitiesQueryRoute,
    extractPackageEntities,
    type PackageEntitiesExtraction,
 } from "./extract";
 import type { ModelCompileResult } from "./internal_types";
 import { FileURLReader } from "./field_helpers";
-import type { PackageManifest } from "./query_surface";
+
+/**
+ * The package's discovery surface, as `publisher.json` resolves it. Both fields
+ * optional: a package with no surface keeps every compiled source queryable.
+ */
+export type PackageManifest = {
+   /** Model file paths that form the surface, as `explores` resolves. */
+   explores?: string[];
+   /** `"declared"` (default) makes the surface a query boundary; `"all"` decouples them. */
+   queryableSources?: "declared" | "all";
+};
+
+/**
+ * The query route of a package that curates nothing: every compiled source
+ * runs and no file is read as a report, which is what a {@link Package} with
+ * no surface answers too.
+ */
+export const UNCURATED_QUERY_ROUTE: EntitiesQueryRoute = Object.freeze({
+   boundaryActive: false,
+   admitsSource: () => true,
+   isServedReport: () => false,
+   servedSourceOf: () => undefined,
+});
 
 /** A single file to write inside a workspace, by workspace-relative path. */
 export interface WorkspaceFile {
@@ -148,6 +181,71 @@ async function compileModelFile(
    }
 }
 
+/**
+ * The query route of the package at `packageRoot` under `manifest`: a real
+ * {@link Package} loaded over the files there, with a `publisher.json` that
+ * declares exactly this surface. Without a manifest, the package curates
+ * nothing.
+ *
+ * A package with a model that does not compile does not load, so the files
+ * in `uncompiled` are set aside while it loads. They would add nothing to the
+ * surface anyway: a file that failed to compile exports nothing.
+ */
+async function queryRouteFor(
+   packageRoot: string,
+   manifest: PackageManifest | undefined,
+   connections: LookupConnection<InfoConnection>,
+   uncompiled: readonly string[],
+): Promise<EntitiesQueryRoute> {
+   if (!manifest) return UNCURATED_QUERY_ROUTE;
+   const setAside = uncompiled.map((relativePath) => {
+      const absolutePath = path.join(packageRoot, relativePath);
+      return { absolutePath, aside: `${absolutePath}.uncompiled` };
+   });
+   const publisherJson = path.join(packageRoot, "publisher.json");
+   const previous = await stat(publisherJson).then(
+      () => readFile(publisherJson, "utf-8"),
+      () => undefined,
+   );
+   const moved: typeof setAside = [];
+   try {
+      for (const file of setAside) {
+         await rename(file.absolutePath, file.aside);
+         moved.push(file);
+      }
+      // An explicit `explores`, so a root index.malloy curates only when the
+      // manifest says it does.
+      await writeFile(
+         publisherJson,
+         JSON.stringify({
+            name: "entities-spec",
+            explores: manifest.explores ?? [],
+            ...(manifest.queryableSources !== undefined && {
+               queryableSources: manifest.queryableSources,
+            }),
+         }),
+         "utf-8",
+      );
+      const pkg = await Package.create(
+         "entities-spec",
+         "entities-spec",
+         packageRoot,
+         new Map([
+            [
+               "duckdb",
+               // The spec lookup serves a full DuckDB connection.
+               (await connections.lookupConnection("duckdb")) as Connection,
+            ],
+         ]),
+      );
+      return pkg.entitiesQueryRoute();
+   } finally {
+      if (previous === undefined) await rm(publisherJson, { force: true });
+      else await writeFile(publisherJson, previous, "utf-8");
+      for (const file of moved) await rename(file.aside, file.absolutePath);
+   }
+}
+
 /** Compile every file of the task, then extract the package's entities and findings. */
 async function extractPackage(
    task: CompilePackageTask,
@@ -160,7 +258,12 @@ async function extractPackage(
    return extractPackageEntities({
       packageRoot,
       modelFiles,
-      manifest: task.manifest,
+      queryRoute: await queryRouteFor(
+         packageRoot,
+         task.manifest,
+         connections,
+         modelFiles.flatMap((f) => ("error" in f ? [f.relativePath] : [])),
+      ),
       connections,
    });
 }
