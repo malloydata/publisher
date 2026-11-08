@@ -109,6 +109,8 @@ tags:
   - name: materialization
     description: Runs that build persisted sources, their manifests, and what each version serves per source.
 paths:
+
+
   /status:
     get:
       operationId: get-status
@@ -130,6 +132,8 @@ paths:
                 $ref: "#/components/schemas/ServerStatus"
         "503":
           $ref: "#/components/responses/Unavailable"
+
+
   /environments:
     get:
       operationId: list-environments
@@ -201,6 +205,8 @@ paths:
           $ref: "#/components/responses/Internal"
         "503":
           $ref: "#/components/responses/Unavailable"
+
+
   /environments/{environmentName}:
     parameters:
       - $ref: "#/components/parameters/environmentName"
@@ -353,6 +359,8 @@ paths:
           $ref: "#/components/responses/Internal"
         "503":
           $ref: "#/components/responses/Unavailable"
+
+
   /environments/{environmentName}/reload:
     parameters:
       - $ref: "#/components/parameters/environmentName"
@@ -386,6 +394,8 @@ paths:
           $ref: "#/components/responses/Internal"
         "503":
           $ref: "#/components/responses/Unavailable"
+
+
   /environments/{environmentName}/connections:
     parameters:
       - $ref: "#/components/parameters/environmentName"
@@ -481,6 +491,8 @@ paths:
           $ref: "#/components/responses/Internal"
         "503":
           $ref: "#/components/responses/Unavailable"
+
+
   /environments/{environmentName}/connections/{connectionName}:
     parameters:
       - $ref: "#/components/parameters/environmentName"
@@ -590,6 +602,8 @@ paths:
           $ref: "#/components/responses/Internal"
         "503":
           $ref: "#/components/responses/Unavailable"
+
+
   /environments/{environmentName}/connections/{connectionName}/test:
     parameters:
       - $ref: "#/components/parameters/environmentName"
@@ -624,6 +638,8 @@ paths:
           $ref: "#/components/responses/Internal"
         "503":
           $ref: "#/components/responses/Unavailable"
+
+
   /environments/{environmentName}/connections/{connectionName}/tables:
     parameters:
       - $ref: "#/components/parameters/environmentName"
@@ -673,6 +689,8 @@ paths:
           $ref: "#/components/responses/Internal"
         "503":
           $ref: "#/components/responses/Unavailable"
+
+
   /environments/{environmentName}/connections/{connectionName}/tables/{tableId}:
     parameters:
       - $ref: "#/components/parameters/environmentName"
@@ -706,6 +724,8 @@ paths:
           $ref: "#/components/responses/Internal"
         "503":
           $ref: "#/components/responses/Unavailable"
+
+
   /environments/{environmentName}/packages:
     parameters:
       - $ref: "#/components/parameters/environmentName"
@@ -797,6 +817,8 @@ paths:
           $ref: "#/components/responses/Internal"
         "503":
           $ref: "#/components/responses/Unavailable"
+
+
   /environments/{environmentName}/packages/{packageName}:
     parameters:
       - $ref: "#/components/parameters/environmentName"
@@ -902,6 +924,8 @@ paths:
           $ref: "#/components/responses/Internal"
         "503":
           $ref: "#/components/responses/Unavailable"
+
+
   /environments/{environmentName}/packages/{packageName}/reload:
     parameters:
       - $ref: "#/components/parameters/environmentName"
@@ -939,6 +963,8 @@ paths:
           $ref: "#/components/responses/Internal"
         "503":
           $ref: "#/components/responses/Unavailable"
+
+
   /environments/{environmentName}/packages/{packageName}/status:
     parameters:
       - $ref: "#/components/parameters/environmentName"
@@ -977,6 +1003,8 @@ paths:
           $ref: "#/components/responses/Internal"
         "503":
           $ref: "#/components/responses/Unavailable"
+
+
   /environments/{environmentName}/packages/{packageName}/versions:
     parameters:
       - $ref: "#/components/parameters/environmentName"
@@ -1017,6 +1045,8 @@ paths:
           $ref: "#/components/responses/Internal"
         "503":
           $ref: "#/components/responses/Unavailable"
+
+
   /environments/{environmentName}/packages/{packageName}/versions/{versionId}:
     parameters:
       - $ref: "#/components/parameters/environmentName"
@@ -1131,6 +1161,8 @@ paths:
           $ref: "#/components/responses/Internal"
         "503":
           $ref: "#/components/responses/Unavailable"
+
+
   /environments/{environmentName}/packages/{packageName}/versions/{versionId}/models:
     parameters:
       - $ref: "#/components/parameters/environmentName"
@@ -1170,6 +1202,8 @@ paths:
           $ref: "#/components/responses/Internal"
         "503":
           $ref: "#/components/responses/Unavailable"
+
+
   /environments/{environmentName}/packages/{packageName}/versions/{versionId}/models/{path}:
     parameters:
       - $ref: "#/components/parameters/environmentName"
@@ -1281,6 +1315,8 @@ paths:
           $ref: "#/components/responses/Internal"
         "503":
           $ref: "#/components/responses/Unavailable"
+
+
   /environments/{environmentName}/packages/{packageName}/versions/{versionId}/models/{path}/query:
     parameters:
       - $ref: "#/components/parameters/environmentName"
@@ -1333,6 +1369,8 @@ paths:
           $ref: "#/components/responses/Unavailable"
         "504":
           $ref: "#/components/responses/GatewayTimeout"
+
+
   /environments/{environmentName}/packages/{packageName}/versions/{versionId}/models/{path}/compile:
     parameters:
       - $ref: "#/components/parameters/environmentName"
@@ -1379,6 +1417,8 @@ paths:
           $ref: "#/components/responses/Internal"
         "503":
           $ref: "#/components/responses/Unavailable"
+
+
   /environments/{environmentName}/packages/{packageName}/versions/{versionId}/reports:
     parameters:
       - $ref: "#/components/parameters/environmentName"
@@ -1431,6 +1471,8 @@ paths:
           $ref: "#/components/responses/Internal"
         "503":
           $ref: "#/components/responses/Unavailable"
+
+
   /environments/{environmentName}/packages/{packageName}/versions/{versionId}/reports/{path}:
     parameters:
       - $ref: "#/components/parameters/environmentName"
@@ -1467,6 +1509,8 @@ paths:
           $ref: "#/components/responses/Internal"
         "503":
           $ref: "#/components/responses/Unavailable"
+
+
   /environments/{environmentName}/packages/{packageName}/versions/{versionId}/data-apps:
     parameters:
       - $ref: "#/components/parameters/environmentName"
@@ -1505,6 +1549,8 @@ paths:
           $ref: "#/components/responses/Internal"
         "503":
           $ref: "#/components/responses/Unavailable"
+
+
   /environments/{environmentName}/packages/{packageName}/versions/{versionId}/public/{path}:
     parameters:
       - $ref: "#/components/parameters/environmentName"
@@ -1544,6 +1590,8 @@ paths:
           $ref: "#/components/responses/Internal"
         "503":
           $ref: "#/components/responses/Unavailable"
+
+
   /environments/{environmentName}/packages/{packageName}/versions/{versionId}/data-files:
     parameters:
       - $ref: "#/components/parameters/environmentName"
@@ -1582,6 +1630,8 @@ paths:
           $ref: "#/components/responses/Internal"
         "503":
           $ref: "#/components/responses/Unavailable"
+
+
   /environments/{environmentName}/packages/{packageName}/versions/{versionId}/agents:
     parameters:
       - $ref: "#/components/parameters/environmentName"
@@ -1620,6 +1670,8 @@ paths:
           $ref: "#/components/responses/Internal"
         "503":
           $ref: "#/components/responses/Unavailable"
+
+
   /environments/{environmentName}/packages/{packageName}/versions/{versionId}/agents/{name}:
     parameters:
       - $ref: "#/components/parameters/environmentName"
@@ -1663,6 +1715,8 @@ paths:
           $ref: "#/components/responses/Internal"
         "503":
           $ref: "#/components/responses/Unavailable"
+
+
   /environments/{environmentName}/packages/{packageName}/versions/{versionId}/agents/{name}/skills/{path}:
     parameters:
       - $ref: "#/components/parameters/environmentName"
@@ -1700,6 +1754,8 @@ paths:
           $ref: "#/components/responses/Internal"
         "503":
           $ref: "#/components/responses/Unavailable"
+
+
   /environments/{environmentName}/packages/{packageName}/versions/{versionId}/skills:
     parameters:
       - $ref: "#/components/parameters/environmentName"
@@ -1739,6 +1795,8 @@ paths:
           $ref: "#/components/responses/Internal"
         "503":
           $ref: "#/components/responses/Unavailable"
+
+
   /environments/{environmentName}/packages/{packageName}/versions/{versionId}/skills/{name}:
     parameters:
       - $ref: "#/components/parameters/environmentName"
@@ -1775,6 +1833,8 @@ paths:
           $ref: "#/components/responses/Internal"
         "503":
           $ref: "#/components/responses/Unavailable"
+
+
   /environments/{environmentName}/packages/{packageName}/versions/{versionId}/entities:
     parameters:
       - $ref: "#/components/parameters/environmentName"
@@ -1814,6 +1874,8 @@ paths:
           $ref: "#/components/responses/Internal"
         "503":
           $ref: "#/components/responses/Unavailable"
+
+
   /environments/{environmentName}/packages/{packageName}/versions/{versionId}/classification:
     parameters:
       - $ref: "#/components/parameters/environmentName"
@@ -1849,6 +1911,8 @@ paths:
           $ref: "#/components/responses/Internal"
         "503":
           $ref: "#/components/responses/Unavailable"
+
+
   /environments/{environmentName}/packages/{packageName}/versions/{versionId}/index:
     parameters:
       - $ref: "#/components/parameters/environmentName"
@@ -1884,6 +1948,8 @@ paths:
           $ref: "#/components/responses/Internal"
         "503":
           $ref: "#/components/responses/Unavailable"
+
+
   /environments/{environmentName}/packages/{packageName}/versions/{versionId}/build-plan:
     parameters:
       - $ref: "#/components/parameters/environmentName"
@@ -1919,6 +1985,8 @@ paths:
           $ref: "#/components/responses/Internal"
         "503":
           $ref: "#/components/responses/Unavailable"
+
+
   /environments/{environmentName}/packages/{packageName}/versions/{versionId}/bindings:
     parameters:
       - $ref: "#/components/parameters/environmentName"
@@ -1957,6 +2025,8 @@ paths:
           $ref: "#/components/responses/Internal"
         "503":
           $ref: "#/components/responses/Unavailable"
+
+
   /environments/{environmentName}/packages/{packageName}/versions/{versionId}/connections:
     parameters:
       - $ref: "#/components/parameters/environmentName"
@@ -1993,6 +2063,8 @@ paths:
           $ref: "#/components/responses/Internal"
         "503":
           $ref: "#/components/responses/Unavailable"
+
+
   /environments/{environmentName}/packages/{packageName}/versions/{versionId}/connections/{connectionName}:
     parameters:
       - $ref: "#/components/parameters/environmentName"
@@ -2030,6 +2102,8 @@ paths:
           $ref: "#/components/responses/Internal"
         "503":
           $ref: "#/components/responses/Unavailable"
+
+
   /environments/{environmentName}/packages/{packageName}/runs:
     parameters:
       - $ref: "#/components/parameters/environmentName"
@@ -2122,6 +2196,8 @@ paths:
           $ref: "#/components/responses/Internal"
         "503":
           $ref: "#/components/responses/Unavailable"
+
+
   /environments/{environmentName}/packages/{packageName}/runs/{runId}:
     parameters:
       - $ref: "#/components/parameters/environmentName"
@@ -2231,6 +2307,8 @@ paths:
           $ref: "#/components/responses/Internal"
         "503":
           $ref: "#/components/responses/Unavailable"
+
+
   /environments/{environmentName}/packages/{packageName}/runs/{runId}/manifest:
     parameters:
       - $ref: "#/components/parameters/environmentName"
@@ -2264,6 +2342,8 @@ paths:
           $ref: "#/components/responses/Internal"
         "503":
           $ref: "#/components/responses/Unavailable"
+
+
   /environments/{environmentName}/connections/{connectionName}/schemas:
     get:
       operationId: list-schemas
@@ -2303,6 +2383,8 @@ paths:
     parameters:
       - $ref: "#/components/parameters/environmentName"
       - $ref: "#/components/parameters/connectionName"
+
+
   /environments/{environmentName}/connections/{connectionName}/schemas/{schemaName}/tables:
     parameters:
       - $ref: "#/components/parameters/environmentName"
@@ -2348,6 +2430,8 @@ paths:
           $ref: "#/components/responses/DatabaseUnreachable"
         "503":
           $ref: "#/components/responses/Unavailable"
+
+
   /environments/{environmentName}/connections/{connectionName}/schemas/{schemaName}/tables/{tableName}:
     parameters:
       - $ref: "#/components/parameters/environmentName"
@@ -2386,6 +2470,8 @@ paths:
           $ref: "#/components/responses/DatabaseUnreachable"
         "503":
           $ref: "#/components/responses/Unavailable"
+
+
   /environments/{environmentName}/connections/{connectionName}/sql:
     post:
       operationId: run-sql
@@ -2432,6 +2518,8 @@ paths:
     parameters:
       - $ref: "#/components/parameters/environmentName"
       - $ref: "#/components/parameters/connectionName"
+
+
   /environments/{environmentName}/packages/{packageName}/versions/{versionId}/connections/{connectionName}/schemas:
     get:
       operationId: list-schemas-in-version
@@ -2475,6 +2563,8 @@ paths:
       - $ref: "#/components/parameters/packageName"
       - $ref: "#/components/parameters/versionId"
       - $ref: "#/components/parameters/connectionName"
+
+
   /environments/{environmentName}/packages/{packageName}/versions/{versionId}/connections/{connectionName}/schemas/{schemaName}/tables:
     parameters:
       - $ref: "#/components/parameters/environmentName"
@@ -2524,6 +2614,8 @@ paths:
           $ref: "#/components/responses/DatabaseUnreachable"
         "503":
           $ref: "#/components/responses/Unavailable"
+
+
   /environments/{environmentName}/packages/{packageName}/versions/{versionId}/connections/{connectionName}/schemas/{schemaName}/tables/{tableName}:
     parameters:
       - $ref: "#/components/parameters/environmentName"
@@ -2566,6 +2658,8 @@ paths:
           $ref: "#/components/responses/DatabaseUnreachable"
         "503":
           $ref: "#/components/responses/Unavailable"
+
+
   /environments/{environmentName}/packages/{packageName}/versions/{versionId}/connections/{connectionName}/sql:
     post:
       operationId: run-sql-in-version
