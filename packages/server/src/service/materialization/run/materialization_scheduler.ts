@@ -6,8 +6,7 @@ import { MaterializationConflictError } from "../../../errors";
 import { logger } from "../../../logger";
 import { recordScheduledFire } from "../../../materialization_metrics";
 import { CronEvaluator } from "./cron_evaluator";
-import type { Environment } from "../../environment";
-import type { EnvironmentStore } from "../../environment_store";
+import type { MaterializationEnvironment, MaterializationHost } from "../host";
 import type { MaterializationService } from "./materialization_service";
 import { resolvePackageScope } from "../../package_manifest";
 import type { Version } from "../../../storage/DatabaseInterface";
@@ -60,7 +59,7 @@ export class MaterializationScheduler {
    private readonly unreadableVersions = new Set<string>();
 
    constructor(
-      private readonly environmentStore: EnvironmentStore,
+      private readonly host: Pick<MaterializationHost, "getLoadedEnvironments">,
       private readonly materializationService: MaterializationService,
       private readonly config: MaterializationSchedulerConfig,
       cron?: CronEvaluator,
@@ -99,7 +98,7 @@ export class MaterializationScheduler {
       const seen = new Set<string>();
       const sweep = { fired: 0 };
 
-      for (const env of this.environmentStore.getLoadedEnvironments()) {
+      for (const env of this.host.getLoadedEnvironments()) {
          const environmentName = env.getEnvironmentName();
          for (const pkg of env.getLoadedPackages()) {
             const packageName = pkg.getPackageName();
@@ -214,7 +213,7 @@ export class MaterializationScheduler {
     * conditions: `scope: version`, and a cron that parses.
     */
    private async versionCron(
-      env: Environment,
+      env: MaterializationEnvironment,
       version: Version,
    ): Promise<string | null> {
       if (version.manifestPath) return null;

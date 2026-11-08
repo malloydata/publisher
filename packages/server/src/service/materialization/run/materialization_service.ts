@@ -74,7 +74,7 @@ import {
 import { mergeQueryMetadata, type QueryMetadata } from "../../query_metadata";
 import type { components } from "../../../api";
 import { getPersistStorageMode } from "../../../config";
-import { EnvironmentStore } from "../../environment_store";
+import type { MaterializationEnvironment, MaterializationHost } from "../host";
 import {
    isVersionOwnedRun,
    newestServingEntries,
@@ -276,10 +276,10 @@ export class MaterializationService {
    /** In-flight runs, so they can be cancelled. In-process only. */
    private runningAbortControllers = new Map<string, AbortController>();
 
-   constructor(private environmentStore: EnvironmentStore) {}
+   constructor(private readonly host: MaterializationHost) {}
 
    private get repository(): ResourceRepository {
-      return this.environmentStore.storageManager.getRepository();
+      return this.host.storageManager.getRepository();
    }
 
    // ==================== STATE MACHINE ====================
@@ -341,7 +341,7 @@ export class MaterializationService {
       // Naming no version of a package that has no `latest` yet (explicit
       // promotion, before the first move) lists every run, as before.
       const versions = (
-         await this.environmentStore.getEnvironment(
+         await this.host.getEnvironment(
             parseEnvironmentName(environmentName),
             false,
          )
@@ -374,7 +374,7 @@ export class MaterializationService {
       packageName: string,
       versionId: unknown,
    ): Promise<string | null> {
-      const environment = await this.environmentStore.getEnvironment(
+      const environment = await this.host.getEnvironment(
          parseEnvironmentName(environmentName),
          false,
       );
@@ -503,7 +503,7 @@ export class MaterializationService {
    ): Promise<Materialization> {
       const environmentId = await this.resolveEnvironmentId(environmentName);
 
-      const environment = await this.environmentStore.getEnvironment(
+      const environment = await this.host.getEnvironment(
          parseEnvironmentName(environmentName),
          false,
       );
@@ -761,7 +761,7 @@ export class MaterializationService {
          });
 
          const environmentId = await this.resolveEnvironmentId(environmentName);
-         const environment = await this.environmentStore.getEnvironment(
+         const environment = await this.host.getEnvironment(
             parseEnvironmentName(environmentName),
             false,
          );
@@ -3444,12 +3444,12 @@ export class MaterializationService {
       packageName: string,
       exceptVersion?: string,
    ): Promise<void> {
-      let environment: Awaited<ReturnType<EnvironmentStore["getEnvironment"]>>;
+      let environment: MaterializationEnvironment;
       let environmentId: string;
       let slots: (string | undefined)[];
       try {
          environmentId = await this.resolveEnvironmentId(environmentName);
-         environment = await this.environmentStore.getEnvironment(
+         environment = await this.host.getEnvironment(
             parseEnvironmentName(environmentName),
             false,
          );
@@ -3541,7 +3541,7 @@ export class MaterializationService {
          return;
       }
 
-      const environment = await this.environmentStore.getEnvironment(
+      const environment = await this.host.getEnvironment(
          parseEnvironmentName(environmentName),
          false,
       );
@@ -3603,7 +3603,7 @@ export class MaterializationService {
     * is the environment's.
     */
    private async connectionResolverFor(
-      environment: Awaited<ReturnType<EnvironmentStore["getEnvironment"]>>,
+      environment: MaterializationEnvironment,
       packageName: string,
       version: string | null,
    ): Promise<(name: string) => Promise<MalloyConnection | undefined>> {
@@ -3626,7 +3626,7 @@ export class MaterializationService {
     * or its destination could not be reached.
     */
    private async dropManifestEntries(
-      environment: Awaited<ReturnType<EnvironmentStore["getEnvironment"]>>,
+      environment: MaterializationEnvironment,
       environmentName: string,
       packageName: string,
       materializationId: string,
@@ -3793,7 +3793,7 @@ export class MaterializationService {
       versionId: string,
    ): Promise<void> {
       try {
-         const environment = await this.environmentStore.getEnvironment(
+         const environment = await this.host.getEnvironment(
             parseEnvironmentName(environmentName),
             false,
          );
@@ -3841,7 +3841,7 @@ export class MaterializationService {
     * throws.
     */
    async reclaimOwedNow(
-      environment: Awaited<ReturnType<EnvironmentStore["getEnvironment"]>>,
+      environment: MaterializationEnvironment,
       packageName: string,
       versionId: string,
    ): Promise<void> {
@@ -3933,7 +3933,7 @@ export class MaterializationService {
     * those tables or writes them.
     */
    private async reclaimOwnedRuns(
-      environment: Awaited<ReturnType<EnvironmentStore["getEnvironment"]>>,
+      environment: MaterializationEnvironment,
       environmentName: string,
       environmentId: string,
       packageName: string,
@@ -4015,7 +4015,7 @@ export class MaterializationService {
     * time.
     */
    async reclaimArchivedVersions(): Promise<void> {
-      for (const environment of this.environmentStore.getLoadedEnvironments()) {
+      for (const environment of this.host.getLoadedEnvironments()) {
          const environmentName = environment.getEnvironmentName();
          try {
             const environmentId =
