@@ -16,7 +16,6 @@ import * as fs from "fs";
 import * as path from "path";
 import { components } from "../api";
 import {
-   API_PREFIX,
    INDEX_MODEL_NAME,
    normalizeModelPath,
    README_NAME,
@@ -74,6 +73,7 @@ import {
 import { ApiConnection } from "./model";
 import { Package } from "./package";
 import { applyLoadGates } from "./package_load_gates";
+import { environmentResource, packageResource } from "../api_resource";
 import { parsePackageName, type PackageName, VersionRef } from "./identity";
 import {
    PackageLifecycle,
@@ -439,7 +439,7 @@ export class Environment {
       this.destinations = [];
       this.setStorageDestinations(storageDestinations);
       this.metadata = {
-         resource: `${API_PREFIX}/environments/${this.environmentName}`,
+         resource: environmentResource(this.environmentName),
          name: this.environmentName,
          location: this.environmentPath,
       };
@@ -574,7 +574,7 @@ export class Environment {
       }
       this.metadata = {
          ...this.metadata,
-         resource: `${API_PREFIX}/environments/${this.environmentName}`,
+         resource: environmentResource(this.environmentName),
          name: this.environmentName,
          readme,
       };
@@ -1078,10 +1078,6 @@ export class Environment {
       };
    }
 
-   private packageResource(packageName: string): string {
-      return `${API_PREFIX}/environments/${this.environmentName}/packages/${packageName}`;
-   }
-
    /**
     * A package's slim `GET /status` entry: what a reconcile reads, without the
     * package's metadata (see PackageStatusEntry). `loaded` is the copy whose
@@ -1095,7 +1091,7 @@ export class Environment {
       const binding = loaded?.getOperationalFields();
       return {
          name: packageName,
-         resource: this.packageResource(packageName),
+         resource: packageResource(this.environmentName, packageName),
          ...(versionId !== undefined && { versionId }),
          status: this.describePackageStatus(packageName, versionId),
          ...(binding && {
@@ -1117,7 +1113,7 @@ export class Environment {
       rawVersionId?: unknown,
    ): Promise<ApiPackageServingState> {
       assertSafePackageName(packageName);
-      const resource = this.packageResource(packageName);
+      const resource = packageResource(this.environmentName, packageName);
       const versions = this.versionService;
       if (
          versions &&
@@ -1877,7 +1873,7 @@ export class Environment {
       if (latest === null) {
          return {
             name: packageName,
-            resource: this.packageResource(packageName),
+            resource: packageResource(this.environmentName, packageName),
             versionId: null,
             latestVersion: null,
             ...(isPackageInlineFieldsEnabled() && {
@@ -1930,7 +1926,10 @@ export class Environment {
               ? loaded.getPackageMetadata()
               : {
                    name: row.packageName,
-                   resource: this.packageResource(row.packageName),
+                   resource: packageResource(
+                      this.environmentName,
+                      row.packageName,
+                   ),
                    versionId: row.versionId,
                 };
          const list = entries.get(row.packageName) ?? [];
@@ -1953,7 +1952,7 @@ export class Environment {
          if (list.some((entry) => entry.versionId === versionId)) continue;
          list.push({
             name: packageName,
-            resource: this.packageResource(packageName),
+            resource: packageResource(this.environmentName, packageName),
             versionId,
             latestVersion: list[0]?.latestVersion ?? null,
             loaded: false,
