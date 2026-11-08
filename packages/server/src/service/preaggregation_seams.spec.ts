@@ -25,6 +25,7 @@ import { AccessDeniedError } from "../errors";
 import { Environment } from "./environment";
 import type { Package } from "./package";
 import { writePackageFiles } from "../test_helpers/temp_package";
+import { governorOf } from "../test_helpers/governor";
 import { parsePackageName } from "./identity";
 
 let rootDir: string;
@@ -965,7 +966,9 @@ source: ungated is duckdb.sql("""
          if (!model) throw new Error("model.malloy did not load");
          expect(
             (
-               model as unknown as { hasAnyAuthorizeNote(): boolean }
+               governorOf(model) as unknown as {
+                  hasAnyAuthorizeNote(): boolean;
+               }
             ).hasAnyAuthorizeNote(),
          ).toBe(true);
       },

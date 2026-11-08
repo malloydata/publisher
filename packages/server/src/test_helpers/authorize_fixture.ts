@@ -42,6 +42,7 @@ import { AccessDeniedError } from "../errors";
 import { malloyGivenToApi, type MalloyGiven } from "../service/given";
 import { Model, ModelPolicy, QueryPrivileges } from "../service/model";
 import { seededDuckdb as seededTempDuckdb } from "./temp_package";
+import { governorOf } from "./governor";
 
 export const AUTHORIZE_SEED_SQL = `
 CREATE OR REPLACE TABLE customers (id INTEGER, name VARCHAR, region VARCHAR);
@@ -347,7 +348,7 @@ export async function buildGatedModel(
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       gateRuntime: runtime as any,
    });
-   const internals = model as unknown as ModelInternals;
+   const internals = governorOf(model) as unknown as ModelInternals;
    return { model, internals, mm, duckdb };
 }
 

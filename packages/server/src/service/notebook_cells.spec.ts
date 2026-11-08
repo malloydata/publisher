@@ -26,6 +26,7 @@ import {
    type MetricsHarness,
 } from "../test_helpers/metrics_harness";
 import { Model, ModelPolicy } from "./model";
+import { governorOf } from "../test_helpers/governor";
 import { Package } from "./package";
 import { listNotebooks } from "./legacy_report_views";
 
@@ -153,7 +154,7 @@ describe("served linear report cells", () => {
    });
 
    it("grafts a tile cell against the whole compiled model", async () => {
-      const nb = model(LAYOUT) as unknown as {
+      const nb = governorOf(model(LAYOUT)) as unknown as {
          runnableNotebookCells: { runnable?: unknown }[];
          resolveNotebookCellGraftScope(
             index: number,

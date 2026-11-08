@@ -42,6 +42,7 @@ import { AccessDeniedError } from "../../src/errors";
 import { logger } from "../../src/logger";
 import { malloyGivenToApi, type MalloyGiven } from "../../src/service/given";
 import { Model, ModelPolicy } from "../../src/service/model";
+import { governorOf } from "../../src/test_helpers/governor";
 import type { Package } from "../../src/service/package";
 import {
    createTempModel,
@@ -1587,7 +1588,7 @@ source: gated_parent is duckdb.table('orgtable') extend { measure: n is count() 
          const realModelDef = (model as unknown as { modelDef: unknown })
             .modelDef;
          const spy = spyOn(
-            model as unknown as {
+            governorOf(model) as unknown as {
                resolveRunTargetStruct: () => Promise<unknown>;
             },
             "resolveRunTargetStruct",
