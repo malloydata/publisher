@@ -7,7 +7,7 @@
  *
  * `conn.sql("""select ... from (%{ locked -> {...} })""")` compiles the
  * embedded query into the SQL text at load. Query-time enforcement walks the
- * run target's own and inherited gates (`collectEntryPointGates`), and a
+ * run target's own and inherited gates (`gatePlan`, the enforcing walk), and a
  * `sql_select` has none: it neither extends nor derives from what it embeds.
  * So the embedded read of `locked` was answered for every caller, `#(authorize)`
  * and `#(access_filter)` alike. A gate the author reads as enforced must not
@@ -33,7 +33,7 @@
  */
 import { isSourceDef, type ModelDef, type SourceDef } from "@malloydata/malloy";
 import { ModelCompilationError } from "../errors";
-import { collectEntryPointGates } from "./gate_classification";
+import { gatePlan, modelDefGateGraph } from "./governance/gate_plan";
 
 /** One embedded gated (or unreadable) source in one model entry's `sql()`. */
 export interface SqlEmbedFinding {
@@ -173,8 +173,8 @@ function rootsOf(modelDef: ModelDef, scope: SqlEmbedScope): EmbedRoot[] {
 /**
  * Every `%{ ... }` embed of a gated source in any `sql()` reachable from a
  * model entry or `run:` statement, plus every embed that cannot be read (fail
- * closed). Uses `collectEntryPointGates`, the walk query-time enforcement
- * uses, so an embedded source is gated here exactly when querying it would be.
+ * closed). Uses `gatePlan` with the `resolved` composite rule, the walk
+ * query-time enforcement uses (`collectEntryPointGates` is its adapter), so an embedded source is gated here exactly when querying it would be.
  */
 export function findSqlEmbedsOfGatedSources(
    modelDef: ModelDef,
@@ -225,8 +225,10 @@ export function findSqlEmbedsOfGatedSources(
                try {
                   routes = [
                      ...new Set(
-                        collectEntryPointGates(struct, modelDef).map(
-                           (gate) => gate.route,
+                        gatePlan(struct, modelDefGateGraph(modelDef), {
+                           composite: "resolved",
+                        }).steps.flatMap((step) =>
+                           step.kind === "gate" ? [step.route] : [],
                         ),
                      ),
                   ];
