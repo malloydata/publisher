@@ -37,6 +37,7 @@ import { AccessDeniedError } from "../../src/errors";
 import { Environment } from "../../src/service/environment";
 import type { Package } from "../../src/service/package";
 import { writePackageFiles } from "../../src/test_helpers/temp_package";
+import { parsePackageName } from "../../src/service/identity";
 
 let rootDir: string;
 let envPath: string;
@@ -66,7 +67,7 @@ async function loadPackageFiles(
    );
    const env = await Environment.create("testEnv", envPath, []);
    await env.addPackage("pkg");
-   return env.getPackage("pkg", false);
+   return env.getPackage(parsePackageName("pkg"), false);
 }
 
 /** Run `query` against `model.malloy` with the given `givens` and return rows. */

@@ -10,6 +10,7 @@ import { EnvironmentNotFoundError } from "../errors";
 import { logger } from "../logger";
 import { assertSafePackageName } from "../path_safety";
 import { EnvironmentStore } from "../service/environment_store";
+import { parseEnvironmentName, parsePackageName } from "../service/identity";
 
 type WatchStatusRes = components["schemas"]["WatchStatus"];
 
@@ -75,7 +76,7 @@ export class WatchModeController {
                return;
             }
             const env = await this.environmentStore.getEnvironment(
-               environmentName,
+               parseEnvironmentName(environmentName),
                false,
             );
             const watchPath = env.getEnvironmentPath();
@@ -112,10 +113,10 @@ export class WatchModeController {
       const reloadPackage = async (pkgName: string): Promise<boolean> => {
          try {
             const environment = await this.environmentStore.getEnvironment(
-               watchName,
+               parseEnvironmentName(watchName),
                false,
             );
-            await environment.getPackage(pkgName, true);
+            await environment.getPackage(parsePackageName(pkgName), true);
             recordPackageReload("watch", "success");
             logger.info(
                `Watch: recompiled package "${pkgName}" in environment "${watchName}"`,

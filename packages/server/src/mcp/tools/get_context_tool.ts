@@ -47,6 +47,7 @@ import {
    type LevelOutcome,
 } from "./get_context_levels";
 import type { GivenValue } from "@malloydata/malloy";
+import { parseEnvironmentName } from "../../service/identity";
 
 /**
  * Contract rules first, reference last, because a tail-truncating client drops
@@ -108,7 +109,7 @@ async function staleNoteFor(
    let staleNote: string | undefined;
    try {
       const environment = await environmentStore.getEnvironment(
-         environmentName,
+         parseEnvironmentName(environmentName),
          false,
       );
       const stale = environment.getStaleCompileErrors().get(packageName);

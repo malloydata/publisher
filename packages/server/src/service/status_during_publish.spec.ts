@@ -10,6 +10,7 @@ import { EnvironmentStore } from "./environment_store";
 import { installSettings } from "../test_helpers/settings_env";
 import type { VersionService } from "./versions/version_service";
 import { writePackageFiles } from "../test_helpers/temp_package";
+import { parseEnvironmentName } from "./identity";
 
 /**
  * A publish of a version is a load in flight from its download until it
@@ -91,7 +92,10 @@ async function open(): Promise<{
 }> {
    store = new EnvironmentStore(path.join(root, "server"));
    await store.finishedInitialization;
-   const environment = await store.getEnvironment(ENV, false);
+   const environment = await store.getEnvironment(
+      parseEnvironmentName(ENV),
+      false,
+   );
    const versions = environment.getVersionService();
    if (!versions) throw new Error("versioning is not bound");
    return {

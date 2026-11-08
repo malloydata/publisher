@@ -57,6 +57,7 @@ import { Environment, type PackageListingOptions } from "./environment";
 import { formatPublishRejections } from "./publish_checks";
 import { assertGoogleCredentialsIsNotADirectory } from "./google_credentials";
 import type { Package } from "./package";
+import { type EnvironmentName, parseEnvironmentName } from "./identity";
 import { VersionStore } from "./versions/version_store";
 import { storageBindingResolverFor } from "./versions/materialization_scope";
 import type { PackageMemoryGovernor } from "./package_memory_governor";
@@ -1515,7 +1516,10 @@ export class EnvironmentStore {
       environmentName: string,
       packageName: string,
    ): Promise<void> {
-      const environment = await this.getEnvironment(environmentName, false);
+      const environment = await this.getEnvironment(
+         parseEnvironmentName(environmentName),
+         false,
+      );
       const repository = this.storageManager.getRepository();
 
       const dbEnvironment =
@@ -1838,10 +1842,11 @@ export class EnvironmentStore {
    }
 
    public async getEnvironment(
-      environmentName: string,
+      environmentName: EnvironmentName,
       reload: boolean = false,
    ): Promise<Environment> {
       await this.finishedInitialization;
+      // The sink-side check (path_safety.ts); the brand says it already ran.
       assertSafePackageName(environmentName);
 
       const environment = this.environments.get(environmentName);

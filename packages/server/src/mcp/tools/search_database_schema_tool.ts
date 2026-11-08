@@ -16,6 +16,7 @@ import {
    SchemaTableEntity,
    rankTables,
 } from "../../retrieval/index/schema_index";
+import { parseEnvironmentName } from "../../service/identity";
 
 /** Tables returned when the caller does not ask for a specific number. */
 const DEFAULT_LIMIT = 20;
@@ -533,7 +534,10 @@ async function assertCanAdmit(
    environmentName: string,
 ): Promise<void> {
    (
-      await environmentStore.getEnvironment(environmentName, false)
+      await environmentStore.getEnvironment(
+         parseEnvironmentName(environmentName),
+         false,
+      )
    ).assertCanAdmitQuery();
 }
 
@@ -586,7 +590,7 @@ async function listEnvironmentsTier(
          let connections: ResponseConnection[] = [];
          try {
             const environment = await environmentStore.getEnvironment(
-               name,
+               parseEnvironmentName(name),
                false,
             );
             connections = await listConnectionsFor(environment);
@@ -616,7 +620,7 @@ async function listConnectionsTier(
    warnings: string[],
 ) {
    const environment = await environmentStore.getEnvironment(
-      environmentName,
+      parseEnvironmentName(environmentName),
       false,
    );
    const connections = await listConnectionsFor(environment);

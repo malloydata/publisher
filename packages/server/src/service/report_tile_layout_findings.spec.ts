@@ -15,6 +15,7 @@ import os from "os";
 import path from "path";
 import { Environment } from "./environment";
 import { writePackageFiles } from "../test_helpers/temp_package";
+import { parsePackageName } from "./identity";
 
 const UNKNOWN_COLSPAN = "Unknown render tag 'colspan' on field 'root'";
 
@@ -112,7 +113,7 @@ describe("render-tag findings for a tile's layout tags", () => {
    ];
 
    it("drops it on a grid tile and keeps it everywhere else, at load", async () => {
-      const pkg = await env.getPackage("pkg", false);
+      const pkg = await env.getPackage(parsePackageName("pkg"), false);
       expect(colspanSubjects(pkg.getPackageMetadata().warnings)).toEqual(
          EXPECTED,
       );

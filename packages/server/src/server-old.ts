@@ -47,6 +47,7 @@ import {
 } from "./route_params";
 import { processStorageDestinationsOrThrow } from "./service/connection_config";
 import { EnvironmentStore } from "./service/environment_store";
+import { parseEnvironmentName } from "./service/identity";
 
 const LEGACY_API_PREFIX = "/api/v0";
 
@@ -125,7 +126,7 @@ export function registerLegacyRoutes(
       apiRoute(async (req) => {
          const reload = booleanParam(req, "reload");
          const environment = await environmentStore.getEnvironment(
-            req.params.projectName,
+            parseEnvironmentName(req.params.projectName),
             reload,
          );
          return environment.serialize();

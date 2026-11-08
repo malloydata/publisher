@@ -7,6 +7,7 @@ import { EnvironmentStore } from "../../service/environment_store";
 import { buildMalloyUri } from "../handler_utils";
 import { registerGuardedTool } from "../register_tool";
 import { jsonResource } from "../tool_response";
+import { parseEnvironmentName, parsePackageName } from "../../service/identity";
 
 const GET_AGENT_DESCRIPTION = `List the agents a package declares, or fetch one agent's definition. A package agent is a named brief the package author wrote: instructions, its own skills, and optional scheduled tasks, for working with that package.
 
@@ -107,10 +108,13 @@ export function registerGetAgentTool(
       run: async (params: GetAgentParams, uri) => {
          const scope = params.scopes[0]!;
          const environment = await environmentStore.getEnvironment(
-            scope.environment,
+            parseEnvironmentName(scope.environment),
             false,
          );
-         const pkg = await environment.getPackage(scope.package, false);
+         const pkg = await environment.getPackage(
+            parsePackageName(scope.package),
+            false,
+         );
          const availableAgents = pkg.listAgents();
          if (params.agent_name === undefined || params.agent_name === null) {
             return jsonResource(uri, {

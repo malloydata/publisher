@@ -13,6 +13,7 @@ import {
 } from "./event_loop_yield";
 import type { Model } from "./model";
 import { writePackageFiles } from "../test_helpers/temp_package";
+import { parsePackageName } from "./identity";
 
 describe("createEventLoopYielder", () => {
    afterEach(() => {
@@ -88,7 +89,9 @@ ${views}
       );
       const env = await Environment.create("testEnv", envPath, []);
       await env.addPackage("pkg");
-      return (await env.getPackage("pkg", false)).getModel("m.malloy")!;
+      return (await env.getPackage(parsePackageName("pkg"), false)).getModel(
+         "m.malloy",
+      )!;
    }
 
    beforeEach(async () => {

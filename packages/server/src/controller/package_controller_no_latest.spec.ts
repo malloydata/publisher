@@ -13,6 +13,7 @@ import { createDuckDBRepository } from "../storage/duckdb/DuckDBRepository";
 import type { ResourceRepository } from "../storage/DatabaseInterface";
 import { initializeSchema } from "../storage/duckdb/schema";
 import { PackageController } from "./package.controller";
+import { parsePackageName, VersionRef } from "../service/identity";
 
 // A versioned package with no `latest` yet: published under explicit
 // promotion, and no version made latest. Through the package routes'
@@ -156,7 +157,9 @@ describe("a versioned package with no latest yet", () => {
       expect(
          await answered(controller.getPackage(ENV_NAME, PKG, true)),
       ).toMatchObject({ status: 404, reason: "VERSION_NOT_FOUND" });
-      expect(await answered(env.getPackage(PKG))).toMatchObject({
+      expect(
+         await answered(env.getPackage(parsePackageName(PKG))),
+      ).toMatchObject({
          status: 404,
          reason: "VERSION_NOT_FOUND",
       });
@@ -165,7 +168,9 @@ describe("a versioned package with no latest yet", () => {
    it("serves a request that names a version", async () => {
       const named = await controller.getPackage(ENV_NAME, PKG, false, "1.0.0");
       expect(named).toMatchObject({ versionId: "1.0.0", latestVersion: null });
-      const other = await env.getPackage(PKG, false, { versionId: "2.0.0" });
+      const other = await env.getPackage(parsePackageName(PKG), false, {
+         versionId: VersionRef.parse("2.0.0"),
+      });
       expect(other.getPackageMetadata().versionId).toBe("2.0.0");
    });
 

@@ -8,6 +8,7 @@ import * as path from "path";
 import { EnvironmentStore } from "./environment_store";
 import { installSettings } from "../test_helpers/settings_env";
 import { writePackageFiles } from "../test_helpers/temp_package";
+import { parseEnvironmentName, parsePackageName } from "./identity";
 
 /**
  * With package versioning on, a package in publisher.config.json loads as a
@@ -91,7 +92,7 @@ function configure(packages: { name: string; location: string }[]) {
 }
 
 async function versionsOf(s: EnvironmentStore, packageName: string) {
-   const environment = await s.getEnvironment(ENV, false);
+   const environment = await s.getEnvironment(parseEnvironmentName(ENV), false);
    const versions = environment.getVersionService();
    if (!versions) return { latest: null, ids: [] as string[] };
    const listed = await versions.listVersions(packageName);
@@ -111,8 +112,14 @@ describe("configured packages with package versioning on", () => {
          latest: "1.2.0",
          ids: ["1.2.0"],
       });
-      const environment = await first.getEnvironment(ENV, false);
-      const served = await environment.getPackage("sales", false);
+      const environment = await first.getEnvironment(
+         parseEnvironmentName(ENV),
+         false,
+      );
+      const served = await environment.getPackage(
+         parsePackageName("sales"),
+         false,
+      );
       expect(served.getVersionId()).toBe("1.2.0");
       await closeStore();
 
@@ -135,7 +142,10 @@ describe("configured packages with package versioning on", () => {
          latest: "1.2.0",
          ids: ["1.2.0"],
       });
-      const environment = await first.getEnvironment(ENV, false);
+      const environment = await first.getEnvironment(
+         parseEnvironmentName(ENV),
+         false,
+      );
       expect(environment.getFailedPackages().has("sales")).toBe(false);
       await closeStore();
 
@@ -148,8 +158,8 @@ describe("configured packages with package versioning on", () => {
       });
       const second = await openStore();
       const restored = await (
-         await second.getEnvironment(ENV, false)
-      ).getPackage("sales", false);
+         await second.getEnvironment(parseEnvironmentName(ENV), false)
+      ).getPackage(parsePackageName("sales"), false);
       expect(restored.getVersionId()).toBe("1.2.0");
    });
 
@@ -162,7 +172,10 @@ describe("configured packages with package versioning on", () => {
 
       const s = await openStore();
       expect((await versionsOf(s, "sales")).ids).toEqual(["1.0.0"]);
-      const environment = await s.getEnvironment(ENV, false);
+      const environment = await s.getEnvironment(
+         parseEnvironmentName(ENV),
+         false,
+      );
       const failed = environment.getFailedPackages();
       expect(failed.has("plain")).toBe(true);
       expect(String(failed.get("plain"))).toContain("version");
@@ -187,8 +200,14 @@ describe("configured packages with package versioning on", () => {
 
       const s = await openStore();
       expect((await versionsOf(s, "sales")).ids).toEqual([]);
-      const environment = await s.getEnvironment(ENV, false);
-      const served = await environment.getPackage("sales", false);
+      const environment = await s.getEnvironment(
+         parseEnvironmentName(ENV),
+         false,
+      );
+      const served = await environment.getPackage(
+         parsePackageName("sales"),
+         false,
+      );
       expect(served.getVersionId()).toBeUndefined();
    });
 });
@@ -199,8 +218,14 @@ describe("configured packages with package versioning off", () => {
 
       const s = await openStore();
       expect((await versionsOf(s, "sales")).ids).toEqual([]);
-      const environment = await s.getEnvironment(ENV, false);
-      const served = await environment.getPackage("sales", false);
+      const environment = await s.getEnvironment(
+         parseEnvironmentName(ENV),
+         false,
+      );
+      const served = await environment.getPackage(
+         parsePackageName("sales"),
+         false,
+      );
       expect(served.getVersionId()).toBeUndefined();
    });
 });

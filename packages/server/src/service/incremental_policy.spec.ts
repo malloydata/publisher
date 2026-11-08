@@ -30,6 +30,7 @@ import {
 } from "./incremental_policy";
 import type { Package } from "./package";
 import { writePackageFiles } from "../test_helpers/temp_package";
+import { parsePackageName } from "./identity";
 
 /** A declaration with nothing declared; each test overrides what it needs. */
 function declaration(
@@ -742,7 +743,7 @@ describe("incremental policy gate over a real package", () => {
    async function loadPackage(model: string): Promise<Package> {
       const env = await stage(model);
       await env.addPackage("pkg");
-      return env.getPackage("pkg", false);
+      return env.getPackage(parsePackageName("pkg"), false);
    }
 
    /**
@@ -829,9 +830,9 @@ source: raw is duckdb.sql("""
          );
          // And a read does not quietly succeed on a second attempt: the lazy
          // reload runs the same gate.
-         await expect(env.getPackage("pkg", false)).rejects.toBeInstanceOf(
-            BadRequestError,
-         );
+         await expect(
+            env.getPackage(parsePackageName("pkg"), false),
+         ).rejects.toBeInstanceOf(BadRequestError);
       },
       { timeout: 30000 },
    );
