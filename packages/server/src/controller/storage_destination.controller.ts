@@ -15,7 +15,7 @@ import {
    cleanupStorageFiles,
    dropStorageTable,
    listStorageTables,
-} from "../service/materialization_build_session";
+} from "../service/materialization/run/materialization_build_session";
 import { parseEnvironmentName } from "../service/identity";
 
 type ApiConnection = components["schemas"]["Connection"];

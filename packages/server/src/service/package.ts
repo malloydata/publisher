@@ -110,11 +110,11 @@ import {
 import {
    deriveServeBindings,
    groupAliasesByName,
-} from "./materialization_serve_transform";
+} from "./materialization/serve/materialization_serve_transform";
 import type {
    PreaggregateViolation,
    PreaggregateViolationCode,
-} from "./preaggregation_validation";
+} from "./materialization/plan/preaggregation_validation";
 
 /**
  * Pre-aggregation violations that warn at both gates rather than refusing: a
@@ -125,19 +125,22 @@ const PREAGG_WARN_ONLY: ReadonlySet<PreaggregateViolationCode> = new Set([
    "non_public_measure",
    "grain_dimension_not_public",
 ]);
-import { ColocatedSourceEligibility, SourceEligibility } from "./build_plan";
-import { computePackageBuildPlan } from "./build_plan_compile";
+import {
+   ColocatedSourceEligibility,
+   SourceEligibility,
+} from "./materialization/plan/build_plan";
+import { computePackageBuildPlan } from "./materialization/plan/build_plan_compile";
 import {
    incrementalPolicyAdvisories,
    incrementalPolicyRejections,
    type IncrementalPolicySource,
-} from "./incremental_policy";
+} from "./materialization/plan/incremental_policy";
 import {
    materializationConfigWarnings,
    type QueryMetadataDeclaration,
-} from "./materialization_config_validation";
+} from "./materialization/plan/materialization_config_validation";
 import type { QueryMetadata } from "./query_metadata";
-import { CronEvaluator } from "./cron_evaluator";
+import { CronEvaluator } from "./materialization/run/cron_evaluator";
 import { createEventLoopYielder } from "./event_loop_yield";
 import { CELLS_UNREADABLE } from "./notebook";
 import {
@@ -193,7 +196,7 @@ import {
    type ReportLayout,
    type ReportTag,
 } from "./report";
-import { filterFreshManifest } from "./freshness";
+import { filterFreshManifest } from "./materialization/run/freshness";
 import { sqlLiteral } from "./introspection_sql";
 import { isQuotedIdentifierPath, quoteManifestTablePath } from "./quoting";
 import { Model } from "./model";
@@ -206,7 +209,7 @@ import {
    type ApiSecureGivenSummary,
    summarizeSecureGivens,
 } from "./secure_givens";
-import { assertPersistNamesQuoted } from "./persist_annotation_validation";
+import { assertPersistNamesQuoted } from "./materialization/plan/persist_annotation_validation";
 import {
    applyLoadGates,
    assertOutcomeStagesAvailable,

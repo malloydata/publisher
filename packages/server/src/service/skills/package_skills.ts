@@ -14,7 +14,7 @@ import {
 import skillsBundle from "./skills_bundle.json";
 import { compareText } from "../../compare_text";
 import { MODEL_FILE_SUFFIX, NOTEBOOK_FILE_SUFFIX } from "../../constants";
-import { CronEvaluator } from "../cron_evaluator";
+import { CronEvaluator } from "../materialization/run/cron_evaluator";
 import { canonicalSha } from "../package_revision";
 import { stepsOutside } from "../../path_safety";
 

@@ -4,7 +4,7 @@
 import { describe, expect, it } from "bun:test";
 import * as sinon from "sinon";
 import { BadRequestError } from "../errors";
-import type { MaterializationService } from "../service/materialization_service";
+import type { MaterializationService } from "../service/materialization/run/materialization_service";
 import { MaterializationController } from "./materialization.controller";
 
 /**
