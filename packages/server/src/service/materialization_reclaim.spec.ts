@@ -24,6 +24,7 @@ import {
    writeTargetsIn,
 } from "./versions/materialization_scope";
 import { writePackageFiles } from "../test_helpers/temp_package";
+import { parseEnvironmentName, parsePackageName, VersionRef } from "./identity";
 
 // What archiving a version reclaims, and what it must leave alone: the keep
 // rules of MaterializationService.reclaimVersionTables (a table another
@@ -276,7 +277,9 @@ describe("reclaiming an archived version's tables", () => {
       table: string,
    ): Promise<Materialization> {
       const plan = (
-         await env.getPackage(PKG, false, { versionId })
+         await env.getPackage(parsePackageName(PKG), false, {
+            versionId: VersionRef.parse(versionId),
+         })
       ).getBuildPlan()!;
       const source = Object.values(plan.sources).find(
          (s) => s.name === sourceName,
@@ -304,7 +307,9 @@ describe("reclaiming an archived version's tables", () => {
 
    /** What a version's `summary` answers, and so which table it reads. */
    async function answerOf(versionId?: string): Promise<number> {
-      const pkg = await env.getPackage(PKG, false, { versionId });
+      const pkg = await env.getPackage(parsePackageName(PKG), false, {
+         versionId: VersionRef.parse(versionId),
+      });
       const result = await pkg
          .getModel("model.malloy")!
          .getQueryResults(
@@ -1081,7 +1086,9 @@ describe("the archive hook and the startup sweep, as main_server.ts wires them",
    }
 
    async function tables(server: Server): Promise<string[]> {
-      return tablesIn(await server.store.getEnvironment(ENV, false));
+      return tablesIn(
+         await server.store.getEnvironment(parseEnvironmentName(ENV), false),
+      );
    }
 
    const statusOf = async (server: Server, id: string) =>
@@ -1148,7 +1155,10 @@ describe("the archive hook and the startup sweep, as main_server.ts wires them",
       const cleanup = spyOn(server.store, "cleanupPackageEmbeddings");
       // Straight through the version rules, as a publish the delete waited
       // for removes the package, with no controller in between.
-      const environment = await server.store.getEnvironment(ENV, false);
+      const environment = await server.store.getEnvironment(
+         parseEnvironmentName(ENV),
+         false,
+      );
       const deleted = await environment
          .getVersionService()!
          .deleteVersion(PKG, "1.0.0");
@@ -1211,8 +1221,13 @@ describe("the archive hook and the startup sweep, as main_server.ts wires them",
 
    /** What a version's `summary` answers, and so which table it reads. */
    async function answerOf(server: Server, versionId: string): Promise<number> {
-      const environment = await server.store.getEnvironment(ENV, false);
-      const pkg = await environment.getPackage(PKG, false, { versionId });
+      const environment = await server.store.getEnvironment(
+         parseEnvironmentName(ENV),
+         false,
+      );
+      const pkg = await environment.getPackage(parsePackageName(PKG), false, {
+         versionId: VersionRef.parse(versionId),
+      });
       const result = await pkg
          .getModel("model.malloy")!
          .getQueryResults(
@@ -1240,10 +1255,15 @@ describe("the archive hook and the startup sweep, as main_server.ts wires them",
       server: Server,
       version: string,
    ): Promise<Materialization> {
-      const environment = await server.store.getEnvironment(ENV, false);
+      const environment = await server.store.getEnvironment(
+         parseEnvironmentName(ENV),
+         false,
+      );
       const versions = new VersionController(server.store);
       const plan = (
-         await environment.getPackage(PKG, false, { versionId: version })
+         await environment.getPackage(parsePackageName(PKG), false, {
+            versionId: VersionRef.parse(version),
+         })
       ).getBuildPlan()!;
       const source = Object.values(plan.sources).find(
          (s) => s.name === "summary",
@@ -1409,7 +1429,7 @@ describe("the archive hook and the startup sweep, as main_server.ts wires them",
       expect(await tables(server)).toEqual([HOST_V1, HOST_V2]);
       // Each version serves from the table its manifest binds.
       const connection = await (
-         await server.store.getEnvironment(ENV, false)
+         await server.store.getEnvironment(parseEnvironmentName(ENV), false)
       ).getMalloyConnection("warehouse");
       await connection.runSQL(`UPDATE ${HOST_V1} SET answer = 101`);
       await connection.runSQL(`UPDATE ${HOST_V2} SET answer = 202`);

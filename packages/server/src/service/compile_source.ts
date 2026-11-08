@@ -49,6 +49,7 @@ import {
    type MalloyGiven,
 } from "./given";
 import { Model } from "./model";
+import { ModelPolicy } from "./model_policy";
 import { notebookReaderProblem } from "./notebook";
 import { notebookLintProblems, reportedByDashboardLint } from "./notebook_lint";
 import { Package } from "./package";
@@ -558,6 +559,9 @@ async function resolveGateModel(
             {
                buildManifest: pkg.getBuildManifestEntries(),
                overlay: withTarget,
+               // Built outside the Package to decide the text's gates; it
+               // runs no query, and carries no Package curation.
+               policy: ModelPolicy.standalone(),
             },
          ),
          hasExactGateModel: true,
@@ -585,6 +589,8 @@ async function resolveGateModel(
                pkg.getMalloyConfig(),
                {
                   buildManifest: pkg.getBuildManifestEntries(),
+                  // Gates only, as for the overlay model above.
+                  policy: ModelPolicy.standalone(),
                },
             ),
             hasExactGateModel: true,

@@ -31,6 +31,7 @@ import type {
    SourceContextFilter,
    SourceContextGiven,
 } from "./types";
+import { parseEnvironmentName, parsePackageName } from "../../service/identity";
 
 /**
  * Caps on doc text carried as CONTEXT alongside a field hit, where the point
@@ -1226,10 +1227,13 @@ export async function getPackageIndex(
    packageName: string,
 ): Promise<PackageIndex> {
    const environment = await environmentStore.getEnvironment(
-      environmentName,
+      parseEnvironmentName(environmentName),
       false,
    );
-   const pkg = await environment.getPackage(packageName, false);
+   const pkg = await environment.getPackage(
+      parsePackageName(packageName),
+      false,
+   );
    return packageIndexOf(pkg, packageName);
 }
 

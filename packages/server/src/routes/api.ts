@@ -17,7 +17,6 @@ import { setPackagePatchDeprecationHeaders } from "../controller/package.control
 import { BadRequestError, ServiceUnavailableError } from "../errors";
 import { setFilterDeprecationHeaders } from "../filter_deprecation";
 import { logger, redactSensitive } from "../logger";
-import { assertSafePackageName } from "../path_safety";
 import { queryConcurrency } from "../query_concurrency";
 import {
    normalizeQueryArray,
@@ -45,6 +44,7 @@ import {
 import { registerStorageDestinationRoutes } from "./storage_destinations";
 import { reportWriteRoute } from "./report_write";
 import { registerVersionRoutes } from "./versions";
+import { parseEnvironmentName, parsePackageRef } from "../service/identity";
 
 // Caps long-lived SSE streams so they cannot exhaust sockets or memory.
 // Generous: legitimate use is one stream per open dashboard tab.
@@ -159,15 +159,18 @@ function registerWatchModeRoutes(
       const envName = req.params.environmentName;
       const pkgName = req.params.packageName;
       try {
-         assertSafePackageName(envName);
-         assertSafePackageName(pkgName);
+         const ref = parsePackageRef({
+            environmentName: envName,
+            packageName: pkgName,
+            versionId: req.query.versionId,
+         });
          const environment = await environmentStore.getEnvironment(
-            envName,
+            ref.environment,
             false,
          );
          // 404 if missing; 404/410 for a version it does not serve.
-         await environment.getPackage(pkgName, false, {
-            versionId: req.query.versionId,
+         await environment.getPackage(ref.package, false, {
+            versionId: ref.version,
          });
       } catch (error) {
          sendRouteError(res, error as Error, logRefusal(req, error as Error));
@@ -251,7 +254,7 @@ function registerEnvironmentRoutes(
       apiRoute(async (req) => {
          const reload = booleanParam(req, "reload");
          const environment = await environmentStore.getEnvironment(
-            req.params.environmentName,
+            parseEnvironmentName(req.params.environmentName),
             reload,
          );
          return environment.serialize();
@@ -518,7 +521,7 @@ function registerPackageRoutes(
          // published version also carries the package's current `latest`.
          if (!added) return undefined;
          const environment = await environmentStore.getEnvironment(
-            req.params.environmentName,
+            parseEnvironmentName(req.params.environmentName),
             false,
          );
          return environment.describePackage(added);

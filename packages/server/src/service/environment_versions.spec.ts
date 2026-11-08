@@ -15,6 +15,7 @@ import { withSettings } from "../test_helpers/settings_env";
 import { Environment } from "./environment";
 import { Package } from "./package";
 import { writePackageFiles } from "../test_helpers/temp_package";
+import { parsePackageName, VersionRef } from "./identity";
 
 // Loading published versions through a real Environment: real packages
 // compiled from real folders, a real registry, and real queries, so what each
@@ -148,12 +149,14 @@ describe("Environment loading of published versions", () => {
       await publish(env, source("1.0.0", 1));
       await publish(env, source("2.0.0", 2));
 
-      const latest = await env.getPackage(PKG);
+      const latest = await env.getPackage(parsePackageName(PKG));
       expect(await answerOf(latest)).toBe(2);
       expect(latest.getPackagePath()).toBe(path.join(envPath, PKG, "2.0.0"));
       expect(latest.getPackageMetadata().versionId).toBe("2.0.0");
 
-      const first = await env.getPackage(PKG, false, { versionId: "1.0.0" });
+      const first = await env.getPackage(parsePackageName(PKG), false, {
+         versionId: VersionRef.parse("1.0.0"),
+      });
       expect(await answerOf(first)).toBe(1);
       expect(first.getPackagePath()).toBe(path.join(envPath, PKG, "1.0.0"));
       expect(first.getPackageMetadata().versionId).toBe("1.0.0");
@@ -162,7 +165,11 @@ describe("Environment loading of published versions", () => {
       );
 
       // An empty versionId is no version: latest.
-      expect(await env.getPackage(PKG, false, { versionId: "" })).toBe(latest);
+      expect(
+         await env.getPackage(parsePackageName(PKG), false, {
+            versionId: VersionRef.parse(""),
+         }),
+      ).toBe(latest);
    });
 
    it("keeps a version loaded once it stops being latest, and never reloads one", async () => {
@@ -171,13 +178,17 @@ describe("Environment loading of published versions", () => {
       await publish(env, source("2.0.0", 2));
       const create = spyOn(Package, "create");
       try {
-         expect(await env.getPackage(PKG, false, { versionId: "1.0.0" })).toBe(
-            v1,
-         );
+         expect(
+            await env.getPackage(parsePackageName(PKG), false, {
+               versionId: VersionRef.parse("1.0.0"),
+            }),
+         ).toBe(v1);
          // reload=true on a published version returns it as it is.
-         expect(await env.getPackage(PKG, true, { versionId: "1.0.0" })).toBe(
-            v1,
-         );
+         expect(
+            await env.getPackage(parsePackageName(PKG), true, {
+               versionId: VersionRef.parse("1.0.0"),
+            }),
+         ).toBe(v1);
          expect(create).not.toHaveBeenCalled();
       } finally {
          create.mockRestore();
@@ -192,11 +203,17 @@ describe("Environment loading of published versions", () => {
       const create = spyOn(Package, "create");
       try {
          const reads = await Promise.all([
-            restarted.getPackage(PKG),
-            restarted.getPackage(PKG),
-            restarted.getPackage(PKG, false, { versionId: "2.0.0" }),
-            restarted.getPackage(PKG, false, { versionId: "1.0.0" }),
-            restarted.getPackage(PKG, false, { versionId: "1.0.0" }),
+            restarted.getPackage(parsePackageName(PKG)),
+            restarted.getPackage(parsePackageName(PKG)),
+            restarted.getPackage(parsePackageName(PKG), false, {
+               versionId: VersionRef.parse("2.0.0"),
+            }),
+            restarted.getPackage(parsePackageName(PKG), false, {
+               versionId: VersionRef.parse("1.0.0"),
+            }),
+            restarted.getPackage(parsePackageName(PKG), false, {
+               versionId: VersionRef.parse("1.0.0"),
+            }),
          ]);
          expect(reads[0]).toBe(reads[1]);
          expect(reads[0]).toBe(reads[2]);
@@ -216,7 +233,9 @@ describe("Environment loading of published versions", () => {
       fs.rmSync(path.join(envPath, PKG, "1.0.0"), { recursive: true });
 
       const restarted = await newEnvironment();
-      expect(await answerOf(await restarted.getPackage(PKG))).toBe(1);
+      expect(
+         await answerOf(await restarted.getPackage(parsePackageName(PKG))),
+      ).toBe(1);
       expect(
          fs.existsSync(path.join(envPath, PKG, "1.0.0", "model.malloy")),
       ).toBe(true);
@@ -229,7 +248,7 @@ describe("Environment loading of published versions", () => {
       writePackage(location, { version: "1.0.0" }, 99);
 
       const restarted = await newEnvironment();
-      await expect(restarted.getPackage(PKG)).rejects.toThrow(
+      await expect(restarted.getPackage(parsePackageName(PKG))).rejects.toThrow(
          /missing and could not be fetched again/,
       );
       expect(fs.existsSync(path.join(envPath, PKG, "1.0.0"))).toBe(false);
@@ -242,17 +261,31 @@ describe("Environment loading of published versions", () => {
       await repo.setVersionArchiveStatus(ENV_ID, PKG, "1.0.0", "archive");
 
       expect(
-         await refusal(env.getPackage(PKG, false, { versionId: "3.0.0" })),
+         await refusal(
+            env.getPackage(parsePackageName(PKG), false, {
+               versionId: VersionRef.parse("3.0.0"),
+            }),
+         ),
       ).toEqual({ status: 404, reason: "VERSION_NOT_FOUND" });
       expect(
-         await refusal(env.getPackage(PKG, false, { versionId: "1.0.0" })),
+         await refusal(
+            env.getPackage(parsePackageName(PKG), false, {
+               versionId: VersionRef.parse("1.0.0"),
+            }),
+         ),
       ).toEqual({ status: 410, reason: "VERSION_ARCHIVED" });
       expect(
-         await refusal(env.getPackage(PKG, false, { versionId: "two" })),
+         await refusal(
+            env.getPackage(parsePackageName(PKG), false, {
+               versionId: VersionRef.parse("two"),
+            }),
+         ),
       ).toEqual({ status: 400, reason: "VERSION_ID_INVALID" });
       expect(
          await refusal(
-            env.getPackage(PKG, false, { versionId: ["1.0.0", "2.0.0"] }),
+            env.getPackage(parsePackageName(PKG), false, {
+               versionId: VersionRef.parse(["1.0.0", "2.0.0"]),
+            }),
          ),
       ).toEqual({ status: 400, reason: "VERSION_ID_INVALID" });
    });
@@ -261,10 +294,16 @@ describe("Environment loading of published versions", () => {
       writePackage(path.join(envPath, PKG), {}, 0);
       const env = await newEnvironment();
       await env.addPackage(PKG);
-      expect(await answerOf(await env.getPackage(PKG))).toBe(0);
+      expect(await answerOf(await env.getPackage(parsePackageName(PKG)))).toBe(
+         0,
+      );
       // An unversioned package has no version to name.
       expect(
-         await refusal(env.getPackage(PKG, false, { versionId: "1.0.0" })),
+         await refusal(
+            env.getPackage(parsePackageName(PKG), false, {
+               versionId: VersionRef.parse("1.0.0"),
+            }),
+         ),
       ).toEqual({ status: 404, reason: "VERSION_NOT_FOUND" });
 
       await publish(env, source("1.0.0", 1));
@@ -273,7 +312,9 @@ describe("Environment loading of published versions", () => {
       expect(env.peekPackage(PKG)?.getPackageMetadata().versionId).toBe(
          "1.0.0",
       );
-      expect(await answerOf(await env.getPackage(PKG))).toBe(1);
+      expect(await answerOf(await env.getPackage(parsePackageName(PKG)))).toBe(
+         1,
+      );
       expect(fs.readdirSync(path.join(envPath, PKG))).toEqual(["1.0.0"]);
       expect(fs.readdirSync(path.join(envPath, ".legacy"))).toEqual([]);
    });
@@ -285,7 +326,9 @@ describe("Environment loading of published versions", () => {
       const lookups = spyOn(repo, "getVersion");
       const probes = spyOn(repo, "hasVersions");
       try {
-         expect(await answerOf(await env.getPackage("plain"))).toBe(7);
+         expect(
+            await answerOf(await env.getPackage(parsePackageName("plain"))),
+         ).toBe(7);
          expect(lookups).not.toHaveBeenCalled();
          expect(probes).not.toHaveBeenCalled();
       } finally {
@@ -298,7 +341,9 @@ describe("Environment loading of published versions", () => {
       const env = await newEnvironment();
       await publish(env, source("1.0.0", 1));
       await publish(env, source("2.0.0", 2));
-      await env.getPackage(PKG, false, { versionId: "1.0.0" });
+      await env.getPackage(parsePackageName(PKG), false, {
+         versionId: VersionRef.parse("1.0.0"),
+      });
 
       // As the controller does it: the rows first, so nothing can resolve a
       // version while its files go, then the environment's own state.
@@ -311,7 +356,7 @@ describe("Environment loading of published versions", () => {
       expect(await repo.listVersions(ENV_ID, PKG)).toEqual([]);
       // Nothing brings it back: no version resolves, and there is no package
       // folder to load as one.
-      await expect(env.getPackage(PKG)).rejects.toThrow();
+      await expect(env.getPackage(parsePackageName(PKG))).rejects.toThrow();
       expect(fs.existsSync(path.join(envPath, PKG))).toBe(false);
       expect(await env.listPackages()).toEqual([]);
    });
@@ -392,7 +437,7 @@ describe("Environment loading: races, listings and bookkeeping", () => {
          const publishing = publish(env, source("1.0.0", 1));
          await new Promise((resolve) => setTimeout(resolve, 20));
          // The package has no version yet, and no folder of its own to load.
-         const reading = env.getPackage(PKG);
+         const reading = env.getPackage(parsePackageName(PKG));
          await new Promise((resolve) => setTimeout(resolve, 20));
          release();
          await publishing;
@@ -450,7 +495,9 @@ describe("Environment loading: races, listings and bookkeeping", () => {
       unversionedOverAFile(0);
       const env = await newEnvironment();
       await env.addPackage(PKG);
-      expect(await answerOf(await env.getPackage(PKG))).toBe(0);
+      expect(await answerOf(await env.getPackage(parsePackageName(PKG)))).toBe(
+         0,
+      );
 
       const held = holdCompile();
       try {
@@ -460,7 +507,7 @@ describe("Environment loading: races, listings and bookkeeping", () => {
          expect(fs.existsSync(path.join(envPath, PKG, "data.csv"))).toBe(false);
          // Served from memory, this read would query a file that is not
          // there; it waits for the publish instead.
-         const reading = env.getPackage(PKG).then(answerOf);
+         const reading = env.getPackage(parsePackageName(PKG)).then(answerOf);
          await new Promise((resolve) => setTimeout(resolve, 20));
          held.release();
          await publishing;
@@ -475,7 +522,9 @@ describe("Environment loading: races, listings and bookkeeping", () => {
       unversionedOverAFile(0);
       const env = await newEnvironment();
       await env.addPackage(PKG);
-      expect(await answerOf(await env.getPackage(PKG))).toBe(0);
+      expect(await answerOf(await env.getPackage(parsePackageName(PKG)))).toBe(
+         0,
+      );
 
       const held = holdCompile(true);
       try {
@@ -484,7 +533,7 @@ describe("Environment loading: races, listings and bookkeeping", () => {
             () => "failed",
          );
          await held.reached;
-         const reading = env.getPackage(PKG).then(answerOf);
+         const reading = env.getPackage(parsePackageName(PKG)).then(answerOf);
          await new Promise((resolve) => setTimeout(resolve, 20));
          held.release();
          expect(await publishing).toBe("failed");
@@ -500,7 +549,9 @@ describe("Environment loading: races, listings and bookkeeping", () => {
       unversionedOverAFile(0);
       const env = await newEnvironment();
       await env.addPackage(PKG);
-      expect(await answerOf(await env.getPackage(PKG))).toBe(0);
+      expect(await answerOf(await env.getPackage(parsePackageName(PKG)))).toBe(
+         0,
+      );
 
       const held = holdCompile();
       try {
@@ -546,9 +597,9 @@ describe("Environment loading: races, listings and bookkeeping", () => {
       const restarted = await newEnvironment();
       restoreDownloads = 0;
       for (let i = 0; i < 3; i++) {
-         await expect(restarted.getPackage(PKG)).rejects.toThrow(
-            /missing and could not be fetched again/,
-         );
+         await expect(
+            restarted.getPackage(parsePackageName(PKG)),
+         ).rejects.toThrow(/missing and could not be fetched again/);
       }
       expect(restoreDownloads).toBe(1);
    });
@@ -583,7 +634,9 @@ describe("Environment loading: races, listings and bookkeeping", () => {
          ),
       ).toEqual({ status: 409, reason: "PACKAGE_IS_VERSIONED" });
       expect(fs.readdirSync(path.join(envPath, PKG))).toEqual(["1.0.0"]);
-      expect(await answerOf(await env.getPackage(PKG))).toBe(1);
+      expect(await answerOf(await env.getPackage(parsePackageName(PKG)))).toBe(
+         1,
+      );
    });
 
    it("publishes only one of two versions that differ only by case, even at once", async () => {
@@ -610,7 +663,7 @@ describe("Environment loading: races, listings and bookkeeping", () => {
          "VERSION_CONFLICT",
       );
       const [only] = await repo.listVersions(ENV_ID, PKG);
-      const served = await env.getPackage(PKG);
+      const served = await env.getPackage(parsePackageName(PKG));
       // The version recorded is the one whose files are served.
       expect(await answerOf(served)).toBe(
          only.versionId === "1.0.0-RC1" ? 1 : 2,

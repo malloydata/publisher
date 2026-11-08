@@ -174,6 +174,7 @@ import {
 import { destinationSchemaOf } from "./storage_table_path";
 import { carriesAuthorSql, isSameCatalog } from "./same_catalog_build";
 import { withStatementUsage } from "./statement_usage";
+import { parseEnvironmentName, parsePackageName, VersionRef } from "./identity";
 
 /** A physical table's key for drop bookkeeping: where it lives, and its name. */
 function tableKey(destination: string, physicalTableName: string): string {
@@ -336,7 +337,10 @@ export class MaterializationService {
       // Naming no version of a package that has no `latest` yet (explicit
       // promotion, before the first move) lists every run, as before.
       const versions = (
-         await this.environmentStore.getEnvironment(environmentName, false)
+         await this.environmentStore.getEnvironment(
+            parseEnvironmentName(environmentName),
+            false,
+         )
       ).getVersionService();
       const version =
          requestedVersionId(options?.versionId) === undefined &&
@@ -367,7 +371,7 @@ export class MaterializationService {
       versionId: unknown,
    ): Promise<string | null> {
       const environment = await this.environmentStore.getEnvironment(
-         environmentName,
+         parseEnvironmentName(environmentName),
          false,
       );
       const versions = environment.getVersionService();
@@ -496,7 +500,7 @@ export class MaterializationService {
       const environmentId = await this.resolveEnvironmentId(environmentName);
 
       const environment = await this.environmentStore.getEnvironment(
-         environmentName,
+         parseEnvironmentName(environmentName),
          false,
       );
       const version = await this.resolveRunVersion(
@@ -505,9 +509,9 @@ export class MaterializationService {
          options.versionId,
       );
       const pkg = await environment.getPackage(
-         packageName,
+         parsePackageName(packageName),
          false,
-         version !== null ? { versionId: version } : {},
+         version !== null ? { versionId: VersionRef.parse(version) } : {},
       );
       // Whose tables a version's run builds (see materialization_scope).
       const scope =
@@ -754,14 +758,16 @@ export class MaterializationService {
 
          const environmentId = await this.resolveEnvironmentId(environmentName);
          const environment = await this.environmentStore.getEnvironment(
-            environmentName,
+            parseEnvironmentName(environmentName),
             false,
          );
          const versionId = opts.version ?? undefined;
          const pkg = await environment.getPackage(
-            packageName,
+            parsePackageName(packageName),
             false,
-            versionId !== undefined ? { versionId } : {},
+            versionId !== undefined
+               ? { versionId: VersionRef.parse(versionId) }
+               : {},
          );
          // The version whose own runs this run reuses from and builds into
          // (`scope: version`); undefined, the package's shared ones.
@@ -3440,7 +3446,7 @@ export class MaterializationService {
       try {
          environmentId = await this.resolveEnvironmentId(environmentName);
          environment = await this.environmentStore.getEnvironment(
-            environmentName,
+            parseEnvironmentName(environmentName),
             false,
          );
          const loaded = environment.getLoadedVersionIds(packageName);
@@ -3532,7 +3538,7 @@ export class MaterializationService {
       }
 
       const environment = await this.environmentStore.getEnvironment(
-         environmentName,
+         parseEnvironmentName(environmentName),
          false,
       );
 
@@ -3600,7 +3606,10 @@ export class MaterializationService {
       const pkg =
          version !== null
             ? environment.peekVersion(packageName, version)
-            : await environment.getPackage(packageName, false);
+            : await environment.getPackage(
+                 parsePackageName(packageName),
+                 false,
+              );
       if (pkg) return (name) => pkg.getMalloyConnection(name);
       return async (name) =>
          name === "duckdb" ? undefined : environment.getMalloyConnection(name);
@@ -3781,7 +3790,7 @@ export class MaterializationService {
    ): Promise<void> {
       try {
          const environment = await this.environmentStore.getEnvironment(
-            environmentName,
+            parseEnvironmentName(environmentName),
             false,
          );
          const versions = environment.getVersionService();

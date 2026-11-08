@@ -25,6 +25,7 @@ import { BadRequestError, internalErrorToHttpError } from "../errors";
 import { Environment } from "./environment";
 import type { Package } from "./package";
 import { writePackageFiles } from "../test_helpers/temp_package";
+import { parsePackageName } from "./identity";
 
 let rootDir: string;
 let envPath: string;
@@ -65,7 +66,7 @@ async function loadPackage(
    await fs.writeFile(path.join(dir, file), text);
    const env = await Environment.create("testEnv", envPath, []);
    await env.addPackage("pkg");
-   return env.getPackage("pkg", false);
+   return env.getPackage(parsePackageName("pkg"), false);
 }
 
 describe("a valid declaration does not disturb the load", () => {

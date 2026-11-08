@@ -11,6 +11,7 @@ import {
    loadTempPackage,
    type LoadedTempPackage,
 } from "../test_helpers/temp_package";
+import { runQueryPositional } from "../test_helpers/positional_query_args";
 import { QueryUseCase } from "../usecases/query";
 import { QueryController, type QueryRequest } from "./query.controller";
 
@@ -69,7 +70,8 @@ function controllerWith({
       queryCostBytes: 345,
    });
    const fakeModel = {
-      getQueryResults,
+      // The specs below read the call in `getQueryResults`'s positional order.
+      runQuery: runQueryPositional(getQueryResults),
       carriesReportTag: () => carriesReportTag,
    };
    const pkg = {
@@ -158,7 +160,8 @@ describe("QueryController.getQuery", () => {
       await run(controller);
       const [compact, full] = getQueryResults.getCalls().map((c) => c.args);
       expect(compact.slice(9)).toEqual(["compact", true, true]);
-      expect(full.slice(9)).toEqual(["full", undefined, undefined]);
+      // Ungranted privileges arrive as `false` (QueryPrivileges.of), never unset.
+      expect(full.slice(9)).toEqual(["full", false, false]);
       expect(compact[8]).toMatchObject({
          request: { team: "x" },
          queryClass: "interactive",

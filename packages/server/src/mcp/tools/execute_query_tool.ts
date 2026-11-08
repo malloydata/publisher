@@ -11,20 +11,14 @@ import { logger } from "../../logger";
 import { accessIdentityOf } from "../../service/access_record";
 import type { Package } from "../../service/package";
 import { EnvironmentStore } from "../../service/environment_store";
-import {
-   QueryUseCase,
-   resolveCommandModel,
-   type QueryTransportOptions,
-} from "../../usecases/query";
-import {
-   getNotFoundError,
-   RESTRICTED_CONSTRUCTS,
-   type ErrorDetails,
-} from "../error_messages";
+import { QueryUseCase, type QueryTransportOptions } from "../../usecases/query";
+import { RESTRICTED_CONSTRUCTS, type ErrorDetails } from "../error_messages";
 import {
    buildMalloyUri,
    classifyToolError,
-   getModelForQuery,
+   mapQuerySetupError,
+   MCP_MODEL_RESOLUTION,
+   modelNotFoundDetails,
 } from "../handler_utils";
 import type { RequestExtra } from "../request_extra";
 import { jsonResource, jsonToolError } from "../tool_response";
@@ -121,21 +115,12 @@ Values above 2^53 are returned as JSON strings so their digits survive.`;
 
 /**
  * execute_query's documented differences from the REST query route. Each
- * call overrides `resolveModel` (to keep the refusal details
- * getModelForQuery words) and sets its own `precondition`.
+ * call adds the hooks that keep the refusal details it answers with.
  */
 const MCP_QUERY_OPTIONS: QueryTransportOptions = {
-   // Replaced per call by getModelForQuery, which serves the package's
-   // `latest`, refuses a notebook and a missing model, and compiles eagerly.
-   resolveModel: resolveCommandModel,
-   // Unreached while getModelForQuery refuses a missing model first; worded
-   // as its refusal is.
-   modelNotFound: ({ environmentName, packageName, modelPath }) =>
-      new ModelNotFoundError(
-         getNotFoundError(
-            `model '${modelPath}' in package '${packageName}' for environment '${environmentName}'`,
-         ).message,
-      ),
+   // The package's `latest`; a notebook or a missing model is refused while
+   // resolving, with MCP's own 404 wording, and the model compiles eagerly.
+   ...MCP_MODEL_RESOLUTION,
    // The envelope is built from `compactResult`, so cap that shape:
    // measuring the wrapped result would 413 on bytes the agent never
    // receives.
@@ -220,22 +205,27 @@ export function registerExecuteQueryTool(
                   precondition: argumentError
                      ? new BadRequestError(argumentError)
                      : undefined,
-                  // getModelForQuery refuses a missing model or a notebook
-                  // with MCP's own 404 wording, and compiles eagerly; the
-                  // details it words are what the catch below answers with.
+                  // A setup refusal answers with the details worded here, in
+                  // the catch below.
+                  modelNotFound: (command) => {
+                     refusal = modelNotFoundDetails(command);
+                     return new ModelNotFoundError(refusal.message);
+                  },
+                  // The answering package, for the catch's reload advice.
                   resolveModel: async (store, command) => {
-                     const modelResult = await getModelForQuery(
+                     const resolved = await MCP_MODEL_RESOLUTION.resolveModel(
                         store,
-                        command.environmentName,
-                        command.packageName,
-                        command.modelPath,
+                        command,
                      );
-                     if ("error" in modelResult) {
-                        refusal = modelResult.error;
-                        throw modelResult.cause;
-                     }
-                     pkg = modelResult.pkg;
-                     return modelResult;
+                     pkg = resolved.pkg;
+                     return resolved;
+                  },
+                  onSetupError: (error) => {
+                     refusal = mapQuerySetupError(error, {
+                        environmentName,
+                        packageName,
+                        modelPath,
+                     });
                   },
                },
                ({

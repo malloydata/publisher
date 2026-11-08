@@ -8,6 +8,7 @@ import * as path from "path";
 
 import { Environment } from "./environment";
 import { writePackageFiles } from "../test_helpers/temp_package";
+import { parsePackageName } from "./identity";
 
 /**
  * The publisher must surface a non-null `materialization` object on a loaded
@@ -55,7 +56,7 @@ describe("materialization schedule surfacing", () => {
          await writePackageDir({ materialization: { schedule: "0 6 * * *" } });
          await env.addPackage("pkg");
 
-         const pkg = await env.getPackage("pkg", false);
+         const pkg = await env.getPackage(parsePackageName("pkg"), false);
          expect(pkg.getPackageMetadata().materialization).toEqual({
             schedule: "0 6 * * *",
             freshness: null,
@@ -79,7 +80,7 @@ describe("materialization schedule surfacing", () => {
          // Freshness rides the same channel as schedule: present-and-verbatim
          // when declared, null when unset — the control plane owns the
          // scheduling/gating logic and only needs the values surfaced.
-         const pkg = await env.getPackage("pkg", false);
+         const pkg = await env.getPackage(parsePackageName("pkg"), false);
          expect(pkg.getPackageMetadata().materialization).toEqual({
             schedule: null,
             freshness: { window: "24h", fallback: "stale_ok" },
@@ -99,7 +100,7 @@ describe("materialization schedule surfacing", () => {
          // Object present with a null schedule — NOT a null object — so the
          // control plane reads it as an authoritative "no schedule declared",
          // not as "metadata unavailable".
-         const pkg = await env.getPackage("pkg", false);
+         const pkg = await env.getPackage(parsePackageName("pkg"), false);
          expect(pkg.getPackageMetadata().materialization).toEqual({
             schedule: null,
             freshness: null,
@@ -129,7 +130,7 @@ describe("materialization schedule surfacing", () => {
             queryMetadata: null,
          });
 
-         const pkg = await env.getPackage("pkg", false);
+         const pkg = await env.getPackage(parsePackageName("pkg"), false);
          expect(pkg.getPackageMetadata().materialization).toEqual({
             schedule: "0 6 * * *",
             freshness: null,
@@ -173,7 +174,7 @@ describe("materialization schedule surfacing", () => {
          // The real assertion: it loads again.
          const reloaded = await Environment.create("testEnv", envPath, []);
          await reloaded.addPackage("pkg");
-         const pkg = await reloaded.getPackage("pkg", false);
+         const pkg = await reloaded.getPackage(parsePackageName("pkg"), false);
          expect(pkg.getPackageMetadata().scope).toBe("version");
       },
       { timeout: 20000 },
@@ -275,7 +276,7 @@ describe("materialization schedule surfacing", () => {
          await writePackageDir({ queryMetadata: { team: "fin" } });
          await env.addPackage("pkg");
 
-         const pkg = await env.getPackage("pkg", false);
+         const pkg = await env.getPackage(parsePackageName("pkg"), false);
          const metadata = pkg.getPackageMetadata();
          expect(metadata.queryMetadata).toEqual({ team: "fin" });
          expect(metadata.materialization).toMatchObject({
@@ -302,7 +303,7 @@ describe("materialization schedule surfacing", () => {
          });
          expect(updated.queryMetadata).toEqual({ team: "fin" });
 
-         const pkg = await env.getPackage("pkg", false);
+         const pkg = await env.getPackage(parsePackageName("pkg"), false);
          expect(pkg.getDeclaredQueryMetadata()).toEqual({ team: "fin" });
       },
       { timeout: 20000 },
@@ -344,7 +345,7 @@ describe("materialization schedule surfacing", () => {
          await reloaded.addPackage("pkg");
          expect(
             (
-               await reloaded.getPackage("pkg", false)
+               await reloaded.getPackage(parsePackageName("pkg"), false)
             ).getDeclaredQueryMetadata(),
          ).toEqual({ team: "ops" });
       },
@@ -377,7 +378,7 @@ describe("materialization schedule surfacing", () => {
          await reloaded.addPackage("pkg");
          expect(
             (
-               await reloaded.getPackage("pkg", false)
+               await reloaded.getPackage(parsePackageName("pkg"), false)
             ).getDeclaredQueryMetadata(),
          ).toBeNull();
       },
@@ -409,7 +410,7 @@ describe("materialization schedule surfacing", () => {
          await reloaded.addPackage("pkg");
          expect(
             (
-               await reloaded.getPackage("pkg", false)
+               await reloaded.getPackage(parsePackageName("pkg"), false)
             ).getDeclaredQueryMetadata(),
          ).toBeNull();
       },
@@ -441,7 +442,7 @@ describe("materialization schedule surfacing", () => {
             queryMetadata: { team: "platform" },
          });
 
-         const pkg = await env.getPackage("pkg", false);
+         const pkg = await env.getPackage(parsePackageName("pkg"), false);
          expect(pkg.getDeclaredQueryMetadata()).toEqual({ team: "platform" });
          expect(pkg.getMaterializationConfig()?.queryMetadata).toEqual({
             team: "platform",
@@ -469,7 +470,7 @@ describe("materialization schedule surfacing", () => {
             materialization: { schedule: "0 6 * * *" },
          });
 
-         const pkg = await env.getPackage("pkg", false);
+         const pkg = await env.getPackage(parsePackageName("pkg"), false);
          expect(pkg.getDeclaredQueryMetadata()).toEqual({ team: "finance" });
          expect(pkg.getMaterializationConfig()).toMatchObject({
             schedule: "0 6 * * *",
@@ -517,8 +518,9 @@ describe("materialization schedule surfacing", () => {
          await env.addPackage("pkg");
 
          const warnings =
-            (await env.getPackage("pkg", false)).getPackageMetadata()
-               .warnings ?? [];
+            (
+               await env.getPackage(parsePackageName("pkg"), false)
+            ).getPackageMetadata().warnings ?? [];
          const overflow = warnings.filter((w) =>
             w.message?.includes("package + model file, merged"),
          );

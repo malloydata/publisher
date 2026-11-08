@@ -33,6 +33,7 @@ import { Environment } from "./environment";
 import { Model } from "./model";
 import type { Package } from "./package";
 import { installSettings } from "../test_helpers/settings_env";
+import { parsePackageName } from "./identity";
 
 /** Puts back the settings the current test installed. */
 let restoreSettings: (() => void) | undefined;
@@ -149,7 +150,7 @@ describe("one QueryModel per hydrated model", () => {
       await fs.writeFile(path.join(dir, "m.malloy"), MODEL);
       const env = await Environment.create("testEnv", envPath, []);
       await env.addPackage("pkg");
-      return env.getPackage("pkg", false);
+      return env.getPackage(parsePackageName("pkg"), false);
    }
 
    async function answers(model: Model) {

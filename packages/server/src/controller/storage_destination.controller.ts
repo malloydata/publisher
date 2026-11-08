@@ -16,6 +16,7 @@ import {
    dropStorageTable,
    listStorageTables,
 } from "../service/materialization_build_session";
+import { parseEnvironmentName } from "../service/identity";
 
 type ApiConnection = components["schemas"]["Connection"];
 type ApiStorageTable = components["schemas"]["StorageTable"];
@@ -133,7 +134,7 @@ export class StorageDestinationController {
    ): Promise<{ environment: Environment; destination: ApiConnection }> {
       assertIdentifier("storage destination", destinationName);
       const environment = await this.environmentStore.getEnvironment(
-         environmentName,
+         parseEnvironmentName(environmentName),
          false,
       );
       try {

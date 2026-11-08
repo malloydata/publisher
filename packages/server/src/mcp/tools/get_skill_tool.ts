@@ -12,6 +12,7 @@ import {
    type ResolvedSkill,
 } from "../../service/skills/package_skills";
 import { jsonResource } from "../tool_response";
+import { parseEnvironmentName, parsePackageName } from "../../service/identity";
 
 const GET_SKILL_DESCRIPTION = `Fetch a task guide, or list the guides available. Guides are concise procedural instructions for working with Malloy and this server: query patterns, chart and rendering tags, analysis pitfalls, how to build or review a model.
 
@@ -113,10 +114,13 @@ export function registerGetSkillTool(
          let resolved = resolveSkills(bundledSkills, []);
          if (scope) {
             const environment = await environmentStore.getEnvironment(
-               scope.environment,
+               parseEnvironmentName(scope.environment),
                false,
             );
-            const pkg = await environment.getPackage(scope.package, false);
+            const pkg = await environment.getPackage(
+               parsePackageName(scope.package),
+               false,
+            );
             resolved = resolveSkills(bundledSkills, pkg.listSkills());
          }
 

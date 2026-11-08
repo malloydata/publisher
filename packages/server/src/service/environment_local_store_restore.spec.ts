@@ -8,6 +8,7 @@ import * as path from "path";
 import { PackageController } from "../controller/package.controller";
 import { EnvironmentStore } from "./environment_store";
 import { installSettings } from "../test_helpers/settings_env";
+import { parseEnvironmentName, parsePackageName } from "./identity";
 
 /**
  * Where an UNVERSIONED package restores its serve bindings from the worker's
@@ -75,7 +76,9 @@ async function closeStore() {
  * with an entry for the package's base source.
  */
 async function commitLocalRun(current: EnvironmentStore) {
-   const pkg = await current.getEnvironment(ENV).then((e) => e.getPackage(PKG));
+   const pkg = await current
+      .getEnvironment(parseEnvironmentName(ENV))
+      .then((e) => e.getPackage(parsePackageName(PKG)));
    const sources = Object.values(
       (pkg.getBuildPlan() as { sources?: Record<string, unknown> } | undefined)
          ?.sources ?? {},
@@ -164,8 +167,8 @@ describe("restoring an unversioned package's bindings from the local store", () 
       // package's last ready run is bound again on load.
       const restarted = await openStore();
       const pkg = await restarted
-         .getEnvironment(ENV)
-         .then((e) => e.getPackage(PKG));
+         .getEnvironment(parseEnvironmentName(ENV))
+         .then((e) => e.getPackage(parsePackageName(PKG)));
       const metadata = pkg.getPackageMetadata();
       expect(metadata.manifestBindingStatus).toBe("bound");
       expect(metadata.manifestEntryCount).toBe(1);

@@ -34,6 +34,7 @@ import os from "os";
 import path from "path";
 import { CompileRefusedError } from "../../src/errors";
 import { Environment } from "../../src/service/environment";
+import { parsePackageName } from "../../src/service/identity";
 
 /** The tracked example packages, not the gitignored `publisher_data/` copy. */
 const EXAMPLES = path.resolve(import.meta.dir, "../../../../examples");
@@ -204,7 +205,7 @@ describe("append scope on a shipped package still serves ordinary work", () => {
     * regression this suite should catch rather than report as success.
     */
    it("runs that query against the package's real data", async () => {
-      const pkg = await env.getPackage("storefront", false);
+      const pkg = await env.getPackage(parsePackageName("storefront"), false);
       const model = await pkg.getModel("storefront.malloy");
       expect(model).toBeDefined();
       const result = await model!.getQueryResults(

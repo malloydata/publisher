@@ -3,6 +3,11 @@
 
 import type { EnvironmentStore } from "../service/environment_store";
 import type { Package } from "../service/package";
+import {
+   parseEnvironmentName,
+   parsePackageName,
+   VersionRef,
+} from "../service/identity";
 
 /**
  * The loaded package a read route names, without reloading it: the version
@@ -16,8 +21,10 @@ export async function loadedPackage(
    versionId?: unknown,
 ): Promise<Package> {
    const environment = await environmentStore.getEnvironment(
-      environmentName,
+      parseEnvironmentName(environmentName),
       false,
    );
-   return environment.getPackage(packageName, false, { versionId });
+   return environment.getPackage(parsePackageName(packageName), false, {
+      versionId: VersionRef.parse(versionId),
+   });
 }

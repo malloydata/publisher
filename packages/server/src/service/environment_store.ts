@@ -57,6 +57,8 @@ import { Environment, type PackageListingOptions } from "./environment";
 import { formatPublishRejections } from "./publish_checks";
 import { assertGoogleCredentialsIsNotADirectory } from "./google_credentials";
 import type { Package } from "./package";
+import { environmentResource } from "../api_resource";
+import { type EnvironmentName, parseEnvironmentName } from "./identity";
 import { VersionStore } from "./versions/version_store";
 import { storageBindingResolverFor } from "./versions/materialization_scope";
 import type { PackageMemoryGovernor } from "./package_memory_governor";
@@ -667,7 +669,7 @@ export class EnvironmentStore {
          const added = await this.addEnvironment(
             {
                name: environment.name,
-               resource: `${API_PREFIX}/environments/${environment.name}`,
+               resource: environmentResource(environment.name),
                connections: environment.connections,
                // Only asserted when the config declares destinations: an empty
                // list is an instruction to clear, and this call reaches
@@ -804,7 +806,7 @@ export class EnvironmentStore {
                const environmentInstance = await this.addEnvironment(
                   {
                      name: environmentConfig.name,
-                     resource: `${API_PREFIX}/environments/${environmentConfig.name}`,
+                     resource: environmentResource(environmentConfig.name),
                      connections: environmentConfig.connections,
                      storageDestinations: environmentConfig.storageDestinations,
                      packages: environmentConfig.packages,
@@ -1515,7 +1517,10 @@ export class EnvironmentStore {
       environmentName: string,
       packageName: string,
    ): Promise<void> {
-      const environment = await this.getEnvironment(environmentName, false);
+      const environment = await this.getEnvironment(
+         parseEnvironmentName(environmentName),
+         false,
+      );
       const repository = this.storageManager.getRepository();
 
       const dbEnvironment =
@@ -1838,10 +1843,11 @@ export class EnvironmentStore {
    }
 
    public async getEnvironment(
-      environmentName: string,
+      environmentName: EnvironmentName,
       reload: boolean = false,
    ): Promise<Environment> {
       await this.finishedInitialization;
+      // The sink-side check (path_safety.ts); the brand says it already ran.
       assertSafePackageName(environmentName);
 
       const environment = this.environments.get(environmentName);
@@ -1891,7 +1897,7 @@ export class EnvironmentStore {
          }
          return await this.addEnvironment({
             name: environmentName,
-            resource: `${API_PREFIX}/environments/${environmentName}`,
+            resource: environmentResource(environmentName),
             connections: environmentConfig?.connections || [],
             // Only asserted when the config declares destinations: an empty
             // list reads as "clear them", wiping API-registered ones on reload.

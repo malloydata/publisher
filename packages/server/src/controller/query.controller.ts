@@ -4,6 +4,7 @@
 import { components } from "../api";
 import { API_PREFIX } from "../constants";
 import type { AccessIdentity } from "../service/access_record";
+import { VersionRef } from "../service/identity";
 import type { FilterParams } from "../service/filter";
 import type { GivenValue } from "@malloydata/malloy";
 import { type QueryUseCase, REST_QUERY_OPTIONS } from "../usecases/query";
@@ -30,10 +31,10 @@ export interface QueryRequest {
    /**
     * Skip `#(authorize)` gates for this request. Set from the
     * `x-publisher-bypass-authorize` request header only, never from the body.
-    * Orthogonal to {@link bypassFilters} — see {@link Model.getQueryResults}.
+    * Orthogonal to {@link bypassFilters} — see {@link Model.runQuery}.
     */
    bypassAuthorize?: boolean;
-   /** Lift the package's surface for this request (see {@link Model.getQueryResults}). */
+   /** Lift the package's surface for this request (see {@link Model.runQuery}). */
    includeHiddenFilesAndSources?: boolean;
    /** Aborted when the HTTP client disconnects: cancels the query with it. */
    clientSignal?: AbortSignal;
@@ -56,7 +57,7 @@ export class QueryController {
    public async getQuery(request: QueryRequest): Promise<ApiQuery> {
       const { environmentName, packageName, modelPath } = request;
       return this.queryUseCase.run(
-         request,
+         { ...request, version: VersionRef.parse(request.versionId) },
          {
             ...REST_QUERY_OPTIONS,
             // Serialize and byte-cap exactly the shape this request receives.

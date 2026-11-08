@@ -25,6 +25,7 @@ import { AccessDeniedError } from "../errors";
 import { Environment } from "./environment";
 import type { Package } from "./package";
 import { writePackageFiles } from "../test_helpers/temp_package";
+import { parsePackageName } from "./identity";
 
 let rootDir: string;
 let envPath: string;
@@ -79,7 +80,7 @@ async function loadPackageFiles(
    );
    const env = await Environment.create("testEnv", envPath, []);
    await env.addPackage("pkg");
-   return env.getPackage("pkg", false);
+   return env.getPackage(parsePackageName("pkg"), false);
 }
 
 async function loadPackage(model = MODEL): Promise<Package> {

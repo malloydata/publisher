@@ -19,6 +19,7 @@ import { Environment } from "./environment";
 import { Model } from "./model";
 import { Package } from "./package";
 import { getDashboard } from "./legacy_report_views";
+import { parsePackageName } from "./identity";
 
 type ApiPackageWarning = NonNullable<
    components["schemas"]["Package"]["warnings"]
@@ -77,7 +78,7 @@ describe("report discovery: what it does with a report it cannot read", () => {
          for (const [name, text] of Object.entries(FILES))
             await fs.writeFile(path.join(stagingPath, name), text);
       });
-      return env.getPackage("drops", false);
+      return env.getPackage(parsePackageName("drops"), false);
    };
 
    const warningsOf = (pkg: Package): ApiPackageWarning[] =>

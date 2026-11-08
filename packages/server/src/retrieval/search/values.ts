@@ -5,7 +5,7 @@
  * The lookup query behind value search: "which string does the data store for
  * what the user typed?" ("Home Gardeners" -> `Home Gardeners (In-Season)` on
  * `segment_name`). It reads a dimension's distinct values with a bounded
- * `group_by` through the NORMAL query path (`Model.getQueryResults`, the call
+ * `group_by` through the NORMAL query path (`Model.runQuery`, the call
  * `execute_query` makes). The engine's value index (../index/values_index.ts)
  * and its response step (./respond.ts) both read through it.
  *
@@ -26,6 +26,7 @@ import {
 } from "../../service/access_record";
 import { quoteMalloyIdentifier } from "../../service/authorize";
 import type { EnvironmentStore } from "../../service/environment_store";
+import { QueryPrivileges } from "../../service/model_query_request";
 import { tryAcquireQuerySlot } from "../../query_concurrency";
 import { runWithQueryTimeout } from "../../query_timeout";
 import { ModelNotFoundError } from "../../errors";
@@ -65,9 +66,7 @@ const plainQueryModelResolver: QueryModelResolver = async (
 ) => {
    const { environment, pkg, model } = await resolveQueryModel(
       environmentStore,
-      environmentName,
-      packageName,
-      modelPath,
+      { environmentName, packageName, modelPath },
    );
    if (!model || model.getType() === "notebook") {
       throw new ModelNotFoundError(
@@ -193,20 +192,19 @@ export async function queryDistinctValues(
          try {
             const { compactResult } = await runWithQueryTimeout(
                (signal) =>
-                  found.model.getQueryResults(
+                  found.model.runQuery(
                      audit,
-                     undefined,
-                     undefined,
-                     query,
-                     request.filterParams,
-                     undefined,
-                     request.givens as Record<string, GivenValue> | undefined,
-                     signal,
-                     undefined,
-                     "compact",
+                     {
+                        query,
+                        filterParams: request.filterParams,
+                        givens: request.givens as
+                           | Record<string, GivenValue>
+                           | undefined,
+                        abortSignal: signal,
+                        responseShape: "compact",
+                     },
                      // MCP sends no #(authorize) bypass, ever; nor does value search.
-                     false,
-                     false,
+                     QueryPrivileges.none,
                   ),
                request.timeoutMs,
             );

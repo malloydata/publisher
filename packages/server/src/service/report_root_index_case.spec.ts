@@ -16,6 +16,7 @@ import path from "path";
 import { Environment } from "./environment";
 import { isReportEligiblePath, reportWritePathProblem } from "./report";
 import { writePackageFiles } from "../test_helpers/temp_package";
+import { parsePackageName } from "./identity";
 
 const PACKAGE = "report-root-index-case";
 
@@ -56,7 +57,7 @@ describe("a tagged root index file in another letter case", () => {
             { manifest: { name: PACKAGE, version: "1.0.0" } },
          ),
       );
-      const pkg = await env.getPackage(PACKAGE, false);
+      const pkg = await env.getPackage(parsePackageName(PACKAGE), false);
 
       expect(pkg.isServedReport("Index.malloy")).toBe(false);
       expect(pkg.listReports().map((r) => r.path)).toEqual([]);
