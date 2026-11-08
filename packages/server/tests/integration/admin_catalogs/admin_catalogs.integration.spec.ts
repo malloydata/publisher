@@ -25,7 +25,7 @@ import {
    recordedCatalogSettings,
    recordedSchemaPath,
 } from "../../../src/service/connection";
-import { listStorageTables } from "../../../src/service/materialization_build_session";
+import { listStorageTables } from "../../../src/service/materialization/run/materialization_build_session";
 import type { components } from "../../../src/api";
 
 const SUPERUSER = process.env.PUBLISHER_TEST_ADMIN_SUPERUSER;

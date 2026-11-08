@@ -26,7 +26,10 @@
 // real Snowflake account.
 import { DuckDBConnection } from "@malloydata/db-duckdb";
 import { beforeAll, describe, expect, it } from "bun:test";
-import { applyDeltaScript, deltaStatements } from "./incremental_apply";
+import {
+   applyDeltaScript,
+   deltaStatements,
+} from "./materialization/run/incremental_apply";
 
 let duckdb: DuckDBConnection;
 // One `:memory:` database is shared by every connection in a process (see

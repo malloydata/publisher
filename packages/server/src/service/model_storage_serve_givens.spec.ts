@@ -20,7 +20,7 @@ import {
    Runtime,
 } from "@malloydata/malloy";
 import { afterEach, describe, expect, it } from "bun:test";
-import type { ServeBinding } from "./materialization_serve_transform";
+import type { ServeBinding } from "./materialization/serve/materialization_serve_transform";
 import { malloyGivenToApi } from "./given";
 import { Model } from "./model";
 import { installSettings } from "../test_helpers/settings_env";

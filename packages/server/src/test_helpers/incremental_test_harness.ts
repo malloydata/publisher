@@ -13,7 +13,10 @@ import {
 import * as fs from "fs/promises";
 import * as os from "os";
 import * as path from "path";
-import { plannedSources, type BuildPlanPackage } from "../service/build_plan";
+import {
+   plannedSources,
+   type BuildPlanPackage,
+} from "../service/materialization/plan/build_plan";
 
 /**
  * Shared real-compile harness for the incremental specs (declaration,

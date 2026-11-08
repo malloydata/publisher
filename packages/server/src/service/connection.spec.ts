@@ -39,7 +39,7 @@ import {
    resolveCloudStorageCredentials,
 } from "./gcs_s3_utils";
 import { assembleEnvironmentConnections } from "./connection_config";
-import { listStorageTables } from "./materialization_build_session";
+import { listStorageTables } from "./materialization/run/materialization_build_session";
 import {
    ConnectionPoolExhaustedError,
    internalErrorToHttpError,

@@ -39,8 +39,11 @@ import type {
 } from "@malloydata/malloy";
 import { beforeAll, describe, expect, it } from "bun:test";
 import type { FreshnessManifest } from "./materialization/types";
-import { computeSourceEntityId, plannedSources } from "./build_plan";
-import { filterFreshManifest } from "./freshness";
+import {
+   computeSourceEntityId,
+   plannedSources,
+} from "./materialization/plan/build_plan";
+import { filterFreshManifest } from "./materialization/run/freshness";
 import {
    duckdbTestConnections,
    loadTestModel,

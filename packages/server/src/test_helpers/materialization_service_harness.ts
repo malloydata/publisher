@@ -6,7 +6,7 @@ import * as sinon from "sinon";
 import { ConnectionNotFoundError, DestinationNotFoundError } from "../errors";
 import type { ResourceRepository } from "../storage/DatabaseInterface";
 import type { EnvironmentStore } from "../service/environment_store";
-import { MaterializationService } from "../service/materialization_service";
+import { MaterializationService } from "../service/materialization/run/materialization_service";
 import { installSettings } from "./settings_env";
 
 /**

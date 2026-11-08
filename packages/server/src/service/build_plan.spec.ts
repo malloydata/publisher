@@ -18,8 +18,8 @@ import {
    sourceBuildsOf,
    sourcesInBuildOrder,
    type SourceBuild,
-} from "./build_plan";
-import { computePackageBuildPlan } from "./build_plan_compile";
+} from "./materialization/plan/build_plan";
+import { computePackageBuildPlan } from "./materialization/plan/build_plan_compile";
 import { MaterializationEligibilityError } from "../errors";
 import {
    compilePersistSources,

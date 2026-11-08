@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 import { describe, expect, it } from "bun:test";
-import { assertUnderDataPath } from "./storage_table_load";
+import { assertUnderDataPath } from "./materialization/run/storage_table_load";
 
 const inside = (uri: string, root = "/data/lake/db_a") =>
    expect(() => assertUnderDataPath(uri, root)).not.toThrow();
