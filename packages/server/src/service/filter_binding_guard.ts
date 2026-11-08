@@ -46,12 +46,12 @@ import {
    type ModelDef,
    type SourceDef,
 } from "@malloydata/malloy";
+import { ANCESTOR_WALK_MAX_DEPTH } from "./governance/gate_plan";
 import {
-   ANCESTOR_WALK_MAX_DEPTH,
    resolveCompositeResolvedBase,
    resolveDeclaredSource,
    resolveQuerySourceBase,
-} from "./gate_registry_walk";
+} from "./governance/ir/source_graph";
 import { fileURLToPath, pathToFileURL } from "url";
 import { findSourceByOwnAnnotationIdentity } from "./gate_classification";
 import { parseAuthorizeAnnotation } from "./authorize";

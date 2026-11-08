@@ -49,10 +49,8 @@ import {
    sourceFilterNotes,
    type FilterDefinition,
 } from "./filter";
-import {
-   derivedStructsReachable,
-   gateExprsForRoute,
-} from "./gate_registry_walk";
+import { gateExprsForRoute } from "./gate_registry_walk";
+import { derivedStructsReachable } from "./governance/ir/source_graph";
 
 /** A `#(filter)` definition enriched with the dimension's Malloy type. */
 export interface ExtractedFilter {

@@ -33,7 +33,7 @@
  * probe it builds is COMPILED, never RUN — the package-load worker's
  * `ProxyConnection.runSQL` deliberately throws. It bundles into that worker,
  * so keep its imports to `@malloydata/malloy`, `module`, `../errors`,
- * `./annotations` and `./authorize_routes`.
+ * `./annotations`, `./authorize_routes` and `./governance/ir`.
  */
 
 import { payloadOf, routeOf } from "@malloydata/malloy";
@@ -47,6 +47,10 @@ import {
    ACCESS_FILTER_ROUTE,
    AUTHORIZE_ROUTE,
 } from "./authorize_routes";
+import {
+   preparedQueryView,
+   probeFilterList,
+} from "./governance/ir/prepared_query";
 
 /**
  * Malloy's own routing for ONE note, via the public `routeOf`. Three outcomes,
@@ -926,11 +930,12 @@ export function buildRowLevelProbe(
  * error subject; `T` is the caller's condition type.
  */
 export function liftProbeFilterCondition<T extends CompiledGateCondition>(
-   prepared: { _query?: { structRef?: { filterList?: T[] } } },
+   /** What the probe's `getPreparedQuery()` resolved to. */
+   prepared: unknown,
    label: string,
    filterText: string,
 ): T {
-   const filterList = prepared._query?.structRef?.filterList;
+   const filterList = probeFilterList<T>(preparedQueryView(prepared));
    if (!Array.isArray(filterList) || filterList.length === 0) {
       throw new Error(`${label} carries no filter condition`);
    }
@@ -969,12 +974,10 @@ async function liftRowLevelCondition(
    exprs: string[],
 ): Promise<CompiledGateCondition> {
    const filterText = gateFilterText(exprs);
-   const prepared = (await compiler
+   const prepared = await compiler
       .loadQuery(buildRowLevelProbe(sourceName, filterText))
-      .getPreparedQuery()) as {
-      _query?: { structRef?: { filterList?: CompiledGateCondition[] } };
-   };
-   return liftProbeFilterCondition(
+      .getPreparedQuery();
+   return liftProbeFilterCondition<CompiledGateCondition>(
       prepared,
       `row-level probe for "${sourceName}"`,
       filterText,

@@ -23,11 +23,11 @@
  * source DERIVED from a composite (`qs is combo -> {...}`) has its branch
  * resolved at compile time, and there all three agree.
  *
- * Phase 3 (V3) replaces the three walks with one `gatePlan`; this spec is its
- * guardrail. Where the walks disagree beyond the composite rule, the
- * disagreement is pinned under an `it` naming it, with the reason and a control
- * showing what enforcement actually does. Those are inputs to `gatePlan`, not
- * bugs fixed here: no production code changes with this spec.
+ * All three are now thin adapters over one walk, `gatePlan`
+ * (./governance/gate_plan.ts); this spec is its guardrail. Where the
+ * adapters still disagree beyond the composite rule, the disagreement is
+ * pinned under an `it` naming it, with the reason and a control showing what
+ * enforcement actually does.
  */
 import { DuckDBConnection } from "@malloydata/db-duckdb";
 import {
@@ -197,10 +197,7 @@ const COMPOSITE_RULE: Record<string, WalkResult> = {
 };
 
 /** Disagreements beyond the composite rule, each pinned by its own `it` below. */
-const PINNED_DISAGREEMENTS = new Set([
-   `${MATRIX} › qs_then_extend_own`,
-   `${SQL_EMBEDS} › sql_embeds_locked`,
-]);
+const PINNED_DISAGREEMENTS = new Set([`${SQL_EMBEDS} › sql_embeds_locked`]);
 
 const verdict = (key: string): SourceVerdict => {
    const v = verdicts.get(key);
@@ -272,33 +269,25 @@ describe("gate walk differential", () => {
       }
    });
 
-   it("PINNED DISAGREEMENT: B over-reports the replaced gate on an extension of a query-derived source", async () => {
+   it("an extension of a query-derived source with its own gate: all three report what enforcement applies", async () => {
       // `qs_then_extend_own` is `qs_own_over_locked extend { }` carrying its
       // own `#(access_filter) region = $REGION`, over
       // `#(access_filter) org_id in $ORGS  qs_own_over_locked is locked -> {...}`.
       //
-      // Malloy keeps an extension of a query_source a `query_source`, so B's
-      // `gateExprsForRoute` takes its "derivation is additive" branch and
-      // returns own + inherited on the same route, reporting BOTH filters. A
-      // and C apply extend's own-wins-over-ancestor on that route (region
-      // replaces org_id) and then follow `query.structRef`, which still names
-      // `locked`, for its lock. Enforcement is A, so load-time metadata (and
-      // the access record built from it) lists a filter that is not applied.
-      // B errs toward over-reporting, never toward a missing gate.
-      //
-      // For `gatePlan` (Phase 3): decide whether an extension of a
-      // query_source is "extend" (replace on the same route) or "derivation"
-      // (additive), and make the report match enforcement.
+      // Malloy keeps an extension of a query_source a `query_source`. Its own
+      // filter replaces the inherited one on that route (extend's
+      // own-wins-over-ancestor: region replaces org_id), and `query.structRef`
+      // still names `locked`, whose lock is added (derivation is additive).
+      // Before `gatePlan`, B listed the replaced org_id filter too, so
+      // load-time metadata named a filter that is not applied. Pinned here
+      // as fixed, with the control below proving it is what enforcement does.
       const { A, B, C } = verdict(`${MATRIX} › qs_then_extend_own`);
       expect(A).toEqual({
          authorize: ["'admin' in $ROLES"],
          access_filter: ["region = $REGION"],
       });
       expect(C).toEqual(A);
-      expect(B).toEqual({
-         authorize: ["'admin' in $ROLES"],
-         access_filter: ["org_id in $ORGS", "region = $REGION"],
-      });
+      expect(B).toEqual(A);
 
       // Control: enforcement does what A says. With no ORGS the query is
       // still answered (org_id is not grafted), filtered by REGION only.

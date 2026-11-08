@@ -15,6 +15,7 @@ import {
    type QueryMaterializer,
    type Result,
 } from "@malloydata/malloy";
+import type { GovernedRunnable } from "./governance/governed_runnable";
 import * as Malloy from "@malloydata/malloy-interfaces";
 import { getDefaultQueryRowLimit } from "../config";
 import { BadRequestError, databaseAccessFailure } from "../errors";
@@ -54,7 +55,8 @@ export interface PreparedRun {
  * name, which only the prepared result knows), then run.
  */
 export async function prepareAndRun(
-   runnable: QueryMaterializer,
+   /** Only a runnable governance returned runs (`./governance/governed_runnable`). */
+   runnable: GovernedRunnable,
    options: PrepareOptions,
    run: {
       abortSignal: AbortSignal | undefined;
