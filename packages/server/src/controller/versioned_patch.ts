@@ -9,6 +9,17 @@
  * already is must not be read as a change.
  */
 
+/**
+ * The fields a PATCH of a package installed from a `location` may change: the
+ * ones a reload re-applies. A reload fetches the package again from its
+ * location and replaces its files, so any other change would be discarded.
+ */
+export const KEPT_ACROSS_A_RELOAD = new Set([
+   "resource",
+   "location",
+   "manifestLocation",
+]);
+
 /** The fields a PATCH of a versioned package applies, rather than checks. */
 export const APPLIED_TO_A_VERSIONED_PACKAGE = new Set([
    "resource",
@@ -105,10 +116,11 @@ export function changedFields(
    current: Record<string, unknown>,
    packageName: string,
    publishedFrom: string | null,
+   applied: ReadonlySet<string> = APPLIED_TO_A_VERSIONED_PACKAGE,
 ): string[] {
    return Object.entries(body)
       .filter(([key, value]) => {
-         if (APPLIED_TO_A_VERSIONED_PACKAGE.has(key)) return false;
+         if (applied.has(key)) return false;
          if (READ_ONLY_PACKAGE_FIELDS.has(key)) return false;
          if (isUnset(value)) return false;
          if (key === "name") return value !== packageName;

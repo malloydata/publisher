@@ -22,6 +22,7 @@ import {
    PackageAdmissionRefusedError,
    PackageVersionError,
    BuildPlanUnavailableError,
+   ConflictError,
 } from "../errors";
 import { logger } from "../logger";
 import type { RetrievalService } from "../retrieval/service";
@@ -35,7 +36,7 @@ import {
 } from "../package_load_metrics";
 import type { VersionService } from "../service/versions/version_service";
 import { versionManifestLocation } from "./manifest_location";
-import { changedFields } from "./versioned_patch";
+import { KEPT_ACROSS_A_RELOAD, changedFields } from "./versioned_patch";
 import { loadedPackage } from "./loaded_package";
 import {
    parseEnvironmentName,
@@ -811,6 +812,14 @@ export class PackageController {
          typeof body.location === "string" &&
          body.location !== "" &&
          body.location !== installedFrom;
+      if (installedFrom) {
+         this.refuseChangesAReloadDiscards(
+            environment,
+            packageName,
+            installedFrom,
+            body,
+         );
+      }
       let result: ApiPackage;
       if (reinstall) {
          // Download to staging without the lock, then swap under it. Explores
@@ -844,6 +853,37 @@ export class PackageController {
       );
 
       return result;
+   }
+
+   /**
+    * Refuse a PATCH of a package installed from a `location` that changes
+    * anything a reload would discard. A reload fetches the package again from
+    * that location and replaces its files, `publisher.json` included, keeping
+    * only the location and the manifest binding (see reloadPackageFrom). A
+    * body that only echoes the package back is accepted, since clients send
+    * whole objects. Interim, until package storage keeps server-side changes
+    * apart from the fetched copy (#1560).
+    */
+   private refuseChangesAReloadDiscards(
+      environment: Environment,
+      packageName: string,
+      installedFrom: string,
+      body: ApiPackage,
+   ): void {
+      const resident = environment.peekPackage(packageName);
+      if (!resident) return;
+      const changed = changedFields(
+         body as Record<string, unknown>,
+         resident.getPackageMetadata() as Record<string, unknown>,
+         packageName,
+         installedFrom,
+         KEPT_ACROSS_A_RELOAD,
+      );
+      if (changed.length > 0) {
+         throw new ConflictError(
+            `Package ${packageName} was installed from ${installedFrom}, and a reload fetches it again from there, which would discard this request's change to ${changed.join(", ")}. Make the change in the package's source and reload it, or publish it as a version.`,
+         );
+      }
    }
 
    /**

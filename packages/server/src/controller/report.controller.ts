@@ -6,6 +6,7 @@ import { components } from "../api";
 import {
    BadRequestError,
    CompileRefusedError,
+   ConflictError,
    DashboardNotFoundError,
    EnvironmentNotFoundError,
    FrozenConfigError,
@@ -75,6 +76,12 @@ class ReportWriteRefusedError extends BadRequestError {
 }
 
 /**
+ * A report write to a package installed from a location: a reload fetches the
+ * package again and would discard the write. 409, like a versioned package.
+ */
+class InstalledFromLocationError extends ConflictError {}
+
+/**
  * The outcome and reason a write-path error is counted under. Read from the
  * error's type rather than set at each throw site, so a new branch cannot be
  * forgotten. Every refusal shares outcome `refused` (nothing was written).
@@ -92,18 +99,20 @@ function outcomeOf(error: Error): {
    if (error instanceof WriteRolledBackError)
       return { outcome: "rolled_back", reason: "reload_failed" };
    const reason: ReportWriteReason =
-      error instanceof ReportWriteRefusedError
-         ? error.reason
-         : error instanceof InvalidModelPathError
-           ? "invalid_path"
-           : error instanceof FrozenConfigError
-             ? "frozen_config"
-             : error instanceof EnvironmentNotFoundError ||
-                 error instanceof PackageNotFoundError
-               ? "not_found"
-               : error instanceof BadRequestError
-                 ? "bad_request"
-                 : "other";
+      error instanceof InstalledFromLocationError
+         ? "installed_from_location"
+         : error instanceof ReportWriteRefusedError
+           ? error.reason
+           : error instanceof InvalidModelPathError
+             ? "invalid_path"
+             : error instanceof FrozenConfigError
+               ? "frozen_config"
+               : error instanceof EnvironmentNotFoundError ||
+                   error instanceof PackageNotFoundError
+                 ? "not_found"
+                 : error instanceof BadRequestError
+                   ? "bad_request"
+                   : "other";
    return { outcome: "refused", reason };
 }
 
@@ -274,7 +283,20 @@ export class ReportController {
       }
       await versions?.resolve(packageName, versionId.requested());
       // Loads the package, or 404s.
-      await environment.getPackage(parsePackageName(packageName), false);
+      const target = await environment.getPackage(
+         parsePackageName(packageName),
+         false,
+      );
+      // A package installed from a location is fetched again from it on
+      // reload, which replaces its files: a report written here would be lost.
+      // Interim, until package storage keeps API writes apart from the fetched
+      // copy (#1560).
+      const installedFrom = target.getPackageMetadata().location;
+      if (installedFrom) {
+         throw new InstalledFromLocationError(
+            `Package ${packageName} was installed from ${installedFrom}, and a reload fetches it again from there, which would discard a report written here. Add the report to the package's source and reload it, or publish it as a version.`,
+         );
+      }
 
       const { problems } = await environment.compileSource(
          packageName,
