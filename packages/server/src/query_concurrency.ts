@@ -14,13 +14,21 @@ import { ServiceUnavailableError } from "./errors";
 import { logger } from "./logger";
 
 /**
- * The pool `publisher_query_active_slots` reports: the one that last took a
- * slot. A process builds one pool (buildApp in main_server.ts), so this is
- * that pool; a spec that builds several sees the one it used last.
+ * The pool `publisher_query_active_slots` reports: the one the composition root
+ * designated with {@link meterQuerySlots}, so no other pool (a default one a
+ * component built for itself) can take over the gauge. With none designated, as
+ * in a spec, the pool that last took a slot.
  */
-let metered: QuerySlots | null = null;
+let designated: QuerySlots | null = null;
+let lastUsed: QuerySlots | null = null;
 function observe(pool: QuerySlots): void {
-   metered = pool;
+   lastUsed = pool;
+}
+
+/** Make `pool` the one `publisher_query_active_slots` reports. */
+export function meterQuerySlots(pool: QuerySlots): void {
+   designated = pool;
+   queryConcurrencyGauges();
 }
 
 const queryConcurrencyRejections = lazyCounter(
@@ -38,7 +46,7 @@ const queryConcurrencyGauges = lazyInstrument(() => {
       },
    );
    activeSlots.addCallback((observation) =>
-      observation.observe(metered?.active ?? 0),
+      observation.observe((designated ?? lastUsed)?.active ?? 0),
    );
    // Exposed so dashboards can render utilization (`active / max`). Read per
    // scrape so an env-var change shows immediately.
@@ -59,8 +67,11 @@ const queryConcurrencyGauges = lazyInstrument(() => {
 });
 
 /** Test-only: kept for component specs; drops every lazily created instrument. */
-export const resetQueryConcurrencyTelemetryForTesting =
-   resetInstrumentsForTesting;
+export function resetQueryConcurrencyTelemetryForTesting(): void {
+   designated = null;
+   lastUsed = null;
+   resetInstrumentsForTesting();
+}
 
 /**
  * Handle on an acquired concurrency slot. The caller MUST call `release()`

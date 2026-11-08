@@ -6,8 +6,11 @@ import { EventEmitter } from "events";
 import type { NextFunction, Request, Response } from "express";
 
 import { ServiceUnavailableError } from "./errors";
-import { QuerySlots } from "./query_concurrency";
-import { resetInstrumentsForTesting } from "./telemetry";
+import {
+   meterQuerySlots,
+   QuerySlots,
+   resetQueryConcurrencyTelemetryForTesting,
+} from "./query_concurrency";
 import {
    startMetricsHarness,
    type MetricsHarness,
@@ -224,13 +227,25 @@ describe("QuerySlots.middleware", () => {
       beforeEach(async () => {
          harness = await startMetricsHarness();
          slots = new QuerySlots();
-         resetInstrumentsForTesting();
+         resetQueryConcurrencyTelemetryForTesting();
       });
       afterEach(async () => {
          restoreCap();
          slots = new QuerySlots();
-         resetInstrumentsForTesting();
+         resetQueryConcurrencyTelemetryForTesting();
          await harness.shutdown();
+      });
+
+      it("reports the designated pool, not another pool that took a slot", async () => {
+         setCap("5");
+         const main = new QuerySlots();
+         meterQuerySlots(main);
+         main.tryAcquire("main");
+         main.tryAcquire("main");
+         new QuerySlots().tryAcquire("stray");
+         expect(
+            await harness.collectGauge("publisher_query_active_slots"),
+         ).toBe(2);
       });
 
       it("publisher_query_concurrency_rejections_total ticks on each 503", async () => {

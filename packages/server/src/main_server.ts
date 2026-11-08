@@ -51,7 +51,7 @@ import {
 } from "./config";
 import { setRetrievalConfig } from "./retrieval/config";
 import { checkHeapConfiguration } from "./heap_check";
-import { QuerySlots } from "./query_concurrency";
+import { meterQuerySlots, QuerySlots } from "./query_concurrency";
 import { RetrievalRegistry } from "./retrieval/registry";
 import { RetrievalService } from "./retrieval/service";
 import { QueryUseCase } from "./usecases/query";
@@ -285,6 +285,7 @@ export async function buildApp(settings: AppSettings): Promise<BuiltApp> {
    // slot, the query use case and retrieval's value lookups share it, so the
    // cap bounds the process's aggregate query load.
    const querySlots = new QuerySlots();
+   meterQuerySlots(querySlots);
    // Build each package's search index as it loads, not on the first question.
    // This only queues the build. The build runs with or without an embedding
    // provider: without one it still builds the catalog, the keyword index and
