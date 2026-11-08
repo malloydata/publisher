@@ -131,12 +131,21 @@ function connectionSaveError(
 }
 
 /**
+ * What triggered an environment's sync to the database: a `request` that
+ * changed it (create, PATCH), the `boot` load, or a read that loaded it
+ * (`load`) or reloaded it (`reload`) from config. Only a `request` fails when
+ * a connection row does not save (see addEnvironmentToDatabase).
+ */
+type EnvironmentSyncPath = "request" | "boot" | "load" | "reload";
+
+/**
  * Environment syncs whose connection rows did not all save. Counted because
- * at boot nothing else reports it off-box: the environment loads and serves.
+ * anywhere but a request (at boot, or on a read that loaded the environment)
+ * nothing else reports it off-box: the environment loads and serves.
  */
 const connectionSaveFailureCounter = lazyCounter(
    "publisher_connection_save_failures_total",
-   "Environment syncs to the database whose connection rows did not all save, so the connections in memory will differ after a restart. Label: path ('request'|'boot').",
+   "Environment syncs to the database whose connection rows did not all save, so the connections in memory will differ after a restart. Label: path ('request'|'boot'|'load'|'reload').",
 );
 
 function validateEnvironmentAzureUrls(environment: ApiEnvironment): void {
@@ -1023,13 +1032,16 @@ export class EnvironmentStore
     * earlier one could not save a connection row, because memory has already
     * changed and a skipped package sync would bring the environment back with
     * no packages after a restart. A connection that did not save is surfaced
-    * only after all of them: a request fails with a {@link ConnectionSaveError}
-    * naming it, while at boot (`atBoot`) the environment still loads and the
-    * failure is logged and counted, since nothing is waiting for an answer.
+    * only after all of them. Only a `request` that changed the environment
+    * (a create or PATCH) fails, with a {@link ConnectionSaveError} naming it.
+    * At `boot`, and on a `load` or `reload` from config that a read triggered,
+    * the environment still loads and the failure is logged and counted: at
+    * boot nothing is waiting for an answer, and a read changed nothing a
+    * retry of it could save.
     */
    public async addEnvironmentToDatabase(
       environment: Environment,
-      { atBoot = false }: { atBoot?: boolean } = {},
+      { syncPath = "request" }: { syncPath?: EnvironmentSyncPath } = {},
    ): Promise<void> {
       if (!environment) {
          logger.error("Cannot sync: environment is null or undefined");
@@ -1069,10 +1081,10 @@ export class EnvironmentStore
          return;
       }
       connectionSaveFailureCounter().add(1, {
-         path: atBoot ? "boot" : "request",
+         path: syncPath,
       });
       const error = connectionSaveError(environmentName, connectionFailures);
-      if (!atBoot) throw error;
+      if (syncPath === "request") throw error;
       logger.error(
          `Loaded environment "${environmentName}", but its connections did not all save to the database`,
          {
@@ -1849,7 +1861,12 @@ export class EnvironmentStore
             false,
             // The config's list (empty for an environment created over the
             // API) is not a request to delete stored connections.
-            { connectionsAreFallback: true },
+            {
+               connectionsAreFallback: true,
+               // A read: a connection row that does not save is logged and
+               // counted, not answered with a 500 the caller cannot act on.
+               syncPath: reload ? "reload" : "load",
+            },
          );
       });
    }
@@ -1859,11 +1876,12 @@ export class EnvironmentStore
     * guess, so the database sync must not prune against them. It is a parameter
     * because this method syncs before it returns.
     *
-    * `skipInitialization` is set only by the boot paths (the config load and
-    * the database restore), so it also decides how a connection row that did
-    * not save is surfaced: logged and counted at boot, where the environment
-    * must still load, and a failed request otherwise
-    * (see {@link addEnvironmentToDatabase}).
+    * `syncPath` decides how a connection row that did not save is surfaced
+    * (see {@link addEnvironmentToDatabase}). It defaults from
+    * `skipInitialization`, which only the boot paths (the config load and the
+    * database restore) set: `boot` there, where the environment must still
+    * load, and `request`, a failed request, otherwise. A read that loads or
+    * reloads from config passes its own.
     */
    public async addEnvironment(
       environment: ApiEnvironment,
@@ -1876,6 +1894,9 @@ export class EnvironmentStore
          // The config's packages are published as versions once the
          // environment exists (see addConfiguredEnvironment), not loaded here.
          configuredPackagesPublished = false,
+         syncPath = (skipInitialization
+            ? "boot"
+            : "request") as EnvironmentSyncPath,
       } = {},
    ) {
       if (!skipInitialization) {
@@ -1901,7 +1922,7 @@ export class EnvironmentStore
             updatedEnvironment.markConnectionsUnknown();
          }
          await this.addEnvironmentToDatabase(updatedEnvironment, {
-            atBoot: skipInitialization,
+            syncPath,
          });
          return updatedEnvironment;
       }
@@ -1964,7 +1985,7 @@ export class EnvironmentStore
          newEnvironment.markConnectionsUnknown();
       }
       await this.addEnvironmentToDatabase(newEnvironment, {
-         atBoot: skipInitialization,
+         syncPath,
       });
 
       return newEnvironment;

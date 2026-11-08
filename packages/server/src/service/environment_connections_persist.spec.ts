@@ -456,6 +456,48 @@ describe("a connection row that fails to save", () => {
       ).toBe(1);
    });
 
+   it("on a reload a read triggered, answers with the environment and counts the failure", async () => {
+      const current = await openStore();
+      await current.addEnvironment({
+         name: ENV,
+         connections: [pg("a"), pg("b")],
+      } as never);
+      // A reload syncs the config's list, which this store has none for:
+      // stand in a config that declares "a", and fail the write of its row.
+      const repository = current.storageManager.getRepository();
+      const original = repository.updateConnection;
+      const env = await current.getEnvironment(parseEnvironmentName(ENV));
+      const originalUpdate = env.update.bind(env);
+      env.update = (payload) =>
+         originalUpdate({ ...payload, connections: [pg("a")] });
+      repository.updateConnection = () =>
+         Promise.reject(new Error("disk full"));
+      let reloaded: Environment;
+      try {
+         reloaded = await current.getEnvironment(
+            parseEnvironmentName(ENV),
+            true,
+         );
+      } finally {
+         repository.updateConnection = original;
+         env.update = originalUpdate;
+      }
+
+      expect(reloaded.listApiConnections().map((c) => c.name)).toEqual(["a"]);
+      expect(
+         await harness.collectCounter(
+            "publisher_connection_save_failures_total",
+            { path: "reload" },
+         ),
+      ).toBe(1);
+      expect(
+         await harness.collectCounter(
+            "publisher_connection_save_failures_total",
+            { path: "request" },
+         ),
+      ).toBe(0);
+   });
+
    it("at boot, loads the environment and writes the other rows", async () => {
       const current = await openStore();
       const restore = failRowOfAOnce(current);
