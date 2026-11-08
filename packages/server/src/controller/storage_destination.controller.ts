@@ -10,7 +10,7 @@ import {
 import { logger } from "../logger";
 import { recordDropTables } from "../materialization_metrics";
 import type { Environment } from "../service/environment";
-import { EnvironmentStore } from "../service/environment_store";
+import type { PackageLookup } from "../service/environment_ports";
 import {
    cleanupStorageFiles,
    dropStorageTable,
@@ -43,7 +43,7 @@ const IDENTIFIER = /^[a-zA-Z0-9_-]+$/;
  * either.
  */
 export class StorageDestinationController {
-   constructor(private environmentStore: EnvironmentStore) {}
+   constructor(private environmentStore: PackageLookup) {}
 
    async listTables(
       environmentName: string,

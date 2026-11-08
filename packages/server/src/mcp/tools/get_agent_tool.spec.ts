@@ -2,10 +2,11 @@
 // SPDX-License-Identifier: MIT
 
 import { describe, expect, it } from "bun:test";
-import type { EnvironmentStore } from "../../service/environment_store";
 import { PackageNotFoundError } from "../../errors";
 import { getNotFoundError } from "../error_messages";
 import { registerGetAgentTool } from "./get_agent_tool";
+import { fakeOf } from "../../test_helpers/store_fakes";
+import type { PackageLookup } from "../../service/environment_ports";
 
 type Result = {
    isError?: boolean;
@@ -42,7 +43,7 @@ function getAgent(getPackage?: () => Promise<unknown>): Handler {
             handler = h;
          },
       } as never,
-      store as unknown as EnvironmentStore,
+      fakeOf<PackageLookup>(store),
    );
    return handler!;
 }

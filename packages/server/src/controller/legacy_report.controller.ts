@@ -15,7 +15,7 @@ import {
    recordRefusal,
    withAccessRecord,
 } from "../service/access_record";
-import { EnvironmentStore } from "../service/environment_store";
+import type { PackageLookup } from "../service/environment_ports";
 import type { FilterParams } from "../service/filter";
 import {
    getDashboard,
@@ -55,9 +55,9 @@ const cellAccessBase = (
  * deprecated use as it starts, so every route reaching it counts once.
  */
 export class LegacyReportController {
-   private environmentStore: EnvironmentStore;
+   private environmentStore: PackageLookup;
 
-   constructor(environmentStore: EnvironmentStore) {
+   constructor(environmentStore: PackageLookup) {
       this.environmentStore = environmentStore;
    }
 

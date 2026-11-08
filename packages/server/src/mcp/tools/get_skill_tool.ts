@@ -3,7 +3,7 @@
 
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod/v3";
-import { EnvironmentStore } from "../../service/environment_store";
+import type { PackageLookup } from "../../service/environment_ports";
 import { buildMalloyUri } from "../handler_utils";
 import { registerGuardedTool } from "../register_tool";
 import { type SkillEntry } from "../../service/skills/build_skills_bundle";
@@ -82,7 +82,7 @@ function summarize(skills: ResolvedSkill[]) {
  */
 export function registerGetSkillTool(
    mcpServer: McpServer,
-   environmentStore: EnvironmentStore,
+   environmentStore: PackageLookup,
    bundledSkills: SkillEntry[],
 ): void {
    registerGuardedTool(mcpServer, {

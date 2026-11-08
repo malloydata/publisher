@@ -15,7 +15,6 @@ import {
    getNotFoundError,
    type ErrorDetails,
 } from "./error_messages";
-import type { EnvironmentStore } from "../service/environment_store";
 import { logger } from "../logger";
 import { linesMentioning } from "../test_helpers/log_lines";
 import {
@@ -38,6 +37,8 @@ import {
    ConnectionPoolExhaustedError,
    UnconfiguredConnectionError,
 } from "../errors";
+import { fakeOf } from "../test_helpers/store_fakes";
+import type { PackageLookup } from "../service/environment_ports";
 
 /**
  * classifyToolError decides what an agent is told to do about a failure, so
@@ -353,11 +354,11 @@ describe("getModelForQuery setup failures", () => {
    const LOAD = "executeQuery (load model)";
 
    async function failWith(error: unknown) {
-      const store = {
+      const store = fakeOf<PackageLookup>({
          getEnvironment: async () => {
             throw error;
          },
-      } as unknown as EnvironmentStore;
+      });
       const result = await getModelForQuery(store, ENV, PKG, MODEL);
       if (!("error" in result)) throw new Error("expected a failure");
       expect(result.cause).toBe(error);

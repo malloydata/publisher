@@ -6,7 +6,7 @@ import { ConnectionNotFoundError, FrozenConfigError } from "../errors";
 import { logger } from "../logger";
 import { buildEnvironmentMalloyConfig } from "./connection";
 import { mergeConnectionUpdate } from "./connection_public_view";
-import { EnvironmentStore } from "./environment_store";
+import type { ConnectionAdmin } from "./environment_ports";
 import { parseEnvironmentName } from "./identity";
 
 type ApiConnection = components["schemas"]["Connection"];
@@ -68,9 +68,9 @@ function buildDeletedConnectionCleanup(
 }
 
 export class ConnectionService {
-   private environmentStore: EnvironmentStore;
+   private environmentStore: ConnectionAdmin;
 
-   constructor(environmentStore: EnvironmentStore) {
+   constructor(environmentStore: ConnectionAdmin) {
       this.environmentStore = environmentStore;
    }
 

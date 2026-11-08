@@ -67,7 +67,8 @@ import {
 import { logger } from "./logger";
 import { classifyToolError, getModelForQuery } from "./mcp/handler_utils";
 import { AuthorizeGrammarError } from "./service/authorize_grammar";
-import type { EnvironmentStore } from "./service/environment_store";
+import { fakeOf } from "./test_helpers/store_fakes";
+import type { PackageLookup } from "./service/environment_ports";
 
 /**
  * Pins how every error the server throws reaches a caller, on both transports:
@@ -498,11 +499,11 @@ async function mapError(make: () => unknown) {
    );
    const setup = await capturingLogs(async () => {
       const thrown = make();
-      const store = {
+      const store = fakeOf<PackageLookup>({
          getEnvironment: async () => {
             throw thrown;
          },
-      } as unknown as EnvironmentStore;
+      });
       const result = await getModelForQuery(store, ENV, PKG, MODEL);
       if (!("error" in result)) throw new Error("expected a setup failure");
       expect(result.cause).toBe(thrown);

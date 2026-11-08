@@ -90,7 +90,7 @@ function registerStatusAndThemeRoutes(
          // overrides. Before storage is ready (themeStore.get() throws) it
          // reports `{}` rather than 500 an endpoint the control plane polls;
          // GET /theme answers 503 in that window instead.
-         const theme = environmentStore.storageManager.isInitialized()
+         const theme = themeStore.isReady()
             ? await themeStore.get()
             : undefined;
          return { ...status, theme: theme ?? {} };
@@ -100,7 +100,7 @@ function registerStatusAndThemeRoutes(
    app.get(
       `${apiPrefix}/theme`,
       apiRoute(() => {
-         if (!environmentStore.storageManager.isInitialized()) {
+         if (!themeStore.isReady()) {
             // 503, not 200 with an empty theme, so the Theme Editor's load stays
             // in an error state and never adopts {} as the saved baseline, which
             // would let a later edit auto-save {} over the persisted theme.

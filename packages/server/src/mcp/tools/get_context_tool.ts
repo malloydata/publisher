@@ -3,7 +3,7 @@
 
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { registerTool } from "../register_tool";
-import { EnvironmentStore } from "../../service/environment_store";
+import type { EnvironmentCatalog } from "../../service/environment_ports";
 import { InvalidArgumentError } from "../../errors";
 import { buildMalloyUri, classifyToolError } from "../handler_utils";
 import {
@@ -14,7 +14,7 @@ import type { RequestExtra } from "../request_extra";
 import { jsonResource, jsonToolError } from "../tool_response";
 import { logger } from "../../logger";
 import type { TraceMode } from "../../retrieval/search/engine";
-import { RetrievalService } from "../../retrieval/service";
+import { NO_CATALOG, RetrievalService } from "../../retrieval/service";
 import {
    convergedContextShape,
    matchesScope,
@@ -99,7 +99,7 @@ function searchResource(
  * Whether the package's most recent reload failed, as a warning to attach.
  */
 async function staleNoteFor(
-   environmentStore: EnvironmentStore,
+   environmentStore: EnvironmentCatalog,
    environmentName: string,
    packageName: string,
 ): Promise<string | undefined> {
@@ -261,7 +261,7 @@ function runListing(
  */
 async function runContextQuery(
    resolved: ResolvedRequest,
-   environmentStore: EnvironmentStore,
+   environmentStore: EnvironmentCatalog,
    retrieval: RetrievalService,
    extraWarnings: string[] = [],
    traceMode: TraceMode = "none",
@@ -405,8 +405,11 @@ function traceModeOf(extra: RequestExtra | undefined): TraceMode {
 
 export function registerGetContextTool(
    mcpServer: McpServer,
-   environmentStore: EnvironmentStore,
-   retrieval: RetrievalService = new RetrievalService(environmentStore),
+   environmentStore: EnvironmentCatalog,
+   retrieval: RetrievalService = new RetrievalService(
+      environmentStore,
+      NO_CATALOG,
+   ),
 ): void {
    registerTool(
       mcpServer,

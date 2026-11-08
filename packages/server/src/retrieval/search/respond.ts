@@ -42,7 +42,7 @@
  */
 
 import type { AccessIdentity } from "../../service/access_record";
-import type { EnvironmentStore } from "../../service/environment_store";
+import type { PackageLookup } from "../../service/environment_ports";
 import { defaultValueFetcher, type ValueFetcher } from "./values";
 import { matchValues } from "./value_match";
 import {
@@ -113,7 +113,7 @@ export async function respond(args: {
    connected: ConnectResult;
    verdicts: readonly JudgeVerdict[];
    targets: readonly FindTarget[];
-   environmentStore: EnvironmentStore;
+   environmentStore: PackageLookup;
    /** Test seam for the gated lookup; the query path otherwise. */
    valueFetcher?: ValueFetcher;
    /** Fields returned beside the picks, marked "also likely" (also_likely.ts). */

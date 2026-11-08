@@ -24,8 +24,8 @@ import {
    BuildPlanUnavailableError,
 } from "../errors";
 import { logger } from "../logger";
-import { RetrievalService } from "../retrieval/service";
-import { EnvironmentStore } from "../service/environment_store";
+import { NO_CATALOG, RetrievalService } from "../retrieval/service";
+import type { PackageAdmin } from "../service/environment_ports";
 import type { Environment } from "../service/environment";
 import type { Package } from "../service/package";
 import { formatPublishRejections } from "../service/publish_checks";
@@ -113,7 +113,7 @@ export function setPackagePatchDeprecationHeaders(res: HeaderSetter): void {
 }
 
 export class PackageController {
-   private environmentStore: EnvironmentStore;
+   private environmentStore: PackageAdmin;
    private retrieval: RetrievalService;
    /** Packages (`env/pkg`) already warned that versioning is off, this run. */
    private warnedVersioningOff = new Set<string>();
@@ -125,8 +125,11 @@ export class PackageController {
     * controller alone gets a store-backed one.
     */
    constructor(
-      environmentStore: EnvironmentStore,
-      retrieval: RetrievalService = new RetrievalService(environmentStore),
+      environmentStore: PackageAdmin,
+      retrieval: RetrievalService = new RetrievalService(
+         environmentStore,
+         NO_CATALOG,
+      ),
    ) {
       this.environmentStore = environmentStore;
       this.retrieval = retrieval;

@@ -46,14 +46,14 @@ import {
    assertNoCollectionReload,
 } from "./route_params";
 import { processStorageDestinationsOrThrow } from "./service/connection_config";
-import { EnvironmentStore } from "./service/environment_store";
+import type { EnvironmentAdmin } from "./service/environment_ports";
 import { parseEnvironmentName } from "./service/identity";
 
 const LEGACY_API_PREFIX = "/api/v0";
 
 /** Bag of controllers shared with the new server. */
 export interface LegacyControllerSet {
-   environmentStore: EnvironmentStore;
+   environmentStore: EnvironmentAdmin;
    connectionController: ConnectionController;
    modelController: ModelController;
    packageController: PackageController;

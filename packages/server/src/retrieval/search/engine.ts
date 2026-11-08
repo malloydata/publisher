@@ -30,7 +30,11 @@ import {
    EMBEDDING_QUERY_TIMEOUT_MS,
    embeddingConfigured,
 } from "../../service/embedding_provider";
-import type { EnvironmentStore } from "../../service/environment_store";
+import type {
+   CatalogDatabase,
+   EnvironmentPeek,
+   PackageLookup,
+} from "../../service/environment_ports";
 import { alsoLikelyOn, fcjSettingsOf } from "../package_retrieval";
 import { logger } from "../../logger";
 import { activeLlmSettings } from "../llm/active";
@@ -240,7 +244,9 @@ export type FcjQueryArgs = {
    /** Aborted when the MCP client cancels the call. */
    clientSignal?: AbortSignal;
    request: ResolvedRequest;
-   environmentStore: EnvironmentStore;
+   environmentStore: PackageLookup & Partial<EnvironmentPeek>;
+   /** Where a search that starts an index build has it write. */
+   catalog: CatalogDatabase;
    pkgIndex: PackageIndex;
    warnings: string[];
    traceMode: TraceMode;
@@ -328,13 +334,14 @@ function unansweredResult(args: FcjQueryArgs, warning: string): SearchResult {
 }
 
 async function runFcjSearch(args: FcjQueryArgs): Promise<SearchResult> {
-   const { request, environmentStore, pkgIndex, traceMode } = args;
+   const { request, environmentStore, catalog, pkgIndex, traceMode } = args;
    const pkg = pkgIndex.pkg;
    const state = fcjStateOf(pkg);
    // Starts a build when there is none, and on a ready index rebuilds one
    // whose value reads failed once its cool-down is over; otherwise a no-op.
    kickFcjBuild({
       environmentStore,
+      catalog,
       environmentName: request.environmentName,
       packageName: request.packageName,
       pkg,

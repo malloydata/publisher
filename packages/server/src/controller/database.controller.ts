@@ -2,15 +2,15 @@
 // SPDX-License-Identifier: MIT
 
 import { components } from "../api";
-import { EnvironmentStore } from "../service/environment_store";
+import type { PackageLookup } from "../service/environment_ports";
 import { loadedPackage } from "./loaded_package";
 
 type ApiDatabase = components["schemas"]["Database"];
 
 export class DatabaseController {
-   private environmentStore: EnvironmentStore;
+   private environmentStore: PackageLookup;
 
-   constructor(environmentStore: EnvironmentStore) {
+   constructor(environmentStore: PackageLookup) {
       this.environmentStore = environmentStore;
    }
 

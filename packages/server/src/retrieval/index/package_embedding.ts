@@ -2,7 +2,11 @@
 // SPDX-License-Identifier: MIT
 
 import type { EmbeddingModel } from "../llm/types";
-import { EnvironmentStore } from "../../service/environment_store";
+import type {
+   CatalogDatabase,
+   EnvironmentPeek,
+   PackageLookup,
+} from "../../service/environment_ports";
 import { Package } from "../../service/package";
 import {
    embeddingConfigured,
@@ -25,7 +29,7 @@ import { getPackageIndex, packageIndexOf } from "../model/package_entities";
  * resolved; without it, the served package's.
  */
 export async function getPackageEmbeddingStatus(
-   environmentStore: EnvironmentStore,
+   environmentStore: PackageLookup,
    environmentName: string,
    packageName: string,
    loaded?: Package,
@@ -70,12 +74,14 @@ export async function getPackageEmbeddingStatus(
  * at server start.
  */
 export function startPackageEmbeddingSync(
-   environmentStore: EnvironmentStore,
+   environmentStore: PackageLookup & Partial<EnvironmentPeek>,
+   catalog: CatalogDatabase,
    environmentName: string,
    pkg: Package,
 ): void {
    kickFcjBuild({
       environmentStore,
+      catalog,
       environmentName,
       packageName: pkg.getPackageName(),
       pkg,
