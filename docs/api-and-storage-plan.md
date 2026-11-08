@@ -5,9 +5,9 @@ SPDX-License-Identifier: MIT
 
 # Plan: Publisher's next API and storage, and the retirement of v0
 
-**Status: plan of record, proposed.** This document consolidates three issues into one plan: [#1562](https://github.com/malloydata/publisher/issues/1562) (the API review and the decisions behind the new API), [#1560](https://github.com/malloydata/publisher/issues/1560) (the storage redesign) and [#1540](https://github.com/malloydata/publisher/issues/1540) (shipping the new API, moving every client, and retiring v0 and every deprecated feature). The issues stay as the decision records and the tracking checklists; this document is where the plan is read end to end. The new API's spec is [`api-doc.v1.yaml`](../api-doc.v1.yaml), drafted in [#1563](https://github.com/malloydata/publisher/pull/1563); its reference is [api-overview.md](api-overview.md).
+**Status: plan of record, proposed.** This document consolidates three issues into one plan: [#1562](https://github.com/malloydata/publisher/issues/1562) (the API review and the decisions behind the new API), [#1560](https://github.com/malloydata/publisher/issues/1560) (the storage redesign) and [#1540](https://github.com/malloydata/publisher/issues/1540) (shipping the new API, moving every client, and retiring v0 and every deprecated feature). The three issues are closed; everything they held is here, and they remain as history. Tracking happens against this document's steps. The new API's spec is [`api-doc.v1.yaml`](../api-doc.v1.yaml), drafted in [#1563](https://github.com/malloydata/publisher/pull/1563); its reference is [api-overview.md](api-overview.md).
 
-"Today" means `fix/server-bugs` at `ccd659a64` (2026-11-08). Every claim about today in the storage sections carries a `path:line` under `packages/server/src/`, collected in [Appendix A](#appendix-a-evidence); the API findings' evidence is in #1562 and its usage matrix.
+"Today" means `fix/server-bugs` at `ccd659a64` (2026-11-08). Every claim about today in the storage sections carries a `path:line` under `packages/server/src/`, collected in [Appendix A](#appendix-a-evidence); the API review's findings, with their evidence, are [Appendix C](#appendix-c-the-api-reviews-findings), and the route-by-consumer usage matrix is [Appendix D](#appendix-d-the-usage-matrix).
 
 **How to read it.** [The goal](#1-the-goal) says what the three pieces of work are for. [Today](#2-today) says what exists and where it falls short. [The target](#3-the-target) is the design: one resource model, the API over it, and the storage under it. [The order of work](#4-the-order-of-work) is the single sequence everything is built in, with each step's scope and acceptance; it is the part to come back to. [What the removal release removes](#5-what-the-removal-release-removes) is the inventory of everything deprecated. [Decisions](#6-decisions) and [Open questions](#7-open-questions) are the record.
 
@@ -35,9 +35,9 @@ Two decisions shape everything below. **The new API is greenfield**: a new spec 
 
 ### 2.1 The API
 
-The REST API at `/api/v0` has 57 paths, 76 operations and 132 schemas (`api-doc.yaml`), plus 42 legacy `/projects` aliases in no spec (`server-old.ts`), a 13-route admin API on its own port (`admin-api-doc.yaml`) and ten MCP tools. Of the 76 operations, the CLI calls 27, the Console 38, the skills and `docs/ai-agents.md` 24 (ten of them used by nothing else), Credible's control plane 17 and its router 34 as customer passthrough; **21 have no first-party caller**, and six of those exist only for Credible. The CLI's generated client is stale and the Python client is a stub. The full route-by-consumer matrix is the first comment on #1562.
+The REST API at `/api/v0` has 57 paths, 76 operations and 132 schemas (`api-doc.yaml`), plus 42 legacy `/projects` aliases in no spec (`server-old.ts`), a 13-route admin API on its own port (`admin-api-doc.yaml`) and ten MCP tools. Of the 76 operations, the CLI calls 27, the Console 38, the skills and `docs/ai-agents.md` 24 (ten of them used by nothing else), Credible's control plane 17 and its router 34 as customer passthrough; **21 have no first-party caller**, and six of those exist only for Credible. The CLI's generated client is stale and the Python client is a stub. The full route-by-consumer matrix is [Appendix D](#appendix-d-the-usage-matrix).
 
-Measured against the three expectations, the findings group as follows (the tables with line references are in #1562):
+Measured against the three expectations, the findings group as follows (the tables with line references are [Appendix C](#appendix-c-the-api-reviews-findings)):
 
 - **Consistency.** Three casings coexist in paths and parameters (`build-plan` beside `sqlSource` and `storageDestinations`; `filter_params` beside `versionId`), and again on MCP. Path parameters name a file four ways. GETs change state (`?reload=true`, the notebook cell runner). `PATCH` means four different things on four resources. Create answers 200 or 201 by route; connection writes return anonymous objects; `QueryResult.result` is a JSON string whose shape a flag toggles; only one list pages; nothing carries an `ETag`; `reason` is an open string documented centrally; the deprecated report routes set no `Deprecation` header.
 - **The domain model.** Package status lives in four places, including 14 inline `Package` fields behind a flag. `Package` echoes the version's fields under different names. Reports exist as three schema sets. Five things are "a database". A persisted table has three names across four lifecycle schemas, with `sourceEntityId` the only stable identity. The run exposes the store's row id as `environmentId` and a `metadata` blob the server queries by JSON path. Givens and filters, schedule, "manifest", "artifact", "index" and "stale" each mean two things. Skill, classification, embedding index and watch mode have no Console label.
@@ -1033,7 +1033,7 @@ Each with a recommendation; the first two are Kyle's to call, the rest are settl
 
 ## Appendix A: evidence
 
-Every claim about today's storage, with the file and lines it rests on, under `packages/server/src/`. The API findings' evidence is in #1562: the consistency, domain-model and surface tables cite `api-doc.yaml` lines and client call sites, and the first comment is the route-by-consumer usage matrix.
+Every claim about today's storage, with the file and lines it rests on, under `packages/server/src/`. The API review's evidence is inline in [Appendix C](#appendix-c-the-api-reviews-findings) and [Appendix D](#appendix-d-the-usage-matrix).
 
 | Claim | Where |
 |---|---|
@@ -1077,7 +1077,7 @@ Every claim about today's storage, with the file and lines it rests on, under `p
 
 ## Appendix B: where things came from
 
-**The three issues.** #1562 holds the API review's findings, the usage matrix and decisions A1 to A23. #1560 holds the storage design and decisions S and D; its phases are steps 1 to 3, 5 and track B here. #1540 holds the rollout and decisions R; its stages are steps 4 and 6 to 8 here, and its side track is track C. Each issue's "Start here" block points at this document.
+**The three issues, now closed.** #1562 held the API review's findings (Appendix C), the usage matrix (Appendix D) and decisions A1 to A23. #1560 held the storage design, decisions S and D, and the hand-off checklist (Appendix E); its phases are steps 1 to 3, 5 and track B here. #1540 held the rollout and decisions R; its stages are steps 4 and 6 to 8 here, and its side track is track C.
 
 | Old label | Here |
 |---|---|
@@ -1096,3 +1096,205 @@ Every claim about today's storage, with the file and lines it rests on, under `p
 | #1540 side track (H0 to H6) | track C |
 
 **The durability program** (ms2data/service PR 7237, closed in favour of #1560) landed as follows: its PR 0 (land #1354) is done and #1552 is now the prerequisite (step 1); PR 0b, the load harness, is step 1; PR 1, the migration runner, is step 3; PR 2, the recovery contract, crash matrix and the eight bugs, is step 2 with the contract under [Lifecycle](#lifecycle); PR 3, the compiled-model store, is B3; PR 4, unload, telemetry, `hostname` and warm start, is step 5; PR 5, the `/projects` removal and the controller-to-storage audit, is step 8 and step 3; PR 3b, the cache load test, is B3's acceptance; S1 to S5 and D7 to D9 are under [Deployments](#deployments) and stay service work.
+
+## Appendix C: the API review's findings
+
+The review that produced decisions A1 to A23 (from #1562), as written on 2026-11-08 against `fix/server-bugs` at `ccd659a64`. Line numbers are into `api-doc.yaml` (v0) and the client sources at that commit.
+
+### The surface today
+
+| Surface | Size | Where |
+|---|---|---|
+| REST, `/api/v0` | 57 paths, 76 operations, 132 schemas, 14 shared responses, 8 shared parameters | `api-doc.yaml` (11,194 lines); routes under `routes/`; parity enforced by `api_route_parity.spec.ts` |
+| Legacy `/projects` aliases | 42 registered routes (35 statements, 7 in a two-scope loop) | `server-old.ts`; in no spec; excluded from parity (`api_route_parity.spec.ts:14-15, 44-47`); one line in `docs/api-overview.md:43` |
+| Admin API, own port | 13 routes: DuckLake catalogs, their tables and snapshots, watch mode, `/metrics` | `admin-api-doc.yaml`; `routes/admin.ts:74-217`; `/metrics` in no spec (`admin.ts:217`, `main_app.ts:122`) |
+| MCP, port 4040 | 10 tools | `mcp/tools/*.ts` |
+
+**Who uses what.** Of the 76 REST operations:
+
+| Consumer | Operations it calls | Evidence |
+|---|---|---|
+| CLI (`packages/cli`) | 27 | `cli/src/api/client.ts`, `commands/*`. Its generated client is stale: it lacks the five `versions`/`latest`/`manifest` routes and `status`, `entities`, `build-plan`, `embedding-index`, `classification`, and carries a `/packages/{pkg}/pages` route the server no longer has (`generated/api/pages-api.ts:45`). |
+| Console / SDK (`packages/sdk`, `packages/app`) | 38 | hooks and components; the generated client matches the spec |
+| Skills and `docs/ai-agents.md` (agents over REST) | 24, of which 10 are used by nothing else | `skills/**`, `docs/ai-agents.md` |
+| Credible control plane (worker calls) | 17 | `controlplane/.../services/WorkerCalls.java`, `WorkerPool.java`, `DataplaneMaterializationClient.java` |
+| Credible router (customer passthrough) | 34 of the 46 operations in its mirror spec | `router/.../controllers/EnvironmentsController.java`; `apis/dataplane-public-api-doc.yaml` |
+| **Nobody first-party** | **21** | the three environment-level ad-hoc SQL routes; all six package-scoped `connections` routes; `GET versions/{v}`; `PUT versions/{v}/manifest`; `GET events`; `POST /connections/test`; `watch-mode/start`, `/stop`; the three `storageDestinations` routes; `GET dashboards` |
+
+Of those 21, Credible's service calls six (`PUT …/manifest`, `POST /connections/test`, `sqlQuery` and the connection schema reads for its orphan-table sweep) and proxies the ad-hoc SQL and package-scoped connection routes to customers; `@malloydata/db-publisher` reaches the connection routes through the router's `/projects` facade. The rest (`GET versions/{v}`, `GET events` on a worker, `watch-mode/start|stop`, `storageDestinations`, `GET dashboards`) have no caller anywhere.
+
+The Python client (`packages/python-client`) is a stub: only `__init__.py` is checked in, the rest is generated at build time and `.gitignore`d; nothing depends on it.
+
+### Findings
+
+###### 1. Consistency
+
+**Naming.** Three casings coexist in paths and parameters, and the choice follows when a route was added, not a rule.
+
+| Kind | Inconsistency | Where |
+|---|---|---|
+| Path segments | kebab `build-plan`, `embedding-index`, `data-apps`, `watch-mode` vs camel `sqlSource`, `sqlQuery`, `sqlTemporaryTable`, `storageDestinations`, `fileCleanups` | `api-doc.yaml:2884, 2936, 3660, 3809` vs `:807-947, 4095, 4170` |
+| Path parameters | `{path}` for models, reports and notebooks vs `{dashboardName}` vs `{relativeFilepath}` vs `{skillName}`/`{agentName}`; `{tablePath}` on connections vs `{tableName}` on storage; `{version}` in the path vs `versionId` in the query; the shared param component `storageSchemaName` is spelled `schemaName` on the wire and `versionPath` is spelled `version` | `:2135, 2596, 3443` vs `:3307, 3150`; `:748` vs `:4131`; `:11186` vs `:11163`; `:11128` |
+| Query parameters | snake `filter_params`, `bypass_filters` vs camel everything else; `bypass_filters` is a string enum `"true"/"false"` while every other boolean is `type: boolean`; their body twins are camel `filterParams`/`bypassFilters` | `:3549-3570` vs `:7985, 7998` |
+| Verbs in paths | `/connections/test`, `/watch-mode/start|stop`, `/fileCleanups`, `/latest`; `?action=stop` on a POST to a materialization; `archiveStatus: archive|unarchive` as an imperative inside a PATCH body | `:3774, 3838-3869, 4170, 2029, 4008-4033, 4586-4595` |
+| operationIds | mostly `verb-noun`, but `post-sqlsource`, `post-querydata` (for a route named `sqlQuery`), `post-temporarytable`, `execute-query-model`, `compile-model-source`, `update-model-source` (which writes a report), `materialization-action`, `start-watching`, `set-package-latest-version`, `test-connection-configuration` | `:807-948, 2216, 4008` |
+| Tags | `connectionsTest` is used but not declared; `events` is tagged `watch-mode` though it lives under packages; `P/status` is `packages` while `/status` is `publisher`; the report write is under `models` | `:3777, 3715, 2769, 2212` |
+| MCP | three conventions at once: camelCase tools (`execute_query`, `compile_model`, `search_database_schema`: `environmentName`, `packageName`, `modelPath`), snake_case tools (`get_context`, `get_skill`, `get_agent`: `search_targets`, `scopes[].{environment, package, version, model_path}`), and `scopes[].version` where REST says `versionId`. `get_context` returns `source_info.resource_id {environment, package, model_path, source}` that the agent must re-key to `environmentName/packageName/modelPath/sourceName` for `execute_query` | `mcp/tools/get_context_tool.ts:69`; `execute_query_tool.ts:72-76` |
+| Admin API | `GET/PUT/DELETE /watch-mode` mirrors the main API's `GET /watch-mode/status`, `POST /start`, `POST /stop` with a different verb style; its `schemas/{s}/tables/{t}` path is the fourth copy of that shape (connections, package connections, storage destinations, catalogs) | `routes/admin.ts:181-200`; `api-doc.yaml:3809-3869` |
+
+**Structure.**
+
+| Kind | Inconsistency | Where |
+|---|---|---|
+| Side-effecting GETs | `GET E?reload=true` and `GET P?reload=true` recompile; `GET notebooks/{path}/cells/{i}` runs a query; connection `schemas`/`tables` GETs run live `DESCRIBE` work under admission control; `GET build-plan` is read-only but a 409 `BUILD_PLAN_UNAVAILABLE` is cleared only by a reload | `:299-300, 1618-1630, 3496-3512, 2896-2897`; `routes/api.ts:402-404, 540` |
+| PATCH semantics | environment PATCH takes the whole `Environment`; connection PATCH takes a hand-picked subset where omitting `configEtag` drops the stored one; package PATCH has field-level rules (the `materialization` block is replaced, `queryMetadata` null preserves and `{}` clears, two homes for `queryMetadata`) and is deprecated; version PATCH is a state transition `{archiveStatus}` not a field patch | `:328-350, 545-553, 1680-1700, 4586-4597` |
+| Create status | 200 for environments and packages (and `dryRun`), 201 for connections, materializations, file cleanups and a model create; `PUT models/{path}` is create-or-replace (201 or 200) in one operation | `:251, 1475-1493` vs `:468, 3895, 4170, 2212-2262` |
+| `versionId` | every package sub-read takes it as a query param, including the duplicated connection sub-tree; PATCH/DELETE package, `POST packages`, env-level connection routes and the versions routes (path `{version}`) do not; the query POST accepts it in the body or the URL but declares no query param; `create-materialization` carries it in the body; listings refuse it with 400 | `:2352-2370, 7972-7978, 9767`; `route_params.ts:44-104` |
+| Envelopes | every list is a bare array; connection create/update/delete answer anonymous inline objects, not `Connection`; deletes return the deleted entity except materializations and storage tables (204); watch-mode start/stop return an empty 200 with `{error}` on failure; `PUT …/manifest` returns `Package` where every other versions operation returns `PackageVersion`; `QueryResult.result` is a JSON **string** whose shape `compactJson` toggles, and `CompiledModel.modelInfo`/`sourceInfos` are JSON strings beside typed fields | `:468-640, 1977-2000, 8206-8210, 7965, 7148-7156`; `routes/api.ts:135-138` |
+| Pagination | only `list-materializations` pages (`limit`, `offset`); packages, models, reports, versions, connections and tables are unbounded arrays | `:3948-3965` |
+| Concurrency | no `ETag`/`If-Match` anywhere on the main API; `PUT models/{path}` uses a body field `expectedHash` (SHA-256 of the text) and connections use a client-owned opaque `configEtag`; the admin API's `PUT tables/{t}` honours `If-None-Match: *` | `:2247-2262, 8555-8570`; `admin.ts:121` |
+| Errors | body `Error {code: int, message, details, reason}` with `reason` an open string; the 18 reason strings in `errors.ts:102-154` are documented centrally, not per route; three operations use an inline `Error` for 409 instead of the `Conflict` component; status-code sets are uneven (materializations omit 401/500/503, storage omits 401/503, `get-model` and `get-notebook` omit 503, `compile` omits 401); `bypassFilters === true` in a body silently ignores `"true"` while its query twin answers 400 | `:9361-9404`; `routes/api.ts:812-813`; `route_params.ts:21-41` |
+| Deprecation signalling | the deprecated `dashboards` and `notebooks` routes set **no** `Deprecation` header, while package PATCH, watch-mode and storageDestinations do; the 13 `publisher_deprecated_usage_total` features are the only consistent signal | `deprecated.ts:131-189` vs `json_route.ts:141-144`, `routes/api.ts:141-153`, `storage_destinations.ts:23`; `deprecated_usage_metrics.ts:32-48` |
+
+#### 2. The domain model
+
+**Twelve concepts have more than one name or representation.**
+
+| Concept | Representations today |
+|---|---|
+| Package and version | `Package` carries `versionId`, `latestVersion`, `archiveStatus`, `loaded`, `status` that echo `PackageVersion.id`, `latest`, `archiveStatus` and `PackageServingState` under different names (`:4494-4560` vs `:5406-5450`); one concept is spelled `latest`/`latestVersion` and `id`/`versionId`/`{version}`/`versionId=` |
+| Package status | four places: `GET /status` → `environments[].packages[]`, `GET P/status` (`PackageServingState`), the deprecated inline `Package` fields behind `PUBLISHER_PACKAGE_INLINE_FIELDS` (14 of 28 fields, `:5431-5975`), and `PackageStatusEntryFields`, an `allOf` that re-declares nine `Package` fields with `deprecated: false` to override the parent (`:5295`); `loadErrors[].stale` appears nowhere else |
+| Reports | three listing schemas (`Report`, `Dashboard`, `Notebook`), three manifests (`ReportManifest`, `DashboardManifest`, `RawNotebook`); the path is `path` on `Report` and `modelPath` on `ReportCells`; `ReportCells.type` is the literal `"notebook"` (`:6784`); `compile_model` still documents the deprecated `kind=` (`compile_tool.ts:21`) |
+| Warehouse handles | `Connection` (22 fields, 13 optional dialect blocks), a storage destination that is typed as `Connection` with credentials stripped (`:5002`) though the docs say it "is not a connection" (`connections.md:186`), `Database` (an embedded data file, `:8410`), `AttachedDatabase`, and the admin API's catalog: five "database" things |
+| A persisted table | `BuildPlan` (intent), `BuildInstructions` (orders), `BuildManifest`/`ManifestEntry` (outcome) and `StorageServeBinding` (what is served) describe one table at four lifecycle stages with three names for it: `physicalTableName`, `tablePath`, `materializedTableId`; `sourceEntityId` is the only stable identity (20 schemas in the materialization cluster) |
+| Run | `Materialization` carries `environmentId` (the store's row id, not the environment's name: `resolve_environment.ts:11-17`), a free-form `metadata` blob whose keys the schema says not to promote (`:9918-9924`) yet the repository queries by JSON path (`MaterializationRepository.ts:119`); `trigger` is spelled `ON_DEMAND|SCHEDULER` in `metadata` and `publish|on_demand|scheduler` in `RunContext` (`:9868`); `versionId` lives only in `metadata` |
+| Givens and filters | `Given{secure}`, `SecureGivenSummary`, the deprecated `Filter`, `QueryRequest.givens` vs deprecated `filterParams`, MCP `givens` and `filter_params` both accepted; `Filter` is still wired into `Source`, `SourceEntities`, `QueryRequest`, `execute_query` and `get_context` |
+| Schedule | `PackageMaterializationConfig.schedule` (runs) and `AgentSchedule` (declared, never run, `:6010-6013`) share a name with opposite semantics |
+| Model | three views of one file: `Model` (listing), `CompiledModel` (sources, views, givens, JSON-string `modelInfo`/`sourceInfos`), `ModelEntities` (retrieval); `path` vs `modelPath` |
+| View and query | `Query{sourceName}`: a view and a model-level named query are one shape told apart by whether `sourceName` is set (`api-overview.md:83-84`) |
+| Optionality with meaning | `Package.materialization` null means unknown, not removal (`:5867`); `queryMetadata` null keeps and `{}` clears (`:5852`); `explores` may be author-written or server-derived with no marker (`:5486`); `versionId` absent and null mean different things (`:5413-5416`); `Package.warnings` is 350 lines of prose enumerating codes rather than an enum (`:5531-5780`) |
+| Terminology across surfaces | environment vs legacy "project"; data app vs the Console's "Apps"; `/databases` vs the Console's "Data"; "Pin as latest" in the Console vs promote in the docs; "Givens" (model viewer) vs "Filters" (reports) vs "parameters" (home) for one thing; "manifest" means `publisher.json`, a build manifest and a report manifest; "artifact" means a report tag and a persisted table; "index" means `index.malloy`, `#(index)` and the embedding index; "stale" means a failed reload and aged data; "cell" has four meanings; skill, classification, embedding index and watch mode have no Console label at all |
+
+**Internal detail that leaks.** `Materialization.environmentId`; the `metadata` blob; `Package.manifestLocation` as a `file://` or absolute server path (`:5822`); `servedRevision` and `sourceContentSha` kept on a `?reload=true` response permanently (`:5949-5963`); the `Environment.theme` field "reserved, not populated" (`:5015`).
+
+**Docs and API disagree.** `api-overview.md`'s hierarchy omits `/status`, `/entities`, `/build-plan`, `/embedding-index`, `/classification`, `/versions`, `/latest` (`:24-41` vs `:53-57`); `packages.md:71` says a configured package ignores `version` while `package-versions.md:12` says it is published as that version; `CompiledModel.modelInfo` and `sourceInfos` are opaque strings the docs never describe.
+
+#### 3. Surface against need
+
+**Load-bearing for first-party clients.** `GET /status`; `/theme` (Console); environments CRUD; `GET connections`, `DELETE connections/{c}` and, CLI only, `GET/POST/PATCH connections/{c}`; the three environment-level schema reads (Console explorer); packages list/POST/GET/PATCH/DELETE; `GET versions`, `PATCH/DELETE versions/{v}`, `PUT latest`; `GET models`, `GET/PUT models/{path}`, `POST query`, `POST compile`; `GET reports`, `GET reports/{path}`; `GET agents`; `GET databases`; `GET data-apps`; `GET build-plan`; materializations POST/list/get/stop/DELETE. Agent-only but taught: `skills`, `agents/{a}` and its skill files, `P/status`, `entities`, `embedding-index`, `classification`, `?reload=true`, `watch-mode/status`.
+
+**Load-bearing for Credible.** The control plane needs `GET /status?includeLoading=true` with `operationalState`, `version`, `environments[].resource` (parsed positionally: `split("/")[4]` is the environment and `[6]` the package, `WorkerCalls.java:141-155`), `connections[]` echoed whole plus `withheldFields` and `configEtag`, `storageDestinations[].name`, `packages[].{resource|name, versionId, status{loading, serving, loadingSince}, manifestBindingStatus, boundManifestUri}`; `POST/PUT/DELETE /environments` taking `name`, `readme`, `connections[]` (with `fingerprint`, `queryMetadataEnforced`, `configEtag`) and `storageDestinations[]` (always sent, even empty); `POST …/packages` with `name`, `location`, `manifestLocation`, `?dryRun` (gated on `/status.version ≥ 0.12.3`), returning `warnings`, `secureGivens`, `buildPlan`, `versionId` and `{reason, message}` errors; `GET …/packages/{pkg}?versionId&reload`; `GET …/entities?includeHiddenFilesAndSources` (404 read as "older worker"); `GET …/build-plan` (409 `BUILD_PLAN_UNAVAILABLE`); `PUT …/versions/{v}/manifest` (synchronous; a non-404 failure fails the finalize); `DELETE …/versions/{v}` (409 semantics); materializations POST/get/stop with `versionId`, `buildInstructions`, `runContext`, returning `id`, `status`, `error`, `manifest[].{sourceEntityId, physicalTableName, error}`; connection `GET`, `schemas`, `tables`, `sqlQuery` with `queryClass=ops`; `POST /connections/test`. The router passes through to customers: environments and packages reads, models, query, compile, reports and the deprecated dashboards/notebooks, databases, data-apps, agents, the connection schema and ad-hoc SQL routes in both scopes, `/connections/test`, a synthesized `/status`, static files, and the `/projects` facade; it deliberately does not expose any create, update or delete, materializations, watch mode, `/theme`, `/skills`, `/embedding-index`, `/classification`, `/storageDestinations` or `PUT models/{path}`.
+
+**What exists for nothing first-party.** All six package-scoped connection routes (they exist because `duckdb` is a per-package `:memory:` connection, `:1009-1017`; the router proxies them); the three environment-level ad-hoc SQL routes (the control plane uses `sqlQuery` for drops; the router proxies all three; `db-publisher` uses them via `/projects`); `/connections/test` (control plane and router); `GET events` on a worker (the router stubs the stream and never hits a worker, `EnvironmentService.java:752-755`); `watch-mode/start|stop`; the three `storageDestinations` routes (deprecated for the admin API); `GET versions/{v}`; `GET dashboards` (list). On the read side, nothing first-party renders Package `latestVersion`, `loaded`, `explores`, `exploresWarnings`, `queryableSources`, `manifestBindingStatus`, `manifestEntryCount`, `boundManifestUri`, `status`, `storageServeBindings`, `embeddingIndex`, `classification`, `servedRevision`, `sourceContentSha`, `agents`, `secureGivens`; Environment `location`, `storageDestinations`, `theme`; Connection `managed`, `fingerprint`, `configEtag`, `queryMetadata*`, `attributes`, `proxy`; PackageVersion `archivedAt`, `promotedAt`, `demotedAt`, `location`, `contentHash`, `manifestLocation`, `gitRef`, `updatedAt`; Materialization `environmentId`, `createdAt`, `updatedAt`. Several of those are Credible's (`secureGivens`, `manifestBindingStatus`, `boundManifestUri`, `fingerprint`, `configEtag`, `withheldFields`).
+
+**Deprecated with live callers and no replacement.**
+
+| Deprecated | Still called by | Replacement |
+|---|---|---|
+| `PATCH …/packages/{pkg}` | CLI `update package` and the whole `schedule` subcommand (`commands/schedule.ts:68, 110`); Console description edit (`EditPackageDialog.tsx:42`) and schedule/scope edits (`Materializations.tsx:220, 249`) | none for "edit an installed package's description, schedule or scope"; #1552 removes the route and says these come from `publisher.json`, which removes the Console and CLI affordances with it |
+| `GET …/notebooks*` | CLI `list/get notebook` (`commands/notebooks.ts:13, 37`); Console legacy `.malloynb` reader (`MalloynbCells.tsx:28, 57`); an eval-loop README | `reports` has no cell runner for `.malloynb`; the cells route is the only one (`:3503-3507`) |
+| `GET …/dashboards/{name}` | Console `legacy/Dashboard.tsx:126`, still a public SDK export (`components/index.ts:29`) | `reports/{path}`, but by path, not by unique basename |
+| `/projects/*` | `@malloydata/db-publisher@0.0.437` (generated against `/projects`, `dbp/package/src/client/api.ts:2022-5404`), but through the **router's** facade, not Publisher's; two eval scripts probe `/projects` for liveness | Publisher could drop its aliases once the router owns the facade and the scripts probe `/status` |
+| `manifestLocation` on `Package` | CLI `schedule.ts:23` and Console `Materializations.tsx:294`, both to detect "control-plane managed" | `GET P/status.manifestBindingStatus` |
+| inline `Package` fields | the Console's `buildPlan` 404 fallback (`Materializations.tsx:117-123`); eval and compliance scripts fall back to inline `embeddingIndex`/`classification` on 404 | the dedicated routes; the fallbacks exist for older servers |
+
+#### 4. Client-side workarounds that reveal gaps
+
+1. **Two write paths for one resource.** The Console adds or edits a connection by re-sending the whole `connections` array on `PATCH /environments/{e}` (`Connections.tsx:71-75, 89-94`), while delete uses the per-connection route because the PATCH "upserts and never drops the row" (`:107-111`); the CLI uses the per-connection POST/PATCH; the control plane sends connections inside the environment body only.
+2. **Whole-object resend on package PATCH.** Both clients must carry `description` and `materialization.queryMetadata` through every schedule or scope edit or they are dropped, because the `materialization` block is replaced (`schedule.ts:68-82, 110-121`; `Materializations.tsx:220-227`).
+3. **Polling for completion.** CLI `--wait` loops on `GET materializations/{id}` every 2 s (`commands/materializations.ts:117-120`); the Console refetches while any row is active (`Materializations.tsx:79-86`); the control plane polls on a 5 s tick. `/events` exists and is unused for this.
+4. **Double-encoded results.** Every query consumer re-parses `data.result` as JSON (`useRawQueryData.ts:62`, `useDimensionalFilterRangeData.ts:275`, `useSuggestOptions.ts:563`, `SourcesExplorer.tsx:218`, `DownloadRowsCsv.tsx:98`, `RenderedResult.tsx:610`; `docs/ai-agents.md:184-192`), and `modelInfo` and each `sourceInfos[]` entry likewise (`useModelSources.ts:78, 110-112`).
+5. **N+1 catalog assembly.** The report builder lists models then GETs every one to build a source catalog (`useEditorCatalog.ts:52, 87`); the new-document dialog does the same (`useDocumentChoices.ts:70`); the package page fires six parallel reads (`Package.tsx:203-270`); the theme editor reads `/theme` and `/status` for one page.
+6. **Feature detection by status code.** 404 means "older server, use the inline field or an empty list" in four Console places and three scripts; 404/501 on `versions` means "no versions" (`usePackageVersions.ts:56`); a 409 with no `reason` is read as `FILE_EXISTS` (`createDocument.ts:244-247`); the compliance script matches refusal text by regex (`compliance.py:293, 300`). The control plane does the same on `entities`, `build-plan` and a null `status`, plus the one semver gate (`supportsDryRun`).
+7. **Client-computed concurrency tokens.** `expectedHash` is a SHA-256 the client computes over text it read (`documentSession.ts:189-193`); `configEtag` is a client-owned opaque string; neither is an HTTP `ETag`.
+8. **Positional parsing of `resource`.** The control plane derives environment and package from the `resource` path's segments (`WorkerCalls.java:141-155`), so the path shape is a contract.
+
+#### 5. What Credible's integration constrains
+
+- The control plane tolerates **undeclared response fields** (`disallowAdditionalPropertiesIfNotPresent=false`, `controlplane/pom.xml:678-688`) but **not** enum additions, new required fields or type narrowing on `/status`, `Package`, `Connection`, `ModelEntities`, `BuildPlan` or `Materialization`: those break every heartbeat or load.
+- Any new field on the connection read projection must also appear in `withheldFields` or be echoed back, or reconcile re-pushes the connection forever (`WorkerPool.java:1880-1890, 1985-1996`).
+- The router's passthrough makes every passthrough response schema a **customer-facing** shape for Credible; `scripts/check_publisher_spec_drift.py` fails CI on removed paths, renamed operationIds and field renames against the pinned release (`0.12.5`).
+- `pkg___<version>` combined names are still accepted on the read side (`reportedWorkerPackageName`, `WorkerCalls.java:105-129`) though the wire sends plain name plus `versionId`; `org___env` environment names are permanent.
+- Older-worker fallbacks (404 on `entities` and `build-plan`, null `status`) mean a route rename must keep answering on the old path for one pin cycle.
+- Direct e2e coverage of worker routes is thin: `/status`, `/environments` and a `?reload=true` rejection (`e2e/src/security/f8-unauth-reload.spec.ts:10-44`).
+
+## Appendix D: the usage matrix
+
+U = used (one representative call site), – = unused. Credible column: CP = control plane calls it on a worker, R = router proxies it to customers.
+
+| Path (method) | CLI | SDK / Console | Skills / docs | Credible |
+|---|---|---|---|---|
+| `/status` GET | – | U `ServerProvider.tsx:234` | U `docs/ai-agents.md:171` | CP (`WorkerPool.java:1150`); R synthesizes its own |
+| `/theme` GET/PUT/DELETE | – | U `ThemeEditorPage.tsx:50, 137, 156` | – | – |
+| `/environments` GET | U `client.ts:60` | U `Home.tsx:112` | U | R |
+| `/environments` POST | U `client.ts:78` | U `AddEnvironmentDialog.tsx:26` | – | CP (`WorkerCalls.java:434`) |
+| `/environments/{e}` GET | U `client.ts:69` | U `About.tsx:27` | – | R |
+| `/environments/{e}` PATCH | U `client.ts:90` | U `EditEnvironmentDialog.tsx:43`; connections upsert `Connections.tsx:71, 89` | – | CP (PUT, `WorkerCalls.java:434`) |
+| `/environments/{e}` DELETE | U `client.ts:102` | U `DeleteEnvironmentDialog.tsx:33` | – | CP (`:766`) |
+| `…/connections` GET | U `client.ts:187` | U `Connections.tsx:66` | – | R |
+| `…/connections/{c}` GET | U `client.ts:199` | – | – | CP sweep; R |
+| `…/connections/{c}` POST | U `client.ts:220` | – | – | – |
+| `…/connections/{c}` PATCH | U `client.ts:237` | – | – | – |
+| `…/connections/{c}` DELETE | U `client.ts:253` | U `Connections.tsx:122` | – | – |
+| `…/connections/{c}/schemas` GET | – | U `ConnectionExplorer.tsx:84` | – | CP sweep; R |
+| `…/schemas/{s}/tables` GET | – | U `ConnectionExplorer.tsx:331` | – | CP sweep; R |
+| `…/schemas/{s}/tables/{t}` GET | – | U `ConnectionExplorer.tsx:229` | – | R |
+| `…/connections/{c}/sqlSource` POST | – | – | – | R; db-publisher via `/projects` |
+| `…/connections/{c}/sqlQuery` POST | – | – | – | CP drops (`DataplaneMaterializationClient.java:284`); R |
+| `…/connections/{c}/sqlTemporaryTable` POST | – | – | – | R; db-publisher |
+| `…/packages/{p}/connections/{c}/*` (6 ops) | – | – | – | R |
+| `…/packages` GET | U `client.ts:111` | U `Environment.tsx:30` | U | R |
+| `…/packages` POST | U `client.ts:137` | U `AddPackageDialog.tsx:28` | U `build_run_package.py:613` | CP (`WorkerCalls.java:337`, `dryRun :358`) |
+| `…/packages/{p}` GET | U `client.ts:120` | U `Package.tsx:206` | U `?reload=true` `improve.py:85` | CP (`DataplaneMaterializationClient.java:156, 221`); R |
+| `…/packages/{p}` PATCH (deprecated) | U `packages.ts:65`, `schedule.ts:68, 110` | U `EditPackageDialog.tsx:42`, `Materializations.tsx:220, 249` | – | – (501 stub in the mirror spec) |
+| `…/packages/{p}` DELETE | U `client.ts:177` | U `DeletePackageDialog.tsx:34` | U `build_run_package.py:595` | – |
+| `…/versions` GET | – (not in CLI client) | U `usePackageVersions.ts:48` | – | – |
+| `…/versions/{v}` GET | – | – | – | – |
+| `…/versions/{v}` PATCH | – | U `VersionSwitch.tsx:224` | – | – |
+| `…/versions/{v}` DELETE | – | U `VersionSwitch.tsx:252` | – | CP (`WorkerCalls.java:758`) |
+| `…/versions/{v}/manifest` PUT | – | – | – | CP (`:427`, finalize and drift rebind) |
+| `…/latest` PUT | – | U `VersionSwitch.tsx:204` | – | – |
+| `…/models` GET | U `client.ts:359` | U `Package.tsx:231`, `useEditorCatalog.ts:52` | U `check_findable.py:160` | R |
+| `…/models/{path}` GET | U `client.ts:375` | U `useModelSources.ts:106` | U `check_findable.py:171` | R |
+| `…/models/{path}` PUT | – | U `documentSession.ts:189`, `Package.tsx:340` | U `skills/malloy-reports/SKILL.md:51` | – |
+| `…/models/{path}/query` POST | – | U `useQueryResult.ts:86` and five more | U `compliance.py:188`, `publisher_rest.py:63` | R; private bypass route |
+| `…/models/{path}/compile` POST | – | U `useCompiledDocument.ts:42` | U | R |
+| `…/reports` GET | – | U `useDocumentLocation.ts:34` | U | R |
+| `…/reports/{path}` GET | – | U `reportQuery.ts:40` | U `skills/malloy-reports/SKILL.md:26` | R |
+| `…/skills` GET, `…/skills/{n}` GET | – | – | U `docs/ai-agents.md:103`, `publisher_rest.py:182` | – |
+| `…/packages/{p}/status` GET | – | – | U `improve.py:99`, `publisher_rest.py:227` | – |
+| `…/entities` GET | – | – | U `skills/malloy-compliance-review/SKILL.md:61` | CP (`WorkerCalls.java:299`) |
+| `…/build-plan` GET | – | U `Materializations.tsx:112` | U `skills/malloy-materialization/SKILL.md:90` | CP (`:322`) |
+| `…/embedding-index` GET | – | – | U `check_findable.py:218` | – |
+| `…/classification` GET | – | – | U `compliance.py:128` | – |
+| `…/agents` GET | – | U `Package.tsx:218` | U | R |
+| `…/agents/{a}` GET | – | – | U `skills/malloy-run-agent/SKILL.md:28` | R |
+| `…/agents/{a}/skills/{f}` GET | – | – | U `SKILL.md:61` | – |
+| `…/dashboards` GET (deprecated) | – | – | – | R |
+| `…/dashboards/{n}` GET (deprecated) | – | U `legacy/Dashboard.tsx:126` | – | R |
+| `…/notebooks` GET (deprecated) | U `notebooks.ts:13` | – | U eval-loop README | R |
+| `…/notebooks/{path}` GET (deprecated) | U `notebooks.ts:37` | U `MalloynbCells.tsx:28` | – | R |
+| `…/notebooks/{path}/cells/{i}` GET (deprecated) | – | U `MalloynbCells.tsx:57` | – | R |
+| `…/databases` GET | U `databases.ts:13` | U `Package.tsx:237` | – | R |
+| `…/data-apps` GET | – | U `Package.tsx:254`, `DataAppViewer.tsx:90` | – | R |
+| `…/events` GET (SSE) | – | – | – | R stubs it |
+| `/connections/test` POST | – | – | – | CP (`WorkerCalls.java:673`); R |
+| `/watch-mode/status` GET (deprecated) | – | – | U `docs/ai-agents.md:236` | – |
+| `/watch-mode/start`, `/stop` POST (deprecated) | – | – | – | – |
+| `…/materializations` POST | U `materializations.ts:88` | U `Materializations.tsx:141` | – | CP (`DataplaneMaterializationClient.java:240`) |
+| `…/materializations` GET | U `materializations.ts:26` | U `Materializations.tsx:72` | – | – |
+| `…/materializations/{id}` GET | U `materializations.ts:62, 119` | – | – | CP poll (`:256`) |
+| `…/materializations/{id}` POST `?action=stop` | U `materializations.ts:153` | U `Materializations.tsx:165` | – | CP (`:344`) |
+| `…/materializations/{id}` DELETE | U `materializations.ts:171` | U `Materializations.tsx:193` | – | – |
+| `…/storageDestinations/*` (3 ops, deprecated) | – | – | – | – |
+
+## Appendix E: hand-off checklist
+
+- [ ] Kyle decides the `--apply` bootstrap (the one item still flagged).
+- [ ] #1552 merges (step 1); Kyle lands the load harness #1378 (step 1, in progress 2026-11-08).
+- [ ] step 2 PRs, each small, against `main`; the lint specs land with them so later phases cannot regress.
+- [ ] step 3 opens with `storage/records/`, the migration runner and migration 0001 before any record moves, so every later PR is a migration. step 5 opens with the config split (`malloy-pub apply`, `--apply`, the deprecated `environments` block), coordinated with the configuration design's step 2 so the two migrations ship in one release note.
+- [ ] Each phase's hammer scenarios are written before its code, from the acceptance lists above.
+- [ ] The compiler spike (open question 5) runs during B1 so B3 is scoped when it starts.
+- [ ] Service #5521 points at this issue; S1 follows the release that carries step 5 `/status` fields and the unload verb.
+- [ ] `docs/local-state.md`, `docs/migrations.md` and `docs/compiled-model-cache.md` exist and match the code when their phases land; `docs/package-versions.md`, `docs/materialization.md`, `docs/configuration.md` and `docs/security-posture.md` are updated in the phase that changes what they describe; `RELEASE_NOTES.md` gets a section per phase that changes a visible behaviour (generational names, `ETag`, the lifted 409, retention, the schema-refresh rule).
