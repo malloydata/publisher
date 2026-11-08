@@ -46,7 +46,7 @@ import {
    type ModelDef,
    type SourceDef,
 } from "@malloydata/malloy";
-import { ANCESTOR_WALK_MAX_DEPTH } from "./gate_registry_walk";
+import { ANCESTOR_WALK_MAX_DEPTH } from "./governance/gate_plan";
 import {
    resolveCompositeResolvedBase,
    resolveDeclaredSource,
