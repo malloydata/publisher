@@ -188,6 +188,10 @@ export function findSqlEmbedsOfGatedSources(
       reported.add(key);
       findings.push(finding);
    };
+   // One walk of the whole model first: most packages hold no sql() at all,
+   // and the per-root walks below would otherwise re-traverse every shared
+   // struct once per entry.
+   if (sqlSelectsWithin(modelDef).length === 0) return findings;
    for (const root of rootsOf(modelDef, scope)) {
       const entryName = root.label;
       const embeddingKind = root.kind;
