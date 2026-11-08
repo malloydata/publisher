@@ -70,12 +70,33 @@ export function registerSignalHandlers(
  * {@link performGracefulShutdownAfterDrain}. The composition root's
  * `shutdown()` runs the same sequence.
  */
-export async function drainAndShutdown(
+let shutdownInProgress: Promise<void> | undefined;
+
+export function drainAndShutdown(
    server: Server | null,
    mcpServer: Server | null,
    shutdownDrainDurationSeconds: number = 0,
    shutdownGracefulCloseTimeoutSeconds: number = 0,
    otherServers: Server[] = [],
+): Promise<void> {
+   // SIGTERM and the root's shutdown() can both arrive; the second joins the
+   // first instead of closing the servers and the SDK again.
+   shutdownInProgress ??= drainThenClose(
+      server,
+      mcpServer,
+      shutdownDrainDurationSeconds,
+      shutdownGracefulCloseTimeoutSeconds,
+      otherServers,
+   );
+   return shutdownInProgress;
+}
+
+async function drainThenClose(
+   server: Server | null,
+   mcpServer: Server | null,
+   shutdownDrainDurationSeconds: number,
+   shutdownGracefulCloseTimeoutSeconds: number,
+   otherServers: Server[],
 ): Promise<void> {
    markNotReady();
    operationalState = "draining" as OperationalState;
