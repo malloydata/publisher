@@ -17,6 +17,7 @@ import * as path from "path";
 import { fileURLToPath, pathToFileURL } from "url";
 import { registerGetContextTool } from "./get_context_tool";
 import { sliceRange } from "../../retrieval/model/package_entities";
+import { testRetrieval } from "../../test_helpers/test_retrieval";
 
 const MODEL = `source: orders is duckdb.sql("select 'CA' as state, 1 as amt") extend {
   dimension: shouty is upper(state)
@@ -225,6 +226,13 @@ describe("a view's definition on the card", () => {
                   getStaleCompileErrors: () => new Map(),
                }) as never,
          } as never,
+         testRetrieval({
+            getEnvironment: async () =>
+               ({
+                  getPackage: async () => pkg,
+                  getStaleCompileErrors: () => new Map(),
+               }) as never,
+         } as never),
       );
       if (!handler) throw new Error("handler was not registered");
       const payload = JSON.parse(

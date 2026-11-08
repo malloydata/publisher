@@ -10,6 +10,7 @@ import {
    ServiceUnavailableError,
 } from "../../errors";
 import { PackageController } from "../../controller/package.controller";
+import { testRetrieval } from "../../test_helpers/test_retrieval";
 
 // Capture the handler registerReloadPackageTool passes to McpServer.registerTool, so it
 // can be exercised against a mocked EnvironmentStore. The tool calls the
@@ -29,7 +30,10 @@ function captureHandler(store: Partial<EnvironmentStore>): Handler {
    };
    registerReloadPackageTool(
       fakeServer as never,
-      new PackageController(store as EnvironmentStore),
+      new PackageController(
+         store as EnvironmentStore,
+         testRetrieval(store as EnvironmentStore),
+      ),
    );
    if (!handler) throw new Error("handler was not registered");
    return handler;

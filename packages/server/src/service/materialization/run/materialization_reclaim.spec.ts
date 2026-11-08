@@ -30,6 +30,7 @@ import {
    VersionRef,
 } from "../../identity";
 import { startedStore } from "../../../test_helpers/started_store";
+import { testRetrieval } from "../../../test_helpers/test_retrieval";
 
 // What archiving a version reclaims, and what it must leave alone: the keep
 // rules of MaterializationService.reclaimVersionTables (a table another
@@ -1060,7 +1061,10 @@ describe("the archive hook and the startup sweep, as main_server.ts wires them",
       scope: Scope = "version",
    ) {
       const location = writePackage(sourcesPath, PKG, version, answer, scope);
-      await new PackageController(server.store).addPackage(ENV, {
+      await new PackageController(
+         server.store,
+         testRetrieval(server.store),
+      ).addPackage(ENV, {
          name: PKG,
          location,
       } as never);
@@ -1378,10 +1382,10 @@ describe("the archive hook and the startup sweep, as main_server.ts wires them",
                      await versions.deleteVersion(ENV, PKG, "1.0.0");
                      break;
                   case "delete the package":
-                     await new PackageController(server.store).deletePackage(
-                        ENV,
-                        PKG,
-                     );
+                     await new PackageController(
+                        server.store,
+                        testRetrieval(server.store),
+                     ).deletePackage(ENV, PKG);
                      break;
                }
 
@@ -1451,7 +1455,10 @@ describe("the archive hook and the startup sweep, as main_server.ts wires them",
       expect(await statusOf(server, run1.id)).toBe("MANIFEST_FILE_READY");
       expect(await answerOf(server, "2.0.0")).toBe(202);
 
-      await new PackageController(server.store).deletePackage(ENV, PKG);
+      await new PackageController(
+         server.store,
+         testRetrieval(server.store),
+      ).deletePackage(ENV, PKG);
       await cleanupsSettled(server, 3);
       expect(server.calls).toEqual([
          [ENV, PKG, "1.0.0"],
@@ -1486,7 +1493,10 @@ describe("the archive hook and the startup sweep, as main_server.ts wires them",
       expect(run.status).toBe("MANIFEST_FILE_READY");
       expect(await tables(server)).toEqual(["summary"]);
 
-      await new PackageController(server.store).deletePackage(ENV, PKG);
+      await new PackageController(
+         server.store,
+         testRetrieval(server.store),
+      ).deletePackage(ENV, PKG);
       await new Promise((resolve) => setTimeout(resolve, 50));
       expect(server.calls).toEqual([]);
       expect(await tables(server)).toEqual(["summary"]);

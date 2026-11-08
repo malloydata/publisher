@@ -605,7 +605,7 @@ The same package definition behaves differently depending on who drives material
 
 ## Attribute a build's cost
 
-`queryMetadata` at the `publisher.json` root (and the per-source `#@ persist queryMetadata.*`) tags every statement a build issues — the staging CTAS, the swap, the rename — and every statement a _query_ against the source issues, so the backend's own reporting can attribute both. Separating build cost from query traffic is the context layer's job, not the declaration's: publisher adds `class=materialize` plus the package, source, trigger and run id to a build, and `class=interactive` with none of those to a served query. Its old home, `materialization.queryMetadata`, still works and is deprecated: it declares what the source is, not only how it is built. See [query-metadata.md](query-metadata.md).
+`queryMetadata` at the `publisher.json` root (and the per-source `#@ persist queryMetadata.*`) tags every statement a build issues — the staging CTAS, the swap, the rename — and every statement a _query_ against the source issues, so the backend's own reporting can attribute both. Separating build cost from query traffic is the context layer's job, not the declaration's: publisher adds `class=materialize` plus the package, source, trigger and run id to a build, and `class=interactive` with none of those to a served query. It sits at the root because it declares what the source is, not only how it is built; its old home, `materialization.queryMetadata`, still works and is deprecated. See [query-metadata.md](query-metadata.md).
 
 ## Tune for cost and performance
 

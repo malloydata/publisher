@@ -7,6 +7,7 @@ import { oneLineSummary } from "../../retrieval/model/package_entities";
 import { registerGetContextTool } from "./get_context_tool";
 import { fakeOf } from "../../test_helpers/store_fakes";
 import type { EnvironmentCatalog } from "../../service/environment_ports";
+import { testRetrieval } from "../../test_helpers/test_retrieval";
 
 type Pkg = { name: string; description?: string };
 type EnvSpec = {
@@ -103,6 +104,7 @@ function handlerFor(store: EnvironmentCatalog): Handler {
          },
       } as never,
       store,
+      testRetrieval(store),
    );
    return handler!;
 }

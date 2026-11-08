@@ -10,6 +10,7 @@ import { EnvironmentStore } from "./environment_store";
 import { installSettings } from "../test_helpers/settings_env";
 import { parseEnvironmentName, parsePackageName } from "./identity";
 import { startedStore } from "../test_helpers/started_store";
+import { testRetrieval } from "../test_helpers/test_retrieval";
 
 /**
  * Where an UNVERSIONED package restores its serve bindings from the worker's
@@ -132,7 +133,7 @@ describe("restoring an unversioned package's bindings from the local store", () 
    it("an environment created at runtime serves a reinstalled package live, as main does", async () => {
       const current = await openStore();
       await current.addEnvironment({ name: ENV, connections: [] } as never);
-      const packages = new PackageController(current);
+      const packages = new PackageController(current, testRetrieval(current));
       const install = () =>
          packages.addPackage(ENV, {
             name: PKG,
@@ -156,11 +157,14 @@ describe("restoring an unversioned package's bindings from the local store", () 
    it("an environment reloaded from the database at startup restores them", async () => {
       const current = await openStore();
       await current.addEnvironment({ name: ENV, connections: [] } as never);
-      await new PackageController(current).addPackage(ENV, {
-         name: PKG,
-         location: source,
-         manifestLocation: null,
-      } as never);
+      await new PackageController(current, testRetrieval(current)).addPackage(
+         ENV,
+         {
+            name: PKG,
+            location: source,
+            manifestLocation: null,
+         } as never,
+      );
       await commitLocalRun(current);
       await closeStore();
 

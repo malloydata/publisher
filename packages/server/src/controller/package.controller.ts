@@ -24,7 +24,7 @@ import {
    BuildPlanUnavailableError,
 } from "../errors";
 import { logger } from "../logger";
-import { NO_CATALOG, RetrievalService } from "../retrieval/service";
+import type { RetrievalService } from "../retrieval/service";
 import type { PackageAdmin } from "../service/environment_ports";
 import type { Environment } from "../service/environment";
 import type { Package } from "../service/package";
@@ -124,13 +124,7 @@ export class PackageController {
     * `retrieval` is the composition root's one instance; a spec that builds a
     * controller alone gets a store-backed one.
     */
-   constructor(
-      environmentStore: PackageAdmin,
-      retrieval: RetrievalService = new RetrievalService(
-         environmentStore,
-         NO_CATALOG,
-      ),
-   ) {
+   constructor(environmentStore: PackageAdmin, retrieval: RetrievalService) {
       this.environmentStore = environmentStore;
       this.retrieval = retrieval;
    }

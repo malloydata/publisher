@@ -16,6 +16,7 @@ import { internalErrorToHttpError } from "../errors";
 import { logger } from "../logger";
 import { safeJoinUnderRoot } from "../path_safety";
 import type { PackageLookup } from "../service/environment_ports";
+import { versionRefOf } from "../route_params";
 import { apiRoute } from "./json_route";
 import {
    parseEnvironmentName,
@@ -210,7 +211,7 @@ export function registerDataAppListRoute(
          const pkg = await environment.getPackage(
             parsePackageName(req.params.packageName),
             false,
-            { versionId: VersionRef.parse(req.query.versionId) },
+            { versionId: versionRefOf(req) },
          );
          return listPackageDataApps(
             req.params.environmentName,

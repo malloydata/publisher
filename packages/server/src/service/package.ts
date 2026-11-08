@@ -130,7 +130,10 @@ import {
    JOIN_BYPASS,
    joinBypasses,
 } from "./join_bypass";
-import { ambiguousDashboardNameWarnings } from "./legacy_report_views";
+import {
+   ambiguousDashboardNameWarnings,
+   type ReportViewPackage,
+} from "./legacy_report_views";
 import { recordDeprecatedManifestKeys } from "./deprecated/manifest_keys";
 import { isMalloynbPath } from "./deprecated/malloynb";
 import {
@@ -181,6 +184,7 @@ import {
    assertOutcomeStagesAvailable,
    loadOutcomeOrThrow,
    warnInvalidExplores,
+   type LoadGatedPackage,
 } from "./package_load_gates";
 
 type ApiDatabase = components["schemas"]["Database"];
@@ -290,7 +294,7 @@ const JOIN_BYPASS_NOTE =
    "caller this entry admits is the author's choice, and a compliance review flags it; " +
    "otherwise apply the fix above.";
 
-export class Package {
+export class Package implements LoadGatedPackage, ReportViewPackage {
    private readonly environmentName: string;
    private packageName: string;
    private packageMetadata: ApiPackage;

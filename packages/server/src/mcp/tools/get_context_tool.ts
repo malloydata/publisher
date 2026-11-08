@@ -14,7 +14,7 @@ import type { RequestExtra } from "../request_extra";
 import { jsonResource, jsonToolError } from "../tool_response";
 import { logger } from "../../logger";
 import type { TraceMode } from "../../retrieval/search/engine";
-import { NO_CATALOG, RetrievalService } from "../../retrieval/service";
+import type { RetrievalService } from "../../retrieval/service";
 import {
    convergedContextShape,
    matchesScope,
@@ -399,10 +399,7 @@ function traceModeOf(extra: RequestExtra | undefined): TraceMode {
 export function registerGetContextTool(
    mcpServer: McpServer,
    environmentStore: EnvironmentCatalog,
-   retrieval: RetrievalService = new RetrievalService(
-      environmentStore,
-      NO_CATALOG,
-   ),
+   retrieval: RetrievalService,
 ): void {
    registerTool(
       mcpServer,

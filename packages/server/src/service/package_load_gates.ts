@@ -14,13 +14,17 @@ import type { LoadPackageOutcome } from "../package_load/package_load_pool";
 import { PackageLoadProtocolError } from "../package_load/protocol_decode";
 import type { PreparedCeilingQueries } from "./classification_report";
 import type { components } from "../api";
+import {
+   DEFAULT_PACKAGE_RETRIEVAL,
+   assertRequiredStagesAvailable,
+} from "./package_retrieval_settings";
 
 type ApiPackage = components["schemas"]["Package"];
 type ApiPackageWarning = NonNullable<ApiPackage["warnings"]>[number];
 /** The listing fields a load is judged under. */
 type Listing = Pick<ApiPackage, "explores" | "queryableSources">;
 
-/** What the load gates read from the package they judge. `Package` implements it. */
+/** What the load gates read from the package they judge; `Package` implements it. */
 export interface LoadGatedPackage {
    getPackageName(): string;
    prepareCeilingQueries(): Promise<PreparedCeilingQueries>;
@@ -34,10 +38,6 @@ export interface LoadGatedPackage {
    preaggregateAccessWarnings(): ApiPackageWarning[];
    persistenceCollisionWarnings(): string[];
 }
-import {
-   DEFAULT_PACKAGE_RETRIEVAL,
-   assertRequiredStagesAvailable,
-} from "./package_retrieval_settings";
 
 /**
  * Await a package-load worker job, rewrapping a pool-infrastructure failure as

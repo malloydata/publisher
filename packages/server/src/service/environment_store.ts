@@ -1471,7 +1471,7 @@ export class EnvironmentStore
          (this.memoryGovernor?.isBackpressured() ?? false)
             ? "throttled"
             : baseState
-      ) as components["schemas"]["ServerStatus"]["operationalState"];
+      ) as ServerStatusBody["operationalState"];
 
       const status: ServerStatusBody = {
          timestamp: Date.now(),

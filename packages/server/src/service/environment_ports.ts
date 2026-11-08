@@ -19,21 +19,22 @@ type ApiEnvironment = components["schemas"]["Environment"];
 type ApiConnection = components["schemas"]["Connection"];
 type ApiServerStatus = components["schemas"]["ServerStatus"];
 
-/** The body of `GET /status` and `get_status`, as the store builds it. */
-export interface ServerStatusBody {
-   timestamp: number;
-   environments: Array<components["schemas"]["ServerStatusEnvironment"]>;
-   initialized: boolean;
-   frozenConfig: boolean;
-   operationalState: ApiServerStatus["operationalState"];
-   version: string;
-   packageVersioning?: ApiServerStatus["packageVersioning"];
-   versionPromotion?: ApiServerStatus["versionPromotion"];
-   modelPage?: ApiServerStatus["modelPage"];
-   emptyReason?: string;
-   initError?: string;
-   loadErrors?: NonNullable<ApiServerStatus["loadErrors"]>;
-}
+/**
+ * The body of `GET /status` and `get_status`: the API schema, with the fields
+ * the store always sets required.
+ */
+export type ServerStatusBody = ApiServerStatus &
+   Required<
+      Pick<
+         ApiServerStatus,
+         | "timestamp"
+         | "environments"
+         | "initialized"
+         | "frozenConfig"
+         | "operationalState"
+         | "version"
+      >
+   >;
 
 /** What `getStatus` may include beyond the default. */
 export interface StatusOptions {

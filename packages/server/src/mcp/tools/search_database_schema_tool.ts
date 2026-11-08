@@ -15,7 +15,7 @@ import type {
    RankingMode,
    SchemaTableEntity,
 } from "../../retrieval/index/schema_index";
-import { NO_CATALOG, RetrievalService } from "../../retrieval/service";
+import type { RetrievalService } from "../../retrieval/service";
 import { parseEnvironmentName } from "../../service/identity";
 
 /** Tables returned when the caller does not ask for a specific number. */
@@ -310,10 +310,7 @@ export function registerSearchDatabaseSchemaTool(
    mcpServer: McpServer,
    environmentStore: EnvironmentCatalog,
    connectionController: ConnectionController,
-   retrieval: RetrievalService = new RetrievalService(
-      environmentStore,
-      NO_CATALOG,
-   ),
+   retrieval: RetrievalService,
 ): void {
    const deps: TierDeps = { environmentStore, connectionController, retrieval };
 

@@ -11,6 +11,7 @@ import { installSettings } from "../test_helpers/settings_env";
 import { writePackageFiles } from "../test_helpers/temp_package";
 import { parseEnvironmentName, parsePackageName, VersionRef } from "./identity";
 import { startedStore } from "../test_helpers/started_store";
+import { testRetrieval } from "../test_helpers/test_retrieval";
 
 /**
  * The startup cleanup of version folders, as a restart runs it: an
@@ -90,7 +91,7 @@ describe("startup cleanup of version folders", () => {
    it("keeps a build-metadata version's folder and removes a folder no version owns", async () => {
       const first = await openStore();
       await first.addEnvironment({ name: ENV, connections: [] } as never);
-      const packages = new PackageController(first);
+      const packages = new PackageController(first, testRetrieval(first));
       await packages.addPackage(ENV, {
          name: PKG,
          location: source("1.0.0+b"),

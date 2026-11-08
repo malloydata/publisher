@@ -50,6 +50,7 @@ import type {
    EnvironmentAdmin,
    PackageAdmin,
 } from "./service/environment_ports";
+import { testRetrieval } from "./test_helpers/test_retrieval";
 
 describe("publisher_deprecated_usage_total", () => {
    let harness: MetricsHarness;
@@ -243,7 +244,10 @@ describe("publisher_deprecated_usage_total", () => {
          });
          return buildRouteApp({
             environmentStore: store,
-            packageController: new PackageController(store),
+            packageController: new PackageController(
+               store,
+               testRetrieval(store),
+            ),
          });
       };
 
@@ -294,7 +298,10 @@ describe("publisher_deprecated_usage_total", () => {
          });
          const server = buildRouteApp({
             environmentStore: store,
-            packageController: new PackageController(store),
+            packageController: new PackageController(
+               store,
+               testRetrieval(store),
+            ),
          });
          const warn = spyOn(logger, "warn");
          try {

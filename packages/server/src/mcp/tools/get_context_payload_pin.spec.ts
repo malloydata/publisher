@@ -52,6 +52,7 @@ import {
    untilSemantic,
    type SemanticHarness,
 } from "../../test_helpers/get_context_llm_harness";
+import { testRetrieval } from "../../test_helpers/test_retrieval";
 
 const GOLDEN_PATH = path.join(
    __dirname,
@@ -128,7 +129,11 @@ function captureHandler(store: Partial<EnvironmentStore>): Handler {
          if (name === "get_context") handler = h;
       },
    };
-   registerGetContextTool(fakeServer as never, store as EnvironmentStore);
+   registerGetContextTool(
+      fakeServer as never,
+      store as EnvironmentStore,
+      testRetrieval(store as EnvironmentStore),
+   );
    if (!handler) throw new Error("get_context was not registered");
    return handler;
 }

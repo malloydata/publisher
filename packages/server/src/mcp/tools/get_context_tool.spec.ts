@@ -14,6 +14,7 @@ import {
    _clearEmbeddingProviderForTests,
    _setEmbeddingProviderForTests,
 } from "../../retrieval/llm/embedding_provider";
+import { testRetrieval } from "../../test_helpers/test_retrieval";
 
 // Pin the baseline: every test in this file runs with no embedding provider,
 // regardless of ambient EMBEDDING_* env vars in the developer's shell.
@@ -200,7 +201,11 @@ function captureNamed(
          handlers.set(name, h);
       },
    };
-   registerGetContextTool(fakeServer as never, store as EnvironmentStore);
+   registerGetContextTool(
+      fakeServer as never,
+      store as EnvironmentStore,
+      testRetrieval(store as EnvironmentStore),
+   );
    const handler = handlers.get(wanted);
    if (!handler) throw new Error(`${wanted} was not registered`);
    return handler;

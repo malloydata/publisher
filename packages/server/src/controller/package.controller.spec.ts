@@ -19,6 +19,7 @@ import { installSettings } from "../test_helpers/settings_env";
 import { PackageController } from "./package.controller";
 import { fakeOf } from "../test_helpers/store_fakes";
 import type { PackageAdmin } from "../service/environment_ports";
+import { testRetrieval } from "../test_helpers/test_retrieval";
 
 let restoreSettings: (() => void) | undefined;
 
@@ -76,7 +77,10 @@ describe("deprecated: explores — PackageController.addPackage validation", () 
          addPackageToDatabase,
       });
 
-      const controller = new PackageController(environmentStore);
+      const controller = new PackageController(
+         environmentStore,
+         testRetrieval(environmentStore),
+      );
 
       await expect(
          controller.addPackage("env", {
@@ -121,7 +125,10 @@ describe("deprecated: explores — PackageController.addPackage validation", () 
          addPackageToDatabase,
       });
 
-      const controller = new PackageController(environmentStore);
+      const controller = new PackageController(
+         environmentStore,
+         testRetrieval(environmentStore),
+      );
 
       await expect(
          controller.addPackage("env", {
@@ -185,7 +192,10 @@ describe("deprecated: explores — PackageController.addPackage validation", () 
          addPackageToDatabase,
       });
 
-      const controller = new PackageController(environmentStore);
+      const controller = new PackageController(
+         environmentStore,
+         testRetrieval(environmentStore),
+      );
 
       await expect(
          controller.addPackage("env", {
@@ -222,7 +232,10 @@ describe("deprecated: explores — PackageController.addPackage validation", () 
          addPackageToDatabase,
       });
 
-      const controller = new PackageController(environmentStore);
+      const controller = new PackageController(
+         environmentStore,
+         testRetrieval(environmentStore),
+      );
 
       await controller.addPackage("env", {
          name: "pkg",
@@ -269,7 +282,10 @@ describe("PackageController.addPackage persistence policy validation", () => {
          addPackageToDatabase,
       });
 
-      const controller = new PackageController(environmentStore);
+      const controller = new PackageController(
+         environmentStore,
+         testRetrieval(environmentStore),
+      );
 
       await expect(
          controller.addPackage("env", { name: "pkg", description: "test" }),
@@ -302,7 +318,10 @@ describe("PackageController.addPackage persistence policy validation", () => {
          addPackageToDatabase,
       });
 
-      const controller = new PackageController(environmentStore);
+      const controller = new PackageController(
+         environmentStore,
+         testRetrieval(environmentStore),
+      );
 
       await expect(
          controller.addPackage("env", {
@@ -348,7 +367,10 @@ describe("PackageController.addPackage persistence policy validation", () => {
          addPackageToDatabase,
       });
 
-      const controller = new PackageController(environmentStore);
+      const controller = new PackageController(
+         environmentStore,
+         testRetrieval(environmentStore),
+      );
 
       await expect(
          controller.addPackage("env", {
@@ -398,7 +420,10 @@ describe("PackageController.addPackage incremental policy validation", () => {
          addPackageToDatabase,
       });
 
-      const controller = new PackageController(environmentStore);
+      const controller = new PackageController(
+         environmentStore,
+         testRetrieval(environmentStore),
+      );
 
       const error = await controller
          .addPackage("env", { name: "pkg", description: "test" })
@@ -432,7 +457,10 @@ describe("PackageController.addPackage incremental policy validation", () => {
          addPackageToDatabase,
       });
 
-      const controller = new PackageController(environmentStore);
+      const controller = new PackageController(
+         environmentStore,
+         testRetrieval(environmentStore),
+      );
       await controller.addPackage("env", { name: "pkg", description: "test" });
 
       expect(addPackageToDatabase.calledOnceWith("env", "pkg")).toBe(true);
@@ -490,7 +518,10 @@ describe("deprecated: explores — PackageController.updatePackage validation", 
          addPackageToDatabase,
       });
 
-      const controller = new PackageController(environmentStore);
+      const controller = new PackageController(
+         environmentStore,
+         testRetrieval(environmentStore),
+      );
 
       await expect(
          controller.updatePackage("env", "pkg", {
@@ -541,7 +572,10 @@ describe("PackageController.getPackage embeddingIndex", () => {
       const environmentStore = fakeOf<PackageAdmin>({
          getEnvironment,
       });
-      const controller = new PackageController(environmentStore);
+      const controller = new PackageController(
+         environmentStore,
+         testRetrieval(environmentStore),
+      );
       sinon
          .stub(
             controller as unknown as {
@@ -614,7 +648,10 @@ describe("PackageController.updatePackage reinstall decision", () => {
          addPackageToDatabase,
       });
       return {
-         controller: new PackageController(environmentStore),
+         controller: new PackageController(
+            environmentStore,
+            testRetrieval(environmentStore),
+         ),
          addPackageToDatabase,
       };
    }
@@ -838,7 +875,10 @@ describe("PackageController.reloadPackage", () => {
             installPackage,
          }),
       });
-      const controller = new PackageController(environmentStore);
+      const controller = new PackageController(
+         environmentStore,
+         testRetrieval(environmentStore),
+      );
       sinon
          .stub(
             controller as unknown as { downloadInto: () => Promise<void> },
@@ -882,7 +922,10 @@ describe("PackageController.addPackage manifestLocation", () => {
             .resolves({ getVersionService: () => null, ...environment }),
          addPackageToDatabase: sinon.stub().resolves(undefined),
       });
-      return new PackageController(environmentStore);
+      return new PackageController(
+         environmentStore,
+         testRetrieval(environmentStore),
+      );
    }
 
    it("hands the publish the body's location and manifestLocation", async () => {
@@ -953,7 +996,10 @@ describe("PackageController.addPackage manifestLocation", () => {
          getEnvironment: sinon.stub().resolves(environment),
          addPackageToDatabase: sinon.stub().resolves(undefined),
       });
-      const controller = new PackageController(environmentStore);
+      const controller = new PackageController(
+         environmentStore,
+         testRetrieval(environmentStore),
+      );
 
       await controller.addPackage("env", {
          name: "pkg",
@@ -1113,7 +1159,13 @@ describe("PackageController.updatePackage on a versioned package", () => {
                .resolves({ name: "pkg", versionId: "2.0.0" }),
          }),
       });
-      return { controller: new PackageController(environmentStore), versions };
+      return {
+         controller: new PackageController(
+            environmentStore,
+            testRetrieval(environmentStore),
+         ),
+         versions,
+      };
    }
 
    it("rebinds latest to a manifest URI, and leaves the binding alone on a null or empty one", async () => {
@@ -1166,7 +1218,10 @@ describe("PackageController.addPackage with package versioning off or on", () =>
          }),
          addPackageToDatabase: sinon.stub().resolves(undefined),
       });
-      return new PackageController(environmentStore);
+      return new PackageController(
+         environmentStore,
+         testRetrieval(environmentStore),
+      );
    }
 
    // logger.warn may already be a spy another spec left in place (health.spec
@@ -1338,7 +1393,10 @@ describe("PackageController.getPackageBuildPlan", () => {
             getPackage: sinon.stub().resolves(pkg),
          }),
       });
-      return new PackageController(environmentStore);
+      return new PackageController(
+         environmentStore,
+         testRetrieval(environmentStore),
+      );
    }
 
    it("is the load's plan", async () => {
@@ -1409,6 +1467,12 @@ describe("PackageController.dryRunPackage", () => {
             publisherConfigIsFrozen: frozen,
             getEnvironment,
          }),
+         testRetrieval(
+            fakeOf<PackageAdmin>({
+               publisherConfigIsFrozen: frozen,
+               getEnvironment,
+            }),
+         ),
       );
       return { controller, seen, getEnvironment };
    }

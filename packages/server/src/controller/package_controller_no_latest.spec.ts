@@ -15,6 +15,7 @@ import { PackageController } from "./package.controller";
 import { parsePackageName, VersionRef } from "../service/identity";
 import { fakeOf } from "../test_helpers/store_fakes";
 import type { PackageAdmin } from "../service/environment_ports";
+import { testRetrieval } from "../test_helpers/test_retrieval";
 
 // A versioned package with no `latest` yet: published under explicit
 // promotion, and no version made latest. Through the package routes'
@@ -124,6 +125,12 @@ beforeEach(async () => {
          publisherConfigIsFrozen: false,
          getEnvironment: async () => env,
       }),
+      testRetrieval(
+         fakeOf<PackageAdmin>({
+            publisherConfigIsFrozen: false,
+            getEnvironment: async () => env,
+         }),
+      ),
    );
 
    await publishExplicit("1.0.0", 1);
