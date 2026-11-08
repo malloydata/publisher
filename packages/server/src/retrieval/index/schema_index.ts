@@ -8,7 +8,7 @@ import { logger } from "../../logger";
 import {
    EMBEDDING_BATCH_TIMEOUT_MS,
    EMBEDDING_QUERY_TIMEOUT_MS,
-} from "../../service/embedding_provider";
+} from "../llm/embedding_provider";
 // Shared with the package index so a query is humanized the same way
 // whichever index answers it.
 import { humanizeName } from "./embedding_index";

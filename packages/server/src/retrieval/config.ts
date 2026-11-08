@@ -5,7 +5,7 @@
  * The `retrieval` block of publisher.config.json: the server operator's
  * settings for `get_context` (credentials live in environment variables, not
  * here). The package author's side is `publisher.json`; see
- * ./package_retrieval.ts.
+ * ../service/package_retrieval_settings.ts.
  */
 
 import {

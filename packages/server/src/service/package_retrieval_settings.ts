@@ -4,7 +4,7 @@
 /**
  * The `retrieval` block of a package's publisher.json: how THIS package is
  * searched and indexed. The server operator's side (credentials, egress,
- * ceilings) is publisher.config.json; see ./config.ts. A package
+ * ceilings) is publisher.config.json; see ../retrieval/config.ts. A package
  * can switch a feature on, never past what the operator allows.
  *
  * Only keys whose code exists are accepted. Any other key is an error naming
@@ -20,11 +20,18 @@ import * as fs from "fs";
 import * as path from "path";
 import { PackageManifestError } from "../errors";
 import { stepsOutside } from "../path_safety";
-import {
-   DEFAULT_QUESTIONS_PER_NODE,
-   QUESTIONS_PROMPTS,
-   type QuestionsPrompt,
-} from "./llm/prompts/questions";
+
+/**
+ * The variants of the prompt the fcj index build sends to write a node's
+ * search rows (`retrieval.fcj.questionsPrompt`); the text of each is in
+ * retrieval/llm/prompts/questions.ts. Declared here, with the rest of the
+ * manifest settings, so validating publisher.json needs no retrieval code.
+ */
+export const QUESTIONS_PROMPTS = ["questions", "phrases", "values"] as const;
+export type QuestionsPrompt = (typeof QUESTIONS_PROMPTS)[number];
+
+/** Rows a node gets by default; also the count the default text was written for. */
+export const DEFAULT_QUESTIONS_PER_NODE = 3;
 
 /**
  * `auto`: on when the operator has an LLM configured, off otherwise.

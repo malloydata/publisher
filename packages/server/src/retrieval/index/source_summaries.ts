@@ -39,7 +39,7 @@ import type { Package } from "../../service/package";
 import {
    DEFAULT_PACKAGE_RETRIEVAL,
    sourceSummaryConfigOf,
-} from "../package_retrieval";
+} from "../../service/package_retrieval_settings";
 import type { ChatModel } from "../llm/types";
 import { publicMessage } from "../../service/http_retry";
 import type { DuckDBConnection } from "../../storage/duckdb/DuckDBConnection";

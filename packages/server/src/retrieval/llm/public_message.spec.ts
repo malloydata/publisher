@@ -11,7 +11,7 @@
 
 import { describe, expect, it } from "bun:test";
 import { DEFAULT_EMBEDDING_MIN_SIMILARITY } from "../../config";
-import { EmbeddingProvider } from "../../service/embedding_provider";
+import { EmbeddingProvider } from "./embedding_provider";
 import { HttpRequestError, publicMessage } from "../../service/http_retry";
 import {
    instantRetry,

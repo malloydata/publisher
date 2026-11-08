@@ -38,7 +38,7 @@ import type { LoadPackageRequest } from "../package_load/protocol";
 import {
    DEFAULT_PACKAGE_RETRIEVAL,
    type PackageRetrievalSettings,
-} from "../retrieval/package_retrieval";
+} from "./package_retrieval_settings";
 import {
    API_PREFIX,
    INDEX_MODEL_NAME,

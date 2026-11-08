@@ -29,13 +29,16 @@ import { sourceContextKey } from "../model/package_entities";
 import {
    EMBEDDING_QUERY_TIMEOUT_MS,
    embeddingConfigured,
-} from "../../service/embedding_provider";
+} from "../llm/embedding_provider";
 import type {
    CatalogDatabase,
    EnvironmentPeek,
    PackageLookup,
 } from "../../service/environment_ports";
-import { alsoLikelyOn, fcjSettingsOf } from "../package_retrieval";
+import {
+   alsoLikelyOn,
+   fcjSettingsOf,
+} from "../../service/package_retrieval_settings";
 import { logger } from "../../logger";
 import { activeLlmSettings } from "../llm/active";
 import { settings } from "../../settings";

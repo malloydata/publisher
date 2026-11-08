@@ -40,7 +40,7 @@
  * connectList). It is the baseline a connect rule has to beat.
  */
 
-import type { FcjSettings } from "../package_retrieval";
+import type { FcjSettings } from "../../service/package_retrieval_settings";
 import { JOIN_WALK_MAX_HOPS, type CatalogNode } from "../model/catalog";
 import {
    mentionsPeriod,
