@@ -6,10 +6,10 @@ import { components } from "../api";
 import {
    BadRequestError,
    CompileRefusedError,
-   ConflictError,
    DashboardNotFoundError,
    EnvironmentNotFoundError,
    FrozenConfigError,
+   InstalledFromLocationError,
    InvalidModelPathError,
    PackageNotFoundError,
    PackageVersionError,
@@ -74,12 +74,6 @@ class ReportWriteRefusedError extends BadRequestError {
       super(message);
    }
 }
-
-/**
- * A report write to a package installed from a location: a reload fetches the
- * package again and would discard the write. 409, like a versioned package.
- */
-class InstalledFromLocationError extends ConflictError {}
 
 /**
  * The outcome and reason a write-path error is counted under. Read from the
@@ -329,6 +323,7 @@ export class ReportController {
                      `\`${modelPath}\` already exists in the package, so nothing ` +
                         `was written. Choose another path, or, to replace a report, ` +
                         `send the \`expectedHash\` of the text you opened.`,
+                     "FILE_EXISTS",
                   );
                return;
             }

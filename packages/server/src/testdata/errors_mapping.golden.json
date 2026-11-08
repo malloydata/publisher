@@ -2418,6 +2418,74 @@
       ]
     }
   },
+  "WriteConflictError (FILE_EXISTS)": {
+    "class": "WriteConflictError",
+    "http": {
+      "status": 409,
+      "json": {
+        "code": 409,
+        "message": "file exists",
+        "reason": "FILE_EXISTS"
+      },
+      "logged": false,
+      "logs": []
+    },
+    "mcp": {
+      "message": "An unexpected internal error occurred during executeQuery.: file exists",
+      "suggestions": [
+        "Try the request again later.",
+        "If the problem persists, check server logs or contact support."
+      ],
+      "logs": []
+    },
+    "mcpSetup": {
+      "message": "An unexpected internal error occurred during executeQuery (Setup).: file exists",
+      "suggestions": [
+        "Try the request again later.",
+        "If the problem persists, check server logs or contact support."
+      ],
+      "logs": [
+        [
+          "error",
+          "[MCP Server Error] Error accessing package/model for query"
+        ]
+      ]
+    }
+  },
+  "InstalledFromLocationError": {
+    "class": "InstalledFromLocationError",
+    "http": {
+      "status": 409,
+      "json": {
+        "code": 409,
+        "message": "installed from gs://b/p.zip; a reload would discard the change",
+        "reason": "PACKAGE_INSTALLED_FROM_LOCATION"
+      },
+      "logged": false,
+      "logs": []
+    },
+    "mcp": {
+      "message": "installed from gs://b/p.zip; a reload would discard the change",
+      "suggestions": [
+        "This is not transient: retrying fails the same way while the package is installed from a location.",
+        "Make the change in the package's source at that location and reload the package, or publish it as a version."
+      ],
+      "logs": []
+    },
+    "mcpSetup": {
+      "message": "An unexpected internal error occurred during executeQuery (Setup).: installed from gs://b/p.zip; a reload would discard the change",
+      "suggestions": [
+        "Try the request again later.",
+        "If the problem persists, check server logs or contact support."
+      ],
+      "logs": [
+        [
+          "error",
+          "[MCP Server Error] Error accessing package/model for query"
+        ]
+      ]
+    }
+  },
   "WriteRolledBackError": {
     "class": "WriteRolledBackError",
     "http": {

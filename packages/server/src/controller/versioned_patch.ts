@@ -9,21 +9,6 @@
  * already is must not be read as a change.
  */
 
-/**
- * The fields a PATCH writes into a package's `publisher.json` that a reload
- * does not re-apply. A reload fetches a package installed from a `location`
- * again and replaces its files, keeping only its location and manifest
- * binding, so a change to any of these would be discarded.
- */
-export const LOST_ON_A_RELOAD = [
-   "description",
-   "explores",
-   "queryableSources",
-   "scope",
-   "queryMetadata",
-   "materialization",
-] as const;
-
 /** The fields a PATCH of a versioned package applies, rather than checks. */
 export const APPLIED_TO_A_VERSIONED_PACKAGE = new Set([
    "resource",

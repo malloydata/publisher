@@ -73,6 +73,7 @@ import {
 import { ApiConnection } from "./model";
 import { Package } from "./package";
 import { applyLoadGates } from "./package_load_gates";
+import { resolvePatchedSettings } from "./package_patch";
 import { environmentResource, packageResource } from "../api_resource";
 import { parsePackageName, type PackageName, VersionRef } from "./identity";
 import {
@@ -2744,8 +2745,18 @@ export class Environment {
          { dryRun: options.dryRun },
       );
       this.attachDestinationServeConfig(pkg);
-      // Publish, update and dry run only (reload passes no validator).
-      const validationMsg = validate?.(pkg);
+      // Publish, update and dry run only (reload passes no validator). A
+      // validator refuses by returning why (400) or by throwing its own error.
+      let validationMsg: string | undefined;
+      try {
+         validationMsg = validate?.(pkg);
+      } catch (error) {
+         await Environment.releasePackageConnections(
+            pkg,
+            `refused load of ${packageName}`,
+         );
+         throw error;
+      }
       if (validationMsg) {
          await Environment.releasePackageConnections(
             pkg,
@@ -3320,14 +3331,10 @@ export class Environment {
       body: ApiPackage,
    ): Promise<string> {
       const existing = pkg.getPackageMetadata();
-      const explores =
-         body.explores !== undefined
-            ? body.explores.map(normalizeModelPath)
-            : existing.explores;
-      const queryableSources =
-         body.queryableSources != null
-            ? body.queryableSources
-            : existing.queryableSources;
+      const { explores, queryableSources } = resolvePatchedSettings(
+         body,
+         existing,
+      );
       const listing = (e?: string[], q?: string) =>
          JSON.stringify([e ?? null, q ?? "declared"]);
       if (
@@ -3369,45 +3376,29 @@ export class Environment {
       // Normalized as the worker normalizes on-disk explores, so publish and
       // reload agree.
       const normalizedExplores = body.explores?.map(normalizeModelPath);
-      const explores =
-         normalizedExplores !== undefined
-            ? normalizedExplores
-            : existing.explores;
-      const queryableSources =
-         body.queryableSources != null
-            ? body.queryableSources
-            : existing.queryableSources;
       // An explicit null clears it, reverting to live.
       const manifestLocation =
          body.manifestLocation !== undefined
             ? body.manifestLocation
             : existing.manifestLocation;
-      // `scope` and `materialization` apply when provided and are otherwise
-      // preserved; a schedule change re-arms the scheduler on its next tick.
-      // Null counts as omitted, so a client serializing unset fields as null
-      // neither trips the policy gate below (failing an orchestrated run) nor
-      // resets the policy. `manifestLocation` differs: null there clears.
+      // The settings a reload would lose resolve in one place, which the
+      // refusal of a change a reload discards reads too. `scope` and
+      // `materialization` apply when provided and are otherwise preserved; a
+      // schedule change re-arms the scheduler on its next tick. Null counts
+      // as omitted, so a client serializing unset fields as null neither
+      // trips the policy gate below (failing an orchestrated run) nor resets
+      // the policy. `manifestLocation` differs: null there clears.
       const scopeProvided = body.scope != null;
       const materializationProvided = body.materialization != null;
       const editingPolicy = scopeProvided || materializationProvided;
-      const scope = scopeProvided ? body.scope : existing.scope;
-      // Preserved the same way (null = omitted; the clear is an empty bag),
-      // resolved once across both wire homes and written to both: the serve
-      // path reads the canonical field and the build path the block, so they
-      // must not disagree.
-      const queryMetadata =
-         body.queryMetadata ??
-         body.materialization?.queryMetadata ??
-         existing.queryMetadata ??
-         existing.materialization?.queryMetadata ??
-         null;
-      const materializationBase = materializationProvided
-         ? body.materialization
-         : existing.materialization;
-      const materialization =
-         materializationBase || queryMetadata !== null
-            ? { ...(materializationBase ?? {}), queryMetadata }
-            : materializationBase;
+      const {
+         description,
+         explores,
+         queryableSources,
+         scope,
+         queryMetadata,
+         materialization,
+      } = resolvePatchedSettings(body, existing);
       // Judged before the listing goes live, so a query meanwhile is served
       // under the old one. Only a change to what is queryable re-runs them.
       const gateMsg = options.regated
@@ -3418,8 +3409,7 @@ export class Environment {
       // orchestrator identifies the package by. An empty string is a value.
       _package.setPackageMetadata({
          name: body.name != null ? body.name : existing.name,
-         description:
-            body.description != null ? body.description : existing.description,
+         description,
          resource: body.resource != null ? body.resource : existing.resource,
          location:
             options.recordLocation && body.location != null

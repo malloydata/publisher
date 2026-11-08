@@ -22,7 +22,7 @@ import {
    PackageAdmissionRefusedError,
    PackageVersionError,
    BuildPlanUnavailableError,
-   ConflictError,
+   InstalledFromLocationError,
 } from "../errors";
 import { logger } from "../logger";
 import type { RetrievalService } from "../retrieval/service";
@@ -36,7 +36,8 @@ import {
 } from "../package_load_metrics";
 import type { VersionService } from "../service/versions/version_service";
 import { versionManifestLocation } from "./manifest_location";
-import { LOST_ON_A_RELOAD, changedFields } from "./versioned_patch";
+import { changedFields } from "./versioned_patch";
+import { settingsAReloadWouldLose } from "../service/package_patch";
 import { loadedPackage } from "./loaded_package";
 import {
    parseEnvironmentName,
@@ -812,12 +813,17 @@ export class PackageController {
          typeof body.location === "string" &&
          body.location !== "" &&
          body.location !== installedFrom;
-      if (installedFrom) {
-         this.refuseChangesAReloadDiscards(
-            environment,
+      // Judged by where a reload fetches the package from once this PATCH is
+      // applied. A reinstall is judged inside the install, against the tree
+      // it fetches, since that tree's publisher.json is what a reload keeps.
+      const resident = environment.peekPackage(packageName);
+      if (!reinstall && installedFrom && resident) {
+         refuseChangesAReloadDiscards(
             packageName,
             installedFrom,
             body,
+            resident.getPackageMetadata(),
+            "installed",
          );
       }
       let result: ApiPackage;
@@ -836,11 +842,22 @@ export class PackageController {
                   bodyLocation,
                   stagingPath,
                ),
-            (pkg) =>
-               formatPublishRejections(
+            (pkg) => {
+               // A request the publish checks refuse is answered 400 first.
+               const rejections = formatPublishRejections(
                   pkg,
                   body.explores?.map(normalizeModelPath),
-               ),
+               );
+               if (rejections) return rejections;
+               refuseChangesAReloadDiscards(
+                  packageName,
+                  bodyLocation,
+                  body,
+                  pkg.getPackageMetadata(),
+                  "reinstalled",
+               );
+               return undefined;
+            },
             { update: body },
          );
          result = installed.getPackageMetadata();
@@ -853,44 +870,6 @@ export class PackageController {
       );
 
       return result;
-   }
-
-   /**
-    * Refuse a PATCH of a package installed from a `location` that changes
-    * anything a reload would discard. A reload fetches the package again from
-    * that location and replaces its files, `publisher.json` included, keeping
-    * only the location and the manifest binding (see reloadPackageFrom). A
-    * body that only echoes the package back is accepted, since clients send
-    * whole objects. Interim, until package storage keeps server-side changes
-    * apart from the fetched copy (#1560).
-    */
-   private refuseChangesAReloadDiscards(
-      environment: Environment,
-      packageName: string,
-      installedFrom: string,
-      body: ApiPackage,
-   ): void {
-      const resident = environment.peekPackage(packageName);
-      if (!resident) return;
-      const fields = body as Record<string, unknown>;
-      const written = Object.fromEntries(
-         LOST_ON_A_RELOAD.filter((key) => key in fields).map((key) => [
-            key,
-            fields[key],
-         ]),
-      );
-      const changed = changedFields(
-         written,
-         resident.getPackageMetadata() as Record<string, unknown>,
-         packageName,
-         installedFrom,
-         new Set(),
-      );
-      if (changed.length > 0) {
-         throw new ConflictError(
-            `Package ${packageName} was installed from ${installedFrom}, and a reload fetches it again from there, which would discard this request's change to ${changed.join(", ")}. Make the change in the package's source and reload it, or publish it as a version.`,
-         );
-      }
    }
 
    /**
@@ -987,6 +966,36 @@ export class PackageController {
          targetPath,
       );
    }
+}
+
+/**
+ * Refuse a PATCH that changes a setting a reload of the package would discard,
+ * with 409 PACKAGE_INSTALLED_FROM_LOCATION. A reload fetches the package again
+ * from `location` and replaces its files, `publisher.json` included, keeping
+ * only the location and the manifest binding (see reloadPackageFrom), so a
+ * setting survives it only when the fetched tree already declares it.
+ * `current` is that tree's metadata: the resident copy for a package that
+ * stays where it was `installed` from, or the tree a PATCH naming a new
+ * location `reinstalled` it from. A body that only echoes it back is
+ * accepted, since clients send whole objects. Interim, until package storage
+ * keeps server-side changes apart from the fetched copy (#1560).
+ */
+function refuseChangesAReloadDiscards(
+   packageName: string,
+   location: string,
+   body: ApiPackage,
+   current: ApiPackage,
+   how: "installed" | "reinstalled",
+): void {
+   const changed = settingsAReloadWouldLose(body, current);
+   if (changed.length === 0) return;
+   const where =
+      how === "installed"
+         ? `was installed from ${location}`
+         : `is being installed from ${location}, whose publisher.json says otherwise`;
+   throw new InstalledFromLocationError(
+      `Package ${packageName} ${where}, and a reload fetches it again from there, which would discard this request's change to ${changed.join(", ")}. Make the change in the package's source and reload it, or publish it as a version.`,
+   );
 }
 
 /**

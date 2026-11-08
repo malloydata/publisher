@@ -110,6 +110,12 @@ export type ErrorReason =
    // 409: the package's build plan could not be derived at load; a reload
    // derives it again, a retry does not.
    | "BUILD_PLAN_UNAVAILABLE"
+   // 409: the package is fetched again from the location it was installed
+   // from on reload, which would discard the write.
+   | "PACKAGE_INSTALLED_FROM_LOCATION"
+   // 409: a create-only report write found a file at the path; another name
+   // may be free.
+   | "FILE_EXISTS"
    // Package versions; each is raised only as a PackageVersionError, whose
    // reason fixes its status (see PACKAGE_VERSION_ERROR_STATUS).
    | PackageVersionErrorReason;
@@ -1078,15 +1084,40 @@ export class MaterializationConflictError extends Error {
    }
 }
 
-/** A write whose `expectedHash` no longer matches the file: someone else saved first. */
+/**
+ * A write that found the file other than the caller expected: someone else
+ * saved first (`expectedHash` no longer matches), or a create-only write
+ * found a file already at the path (`reason` FILE_EXISTS, so a caller
+ * choosing a name can tell it to try the next).
+ */
 export class WriteConflictError extends Error {
    get kind(): "write_conflict" {
       return "write_conflict";
    }
 
-   constructor(message: string) {
+   constructor(
+      message: string,
+      readonly reason?: "FILE_EXISTS",
+   ) {
       super(message);
       this.name = "WriteConflictError";
+   }
+}
+
+/**
+ * A write to a package installed from a `location`, which a reload would
+ * discard: a reload fetches the package again from there and replaces its
+ * files. 409, `reason` PACKAGE_INSTALLED_FROM_LOCATION. Interim, until package
+ * storage keeps server-side writes apart from the fetched copy (#1560).
+ */
+export class InstalledFromLocationError extends Error {
+   get kind(): "installed_from_location" {
+      return "installed_from_location";
+   }
+
+   constructor(message: string) {
+      super(message);
+      this.name = "InstalledFromLocationError";
    }
 }
 
@@ -1325,6 +1356,7 @@ interface ErrorByKind {
    materialization_not_found: MaterializationNotFoundError;
    materialization_conflict: MaterializationConflictError;
    write_conflict: WriteConflictError;
+   installed_from_location: InstalledFromLocationError;
    write_rolled_back: WriteRolledBackError;
    write_rollback_failed: WriteRollbackFailedError;
    connection_save: ConnectionSaveError;
@@ -1405,6 +1437,7 @@ const ERROR_CLASSES: {
    materialization_not_found: MaterializationNotFoundError,
    materialization_conflict: MaterializationConflictError,
    write_conflict: WriteConflictError,
+   installed_from_location: InstalledFromLocationError,
    write_rolled_back: WriteRolledBackError,
    write_rollback_failed: WriteRollbackFailedError,
    connection_save: ConnectionSaveError,
@@ -1494,7 +1527,7 @@ export interface ErrorMapping<E> {
    /** The HTTP body's message; the error's own when absent. */
    message?: string | ((error: E) => string);
    /** The HTTP body's `reason`, for a caller that branches on it. */
-   reason?: ErrorReason | ((error: E) => ErrorReason);
+   reason?: ErrorReason | ((error: E) => ErrorReason | undefined);
    /** Logged server-side by the HTTP mapping (unless the caller passed `log: false`). */
    log?: LogLine | ((error: E) => LogLine | undefined);
    /** The HTTP body also carries the compile problems. */
@@ -1765,7 +1798,24 @@ export const ERROR_TABLE: { [K in ErrorKind]: ErrorMapping<ErrorByKind[K]> } = {
    materialization_not_found: { status: 404, mcp: { advice: "internal" } },
    materialization_conflict: { status: 409, mcp: { advice: "internal" } },
    invalid_state_transition: { status: 409, mcp: { advice: "internal" } },
-   write_conflict: { status: 409, mcp: { advice: "internal" } },
+   write_conflict: {
+      status: 409,
+      reason: (error) => error.reason,
+      mcp: { advice: "internal" },
+   },
+   installed_from_location: {
+      status: 409,
+      reason: "PACKAGE_INSTALLED_FROM_LOCATION",
+      mcp: {
+         // Not transient, and not the model's fault: the message names where
+         // the change belongs.
+         advice: "fixed",
+         suggestions: [
+            "This is not transient: retrying fails the same way while the package is installed from a location.",
+            "Make the change in the package's source at that location and reload the package, or publish it as a version.",
+         ],
+      },
+   },
    write_rollback_failed: { status: 500, mcp: { advice: "internal" } },
    // Answered with its message, which names only connections; each failure
    // was logged where it happened, so it is not logged again here.

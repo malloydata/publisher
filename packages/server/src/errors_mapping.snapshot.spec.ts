@@ -61,6 +61,7 @@ import {
    UnsupportedCatalogFormatError,
    VersionFilesMissingError,
    WriteConflictError,
+   InstalledFromLocationError,
    WriteRollbackFailedError,
    WriteRolledBackError,
    WriteVerifyError,
@@ -395,6 +396,17 @@ const CASES: Array<[string, () => unknown]> = [
       () => new MaterializationConflictError("a build is running"),
    ],
    ["WriteConflictError", () => new WriteConflictError("file changed")],
+   [
+      "WriteConflictError (FILE_EXISTS)",
+      () => new WriteConflictError("file exists", "FILE_EXISTS"),
+   ],
+   [
+      "InstalledFromLocationError",
+      () =>
+         new InstalledFromLocationError(
+            "installed from gs://b/p.zip; a reload would discard the change",
+         ),
+   ],
    [
       "WriteRolledBackError",
       () =>
