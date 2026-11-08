@@ -8,7 +8,8 @@
  * gates, outcome, status, the fields read with their classes), so a refactor
  * of the governance path that changes any of it fails here by name.
  *
- * The last golden pins a KNOWN-WRONG value on purpose: see its comment.
+ * The caller-declared golden pins the record built from what enforcement
+ * evaluated (Phase 3, V4), not from a load-time lookup by source name.
  */
 import { afterEach, beforeEach, describe, expect, it, spyOn } from "bun:test";
 import type { GivenValue } from "@malloydata/malloy";
@@ -226,15 +227,12 @@ describe("access record goldens, one per decision path", () => {
       expect(typeof error).toBe("string");
    });
 
-   it("caller-declared source admitted through an inherited lock records today's 'open'", async () => {
-      // KNOWN WRONG, pinned on purpose. The caller declares `mine is chart
-      // extend {}` in the query text; enforcement walks `mine`'s ancestry,
-      // finds `chart`'s lock and admits the clinician. But the record looks
-      // its gates up by name in the load-time `apiSources`, where `mine` does
-      // not exist, so it reports no gates and `decision: "open"` for a query
-      // a lock decided. Phase 3 (V4) derives the record from what enforcement
-      // evaluated and changes this golden deliberately to `admitted` with the
-      // lock's expression.
+   it("caller-declared source admitted through an inherited lock records the lock that admitted it", async () => {
+      // The caller declares `mine is chart extend {}` in the query text;
+      // enforcement walks `mine`'s ancestry, finds `chart`'s lock and admits
+      // the clinician. The record reports what enforcement evaluated, not a
+      // load-time lookup by name (where `mine` does not exist): `admitted`,
+      // with the lock's expression. (Before, it recorded `open` with no gates.)
       expect(
          await golden(
             "source: mine is chart extend { }\nrun: mine -> { group_by: patient; aggregate: n }",
@@ -243,8 +241,8 @@ describe("access record goldens, one per decision path", () => {
       ).toEqual({
          ...RECORD,
          source: "mine",
-         gates: { authorize: [], accessFilter: [] },
-         decision: "open",
+         gates: { authorize: ["'clinician' in $ROLES"], accessFilter: [] },
+         decision: "admitted",
          givenNames: ["ROLES"],
          secureGivens: { ROLES: ["clinician"] },
          gateGivenNames: [],
@@ -259,8 +257,7 @@ describe("access record goldens, one per decision path", () => {
    });
 
    it("control: the same caller-declared source is refused when the inherited lock does not admit", async () => {
-      // Proves the golden above went through the lock: enforcement is right,
-      // only the record is wrong.
+      // Proves the golden above went through the lock.
       const record = await golden(
          "source: mine is chart extend { }\nrun: mine -> { aggregate: n }",
          { ROLES: ["viewer"] } as never,

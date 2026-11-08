@@ -65,7 +65,7 @@ import {
 import {
    resolveCompositeResolvedBase,
    resolveQuerySourceBase,
-} from "./gate_registry_walk";
+} from "./governance/ir/source_graph";
 import type { Model } from "./model";
 
 type ApiPackageWarning = NonNullable<

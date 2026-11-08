@@ -59,7 +59,12 @@ import {
 import { type RenderTagTarget, renderTagTargets } from "./render_tag_targets";
 import { modelInfoOf } from "./model_info";
 import { logger } from "../logger";
-import { summarizeQueryAccess, type QueryAudit } from "./access_record";
+import {
+   enforcedGatesOf,
+   summarizeQueryAccess,
+   type EnforcedGates,
+   type QueryAudit,
+} from "./access_record";
 import { ceilingRefusal, modelDeclaresCarries } from "./classification";
 import {
    type ServeBinding,
@@ -172,7 +177,18 @@ import {
    validateModelPreaggregation,
    type PreaggregateViolation,
 } from "./preaggregation_validation";
-import { derivedStructsReachable } from "./gate_registry_walk";
+import {
+   preparedQueryView,
+   readPreparedQuery,
+   resolveStructRef,
+   sqlTargetRef,
+   structRefName,
+} from "./governance/ir/prepared_query";
+import {
+   mintGovernedRunnable,
+   type GovernedRunnable,
+} from "./governance/governed_runnable";
+import { derivedStructsReachable } from "./governance/ir/source_graph";
 import {
    assertFilterDimensionBindsToDeclaringSource,
    assertGraftedGateBindsToDeclaringSource,
@@ -688,6 +704,17 @@ export class Model {
     * package; a miss costs latency (one clone + reload), never correctness.
     */
    private static readonly GRAFTED_MATERIALIZER_CACHE_MAX = 32;
+   /**
+    * The gates enforcement evaluated for each runnable
+    * {@link authorizeAndBindRunnable} returned (see `EnforcedGates`): what the
+    * access record reports, so a record says what was decided rather than
+    * what a load-time lookup by name finds.
+    */
+   private enforcedGatesByRunnable = new WeakMap<
+      QueryMaterializer,
+      EnforcedGates
+   >();
+
    /**
     * `QueryMaterializer`s that `authorizeAndBindRunnable` returned with a
     * row-level filter attached. Keyed by object identity because `Model` is
@@ -1603,6 +1630,8 @@ export class Model {
       givens: Record<string, GivenValue>,
       graftScope: GraftScope | undefined,
       options: { skipOwnSourceGate?: boolean; callerText?: string } = {},
+      /** Receives every gate that was evaluated and did not deny. */
+      evaluated?: GateEntry[],
    ): Promise<RowLevelGraftEntry[]> {
       const { entryPointGates, modelDef } =
          await this.collectAuthorizeEntryPointGates(
@@ -1628,11 +1657,50 @@ export class Model {
                condition: resolution.condition,
                givenNames: resolution.givenNames,
             });
+            evaluated?.push(entry);
             continue;
          }
          denyUnlessAdmitted(resolution, givens, entry.label);
+         evaluated?.push(entry);
       }
       return rowLevel;
+   }
+
+   /**
+    * The entry-point gates the walk finds in force on `runnable`, without
+    * evaluating any: what the bypass path skipped, for its access record.
+    * `undefined` when the run target cannot be read.
+    */
+   private async entryPointGatesInForce(
+      runnable: QueryMaterializer,
+   ): Promise<GateEntry[] | undefined> {
+      try {
+         const { struct, modelDef, compositeResolvedSourceDef } =
+            await this.resolveRunTargetStruct(runnable);
+         if (!modelDef) return undefined;
+         const seen = new Set<SourceDef>();
+         const gates = this.collectEntryPointGates(
+            struct,
+            modelDef,
+            seen,
+            true,
+         );
+         if (compositeResolvedSourceDef) {
+            gates.push(
+               ...this.collectEntryPointGates(
+                  compositeResolvedSourceDef,
+                  modelDef,
+                  seen,
+                  true,
+                  undefined,
+                  struct ? ownLevelNotes(struct.annotations) : [],
+               ),
+            );
+         }
+         return gates;
+      } catch {
+         return undefined;
+      }
    }
 
    /**
@@ -1770,6 +1838,8 @@ export class Model {
       query: string,
       givens: Record<string, GivenValue>,
       graftScope: GraftScope | undefined,
+      /** Receives every gate that was evaluated and admitted. */
+      evaluated?: GateEntry[],
    ): Promise<void> {
       // Nothing to launder unless this model actually declares a gate.
       if (!this.declaresAnyGate()) return;
@@ -1806,6 +1876,7 @@ export class Model {
                }
                // Labelled with the ephemeral entry point, not the gated base.
                denyUnlessAdmitted(resolution, givens, entryPoint);
+               evaluated?.push(entry);
             }
          }
          return;
@@ -1982,11 +2053,8 @@ export class Model {
    ): Promise<void> {
       // Only a model that declares a ceiling pays for reading the query.
       if (!modelDeclaresCarries(this.modelDef)) return;
-      const prepared = (await live.getPreparedQuery()) as {
-         _query?: unknown;
-         _modelDef?: ModelDef;
-      };
-      const modelDef = prepared._modelDef ?? this.modelDef;
+      const prepared = await readPreparedQuery(live);
+      const modelDef = prepared.modelDef ?? this.modelDef;
       let refusal: string | undefined;
       try {
          const joins = region
@@ -1994,7 +2062,7 @@ export class Model {
                  (r) => r.callerJoin.join,
               )
             : [];
-         refusal = ceilingRefusal(modelDef, prepared._query, joins);
+         refusal = ceilingRefusal(modelDef, prepared.query, joins);
       } catch (err) {
          if (!(err instanceof CallerJoinWalkError)) throw err;
          refusal = "this query's joins cannot be read completely";
@@ -2004,6 +2072,7 @@ export class Model {
          audit.summary = await summarizeQueryAccess({
             runnable: live,
             modelDef: this.modelDef,
+            enforced: this.enforcedGatesByRunnable.get(bound),
             apiSources: this.sources,
             modelGivens: this.givens,
             source,
@@ -2550,26 +2619,45 @@ export class Model {
           * whole-file `/compile`). See {@link probeCallerJoinGates}.
           */
          callerJoins?: { runnable: QueryMaterializer; region: CallerRegion };
+         /**
+          * This request's bypass was already noted by an earlier bind (the
+          * degrade-to-live retry re-binds the live runnable): skip the second
+          * audit line and counter tick, nothing else.
+          */
+         bypassAlreadyNoted?: boolean;
       },
-   ): Promise<QueryMaterializer> {
+   ): Promise<GovernedRunnable> {
       // Bypass skips the gate walk but not the source-name resolution (the
       // audit trail) or the inherited-filter bind check: a misbound `where:` is
       // a wrong answer, not an authorization decision.
       if (options?.bypassAuthorize) {
-         this.noteAuthorizeBypass(
-            "runnable",
-            await this.resolveAuthorizeSourceFromRunnable(runnable),
-         );
+         if (!options.bypassAlreadyNoted) {
+            this.noteAuthorizeBypass(
+               "runnable",
+               await this.resolveAuthorizeSourceFromRunnable(runnable),
+            );
+         }
          await this.assertNoMisboundInheritedFilters(
             runnable,
             new Set(),
             "entry_point",
             options?.callerJoins?.region,
          );
-         return runnable;
+         // Nothing was evaluated; the record names the gates the walk found
+         // in force and skipped.
+         const inForce = await this.entryPointGatesInForce(runnable);
+         if (inForce) {
+            this.enforcedGatesByRunnable.set(
+               runnable,
+               enforcedGatesOf(inForce),
+            );
+         }
+         // The explicit bypass: governed by decision, nothing evaluated.
+         return mintGovernedRunnable(runnable);
       }
 
       const graftScope = options?.graftScope ?? this.defaultGraftScope();
+      const evaluated: GateEntry[] = [];
       const entryPointRowLevel = await this.probeEntryPointGates(
          runnable,
          givens,
@@ -2578,7 +2666,13 @@ export class Model {
             skipOwnSourceGate: options?.skipOwnSourceGate,
             callerText: options?.compileCallerText ?? options?.callerQueryText,
          },
+         evaluated,
       );
+      // Every non-bypass exit: the runnable governance decided, branded.
+      const bound = (result: QueryMaterializer): GovernedRunnable => {
+         this.enforcedGatesByRunnable.set(result, enforcedGatesOf(evaluated));
+         return mintGovernedRunnable(result);
+      };
 
       // Keyed on the RUN TARGET's own gates, never on the caller-join grafts
       // added below: a harmless caller join into any row-gated source must not
@@ -2593,6 +2687,7 @@ export class Model {
                options.callerQueryText,
                givens,
                graftScope,
+               evaluated,
             );
          }
       }
@@ -2628,7 +2723,7 @@ export class Model {
          rowLevel.length > 0 ? siteOf(rowLevel[0]) : undefined,
          options?.callerJoins?.region,
       );
-      if (rowLevel.length === 0) return runnable;
+      if (rowLevel.length === 0) return bound(runnable);
 
       if (!options?.recompile) {
          // Without `recompile` the filter cannot attach, so a caller that will
@@ -2645,7 +2740,7 @@ export class Model {
             recordRowLevelGateDecision("denied_by_gate", siteOf(rowLevel[0]));
             throw AccessDeniedError.forSource(rowLevel[0].label);
          }
-         return runnable;
+         return bound(runnable);
       }
 
       try {
@@ -2692,7 +2787,7 @@ export class Model {
             options?.callerJoins?.region,
          );
          this.rowLevelFilteredRunnables.set(recompiled, rowLevel);
-         return recompiled;
+         return bound(recompiled);
       } catch (err) {
          recordRowLevelGateDecision("denied_by_gate", siteOf(rowLevel[0]));
          logger.debug("Row-level authorize attach failed; denying", {
@@ -2730,16 +2825,8 @@ export class Model {
       pipeline: readonly StageLike[] | undefined;
    }> {
       try {
-         const prepared = (await runnable.getPreparedQuery()) as {
-            _query?: {
-               structRef?: unknown;
-               compositeResolvedSourceDef?: SourceDef;
-               location?: DocumentLocationLike;
-               pipeline?: readonly StageLike[];
-            };
-            _modelDef?: ModelDef;
-         };
-         const modelDef = prepared._modelDef ?? this.modelDef;
+         const view = await readPreparedQuery(runnable);
+         const modelDef = view.modelDef ?? this.modelDef;
          if (!modelDef)
             return {
                struct: undefined,
@@ -2749,26 +2836,20 @@ export class Model {
                queryLocation: undefined,
                pipeline: undefined,
             };
-         const structRef = prepared._query?.structRef;
-         const struct =
-            typeof structRef === "string"
-               ? modelDef.contents[structRef]
-               : structRef;
+         const location = view.location as DocumentLocationLike | undefined;
          return {
-            struct:
-               struct && typeof struct === "object"
-                  ? (struct as SourceDef)
-                  : undefined,
+            struct: resolveStructRef(view.structRef, modelDef),
             modelDef,
-            compositeResolvedSourceDef:
-               prepared._query?.compositeResolvedSourceDef,
+            compositeResolvedSourceDef: view.compositeResolvedSourceDef as
+               | SourceDef
+               | undefined,
             compiledUrl:
-               typeof prepared._query?.location?.url === "string" &&
-               prepared._query.location.url.startsWith("internal://")
-                  ? prepared._query.location.url
+               typeof location?.url === "string" &&
+               location.url.startsWith("internal://")
+                  ? location.url
                   : undefined,
-            queryLocation: prepared._query?.location,
-            pipeline: prepared._query?.pipeline,
+            queryLocation: location,
+            pipeline: view.pipeline as readonly StageLike[] | undefined,
          };
       } catch {
          // Not fail-open: if getPreparedQuery() throws here, execution's own
@@ -3184,29 +3265,14 @@ export class Model {
          callerJoinPath?: CallerJoinPath;
       }>,
    ): Promise<void> {
-      const prepared = (await recompiled.getPreparedQuery()) as {
-         _query?: {
-            structRef?: unknown;
-            compositeResolvedSourceDef?: unknown;
-         };
-         _modelDef?: ModelDef;
-      };
-      const modelDef = prepared._modelDef ?? this.modelDef;
+      const prepared = await recompiled.getPreparedQuery();
+      const view = preparedQueryView(prepared);
+      const modelDef = view.modelDef ?? this.modelDef;
       // MIRROR the compiler's precedence (`compositeResolvedSourceDef ??
       // structRef`), never a union: checking the struct that does not
       // generate SQL would let unfiltered rows pass behind a green proof.
-      const structRef =
-         prepared._query?.compositeResolvedSourceDef ??
-         prepared._query?.structRef;
-      const resolvedRef =
-         typeof structRef === "string"
-            ? modelDef?.contents[structRef]
-            : structRef;
       // A string `structRef` names a `contents` entry; an object one IS it.
-      const struct =
-         resolvedRef && typeof resolvedRef === "object"
-            ? (resolvedRef as SourceDef)
-            : undefined;
+      const struct = resolveStructRef(sqlTargetRef(view), modelDef);
       for (const { condition, callerJoinPath } of grafts) {
          // A caller join's graft is proven on that join, found again by the
          // path the walk recorded; the run target's on the run target.
@@ -3315,10 +3381,9 @@ export class Model {
                await this.assertGateLanded(recompiled, appliedGrafts);
                return;
             }
-            const prepared = (await recompiled.getPreparedQuery()) as {
-               _query?: { structRef?: unknown };
-            };
-            if (prepared._query?.structRef !== graftedStruct) {
+            if (
+               (await readPreparedQuery(recompiled)).structRef !== graftedStruct
+            ) {
                throw new Error(
                   "the grafted run target is not the one the query will execute",
                );
@@ -3500,15 +3565,8 @@ export class Model {
       getPreparedQuery(): Promise<unknown>;
    }): Promise<string | undefined> {
       try {
-         const prepared = (await runnable.getPreparedQuery()) as {
-            _query?: { structRef?: unknown };
-         };
-         const structRef = prepared._query?.structRef;
-         if (typeof structRef === "string") return structRef;
-         if (structRef && typeof structRef === "object") {
-            const s = structRef as { as?: string; name?: string };
-            return s.as || s.name;
-         }
+         // `as || name`: an empty alias falls through to the name.
+         return structRefName((await readPreparedQuery(runnable)).structRef);
       } catch {
          // Can't resolve — caller simply has no name to gate on here.
       }
@@ -5971,8 +6029,9 @@ export class Model {
       //
       // Do NOT guard on hasAuthorize(): it misses inherited gates. The recompile
       // stays restricted, as the original compile was.
-      runnable = await this.authorizeAndBindRunnable(runnable, givens ?? {}, {
-         recompile: (mm) => mm.loadRestrictedQuery(queryString),
+      const bindOptions = {
+         recompile: (mm: ModelMaterializer) =>
+            mm.loadRestrictedQuery(queryString),
          bypassAuthorize,
          // The caller's OWN text, not the synthesized/injected `queryString`.
          callerQueryText: query,
@@ -5980,7 +6039,13 @@ export class Model {
             callerRegion && liveRunnable
                ? { runnable: liveRunnable, region: callerRegion }
                : undefined,
-      });
+      };
+      const governed = await this.authorizeAndBindRunnable(
+         runnable,
+         givens ?? {},
+         bindOptions,
+      );
+      runnable = governed;
       if (!bypassAuthorize) {
          await this.assertWithinCarriesCeiling(
             audit,
@@ -6046,7 +6111,7 @@ export class Model {
          // Prepare yields the connection name, so its metadata layer resolves
          // before the statement is issued.
          run = await prepareAndRun(
-            runnable,
+            governed,
             {
                givens: effectiveGivens,
                buildManifest: effectiveBuildManifest,
@@ -6160,12 +6225,24 @@ export class Model {
             },
          );
          recordStorageServeRouting("runtime_live_fallback");
+         // The retry runs the LIVE compile, which `governed` is not (it is the
+         // serve shape), so it is governed in its own right here: the same
+         // bind, on the runnable that will execute. Today routing already
+         // refuses any gated entry point (`queryEntryPointHasRowLevelGate`),
+         // so this decides nothing new; it is what keeps an ungoverned live
+         // runnable from ever running if that refusal narrows. Outside the
+         // retry's try, so a denial answers 403, not a mapped run error.
+         const governedLive = await this.authorizeAndBindRunnable(
+            liveRunnable!,
+            givens ?? {},
+            { ...bindOptions, bypassAlreadyNoted: true },
+         );
          try {
             // A fresh prepare re-derives the row cap from the live shape (a
             // failure at storage prepare would leave it 0, an EMPTY answer).
             // `liveBuildManifest`: this runs on the author's model.
             run = await prepareAndRun(
-               liveRunnable!,
+               governedLive,
                { givens: querySurfaceGivens, buildManifest: liveBuildManifest },
                {
                   abortSignal,
@@ -6245,6 +6322,7 @@ export class Model {
             // The storage serve shape carries no annotations; the live one does.
             runnable: liveRunnable ?? runnable,
             modelDef: this.modelDef,
+            enforced: this.enforcedGatesByRunnable.get(runnable),
             apiSources: this.sources,
             modelGivens: this.givens,
             source: compiledSource ?? sourceName,
@@ -6989,6 +7067,8 @@ export class Model {
             // (after refinement, so the graft composes with the `#(filter)`
             // refinement instead of dropping it). Cells are author-curated, so
             // the recompile uses `loadQuery`, not `loadRestrictedQuery`.
+            // What governance returned: the only thing this cell may run.
+            let cellGoverned: GovernedRunnable;
             if (cell.modelMaterializer) {
                const textForRecompile = textToExecute;
                // Own scope: graft the compiled queryDef (read off
@@ -7004,7 +7084,7 @@ export class Model {
                        graftScope!,
                     )
                   : undefined;
-               runnableToExecute = await this.authorizeAndBindRunnable(
+               cellGoverned = await this.authorizeAndBindRunnable(
                   runnableToExecute,
                   givens ?? {},
                   {
@@ -7015,11 +7095,17 @@ export class Model {
                      graftScope,
                   },
                );
+               runnableToExecute = cellGoverned;
             } else {
-               await this.assertAuthorizedForAllSources(
+               // No materializer to recompile against, so a row-level gate
+               // denies here (as `assertAuthorizedForAllSources` did); the
+               // same bind, kept so the cell runs what governance returned.
+               cellGoverned = await this.authorizeAndBindRunnable(
                   runnableToExecute,
                   givens ?? {},
+                  { bypassAuthorize: false },
                );
+               runnableToExecute = cellGoverned;
             }
             await this.assertWithinCarriesCeiling(
                audit,
@@ -7047,7 +7133,7 @@ export class Model {
                cellReadGivenNames,
                this.notebookCellDeclaredGivens[cellIndex],
             );
-            const cellRunnable = runnableToExecute;
+            const cellRunnable = cellGoverned;
             const { result } = await prepareAndRun(
                cellRunnable,
                { givens: cellSurfaceGivens, buildManifest },
@@ -7079,6 +7165,7 @@ export class Model {
                audit.summary = await summarizeQueryAccess({
                   runnable: cellRunnable,
                   modelDef: this.modelDef,
+                  enforced: this.enforcedGatesByRunnable.get(cellRunnable),
                   apiSources: this.sources,
                   modelGivens: this.givens,
                   source:
