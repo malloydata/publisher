@@ -7,7 +7,7 @@ import { fileURLToPath } from "url";
 import { parseAnnotation } from "@malloydata/malloy-tag";
 import type { Relationship } from "@malloydata/malloy-interfaces";
 import type { ModelDef } from "@malloydata/malloy";
-import { EnvironmentStore } from "../../service/environment_store";
+import type { PackageLookup } from "../../service/environment_ports";
 import { Package } from "../../service/package";
 import { referencedGivenNames } from "../../service/authorize";
 import { splitSourceId } from "../../service/source_id";
@@ -1219,7 +1219,7 @@ function directEntitiesOf(
 
 /** Get, or lazily build and cache, the entity index for a package. */
 export async function getPackageIndex(
-   environmentStore: EnvironmentStore,
+   environmentStore: PackageLookup,
    environmentName: string,
    packageName: string,
 ): Promise<PackageIndex> {

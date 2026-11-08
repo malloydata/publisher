@@ -3,7 +3,7 @@
 
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod/v3";
-import { EnvironmentStore } from "../../service/environment_store";
+import type { PackageLookup } from "../../service/environment_ports";
 import { buildMalloyUri } from "../handler_utils";
 import { registerGuardedTool } from "../register_tool";
 import { jsonResource } from "../tool_response";
@@ -85,7 +85,7 @@ type GetAgentParams = z.infer<z.ZodObject<typeof getAgentShape>>;
  */
 export function registerGetAgentTool(
    mcpServer: McpServer,
-   environmentStore: EnvironmentStore,
+   environmentStore: PackageLookup,
 ): void {
    registerGuardedTool(mcpServer, {
       name: "get_agent",

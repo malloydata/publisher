@@ -12,7 +12,10 @@ import {
    FrozenConfigError,
    PackageNotFoundError,
 } from "../errors";
-import type { EnvironmentStore } from "../service/environment_store";
+import type {
+   ConfigFreezeReader,
+   PackageLookup,
+} from "../service/environment_ports";
 import type { Package } from "../service/package";
 import type { VersionService } from "../service/versions/version_service";
 import type { Version } from "../storage/DatabaseInterface";
@@ -27,7 +30,9 @@ type ApiPackage = components["schemas"]["Package"];
  * live in the environment's VersionService; this is their HTTP shape.
  */
 export class VersionController {
-   constructor(private readonly environmentStore: EnvironmentStore) {}
+   constructor(
+      private readonly environmentStore: PackageLookup & ConfigFreezeReader,
+   ) {}
 
    async listVersions(
       environmentName: string,
@@ -153,7 +158,7 @@ export class VersionController {
 
    private async service(environmentName: string): Promise<{
       versions: VersionService<Package>;
-      environment: Awaited<ReturnType<EnvironmentStore["getEnvironment"]>>;
+      environment: Awaited<ReturnType<PackageLookup["getEnvironment"]>>;
    }> {
       const environment = await this.environmentStore.getEnvironment(
          parseEnvironmentName(environmentName),

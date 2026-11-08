@@ -14,7 +14,7 @@ import { getQueryTimeoutMs } from "../config";
 import { runWithQueryTimeout } from "../query_timeout";
 import type { QueryAudit } from "./access_record";
 import type { Environment } from "./environment";
-import type { EnvironmentStore } from "./environment_store";
+import type { PackageLookup } from "./environment_ports";
 import type { FilterParams } from "./filter";
 import type { Model } from "./model";
 import { QueryPrivileges } from "./model_query_request";
@@ -36,7 +36,7 @@ import {
  * guard for query traffic on a hot pod.
  */
 export async function admitQueryEnvironment(
-   environmentStore: EnvironmentStore,
+   environmentStore: PackageLookup,
    environmentName: EnvironmentName,
 ): Promise<Environment> {
    const environment = await environmentStore.getEnvironment(
@@ -59,7 +59,7 @@ export async function admitQueryEnvironment(
  * path it always was.
  */
 export async function resolveQueryModel(
-   environmentStore: EnvironmentStore,
+   environmentStore: PackageLookup,
    names: {
       environmentName: string;
       packageName: string;

@@ -3,7 +3,7 @@
 
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import { QuerySlots } from "../query_concurrency";
-import type { EnvironmentStore } from "../service/environment_store";
+import type { PackageLookup } from "../service/environment_ports";
 import type { Package } from "../service/package";
 import { fcjStateOf } from "./index/engine_state";
 import { _setChatModelForTests, getChatModel } from "./llm/active";
@@ -13,7 +13,7 @@ import {
    RetrievalRegistry,
    retrievalRegistry,
 } from "./registry";
-import { RetrievalService } from "./service";
+import { NO_CATALOG, RetrievalService } from "./service";
 
 let previous: RetrievalRegistry | undefined;
 beforeEach(() => {
@@ -23,19 +23,19 @@ afterEach(() => {
    installRetrievalRegistry(previous);
 });
 
-const store = {} as EnvironmentStore;
+const store = {} as PackageLookup;
 
 describe("RetrievalRegistry", () => {
    it("is the registry retrieval reads once a RetrievalService is given it", () => {
       const registry = new RetrievalRegistry();
-      const service = new RetrievalService(store, registry);
+      const service = new RetrievalService(store, NO_CATALOG, registry);
       expect(service.registry).toBe(registry);
       expect(retrievalRegistry()).toBe(registry);
    });
 
    it("is adopted, not replaced, by a RetrievalService given none", () => {
       const inForce = retrievalRegistry();
-      expect(new RetrievalService(store).registry).toBe(inForce);
+      expect(new RetrievalService(store, NO_CATALOG).registry).toBe(inForce);
       expect(retrievalRegistry()).toBe(inForce);
    });
 

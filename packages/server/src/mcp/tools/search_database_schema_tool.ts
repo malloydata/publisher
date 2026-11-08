@@ -4,7 +4,7 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod/v3";
 import type { ConnectionController } from "../../controller/connection.controller";
-import { EnvironmentStore } from "../../service/environment_store";
+import type { EnvironmentCatalog } from "../../service/environment_ports";
 import { schemaEmbeddingEnabled } from "../../config";
 import { getEmbeddingProvider } from "../../service/embedding_provider";
 import { buildMalloyUri } from "../handler_utils";
@@ -308,7 +308,7 @@ Then paste that table's malloySource verbatim, e.g. source: \`orders\` is \`ware
  */
 export function registerSearchDatabaseSchemaTool(
    mcpServer: McpServer,
-   environmentStore: EnvironmentStore,
+   environmentStore: EnvironmentCatalog,
    connectionController: ConnectionController,
 ): void {
    const deps: TierDeps = { environmentStore, connectionController };
@@ -389,7 +389,7 @@ export function registerSearchDatabaseSchemaTool(
 
 /** What the tiers that reach a store or a warehouse need. */
 interface TierDeps {
-   environmentStore: EnvironmentStore;
+   environmentStore: EnvironmentCatalog;
    connectionController: ConnectionController;
 }
 
@@ -530,7 +530,7 @@ function withWarnings(warnings: string[]): { warnings?: string[] } {
  * pull 100k rows, and the memory governor otherwise cannot see this traffic.
  */
 async function assertCanAdmit(
-   environmentStore: EnvironmentStore,
+   environmentStore: EnvironmentCatalog,
    environmentName: string,
 ): Promise<void> {
    (

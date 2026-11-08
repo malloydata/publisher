@@ -291,6 +291,7 @@ export async function buildApp(settings: AppSettings): Promise<BuiltApp> {
    // the value index of #(index) dimensions, and skips only the vectors.
    const retrieval = new RetrievalService(
       environmentStore,
+      environmentStore.storageManager,
       new RetrievalRegistry({
          querySlots,
          // A gated value lookup words a refused model the way execute_query does.

@@ -40,7 +40,7 @@
 
 import { QueryTimeoutError, ServiceUnavailableError } from "../../errors";
 import { logger } from "../../logger";
-import type { EnvironmentStore } from "../../service/environment_store";
+import type { PackageLookup } from "../../service/environment_ports";
 import type { DuckDBConnection } from "../../storage/duckdb/DuckDBConnection";
 import {
    editDistance,
@@ -72,7 +72,7 @@ interface CountedValues {
 }
 
 export interface IndexValueRequest {
-   environmentStore: EnvironmentStore;
+   environmentStore: PackageLookup;
    environmentName: string;
    packageName: string;
    modelPath: string;
@@ -530,7 +530,7 @@ export async function buildValueIndex(args: {
    parts: ReadonlyMap<string, DocParts>;
    cap: number;
    read?: {
-      environmentStore: EnvironmentStore;
+      environmentStore: PackageLookup;
       environmentName: string;
       packageName: string;
       fetcher?: IndexValueFetcher;

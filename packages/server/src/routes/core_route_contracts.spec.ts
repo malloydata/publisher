@@ -23,7 +23,8 @@ describe("PUT …/models/{path} (report write)", () => {
    it("answers 403 under frozenConfig", async () => {
       const reportController = new ReportController({
          publisherConfigIsFrozen: true,
-      } as unknown as EnvironmentStore);
+         getEnvironment: () => Promise.reject(new Error("not looked up")),
+      });
       const res = await request(buildRouteApp({ reportController }))
          .put(`${API_PREFIX}/environments/env/packages/pkg/models/r.malloy`)
          .send({ source: "## artifact { layout=grid }\n" });
@@ -112,11 +113,13 @@ describe("GET /status", () => {
          environmentStore: {
             getStatus: async (options: unknown) => {
                calls.push(options);
-               return STATUS;
+               return STATUS as never;
             },
-            storageManager: { isInitialized: () => storageReady },
-         } as unknown as EnvironmentStore,
-         themeStore: { get: async () => ({ defaultMode: "dark" }) },
+         },
+         themeStore: {
+            get: async () => ({ defaultMode: "dark" }),
+            isReady: () => storageReady,
+         },
       });
 
    it.each([

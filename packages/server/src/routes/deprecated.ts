@@ -18,7 +18,7 @@ import { BadRequestError, internalErrorToHttpError } from "../errors";
 import type { QuerySlots } from "../query_concurrency";
 import { optionalBooleanParam } from "../route_params";
 import { accessIdentityOf } from "../service/access_record";
-import type { EnvironmentStore } from "../service/environment_store";
+import type { PackageLookup } from "../service/environment_ports";
 import { apiRoute, recordGateRefusal, wildcardParam } from "./json_route";
 
 /** A cell request refused before the controller ran, and the body it answers. */
@@ -123,7 +123,7 @@ export function notebookCellHandlers(
 export function registerDeprecatedRoutes(
    app: express.Express,
    apiPrefix: string,
-   environmentStore: EnvironmentStore,
+   environmentStore: PackageLookup,
    querySlots: QuerySlots,
 ): void {
    const controller = new LegacyReportController(environmentStore);
