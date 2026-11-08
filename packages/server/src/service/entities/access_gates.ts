@@ -12,6 +12,7 @@
  * routing, `../authorize_grammar.ts`), never a second grammar of this file's.
  */
 
+import type { SourceDef } from "@malloydata/malloy";
 import {
    collectAuthorizeNearMissesAllRoutes,
    parseAuthorizeAnnotation,
@@ -22,6 +23,7 @@ import {
    type AuthorizeGrammarTerm,
 } from "../authorize_grammar";
 import { ACCESS_FILTER_ROUTE } from "../authorize_routes";
+import { gatePlan, type GateGraph } from "../governance/gate_plan";
 
 export type GateRoute = "authorize" | "access_filter";
 
@@ -119,10 +121,8 @@ export const parseGateAnnotation = (annotation: string): GateExpr | null => {
    return { route, expr };
 };
 
-const ANCESTOR_WALK_MAX_DEPTH = 32;
-// A separate budget from the annotation chain above: this one bounds
-// `query_source` structRef resolution by NAME, which has no object identity for
-// the `seen` set to compare.
+// A budget for `query_source` structRef resolution by NAME, separate from the
+// ancestor chain's: a name lookup has no object identity for `seen` to compare.
 const STRING_REF_RESOLUTION_MAX_DEPTH = 32;
 
 /** Unlike the join path, a malformed gate propagates so the caller can deny.
@@ -130,10 +130,11 @@ const STRING_REF_RESOLUTION_MAX_DEPTH = 32;
  *  route denies on both walks. */
 const collectGateExprsOrThrow = (
    taglines: string[],
-   route: GateRoute,
+   route: string,
 ): string[] => {
    const out: string[] = [];
    for (const tagline of taglines) {
+      if (typeof tagline !== "string") continue;
       const gate = parseGateAnnotation(tagline);
       if (gate && gate.route === route) out.push(gate.expr);
    }
@@ -145,35 +146,6 @@ export interface InheritableAnnotations {
    blockNotes?: { text?: string }[];
    notes?: { text?: string }[];
 }
-
-// Malloy files the multi-definition `source:` block form's gate under `notes`
-// and the line-above form's under `blockNotes`, so both must be read.
-const notesOf = (a: InheritableAnnotations | undefined): string[] =>
-   [...(a?.blockNotes ?? []), ...(a?.notes ?? [])]
-      .map((n) => n.text)
-      .filter((t): t is string => typeof t === "string");
-
-/** Walks `annotations.inherits` for the nearest ancestor's gate on `route`
- *  (declaring its own on that route replaces an ancestor's, so this only runs
- *  when the struct has none of its own). Throws (caller fails closed) if the
- *  chain still has more ancestors past `ANCESTOR_WALK_MAX_DEPTH`. */
-const ancestorGateExprs = (
-   annotation: InheritableAnnotations | undefined,
-   route: GateRoute,
-): string[] => {
-   let inherited = annotation?.inherits;
-   for (let depth = 0; inherited && depth < ANCESTOR_WALK_MAX_DEPTH; depth++) {
-      const exprs = collectGateExprsOrThrow(notesOf(inherited), route);
-      if (exprs.length > 0) return exprs;
-      inherited = inherited.inherits;
-   }
-   if (inherited) {
-      throw new Error(
-         `annotations.inherits chain exceeds ${ANCESTOR_WALK_MAX_DEPTH} levels`,
-      );
-   }
-   return [];
-};
 
 /** The subset of a raw `structDef` this module resolves a gate over: own
  *  annotations; a query-derived struct's base and resolved composite branch;
@@ -189,150 +161,31 @@ export interface GateStructDef {
    selectSegments?: unknown[];
 }
 
-/** Structural stand-in for `@malloydata/malloy`'s `isSegmentSQL`, which isn't
- *  importable; mirrors its own check (`'sql' in f`). */
-const isSQLStringSegment = (segment: unknown): boolean =>
-   typeof segment === "object" && segment !== null && "sql" in segment;
-
-interface WalkContext {
-   /** Set when any composite is met: which member branch a query takes is not
-    *  known at index time. */
-   composite: boolean;
-}
-
-/** One route's walk, mirroring `collectEntryPointGatesForRoute`
- *  (../gate_classification.ts): own notes on THIS route, else the nearest
- *  `inherits` ancestor's, PLUS — for a query-derived struct — the base it derives
- *  from and its resolved composite branch (`source: mine is locked -> {...}` must
- *  not launder `locked`'s gate away, and a base's `#(access_filter)` ANDs with
- *  the derivation's own). A bare composite with no query wrapper reports its first
- *  gated member (deliberate over-report; the query path resolves one branch per query).
- *  `seen` (struct identity) stops a repeat struct rather than denying it; only
- *  string-name resolution, which has no identity to compare, is depth-capped.
- *  `walkCompositeMembers` is false only for a query_source's own structRef base:
- *  Malloy already resolved that derivation to one branch
- *  (`compositeResolvedSourceDef`, walked separately), so the any-member rule would
- *  over-gate it.
- *
- *  `ownTaglines` overrides the own-notes step for the initial call only: the join
- *  call site has already location-filtered its own notes per tag-kind. */
-const routeGateExprs = (
-   struct: GateStructDef,
+/** The index's view of the source graph: raw `structDef` JSON, a name ref
+ *  looked up among the model's own explores, and no `sourceRegistry` (an entry
+ *  point's ancestors are all on its `annotations.inherits` chain). */
+const exploreGateGraph = (
    sourceDefsByName: ReadonlyMap<string, GateStructDef>,
-   route: GateRoute,
-   ctx: WalkContext,
-   seen: Set<GateStructDef>,
-   stringResolutionDepth: number,
-   walkCompositeMembers: boolean,
-   ownTaglines?: string[],
-): string[] => {
-   // A restricted visit of a composite recurses nowhere, so it must NOT claim the
-   // struct in `seen`: doing so would suppress a later unrestricted visit, which
-   // WOULD walk its members, and launder a gated member away.
-   const claimsSeen = walkCompositeMembers || struct.type !== "composite";
-   if (claimsSeen) {
-      if (seen.has(struct)) return [];
-      seen.add(struct);
-   }
-   const own = collectGateExprsOrThrow(
-      ownTaglines ?? notesOf(struct.annotations),
-      route,
-   );
-   const out =
-      own.length > 0 ? own : ancestorGateExprs(struct.annotations, route);
-
-   if (struct.type === "composite") {
-      ctx.composite = true;
-      if (out.length > 0 || !walkCompositeMembers) return out;
-      for (const member of struct.sources ?? []) {
-         const memberGate = routeGateExprs(
-            member,
-            sourceDefsByName,
-            route,
-            ctx,
-            seen,
-            stringResolutionDepth,
-            true,
-         );
-         if (memberGate.length > 0) return memberGate;
-      }
-      return [];
-   }
-   // Terminal shapes: none can reference another named source, so a gate could
-   // only be on the own/ancestor annotations already read above.
-   if (
-      struct.type === "table" ||
-      struct.type === "record" ||
-      struct.type === "array"
-   ) {
-      return out;
-   }
-   if (struct.type === "sql_select") {
-      // A plain `duckdb.sql(...)` compiles with no query-bearing segment, so it
-      // can't embed a gated source. A segment that is not raw SQL text is an
-      // embedded query/source this walk doesn't descend into — deny rather than
-      // silently drop its gate.
-      const embedsSource = (struct.selectSegments ?? []).some(
-         (segment) => !isSQLStringSegment(segment),
-      );
-      if (!embedsSource) return out;
-      throw new Error(
-         "resolveGates does not walk an embedded query/source in sql_select.selectSegments",
-      );
-   }
-   if (struct.type !== "query_source") {
-      throw new Error(
-         `resolveGates does not support struct.type '${struct.type}'`,
-      );
-   }
-   const ref = struct.query?.structRef;
-   const isStringRef = typeof ref === "string";
-   if (
-      isStringRef &&
-      stringResolutionDepth >= STRING_REF_RESOLUTION_MAX_DEPTH
-   ) {
-      throw new Error(
-         `query_source structRef name chain exceeds ${STRING_REF_RESOLUTION_MAX_DEPTH} levels`,
-      );
-   }
-   const base = isStringRef ? sourceDefsByName.get(ref) : ref;
-   // Throws even when `out` is non-empty: skipping an unresolved base would drop its gate and fail open.
-   if (!base) {
-      throw new Error(
-         isStringRef
-            ? `query_source structRef '${ref}' did not resolve against the model's own sources`
-            : "query_source has an unresolvable structRef",
-      );
-   }
-   const results = [
-      ...out,
-      ...routeGateExprs(
-         base,
-         sourceDefsByName,
-         route,
-         ctx,
-         seen,
-         isStringRef ? stringResolutionDepth + 1 : stringResolutionDepth,
-         /* walkCompositeMembers */ false,
-      ),
-   ];
-   const resolvedComposite = struct.query?.compositeResolvedSourceDef;
-   if (resolvedComposite) {
-      ctx.composite = true;
-      results.push(
-         ...routeGateExprs(
-            resolvedComposite,
-            sourceDefsByName,
-            route,
-            ctx,
-            seen,
-            stringResolutionDepth,
-            true,
-         ),
-      );
-   }
-   return results;
-};
+): GateGraph => ({
+   declaredSource: () => ({ kind: "none" }),
+   queryBase: (struct) => {
+      const ref = (struct as unknown as GateStructDef).query?.structRef;
+      const byName = typeof ref === "string";
+      const base = byName ? sourceDefsByName.get(ref) : ref;
+      return base
+         ? { kind: "resolved", base: base as unknown as SourceDef, byName }
+         : {
+              kind: "unresolvable",
+              byName,
+              message: byName
+                 ? `query_source structRef '${ref}' did not resolve against the model's own sources`
+                 : "query_source has an unresolvable structRef",
+           };
+   },
+   compositeResolved: (struct) =>
+      (struct as unknown as GateStructDef).query
+         ?.compositeResolvedSourceDef as unknown as SourceDef | undefined,
+});
 
 export interface ResolvedGates {
    /** Authorize-route gates first, then access_filter, each in walk order. */
@@ -341,38 +194,54 @@ export interface ResolvedGates {
    composite: boolean;
 }
 
-/** The gates that apply to `struct` as an entry point, one independent walk per
- *  route (own `seen` set, own own-wins-over-ancestor decision) — the shape of
- *  `Model.collectEntryPointGates` (../model.ts). A single route-blind list would miss a locked
- *  base under a child declaring its own `#(access_filter)`. Throws on a
- *  resolution failure; the caller denies. */
+/** The gates that apply to `struct` as an entry point: a thin adapter over
+ *  `gatePlan` (../governance/gate_plan.ts), the one gate-inheritance walk the
+ *  query path enforces with, under the `anyMember` composite rule: an index
+ *  cannot know which branch a query takes, so a bare composite with no gate of
+ *  its own reports its first gated member (a deliberate over-report).
+ *
+ *  `ownTaglines` replaces the root's own notes: the join call site has already
+ *  location-filtered them per tag-kind.
+ *
+ *  Throws on anything the walk could not read, or a shape it does not descend
+ *  into (an embedded query in `sql_select`, an unknown struct type); the
+ *  caller denies. */
 export const resolveGates = (
    struct: GateStructDef,
    sourceDefsByName: ReadonlyMap<string, GateStructDef>,
    ownTaglines?: string[],
 ): ResolvedGates => {
-   const ctx: WalkContext = { composite: false };
+   const plan = gatePlan(
+      struct as unknown as SourceDef,
+      exploreGateGraph(sourceDefsByName),
+      {
+         composite: "anyMember",
+         routes: GATE_ROUTES,
+         readRoute: collectGateExprsOrThrow,
+         maxNameHops: STRING_REF_RESOLUTION_MAX_DEPTH,
+         ownTexts: ownTaglines,
+      },
+   );
    const gates: GateExpr[] = [];
-   for (const route of GATE_ROUTES) {
-      const seenExprs = new Set<string>();
-      for (const expr of routeGateExprs(
-         struct,
-         sourceDefsByName,
-         route,
-         ctx,
-         new Set(),
-         0,
-         true,
-         ownTaglines,
-      )) {
+   const seenExprs = new Map<string, Set<string>>();
+   for (const step of plan.steps) {
+      if (step.kind === "unwalked") throw new Error(step.message);
+      if (step.failure) {
+         if (step.failure.kind === "unreadable") throw step.failure.error;
+         throw new Error(step.failure.message);
+      }
+      const route = step.route as GateRoute;
+      const seen = seenExprs.get(route) ?? new Set<string>();
+      seenExprs.set(route, seen);
+      for (const expr of step.exprs) {
          // Malloy copies a base's note objects onto a derivation, so the same
          // predicate can be read twice; ANDing it with itself changes nothing.
-         if (seenExprs.has(expr)) continue;
-         seenExprs.add(expr);
+         if (seen.has(expr)) continue;
+         seen.add(expr);
          gates.push({ route, expr });
       }
    }
-   return { gates, composite: ctx.composite };
+   return { gates, composite: plan.metComposite };
 };
 
 // --- `#(access_filter)` body grammar ---------------------------------------
