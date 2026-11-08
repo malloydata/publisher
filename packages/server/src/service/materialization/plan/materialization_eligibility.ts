@@ -10,7 +10,7 @@ import {
    deriveAnnotationFields,
    deriveColumns,
    type PersistSourceGateOutcome,
-} from "./build_plan";
+} from "./persist_source_fields";
 import {
    buildSubstitutesAGiven,
    classifyDynamicTerms,
