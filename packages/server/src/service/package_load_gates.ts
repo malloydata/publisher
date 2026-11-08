@@ -12,7 +12,7 @@ import { operatorLlmConfigured } from "../config";
 import { logger } from "../logger";
 import type { LoadPackageOutcome } from "../package_load/package_load_pool";
 import { PackageLoadProtocolError } from "../package_load/protocol_decode";
-import type { PreparedCeilingQueries } from "./classification";
+import type { PreparedCeilingQueries } from "./classification_report";
 import type { ApiPackage, Package } from "./package";
 import {
    DEFAULT_PACKAGE_RETRIEVAL,

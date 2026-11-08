@@ -120,7 +120,7 @@ import {
    classificationWarnings,
    prepareCeilingQueries,
    type PreparedCeilingQueries,
-} from "./classification";
+} from "./classification_report";
 import {
    classificationSummary,
    type ApiClassificationSummary,
