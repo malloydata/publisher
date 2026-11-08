@@ -8,10 +8,7 @@ import { logger } from "../../logger";
 import type { CompileController } from "../../controller/compile.controller";
 import { buildMalloyUri } from "../handler_utils";
 import { registerGuardedTool } from "../register_tool";
-import {
-   type QuerySlotHandle,
-   tryAcquireQuerySlot,
-} from "../../query_concurrency";
+import type { QuerySlotHandle, QuerySlots } from "../../query_concurrency";
 import { jsonResource } from "../tool_response";
 
 const compileShape = {
@@ -108,6 +105,7 @@ export function formatDiagnosticsText(
 export function registerCompileTool(
    mcpServer: McpServer,
    compileController: CompileController,
+   querySlots: QuerySlots,
 ): void {
    registerGuardedTool(mcpServer, {
       name: "compile_model",
@@ -159,7 +157,7 @@ export function registerCompileTool(
          // the bypass. A refusal throws, answered as a classified error.
          let querySlot: QuerySlotHandle | null = null;
          try {
-            querySlot = tryAcquireQuerySlot("mcp:compile");
+            querySlot = querySlots.tryAcquire("mcp:compile");
             const result = await compileController.compile(
                environmentName,
                packageName,

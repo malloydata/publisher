@@ -32,6 +32,7 @@ import type {
    SourceContextGiven,
 } from "./types";
 import { parseEnvironmentName, parsePackageName } from "../../service/identity";
+import { retrievalRegistry } from "../registry";
 
 /**
  * Caps on doc text carried as CONTEXT alongside a field hit, where the point
@@ -1179,10 +1180,6 @@ function buildSourceContext(
    return context;
 }
 
-// Per Package instance: a reload swaps in a new instance, so a stale entry
-// drops out of the WeakMap on its own.
-const indexCache = new WeakMap<Package, PackageIndex>();
-
 /**
  * Every entity except a joined copy that assembly will rebuild from the
  * topology: one whose join reaches an indexed target source holding a direct
@@ -1242,6 +1239,9 @@ export async function packageIndexOf(
    pkg: Package,
    packageName: string,
 ): Promise<PackageIndex> {
+   // Per Package instance (RetrievalRegistry.packageIndexes): a reload swaps in
+   // a new instance, so a stale entry drops out of the WeakMap on its own.
+   const indexCache = retrievalRegistry().packageIndexes;
    const cached = indexCache.get(pkg);
    if (cached) return cached;
 

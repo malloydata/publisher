@@ -29,9 +29,12 @@ import { afterAll, afterEach, beforeAll, describe, expect, it } from "bun:test";
 import fs from "fs";
 import path from "path";
 import { simpleGit, type SimpleGitOptions } from "simple-git";
-import { environmentStore } from "../../../src/main_server";
+import { bootMainServer } from "../../harness/main_server";
 import { installVariables } from "../../../src/test_helpers/settings_env";
 import { startRestE2E } from "../../harness/rest_e2e";
+
+// The one main server this process boots (tests/harness/main_server.ts).
+const { environmentStore } = await bootMainServer();
 
 const FIXTURES = path.resolve(__dirname, "../../fixtures/publish-locations");
 const FIXTURE_FOLDERS = [

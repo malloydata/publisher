@@ -21,7 +21,7 @@ import { logger } from "../logger";
 import { registerExecuteQueryTool } from "../mcp/tools/execute_query_tool";
 import { defaultIndexValueFetcher } from "../retrieval/index/values_index";
 import { queryDistinctValues } from "../retrieval/search/values";
-import { tryAcquireQuerySlot } from "../query_concurrency";
+import { QuerySlots } from "../query_concurrency";
 import { withAuthorizeModel } from "../test_helpers/authorize_fixture";
 import { runQueryPositional } from "../test_helpers/positional_query_args";
 import { buildRouteApp } from "../test_helpers/route_app";
@@ -102,6 +102,9 @@ const HUNG = {
    ),
 };
 
+/** The one slot pool every adapter in this file shares, as buildApp shares one. */
+const slots = new QuerySlots();
+
 function rest(
    store: EnvironmentStore,
    opts: {
@@ -111,7 +114,7 @@ function rest(
       signal?: AbortSignal;
    } = {},
 ) {
-   return new QueryController(new QueryUseCase(store)).getQuery({
+   return new QueryController(new QueryUseCase(store, slots)).getQuery({
       environmentName: "env",
       packageName: "pkg",
       modelPath: opts.modelPath ?? "m.malloy",
@@ -197,7 +200,7 @@ describe("REST query writes exactly one record", () => {
       await withAuthorizeModel(MODEL, async ({ model }) => {
          const app = buildRouteApp({
             queryController: new QueryController(
-               new QueryUseCase(storeOf(model)),
+               new QueryUseCase(storeOf(model), slots),
             ),
          });
          await request(app)
@@ -233,6 +236,7 @@ function mcpHandler(store: EnvironmentStore) {
          },
       } as never,
       store,
+      new QueryUseCase(store, slots),
    );
    return handler;
 }
@@ -316,7 +320,7 @@ describe("MCP execute_query writes exactly one record", () => {
       await withSettings(
          { env: { PUBLISHER_MAX_CONCURRENT_QUERIES: "1" } },
          async () => {
-            const held = tryAcquireQuerySlot("test");
+            const held = slots.tryAcquire("test");
             try {
                await withAuthorizeModel(MODEL, async ({ model }) => {
                   const result = await mcpHandler(storeOf(model))(
@@ -472,13 +476,14 @@ describe("a request refused before its controller runs still writes one record",
    const appOver = (store: EnvironmentStore) =>
       buildRouteApp({
          environmentStore: store,
-         queryController: new QueryController(new QueryUseCase(store)),
+         queryController: new QueryController(new QueryUseCase(store, slots)),
+         querySlots: slots,
       });
    const atCap = (run: () => Promise<void>) =>
       withSettings(
          { env: { PUBLISHER_MAX_CONCURRENT_QUERIES: "1" } },
          async () => {
-            const held = tryAcquireQuerySlot("test");
+            const held = slots.tryAcquire("test");
             try {
                await run();
             } finally {

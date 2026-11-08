@@ -10,7 +10,7 @@
  */
 
 import type express from "express";
-import { queryConcurrencyMiddleware } from "../query_concurrency";
+import { isQuerySlotMiddleware, QuerySlots } from "../query_concurrency";
 import type { AppServices } from "../app_services";
 import { createMainApp } from "../routes/main_app";
 
@@ -52,6 +52,7 @@ function controllers(stubs: Stubs): AppServices {
       "materializationController",
       "storageDestinationController",
       "versionController",
+      "querySlots",
    ];
    return Object.fromEntries(
       names.map((name) => [name, stubs[name] ?? unstubbed(name)]),
@@ -65,6 +66,8 @@ export function buildRouteApp(stubs: Stubs = {}): express.Express {
          // The deprecated-route controller is constructed at registration and
          // only stores this reference.
          environmentStore: {},
+         // A pool of its own unless the spec shares one to hold slots in.
+         querySlots: new QuerySlots(),
          ...stubs,
       }),
       dataAppRuntimePath: "/nonexistent/publisher.js",
@@ -93,8 +96,8 @@ export function registeredRoutes(app: express.Express): RegisteredRoute[] {
          ? Object.keys(route.methods).map((method) => ({
               method: method.toUpperCase(),
               path: route.path,
-              gated: route.stack.some(
-                 (layer) => layer.handle === queryConcurrencyMiddleware,
+              gated: route.stack.some((layer) =>
+                 isQuerySlotMiddleware(layer.handle),
               ),
            }))
          : [],

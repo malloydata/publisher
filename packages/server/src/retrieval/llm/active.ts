@@ -3,26 +3,9 @@
 
 import { getLlmSettings } from "../../config";
 import { loadedRetrievalConfig } from "../config";
+import { retrievalRegistry } from "../registry";
 import { createChatModel } from "./registry";
 import type { ChatModel, LlmSettings } from "./types";
-
-// Cached on a settings fingerprint, as getEmbeddingProvider is, so a change to
-// the environment is seen on the next call and the model's cooldown state
-// survives between calls.
-let cached: { fingerprint: string; model: ChatModel } | null = null;
-let testOverride: { model: ChatModel | null; settings?: LlmSettings } | null =
-   null;
-
-/**
- * The LLM settings in force, or null when every LLM feature is off: no
- * `retrieval.llm.provider`, or a provider that needs `LLM_API_KEY` and has
- * none. Nothing errors when it is off.
- */
-export function activeLlmSettings(): LlmSettings | null {
-   if (testOverride)
-      return testOverride.model ? (testOverride.settings ?? FAKE) : null;
-   return getLlmSettings(loadedRetrievalConfig()?.llm);
-}
 
 const FAKE: LlmSettings = {
    provider: "openai-compatible",
@@ -33,6 +16,67 @@ const FAKE: LlmSettings = {
    maxCallsPerRequest: 20,
 };
 
+/**
+ * The chat model in force, owned by the RetrievalRegistry. Cached on a
+ * settings fingerprint, as getEmbeddingProvider is, so a change to the
+ * environment is seen on the next call and the model's cooldown state
+ * survives between calls.
+ */
+export class ChatModelSlot {
+   private cached: { fingerprint: string; model: ChatModel } | null = null;
+   private testOverride: {
+      model: ChatModel | null;
+      settings?: LlmSettings;
+   } | null = null;
+
+   /** See {@link activeLlmSettings}. */
+   settings(): LlmSettings | null {
+      if (this.testOverride)
+         return this.testOverride.model
+            ? (this.testOverride.settings ?? FAKE)
+            : null;
+      return getLlmSettings(loadedRetrievalConfig()?.llm);
+   }
+
+   /** See {@link getChatModel}. */
+   model(): ChatModel | null {
+      if (this.testOverride) return this.testOverride.model;
+      const settings = getLlmSettings(loadedRetrievalConfig()?.llm);
+      if (!settings) {
+         this.cached = null;
+         return null;
+      }
+      const fingerprint = JSON.stringify(settings);
+      if (!this.cached || this.cached.fingerprint !== fingerprint) {
+         this.cached = { fingerprint, model: createChatModel(settings) };
+      }
+      return this.cached.model;
+   }
+
+   /** Test seam: force the chat model (or null) and the settings that go with it. */
+   override(model: ChatModel | null, settings?: Partial<LlmSettings>): void {
+      this.testOverride = {
+         model,
+         settings: settings ? { ...FAKE, ...settings } : undefined,
+      };
+   }
+
+   /** Test seam: drop the override and the cached model. */
+   reset(): void {
+      this.testOverride = null;
+      this.cached = null;
+   }
+}
+
+/**
+ * The LLM settings in force, or null when every LLM feature is off: no
+ * `retrieval.llm.provider`, or a provider that needs `LLM_API_KEY` and has
+ * none. Nothing errors when it is off.
+ */
+export function activeLlmSettings(): LlmSettings | null {
+   return retrievalRegistry().chat.settings();
+}
+
 /** Whether an LLM is configured. Cheap; safe to call on any path. */
 export function llmConfigured(): boolean {
    return activeLlmSettings() !== null;
@@ -40,31 +84,18 @@ export function llmConfigured(): boolean {
 
 /** The process-wide chat model, or null when the LLM is off. */
 export function getChatModel(): ChatModel | null {
-   if (testOverride) return testOverride.model;
-   const settings = getLlmSettings(loadedRetrievalConfig()?.llm);
-   if (!settings) {
-      cached = null;
-      return null;
-   }
-   const fingerprint = JSON.stringify(settings);
-   if (!cached || cached.fingerprint !== fingerprint) {
-      cached = { fingerprint, model: createChatModel(settings) };
-   }
-   return cached.model;
+   return retrievalRegistry().chat.model();
 }
 
-/** Test seam: force the chat model (or null) and the settings that go with it. */
+/** Test seam: force the chat model (or null) on the registry in force. */
 export function _setChatModelForTests(
    model: ChatModel | null,
    settings?: Partial<LlmSettings>,
 ): void {
-   testOverride = {
-      model,
-      settings: settings ? { ...FAKE, ...settings } : undefined,
-   };
+   retrievalRegistry().chat.override(model, settings);
 }
 
+/** Test seam: drop the override and the cached model of the registry in force. */
 export function _clearChatModelForTests(): void {
-   testOverride = null;
-   cached = null;
+   retrievalRegistry().chat.reset();
 }

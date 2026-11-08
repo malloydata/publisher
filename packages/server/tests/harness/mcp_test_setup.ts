@@ -105,9 +105,10 @@ async function setupE2ETestEnvironmentInternal(
 async function startServerAndClient(
    restoreSettings: () => void,
 ): Promise<McpE2ETestEnvironment> {
-   // --- IMPORTANT: Import server *after* installing the settings ---
-   // It reads them at import. Dynamically import the actual app instance
-   const { mcpApp } = await import("../../src/main_server");
+   // --- IMPORTANT: Boot the server *after* installing the settings ---
+   // It reads them when first booted; later suites share that one server.
+   const { bootMainServer } = await import("./main_server");
+   const { mcp: mcpApp } = await bootMainServer();
 
    // An OS-assigned port: suites set up one after another under the mutex,
    // and a fixed port could be held by anything else on the machine.

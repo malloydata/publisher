@@ -54,26 +54,48 @@ export function registerSignalHandlers(
    // K8s sends SIGKILL after terminationGracePeriodSeconds if this has not exited.
    process.once("SIGTERM", async () => {
       logger.info("========== SIGTERM RECEIVED ==========");
-      markNotReady();
-      operationalState = "draining" as OperationalState;
-      logger.info(
-         `Service entering draining state for ${shutdownDrainDurationSeconds} seconds before closing servers...`,
-      );
-
-      await new Promise((resolve) =>
-         setTimeout(() => {
-            preGracefulShutdownCompleted = true;
-            resolve(true);
-         }, shutdownDrainDurationSeconds * 1000),
-      );
-
-      await performGracefulShutdownAfterDrain(
+      await drainAndShutdown(
          server,
          mcpServer,
+         shutdownDrainDurationSeconds,
          shutdownGracefulCloseTimeoutSeconds,
          otherServers,
       );
    });
+}
+
+/**
+ * What SIGTERM runs after logging it: fail readiness, drain for
+ * `shutdownDrainDurationSeconds` while still accepting requests, then
+ * {@link performGracefulShutdownAfterDrain}. The composition root's
+ * `shutdown()` runs the same sequence.
+ */
+export async function drainAndShutdown(
+   server: Server | null,
+   mcpServer: Server | null,
+   shutdownDrainDurationSeconds: number = 0,
+   shutdownGracefulCloseTimeoutSeconds: number = 0,
+   otherServers: Server[] = [],
+): Promise<void> {
+   markNotReady();
+   operationalState = "draining" as OperationalState;
+   logger.info(
+      `Service entering draining state for ${shutdownDrainDurationSeconds} seconds before closing servers...`,
+   );
+
+   await new Promise((resolve) =>
+      setTimeout(() => {
+         preGracefulShutdownCompleted = true;
+         resolve(true);
+      }, shutdownDrainDurationSeconds * 1000),
+   );
+
+   await performGracefulShutdownAfterDrain(
+      server,
+      mcpServer,
+      shutdownGracefulCloseTimeoutSeconds,
+      otherServers,
+   );
 }
 
 /**

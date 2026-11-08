@@ -37,8 +37,7 @@ import {
    ServiceUnavailableError,
 } from "../../src/errors";
 import {
-   queryConcurrency,
-   resetActiveQueryCountForTesting,
+   QuerySlots,
    resetQueryConcurrencyTelemetryForTesting,
 } from "../../src/query_concurrency";
 import { accessIdentityOf } from "../../src/service/access_record";
@@ -83,7 +82,7 @@ function buildApp(
    // first, then a thin route handler that delegates to the controller.
    app.post(
       "/api/v0/environments/:env/connections/:conn/sqlQuery",
-      queryConcurrency(),
+      new QuerySlots().middleware,
       async (req, res) => {
          try {
             const result = await controller.getConnectionQueryData(
@@ -141,14 +140,12 @@ describe("OOM guardrails: end-to-end chain", () => {
    }
 
    beforeEach(() => {
-      resetActiveQueryCountForTesting();
       resetQueryConcurrencyTelemetryForTesting();
       installEnv();
    });
 
    afterEach(() => {
       sinon.restore();
-      resetActiveQueryCountForTesting();
       resetQueryConcurrencyTelemetryForTesting();
       restoreSettings?.();
       restoreSettings = undefined;
