@@ -9,7 +9,6 @@ SPDX-License-Identifier: MIT
 > tools, and where to find the live API explorer. For connecting an AI agent, see [ai-agents.md](ai-agents.md); for the
 > Console, see [console.md](console.md). The design decisions behind v1 are recorded in
 > [issue #1562](https://github.com/malloydata/publisher/issues/1562).
-> The plan that builds v1, moves every client to it and retires v0 is [api-and-storage-plan.md](api-and-storage-plan.md).
 
 ## Two surfaces
 
@@ -58,6 +57,9 @@ parent.
   named resource. `versionId` is the one spelling of a version, everywhere.
 - **Reads never change state.** Reload is `POST …/reload`, which answers with what it did (`unchanged`, `published`, or
   `recompiled` for a live package).
+- **Which reads load.** `/status`, a package's `status`, the versions list, the version record and `…/index` never load a
+  version that is not in memory. Every other content read loads it on demand (a hydrate when the compiled-model store has
+  it); read `ServingState.loaded` first to know what a read will cost.
 - **State changes are fields.** `PATCH …/versions/{versionId}` with `archived`, `loaded`, `pinned` or
   `manifestLocation`; `PATCH …/packages/{packageName}` with `latestVersionId`; `PATCH …/runs/{runId}` with
   `status: "cancelled"`. The one explicit action is `POST …/connections/{connectionName}/test`; to test an unsaved

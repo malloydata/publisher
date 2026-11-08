@@ -51,6 +51,9 @@ info:
 
     - `GET` never changes state. Reload is `POST …/reload`, which answers with what it did.
 
+    - `/status`, a package's `status`, the versions list, the version record and `…/index` never load a version that is
+    not in memory; every other content read loads it on demand and says so.
+
     - State changes are fields: `PATCH …/versions/{versionId}` with `archived`, `loaded`, `pinned` or
     `manifestLocation`; `PATCH …/packages/{packageName}` with `latestVersionId`; `PATCH …/runs/{runId}` with `status:
     "cancelled"`. The one explicit action is `POST …/connections/{connectionName}/test`.
@@ -1060,6 +1063,7 @@ paths:
       tags:
         - versions
       summary: Read a version
+      description: The version's record. Never loads it; `GET …/packages/{packageName}/status` says whether it is in memory.
       responses:
         "200":
           description: The version.
@@ -1220,6 +1224,8 @@ paths:
       tags:
         - models
       summary: A model's compiled sources, queries and givens
+      description: Loads the version when it is not in memory (a hydrate when the compiled-model store has an entry); check
+        `ServingState.loaded` first to know the cost.
       parameters:
         - $ref: "#/components/parameters/includeHidden"
         - name: include
@@ -1921,6 +1927,8 @@ paths:
       tags:
         - discovery
       summary: The state of the version's discovery index
+      description: Never loads the version. Until the derived store is keyed by content, the state is the package's latest
+        loaded version's, whatever `versionId` names.
       responses:
         "200":
           description: The index state.
@@ -2728,8 +2736,10 @@ components:
       required: true
       schema:
         $ref: "#/components/schemas/VersionRef"
-      description: A version id, or `latest`. Every content read is of exactly one version; the response carries the id
-        `latest` resolved to.
+      description: A version id, `latest`, or `live`. Every content read is of exactly one version; the response carries the
+        id `latest` resolved to. A content read of a version that is not in memory loads it first, as a hydrate when the
+        compiled-model store has an entry; `GET …/status`, `GET …/versions`, `GET …/versions/{versionId}` and `…/index`
+        never load. `ServingState.loaded` says what a read will cost.
     connectionName:
       name: connectionName
       in: path

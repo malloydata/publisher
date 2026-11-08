@@ -5,7 +5,7 @@ SPDX-License-Identifier: MIT
 
 # Plan: Publisher's next API and storage, and the retirement of v0
 
-**Status: plan of record, proposed.** This document consolidates three issues into one plan: [#1562](https://github.com/malloydata/publisher/issues/1562) (the API review and the decisions behind the new API), [#1560](https://github.com/malloydata/publisher/issues/1560) (the storage redesign) and [#1540](https://github.com/malloydata/publisher/issues/1540) (shipping the new API, moving every client, and retiring v0 and every deprecated feature). The three issues are closed; everything they held is here, and they remain as history. Tracking happens against this document's steps. The new API's spec is [`api-doc.v1.yaml`](../api-doc.v1.yaml), drafted in [#1563](https://github.com/malloydata/publisher/pull/1563); its reference is [api-overview.md](api-overview.md).
+**Status: plan of record, proposed.** This document consolidates four issues into one plan: [#1562](https://github.com/malloydata/publisher/issues/1562) (the API review and the decisions behind the new API), [#1560](https://github.com/malloydata/publisher/issues/1560) (the storage redesign) [#1540](https://github.com/malloydata/publisher/issues/1540) (shipping the new API, moving every client, and retiring v0 and every deprecated feature) and [#1539](https://github.com/malloydata/publisher/issues/1539) (which reads may load a package). The three issues are closed; everything they held is here, and they remain as history. Tracking happens against this document's steps. The new API's spec is [`api-doc.v1.yaml`](../api-doc.v1.yaml), drafted in [#1563](https://github.com/malloydata/publisher/pull/1563); its reference is [api-overview.md](api-overview.md).
 
 "Today" means `fix/server-bugs` at `ccd659a64` (2026-11-08). Every claim about today in the storage sections carries a `path:line` under `packages/server/src/`, collected in [Appendix A](#appendix-a-evidence); the API review's findings, with their evidence, are [Appendix C](#appendix-c-the-api-reviews-findings), and the route-by-consumer usage matrix is [Appendix D](#appendix-d-the-usage-matrix).
 
@@ -128,7 +128,7 @@ Three things that exist today are not in the model: the **theme** (the Console k
 
 ### 3.2 The API: `/api/v1`
 
-The spec is [`api-doc.v1.yaml`](../api-doc.v1.yaml); the reference, with every route, is [api-overview.md](api-overview.md). The 23 decisions it was drafted from are the register in [Decisions](#6-decisions), A1 to A23; this is what they add up to.
+The spec is [`api-doc.v1.yaml`](../api-doc.v1.yaml); the reference, with every route, is [api-overview.md](api-overview.md). The 24 decisions it was drafted from are the register in [Decisions](#6-decisions), A1 to A24; this is what they add up to.
 
 **Structure.**
 
@@ -159,6 +159,7 @@ Every content read is of exactly one version, named in the path. A publish, a re
 
 - **Names.** Kebab-case paths, camelCase parameters and fields. `{path}` is a file inside a version; `{name}` a named resource. `versionId` is the one spelling of a version.
 - **Reads never change state.** Reload is `POST …/reload`, which answers with what it did. The build plan is a read with a `state`.
+- **Which reads load.** `/status`, a package's `status`, the versions list, the version record and `…/index` never load a version that is not in memory. Every other content read loads it on demand (a hydrate when the compiled-model store has it) and says so; `ServingState.loaded` tells a client what a read will cost.
 - **State changes are fields.** `PATCH …/versions/{versionId}` with `archived`, `loaded`, `pinned` or `manifestLocation`; `PATCH …/packages/{pkg}` with `latestVersionId`; `PATCH …/runs/{id}` with `status: "cancelled"`. The one explicit action is `POST …/connections/{name}/test`; an unsaved configuration is tested with `?dryRun=true` on create or update.
 - **One mutation shape.** `PATCH` is JSON merge-patch; `PUT` replaces the whole resource only where that is wanted (environments, for an orchestrator's push); `POST` on a collection answers 201 with the resource and a `Location`; `DELETE` answers 204. Every mutable resource carries a `revision`, returned as `ETag`; every write accepts `If-Match` and answers 412 when the resource has moved on. The report write also takes `expectedHash`.
 - **Typed responses.** A query answers `{rows, schema, metadata}` plus the full Malloy result on request; nothing is a JSON string inside JSON. Every list is `{items, nextCursor}`, cursor-paged; `/status` is the one unpaged snapshot.
@@ -945,7 +946,7 @@ Malloy still parses each of these, and without the refusal the package would loa
 
 The register, in four groups: **A** for the API (#1562), **S** for storage (#1560), **D** for the durability program folded into the storage design (settled with Kyle on 2026-10-24, from ms2data/service PR 7237), and **R** for the rollout (#1540). Dates are when Kyle decided.
 
-### API (A1 to A23, 2026-11-08)
+### API (A1 to A24, 2026-11-08)
 
 Each on the recommended option except A22, which Kyle called directly, A4, which Kyle revised to leave `.malloynb` out, and A2 and A6, revised when the spec was drafted. They are the rules the v1 spec is drafted from.
 
@@ -972,6 +973,7 @@ Each on the recommended option except A22, which Kyle called directly, A4, which
 21. **A21. The admin API.** A sibling spec, `admin-api-doc.v1.yaml` at `/admin/v1`, following decisions A1, A6, A8, A9, A10 and A11 exactly. It owns what only an operator should do: DuckLake catalogs, tables and snapshots; watch mode (`GET/PUT/DELETE /watch-mode`, the one copy); `GET`/`POST /gc` (#1560); and, under `resources.readOnly`, the v1 resource writes the serving API refuses, mounted as the same routes under the admin port. `/metrics` is declared in the admin spec and served there; serving it on the main port too is a deployment setting, default on. Nothing in the admin spec duplicates a serving-API route.
 22. **A22. Theme.** Not in v1. A viewer's theme is the Console's to keep, in browser storage; the server has no `/theme` routes, no `Theme` schema and no `theme` on `/status`. v0's `/theme` retires with v0. An operator who wants one look for every viewer sets it where the Console is deployed, not through the API. (Decided 2026-11-08.)
 23. **A23. Live packages.** A watched environment's package has no version rows ([#1560](https://github.com/malloydata/publisher/issues/1560)), but every v1 content read sits under `…/versions/{versionId}`. A live package exposes one reserved pseudo-version, `live`, which `latest` resolves to and which every content route accepts; it is not listed by `GET …/versions`, carries no `seq`, and `PATCH` and `DELETE` on it answer 409 `PACKAGE_IS_LIVE`. Its reads carry `versionId: "live"`, and the report write on it writes through to the author's directory. (Decided 2026-11-08.)
+24. **A24. Which reads load.** Today `GET …/embedding-index`, `…/classification`, `…/entities` and `…/build-plan` load a package or version that is not in memory, so a poll against an evicted version compiles it, while `…/status` never loads ([#1539](https://github.com/malloydata/publisher/issues/1539)). In v1 the rule is by resource. **Never load:** `GET /status`, `GET …/packages/{pkg}/status`, `GET …/versions`, `GET …/versions/{versionId}` (the record), and `GET …/versions/{versionId}/index`, whose state is derived data keyed by the version's content, not by the compiled model. **Load on demand, as a hydrate when the compiled-model store has an entry:** every other content read (models, query, compile, reports, data apps, data files, agents, skills, entities, classification, build plan, bindings, the `duckdb` connection), and each says so in its description. A client that wants to know what a read will cost reads `ServingState.loaded` first; a client that wants an unloaded version to stay unloaded does not read its content. Until the derived store is keyed by content (B3), `…/index` answers for the package's latest loaded version whatever `versionId` names, which the route says. (Decided 2026-11-08.)
 
 ### Storage (S) and the durability program (D)
 
@@ -1077,7 +1079,7 @@ Every claim about today's storage, with the file and lines it rests on, under `p
 
 ## Appendix B: where things came from
 
-**The three issues, now closed.** #1562 held the API review's findings (Appendix C), the usage matrix (Appendix D) and decisions A1 to A23. #1560 held the storage design, decisions S and D, and the hand-off checklist (Appendix E); its phases are steps 1 to 3, 5 and track B here. #1540 held the rollout and decisions R; its stages are steps 4 and 6 to 8 here, and its side track is track C.
+**The issues, now closed.** #1562 held the API review's findings (Appendix C), the usage matrix (Appendix D) and decisions A1 to A24; #1539 (per-package reads loading a package not in memory) is decision A24. #1560 held the storage design, decisions S and D, and the hand-off checklist (Appendix E); its phases are steps 1 to 3, 5 and track B here. #1540 held the rollout and decisions R; its stages are steps 4 and 6 to 8 here, and its side track is track C.
 
 | Old label | Here |
 |---|---|
