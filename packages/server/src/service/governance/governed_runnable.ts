@@ -6,13 +6,13 @@
  * only kind `prepareAndRun` (`../query_execution.ts`) will execute.
  *
  * A type brand, not a wrapper: the value IS the `QueryMaterializer`
- * `Model.authorizeAndBindRunnable` returned (for a row-level gate, the
+ * `QueryGovernor.authorizeAndBindRunnable` returned (for a row-level gate, the
  * recompiled runnable carrying the graft, where the reassignment IS the
  * enforcement). The brand makes "ran the runnable from before the bind" a
  * compile error instead of an ungated read.
  *
  * Minted ONLY by {@link mintGovernedRunnable}, called ONLY inside
- * `Model.authorizeAndBindRunnable`, which also holds the explicit bypass
+ * `QueryGovernor.authorizeAndBindRunnable`, which also holds the explicit bypass
  * branch. `governed_runnable_audit.spec.ts` fails if anything else mints one
  * or casts to the type.
  */

@@ -11,6 +11,7 @@ import { AccessDeniedError, NotQueryableError } from "../../../src/errors";
 import { hasCallerAuthorizeAnnotation } from "../../../src/service/authorize";
 import { Environment } from "../../../src/service/environment";
 import { writePackageFiles } from "../../../src/test_helpers/temp_package";
+import { governorOf } from "../../../src/test_helpers/governor";
 import { parsePackageName } from "../../../src/service/identity";
 
 /** The rows of a query result, whatever wrapper the result carries them in. */
@@ -262,7 +263,7 @@ describe("compile-path authorize gate (compileSource)", () => {
          it("keeps a walk entry that has no on-disk twin (fails closed)", async () => {
             const pkg = await env.getPackage(parsePackageName("pkg"));
             const { model } = pkg.getCompileAuthorizationModel("model.malloy");
-            const internals = model as unknown as {
+            const internals = governorOf(model!) as unknown as {
                entryPointGatesBySource: Map<
                   string,
                   { label: string; route: string; exprs: string[] }[]
@@ -406,7 +407,7 @@ describe("compile-path authorize gate (compileSource)", () => {
             const { model } = (
                await env.getPackage(parsePackageName("pkg"))
             ).getCompileAuthorizationModel("model.malloy");
-            return model as unknown as {
+            return governorOf(model!) as unknown as {
                queries: { name: string; sourceName?: string }[];
                entryPointGatesBySource: Map<
                   string,
