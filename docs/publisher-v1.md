@@ -5,7 +5,7 @@ SPDX-License-Identifier: MIT
 
 # Publisher v1: the first major release
 
-**Status: plan of record, proposed.** Publisher v1 is the first major release, version 1.0.0. It ships a new API at `/api/v1`, rebuilds the storage underneath it, moves every client we own to the new API, and removes `/api/v0` and every deprecated feature. The work lands over a series of 0.x releases and finishes with the 1.0.0 release, after a 90-day window announced in advance. This document is the plan, consolidated from six issues and one merged design: [#1562](https://github.com/malloydata/publisher/issues/1562) (the API review and the decisions behind the new API), [#1560](https://github.com/malloydata/publisher/issues/1560) (the storage redesign) [#1540](https://github.com/malloydata/publisher/issues/1540) (shipping the new API, moving every client, and retiring v0 and every deprecated feature) [#1539](https://github.com/malloydata/publisher/issues/1539) (which reads may load a package), [#1538](https://github.com/malloydata/publisher/issues/1538) (one implementation for queryability and gates) [ms2data/service#7479](https://github.com/ms2data/service/issues/7479) (the Publisher half of cutting load time for draft checkpoints), and the configuration design ([configuration-design.md](configuration-design.md), [#1474](https://github.com/malloydata/publisher/pull/1474)), whose remaining steps are sequenced here. The three issues are closed; everything they held is here, and they remain as history. Tracking happens against this document's steps. The new API's spec is [`api-doc.v1.yaml`](../api-doc.v1.yaml), drafted in [#1563](https://github.com/malloydata/publisher/pull/1563); its reference is [api-overview.md](api-overview.md).
+**Status: plan of record, proposed.** Publisher v1 is the first major release, version 1.0.0. It ships a new API at `/api/v1`, rebuilds the storage underneath it, moves every client we own to the new API, and removes `/api/v0` and every deprecated feature. The work lands over a series of 0.x releases and finishes with the 1.0.0 release, after a 90-day window announced in advance. This document is the plan, consolidated from six issues and one merged design: [#1562](https://github.com/malloydata/publisher/issues/1562) (the API review and the decisions behind the new API), [#1560](https://github.com/malloydata/publisher/issues/1560) (the storage redesign) [#1540](https://github.com/malloydata/publisher/issues/1540) (shipping the new API, moving every client, and retiring v0 and every deprecated feature) [#1539](https://github.com/malloydata/publisher/issues/1539) (which reads may load a package), [#1538](https://github.com/malloydata/publisher/issues/1538) (one implementation for queryability and gates) [ms2data/service#7479](https://github.com/ms2data/service/issues/7479) (the Publisher half of cutting load time for draft checkpoints), and the configuration design ([#1474](https://github.com/malloydata/publisher/pull/1474)), whose text is [Appendix F](#appendix-f-the-configuration-registry-and-mapping) and whose remaining steps are sequenced here. The three issues are closed; everything they held is here, and they remain as history. Tracking happens against this document's steps. The new API's spec is [`api-doc.v1.yaml`](../api-doc.v1.yaml), drafted in [#1563](https://github.com/malloydata/publisher/pull/1563); its reference is [api-overview.md](api-overview.md).
 
 "Today" means `fix/server-bugs` at `ccd659a64` (2026-11-08). Every claim about today in the storage sections carries a `path:line` under `packages/server/src/`, collected in [Appendix A](#appendix-a-evidence); the API review's findings, with their evidence, are [Appendix C](#appendix-c-the-api-reviews-findings), and the route-by-consumer usage matrix is [Appendix D](#appendix-d-the-usage-matrix).
 
@@ -27,7 +27,7 @@ Publisher has shipped as 0.x releases while its API, package format and storage 
 2. **A request touches only the storage it needs.** Reading or changing one resource reads or writes that resource. It does not load the environment, rewrite a large blob, or recompile a package.
 3. **It follows system-design practice.** Each piece of state has one owner and one source of truth. Invariants hold inside transactions. Crashes recover. Growth is bounded, and the schema is versioned.
 
-**The configuration** ([configuration-design.md](configuration-design.md)) is held to one: every setting is declared once, in one registry, with one name, one type and one default, and can be given in the config file, as an environment variable or as a flag, read the same way from each, with one precedence. Its first step is built; its second and third are sequenced below.
+**The configuration** ([Appendix F](#appendix-f-the-configuration-registry-and-mapping)) is held to one: every setting is declared once, in one registry, with one name, one type and one default, and can be given in the config file, as an environment variable or as a flag, read the same way from each, with one precedence. Its first step is built; its second and third are sequenced below.
 
 **The rollout** (#1540) is one rule: ship the new API, move everything we own to it, warn on everything users own that is deprecated, give the community 90 days, then remove v0 and every deprecated feature in one release. That release is 1.0.0.
 
@@ -38,7 +38,7 @@ From 1.0.0 on, every 1.x release keeps these contracts, and anything that breaks
 - **The API.** `/api/v1` changes additively: new optional fields, new routes, new enum members where clients are told to tolerate unknowns. Nothing is removed or retyped. The MCP tools' arguments and results follow the same schemas.
 - **The package format.** Every `publisher.json` key and model annotation the 1.0 docs describe is read by every 1.x release. A key or annotation deprecated in 1.x warns, with its rewrite, for the rest of 1.x; its reader goes in 2.0.
 - **The store.** Every 1.x release opens a store a 1.0 release wrote, through recorded migrations, and a 1.x release opens the store the next 1.x release wrote until a migration says otherwise. Rollback is running the previous release.
-- **Configuration.** Every setting's key, derived variable and derived flag are the names, and `publisher.config.json` holds settings only; resources are created through the API and an init script, never read from the file. Today's variable and flag names are aliases that warn through 0.x and are removed in 1.0.0.
+- **Configuration.** Every setting's key, derived variable and derived flag are the names ([Appendix F](#appendix-f-the-configuration-registry-and-mapping)), and `publisher.config.json` holds settings only; resources are created through the API and an init script, never read from the file. Today's variable and flag names are aliases that warn through 0.x and are removed in 1.0.0.
 
 The 0.x releases before 1.0.0 are where the contracts are built; they carry the usual release notes and may still change what they ship.
 
@@ -112,7 +112,7 @@ No schema version is recorded. DDL is `CREATE TABLE IF NOT EXISTS`, then a colum
 
 - **`fix/server-bugs`**: interrupted runs settled at open; colocated swap renames aside; connection rows pruned on environment PATCH; `frozenConfig` enforced from the first store; a never-loaded configured package can be deleted; the interim 409 on report writes and content PATCH for location-installed packages.
 - **#1552** (draft): every package is a published version. Removes the in-place install with its stage-and-swap and rollback, `.install-records`, `addPackageToDatabase`, package PATCH, the `<pkg>___<version>` split and `PUBLISHER_PACKAGE_VERSIONING`. Configured packages are staged and published as versions. Watch mode becomes the one in-place path and the only place a report write or a reload does anything; elsewhere a reload answers the version unchanged and a write answers 409 `PACKAGE_IS_VERSIONED`. B2 lifts that refusal.
-- **[configuration-design.md](configuration-design.md)**: one registry for the process's settings, one half of today's `publisher.config.json`. This design takes the other half (the `environments` block) out of the file; see [Settings and resources](#settings-and-resources).
+- **The configuration design** ([Appendix F](#appendix-f-the-configuration-registry-and-mapping)): one registry for the process's settings, one half of today's `publisher.config.json`. This design takes the other half (the `environments` block) out of the file; see [Settings and resources](#settings-and-resources).
 - **Credible's M0a numbers** (service #5514, 2,506 loads): mean load 3.4 s, of which schema fetch 55% and compile 19%; p95 19.9 s. A persisted compiled model skips both, because the schema is baked into the `ModelDef`. Credible's workers have no disk today, so nothing a worker persists survives a pod restart until the service work under [Deployments](#deployments).
 
 ## 3. The target
@@ -466,7 +466,7 @@ Nothing was mutated, so `WriteRolledBackError` disappears. The write path's refu
 
 #### Settings and resources
 
-Today `publisher.config.json` mixes settings for the process (`frozenConfig`, `theme`, `mcp.*`, `retrieval.*`, the admin flags) with a declaration of resources (`environments`, each with `packages`, `connections`, `storageDestinations`). The settings half is [configuration-design.md](configuration-design.md)'s and stays in the file. The resources half leaves it.
+Today `publisher.config.json` mixes settings for the process (`frozenConfig`, `theme`, `mcp.*`, `retrieval.*`, the admin flags) with a declaration of resources (`environments`, each with `packages`, `connections`, `storageDestinations`). The settings half is [Appendix F](#appendix-f-the-configuration-registry-and-mapping)'s and stays in the file. The resources half leaves it.
 
 **Resources are created through the API, by whoever owns them.** The server reads no resource declaration at boot. The catalog is populated the way Credible's control plane already populates a worker: `POST /environments` (or `PUT` for an orchestrator's whole push), `POST …/connections`, `POST …/packages`, `PATCH …/packages/{packageName}` with `latestVersionId`, each idempotent (the same content again is a placement). Three drivers:
 
@@ -610,7 +610,7 @@ Three rules the table implies, each with a violation today: a catalog write and 
 
 ### 3.4 The configuration
 
-The design is [configuration-design.md](configuration-design.md) (merged as [#1474](https://github.com/malloydata/publisher/pull/1474)); this is its shape and where it stands.
+The design merged as [#1474](https://github.com/malloydata/publisher/pull/1474) and is retired into this document: its full text, the registry rules and the setting-by-setting mapping, is [Appendix F](#appendix-f-the-configuration-registry-and-mapping). This is its shape and where it stands.
 
 - **One registry** declares every setting once: key, type, default, description, whether it is secret, and the deprecated names it still answers to. Parsing, validation, `--help`, the configuration reference and the startup log are generated from it; code reads a setting through one typed accessor, never from `process.env`, and a lint rule enforces that.
 - **Three sources, one precedence.** A setting may be given in the file by its key, as `PUBLISHER_<KEY>` in upper snake case, or as `--<key>` in kebab case; the variable and flag are derived, never chosen by hand. Precedence is flag, then variable, then file, then default, for every setting. Three exceptions, marked in the registry: structured settings (`theme`, `retrieval.llm`) are file-only as a whole though their scalar leaves still get a variable and a flag; launch settings (`root`, `config`, `initializeStorage`, `watchEnvironments`) cannot be in the file; secrets never take a flag and never log.
@@ -978,11 +978,11 @@ Malloy still parses each of these, and without the refusal the package would loa
 
 ### Setting names
 
-Every deprecated variable and flag name the registry lists as an alias (the mapping in [configuration-design.md](configuration-design.md): `MCP_PORT`, `SERVER_ROOT`, `LOG_LEVEL`, the `EMBEDDING_*` and `LLM_*` variables, `--mcp_port`, `--watch-env` for `PUBLISHER_WATCH`, `INITIALIZE_STORAGE`, `DISABLE_RESPONSE_LOGGING`, `--no-mcp-config`, and the rest), `frozenConfig` for `resources.readOnly`, and the `environments` block of `publisher.config.json`. From 1.0.0 a setting has exactly one key, one variable and one flag, and the release notes carry the mapping table once more.
+Every deprecated variable and flag name the registry lists as an alias (the mapping in [Appendix F](#appendix-f-the-configuration-registry-and-mapping): `MCP_PORT`, `SERVER_ROOT`, `LOG_LEVEL`, the `EMBEDDING_*` and `LLM_*` variables, `--mcp_port`, `--watch-env` for `PUBLISHER_WATCH`, `INITIALIZE_STORAGE`, `DISABLE_RESPONSE_LOGGING`, `--no-mcp-config`, and the rest), `frozenConfig` for `resources.readOnly`, and the `environments` block of `publisher.config.json`. From 1.0.0 a setting has exactly one key, one variable and one flag, and the release notes carry the mapping table once more.
 
 ## 6. Decisions
 
-The register, in five groups: **A** for the API (#1562), **S** for storage (#1560), **D** for the durability program folded into the storage design (settled with Kyle on 2026-10-24, from ms2data/service PR 7237), **R** for the rollout (#1540), and the configuration design's own decisions ([configuration-design.md](configuration-design.md), #1474). Dates are when Kyle decided.
+The register, in five groups: **A** for the API (#1562), **S** for storage (#1560), **D** for the durability program folded into the storage design (settled with Kyle on 2026-10-24, from ms2data/service PR 7237), **R** for the rollout (#1540), and the configuration design's own decisions (#1474, [Appendix F](#appendix-f-the-configuration-registry-and-mapping)). Dates are when Kyle decided.
 
 ### API (A1 to A26, 2026-11-08)
 
@@ -1050,7 +1050,7 @@ From the durability program, settled with Kyle on 2026-10-24, with two revisions
 - **`explores` and `queryableSources` are deprecated, both values included,** and go at the 1.0.0 release with no exception. `queryableSources: "all"`, the one way today to hide an `#(authorize)`-gated source from listings while authorized callers query it by name, has no like-for-like replacement and does not get one: curation is `index.malloy`, access is `#(authorize)`, and the migration guide says so.
 - **The clock waits for Credible's dated plan.** Release R is the first release in which steps 4, 5 and 6 are complete and Credible has a dated plan to switch its control plane and router inside the window, because its router's passthrough makes the switch customer-facing for Credible.
 
-### Configuration (from [configuration-design.md](configuration-design.md), #1474)
+### Configuration (from the configuration design, #1474; [Appendix F](#appendix-f-the-configuration-registry-and-mapping))
 
 - **The file and the environment are equals, not layers with different jobs.** With every setting available everywhere, the only rule is precedence.
 - **The file's top level is the server's own section**, so `port`, `host` and the most-used names do not change.
@@ -1078,7 +1078,6 @@ Each with a recommendation; the first two are Kyle's to call, the rest are settl
 
 ## 8. Not in scope
 
-- The setting-by-setting mapping of today's names to the registry's keys, which [configuration-design.md](configuration-design.md) keeps and this plan sequences but does not repeat.
 - Authentication, tenancy and the gateway ([security-posture.md](security-posture.md)); nothing here changes who may call what.
 - The query engine, result caching and the materialization *planner*; only where runs and tables are recorded changes.
 - Row-level access to dimension values through `get_context`.
@@ -1132,7 +1131,7 @@ Every claim about today's storage, with the file and lines it rests on, under `p
 
 ## Appendix B: where things came from
 
-**The configuration design** ([configuration-design.md](configuration-design.md), merged as #1474) stays as the detailed reference for the registry and the mapping; this plan carries its shape (section 3.4), sequences its steps 2 and 3 and the alias removal (steps 5, 7 and 8), and holds its decisions and open questions.
+**The configuration design** (merged as #1474 as `docs/configuration-design.md`, now retired) is carried whole: its shape in section 3.4, its steps 2 and 3 and the alias removal in steps 5, 7 and 8, its decisions and open questions in sections 6 and 7, and its text, the registry rules and the mapping, as [Appendix F](#appendix-f-the-configuration-registry-and-mapping).
 
 **The issues, now closed.** #1562 held the API review's findings (Appendix C), the usage matrix (Appendix D) and decisions A1 to A24; #1539 (per-package reads loading a package not in memory) is decision A24; #1538 (the entities extraction's duplicate gate and queryability rules) is decision A25 and a step 4 item; ms2data/service#7479's Publisher half is decision A26 (the light load profile), the load-time quick wins in step 2, and the cross-version reuse and Malloy cache notes in track B3. #1560 held the storage design, decisions S and D, and the hand-off checklist (Appendix E); its phases are steps 1 to 3, 5 and track B here. #1540 held the rollout and decisions R; its stages are steps 4 and 6 to 8 here, and its side track is track C.
 
@@ -1355,3 +1354,333 @@ U = used (one representative call site), – = unused. Credible column: CP = con
 - [ ] The compiler spike (open question 5) runs during B1 so B3 is scoped when it starts.
 - [ ] Service #5521 points at this issue; S1 follows the release that carries step 5 `/status` fields and the unload verb.
 - [ ] `docs/local-state.md`, `docs/migrations.md` and `docs/compiled-model-cache.md` exist and match the code when their phases land; `docs/package-versions.md`, `docs/materialization.md`, `docs/configuration.md` and `docs/security-posture.md` are updated in the phase that changes what they describe; `RELEASE_NOTES.md` gets a section per phase that changes a visible behaviour (generational names, `ETag`, the lifted 409, retention, the schema-refresh rule).
+
+## Appendix F: the configuration registry and mapping
+
+The text of the configuration design (merged as #1474 as `docs/configuration-design.md`, retired into this document on 2026-11-08), as it stood with step 1 built. "Today" in this appendix means before step 1. Its decisions are in [section 6](#6-decisions), its open questions in [section 7](#7-open-questions), and its steps are sequenced in [section 4](#4-the-order-of-work): step 2 with step 5, step 3 no later than release R, the aliases removed in 1.0.0.
+
+### What exists today
+
+Publisher reads its settings from three places, and which place a setting lives in follows no rule:
+
+- **`publisher.config.json`** began as the list of what to serve, and grew server-wide settings one at a
+  time: `frozenConfig`, `theme`, `mcp.includeHiddenFilesAndSources` and the `retrieval` block. With the
+  admin API, `servingApiEnabled` and `adminApiEnabled` arrive already following this design: each is a
+  key in the file, a derived variable and a derived flag, read with the precedence below.
+- **Environment variables** carry everything else, about 60 of them, most added for container
+  deployments.
+- **Command-line flags** exist for about a dozen of those variables, the ones a local user reaches for:
+  ports, hosts, the server root, the config path, shutdown timing, watch mode and `--init`.
+
+Every string in the config file may reference a variable as `${VAR}`, which is how a file names a
+credential without holding it.
+
+#### What that costs
+
+| Problem | Example |
+|---|---|
+| The same kind of setting lives in different places | MCP's port and host are variables, but what MCP exposes (`mcp.includeHiddenFilesAndSources`) is in the file |
+| A setting can be given in two places with no general rule for which wins | the `retrieval.embedding` keys override the `EMBEDDING_*` variables; nothing else overlaps |
+| Booleans are read five ways | most variables accept `1/true/yes/on` and `0/false/no/off` and refuse anything else; `INITIALIZE_STORAGE`, `PUBLISHER_USE_BUNDLED_DEFAULT` and `PUBLISHER_ALLOW_PROXY_CONNECTIONS` are on only for exactly `true`; `DISABLE_RESPONSE_LOGGING` for `true` or `1`; `PUBLISHER_ALLOW_UNVERIFIED_SSH_HOST_KEY` reads an unrecognised value as off where it is used, because one reader runs inside ssh2's synchronous host-key callback, where a throw would escape; and `frozenConfig` is read with `Boolean()`, so `"frozenConfig": "false"` freezes the server |
+| A typo is silent | an unknown key in the file is ignored (only `retrieval.llm`, `retrieval.embedding` and `retrieval.egress` refuse one), so a misspelled `adminApiEnable` runs the API it meant to turn off; an unknown flag, and a flag given without its value, are ignored too |
+| A `${VAR}` cannot supply a number or a boolean | substitution always yields a string |
+| Names do not follow a pattern | about 20 Publisher settings lack the `PUBLISHER_` prefix (`MCP_PORT`, `SERVER_ROOT`, `LOG_LEVEL`, `EMBEDDING_MODEL`, …); flags mix `--mcp_port` with `--watch-env`; a flag and its variable can differ (`--watch-env` is `PUBLISHER_WATCH`, `--init` is `INITIALIZE_STORAGE`); two switches are negative (`--no-mcp-config`, `DISABLE_RESPONSE_LOGGING`) |
+| The reference drifts from the code | `--config` and `PERSIST_COLLISION_ENFORCE` are not in the configuration table |
+
+### Design
+
+#### One registry
+
+A single module declares every setting:
+
+```ts
+setting({
+   key: "mcp.port",           // its path in publisher.config.json
+   type: integer({ min: 0, max: 65535 }),
+   default: 4040,
+   description: "MCP HTTP port.",
+   aliases: { env: ["MCP_PORT"], flags: ["--mcp_port"] },  // deprecated names, read during migration
+});
+```
+
+The registry is the only place a setting is defined. Parsing, validation, `--help`, the configuration
+reference and the startup log are all produced from it, and a test fails if the checked-in reference
+differs from what the registry generates, if two settings derive the same variable or flag, or if one
+setting's derived name is another's alias. Code reads a setting through one typed accessor
+(`settings.get("mcp.port")`), never from `process.env`.
+
+The module can be one file per section of [the mapping](#the-mapping), exported as one list; what
+matters is that one list holds every setting. Settings are read once, at startup, before any module
+that uses one is loaded, and a lint rule refuses `process.env` outside the registry module, which also
+hands out the variables Publisher does not own (below), unparsed. A worker thread receives the parsed
+settings from the thread that started it rather than reading the environment again, and a test builds
+its settings with the same loader rather than writing `process.env`.
+
+A default can be another setting rather than a constant, so `default` also takes a function of the
+settings already resolved:
+
+- `mcp.host` defaults to `host` when `host` is given and to `127.0.0.1` otherwise, while `admin.host`
+  defaults to `127.0.0.1` whatever `host` is.
+- `useBundledDefault` is on when neither `root` nor `config` is given. Today only the two flags count,
+  so `--server_root /x` with no config at `/x` serves nothing, while `SERVER_ROOT=/x` serves the bundled
+  samples. Once a setting has one value whatever its source, the variable counts too, which changes the
+  second case in step 2.
+
+#### Three sources, one precedence
+
+Each setting may be given as:
+
+| Source | Form | Example |
+|---|---|---|
+| Config file | its key | `{ "mcp": { "port": 4041 } }` |
+| Environment variable | `PUBLISHER_` + the key in upper snake case, a dot becoming `_` | `PUBLISHER_MCP_PORT=4041` |
+| Command-line flag | `--` + the key in kebab case, a dot becoming `-` | `--mcp-port 4041` |
+
+The variable and flag names are derived from the key and are never chosen by hand. Precedence is the
+same for every setting: **flag, then variable, then file, then default.** Startup logs one line naming
+each setting a flag, a variable or the file gave and where its value came from, with secrets shown as
+`(set)`.
+
+Three kinds of setting are exceptions, and the registry marks them:
+
+- **Structured settings** (`environments`, `theme`, and objects such as `retrieval.llm` whose fields
+  depend on each other) are file-only as a whole. Their scalar leaves (`retrieval.embedding.model`)
+  still get a variable and a flag, so one object's leaves can come from different sources. Where one
+  field decides what the others mean (in `retrieval.llm` and `retrieval.embedding`, `provider` decides
+  which fields apply and what `baseUrl` defaults to), the object is assembled from every source first
+  and validated as one, and an error names the source of each field it cites. A variable that switches
+  `provider` is therefore checked against the file's other fields. A mix can still validate (a `model`
+  written for the old provider), so the startup line lists that object's leaves with their sources.
+- **Launch settings** (`root`, `config`, `useBundledDefault`, `initializeStorage`,
+  `watchEnvironments`) have a variable and a flag but cannot be in the file: the first three decide
+  which file is read, `initializeStorage` wipes storage and must not happen on every boot because a file
+  said so, and `watchEnvironments` describes one development run.
+- **Secrets** have no flag, because a flag is visible in a process listing. They come from a variable, or
+  from the file through a `${VAR}` reference, and are never logged or reported. A literal secret in the
+  file fails startup. Telling a literal from a reference means checking the file's raw value before
+  `${VAR}` substitution, because a substituted value looks like a literal. The `retrieval` API keys are
+  new file keys: today they come only from `EMBEDDING_API_KEY` and `LLM_API_KEY`, and `retrieval.llm`
+  and `retrieval.embedding` refuse an `apiKey`.
+
+Variables Publisher does not own keep their names and stay outside the registry: `NODE_ENV`,
+`NODE_OPTIONS`, `NODE_EXTRA_CA_CERTS` (which the Docker image sets to its RDS CA bundle), `OTEL_*`,
+`GOOGLE_APPLICATION_CREDENTIALS`, libpq's `PGSSLMODE` and `PGSERVICE` (which Publisher's Postgres
+connection setup also reads), and the `ADBC_*` variables the Docker image's driver shim reads.
+
+#### Types, read the same way from every source
+
+| Type | In the file | As a variable or flag |
+|---|---|---|
+| boolean | `true` or `false` | `true/false`, `1/0`, `yes/no`, `on/off`, any case; a bare `--x` is true and `--no-x` is false |
+| integer, number | a JSON number, within the registered range | the same, parsed |
+| enum | one of the registered strings | the same, any case |
+| list | a JSON array | comma-separated; a flag may repeat |
+| string | a JSON string | the same |
+
+An empty variable is unset, as it already is for nearly every variable (`PACKAGE_LOAD_WORKERS=""`
+fails startup today), so `-e NAME=` undoes a value an image sets.
+
+Units stay in the name (`timeoutMs`, `maxResponseBytes`, `drainDurationSeconds`) and values are plain
+integers in that unit. The one exception is `duckdb.memoryLimit`, which DuckDB parses (`1GB`), so it is
+a string and says so.
+
+A `${VAR}` in the file is substituted first and then read as the setting's type, so
+`"adminApiEnabled": "${ADMIN_API_ENABLED}"` works.
+
+#### Validation
+
+A value that does not parse as its type, an unknown key at any registered level of the file, an unknown
+flag or a flag given without its value, or the same setting given under an old and a new name with
+different values fails startup, with one message naming
+the setting, the source and what was expected (`mcp.port from PUBLISHER_MCP_PORT: expected an integer
+from 0 to 65535, got "40a0"`). An unknown key gets the nearest registered key as a suggestion. An old
+and a new name are compared after parsing, so a negated alias agrees with its new name
+(`PUBLISHER_NO_MCP_CONFIG=1` and `PUBLISHER_MCP_CONFIG_FILE_ENABLED=false`). A file that cannot be read
+or parsed fails startup before any setting is read, so no setting falls back to its default because the
+file was unreadable.
+Cross-setting rules stay where they are today (the admin API's checks, the memory governor's
+high-water above low-water) but run on the parsed settings.
+
+#### Names
+
+The top level of the file holds the server's own settings, so the most used names do not change:
+`port` is `PUBLISHER_PORT` and `--port`, and `frozenConfig` gains `PUBLISHER_FROZEN_CONFIG`. Other
+settings sit in sections named for the subsystem they configure. A boolean that turns a feature on or
+off ends in `Enabled` and defaults to whichever state is safe; the `allow` section holds permissions,
+each off by default except `allow.s3CredentialChain`, which keeps today's default `any`. Deployments that
+read S3 through the host's own role (an EKS pod's IRSA role) depend on that default, so changing it
+would be a breaking change with its own migration step.
+
+### The mapping
+
+Every setting Publisher reads today, with its key. **Unchanged** means today's variable and flag already
+match the derived names.
+
+#### Server (top level)
+
+| Today | Key | Variable | Flag | Notes |
+|---|---|---|---|---|
+| `frozenConfig` (file) | `frozenConfig` | `PUBLISHER_FROZEN_CONFIG` | `--frozen-config` | strict boolean |
+| `servingApiEnabled`, `PUBLISHER_SERVING_API_ENABLED`, `--[no-]serving-api-enabled` | `servingApiEnabled` | unchanged | unchanged | already follows this design |
+| `adminApiEnabled`, `PUBLISHER_ADMIN_API_ENABLED`, `--[no-]admin-api-enabled` | `adminApiEnabled` | unchanged | unchanged | already follows this design |
+| `PUBLISHER_PORT`, `--port` | `port` | unchanged | unchanged | |
+| `PUBLISHER_HOST`, `--host` | `host` | unchanged | unchanged | |
+| `PUBLISHER_RATE_LIMIT` | `rateLimit` | unchanged | `--rate-limit` | requests per minute |
+| `PUBLISHER_FRAME_ANCESTORS` | `frameAncestors` | unchanged | `--frame-ancestors` | |
+| `theme` (file) | `theme` | — | — | structured |
+| `environments` (file) | `environments` | — | — | structured |
+
+#### Launch settings (no file key)
+
+| Today | Key | Variable | Flag |
+|---|---|---|---|
+| `SERVER_ROOT`, `--server_root` | `root` | `PUBLISHER_ROOT` | `--root` |
+| `PUBLISHER_CONFIG_PATH`, `--config` | `config` | `PUBLISHER_CONFIG` | `--config` |
+| `PUBLISHER_USE_BUNDLED_DEFAULT` | `useBundledDefault` | unchanged | `--use-bundled-default` |
+| `INITIALIZE_STORAGE`, `--init` | `initializeStorage` | `PUBLISHER_INITIALIZE_STORAGE` | `--initialize-storage` (`--init` kept as a short form) |
+| `PUBLISHER_WATCH`, `--watch-env` | `watchEnvironments` | `PUBLISHER_WATCH_ENVIRONMENTS` | `--watch-environments` (`--watch-env` kept as a short form) |
+
+`watchEnvironments` is a list. Today `--watch-env` adds to `PUBLISHER_WATCH` rather than replacing it.
+Under one precedence the flag replaces the variable, as it does for every other list.
+
+#### `mcp`
+
+| Today | Key | Variable | Flag |
+|---|---|---|---|
+| `MCP_PORT`, `--mcp_port` | `mcp.port` | `PUBLISHER_MCP_PORT` | `--mcp-port` |
+| `MCP_HOST`, `--mcp_host` | `mcp.host` | `PUBLISHER_MCP_HOST` | `--mcp-host` |
+| `MCP_CORS_ORIGINS` | `mcp.corsOrigins` (list) | `PUBLISHER_MCP_CORS_ORIGINS` | `--mcp-cors-origins` |
+| `PUBLISHER_NO_MCP_CONFIG`, `--no-mcp-config` | `mcp.configFileEnabled` (default `true`) | `PUBLISHER_MCP_CONFIG_FILE_ENABLED` | `--mcp-config-file-enabled` / `--no-mcp-config-file-enabled` |
+| `mcp.includeHiddenFilesAndSources` (file) | unchanged | `PUBLISHER_MCP_INCLUDE_HIDDEN_FILES_AND_SOURCES` | `--mcp-include-hidden-files-and-sources` |
+| `PUBLISHER_MCP_TRACE` | `mcp.trace` (enum: `retrieval`) | unchanged | `--mcp-trace` |
+
+#### `admin` (the admin API's settings)
+
+| Today | Key | Variable | Flag |
+|---|---|---|---|
+| `PUBLISHER_ADMIN_PORT`, `--admin_port` | `admin.port` | unchanged | `--admin-port` |
+| `PUBLISHER_ADMIN_HOST`, `--admin_host` | `admin.host` | unchanged | `--admin-host` |
+| `PUBLISHER_ADMIN_CATALOG_DATABASE` | `admin.catalogDatabase` | unchanged | — (secret) |
+| `PUBLISHER_ADMIN_STORAGE_PROVIDER` | `admin.storage.provider` | unchanged | `--admin-storage-provider` |
+| `PUBLISHER_ADMIN_STORAGE_KEY_ID` | `admin.storage.keyId` | unchanged | `--admin-storage-key-id` |
+| `PUBLISHER_ADMIN_STORAGE_SECRET` | `admin.storage.secret` | unchanged | — (secret) |
+| `PUBLISHER_ADMIN_STORAGE_REGION` | `admin.storage.region` | unchanged | `--admin-storage-region` |
+| `PUBLISHER_ADMIN_STORAGE_ENDPOINT` | `admin.storage.endpoint` | unchanged | `--admin-storage-endpoint` |
+
+#### `query`, `postgres`, `memory`, `packageLoad`
+
+| Today | Key | Variable |
+|---|---|---|
+| `PUBLISHER_MAX_QUERY_ROWS` | `query.maxRows` | `PUBLISHER_QUERY_MAX_ROWS` |
+| `PUBLISHER_MAX_RESPONSE_BYTES` | `query.maxResponseBytes` | `PUBLISHER_QUERY_MAX_RESPONSE_BYTES` |
+| `PUBLISHER_DEFAULT_QUERY_ROW_LIMIT` | `query.defaultRowLimit` | `PUBLISHER_QUERY_DEFAULT_ROW_LIMIT` |
+| `PUBLISHER_QUERY_TIMEOUT_MS` | `query.timeoutMs` | unchanged |
+| `PUBLISHER_MAX_CONCURRENT_QUERIES` | `query.maxConcurrent` | `PUBLISHER_QUERY_MAX_CONCURRENT` |
+| `PUBLISHER_QUERY_METADATA` | `query.metadataEnabled` (default `false`) | `PUBLISHER_QUERY_METADATA_ENABLED` |
+| `PUBLISHER_POSTGRES_POOL_MAX` | `postgres.poolMax` | unchanged |
+| `PUBLISHER_MAX_MEMORY_BYTES` | `memory.maxBytes` | `PUBLISHER_MEMORY_MAX_BYTES` |
+| `PUBLISHER_MEMORY_HIGH_WATER_FRACTION` | `memory.highWaterFraction` | unchanged |
+| `PUBLISHER_MEMORY_LOW_WATER_FRACTION` | `memory.lowWaterFraction` | unchanged |
+| `PUBLISHER_MEMORY_CHECK_INTERVAL_MS` | `memory.checkIntervalMs` | unchanged |
+| `PUBLISHER_MEMORY_BACKPRESSURE` | `memory.backpressureEnabled` | `PUBLISHER_MEMORY_BACKPRESSURE_ENABLED` |
+| `PACKAGE_LOAD_WORKERS` | `packageLoad.workers` | `PUBLISHER_PACKAGE_LOAD_WORKERS` |
+| `PACKAGE_LOAD_JOB_TIMEOUT_MS` | `packageLoad.jobTimeoutMs` | `PUBLISHER_PACKAGE_LOAD_JOB_TIMEOUT_MS` |
+| `PACKAGE_LOAD_SCHEMA_CACHE_BYTES` | `packageLoad.schemaCacheBytes` | `PUBLISHER_PACKAGE_LOAD_SCHEMA_CACHE_BYTES` |
+
+Every row here also gets the derived flag (`--query-max-rows`, …). `PUBLISHER_QUERY_METADATA` takes only
+`on` and `off`, so it is a boolean under the `Enabled` rule, and today's two values are boolean spellings
+the alias keeps reading.
+
+#### `duckdb`, `ducklake`, `persist`, `materialization`
+
+| Today | Key | Variable |
+|---|---|---|
+| `EXTENSION_FETCH_POLICY` | `duckdb.extensionFetchPolicy` | `PUBLISHER_DUCKDB_EXTENSION_FETCH_POLICY` |
+| `PUBLISHER_DUCKDB_MEMORY_LIMIT` | `duckdb.memoryLimit` | unchanged |
+| `PUBLISHER_DUCKDB_TEMP_DIRECTORY` | `duckdb.tempDirectory` | unchanged |
+| `PUBLISHER_PARTITIONED_WRITE_FLUSH_THRESHOLD` | `duckdb.partitionedWriteFlushThreshold` | `PUBLISHER_DUCKDB_PARTITIONED_WRITE_FLUSH_THRESHOLD` |
+| `PUBLISHER_DUCKLAKE_ROW_GROUP_SIZE_BYTES` | `ducklake.rowGroupSizeBytes` | unchanged |
+| `PUBLISHER_DUCKLAKE_TARGET_FILE_SIZE_BYTES` | `ducklake.targetFileSizeBytes` | unchanged |
+| `PERSIST_STORAGE_MODE` | `persist.storageMode` | `PUBLISHER_PERSIST_STORAGE_MODE` |
+| `PERSIST_COLLISION_ENFORCE` | `persist.collisionEnforcementEnabled` | `PUBLISHER_PERSIST_COLLISION_ENFORCEMENT_ENABLED` |
+| `PUBLISHER_LOCAL_MATERIALIZATION_SCHEDULER` | `materialization.schedulerEnabled` | `PUBLISHER_MATERIALIZATION_SCHEDULER_ENABLED` |
+| `PUBLISHER_MATERIALIZATION_SCHEDULER_INTERVAL_MS` | `materialization.schedulerIntervalMs` | unchanged |
+| `PUBLISHER_MATERIALIZATION_SCHEDULER_MAX_FIRES_PER_TICK` | `materialization.schedulerMaxFiresPerTick` | unchanged |
+
+#### `allow`, `authorize`, `logging`, `shutdown`
+
+| Today | Key | Variable |
+|---|---|---|
+| `PUBLISHER_ALLOW_PROXY_CONNECTIONS` | `allow.proxyConnections` | unchanged |
+| `PUBLISHER_ALLOW_DUCKDB_SETUP_SQL` | `allow.duckdbSetupSql` | unchanged |
+| `PUBLISHER_ALLOW_UNVERIFIED_SSH_HOST_KEY` | `allow.unverifiedSshHostKey` | unchanged |
+| `S3_CREDENTIAL_CHAIN_POLICY` | `allow.s3CredentialChain` (enum: `any`, `destinations-only`, `off`) | `PUBLISHER_ALLOW_S3_CREDENTIAL_CHAIN` |
+| `PUBLISHER_BYPASS_AUTHORIZE_SECRET` | `authorize.bypassSecret` (secret) | `PUBLISHER_AUTHORIZE_BYPASS_SECRET` |
+| `LOG_LEVEL` | `logging.level` | `PUBLISHER_LOGGING_LEVEL` |
+| `DISABLE_RESPONSE_LOGGING` | `logging.responseBodiesEnabled` (default `true`) | `PUBLISHER_LOGGING_RESPONSE_BODIES_ENABLED` |
+| `SHUTDOWN_DRAIN_DURATION_SECONDS`, `--shutdown_drain_duration_seconds` | `shutdown.drainDurationSeconds` | `PUBLISHER_SHUTDOWN_DRAIN_DURATION_SECONDS` |
+| `SHUTDOWN_GRACEFUL_CLOSE_TIMEOUT_SECONDS`, `--shutdown_graceful_close_timeout_seconds` | `shutdown.gracefulCloseTimeoutSeconds` | `PUBLISHER_SHUTDOWN_GRACEFUL_CLOSE_TIMEOUT_SECONDS` |
+
+`authorize.bypassSecret` is a secret and has no flag.
+
+#### `retrieval`
+
+The block keeps its shape. Its scalar leaves gain a variable and a flag, and the `EMBEDDING_*` and
+`LLM_API_KEY` variables become aliases of them:
+
+| Today | Key | Variable |
+|---|---|---|
+| `EMBEDDING_API_KEY` | `retrieval.embedding.apiKey` (secret) | `PUBLISHER_RETRIEVAL_EMBEDDING_API_KEY` |
+| `EMBEDDING_MODEL` | `retrieval.embedding.model` | `PUBLISHER_RETRIEVAL_EMBEDDING_MODEL` |
+| `EMBEDDING_API_BASE` | `retrieval.embedding.baseUrl` | `PUBLISHER_RETRIEVAL_EMBEDDING_BASE_URL` |
+| `EMBEDDING_DIMENSIONS` | `retrieval.embedding.dimensions` | `PUBLISHER_RETRIEVAL_EMBEDDING_DIMENSIONS` |
+| `EMBEDDING_MIN_SIMILARITY` | `retrieval.embedding.minSimilarity` | `PUBLISHER_RETRIEVAL_EMBEDDING_MIN_SIMILARITY` |
+| `EMBEDDING_INDEX_CONNECTION_SCHEMA` | `retrieval.embedding.connectionSchemaIndexingEnabled` | `PUBLISHER_RETRIEVAL_EMBEDDING_CONNECTION_SCHEMA_INDEXING_ENABLED` |
+| `LLM_API_KEY` | `retrieval.llm.apiKey` (secret) | `PUBLISHER_RETRIEVAL_LLM_API_KEY` |
+
+The other `retrieval` keys (`indexing.maxEntities`, `llm.provider`, `llm.model`, …, `egress.preset`)
+keep their file paths and gain derived variables and flags.
+
+#### Settings in open pull requests
+
+| Today | Key | Variable | Flag | Notes |
+|---|---|---|---|---|
+| `versionPromotion` (file), `PUBLISHER_VERSION_PROMOTION` ([#1354](https://github.com/malloydata/publisher/pull/1354)) | `versionPromotion` (enum: `on-publish`, `explicit`) | unchanged | `--version-promotion` | the key and variable already follow this design; the flag is new |
+| `PUBLISHER_PACKAGE_VERSIONING` (#1354) | `packageVersioning` (enum: `on`, `off`) | unchanged | — | a transition setting that [#1381](https://github.com/malloydata/publisher/issues/1381) removes, so it keeps its name and is exempt from the `Enabled` rule |
+| `PUBLISHER_MODEL_PAGE` (#1498) | `modelPage` (enum: `explorer`, `viewer`) | unchanged | — | a lasting choice between two pages, both kept |
+
+Until step 2 ships, a new setting takes its derived name from the start, as `PUBLISHER_VERSION_PROMOTION`
+does, so it never needs an alias.
+
+### Migration
+
+1. **The registry, behavior unchanged.** Every setting is registered under its key, with today's
+   variable and flag as its names and today's precedence; code reads through the accessor; the reference
+   and `--help` are generated. The boolean readers become one, but no value changes meaning in this
+   step: a value that the common reader and today's reader read differently keeps today's meaning and
+   is warned about. Those values include `INITIALIZE_STORAGE=1`, which is off today and would wipe
+   storage on every boot; `PUBLISHER_ALLOW_PROXY_CONNECTIONS=yes`, which is refused today and would
+   allow proxy connections; and `"frozenConfig": "false"`, which freezes the server today. A value no
+   reader accepts (`enabled`, say), which some of them read as off today, fails startup. An unknown file
+   key, an unknown flag, a flag given without its value and an invalid `LOG_LEVEL` (today it falls back
+   to `debug`) are warned about, not yet refused. Each reading this step keeps and a later step ends (an
+   exact-`true` boolean, the `retrieval.embedding` keys winning over their variables, `--watch-env`
+   adding to `PUBLISHER_WATCH`, only the flags turning `useBundledDefault` off) is recorded in the
+   registry next to the alias or default it belongs to, so the later step removes it from one place.
+   Some settings are exceptions to "behavior unchanged". Before this step they accepted values of more
+   than one type, and the registry gives each setting a single type (a boolean, an integer, an enum), so
+   a value of any other type fails startup from this step. For example, `MCP_PORT` took a port number,
+   `0` for an ephemeral port, or, under Bun, any non-numeric string, which also bound an ephemeral
+   port. Registered as an integer, the non-numeric form now fails startup. The release notes name each
+   exception. Ships alone.
+2. **The new names.** The derived variables and flags become the names, today's become aliases, and
+   each alias in use logs one deprecation warning at startup and counts in
+   `publisher_deprecated_usage_total{feature="config:<old name>"}`. Precedence becomes flag, variable,
+   file for every setting. An old and new name given different values fails startup.
+3. **Strict.** A release later: the warnings from step 1 become refusals, so a boolean value the two
+   readers disagree on is refused before it can change meaning. The aliases are removed in the release
+   after that, announced in the changelog with the mapping table above.
+
+An orchestrator moves to the new names when it adopts step 2's release. Nothing it sets today stops
+working before step 3, which refuses only the values step 1 warned about; the old names keep working
+until step 3's second release.
