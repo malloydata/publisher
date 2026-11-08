@@ -23,7 +23,8 @@ export type IncrementalRefreshTarget = NonNullable<
  *
  * - colocated: {@link IncrementalDeltaStrategy} advances an incremental
  *   table by a bounded delta, else {@link ColocatedCtasStrategy} rebuilds it
- *   by a staging CTAS and an atomic rename, in the source's own warehouse;
+ *   by a staging CTAS and a swap onto the served name (one transaction where
+ *   DDL is transactional), in the source's own warehouse;
  * - storage: {@link StorageBuildStrategy} builds into a `storage=` destination
  *   (its delta, when there is one, applies inside the destination session);
  * - instructed: {@link InstructedBuild} drives a run's instructions through
