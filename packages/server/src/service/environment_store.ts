@@ -263,6 +263,11 @@ export class EnvironmentStore
     */
    private initError: string | null = null;
    private environmentMutexes = new Map<string, Mutex>();
+   /**
+    * Read in the constructor, not after storage opens: write paths check it
+    * before they wait for initialization, so a write during a slow first
+    * boot (or after a failed one) must already see `frozenConfig`.
+    */
    public publisherConfigIsFrozen: boolean;
    /**
     * Read once: the MCP server registers its tools per request, and must not
@@ -306,6 +311,7 @@ export class EnvironmentStore
       );
       this.mcpIncludeHiddenFilesAndSources =
          isMcpIncludeHiddenFilesAndSources();
+      this.publisherConfigIsFrozen = isPublisherConfigFrozen();
 
       for (const envName of settings.get("watchEnvironments")) {
          this.inPlaceEnvs.add(envName);
@@ -712,6 +718,9 @@ export class EnvironmentStore
       try {
          await this.storageManager.initialize(reInit);
 
+         // Re-read from the same settings the constructor read, so a store
+         // built before its settings were installed (as tests do) still
+         // starts with the value in force.
          this.publisherConfigIsFrozen = isPublisherConfigFrozen();
 
          const environmentManifest =
