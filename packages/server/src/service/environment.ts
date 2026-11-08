@@ -170,6 +170,18 @@ export function resetAdmissionTelemetryForTesting(): void {
    resetInstrumentsForTesting();
 }
 
+/**
+ * Judges a metadata PATCH under the package lock: `body` against `target`,
+ * the metadata of the tree it is applied to, and `previous`, that of the
+ * package an install replaces (absent for a metadata update, and when nothing
+ * was resident). Returns the body to apply, or throws to refuse it.
+ */
+export type AdmitUpdate = (
+   body: ApiPackage,
+   target: ApiPackage,
+   previous: ApiPackage | undefined,
+) => ApiPackage;
+
 /** The publisher.json fields a metadata write may set. */
 type PackageManifestUpdate = {
    name: string;
@@ -2587,6 +2599,12 @@ export class Environment {
           * record one).
           */
          update?: ApiPackage;
+         /**
+          * Judges `update` under the lock, against the tree just loaded and
+          * the package it replaces, as the lock holder sees them: returns the
+          * body to apply, or throws to refuse it (the swap rolls back).
+          */
+         admit?: AdmitUpdate;
       } = {},
    ): Promise<Package> {
       assertSafePackageName(packageName);
@@ -2792,7 +2810,7 @@ export class Environment {
       packageName: string,
       downloader: (stagingPath: string) => Promise<void>,
       validate: ((pkg: Package) => string | undefined) | undefined,
-      options: { update?: ApiPackage },
+      options: { update?: ApiPackage; admit?: AdmitUpdate },
    ): Promise<Package> {
       const stagingPath = await this.stageDownload(packageName, downloader);
 
@@ -2837,6 +2855,23 @@ export class Environment {
             });
          }
 
+         // The body as admitted under this lock hold, against the tree just
+         // loaded and the package it replaces: after the validator, so a
+         // request the publish checks refuse is answered 400 first.
+         let update = options.update;
+         const validateAndAdmit = (pkg: Package): string | undefined => {
+            const refused = validate?.(pkg);
+            if (refused) return refused;
+            if (update !== undefined && options.admit) {
+               update = options.admit(
+                  update,
+                  pkg.getPackageMetadata(),
+                  oldPackage?.getPackageMetadata(),
+               );
+            }
+            return undefined;
+         };
+
          let newPackage: Package;
          try {
             await fs.promises.rename(stagingPath, canonicalPath);
@@ -2846,13 +2881,13 @@ export class Environment {
             newPackage = await this.loadStagedTree(
                packageName,
                canonicalPath,
-               validate,
+               validateAndAdmit,
                { dryRun: false },
             );
             // The body's listing decides what the gates judge, so a refusal
             // here rolls the swap back rather than 400ing a tree already live.
-            const gateMsg = options.update
-               ? await this.gatesRefuseUnder(newPackage, options.update)
+            const gateMsg = update
+               ? await this.gatesRefuseUnder(newPackage, update)
                : "";
             if (gateMsg) {
                throw new BadRequestError(gateMsg);
@@ -2885,8 +2920,8 @@ export class Environment {
 
          // Same lock hold: as a separate step, a delete queued behind the
          // swap could run first and the update would 404 for completed work.
-         if (options.update !== undefined) {
-            await this._updatePackageLocked(packageName, options.update, {
+         if (update !== undefined) {
+            await this._updatePackageLocked(packageName, update, {
                recordLocation: true,
                regated: true,
             });
@@ -3315,7 +3350,18 @@ export class Environment {
       }
    }
 
-   public async updatePackage(packageName: string, body: ApiPackage) {
+   public async updatePackage(
+      packageName: string,
+      body: ApiPackage,
+      options: {
+         /**
+          * Judges `body` under the lock, against the metadata the update
+          * applies to (`previous` is absent): returns the body to apply, or
+          * throws to refuse it with nothing changed.
+          */
+         admit?: AdmitUpdate;
+      } = {},
+   ) {
       assertSafePackageName(packageName);
       // An install downloads before taking the lock, so a PATCH arriving then
       // would land on the copy about to be swapped away. Wait for loads in
@@ -3324,6 +3370,7 @@ export class Environment {
       return this.withPackageLock(packageName, () =>
          this._updatePackageLocked(packageName, body, {
             recordLocation: false,
+            admit: options.admit,
          }),
       );
    }
@@ -3362,8 +3409,10 @@ export class Environment {
    /** Apply a metadata PATCH to a loaded package. Caller holds the package mutex. */
    private async _updatePackageLocked(
       packageName: string,
-      body: ApiPackage,
+      requested: ApiPackage,
       options: {
+         /** See updatePackage: judged here, against what this apply reads. */
+         admit?: AdmitUpdate;
          /**
           * Record the body's `location` as the install location. True only
           * for an install; a PATCH naming a new location is a reinstall.
@@ -3380,6 +3429,11 @@ export class Environment {
       // `setPackageMetadata` replaces the whole object, so omitted fields
       // carry over; a wiped `explores` would silently serve every model.
       const existing = _package.getPackageMetadata();
+      // Under the lock and against this metadata, so a PATCH racing another
+      // is judged against what the first one left, not what it read before.
+      const body = options.admit
+         ? options.admit(requested, existing, undefined)
+         : requested;
       // Normalized as the worker normalizes on-disk explores, so publish and
       // reload agree.
       const normalizedExplores = body.explores?.map(normalizeModelPath);

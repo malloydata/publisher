@@ -1704,7 +1704,11 @@ paths:
         would leave in force: clearing a set field is a change, a null is omitted, and a
         value equal to the current one (`explores` normalized as stored) is not. A request
         that names a new `location` is judged against the tree fetched from it, and a
-        refusal leaves the previous install serving. Make the change in the package's
+        refusal leaves the previous install serving. When the package it replaces was
+        itself installed from a location, a field sent with that package's value is the
+        package sent back, not a change: it is left out and the new tree's value serves,
+        so a whole package read back with only its `location` changed is accepted.
+        Make the change in the package's
         source and reload it, or publish it as a version.
       parameters:
         - name: environmentName

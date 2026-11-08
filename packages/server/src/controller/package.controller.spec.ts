@@ -701,7 +701,10 @@ describe("PackageController.updatePackage reinstall decision", () => {
       // The metadata rides with the install so both land under one lock hold;
       // a separate update call is exactly the second lock acquisition that a
       // queued delete could run between.
-      expect(installPackage.firstCall.args[3]).toEqual({ update: body });
+      expect(installPackage.firstCall.args[3]).toEqual({
+         update: body,
+         admit: expect.any(Function),
+      });
       expect(updatePackage.called).toBe(false);
    });
 
@@ -741,16 +744,28 @@ describe("PackageController.updatePackage reinstall decision", () => {
       }),
    });
 
+   type ApiPackage = components["schemas"]["Package"];
+   type Admit = (
+      body: ApiPackage,
+      target: ApiPackage,
+      previous: ApiPackage | undefined,
+   ) => ApiPackage;
+   type Resident = { getPackageMetadata: () => Record<string, unknown> };
+
    /**
-    * Send `body` to a package resident as `resident`. installPackage runs the
-    * install's validator against a fetched tree whose metadata is `fetched`,
-    * as the real install does inside its swap.
+    * Send `body` to a package resident as `resident`. The environment's
+    * installPackage runs the install's validator, then its `admit`, against a
+    * fetched tree whose metadata is `fetched` and the resident it replaces,
+    * as the real install does inside its swap; its updatePackage runs `admit`
+    * against the resident, as the real one does under the lock. `applied()`
+    * is the body that was admitted.
     */
    async function patch(
       body: Record<string, unknown>,
-      resident: object | undefined = servedPackage,
+      resident: Resident | null = servedPackage,
       fetched: Record<string, unknown> = { name: "pkg" },
    ) {
+      let admitted: ApiPackage | undefined;
       const installPackage = sinon
          .stub()
          .callsFake(
@@ -758,6 +773,7 @@ describe("PackageController.updatePackage reinstall decision", () => {
                _name: string,
                _download: unknown,
                validate: (pkg: object) => string | undefined,
+               options: { update: ApiPackage; admit: Admit },
             ) => {
                validate({
                   getPackageMetadata: () => fetched,
@@ -767,37 +783,59 @@ describe("PackageController.updatePackage reinstall decision", () => {
                   formatInvalidPreaggregatePolicy: () => "",
                   formatPersistenceCollisionRejections: () => "",
                });
+               admitted = options.admit(
+                  options.update,
+                  fetched as ApiPackage,
+                  resident?.getPackageMetadata() as ApiPackage | undefined,
+               );
                return servedPackage;
             },
          );
-      const updatePackage = sinon.stub().resolves({ name: "pkg" });
+      const updatePackage = sinon
+         .stub()
+         .callsFake(
+            async (
+               _name: string,
+               update: ApiPackage,
+               options: { admit: Admit },
+            ) => {
+               admitted = options.admit(
+                  update,
+                  resident?.getPackageMetadata() as ApiPackage,
+                  undefined,
+               );
+               return { name: "pkg" };
+            },
+         );
       const { controller, addPackageToDatabase } = controllerWith({
-         peekPackage: () => resident,
+         peekPackage: () => resident ?? undefined,
          awaitPackageLoads: async () => {},
          installPackage,
          updatePackage,
       });
-      const result = controller.updatePackage(
-         "env",
-         "pkg",
-         body as components["schemas"]["Package"],
-      );
-      return { result, installPackage, updatePackage, addPackageToDatabase };
+      const result = controller.updatePackage("env", "pkg", body as ApiPackage);
+      return {
+         result,
+         installPackage,
+         updatePackage,
+         addPackageToDatabase,
+         applied: () => admitted,
+      };
    }
 
    async function expectRefused(
       body: Record<string, unknown>,
-      resident?: object,
+      resident?: Resident | null,
       fetched?: Record<string, unknown>,
    ) {
-      const { result, updatePackage, addPackageToDatabase } = await patch(
+      const { result, addPackageToDatabase, applied } = await patch(
          body,
          resident,
          fetched,
       );
       await expect(result).rejects.toBeInstanceOf(InstalledFromLocationError);
       await expect(result).rejects.toThrow(/install.* from .*reload/);
-      expect(updatePackage.called).toBe(false);
+      expect(applied()).toBeUndefined();
       expect(addPackageToDatabase.called).toBe(false);
    }
 
@@ -937,14 +975,108 @@ describe("PackageController.updatePackage reinstall decision", () => {
          location: "gs://bucket/pkg___1.0.1.zip",
          description: "next",
       });
+      // A value that is neither the replaced package's nor the new tree's.
       await expectRefused(
          {
             name: "pkg",
             location: "gs://bucket/pkg___1.0.1.zip",
-            description: "Sales",
+            description: "Sales, renamed",
          },
          residentWith({ description: "Sales" }),
          { name: "pkg", description: "Sales 1.0.1" },
+      );
+   });
+
+   it("accepts a whole package sent back with only its location changed, and serves the new tree's settings", async () => {
+      // A client GETs the package, changes `location`, and PATCHes the whole
+      // object back: every other setting echoes the package it replaces. Those
+      // echoes are dropped, so the new source's own publisher.json stands and
+      // nothing it says is lost on the next reload.
+      const old = {
+         description: "Sales",
+         explores: ["models/a.malloy"],
+         queryableSources: "all",
+         scope: "version",
+         queryMetadata: { team: "x" },
+         materialization: {
+            schedule: "0 * * * *",
+            queryMetadata: { team: "x" },
+         },
+      };
+      const fetched = {
+         name: "pkg",
+         description: "Sales 1.0.1",
+         explores: ["models/b.malloy"],
+         materialization: { schedule: "0 0 * * *" },
+      };
+      const { result, installPackage, applied } = await patch(
+         {
+            name: "pkg",
+            location: "gs://bucket/pkg___1.0.1.zip",
+            manifestLocation: "gs://bucket/pkg___1.0.1.manifest.json",
+            ...old,
+         },
+         residentWith(old),
+         fetched,
+      );
+      await result;
+      expect(installPackage.calledOnce).toBe(true);
+      // Only what is not a setting a reload would lose is left to apply.
+      expect(applied()).toEqual({
+         name: "pkg",
+         location: "gs://bucket/pkg___1.0.1.zip",
+         manifestLocation: "gs://bucket/pkg___1.0.1.manifest.json",
+      });
+   });
+
+   it("on a reinstall, keeps a setting equal to the new tree's and refuses one equal to neither", async () => {
+      const resident = residentWith({ description: "Sales", scope: "package" });
+      const fetched = { name: "pkg", description: "Sales 1.0.1" };
+      const matches = await patch(
+         {
+            name: "pkg",
+            location: "gs://bucket/pkg___1.0.1.zip",
+            description: "Sales 1.0.1",
+            scope: "package",
+         },
+         resident,
+         fetched,
+      );
+      await matches.result;
+      expect(matches.installPackage.calledOnce).toBe(true);
+
+      // An echo of the old package alongside a genuinely new value: the echo
+      // is no reason to refuse, the new value is.
+      const { result } = await patch(
+         {
+            name: "pkg",
+            location: "gs://bucket/pkg___1.0.1.zip",
+            description: "Sales",
+            scope: "version",
+         },
+         resident,
+         fetched,
+      );
+      const error = await result.catch((e: Error) => e);
+      expect(error).toBeInstanceOf(InstalledFromLocationError);
+      expect((error as Error).message).toContain("change to scope.");
+      expect((error as Error).message).not.toContain("description");
+   });
+
+   it("judges an echo against the replaced package only when it came from a location", async () => {
+      // A package with no location owns its settings; a first install from a
+      // location that echoed them would otherwise drop them silently.
+      const local = {
+         getPackageMetadata: () => ({ name: "pkg", description: "Mine" }),
+      };
+      await expectRefused(
+         {
+            name: "pkg",
+            location: "gs://bucket/pkg___1.0.0.zip",
+            description: "Mine",
+         },
+         local,
+         { name: "pkg", description: "Theirs" },
       );
    });
 
@@ -965,7 +1097,7 @@ describe("PackageController.updatePackage reinstall decision", () => {
             location: "gs://bucket/pkg___1.0.0.zip",
             description: "first",
          },
-         undefined,
+         null,
       );
    });
 

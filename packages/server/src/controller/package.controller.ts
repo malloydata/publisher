@@ -22,7 +22,6 @@ import {
    PackageAdmissionRefusedError,
    PackageVersionError,
    BuildPlanUnavailableError,
-   InstalledFromLocationError,
 } from "../errors";
 import { logger } from "../logger";
 import type { RetrievalService } from "../retrieval/service";
@@ -37,7 +36,7 @@ import {
 import type { VersionService } from "../service/versions/version_service";
 import { versionManifestLocation } from "./manifest_location";
 import { changedFields } from "./versioned_patch";
-import { settingsAReloadWouldLose } from "../service/package_patch";
+import { admitPatch } from "../service/package_patch";
 import { loadedPackage } from "./loaded_package";
 import {
    parseEnvironmentName,
@@ -813,19 +812,10 @@ export class PackageController {
          typeof body.location === "string" &&
          body.location !== "" &&
          body.location !== installedFrom;
-      // Judged by where a reload fetches the package from once this PATCH is
-      // applied. A reinstall is judged inside the install, against the tree
-      // it fetches, since that tree's publisher.json is what a reload keeps.
-      const resident = environment.peekPackage(packageName);
-      if (!reinstall && installedFrom && resident) {
-         refuseChangesAReloadDiscards(
-            packageName,
-            installedFrom,
-            body,
-            resident.getPackageMetadata(),
-            "installed",
-         );
-      }
+      // A change a reload would discard is refused (see admitPatch), judged
+      // under the package lock against the metadata the apply sees: for a
+      // reinstall, the tree it fetches, whose publisher.json is what a reload
+      // keeps, and the package it replaces.
       let result: ApiPackage;
       if (reinstall) {
          // Download to staging without the lock, then swap under it. Explores
@@ -842,27 +832,26 @@ export class PackageController {
                   bodyLocation,
                   stagingPath,
                ),
-            (pkg) => {
-               // A request the publish checks refuse is answered 400 first.
-               const rejections = formatPublishRejections(
+            (pkg) =>
+               formatPublishRejections(
                   pkg,
                   body.explores?.map(normalizeModelPath),
-               );
-               if (rejections) return rejections;
-               refuseChangesAReloadDiscards(
-                  packageName,
-                  bodyLocation,
-                  body,
-                  pkg.getPackageMetadata(),
-                  "reinstalled",
-               );
-               return undefined;
+               ),
+            {
+               update: body,
+               admit: (update, fetched, previous) =>
+                  admitPatch(packageName, update, fetched, {
+                     location: bodyLocation,
+                     previous,
+                  }),
             },
-            { update: body },
          );
          result = installed.getPackageMetadata();
       } else {
-         result = await environment.updatePackage(packageName, body);
+         result = await environment.updatePackage(packageName, body, {
+            admit: (update, resident) =>
+               admitPatch(packageName, update, resident),
+         });
       }
       await this.environmentStore.addPackageToDatabase(
          environmentName,
@@ -966,36 +955,6 @@ export class PackageController {
          targetPath,
       );
    }
-}
-
-/**
- * Refuse a PATCH that changes a setting a reload of the package would discard,
- * with 409 PACKAGE_INSTALLED_FROM_LOCATION. A reload fetches the package again
- * from `location` and replaces its files, `publisher.json` included, keeping
- * only the location and the manifest binding (see reloadPackageFrom), so a
- * setting survives it only when the fetched tree already declares it.
- * `current` is that tree's metadata: the resident copy for a package that
- * stays where it was `installed` from, or the tree a PATCH naming a new
- * location `reinstalled` it from. A body that only echoes it back is
- * accepted, since clients send whole objects. Interim, until package storage
- * keeps server-side changes apart from the fetched copy (#1560).
- */
-function refuseChangesAReloadDiscards(
-   packageName: string,
-   location: string,
-   body: ApiPackage,
-   current: ApiPackage,
-   how: "installed" | "reinstalled",
-): void {
-   const changed = settingsAReloadWouldLose(body, current);
-   if (changed.length === 0) return;
-   const where =
-      how === "installed"
-         ? `was installed from ${location}`
-         : `is being installed from ${location}, whose publisher.json says otherwise`;
-   throw new InstalledFromLocationError(
-      `Package ${packageName} ${where}, and a reload fetches it again from there, which would discard this request's change to ${changed.join(", ")}. Make the change in the package's source and reload it, or publish it as a version.`,
-   );
 }
 
 /**
