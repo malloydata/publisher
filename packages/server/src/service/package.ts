@@ -101,6 +101,7 @@ import {
    ManifestEntry,
 } from "./materialization/types";
 import { errMessage, ignoreDotfiles } from "../utils";
+import { packageResource } from "../api_resource";
 import {
    getPersistCollisionEnforce,
    getPersistStorageMode,
@@ -335,7 +336,7 @@ const JOIN_BYPASS_NOTE =
    "otherwise apply the fix above.";
 
 export class Package {
-   private environmentName: string;
+   private readonly environmentName: string;
    private packageName: string;
    private packageMetadata: ApiPackage;
    private databases: ApiDatabase[];
@@ -984,7 +985,7 @@ export class Package {
          name: outcome.packageMetadata.name,
          description: outcome.packageMetadata.description,
          location: outcome.packageMetadata.location,
-         resource: `${API_PREFIX}/environments/${environmentName}/packages/${packageName}`,
+         resource: packageResource(environmentName, packageName),
          explores: outcome.packageMetadata.explores,
          queryableSources: outcome.packageMetadata.queryableSources,
          manifestLocation: outcome.packageMetadata.manifestLocation ?? null,
@@ -4016,10 +4017,6 @@ export class Package {
 
    public setName(name: string) {
       this.packageName = name;
-   }
-
-   public setEnvironmentName(environmentName: string) {
-      this.environmentName = environmentName;
    }
 
    /**

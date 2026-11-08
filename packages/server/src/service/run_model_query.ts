@@ -17,32 +17,71 @@ import type { Environment } from "./environment";
 import type { EnvironmentStore } from "./environment_store";
 import type { FilterParams } from "./filter";
 import type { Model } from "./model";
+import { QueryPrivileges } from "./model_query_request";
 import type { Package } from "./package";
 import type { ModelQueryMetadataInput } from "./query_metadata";
 import { filterPublisherOwnedRenderLogs } from "./report_manifest";
+import {
+   type EnvironmentName,
+   parseEnvironmentName,
+   parsePackageName,
+   tryParseModelPath,
+   type VersionRef,
+} from "./identity";
 
 /**
- * The environment, admitted for query traffic, and the package and model a
- * request names. `model` is undefined when the package serves no such file;
- * how to refuse that is the caller's.
+ * The environment a query names, admitted for query traffic: shed load (503)
+ * before any disk / DB work rather than crash partway through a query.
+ * Loaded packages bypass the package-load admission gate, so this is the only
+ * guard for query traffic on a hot pod.
  */
-export async function resolveQueryModel(
+export async function admitQueryEnvironment(
    environmentStore: EnvironmentStore,
-   environmentName: string,
-   packageName: string,
-   modelPath: string,
-   versionId?: unknown,
-): Promise<{ environment: Environment; pkg: Package; model?: Model }> {
+   environmentName: EnvironmentName,
+): Promise<Environment> {
    const environment = await environmentStore.getEnvironment(
       environmentName,
       false,
    );
-   // Shed load (503) before any disk / DB work rather than crash partway
-   // through a query. Loaded packages bypass the package-load admission gate,
-   // so this is the only guard for query traffic on a hot pod.
    environment.assertCanAdmitQuery();
-   const pkg = await environment.getPackage(packageName, false, { versionId });
-   return { environment, pkg, model: pkg.getModel(modelPath) };
+   return environment;
+}
+
+/**
+ * The environment, admitted for query traffic, and the package version and
+ * model a request names. `model` is undefined when the package serves no
+ * such file; how to refuse that is the caller's.
+ *
+ * The names arrive as the request carried them (the access record logs them
+ * so) and are parsed here, in the order the lookups have always checked
+ * them: the environment, its admission, then the package. A model path no
+ * package could serve is no model, not a malformed request, as on the query
+ * path it always was.
+ */
+export async function resolveQueryModel(
+   environmentStore: EnvironmentStore,
+   names: {
+      environmentName: string;
+      packageName: string;
+      modelPath: string;
+      version?: VersionRef;
+   },
+): Promise<{ environment: Environment; pkg: Package; model?: Model }> {
+   const environment = await admitQueryEnvironment(
+      environmentStore,
+      parseEnvironmentName(names.environmentName),
+   );
+   const pkg = await environment.getPackage(
+      parsePackageName(names.packageName),
+      false,
+      { versionId: names.version },
+   );
+   const modelPath = tryParseModelPath(names.modelPath);
+   return {
+      environment,
+      pkg,
+      model: modelPath === undefined ? undefined : pkg.getModel(modelPath),
+   };
 }
 
 export interface ModelQueryRequest {
@@ -71,23 +110,24 @@ export async function runModelQuery(
 ) {
    const outcome = await runWithQueryTimeout(
       (abortSignal) =>
-         // The positional form of `Model.runQuery`, which splits these into a
-         // `QueryRequest` and `QueryPrivileges`. Kept here because the route
-         // specs' model doubles (access_record_routes, execute_query_tool,
-         // query.controller) stub `getQueryResults` by position.
-         model.getQueryResults(
+         model.runQuery(
             audit,
-            request.sourceName,
-            request.queryName,
-            request.query,
-            request.filterParams,
-            request.bypassFilters,
-            request.givens,
-            abortSignal,
-            request.queryMetadataInput,
-            request.shape,
-            request.bypassAuthorize,
-            request.includeHiddenFilesAndSources,
+            {
+               sourceName: request.sourceName,
+               queryName: request.queryName,
+               query: request.query,
+               filterParams: request.filterParams,
+               givens: request.givens,
+               abortSignal,
+               queryMetadataInput: request.queryMetadataInput,
+               responseShape: request.shape,
+            },
+            QueryPrivileges.of({
+               bypassFilters: request.bypassFilters,
+               bypassAuthorize: request.bypassAuthorize,
+               includeHiddenFilesAndSources:
+                  request.includeHiddenFilesAndSources,
+            }),
          ),
       getQueryTimeoutMs(),
       request.clientSignal,

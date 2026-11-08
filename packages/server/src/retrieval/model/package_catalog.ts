@@ -3,6 +3,7 @@
 
 import { EnvironmentStore } from "../../service/environment_store";
 import { logger } from "../../logger";
+import { parseEnvironmentName } from "../../service/identity";
 
 /** One package as the catalog reports it. */
 interface CatalogPackage {
@@ -51,7 +52,10 @@ export async function readPackageCatalog(
       const name = env.name;
       if (!name) continue;
       try {
-         const environment = await environmentStore.getEnvironment(name, false);
+         const environment = await environmentStore.getEnvironment(
+            parseEnvironmentName(name),
+            false,
+         );
          const staleErrors = environment.getStaleCompileErrors();
          const packages: CatalogPackage[] = [];
          for (const pkg of await environment.listPackages({

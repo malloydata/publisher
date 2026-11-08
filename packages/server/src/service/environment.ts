@@ -16,7 +16,6 @@ import * as fs from "fs";
 import * as path from "path";
 import { components } from "../api";
 import {
-   API_PREFIX,
    INDEX_MODEL_NAME,
    normalizeModelPath,
    README_NAME,
@@ -74,6 +73,8 @@ import {
 import { ApiConnection } from "./model";
 import { Package } from "./package";
 import { applyLoadGates } from "./package_load_gates";
+import { environmentResource, packageResource } from "../api_resource";
+import { parsePackageName, type PackageName, VersionRef } from "./identity";
 import {
    PackageLifecycle,
    type PackageInfo,
@@ -438,7 +439,7 @@ export class Environment {
       this.destinations = [];
       this.setStorageDestinations(storageDestinations);
       this.metadata = {
-         resource: `${API_PREFIX}/environments/${this.environmentName}`,
+         resource: environmentResource(this.environmentName),
          name: this.environmentName,
          location: this.environmentPath,
       };
@@ -573,7 +574,7 @@ export class Environment {
       }
       this.metadata = {
          ...this.metadata,
-         resource: `${API_PREFIX}/environments/${this.environmentName}`,
+         resource: environmentResource(this.environmentName),
          name: this.environmentName,
          readme,
       };
@@ -986,7 +987,10 @@ export class Environment {
                         // caller has the error, and a read never loads it.
                         return undefined;
                      } else {
-                        loaded = await this.getPackage(packageName, false);
+                        loaded = await this.getPackage(
+                           parsePackageName(packageName),
+                           false,
+                        );
                         if (slim) return this.statusEntry(packageName, loaded);
                         metadata = loaded.getPackageMetadata();
                      }
@@ -1074,10 +1078,6 @@ export class Environment {
       };
    }
 
-   private packageResource(packageName: string): string {
-      return `${API_PREFIX}/environments/${this.environmentName}/packages/${packageName}`;
-   }
-
    /**
     * A package's slim `GET /status` entry: what a reconcile reads, without the
     * package's metadata (see PackageStatusEntry). `loaded` is the copy whose
@@ -1091,7 +1091,7 @@ export class Environment {
       const binding = loaded?.getOperationalFields();
       return {
          name: packageName,
-         resource: this.packageResource(packageName),
+         resource: packageResource(this.environmentName, packageName),
          ...(versionId !== undefined && { versionId }),
          status: this.describePackageStatus(packageName, versionId),
          ...(binding && {
@@ -1113,7 +1113,7 @@ export class Environment {
       rawVersionId?: unknown,
    ): Promise<ApiPackageServingState> {
       assertSafePackageName(packageName);
-      const resource = this.packageResource(packageName);
+      const resource = packageResource(this.environmentName, packageName);
       const versions = this.versionService;
       if (
          versions &&
@@ -1873,7 +1873,7 @@ export class Environment {
       if (latest === null) {
          return {
             name: packageName,
-            resource: this.packageResource(packageName),
+            resource: packageResource(this.environmentName, packageName),
             versionId: null,
             latestVersion: null,
             ...(isPackageInlineFieldsEnabled() && {
@@ -1881,9 +1881,13 @@ export class Environment {
             }),
          };
       }
-      const loaded = await this.getPackage(packageName, false, {
-         versionId: latest,
-      });
+      const loaded = await this.getPackage(
+         parsePackageName(packageName),
+         false,
+         {
+            versionId: VersionRef.parse(latest),
+         },
+      );
       return { ...(await this.describePackage(loaded)), name: packageName };
    }
 
@@ -1922,7 +1926,10 @@ export class Environment {
               ? loaded.getPackageMetadata()
               : {
                    name: row.packageName,
-                   resource: this.packageResource(row.packageName),
+                   resource: packageResource(
+                      this.environmentName,
+                      row.packageName,
+                   ),
                    versionId: row.versionId,
                 };
          const list = entries.get(row.packageName) ?? [];
@@ -1945,7 +1952,7 @@ export class Environment {
          if (list.some((entry) => entry.versionId === versionId)) continue;
          list.push({
             name: packageName,
-            resource: this.packageResource(packageName),
+            resource: packageResource(this.environmentName, packageName),
             versionId,
             latestVersion: list[0]?.latestVersion ?? null,
             loaded: false,
@@ -2293,26 +2300,31 @@ export class Environment {
    }
 
    public async getPackage(
-      packageName: string,
+      packageName: PackageName,
       reload: boolean = false,
-      options: { allowAdmission?: boolean; versionId?: unknown } = {},
+      /**
+       * `versionId`: which version to read; absent means `latest`. A
+       * malformed one is refused (400) only when this environment has
+       * versions to consult.
+       */
+      options: { allowAdmission?: boolean; versionId?: VersionRef } = {},
    ): Promise<Package> {
+      // The sink-side check (path_safety.ts); the brand says it already ran.
       assertSafePackageName(packageName);
       // A published version is immutable, so it has nothing to reload: a
       // versioned package answers with the named version (or `latest`) as it
       // is, resolved from its registry records, never the disk. An unversioned
       // package already loaded here skips the lookup unless the request names
       // a version (`latest` names none), which it does not have (404).
-      if (
-         this.versionService &&
-         (requestedVersionId(options.versionId) !== undefined ||
-            !this.packages.has(packageName))
-      ) {
-         const versioned = await this.versionService.getLoaded(
-            packageName,
-            options.versionId,
-         );
-         if (versioned) return versioned.loaded;
+      if (this.versionService) {
+         const requested = options.versionId?.requested();
+         if (requested !== undefined || !this.packages.has(packageName)) {
+            const versioned = await this.versionService.getLoaded(
+               packageName,
+               requested,
+            );
+            if (versioned) return versioned.loaded;
+         }
       }
       // Lock-free fast path: `Package` references are immutable, and
       // disk-reading methods take the lock themselves.
@@ -2343,7 +2355,7 @@ export class Environment {
          if (this.versionService && !this.packages.has(packageName)) {
             const versioned = await this.versionService.getLoaded(
                packageName,
-               options.versionId,
+               options.versionId?.requested(),
             );
             if (versioned) return versioned.loaded;
          }

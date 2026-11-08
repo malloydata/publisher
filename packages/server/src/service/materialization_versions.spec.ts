@@ -33,6 +33,7 @@ import {
    versionTableSuffix,
 } from "./versions/materialization_scope";
 import { writePackageFiles } from "../test_helpers/temp_package";
+import { parsePackageName, VersionRef } from "./identity";
 
 // Materializations of published versions, end to end: real versions compiled
 // from real folders, real builds into a DuckDB file every version reaches (the
@@ -207,7 +208,9 @@ async function settled(id: string): Promise<Materialization> {
 
 /** What a version's `summary` answers, and so which table it reads. */
 async function answerOf(versionId?: string): Promise<number> {
-   const pkg = await env.getPackage(PKG, false, { versionId });
+   const pkg = await env.getPackage(parsePackageName(PKG), false, {
+      versionId: VersionRef.parse(versionId),
+   });
    const model = pkg.getModel("model.malloy");
    expect(model).toBeDefined();
    const result = await model!.getQueryResults(
@@ -430,7 +433,9 @@ describe('scope "version": each version builds and serves its own tables', () =>
 
          const source = Object.values(
             (
-               await env.getPackage(PKG, false, { versionId: "1.0.0" })
+               await env.getPackage(parsePackageName(PKG), false, {
+                  versionId: VersionRef.parse("1.0.0"),
+               })
             ).getBuildPlan()!.sources,
          )[0];
          const clash = await service
@@ -512,7 +517,7 @@ describe('scope "version": each version builds and serves its own tables', () =>
       expect(await warehouseTables()).toEqual([otherTable]);
       // The other package still serves from its own table.
       await tamper(otherTable, 77);
-      const other = await env.getPackage(OTHER, false);
+      const other = await env.getPackage(parsePackageName(OTHER), false);
       const result = await other
          .getModel("model.malloy")!
          .getQueryResults(
@@ -762,7 +767,9 @@ describe('scope "package": the versions share the package\'s tables', () => {
          }
          return entries as never;
       });
-      const loading = env.getPackage(PKG, false, { versionId: "1.0.0" });
+      const loading = env.getPackage(parsePackageName(PKG), false, {
+         versionId: VersionRef.parse("1.0.0"),
+      });
       // The only load running is 1.0.0's: the first store read is its.
       await reading;
       await build({});
@@ -898,7 +905,9 @@ describe('scope "package": the versions share the package\'s tables', () => {
       expect(await answerOf("1.0.0")).toBe(101);
       await publish("2.0.0", 2, "package");
 
-      const v1 = await env.getPackage(PKG, false, { versionId: "1.0.0" });
+      const v1 = await env.getPackage(parsePackageName(PKG), false, {
+         versionId: VersionRef.parse("1.0.0"),
+      });
       const failing = spyOn(v1, "reloadAllModels").mockRejectedValue(
          new Error("worker pool unavailable"),
       );
@@ -919,7 +928,9 @@ describe('scope "package": the versions share the package\'s tables', () => {
 
       // 1.0.0's own build, into a table its caller names, committing last.
       const plan = (
-         await env.getPackage(PKG, false, { versionId: "1.0.0" })
+         await env.getPackage(parsePackageName(PKG), false, {
+            versionId: VersionRef.parse("1.0.0"),
+         })
       ).getBuildPlan()!;
       const source = Object.values(plan.sources)[0];
       await build({
@@ -945,7 +956,9 @@ describe('scope "package": the versions share the package\'s tables', () => {
       await build({});
       const instruct = async (versionId: string, physicalTableName: string) => {
          const plan = (
-            await env.getPackage(PKG, false, { versionId })
+            await env.getPackage(parsePackageName(PKG), false, {
+               versionId: VersionRef.parse(versionId),
+            })
          ).getBuildPlan()!;
          const source = Object.values(plan.sources)[0];
          return service.createMaterialization(ENV, PKG, {
@@ -1035,7 +1048,9 @@ describe('scope "package": the versions share the package\'s tables', () => {
       await publish("1.0.0", 1, "package");
       await publish("2.0.0", 2, "package");
       const plan = (
-         await env.getPackage(PKG, false, { versionId: "1.0.0" })
+         await env.getPackage(parsePackageName(PKG), false, {
+            versionId: VersionRef.parse("1.0.0"),
+         })
       ).getBuildPlan()!;
       const source = Object.values(plan.sources)[0];
       const refused = await service
@@ -1059,7 +1074,9 @@ describe('scope "package": the versions share the package\'s tables', () => {
       await publish("2.0.0", 2, "package");
       const instruct = async (versionId: string) => {
          const plan = (
-            await env.getPackage(PKG, false, { versionId })
+            await env.getPackage(parsePackageName(PKG), false, {
+               versionId: VersionRef.parse(versionId),
+            })
          ).getBuildPlan()!;
          const source = Object.values(plan.sources)[0];
          return build({
@@ -1094,7 +1111,9 @@ describe('scope "package": the versions share the package\'s tables', () => {
       await publish("2.0.0", 2, "package");
       await build({});
       const plan = (
-         await env.getPackage(PKG, false, { versionId: "1.0.0" })
+         await env.getPackage(parsePackageName(PKG), false, {
+            versionId: VersionRef.parse("1.0.0"),
+         })
       ).getBuildPlan()!;
       const source = Object.values(plan.sources)[0];
       const instruct = (physicalTableName: string) =>
@@ -1122,7 +1141,9 @@ describe('scope "package": the versions share the package\'s tables', () => {
    it("refuses one table named twice in one run's instructions", async () => {
       await publish("1.0.0", 1, "package");
       const plan = (
-         await env.getPackage(PKG, false, { versionId: "1.0.0" })
+         await env.getPackage(parsePackageName(PKG), false, {
+            versionId: VersionRef.parse("1.0.0"),
+         })
       ).getBuildPlan()!;
       const source = Object.values(plan.sources)[0];
       const instruction = {
@@ -1146,7 +1167,9 @@ describe('scope "package": the versions share the package\'s tables', () => {
    it("defers unloading a version whose rebind fails while a build of it runs, and retries a busy one", async () => {
       await publish("1.0.0", 1, "package");
       await publish("2.0.0", 2, "package");
-      await env.getPackage(PKG, false, { versionId: "1.0.0" });
+      await env.getPackage(parsePackageName(PKG), false, {
+         versionId: VersionRef.parse("1.0.0"),
+      });
       const cache = env.getVersionService()!.cache;
 
       // Busy twice, then fine: still loaded.
@@ -1193,7 +1216,9 @@ describe('scope "package": the versions share the package\'s tables', () => {
 
    it("waits out a busy rebind without holding the version's lock", async () => {
       await publish("1.0.0", 1, "package");
-      await env.getPackage(PKG, false, { versionId: "1.0.0" });
+      await env.getPackage(parsePackageName(PKG), false, {
+         versionId: VersionRef.parse("1.0.0"),
+      });
       let failed!: () => void;
       const firstFailure = new Promise<void>((resolve) => (failed = resolve));
       let calls = 0;
@@ -1221,7 +1246,9 @@ describe('scope "package": the versions share the package\'s tables', () => {
       await publish("1.0.0", 1, "package");
       await publish("2.0.0", 2, "package");
       const plan = (
-         await env.getPackage(PKG, false, { versionId: "1.0.0" })
+         await env.getPackage(parsePackageName(PKG), false, {
+            versionId: VersionRef.parse("1.0.0"),
+         })
       ).getBuildPlan()!;
       const source = Object.values(plan.sources)[0];
       const release = holdRuns();
@@ -1386,7 +1413,7 @@ describe("a package with no versions", () => {
          ),
       ).toEqual(["summary"]);
       await tamper("summary", 70);
-      const pkg = await env.getPackage("plain", false);
+      const pkg = await env.getPackage(parsePackageName("plain"), false);
       expect(pkg).toBeInstanceOf(Package);
       const result = await pkg
          .getModel("model.malloy")!

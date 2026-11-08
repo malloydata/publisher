@@ -18,6 +18,7 @@ import { Environment } from "./environment";
 // across files) and none of its effects on the served model.
 import { listDashboards } from "./legacy_report_views";
 import { writePackageFiles } from "../test_helpers/temp_package";
+import { parsePackageName } from "./identity";
 
 const BASE_MODEL = `source: base_source is duckdb.sql("select 1 as id, 5 as n") extend {
   measure: c is count()
@@ -203,7 +204,7 @@ source: broken is duckdb.sql("select 1 as id") extend {
       // The whole point vs. reload: after a dry-run over a broken what-if, the
       // served model still answers, and no reload happened (the package would
       // otherwise be marked stale by a failing one).
-      const pkg = await env.getPackage("pkg");
+      const pkg = await env.getPackage(parsePackageName("pkg"));
       const servedBefore = pkg.getModel("tracks.malloy");
       await compile(
          "base.malloy",
@@ -302,7 +303,7 @@ query: x is sales -> by_n
    const expectSameAsReload = async (
       problems: { severity?: string; message: string }[],
    ) => {
-      const reloaded = await env.getPackage("pkg", true);
+      const reloaded = await env.getPackage(parsePackageName("pkg"), true);
       // A compile finding has no subject field, so it leads the message.
       const served = (reloaded.getPackageMetadata().warnings ?? []).map(
          (w) =>
@@ -384,7 +385,7 @@ query: x is sales -> by_n
       );
       const result = await compilePackage();
       expect(unparsedOf(result.problems).length).toBe(1);
-      const reloaded = await env.getPackage("pkg", true);
+      const reloaded = await env.getPackage(parsePackageName("pkg"), true);
       expect(
          (reloaded.getPackageMetadata().warnings ?? []).filter(
             (w) =>
@@ -439,7 +440,7 @@ query: x is sales -> by_n
 
    it("package: the dashboard lint leaves the served package untouched", async () => {
       await writeDashboard(CLEAN_DASHBOARD);
-      const pkg = await env.getPackage("pkg", true);
+      const pkg = await env.getPackage(parsePackageName("pkg"), true);
       const before = pkg.getPackageMetadata().warnings;
       const servedModel = pkg.getModel("dashboards/x.malloy");
       expect(listDashboards(pkg, "env").map((d) => d.name)).toEqual(["x"]);
@@ -452,7 +453,7 @@ query: x is sales -> by_n
          "package",
       );
       expect(reloadFindings(problems).length).toBe(3);
-      expect(await env.getPackage("pkg")).toBe(pkg);
+      expect(await env.getPackage(parsePackageName("pkg"))).toBe(pkg);
       expect(pkg.getModel("dashboards/x.malloy")).toBe(servedModel);
       expect(pkg.getPackageMetadata().warnings).toEqual(before);
       expect(listDashboards(pkg, "env").map((d) => d.name)).toEqual(["x"]);

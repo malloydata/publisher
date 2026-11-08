@@ -16,6 +16,7 @@ import type { EnvironmentStore } from "../service/environment_store";
 import type { Package } from "../service/package";
 import type { VersionService } from "../service/versions/version_service";
 import type { Version } from "../storage/DatabaseInterface";
+import { parseEnvironmentName } from "../service/identity";
 
 type ApiPackageVersion = components["schemas"]["PackageVersion"];
 type ApiPackage = components["schemas"]["Package"];
@@ -155,7 +156,7 @@ export class VersionController {
       environment: Awaited<ReturnType<EnvironmentStore["getEnvironment"]>>;
    }> {
       const environment = await this.environmentStore.getEnvironment(
-         environmentName,
+         parseEnvironmentName(environmentName),
          false,
       );
       const versions = environment.getVersionService();

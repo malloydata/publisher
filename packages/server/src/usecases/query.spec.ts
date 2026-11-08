@@ -24,6 +24,7 @@ import { getActiveQueryCount } from "../query_concurrency";
 import type { AccessRecord } from "../service/access_record";
 import type { EnvironmentStore } from "../service/environment_store";
 import type { Model } from "../service/model";
+import { positionalQueryArgs } from "../test_helpers/positional_query_args";
 import { withSettings } from "../test_helpers/settings_env";
 import {
    loadTempPackage,
@@ -96,11 +97,11 @@ const COMMAND: QueryCommand = {
 
 const REST: QueryTransportOptions = { ...REST_QUERY_OPTIONS, shape: "full" };
 
-/** The positional arguments Model.getQueryResults was called with. */
+/** What Model.runQuery was called with, in `getQueryResults`'s positional order. */
 function spyRun() {
-   const spy = sinon.spy(model, "getQueryResults");
+   const spy = sinon.spy(model, "runQuery");
    return () => {
-      const args = spy.firstCall.args;
+      const args = positionalQueryArgs(...spy.firstCall.args);
       return {
          sourceName: args[1],
          queryName: args[2],
@@ -140,6 +141,39 @@ describe("QueryUseCase", () => {
       expect(err).toBeInstanceOf(ModelNotFoundError);
       expect((err as Error).message).toBe('No queryable model "nope.malloy".');
       expect(records()[0]).toMatchObject({ status: 404, version: "2.0.0" });
+   });
+
+   it("refuseNotebook refuses a missing model while resolving, before the version is recorded", async () => {
+      const onSetupError = sinon.spy();
+      const err = await useCaseOver("2.0.0")
+         .run(
+            { ...COMMAND, modelPath: "nope.malloy" },
+            {
+               ...REST,
+               refuseNotebook: true,
+               modelNotFound: () => new ModelNotFoundError("early"),
+               onSetupError,
+            },
+            (o) => o,
+         )
+         .catch((e: unknown) => e);
+      expect((err as Error).message).toBe("early");
+      expect(records()[0]).toMatchObject({ status: 404 });
+      expect(records()[0].version).toBeUndefined();
+      // The transport's own refusal is not a setup error.
+      expect(onSetupError.called).toBe(false);
+   });
+
+   it("eagerCompile reports a compile failure to onSetupError and rethrows it", async () => {
+      const broken = new Error("does not compile");
+      sinon.stub(model, "getModel").rejects(broken);
+      const onSetupError = sinon.spy();
+      const err = await useCaseOver("2.0.0")
+         .run(COMMAND, { ...REST, eagerCompile: true, onSetupError }, (o) => o)
+         .catch((e: unknown) => e);
+      expect(err).toBe(broken);
+      expect(onSetupError.calledOnceWith(broken)).toBe(true);
+      expect(records()[0].version).toBeUndefined();
    });
 
    it("throws the precondition inside the record, before resolving", async () => {

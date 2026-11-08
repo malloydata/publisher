@@ -9,6 +9,7 @@ import * as path from "path";
 import { writePackageFiles } from "../test_helpers/temp_package";
 import { Environment } from "./environment";
 import { PackageStatus } from "./package_lifecycle";
+import { parsePackageName } from "./identity";
 
 /**
  * Characterization of a package's lifecycle as Environment's public read
@@ -148,7 +149,9 @@ describe("package lifecycle (characterization)", () => {
       expect(registeredAt).toBeNumber();
 
       await fs.writeFile(path.join(dir, "model.malloy"), BROKEN_MODEL);
-      await expect(env.getPackage("pkg", true)).rejects.toThrow();
+      await expect(
+         env.getPackage(parsePackageName("pkg"), true),
+      ).rejects.toThrow();
 
       expect(env.getPackageStatus("pkg")).toEqual({
          name: "pkg",
@@ -163,11 +166,13 @@ describe("package lifecycle (characterization)", () => {
       expect(env.getLoadedPackages()).toHaveLength(1);
 
       // A second failure replaces the record.
-      await expect(env.getPackage("pkg", true)).rejects.toThrow();
+      await expect(
+         env.getPackage(parsePackageName("pkg"), true),
+      ).rejects.toThrow();
       expect(env.getStaleCompileErrors().size).toBe(1);
 
       await fs.writeFile(path.join(dir, "model.malloy"), GOOD_MODEL);
-      await env.getPackage("pkg", true);
+      await env.getPackage(parsePackageName("pkg"), true);
       expect(env.getStaleCompileErrors().size).toBe(0);
       expect(env.getPackageStatus("pkg")?.loadTimestamp).toBe(registeredAt!);
    });
@@ -178,7 +183,9 @@ describe("package lifecycle (characterization)", () => {
       await expect(env.addPackage("broken")).rejects.toThrow();
       expect(env.getPackageStatus("broken")).toBeUndefined();
       expect(env.getFailedPackages().size).toBe(0);
-      await expect(env.getPackage("broken")).rejects.toThrow();
+      await expect(
+         env.getPackage(parsePackageName("broken")),
+      ).rejects.toThrow();
       expect(env.getPackageStatus("broken")).toBeUndefined();
       expect(env.getFailedPackages().size).toBe(0);
    });
@@ -198,7 +205,9 @@ describe("package lifecycle (characterization)", () => {
       const dir = writePackageDir("pkg", GOOD_MODEL);
       await env.addPackage("pkg");
       await fs.writeFile(path.join(dir, "model.malloy"), BROKEN_MODEL);
-      await expect(env.getPackage("pkg", true)).rejects.toThrow();
+      await expect(
+         env.getPackage(parsePackageName("pkg"), true),
+      ).rejects.toThrow();
       expect(env.getStaleCompileErrors().size).toBe(1);
 
       await env.unloadPackage("pkg");

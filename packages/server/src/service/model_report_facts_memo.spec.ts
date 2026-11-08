@@ -10,6 +10,7 @@ import { Environment } from "./environment";
 import { Model } from "./model";
 import type { Package } from "./package";
 import { writePackageFiles } from "../test_helpers/temp_package";
+import { parsePackageName } from "./identity";
 
 /**
  * `Model.carriesReportTag` is asked on every query (to filter render logs),
@@ -44,7 +45,7 @@ import "m.malloy"
       );
       const env = await Environment.create("testEnv", envPath, []);
       await env.addPackage("pkg");
-      return env.getPackage("pkg", false);
+      return env.getPackage(parsePackageName("pkg"), false);
    }
 
    beforeEach(async () => {

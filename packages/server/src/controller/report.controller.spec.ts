@@ -6,6 +6,7 @@ import sinon from "sinon";
 import type { components } from "../api";
 import { DashboardNotFoundError, PackageNotFoundError } from "../errors";
 import type { EnvironmentStore } from "../service/environment_store";
+import { VersionRef } from "../service/identity";
 import { ReportController } from "./report.controller";
 
 /**
@@ -59,7 +60,7 @@ describe("ReportController read routes", () => {
       expect(environment.getPackage.firstCall.args).toEqual([
          "pkg",
          false,
-         { versionId: undefined },
+         { versionId: VersionRef.LATEST },
       ]);
    });
 

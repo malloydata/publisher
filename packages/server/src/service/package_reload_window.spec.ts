@@ -18,6 +18,7 @@ import path from "path";
 import { Environment } from "./environment";
 import type { Model } from "./model";
 import { Package } from "./package";
+import { parsePackageName } from "./identity";
 
 const PKG = "window";
 
@@ -95,7 +96,7 @@ describe("a reload's report swap", () => {
          for (const [name, text] of Object.entries(FILES))
             await fs.writeFile(path.join(stagingPath, name), text);
       });
-      const pkg = await env.getPackage(PKG, false);
+      const pkg = await env.getPackage(parsePackageName(PKG), false);
       const before = pkg.getModel("flip.malloy");
       expect(pkg.getReportLayout("flip.malloy")).toBe("linear");
       expect(onSurface(before)).toBe(true);

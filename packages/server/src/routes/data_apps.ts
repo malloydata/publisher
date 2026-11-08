@@ -17,6 +17,11 @@ import { logger } from "../logger";
 import { safeJoinUnderRoot } from "../path_safety";
 import type { EnvironmentStore } from "../service/environment_store";
 import { apiRoute } from "./json_route";
+import {
+   parseEnvironmentName,
+   parsePackageName,
+   VersionRef,
+} from "../service/identity";
 
 /** The data-app listing route, relative to the API prefix (api-doc.yaml pins it). */
 export const DATA_APPS_ROUTE =
@@ -52,7 +57,7 @@ async function serveFromPackage(
    const subPathRaw = (req.params as Record<string, string>)["0"] ?? "";
    try {
       const environment = await environmentStore.getEnvironment(
-         req.params.environmentName,
+         parseEnvironmentName(req.params.environmentName),
          false,
       );
       // A page is served from the version its URL names (`?versionId=`), and
@@ -64,9 +69,13 @@ async function serveFromPackage(
       const staticVersionId = await environment
          .getVersionService()
          ?.pinnableVersion(req.params.packageName, req.query.versionId);
-      const pkg = await environment.getPackage(req.params.packageName, false, {
-         versionId: staticVersionId,
-      });
+      const pkg = await environment.getPackage(
+         parsePackageName(req.params.packageName),
+         false,
+         {
+            versionId: VersionRef.parse(staticVersionId),
+         },
+      );
       // This directory boundary is the whole access control for static files.
       const publicRoot = path.join(pkg.getPackagePath(), "public");
 
@@ -195,13 +204,13 @@ export function registerDataAppListRoute(
       `${apiPrefix}${DATA_APPS_ROUTE}`,
       apiRoute(async (req) => {
          const environment = await environmentStore.getEnvironment(
-            req.params.environmentName,
+            parseEnvironmentName(req.params.environmentName),
             false,
          );
          const pkg = await environment.getPackage(
-            req.params.packageName,
+            parsePackageName(req.params.packageName),
             false,
-            { versionId: req.query.versionId },
+            { versionId: VersionRef.parse(req.query.versionId) },
          );
          return listPackageDataApps(
             req.params.environmentName,

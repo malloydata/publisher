@@ -11,6 +11,7 @@
 import { describe, expect, it } from "bun:test";
 import request from "supertest";
 import { PackageVersionError } from "./errors";
+import type { VersionRef } from "./service/identity";
 import { buildRouteApp } from "./test_helpers/route_app";
 
 const PKG = "/api/v0/projects/env/packages/pkg";
@@ -31,9 +32,9 @@ function recordingApp() {
          getPackage: async (
             _packageName: string,
             _reload: boolean,
-            options: { versionId?: unknown },
+            options: { versionId?: VersionRef },
          ) => {
-            calls.storeGetPackage = [options.versionId];
+            calls.storeGetPackage = [options.versionId?.requested()];
             throw new PackageVersionError(
                "VERSION_NOT_FOUND",
                "No such version.",

@@ -58,6 +58,7 @@ import {
    writeTempPackage,
    writePackageFiles,
 } from "../test_helpers/temp_package";
+import { parsePackageName } from "./identity";
 
 type ApiConnection = components["schemas"]["Connection"];
 
@@ -319,7 +320,7 @@ describe("a storage destination is not in the namespace a tenant authors in", ()
       try {
          // The real production wiring: the environment's own load path is what
          // attaches the serve config.
-         const pkg = await environment.getPackage("pkg");
+         const pkg = await environment.getPackage(parsePackageName("pkg"));
          const model = pkg.getModel("plain.malloy")!;
          model.setServeBindings([
             {

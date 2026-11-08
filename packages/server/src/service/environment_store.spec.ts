@@ -31,6 +31,11 @@ import {
    resolvePackageLocation,
    stripGitProgressNoise,
 } from "./environment_store";
+import {
+   parseEnvironmentName,
+   parsePackageName,
+   type EnvironmentName,
+} from "./identity";
 
 type MockData = Record<string, unknown>;
 
@@ -342,7 +347,9 @@ describe("EnvironmentStore Service", () => {
 
    it("should not load a package if the project does not exist", async () => {
       await expect(
-         environmentStore.getEnvironment("non-existent-project"),
+         environmentStore.getEnvironment(
+            parseEnvironmentName("non-existent-project"),
+         ),
       ).rejects.toThrow();
    });
 
@@ -391,7 +398,9 @@ describe("EnvironmentStore Service", () => {
          );
 
          // Test that the project can be retrieved
-         const project = await environmentStore.getEnvironment(projectName);
+         const project = await environmentStore.getEnvironment(
+            parseEnvironmentName(projectName),
+         );
          expect(project).toBeInstanceOf(Environment);
          expect(project.metadata.name).toBe(projectName);
       },
@@ -537,7 +546,9 @@ describe("EnvironmentStore Service", () => {
       const projects = await newEnvironmentStore.listEnvironments();
       expect(projects.map((p) => p.name)).toEqual([validProjectName]);
       await expect(
-         newEnvironmentStore.getEnvironment(invalidProjectName),
+         newEnvironmentStore.getEnvironment(
+            parseEnvironmentName(invalidProjectName),
+         ),
       ).rejects.toThrow();
 
       // The skip is not fatal, so the server still serves. getStatus is the
@@ -628,7 +639,9 @@ describe("EnvironmentStore Service", () => {
       expect(status.operationalState).toBe("serving");
       expect(status.environments.map((e) => e.name)).toEqual([projectName]);
 
-      const environment = await newEnvironmentStore.getEnvironment(projectName);
+      const environment = await newEnvironmentStore.getEnvironment(
+         parseEnvironmentName(projectName),
+      );
       const packages = await environment.listPackages();
       expect(packages.map((p) => p.name).sort()).toEqual(["good-a", "good-b"]);
 
@@ -687,7 +700,9 @@ describe("EnvironmentStore Service", () => {
 
       const status = await newEnvironmentStore.getStatus();
       expect(status.loadErrors).toBeUndefined();
-      const environment = await newEnvironmentStore.getEnvironment(projectName);
+      const environment = await newEnvironmentStore.getEnvironment(
+         parseEnvironmentName(projectName),
+      );
       const packages = await environment.listPackages();
       expect(packages.map((p) => p.name)).toEqual(["zipped"]);
       // Nothing was written beside the archive.
@@ -739,8 +754,12 @@ describe("EnvironmentStore Service", () => {
       );
       writeFileSync(servedModel, "source: s1 is duckdb.sql(\n"); // parse error
 
-      const environment = await store.getEnvironment(projectName);
-      await expect(environment.getPackage(projectName, true)).rejects.toThrow();
+      const environment = await store.getEnvironment(
+         parseEnvironmentName(projectName),
+      );
+      await expect(
+         environment.getPackage(parsePackageName(projectName), true),
+      ).rejects.toThrow();
 
       const status = await store.getStatus();
       // Still serving: the package remains listed under its environment...
@@ -760,7 +779,7 @@ describe("EnvironmentStore Service", () => {
       // Fixing the file and reloading clears the entry: a healthy status
       // omits loadErrors entirely (the byte-for-byte-healthy contract).
       writeFileSync(servedModel, 'source: s1 is duckdb.sql("SELECT 2 as n")\n');
-      await environment.getPackage(projectName, true);
+      await environment.getPackage(parsePackageName(projectName), true);
       const healthy = await store.getStatus();
       expect(healthy.loadErrors).toBeUndefined();
    });
@@ -809,12 +828,17 @@ describe("EnvironmentStore Service", () => {
       ]);
 
       // Looking the package up again is not a load.
-      const environment = await store.getEnvironment(projectName);
-      await environment.getPackage(projectName, false);
+      const environment = await store.getEnvironment(
+         parseEnvironmentName(projectName),
+      );
+      await environment.getPackage(parsePackageName(projectName), false);
       expect(loaded.length).toBe(1);
 
       // A reload is a new Package instance, and so a new notification.
-      const reloaded = await environment.getPackage(projectName, true);
+      const reloaded = await environment.getPackage(
+         parsePackageName(projectName),
+         true,
+      );
       expect(loaded.length).toBe(2);
       expect(instances[1]).toBe(reloaded);
       expect(instances[1]).not.toBe(instances[0]);
@@ -841,7 +865,9 @@ describe("EnvironmentStore Service", () => {
       );
       const store = new EnvironmentStore(serverRootPath, { storageManager });
       await store.finishedInitialization;
-      const environment = await store.getEnvironment(projectName);
+      const environment = await store.getEnvironment(
+         parseEnvironmentName(projectName),
+      );
       type Forwarded = (packageName: string, versionId: string) => unknown;
       const forwarded = (name: string) =>
          (environment as unknown as Record<string, Forwarded | null>)[name];
@@ -919,8 +945,9 @@ describe("EnvironmentStore Service", () => {
          });
          await newEnvironmentStore.finishedInitialization;
 
-         const environment =
-            await newEnvironmentStore.getEnvironment(projectName);
+         const environment = await newEnvironmentStore.getEnvironment(
+            parseEnvironmentName(projectName),
+         );
          const packages = await environment.listPackages();
          // "last" is the one that regressed: it is queued behind the failure.
          expect(packages.map((p) => p.name).sort()).toEqual(["first", "last"]);
@@ -973,7 +1000,9 @@ describe("EnvironmentStore Service", () => {
 
       // Boot pre-validates the names and skips the environment, so reach the
       // lazy path, which passes the config's package names through unchecked.
-      await newEnvironmentStore.getEnvironment(projectName).catch(() => {});
+      await newEnvironmentStore
+         .getEnvironment(parseEnvironmentName(projectName))
+         .catch(() => {});
 
       const envDir = path.join(serverRootPath, "publisher_data", projectName);
       // The environment directory and the healthy sibling must both survive.
@@ -1197,7 +1226,9 @@ describe("EnvironmentStore Service", () => {
       });
       await afterRestart.finishedInitialization;
 
-      const environment = await afterRestart.getEnvironment(projectName);
+      const environment = await afterRestart.getEnvironment(
+         parseEnvironmentName(projectName),
+      );
       expect(
          environment.getStorageDestination("managed").ducklakeConnection
             ?.storage?.bucketUrl,
@@ -1450,7 +1481,9 @@ describe("EnvironmentStore Service", () => {
       });
       await newEnvironmentStore.finishedInitialization;
 
-      const environment = await newEnvironmentStore.getEnvironment(projectName);
+      const environment = await newEnvironmentStore.getEnvironment(
+         parseEnvironmentName(projectName),
+      );
       expect(environment.listStorageDestinations().map((d) => d.name)).toEqual([
          "managed",
       ]);
@@ -1495,7 +1528,9 @@ describe("EnvironmentStore Service", () => {
       });
       await newEnvironmentStore.finishedInitialization;
 
-      const environment = await newEnvironmentStore.getEnvironment(projectName);
+      const environment = await newEnvironmentStore.getEnvironment(
+         parseEnvironmentName(projectName),
+      );
       const packages = await environment.listPackages();
       expect(packages.map((p) => p.name)).toEqual([goodPackageName]);
 
@@ -1542,7 +1577,9 @@ describe("EnvironmentStore Service", () => {
       });
       await newEnvironmentStore.finishedInitialization;
 
-      const environment = await newEnvironmentStore.getEnvironment(projectName);
+      const environment = await newEnvironmentStore.getEnvironment(
+         parseEnvironmentName(projectName),
+      );
       expect((await newEnvironmentStore.getStatus()).loadErrors).toHaveLength(
          1,
       );
@@ -1590,7 +1627,9 @@ describe("EnvironmentStore Service", () => {
       });
       await newEnvironmentStore.finishedInitialization;
 
-      const environment = await newEnvironmentStore.getEnvironment(projectName);
+      const environment = await newEnvironmentStore.getEnvironment(
+         parseEnvironmentName(projectName),
+      );
       expect((await newEnvironmentStore.getStatus()).loadErrors).toHaveLength(
          1,
       );
@@ -1653,7 +1692,9 @@ describe("EnvironmentStore Service", () => {
       await environmentStore.finishedInitialization;
 
       // Get the project
-      const project = await environmentStore.getEnvironment(projectName);
+      const project = await environmentStore.getEnvironment(
+         parseEnvironmentName(projectName),
+      );
 
       // Update the project
       await project.update({
@@ -1711,11 +1752,13 @@ describe("EnvironmentStore Service", () => {
          );
 
          // Get the project
-         const project1 = await environmentStore.getEnvironment(projectName);
+         const project1 = await environmentStore.getEnvironment(
+            parseEnvironmentName(projectName),
+         );
 
          // Get the project again with reload=true
          const project2 = await environmentStore.getEnvironment(
-            projectName,
+            parseEnvironmentName(projectName),
             true,
          );
 
@@ -1757,7 +1800,9 @@ describe("EnvironmentStore Service", () => {
       await newEnvironmentStore.finishedInitialization;
 
       // The environment loaded rather than being skipped.
-      const environment = await newEnvironmentStore.getEnvironment(projectName);
+      const environment = await newEnvironmentStore.getEnvironment(
+         parseEnvironmentName(projectName),
+      );
       expect(environment.metadata.name).toBe(projectName);
 
       // And the failure is reported at the package level, not the env level.
@@ -2008,7 +2053,7 @@ describe("EnvironmentStore Service", () => {
 
          // Test concurrent access to the same project
          const promises = Array.from({ length: 5 }, () =>
-            environmentStore.getEnvironment(projectName),
+            environmentStore.getEnvironment(parseEnvironmentName(projectName)),
          );
 
          const projects = await Promise.all(promises);
@@ -2095,8 +2140,9 @@ describe("Project Service Error Recovery", () => {
          });
          await newEnvironmentStore.finishedInitialization;
 
-         const environment =
-            await newEnvironmentStore.getEnvironment(projectName);
+         const environment = await newEnvironmentStore.getEnvironment(
+            parseEnvironmentName(projectName),
+         );
          expect(environment.metadata.name).toBe(projectName);
 
          const status = await newEnvironmentStore.getStatus();
@@ -2151,7 +2197,9 @@ describe("Project Service Error Recovery", () => {
 
             // Test that the project store handles corrupted connection files gracefully
             // (The current implementation loads the project even with corrupted connection files)
-            const project = await environmentStore.getEnvironment(projectName);
+            const project = await environmentStore.getEnvironment(
+               parseEnvironmentName(projectName),
+            );
             expect(project).toBeInstanceOf(Environment);
             expect(project.metadata.name).toBe(projectName);
          },
@@ -2201,13 +2249,15 @@ describe("Project Service Error Recovery", () => {
             );
 
             // Get the project successfully
-            const project = await environmentStore.getEnvironment(projectName);
+            const project = await environmentStore.getEnvironment(
+               parseEnvironmentName(projectName),
+            );
             expect(project).toBeInstanceOf(Environment);
 
             // Try to get a non-existent project. The error carries the loaded
             // names, which is what the MCP tools show an agent that guessed.
             const missing = await environmentStore
-               .getEnvironment("non-existent")
+               .getEnvironment(parseEnvironmentName("non-existent"))
                .catch((e: unknown) => e);
             expect(missing).toBeInstanceOf(EnvironmentNotFoundError);
             expect((missing as EnvironmentNotFoundError).lookup).toEqual({
@@ -2216,8 +2266,9 @@ describe("Project Service Error Recovery", () => {
             });
 
             // Verify the original project is still accessible
-            const projectAgain =
-               await environmentStore.getEnvironment(projectName);
+            const projectAgain = await environmentStore.getEnvironment(
+               parseEnvironmentName(projectName),
+            );
             expect(projectAgain).toBeInstanceOf(Environment);
             expect(projectAgain.metadata.name).toBe(projectName);
          },
@@ -2318,8 +2369,10 @@ describe("EnvironmentStore path-injection guards", () => {
       it.each(TRAVERSAL_NAMES)(
          "rejects %s as environmentName (%p)",
          async (_label, name) => {
+            expect(() => parseEnvironmentName(name)).toThrow(BadRequestError);
+            // The sink-side check holds even for a name cast past the parse.
             await expect(
-               environmentStore.getEnvironment(name),
+               environmentStore.getEnvironment(name as EnvironmentName),
             ).rejects.toBeInstanceOf(BadRequestError);
          },
       );

@@ -37,6 +37,11 @@ import type { VersionService } from "../service/versions/version_service";
 import { versionManifestLocation } from "./manifest_location";
 import { changedFields } from "./versioned_patch";
 import { loadedPackage } from "./loaded_package";
+import {
+   parseEnvironmentName,
+   parsePackageName,
+   VersionRef,
+} from "../service/identity";
 
 type ApiPackage = components["schemas"]["Package"];
 type ApiModelEntities = components["schemas"]["ModelEntities"];
@@ -129,7 +134,7 @@ export class PackageController {
 
    public async listPackages(environmentName: string): Promise<ApiPackage[]> {
       const environment = await this.environmentStore.getEnvironment(
-         environmentName,
+         parseEnvironmentName(environmentName),
          false,
       );
       return environment.listPackages();
@@ -159,12 +164,16 @@ export class PackageController {
          };
       } else {
          const environment = await this.environmentStore.getEnvironment(
-            environmentName,
+            parseEnvironmentName(environmentName),
             false,
          );
-         const _package = await environment.getPackage(packageName, false, {
-            versionId,
-         });
+         const _package = await environment.getPackage(
+            parsePackageName(packageName),
+            false,
+            {
+               versionId: VersionRef.parse(versionId),
+            },
+         );
          metadata = _package.getPackageMetadata();
          // Serving state (`GET …/status`), on a package response only while
          // PUBLISHER_PACKAGE_INLINE_FIELDS is on.
@@ -231,7 +240,10 @@ export class PackageController {
    }
 
    private environment(environmentName: string) {
-      return this.environmentStore.getEnvironment(environmentName, false);
+      return this.environmentStore.getEnvironment(
+         parseEnvironmentName(environmentName),
+         false,
+      );
    }
 
    /** The loaded package `versionId` names, for a sub-resource read. */
@@ -398,7 +410,7 @@ export class PackageController {
       versionId?: unknown,
    ): Promise<ReloadedPackage> {
       const environment = await this.environmentStore.getEnvironment(
-         environmentName,
+         parseEnvironmentName(environmentName),
          false,
       );
 
@@ -408,9 +420,13 @@ export class PackageController {
       // it is.
       const versions = environment.getVersionService();
       if (versions && (await versions.resolve(packageName, versionId))) {
-         const version = await environment.getPackage(packageName, false, {
-            versionId,
-         });
+         const version = await environment.getPackage(
+            parsePackageName(packageName),
+            false,
+            {
+               versionId: VersionRef.parse(versionId),
+            },
+         );
          return {
             metadata: await environment.describePackage(version),
             operational: version.getOperationalFields(),
@@ -423,7 +439,10 @@ export class PackageController {
       // otherwise reload the on-disk tree in place.
       let resident: ApiPackage | undefined;
       try {
-         const cached = await environment.getPackage(packageName, false);
+         const cached = await environment.getPackage(
+            parsePackageName(packageName),
+            false,
+         );
          resident = cached.getPackageMetadata();
       } catch {
          // Not previously loaded, so there is nothing to reinstall from.
@@ -459,7 +478,10 @@ export class PackageController {
             mode: "reinstalled",
          };
       }
-      const _package = await environment.getPackage(packageName, true);
+      const _package = await environment.getPackage(
+         parsePackageName(packageName),
+         true,
+      );
       return {
          metadata: _package.getPackageMetadata(),
          operational: _package.getOperationalFields(),
@@ -494,7 +516,7 @@ export class PackageController {
       }
       const packageName = body.name;
       const environment = await this.environmentStore.getEnvironment(
-         environmentName,
+         parseEnvironmentName(environmentName),
          false,
       );
       const versioned = Boolean(
@@ -548,7 +570,7 @@ export class PackageController {
       }
       const packageName = body.name;
       const environment = await this.environmentStore.getEnvironment(
-         environmentName,
+         parseEnvironmentName(environmentName),
          false,
       );
       const versions = environment.getVersionService();
@@ -715,7 +737,7 @@ export class PackageController {
          throw new FrozenConfigError();
       }
       const environment = await this.environmentStore.getEnvironment(
-         environmentName,
+         parseEnvironmentName(environmentName),
          false,
       );
       // The rows are removed by the environment, under the package's lock
@@ -753,7 +775,7 @@ export class PackageController {
          throw new FrozenConfigError();
       }
       const environment = await this.environmentStore.getEnvironment(
-         environmentName,
+         parseEnvironmentName(environmentName),
          false,
       );
       const versions = environment.getVersionService();
@@ -864,8 +886,8 @@ export class PackageController {
       }
       const version = await versions.getVersion(packageName, latest);
       const current = (await environment.describePackage(
-         await environment.getPackage(packageName, false, {
-            versionId: latest,
+         await environment.getPackage(parsePackageName(packageName), false, {
+            versionId: VersionRef.parse(latest),
          }),
       )) as Record<string, unknown>;
       const changed = changedFields(
@@ -895,8 +917,8 @@ export class PackageController {
       // binding is PUT .../versions/{version}/manifest's.
       const loaded = manifestLocation
          ? await versions.setManifest(packageName, latest, manifestLocation)
-         : await environment.getPackage(packageName, false, {
-              versionId: latest,
+         : await environment.getPackage(parsePackageName(packageName), false, {
+              versionId: VersionRef.parse(latest),
            });
       return environment.describePackage(loaded);
    }

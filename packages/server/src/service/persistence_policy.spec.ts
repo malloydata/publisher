@@ -10,6 +10,7 @@ import { Environment } from "./environment";
 import type { Package } from "./package";
 import { withSettings } from "../test_helpers/settings_env";
 import { writePackageFiles } from "../test_helpers/temp_package";
+import { parsePackageName } from "./identity";
 
 /**
  * The publish gate for the package's Malloy Persistence policy (persistence.md
@@ -46,7 +47,7 @@ describe("persistence policy gate", () => {
       );
       const env = await Environment.create("testEnv", envPath, []);
       await env.addPackage("pkg");
-      return env.getPackage("pkg", false);
+      return env.getPackage(parsePackageName("pkg"), false);
    }
 
    function sourceByName(pkg: Package, name: string) {
