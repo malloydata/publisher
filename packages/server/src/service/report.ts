@@ -20,7 +20,16 @@ import {
    NOTEBOOK_FILE_SUFFIX,
 } from "../constants";
 import { motlyTag, tagText } from "./motly";
-import { isArtifactNoteText, modelNotesOfText } from "./notebook";
+import type { LogMessage, ModelDef } from "@malloydata/malloy";
+import { ownModelNoteObjects } from "./annotations";
+import {
+   cellsUnreadableProblem,
+   isArtifactNoteText,
+   isNotebookReaderError,
+   modelNotesOfText,
+   parseNotebookText,
+   readNotebookCells,
+} from "./notebook";
 
 /** How a report's tiles are placed: one column top to bottom, or a grid. */
 export type ReportLayout = "grid" | "linear";
@@ -175,4 +184,28 @@ export function carriesArtifactTag(text: string): boolean {
  */
 export function mayCarryArtifactTag(text: string): boolean {
    return text.includes("artifact");
+}
+
+/**
+ * The compile problem for a linear report the reader would refuse, so a
+ * compile check (an agent's, or the builder's save gate) fails on a report
+ * that would not open. Undefined for anything that is not a linear report
+ * (this module), wherever the file lives.
+ */
+export function notebookReaderProblem(
+   modelPath: string,
+   text: string,
+   modelDef: ModelDef,
+   url: string,
+): LogMessage | undefined {
+   if (!isReportEligiblePath(modelPath)) return undefined;
+   const tag = readReportTag(
+      ownModelNoteObjects(modelDef).map((note) => note.text),
+   );
+   if (tag.status !== "report" || tag.layout !== "linear") return undefined;
+   const parse = parseNotebookText(text);
+   const error = isNotebookReaderError(parse)
+      ? parse
+      : readNotebookCells(parse, modelDef, text).error;
+   return error && cellsUnreadableProblem(error, url);
 }

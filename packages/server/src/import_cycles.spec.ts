@@ -30,15 +30,8 @@ import * as path from "path";
  * the narrow interface the callee reads. Do not extend a list without a reason.
  */
 
-const RUNTIME_CYCLES: Array<{ files: string[]; why: string }> = [
-   {
-      files: ["service/notebook.ts", "service/report.ts"],
-      why:
-         "~/service/malloy-code-server vendors both files, so their exports stay " +
-         "at these paths with these names, and a shared leaf would be a third " +
-         "file the vendored copy does not have. Each reads the other's tag helpers.",
-   },
-];
+/** Empty: the value graph has no cycle. Keep it so. */
+const RUNTIME_CYCLES: Array<{ files: string[]; why: string }> = [];
 
 const REGISTRY_READERS =
    "RetrievalRegistry owns retrieval's state as typed fields (one per module " +

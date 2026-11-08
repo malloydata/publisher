@@ -50,10 +50,13 @@ import {
 } from "./given";
 import { Model } from "./model";
 import { ModelPolicy } from "./model_policy";
-import { notebookReaderProblem } from "./notebook";
 import { notebookLintProblems, reportedByDashboardLint } from "./notebook_lint";
 import { Package } from "./package";
-import { carriesArtifactTag, isReportEligiblePath } from "./report";
+import {
+   carriesArtifactTag,
+   isReportEligiblePath,
+   notebookReaderProblem,
+} from "./report";
 import { translatorMalloyError } from "./translator_error";
 import { overlayKey, overlayKeyOfPath } from "./overlay_key";
 import {
