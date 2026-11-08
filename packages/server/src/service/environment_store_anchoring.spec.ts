@@ -11,6 +11,7 @@ import {
    stubStorageManager,
 } from "../test_helpers/storage_manager_stub";
 import { EnvironmentStore } from "./environment_store";
+import { startedStore } from "../test_helpers/started_store";
 
 /**
  * A relative package `location` must anchor at the directory holding the config
@@ -70,7 +71,9 @@ describe("relative package locations anchor at the config directory", () => {
          JSON.stringify({ name: "decoy-from-server-root" }),
       );
 
-      const store = new EnvironmentStore(serverRootPath, { storageManager });
+      const store = startedStore(
+         new EnvironmentStore(serverRootPath, { storageManager }),
+      );
       await store.addEnvironment({
          name: "probe",
          packages: [{ name: "sales", location: "./sales" }],

@@ -9,6 +9,7 @@ import { EnvironmentStore } from "./environment_store";
 import { installSettings } from "../test_helpers/settings_env";
 import { writePackageFiles } from "../test_helpers/temp_package";
 import { parseEnvironmentName, parsePackageName } from "./identity";
+import { startedStore } from "../test_helpers/started_store";
 
 /**
  * With package versioning on, a package in publisher.config.json loads as a
@@ -50,7 +51,7 @@ async function openStore(): Promise<EnvironmentStore> {
       env,
       cwd: path.join(root, "server"),
    }).restore;
-   store = new EnvironmentStore(path.join(root, "server"));
+   store = startedStore(new EnvironmentStore(path.join(root, "server")));
    await store.finishedInitialization;
    return store;
 }

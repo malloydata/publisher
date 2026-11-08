@@ -14,6 +14,7 @@ import {
 } from "../test_helpers/storage_manager_stub";
 import { EnvironmentStore } from "./environment_store";
 import packageJson from "../../package.json";
+import { startedStore } from "../test_helpers/started_store";
 
 /**
  * A server that loads nothing reports `serving` with `environments=0
@@ -153,7 +154,9 @@ describe("unconfigured boot notice", () => {
    });
 
    it("names the missing config once when nothing loaded", async () => {
-      const store = new EnvironmentStore(serverRootPath, { storageManager });
+      const store = startedStore(
+         new EnvironmentStore(serverRootPath, { storageManager }),
+      );
       await store.finishedInitialization;
 
       assertInitialized();
@@ -181,7 +184,9 @@ describe("unconfigured boot notice", () => {
       // `frozenConfig` defaulting to false when no config file exists, which
       // nothing else pins. If a future change made runtime creation require a
       // config file, all three would quietly become wrong.
-      const store = new EnvironmentStore(serverRootPath, { storageManager });
+      const store = startedStore(
+         new EnvironmentStore(serverRootPath, { storageManager }),
+      );
       await store.finishedInitialization;
       assertInitialized();
       expect(noticeLines()).toHaveLength(1);
@@ -208,7 +213,9 @@ describe("unconfigured boot notice", () => {
          { id: "env-id", name: "created-at-runtime", path: missingEnvPath },
       ];
 
-      const store = new EnvironmentStore(serverRootPath, { storageManager });
+      const store = startedStore(
+         new EnvironmentStore(serverRootPath, { storageManager }),
+      );
       await store.finishedInitialization;
 
       assertInitialized();
@@ -226,7 +233,9 @@ describe("unconfigured boot notice", () => {
       });
       const errorSpy = spyOn(logger, "error").mockImplementation(() => logger);
       try {
-         const store = new EnvironmentStore(serverRootPath, { storageManager });
+         const store = startedStore(
+            new EnvironmentStore(serverRootPath, { storageManager }),
+         );
          await store.finishedInitialization;
 
          assertInitialized();
@@ -259,7 +268,9 @@ describe("unconfigured boot notice", () => {
       // Read again, as a server started on this root now would.
       const configured = installSettings({ cwd: serverRootPath });
       try {
-         const store = new EnvironmentStore(serverRootPath, { storageManager });
+         const store = startedStore(
+            new EnvironmentStore(serverRootPath, { storageManager }),
+         );
          await store.finishedInitialization;
 
          assertInitialized();
