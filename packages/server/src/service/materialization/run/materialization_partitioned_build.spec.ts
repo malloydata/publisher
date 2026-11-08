@@ -48,15 +48,33 @@ function recorder(): { conn: DuckDBConnection; sql: string[] } {
 }
 
 describe("createTableAndDescribe: statements issued", () => {
-   it("issues the single CTAS when nothing is partitioned", async () => {
-      // An unpartitioned build must be byte-identical to what it was, so
-      // adopting this parameter changes nothing for the sources already built.
+   it("issues the single CTAS when nothing is partitioned, read back in its transaction", async () => {
       const { conn, sql } = recorder();
       await createTableAndDescribe(conn, '"lake"."t"', ROWS);
       expect(sql).toEqual([
+         "BEGIN TRANSACTION",
          `CREATE OR REPLACE TABLE "lake"."t" AS (${ROWS})`,
          'DESCRIBE "lake"."t"',
+         "COMMIT",
       ]);
+   });
+
+   it("rolls an unpartitioned build back when its read-back fails, and drops nothing", async () => {
+      // A DROP after the CTAS committed would delete the stable name the
+      // previous manifest still serves from.
+      const issued: string[] = [];
+      const conn = {
+         runSQL: async (q: string) => {
+            issued.push(q);
+            if (q.startsWith("DESCRIBE")) throw new Error("catalog went away");
+            return { rows: [], totalRows: 0 };
+         },
+      } as unknown as DuckDBConnection;
+      await expect(
+         createTableAndDescribe(conn, '"lake"."t"', ROWS),
+      ).rejects.toThrow("catalog went away");
+      expect(issued.at(-1)).toBe("ROLLBACK");
+      expect(issued.some((q) => q.startsWith("DROP"))).toBe(false);
    });
 
    it("lays the table out before inserting, never after", async () => {
@@ -158,15 +176,16 @@ describe("createTableAndDescribe: the flush threshold", () => {
    });
 
    it("never reaches an unpartitioned build, nor does the ordering or the thread count", async () => {
-      // The setting only governs a partitioned COPY, and the unpartitioned
-      // CTAS is promised byte-identical to what it was.
+      // The setting only governs a partitioned COPY.
       const { conn, sql } = recorder();
       await createTableAndDescribe(conn, '"lake"."t"', ROWS, [], {
          sourceType: "postgres",
       });
       expect(sql).toEqual([
+         "BEGIN TRANSACTION",
          `CREATE OR REPLACE TABLE "lake"."t" AS (${ROWS})`,
          'DESCRIBE "lake"."t"',
+         "COMMIT",
       ]);
    });
 
@@ -480,5 +499,51 @@ describe("createTableAndDescribe: against a real DuckLake", () => {
             (r) => !r.data_file.replaceAll("\\", "/").includes("/org_id="),
          ),
       ).toBe(true);
+   }, 120000);
+
+   it("leaves the previous generation serving when an unpartitioned build's read-back fails", async () => {
+      // The CTAS itself succeeds and replaces the served table; only the
+      // read-back fails. Dropping the table then (as the build once did) left
+      // the stable name the previous manifest serves from with no table.
+      const dir = mkdtempSync(join(tmpdir(), "ducklake-describe-fail-"));
+      const conn = new DuckDBConnection("duckdb");
+      await conn.runSQL("INSTALL ducklake");
+      await conn.runSQL("LOAD ducklake");
+      await conn.runSQL(
+         `ATTACH 'ducklake:${join(dir, "catalog.ducklake")}' AS lake3 ` +
+            `(DATA_PATH '${join(dir, "data")}/')`,
+      );
+      await conn.runSQL(`CREATE OR REPLACE TABLE lake3.t AS (${ROWS})`);
+      const failingDescribe = {
+         runSQL: (q: string) =>
+            q.startsWith("DESCRIBE")
+               ? Promise.reject(new Error("catalog went away"))
+               : conn.runSQL(q),
+      } as unknown as DuckDBConnection;
+
+      await expect(
+         createTableAndDescribe(
+            failingDescribe,
+            "lake3.t",
+            "SELECT 42 AS answer",
+         ),
+      ).rejects.toThrow("catalog went away");
+
+      // The previous generation, not the new one and not nothing.
+      const r = await conn.runSQL("SELECT count(*) AS n FROM lake3.t");
+      expect(Number((r.rows as { n: unknown }[])[0].n)).toBe(3);
+
+      // And on a first build, nothing is left behind for no record to name.
+      await expect(
+         createTableAndDescribe(
+            failingDescribe,
+            "lake3.fresh",
+            "SELECT 42 AS answer",
+         ),
+      ).rejects.toThrow("catalog went away");
+      const tables = await conn.runSQL(
+         "SELECT table_name FROM information_schema.tables WHERE table_catalog = 'lake3' AND table_name = 'fresh'",
+      );
+      expect(tables.rows).toHaveLength(0);
    }, 120000);
 });

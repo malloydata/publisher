@@ -963,7 +963,7 @@ report into the package and reloads it. One rule for both layouts:
 
 - **Create** (omit `expectedHash`) at any `.malloy` path in the package that does not exist yet, outside
   `public/` and never at the root `index.malloy`. Missing directories are created inside the package. The
-  text must carry an artifact tag. A file already at that path answers `409`.
+  text must carry an artifact tag. A file already at that path answers `409` with `reason` `FILE_EXISTS`.
 - **Replace** (with `expectedHash`) only a file with an artifact tag: a report the package serves, or a
   tagged file it refuses as one (a retired cell-format file, a `kind=` tag), so that file can be rewritten
   as tiles in place. The endpoint cannot overwrite a model, an untagged file, a `.malloynb` or `index.malloy`, wherever they live.
@@ -973,6 +973,11 @@ report into the package and reloads it. One rule for both layouts:
   restored if the reload does not take it or the file is not then a served report. A text that declares a
   real `#(authorize)` or `#(access_filter)` gate outside prose is refused with `400`: gates live in the model.
 - `403` under `frozenConfig`.
+- `409` with `reason` `PACKAGE_INSTALLED_FROM_LOCATION` for a package installed from a `location` (a publish
+  over the API that named one). A reload fetches such a package again and replaces its files, so a report
+  written into it would be lost. Add the report to the package's source and reload, or publish it as a version.
+  A package with published versions answers `409` with `reason` `PACKAGE_IS_VERSIONED`. Only `FILE_EXISTS`
+  means another path may be free.
 
 Two reports may share a basename in different directories; there is no name-collision `409`.
 

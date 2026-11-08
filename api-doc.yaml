@@ -1693,6 +1693,23 @@ paths:
         At EITHER home, omitting it preserves the package's tags and so does sending
         null — a client that serializes unset fields as null must not untag a package
         by accident. Send an empty object to clear.
+
+        A package fetched from a `location` keeps none of these on reload: a reload fetches
+        it again and replaces its files, `publisher.json` included, keeping only its
+        `location` and manifest binding. So when the package will be fetched from a
+        location once this request is applied (the `location` it sends, or else the one it
+        was installed from), a change to `description`, `explores`, `queryableSources`,
+        `scope`, `queryMetadata` or `materialization` is refused with 409 (`reason`
+        `PACKAGE_INSTALLED_FROM_LOCATION`). A change is judged by the value the request
+        would leave in force: clearing a set field is a change, a null is omitted, and a
+        value equal to the current one (`explores` normalized as stored) is not. A request
+        that names a new `location` is judged against the tree fetched from it, and a
+        refusal leaves the previous install serving. When the package it replaces was
+        itself installed from a location, a field sent with that package's value is the
+        package sent back, not a change: it is left out and the new tree's value serves,
+        so a whole package read back with only its `location` changed is accepted.
+        Make the change in the package's
+        source and reload it, or publish it as a version.
       parameters:
         - name: environmentName
           in: path
@@ -2242,8 +2259,9 @@ paths:
         with `includeHiddenFilesAndSources=true`. When the file on disk no
         longer hashes to it, the write is refused with 409 and nothing is
         merged: the caller re-opens and reapplies its change. Omit it to CREATE
-        the file: a file that already exists is then refused with 409 too, so
-        an unconditional overwrite is not something a caller can ask for by
+        the file: a file that already exists is then refused with 409 too,
+        `reason` `FILE_EXISTS`, so a caller choosing a name can try the next,
+        and an unconditional overwrite is not something a caller can ask for by
         leaving a field out. A path over an existing file the package does not
         read as a report answers 400 instead, with or without a hash, because
         that check comes before the hash. The check, the write,
@@ -2267,6 +2285,11 @@ paths:
         `versionId` names: change the file in the package's source and publish
         a new version. A `versionId` on a package with no versions answers 404
         (`reason` `VERSION_NOT_FOUND`).
+
+        A package installed from a `location` is fetched again from there on
+        reload, which replaces its files, so it refuses this write with 409
+        (`reason` `PACKAGE_INSTALLED_FROM_LOCATION`): add the report to the
+        package's source and reload it, or publish it as a version.
       parameters:
         - name: environmentName
           in: path
@@ -2316,8 +2339,10 @@ paths:
           $ref: "#/components/responses/NotFound"
         "409":
           description:
-            The file changed since the caller opened it, or already exists and
-            no `expectedHash` was sent
+            The file changed since the caller opened it; or it already exists
+            and no `expectedHash` was sent (`reason` `FILE_EXISTS`); or the
+            package cannot take the write in place (`reason`
+            `PACKAGE_IS_VERSIONED` or `PACKAGE_INSTALLED_FROM_LOCATION`)
           content:
             application/json:
               schema:
@@ -4237,6 +4262,11 @@ components:
             content. Bump the `version` in publisher.json and publish again.
           * PACKAGE_IS_VERSIONED: the package has published versions, which are
             immutable, so it cannot be changed in place.
+          * PACKAGE_INSTALLED_FROM_LOCATION: the package is fetched again from
+            the location it was installed from on reload, which would discard
+            the change. Make it in the package's source and reload.
+          * FILE_EXISTS: a create-only report write found a file at the path.
+            Choose another path.
           * VERSION_IS_LATEST: the version is the package's `latest` and cannot
             be archived, or deleted while other versions remain. Move `latest` first.
           * VERSION_IS_LAST_ACTIVE: the version is the package's last one in
@@ -9390,6 +9420,12 @@ components:
               * PACKAGE_IS_VERSIONED (409): the package has published versions,
                 so it cannot be changed in place (a write, or a publish with
                 package versioning off).
+              * PACKAGE_INSTALLED_FROM_LOCATION (409): the package is fetched
+                again from a `location` on reload, which would discard a report
+                write or a package update's change to its settings.
+              * FILE_EXISTS (409): a report write with no `expectedHash` (a
+                create) found a file already at the path; another path may be
+                free. A stale `expectedHash` answers 409 with no `reason`.
               * VERSION_IS_LATEST (409): the package's `latest` version cannot be
                 archived, or deleted while other versions remain.
               * VERSION_IS_LAST_ACTIVE (409): the package's last version in
@@ -9408,7 +9444,8 @@ components:
             Known values: TABLE_NOT_FOUND, CONNECTION_FAILED,
             CONNECTION_AUTH_FAILED, CONNECTION_NOT_FOUND,
             MANIFEST_VERSION_MISSING, MANIFEST_VERSION_INVALID,
-            VERSION_CONFLICT, PACKAGE_IS_VERSIONED, VERSION_IS_LATEST,
+            VERSION_CONFLICT, PACKAGE_IS_VERSIONED,
+            PACKAGE_INSTALLED_FROM_LOCATION, FILE_EXISTS, VERSION_IS_LATEST,
             VERSION_IS_LAST_ACTIVE, VERSION_BUILDING, VERSION_ID_INVALID,
             VERSION_NOT_LATEST, VERSION_NOT_FOUND, VERSION_ARCHIVED.
         problems:

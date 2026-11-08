@@ -1588,12 +1588,14 @@ function sourceFederationConfig(sourceConnection: ApiConnection): {
 /**
  * Build the table and read back its schema.
  *
- * Without partition columns, a CTAS; with them, create-empty / lay out / insert
- * in one transaction, because DuckLake applies a layout only to files written
- * after it is set.
- *
- * On the CTAS path a failed DESCRIBE drops the committed table: the caller
- * records nothing until this returns, so no reclaim or GC would ever find it.
+ * Without partition columns, a CTAS; with them, create-empty / lay out / insert,
+ * because DuckLake applies a layout only to files written after it is set.
+ * Either way the table is created and read back in ONE transaction: the
+ * physical name is stable across generations (`selfAssignTableName`), so a
+ * rebuild replaces the table being SERVED, and a failure anywhere, the
+ * read-back included, rolls back to the previous generation (or, on a first
+ * build, to no table, which no reclaim would otherwise find: the caller
+ * records nothing until this returns).
  */
 export async function createTableAndDescribe(
    session: DuckDBConnection,
@@ -1611,16 +1613,20 @@ export async function createTableAndDescribe(
    } = {},
 ): Promise<WireColumn[]> {
    if (partitionColumns.length === 0) {
-      await session.runSQL(
-         `CREATE OR REPLACE TABLE ${quotedTablePath} AS (${selectSQL})`,
-      );
-      return await describeOrDrop(session, quotedTablePath);
+      // In the transaction, not create-then-drop-on-failure: a DROP after the
+      // CREATE OR REPLACE committed would delete the name the previous
+      // manifest serves from.
+      return await inTransaction(session, quotedTablePath, async () => {
+         await session.runSQL(
+            `CREATE OR REPLACE TABLE ${quotedTablePath} AS (${selectSQL})`,
+         );
+         return await describeTable(session, quotedTablePath);
+      });
    }
 
-   // IN ONE TRANSACTION: the physical name is stable across generations
-   // (`selfAssignTableName`), so a rebuild targets the table being SERVED. Run
-   // bare, `WITH NO DATA` would serve zero rows until the INSERT lands, and a
-   // failed INSERT would lose the previous generation; a ROLLBACK keeps it.
+   // Run bare, `WITH NO DATA` would serve zero rows until the INSERT lands,
+   // and a failed INSERT would lose the previous generation; a ROLLBACK keeps
+   // it.
    //
    // The layout only means something because the session disabled inlining
    // (`ducklake_default_data_inlining_row_limit=0`); inlined rows have no files.
@@ -1646,46 +1652,25 @@ export async function createTableAndDescribe(
       // so the RESET in the finally is what restores it after a rollback.
       await session.runSQL("SET threads = 1");
    }
-   let schema: WireColumn[];
-   await session.runSQL("BEGIN TRANSACTION");
    try {
-      await session.runSQL(
-         `CREATE OR REPLACE TABLE ${quotedTablePath} AS (${selectSQL}) WITH NO DATA`,
-      );
-      await session.runSQL(
-         `ALTER TABLE ${quotedTablePath} SET PARTITIONED BY (${columns})`,
-      );
-      // See orderByPartitionColumns.
-      const inserted = bounded
-         ? orderByPartitionColumns(
-              selectSQL,
-              partitionColumns,
-              STORAGE_TARGET_DIALECT,
-           )
-         : selectSQL;
-      await session.runSQL(`INSERT INTO ${quotedTablePath} (${inserted})`);
-      // Read back INSIDE the transaction, not via `describeOrDrop`: after COMMIT
-      // a drop would delete the generation the previous manifest names. Here a
-      // failed read-back rolls back and the previous generation survives.
-      schema = await describeTable(session, quotedTablePath);
-      await session.runSQL("COMMIT");
-   } catch (buildErr) {
-      // Restores the previous generation. A failed rollback must not replace
-      // the error that caused it.
-      try {
-         await session.runSQL("ROLLBACK");
-      } catch (rollbackErr) {
-         logger.warn(
-            "Failed to roll back a partitioned storage build; the served " +
-               "generation may have been replaced",
-            {
-               table: quotedTablePath,
-               error: errMessage(rollbackErr),
-               cause: errMessage(buildErr),
-            },
+      return await inTransaction(session, quotedTablePath, async () => {
+         await session.runSQL(
+            `CREATE OR REPLACE TABLE ${quotedTablePath} AS (${selectSQL}) WITH NO DATA`,
          );
-      }
-      throw buildErr;
+         await session.runSQL(
+            `ALTER TABLE ${quotedTablePath} SET PARTITIONED BY (${columns})`,
+         );
+         // See orderByPartitionColumns.
+         const inserted = bounded
+            ? orderByPartitionColumns(
+                 selectSQL,
+                 partitionColumns,
+                 STORAGE_TARGET_DIALECT,
+              )
+            : selectSQL;
+         await session.runSQL(`INSERT INTO ${quotedTablePath} (${inserted})`);
+         return await describeTable(session, quotedTablePath);
+      });
    } finally {
       // Best-effort: the session is disposed with the build, so a stuck setting
       // dies with it.
@@ -1697,45 +1682,41 @@ export async function createTableAndDescribe(
          }
       }
    }
-   return schema;
-}
-
-/** Read the built table's schema back, dropping the table if that fails. */
-async function describeOrDrop(
-   session: DuckDBConnection,
-   quotedTablePath: string,
-): Promise<WireColumn[]> {
-   try {
-      return await describeTable(session, quotedTablePath);
-   } catch (describeErr) {
-      await dropStranded(session, quotedTablePath, describeErr);
-      throw describeErr;
-   }
 }
 
 /**
- * Drop a table a failed build left committed, on the session whose read-write
- * attach created it. Best-effort: a failed drop is logged, never raised over
- * the actual failure.
+ * Run a build's statements as one transaction: COMMIT when `body` returns,
+ * ROLLBACK when it throws, which restores the previous generation of the
+ * table. A failed rollback is logged, never raised over the error that caused
+ * it.
  */
-async function dropStranded(
+async function inTransaction<T>(
    session: DuckDBConnection,
    quotedTablePath: string,
-   cause: unknown,
-): Promise<void> {
+   body: () => Promise<T>,
+): Promise<T> {
+   await session.runSQL("BEGIN TRANSACTION");
+   let result: T;
    try {
-      await session.runSQL(`DROP TABLE IF EXISTS ${quotedTablePath}`);
-   } catch (dropErr) {
-      logger.error(
-         "Failed to drop a storage table stranded by a failed build " +
-            "(physical leak)",
-         {
-            table: quotedTablePath,
-            error: errMessage(dropErr),
-            cause: errMessage(cause),
-         },
-      );
+      result = await body();
+      await session.runSQL("COMMIT");
+   } catch (buildErr) {
+      try {
+         await session.runSQL("ROLLBACK");
+      } catch (rollbackErr) {
+         logger.warn(
+            "Failed to roll back a storage build; the served generation may " +
+               "have been replaced",
+            {
+               table: quotedTablePath,
+               error: errMessage(rollbackErr),
+               cause: errMessage(buildErr),
+            },
+         );
+      }
+      throw buildErr;
    }
+   return result;
 }
 
 async function describeTable(

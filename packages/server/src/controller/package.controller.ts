@@ -36,6 +36,7 @@ import {
 import type { VersionService } from "../service/versions/version_service";
 import { versionManifestLocation } from "./manifest_location";
 import { changedFields } from "./versioned_patch";
+import { admitPatch } from "../service/package_patch";
 import { loadedPackage } from "./loaded_package";
 import {
    parseEnvironmentName,
@@ -811,6 +812,10 @@ export class PackageController {
          typeof body.location === "string" &&
          body.location !== "" &&
          body.location !== installedFrom;
+      // A change a reload would discard is refused (see admitPatch), judged
+      // under the package lock against the metadata the apply sees: for a
+      // reinstall, the tree it fetches, whose publisher.json is what a reload
+      // keeps, and the package it replaces.
       let result: ApiPackage;
       if (reinstall) {
          // Download to staging without the lock, then swap under it. Explores
@@ -832,11 +837,21 @@ export class PackageController {
                   pkg,
                   body.explores?.map(normalizeModelPath),
                ),
-            { update: body },
+            {
+               update: body,
+               admit: (update, fetched, previous) =>
+                  admitPatch(packageName, update, fetched, {
+                     location: bodyLocation,
+                     previous,
+                  }),
+            },
          );
          result = installed.getPackageMetadata();
       } else {
-         result = await environment.updatePackage(packageName, body);
+         result = await environment.updatePackage(packageName, body, {
+            admit: (update, resident) =>
+               admitPatch(packageName, update, resident),
+         });
       }
       await this.environmentStore.addPackageToDatabase(
          environmentName,

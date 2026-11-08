@@ -1,6 +1,7 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
+import type { Connection as MalloyConnection } from "@malloydata/malloy";
 import { logger } from "../../../logger";
 import { recordSourceBuildDuration } from "../../../materialization_metrics";
 import { errMessage } from "../../../utils";
@@ -13,14 +14,25 @@ import {
    refreshFields,
    resetLedger,
 } from "./incremental_build";
-import { stagingSuffix } from "./materialization_run_support";
+import { backupSuffix, stagingSuffix } from "./materialization_run_support";
 
 /**
  * A full rebuild of a colocated table in the source's own warehouse: COPY into
- * a staging table, then an atomic swap onto the physical name, so a crash
- * mid-build never leaves the served table half-written. The staging name
- * derives from the sourceEntityId. For an incremental source it also clears
- * the ledger before the rebuild and records the new boundary after it.
+ * a staging table, then swap it onto the physical name (see
+ * {@link swapIntoPlace}). The served table is never written in place, so it is
+ * never half-written. What the swap guarantees depends on the dialect:
+ * - Postgres and DuckDB (transactional DDL): the drop of the served table and
+ *   the rename onto its name are one transaction. A reader never finds the
+ *   name missing, and a failure, including a Postgres view that depends on
+ *   the served table, leaves it exactly as it was.
+ * - every other dialect: two renames, the served table moved aside to a
+ *   backup name and dropped only once the new one holds its name. Between
+ *   them a reader finds no table under the physical name (a not-found error,
+ *   never a partial table), and a crash there leaves the previous table under
+ *   the backup name, which the next build of the source restores or replaces.
+ * The staging and backup names derive from the sourceEntityId. For an
+ * incremental source it also clears the ledger before the rebuild and records
+ * the new boundary after it.
  */
 export class ColocatedCtasStrategy
    implements BuildStrategy<ColocatedBuildRequest>
@@ -44,9 +56,6 @@ export class ColocatedCtasStrategy
       // BigQuery project id). The manifest echoes the logical name.
       const quotedStaging = quoteTablePath(stagingTableName, dialect);
       const quotedPhysical = quoteTablePath(physicalTableName, dialect);
-      // Not always the bare name: on some dialects a bare rename target moves
-      // the table into the session's default container.
-      const quotedRenameTarget = quoteRenameTarget(physicalTableName, dialect);
 
       // Drop the boundary BEFORE the rebuild: a crash mid-rebuild must not leave
       // a boundary for data that no longer exists for the next delta to trust.
@@ -71,32 +80,25 @@ export class ColocatedCtasStrategy
             runOptions,
          );
          buildCostBytes = ctas?.runStats?.queryCostBytes;
-         await connection.runSQL(
-            `DROP TABLE IF EXISTS ${quotedPhysical}`,
-            runOptions,
-         );
-         await connection.runSQL(
-            `ALTER TABLE ${quotedStaging} RENAME TO ${quotedRenameTarget}`,
-            runOptions,
-         );
       } catch (err) {
-         try {
-            await connection.runSQL(
-               `DROP TABLE IF EXISTS ${quotedStaging}`,
-               runOptions,
-            );
-         } catch (cleanupErr) {
-            logger.error(
-               "Failed to clean up staging table after a failed build; physical leak",
-               {
-                  stagingTableName,
-                  connectionName: persistSource.connectionName,
-                  cleanupError: errMessage(cleanupErr),
-               },
-            );
-         }
+         await dropStagingAfterFailure({
+            connection,
+            runOptions,
+            dialect,
+            stagingTableName,
+            connectionName: persistSource.connectionName,
+         });
          throw err;
       }
+      await swapIntoPlace({
+         connection,
+         runOptions,
+         dialect,
+         physicalTableName,
+         stagingTableName,
+         backupTableName: `${physicalTableName}${backupSuffix(sourceEntityId)}`,
+         connectionName: persistSource.connectionName,
+      });
 
       // Visible to later downstreams in this run, under the SAME quoted path
       // the CREATE used (pasted into a downstream `FROM` verbatim). The returned
@@ -139,5 +141,290 @@ export class ColocatedCtasStrategy
          queryCostBytes: buildCostBytes ?? null,
          ...request.upstreamReuse,
       };
+   }
+}
+
+/**
+ * Drop the staging table of a build that failed. Never throws: the build's own
+ * failure is what the caller reports, so a failed drop is only logged, as the
+ * table it leaves behind in the warehouse.
+ */
+async function dropStagingAfterFailure({
+   connection,
+   runOptions,
+   dialect,
+   stagingTableName,
+   connectionName,
+}: {
+   connection: Pick<MalloyConnection, "runSQL">;
+   runOptions: ColocatedBuildRequest["runOptions"];
+   dialect: string;
+   stagingTableName: string;
+   connectionName: string;
+}): Promise<void> {
+   try {
+      await connection.runSQL(
+         `DROP TABLE IF EXISTS ${quoteTablePath(stagingTableName, dialect)}`,
+         runOptions,
+      );
+   } catch (cleanupErr) {
+      logger.error(
+         "Failed to clean up staging table after a failed build; physical leak",
+         {
+            stagingTableName,
+            connectionName,
+            cleanupError: errMessage(cleanupErr),
+         },
+      );
+   }
+}
+
+/**
+ * Dialects whose swap is one transaction: DDL is transactional there, and the
+ * swap reaches one database session (see {@link swapInTransaction}).
+ *
+ * Not the others: Snowflake, MySQL, Databricks and Trino commit DDL as it
+ * runs, and BigQuery refuses DROP and RENAME inside a transaction. SQL Server
+ * has transactional DDL, but not this rename, so it gains nothing here.
+ */
+const TRANSACTIONAL_SWAP_DIALECTS: ReadonlySet<string> = new Set([
+   "postgres",
+   "duckdb",
+]);
+
+interface SwapArgs {
+   connection: Pick<MalloyConnection, "runSQL">;
+   runOptions: ColocatedBuildRequest["runOptions"];
+   dialect: string;
+   physicalTableName: string;
+   stagingTableName: string;
+   backupTableName: string;
+   connectionName: string;
+}
+
+/**
+ * Put a built staging table in place of the served one. On a dialect with
+ * transactional DDL the swap is one atomic transaction
+ * ({@link swapInTransaction}); elsewhere the served table is renamed aside
+ * first and dropped only once the new one holds its name
+ * ({@link swapByRenamingAside}). Either way a failure leaves the physical name
+ * holding the previous table or the new one, never neither for good, and gives
+ * back the staging table once the served one is intact.
+ */
+export async function swapIntoPlace(args: SwapArgs): Promise<void> {
+   if (TRANSACTIONAL_SWAP_DIALECTS.has(args.dialect)) {
+      await swapInTransaction(args);
+   } else {
+      await swapByRenamingAside(args);
+   }
+}
+
+/**
+ * `DROP TABLE IF EXISTS <physical>` then `ALTER TABLE <staging> RENAME TO
+ * <physical>`, as one transaction sent as ONE driver call. A reader sees the
+ * previous table or the new one, never no table, and a failure of either
+ * statement rolls both back, leaving the served table as it was. That covers
+ * a Postgres view over the served table: it makes the DROP fail, so the build
+ * fails with the table intact (rather than the view following a rename to a
+ * name that is then dropped). No existence probe is needed.
+ *
+ * One call, because the transaction must not span calls: Malloy's Postgres
+ * connections take a session per call (a pooled one from `pg.Pool`, or a new
+ * client each time), so a BEGIN sent on its own would bracket nothing.
+ * - Postgres: no BEGIN/COMMIT in the text. The simple query protocol runs a
+ *   multi-statement string as one implicit transaction, which a failure rolls
+ *   back and ends, so no session is left in an aborted transaction.
+ * - DuckDB: a multi-statement string autocommits each statement, so it is
+ *   bracketed by BEGIN TRANSACTION/COMMIT, and a ROLLBACK follows a failure as
+ *   its own call. That reaches the same session: a DuckDB connection holds one.
+ */
+async function swapInTransaction({
+   connection,
+   runOptions,
+   dialect,
+   physicalTableName,
+   stagingTableName,
+   connectionName,
+}: SwapArgs): Promise<void> {
+   const run = (sql: string) => connection.runSQL(sql, runOptions);
+   const body = [
+      `DROP TABLE IF EXISTS ${quoteTablePath(physicalTableName, dialect)}`,
+      `ALTER TABLE ${quoteTablePath(stagingTableName, dialect)} RENAME TO ${quoteRenameTarget(physicalTableName, dialect)}`,
+   ];
+   const explicit = dialect !== "postgres";
+   const statements = explicit
+      ? ["BEGIN TRANSACTION", ...body, "COMMIT"]
+      : body;
+   try {
+      await run(statements.map((s) => `${s};`).join("\n"));
+   } catch (err) {
+      if (explicit) {
+         try {
+            await run("ROLLBACK");
+         } catch (rollbackErr) {
+            // Usually no transaction was left open, which is harmless.
+            logger.warn("Failed to roll back a materialized table swap", {
+               physicalTableName,
+               connectionName,
+               error: errMessage(rollbackErr),
+               cause: errMessage(err),
+            });
+         }
+      }
+      await dropStagingAfterFailure({
+         connection,
+         runOptions,
+         dialect,
+         stagingTableName,
+         connectionName,
+      });
+      throw err;
+   }
+}
+
+/**
+ * Whether a statement failed because the table it names does not exist.
+ * Liberal by design: the swap reads a not-found as "nothing there" only where
+ * being wrong makes a later rename onto an occupied name fail, never a table
+ * be dropped (see {@link swapByRenamingAside}). Snowflake's "does not exist or
+ * not authorized" is one such case.
+ */
+export function isTableNotFound(err: unknown): boolean {
+   const code = (err as { code?: unknown } | null)?.code;
+   // Postgres's undefined_table; MySQL's ER_NO_SUCH_TABLE.
+   if (code === "42P01" || code === "ER_NO_SUCH_TABLE" || code === 1146) {
+      return true;
+   }
+   return /does not exist|doesn't exist|not found|cannot be found|no such table|invalid object name|TABLE_OR_VIEW_NOT_FOUND/i.test(
+      errMessage(err),
+   );
+}
+
+/**
+ * The swap where DDL is not transactional: the served table is renamed aside
+ * to `backupTableName`, the staging table renamed onto the physical name, and
+ * only then is the backup dropped. Plain `ALTER TABLE ... RENAME TO` and
+ * `DROP TABLE IF EXISTS`: three statements on a rebuild and no existence
+ * probe, since a not-found from moving the served table aside is what says
+ * there is none. Between the two renames a reader finds no table under the
+ * physical name (a not-found error, never a partial table).
+ *
+ * What survives each failure:
+ * - moving the served table aside fails, other than as not-found: when a
+ *   probe (`SELECT 1 ... WHERE 1 = 0`, reading no rows) shows the served table
+ *   is there, the backup name is stale, so it is dropped and the move retried
+ *   once. Otherwise, or when the retry fails, the served table is untouched,
+ *   staging is dropped and the error raised. This is the only probe, and only
+ *   its success counts: a probe that fails for any reason aborts the swap.
+ * - renaming staging into place fails: the backup is renamed back, then
+ *   staging is dropped; when that restore fails too, both are kept (an error
+ *   names them) and nothing is dropped.
+ * - dropping the backup fails: the new table is already served; the backup is
+ *   left (a warning names it) and the next build drops it.
+ *
+ * A backup with no table under the physical name is what a crash between the
+ * two renames leaves: it is the last served copy, so it is restored if this
+ * swap fails, and dropped only once the new table holds the name.
+ */
+async function swapByRenamingAside({
+   connection,
+   runOptions,
+   dialect,
+   physicalTableName,
+   stagingTableName,
+   backupTableName,
+   connectionName,
+}: SwapArgs): Promise<void> {
+   const run = (sql: string) => connection.runSQL(sql, runOptions);
+   const quotedPhysical = quoteTablePath(physicalTableName, dialect);
+   const quotedStaging = quoteTablePath(stagingTableName, dialect);
+   const quotedBackup = quoteTablePath(backupTableName, dialect);
+   // Not always the bare name: on some dialects a bare rename target moves
+   // the table into the session's default container.
+   const renameToPhysical = quoteRenameTarget(physicalTableName, dialect);
+   const moveAside = `ALTER TABLE ${quotedPhysical} RENAME TO ${quoteRenameTarget(backupTableName, dialect)}`;
+   const dropStaging = () =>
+      dropStagingAfterFailure({
+         connection,
+         runOptions,
+         dialect,
+         stagingTableName,
+         connectionName,
+      });
+
+   // Whether the previous table is known to sit under the backup name. False
+   // also when a crash stranded it there: that copy is restored or dropped
+   // below by trying, not by knowing.
+   let movedAside = true;
+   try {
+      await run(moveAside);
+   } catch (moveErr) {
+      if (isTableNotFound(moveErr)) {
+         movedAside = false;
+      } else {
+         try {
+            await run(`SELECT 1 FROM ${quotedPhysical} WHERE 1 = 0`);
+         } catch {
+            // Whether the served table is there is unknown, so the backup may
+            // be the last served copy: touch nothing.
+            await dropStaging();
+            throw moveErr;
+         }
+         // The served table is there, so a table under the backup name is
+         // stale, and may be what the move collided with.
+         try {
+            await run(`DROP TABLE IF EXISTS ${quotedBackup}`);
+            await run(moveAside);
+         } catch (retryErr) {
+            // The served table was not moved: it is as it was.
+            await dropStaging();
+            throw retryErr;
+         }
+      }
+   }
+
+   try {
+      await run(`ALTER TABLE ${quotedStaging} RENAME TO ${renameToPhysical}`);
+   } catch (err) {
+      // Put the previous table back: the one just moved aside, or one a crash
+      // stranded under the backup name.
+      try {
+         await run(`ALTER TABLE ${quotedBackup} RENAME TO ${renameToPhysical}`);
+      } catch (restoreErr) {
+         if (movedAside || !isTableNotFound(restoreErr)) {
+            // Nothing is dropped: the previous table is (or may be) under the
+            // backup name and the new one under the staging name.
+            logger.error(
+               "Failed to put a materialized table in place or restore the previous one; both are kept",
+               {
+                  physicalTableName,
+                  backupTableName,
+                  stagingTableName,
+                  connectionName,
+                  error: errMessage(err),
+                  restoreError: errMessage(restoreErr),
+               },
+            );
+            throw err;
+         }
+         // No backup: there was nothing to restore.
+      }
+      await dropStaging();
+      throw err;
+   }
+
+   // Also drops a copy a crash stranded under the backup name, now replaced.
+   try {
+      await run(`DROP TABLE IF EXISTS ${quotedBackup}`);
+   } catch (dropErr) {
+      logger.warn(
+         "Failed to drop the previous copy of a rebuilt materialized table; the next build drops it",
+         {
+            physicalTableName,
+            backupTableName,
+            connectionName,
+            error: errMessage(dropErr),
+         },
+      );
    }
 }

@@ -73,6 +73,7 @@ import {
 import { ApiConnection } from "./model";
 import { Package } from "./package";
 import { applyLoadGates } from "./package_load_gates";
+import { resolvePatchedSettings } from "./package_patch";
 import { environmentResource, packageResource } from "../api_resource";
 import { parsePackageName, type PackageName, VersionRef } from "./identity";
 import {
@@ -168,6 +169,18 @@ const getPackageAdmissionRejectionsCounter = lazyCounter(
 export function resetAdmissionTelemetryForTesting(): void {
    resetInstrumentsForTesting();
 }
+
+/**
+ * Judges a metadata PATCH under the package lock: `body` against `target`,
+ * the metadata of the tree it is applied to, and `previous`, that of the
+ * package an install replaces (absent for a metadata update, and when nothing
+ * was resident). Returns the body to apply, or throws to refuse it.
+ */
+export type AdmitUpdate = (
+   body: ApiPackage,
+   target: ApiPackage,
+   previous: ApiPackage | undefined,
+) => ApiPackage;
 
 /** The publisher.json fields a metadata write may set. */
 type PackageManifestUpdate = {
@@ -356,6 +369,18 @@ export class Environment {
     * against it. An explicit set makes it authoritative again.
     */
    private destinationsAuthoritative = true;
+   /**
+    * The connection counterpart of {@link destinationsAuthoritative}: false
+    * when the list is a fallback (the config standing in for a missing
+    * directory, or a reload from config) or torn down, so the database sync
+    * must not prune stored connections against it. Only a wholesale
+    * replacement of the list (an environment create or PATCH carrying
+    * `connections`, or a restore from the stored rows) makes it authoritative
+    * again. Adding, updating or deleting one connection edits one entry of
+    * whatever list is in memory, so it leaves the flag as it was: a fallback
+    * list with one connection added is still a fallback.
+    */
+   private connectionsAuthoritative = true;
    private environmentPath: string;
    private environmentName: string;
    // Resolves a package's latest persisted manifest entries (both tiers), so
@@ -499,6 +524,8 @@ export class Environment {
             );
 
             this.updateConnections(nextMalloyConfig);
+            // A wholesale replacement: the list is now the desired state.
+            this.connectionsAuthoritative = true;
 
             logger.info(
                `Successfully updated connections for environment ${this.environmentName}`,
@@ -800,6 +827,16 @@ export class Environment {
    /** See {@link destinationsAuthoritative}. */
    public hasAuthoritativeStorageDestinations(): boolean {
       return this.destinationsAuthoritative;
+   }
+
+   /** The connection list is a best guess; see {@link connectionsAuthoritative}. */
+   public markConnectionsUnknown(): void {
+      this.connectionsAuthoritative = false;
+   }
+
+   /** See {@link connectionsAuthoritative}. */
+   public hasAuthoritativeConnections(): boolean {
+      return this.connectionsAuthoritative;
    }
 
    /**
@@ -2562,6 +2599,12 @@ export class Environment {
           * record one).
           */
          update?: ApiPackage;
+         /**
+          * Judges `update` under the lock, against the tree just loaded and
+          * the package it replaces, as the lock holder sees them: returns the
+          * body to apply, or throws to refuse it (the swap rolls back).
+          */
+         admit?: AdmitUpdate;
       } = {},
    ): Promise<Package> {
       assertSafePackageName(packageName);
@@ -2727,8 +2770,18 @@ export class Environment {
          { dryRun: options.dryRun },
       );
       this.attachDestinationServeConfig(pkg);
-      // Publish, update and dry run only (reload passes no validator).
-      const validationMsg = validate?.(pkg);
+      // Publish, update and dry run only (reload passes no validator). A
+      // validator refuses by returning why (400) or by throwing its own error.
+      let validationMsg: string | undefined;
+      try {
+         validationMsg = validate?.(pkg);
+      } catch (error) {
+         await Environment.releasePackageConnections(
+            pkg,
+            `refused load of ${packageName}`,
+         );
+         throw error;
+      }
       if (validationMsg) {
          await Environment.releasePackageConnections(
             pkg,
@@ -2757,7 +2810,7 @@ export class Environment {
       packageName: string,
       downloader: (stagingPath: string) => Promise<void>,
       validate: ((pkg: Package) => string | undefined) | undefined,
-      options: { update?: ApiPackage },
+      options: { update?: ApiPackage; admit?: AdmitUpdate },
    ): Promise<Package> {
       const stagingPath = await this.stageDownload(packageName, downloader);
 
@@ -2802,6 +2855,23 @@ export class Environment {
             });
          }
 
+         // The body as admitted under this lock hold, against the tree just
+         // loaded and the package it replaces: after the validator, so a
+         // request the publish checks refuse is answered 400 first.
+         let update = options.update;
+         const validateAndAdmit = (pkg: Package): string | undefined => {
+            const refused = validate?.(pkg);
+            if (refused) return refused;
+            if (update !== undefined && options.admit) {
+               update = options.admit(
+                  update,
+                  pkg.getPackageMetadata(),
+                  oldPackage?.getPackageMetadata(),
+               );
+            }
+            return undefined;
+         };
+
          let newPackage: Package;
          try {
             await fs.promises.rename(stagingPath, canonicalPath);
@@ -2811,13 +2881,13 @@ export class Environment {
             newPackage = await this.loadStagedTree(
                packageName,
                canonicalPath,
-               validate,
+               validateAndAdmit,
                { dryRun: false },
             );
             // The body's listing decides what the gates judge, so a refusal
             // here rolls the swap back rather than 400ing a tree already live.
-            const gateMsg = options.update
-               ? await this.gatesRefuseUnder(newPackage, options.update)
+            const gateMsg = update
+               ? await this.gatesRefuseUnder(newPackage, update)
                : "";
             if (gateMsg) {
                throw new BadRequestError(gateMsg);
@@ -2850,8 +2920,8 @@ export class Environment {
 
          // Same lock hold: as a separate step, a delete queued behind the
          // swap could run first and the update would 404 for completed work.
-         if (options.update !== undefined) {
-            await this._updatePackageLocked(packageName, options.update, {
+         if (update !== undefined) {
+            await this._updatePackageLocked(packageName, update, {
                recordLocation: true,
                regated: true,
             });
@@ -3280,7 +3350,18 @@ export class Environment {
       }
    }
 
-   public async updatePackage(packageName: string, body: ApiPackage) {
+   public async updatePackage(
+      packageName: string,
+      body: ApiPackage,
+      options: {
+         /**
+          * Judges `body` under the lock, against the metadata the update
+          * applies to (`previous` is absent): returns the body to apply, or
+          * throws to refuse it with nothing changed.
+          */
+         admit?: AdmitUpdate;
+      } = {},
+   ) {
       assertSafePackageName(packageName);
       // An install downloads before taking the lock, so a PATCH arriving then
       // would land on the copy about to be swapped away. Wait for loads in
@@ -3289,6 +3370,7 @@ export class Environment {
       return this.withPackageLock(packageName, () =>
          this._updatePackageLocked(packageName, body, {
             recordLocation: false,
+            admit: options.admit,
          }),
       );
    }
@@ -3303,14 +3385,10 @@ export class Environment {
       body: ApiPackage,
    ): Promise<string> {
       const existing = pkg.getPackageMetadata();
-      const explores =
-         body.explores !== undefined
-            ? body.explores.map(normalizeModelPath)
-            : existing.explores;
-      const queryableSources =
-         body.queryableSources != null
-            ? body.queryableSources
-            : existing.queryableSources;
+      const { explores, queryableSources } = resolvePatchedSettings(
+         body,
+         existing,
+      );
       const listing = (e?: string[], q?: string) =>
          JSON.stringify([e ?? null, q ?? "declared"]);
       if (
@@ -3331,8 +3409,10 @@ export class Environment {
    /** Apply a metadata PATCH to a loaded package. Caller holds the package mutex. */
    private async _updatePackageLocked(
       packageName: string,
-      body: ApiPackage,
+      requested: ApiPackage,
       options: {
+         /** See updatePackage: judged here, against what this apply reads. */
+         admit?: AdmitUpdate;
          /**
           * Record the body's `location` as the install location. True only
           * for an install; a PATCH naming a new location is a reinstall.
@@ -3349,48 +3429,37 @@ export class Environment {
       // `setPackageMetadata` replaces the whole object, so omitted fields
       // carry over; a wiped `explores` would silently serve every model.
       const existing = _package.getPackageMetadata();
+      // Under the lock and against this metadata, so a PATCH racing another
+      // is judged against what the first one left, not what it read before.
+      const body = options.admit
+         ? options.admit(requested, existing, undefined)
+         : requested;
       // Normalized as the worker normalizes on-disk explores, so publish and
       // reload agree.
       const normalizedExplores = body.explores?.map(normalizeModelPath);
-      const explores =
-         normalizedExplores !== undefined
-            ? normalizedExplores
-            : existing.explores;
-      const queryableSources =
-         body.queryableSources != null
-            ? body.queryableSources
-            : existing.queryableSources;
       // An explicit null clears it, reverting to live.
       const manifestLocation =
          body.manifestLocation !== undefined
             ? body.manifestLocation
             : existing.manifestLocation;
-      // `scope` and `materialization` apply when provided and are otherwise
-      // preserved; a schedule change re-arms the scheduler on its next tick.
-      // Null counts as omitted, so a client serializing unset fields as null
-      // neither trips the policy gate below (failing an orchestrated run) nor
-      // resets the policy. `manifestLocation` differs: null there clears.
+      // The settings a reload would lose resolve in one place, which the
+      // refusal of a change a reload discards reads too. `scope` and
+      // `materialization` apply when provided and are otherwise preserved; a
+      // schedule change re-arms the scheduler on its next tick. Null counts
+      // as omitted, so a client serializing unset fields as null neither
+      // trips the policy gate below (failing an orchestrated run) nor resets
+      // the policy. `manifestLocation` differs: null there clears.
       const scopeProvided = body.scope != null;
       const materializationProvided = body.materialization != null;
       const editingPolicy = scopeProvided || materializationProvided;
-      const scope = scopeProvided ? body.scope : existing.scope;
-      // Preserved the same way (null = omitted; the clear is an empty bag),
-      // resolved once across both wire homes and written to both: the serve
-      // path reads the canonical field and the build path the block, so they
-      // must not disagree.
-      const queryMetadata =
-         body.queryMetadata ??
-         body.materialization?.queryMetadata ??
-         existing.queryMetadata ??
-         existing.materialization?.queryMetadata ??
-         null;
-      const materializationBase = materializationProvided
-         ? body.materialization
-         : existing.materialization;
-      const materialization =
-         materializationBase || queryMetadata !== null
-            ? { ...(materializationBase ?? {}), queryMetadata }
-            : materializationBase;
+      const {
+         description,
+         explores,
+         queryableSources,
+         scope,
+         queryMetadata,
+         materialization,
+      } = resolvePatchedSettings(body, existing);
       // Judged before the listing goes live, so a query meanwhile is served
       // under the old one. Only a change to what is queryable re-runs them.
       const gateMsg = options.regated
@@ -3401,8 +3470,7 @@ export class Environment {
       // orchestrator identifies the package by. An empty string is a value.
       _package.setPackageMetadata({
          name: body.name != null ? body.name : existing.name,
-         description:
-            body.description != null ? body.description : existing.description,
+         description,
          resource: body.resource != null ? body.resource : existing.resource,
          location:
             options.recordLocation && body.location != null
@@ -3610,9 +3678,23 @@ export class Environment {
                );
                this.transition(packageName, { type: "unregister" });
             } else {
+               // Registered but never loaded (configured at boot, not yet
+               // listed): it goes as a loaded one does, registration and
+               // folder, or the next listing loads and serves it again. One
+               // whose load failed is already unregistered, and keeps its
+               // folder as before.
+               let retiredPath: string | null = null;
+               if (this.lifecycle.phaseOf(packageName) === "configured") {
+                  retiredPath = await this.retirePackageDirectory(packageName);
+                  this.transition(packageName, { type: "unregister" });
+                  await fs.promises
+                     .rm(this.installRecordPath(packageName), { force: true })
+                     .catch(() => {});
+               }
                // Not loaded, and no versions: its rows go under the lock too,
                // so a first versioned publish cannot land between.
                await options.removeRecords?.();
+               if (retiredPath) this.removeRetiredInBackground(retiredPath);
             }
             return;
          }
@@ -3636,29 +3718,7 @@ export class Environment {
             _package.getMalloyConfig().shutdown("close"),
          );
 
-         // Rename aside under the lock; the slow recursive remove is deferred.
-         const canonicalPath = safeJoinUnderRoot(
-            this.environmentPath,
-            packageName,
-         );
-         const retiredPath = this.allocateRetiredPath(packageName);
-         let renamed = false;
-         try {
-            await fs.promises.mkdir(path.dirname(retiredPath), {
-               recursive: true,
-            });
-            await fs.promises.rename(canonicalPath, retiredPath);
-            renamed = true;
-         } catch (err) {
-            logger.error(
-               "Error renaming package directory to retired during unload",
-               {
-                  error: err,
-                  environmentName: this.environmentName,
-                  packageName,
-               },
-            );
-         }
+         const retiredPath = await this.retirePackageDirectory(packageName);
 
          this.packages.delete(packageName);
          this.transition(packageName, { type: "unregister" });
@@ -3669,18 +3729,7 @@ export class Environment {
          // waited for it must find the package gone, rows and all.
          await options.removeRecords?.();
 
-         if (renamed) {
-            setImmediate(() => {
-               void fs.promises
-                  .rm(retiredPath, { recursive: true, force: true })
-                  .catch((err) => {
-                     logger.warn(
-                        `Failed to clean up retired package directory ${retiredPath}`,
-                        { error: err },
-                     );
-                  });
-            });
-         }
+         if (retiredPath) this.removeRetiredInBackground(retiredPath);
       });
       // The delete is committed; cleaning up must not turn it into a failure.
       for (const versionId of deletedVersions) {
@@ -3695,6 +3744,54 @@ export class Environment {
             });
          }
       }
+   }
+
+   /**
+    * Rename a deleted package's directory aside, under the caller's lock, so
+    * the slow recursive remove can be deferred. Null when there was nothing
+    * to rename (a configured package whose location never mounted) or the
+    * rename failed.
+    */
+   private async retirePackageDirectory(
+      packageName: string,
+   ): Promise<string | null> {
+      const canonicalPath = safeJoinUnderRoot(
+         this.environmentPath,
+         packageName,
+      );
+      const retiredPath = this.allocateRetiredPath(packageName);
+      try {
+         await fs.promises.mkdir(path.dirname(retiredPath), {
+            recursive: true,
+         });
+         await fs.promises.rename(canonicalPath, retiredPath);
+         return retiredPath;
+      } catch (err) {
+         if ((err as NodeJS.ErrnoException).code !== "ENOENT") {
+            logger.error(
+               "Error renaming package directory to retired during unload",
+               {
+                  error: err,
+                  environmentName: this.environmentName,
+                  packageName,
+               },
+            );
+         }
+         return null;
+      }
+   }
+
+   private removeRetiredInBackground(retiredPath: string): void {
+      setImmediate(() => {
+         void fs.promises
+            .rm(retiredPath, { recursive: true, force: true })
+            .catch((err) => {
+               logger.warn(
+                  `Failed to clean up retired package directory ${retiredPath}`,
+                  { error: err },
+               );
+            });
+      });
    }
 
    /**
@@ -3728,6 +3825,9 @@ export class Environment {
       const previousMalloyConfig = this.malloyConfig;
       this.malloyConfig = malloyConfig;
       this.apiConnections = malloyConfig.apiConnections;
+      // Deliberately leaves connectionsAuthoritative alone: ConnectionService
+      // calls this for a single-connection edit, which does not make a
+      // fallback list the desired state. See {@link connectionsAuthoritative}.
 
       if (previousMalloyConfig !== malloyConfig) {
          this.retireConnectionGeneration(
@@ -3809,6 +3909,8 @@ export class Environment {
       await this.releaseAllRetiredConnectionGenerations();
 
       this.apiConnections = [];
+      // Torn down: as for destinations, not a list to prune against.
+      this.connectionsAuthoritative = false;
 
       logger.info(
          `Closed all connections for environment ${this.environmentName}`,

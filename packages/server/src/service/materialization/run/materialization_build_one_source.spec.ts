@@ -106,7 +106,7 @@ describe("buildOneSource", () => {
       });
 
       const bags = runSQL.getCalls().map((c) => c.args[1]?.queryMetadata);
-      expect(bags).toHaveLength(4);
+      expect(bags).toHaveLength(3);
       for (const bag of bags) {
          expect(bag).toEqual({
             deployment: "eu",
@@ -155,11 +155,12 @@ describe("buildOneSource", () => {
       const entry = await callBuildOneSource({ runSQL }, "orders_v1");
 
       const sql = runSQL.getCalls().map((c) => c.args[0] as string);
+      // DuckDB: the served table is dropped and replaced in one transaction,
+      // so no reader finds the name missing.
       expect(sql).toEqual([
          'DROP TABLE IF EXISTS "orders_v1_abcdef123456"',
          'CREATE TABLE "orders_v1_abcdef123456" AS (SELECT * FROM t)',
-         'DROP TABLE IF EXISTS "orders_v1"',
-         'ALTER TABLE "orders_v1_abcdef123456" RENAME TO "orders_v1"',
+         'BEGIN TRANSACTION;\nDROP TABLE IF EXISTS "orders_v1";\nALTER TABLE "orders_v1_abcdef123456" RENAME TO "orders_v1";\nCOMMIT;',
       ]);
       expect(entry.physicalTableName).toBe("orders_v1");
       expect(entry.sourceEntityId).toBe("abcdef1234567890");
@@ -183,8 +184,10 @@ describe("buildOneSource", () => {
       expect(sql).toEqual([
          'DROP TABLE IF EXISTS "MY_SCHEMA"."orders_v1_abcdef123456"',
          'CREATE TABLE "MY_SCHEMA"."orders_v1_abcdef123456" AS (SELECT * FROM t)',
-         'DROP TABLE IF EXISTS "MY_SCHEMA"."orders_v1"',
+         // Snowflake: renamed aside, the new table renamed in, the old dropped.
+         'ALTER TABLE "MY_SCHEMA"."orders_v1" RENAME TO "MY_SCHEMA"."orders_v1_oabcdef12345"',
          'ALTER TABLE "MY_SCHEMA"."orders_v1_abcdef123456" RENAME TO "MY_SCHEMA"."orders_v1"',
+         'DROP TABLE IF EXISTS "MY_SCHEMA"."orders_v1_oabcdef12345"',
       ]);
       // The manifest keeps the logical name the control plane sent.
       expect(entry.physicalTableName).toBe("MY_SCHEMA.orders_v1");
@@ -201,6 +204,9 @@ describe("buildOneSource", () => {
       );
 
       const sql = runSQL.getCalls().map((c) => c.args[0] as string);
+      expect(sql[2]).toBe(
+         "ALTER TABLE `mydataset`.`orders_v1` RENAME TO `orders_v1_oabcdef12345`",
+      );
       expect(sql[3]).toBe(
          "ALTER TABLE `mydataset`.`orders_v1_abcdef123456` RENAME TO `orders_v1`",
       );
@@ -274,8 +280,9 @@ describe("buildOneSource", () => {
       expect(sql).toEqual([
          "DROP TABLE IF EXISTS `ds`.`orders_v1_abcdef123456`",
          "CREATE TABLE `ds`.`orders_v1_abcdef123456` AS (SELECT * FROM t)",
-         "DROP TABLE IF EXISTS `ds`.`orders_v1`",
+         "ALTER TABLE `ds`.`orders_v1` RENAME TO `orders_v1_oabcdef12345`",
          "ALTER TABLE `ds`.`orders_v1_abcdef123456` RENAME TO `orders_v1`",
+         "DROP TABLE IF EXISTS `ds`.`orders_v1_oabcdef12345`",
       ]);
       expect(entry.physicalTableName).toBe("ds.orders_v1");
    });

@@ -20,6 +20,7 @@ import {
    ConnectionFailedError,
    ConnectionNotFoundError,
    ConnectionPoolExhaustedError,
+   ConnectionSaveError,
    DashboardNotFoundError,
    DestinationNotFoundError,
    DryRunCapacityError,
@@ -60,6 +61,7 @@ import {
    UnsupportedCatalogFormatError,
    VersionFilesMissingError,
    WriteConflictError,
+   InstalledFromLocationError,
    WriteRollbackFailedError,
    WriteRolledBackError,
    WriteVerifyError,
@@ -395,6 +397,17 @@ const CASES: Array<[string, () => unknown]> = [
    ],
    ["WriteConflictError", () => new WriteConflictError("file changed")],
    [
+      "WriteConflictError (FILE_EXISTS)",
+      () => new WriteConflictError("file exists", "FILE_EXISTS"),
+   ],
+   [
+      "InstalledFromLocationError",
+      () =>
+         new InstalledFromLocationError(
+            "installed from gs://b/p.zip; a reload would discard the change",
+         ),
+   ],
+   [
       "WriteRolledBackError",
       () =>
          new WriteRolledBackError("the reload failed; restored", {
@@ -404,6 +417,14 @@ const CASES: Array<[string, () => unknown]> = [
    [
       "WriteRollbackFailedError",
       () => new WriteRollbackFailedError("the restore failed"),
+   ],
+   [
+      "ConnectionSaveError",
+      () =>
+         new ConnectionSaveError(
+            'Environment "env" was updated, but the server could not save connection(s) "pg".',
+            ["pg"],
+         ),
    ],
    ["WriteVerifyError", () => new WriteVerifyError("written text differs")],
    [

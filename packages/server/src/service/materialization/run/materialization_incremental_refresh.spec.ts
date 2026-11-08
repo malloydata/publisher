@@ -344,7 +344,7 @@ describe("buildOneSource: incremental refresh", () => {
          'CREATE TABLE "orders_v1_abcdef123456" AS (SELECT * FROM t)',
       );
       expect(statements).toContain(
-         'ALTER TABLE "orders_v1_abcdef123456" RENAME TO "orders_v1"',
+         'DROP TABLE IF EXISTS "orders_v1";\nALTER TABLE "orders_v1_abcdef123456" RENAME TO "orders_v1";',
       );
       // Cleared before the rebuild starts, then set from the table it wrote.
       expect(remove.calledOnce).toBe(true);
@@ -391,8 +391,8 @@ describe("buildOneSource: incremental refresh", () => {
       expect(statements).toEqual([
          'DROP TABLE IF EXISTS "orders_v1_abcdef123456"',
          'CREATE TABLE "orders_v1_abcdef123456" AS (SELECT * FROM t)',
-         'DROP TABLE IF EXISTS "orders_v1"',
-         'ALTER TABLE "orders_v1_abcdef123456" RENAME TO "orders_v1"',
+         // Postgres: the swap is one implicit transaction in one call.
+         'DROP TABLE IF EXISTS "orders_v1";\nALTER TABLE "orders_v1_abcdef123456" RENAME TO "orders_v1";',
       ]);
       expect(upsert.called).toBe(false);
       expect(remove.called).toBe(false);
@@ -436,7 +436,8 @@ describe("buildOneSource: incremental refresh", () => {
          context,
          "abcdef1234567890",
       );
-      expect(runSQL.getCalls().map((c) => c.args[0])).toHaveLength(4);
+      // The staging drop, the CTAS and the one-transaction swap.
+      expect(runSQL.getCalls().map((c) => c.args[0])).toHaveLength(3);
       expect(upsert.called).toBe(false);
    });
 
