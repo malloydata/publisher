@@ -29,11 +29,12 @@ v1 is the release that settles all four and promises them. Each surface is held 
 2. **A deprecated form is a warning with its rewrite, then a refusal with its rewrite, then gone.** Every deprecated key and annotation is counted before it goes, and the migration guide maps each old form to its new one.
 3. **An invalid form fails loudly, at publish.** A malformed annotation, a name that resolves to nothing, or a tag on the wrong kind of field refuses the publish with a coded message; nothing loads clean with part of its meaning silently dropped, and nothing that would fail open is ever accepted.
 
-**The configuration** ([Appendix C](#appendix-c-the-configuration-registry-and-mapping)) is held to three:
+**The configuration** ([Appendix C](#appendix-c-the-configuration-registry-and-mapping), and [Settings and resources](#settings-and-resources)) is held to four. The first three are about configuring the server; the fourth separates that from initializing what it serves.
 
 1. **One registry.** Every setting is declared once, with one key, one type, one default and one description, and `--help` and the configuration reference are generated from it.
 2. **Three sources, one precedence.** Any setting can be given in the file, as `PUBLISHER_<KEY>` or as `--<key>`, with the variable and flag derived from the key; a flag wins over a variable, which wins over the file.
-3. **One parser.** A value is read the same way from every source, `${VAR}` substitution included; a bad value, an unknown key or an unknown flag fails startup with a message naming the setting. The file holds settings only; resources are created through the API.
+3. **One parser.** A value is read the same way from every source, `${VAR}` substitution included; a bad value, an unknown key or an unknown flag fails startup with a message naming the setting.
+4. **Settings are not resources.** `publisher.config.json` configures the process: ports, limits, retrieval, the admin API. Environments, connections and packages are resources, with the catalog as their one source of truth; they are created through the API, by a person, by an orchestrator, or by an init script that `malloy-pub apply` applies against a running server, and the server never reads a resource declaration from a file. Today's `environments` block is the one place the two are mixed, and it leaves the file. The one bootstrap is `--apply <file>`, which runs the same `apply` against the server's own API when the catalog is empty, so the zero-flag quick start and a single container keep working.
 
 **The storage** (#1560) is held to three:
 
