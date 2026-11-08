@@ -780,6 +780,18 @@ paths:
           schema:
             type: boolean
             default: false
+        - name: profile
+          in: query
+          schema:
+            type: string
+            enum:
+              - full
+              - light
+            default: full
+          description: "`light` compiles and runs the authorize validation, so a broken model still answers 4xx, and defers what a
+            draft checkpoint does not need to serve: the build plan and preaggregation companions, render-tag prepares,
+            report lint, the discovery-index build, and the per-file row counts of `data-files`. Each deferred part is
+            derived on its first read. For a package whose every edit publishes a version."
       requestBody:
         required: true
         content:
@@ -3367,9 +3379,11 @@ components:
           enum:
             - ready
             - empty
+            - deferred
             - unavailable
-          description: "`ready`: `plan` is present. `empty`: the version declares no persist source. `unavailable`: the plan could
-            not be derived at load; reload the package to derive it again."
+          description: "`ready`: `plan` is present. `empty`: the version declares no persist source. `deferred`: the version was
+            published with `profile=light` and the plan is being derived now that it was read; read again.
+            `unavailable`: the plan could not be derived at load; reload the package to derive it again."
         plan:
           $ref: "#/components/schemas/BuildPlan"
         message:
