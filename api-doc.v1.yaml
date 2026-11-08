@@ -127,7 +127,7 @@ paths:
             $ref: "#/components/schemas/IdentifierPattern"
       responses:
         "200":
-          description: The snapshot. Served at both `/api/v0/status` and `/api/v1/status`.
+          description: The snapshot in the v1 shape. `/api/v0/status` keeps the v0 shape, with additive fields only.
           content:
             application/json:
               schema:
