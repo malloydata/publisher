@@ -76,7 +76,6 @@ import {
    assertNoAuthorizeTagLike,
    assertNoCallerAuthorizeAnnotation,
    assertNoCallerClassificationAnnotation,
-   hasCallerAuthorizeAnnotation,
 } from "./authorize";
 import {
    buildReportManifest,
@@ -147,11 +146,11 @@ import {
    validateModelPreaggregation,
    type PreaggregateViolation,
 } from "./preaggregation_validation";
-import { type GovernedRunnable } from "./governance/governed_runnable";
 import {
    QueryGovernor,
    REQUEST_CHAIN_MAX_NAMES,
    type GovernorHost,
+   type GovernRequest,
 } from "./governance/query_governor";
 import { type SiblingModelDefResolver } from "./filter_binding_guard";
 // Aliased with an `Impl` suffix because `Model` declares private wrapper
@@ -641,6 +640,14 @@ export class Model {
     */
    private readonly governor: QueryGovernor;
 
+   /**
+    * This model's {@link QueryGovernor}: the authorization `/compile` runs
+    * its gates through (the query route reaches it inside {@link runQuery}).
+    */
+   public governance(): QueryGovernor {
+      return this.governor;
+   }
+
    /** What {@link governor} reads from this model; see {@link GovernorHost}. */
    private governorHost(
       gateRuntime: HydrationRuntime | undefined,
@@ -729,13 +736,6 @@ export class Model {
    /** See {@link QueryGovernor.assertTextNameVisible}. */
    public assertTextNameVisible(query: string, definitions: string): void {
       this.governor.assertTextNameVisible(query, definitions);
-   }
-
-   /** See {@link QueryGovernor.authorizeAndBindRunnable}. */
-   public authorizeAndBindRunnable(
-      ...args: Parameters<QueryGovernor["authorizeAndBindRunnable"]>
-   ): Promise<GovernedRunnable> {
-      return this.governor.authorizeAndBindRunnable(...args);
    }
 
    /** See {@link QueryGovernor.assertAuthorizedForText}. */
@@ -2630,63 +2630,18 @@ export class Model {
          !sourceName && !queryName && query
             ? { kind: "query", text: query }
             : undefined;
-      const readCallerJoinText =
-         !!callerRegion && !hasCallerAuthorizeAnnotation(callerRegion.text);
-      // Under `includeHiddenFilesAndSources` there is no boundary to check a join against.
-      if (readCallerJoinText && !includeHiddenFilesAndSources) {
-         await this.governor.assertCallerJoinBasesEarly(
-            callerRegion.text,
-            givens ?? {},
-            "boundary",
-         );
-      }
-
-      // Early authorize gate from surface syntax, BEFORE compilation, so a
-      // denied caller cannot learn a gated source's columns from "field not
-      // found" errors. The authoritative compiled-source gate below still runs.
-      const surfaceName = extractRunTargetSourceName(query);
-      const earlySource =
-         sourceName ||
-         (queryName
-            ? this.queries?.find((q) => q.name === queryName)?.sourceName
-            : undefined) ||
-         // A run target can be a declared QUERY (`run: locked_q + { … }`):
-         // resolve it to its source, or nothing gates it early and the
-         // refinement's compile errors leak the source.
-         (surfaceName && !this.sources?.some((s) => s.name === surfaceName)
-            ? this.queries?.find((q) => q.name === surfaceName)?.sourceName
-            : undefined) ||
-         surfaceName;
-      if (earlySource) {
-         await this.governor.assertAuthorized(
-            earlySource,
-            givens ?? {},
-            bypassAuthorize,
-         );
-      }
-      // Each lock is decided (and booked) once before compile.
-      const decided = new Set(earlySource ? [earlySource] : []);
-      // Not under `earlySource`: a join needs no readable run target.
-      if (readCallerJoinText && !bypassAuthorize) {
-         await this.governor.assertCallerJoinBasesEarly(
-            callerRegion.text,
-            givens ?? {},
-            "locks",
-            decided,
-            includeHiddenFilesAndSources,
-         );
-      }
-      // Every other locked name the text mentions, wherever it sits: the
-      // pre-compile oracle guard, never the authority.
-      if (query && !hasCallerAuthorizeAnnotation(query)) {
-         await this.governor.assertLocksOnAppearingNames(
-            query,
-            givens ?? {},
-            bypassAuthorize,
-            decided,
-            includeHiddenFilesAndSources,
-         );
-      }
+      // The advisory pre-compile checks (`OracleGuard`): a refused caller hears
+      // the gate's 403 or the boundary's 404 before any compile error could
+      // describe the source. Never the authority; `govern` below is.
+      const { earlySource } = await this.governor.oracle.beforeQueryCompile({
+         sourceName,
+         queryName,
+         query,
+         givens,
+         bypassAuthorize,
+         includeHiddenFilesAndSources,
+         callerRegion,
+      });
 
       // Wrap loadQuery calls in try-catch to handle query parsing errors
       try {
@@ -3058,53 +3013,34 @@ export class Model {
       const compiledSource =
          await this.governor.resolveAuthorizeSourceFromRunnable(runnable);
 
-      // Boundary backstop (404) BEFORE the authorize gate (403), for "deferred"
-      // admissions only (see assertQueryBoundaryEarly).
-      if (boundary === "deferred") {
-         this.assertQueryBoundaryCompiled(compiledSource, query);
-         // The LIVE compile keeps the caller's joins; a routed one does not.
-         if (callerRegion && liveRunnable) {
-            await this.governor.assertCallerJoinsQueryable(
-               liveRunnable,
-               callerRegion,
-            );
-         }
-      }
-
-      // The AUTHORITATIVE gate, on the compiled run target (the early gate
-      // cannot resolve named-query, multi-statement or caller-declared forms).
-      // MUST run unconditionally and its result MUST be assigned back to
-      // `runnable`: for a row-level gate the reassignment IS the enforcement.
+      // The AUTHORITATIVE governance, on the compiled run target (the early
+      // checks cannot resolve named-query, multi-statement or caller-declared
+      // forms): the compiled boundary backstop (404) for a "deferred"
+      // admission (see assertQueryBoundaryEarly), then every gate (403), the
+      // row-level graft, the bind guards and the ceiling. MUST run
+      // unconditionally and its runnable MUST replace `runnable`: for a
+      // row-level gate the replacement IS the enforcement.
       //
       // Do NOT guard on hasAuthorize(): it misses inherited gates. The recompile
       // stays restricted, as the original compile was.
-      const bindOptions = {
+      const governRequest: GovernRequest = {
+         givens,
+         bypassAuthorize,
+         boundary:
+            boundary === "deferred" ? { compiledSource, query } : undefined,
+         callerRegion,
          recompile: (mm: ModelMaterializer) =>
             mm.loadRestrictedQuery(queryString),
-         bypassAuthorize,
          // The caller's OWN text, not the synthesized/injected `queryString`.
          callerQueryText: query,
-         callerJoins:
-            callerRegion && liveRunnable
-               ? { runnable: liveRunnable, region: callerRegion }
-               : undefined,
+         ceiling: { audit, source: () => compiledSource ?? sourceName },
       };
-      const governed = await this.governor.authorizeAndBindRunnable(
-         runnable,
-         givens ?? {},
-         bindOptions,
+      const { runnable: governed, decision } = await this.governor.govern(
+         governRequest,
+         // The LIVE compile keeps the caller's joins; a routed one does not.
+         { runnable, live: liveRunnable },
       );
       runnable = governed;
-      if (!bypassAuthorize) {
-         await this.governor.assertWithinCarriesCeiling(
-            audit,
-            liveRunnable ?? runnable,
-            runnable,
-            compiledSource ?? sourceName,
-            givens,
-            callerRegion,
-         );
-      }
       if (runCount !== undefined && runCount > 1) {
          queryExecutionHistogram().record(
             performance.now() - startTime,
@@ -3123,9 +3059,7 @@ export class Model {
                runnable,
                givens,
                compiledSource ?? sourceName ?? "unknown",
-               (
-                  this.governor.rowLevelFilteredRunnables.get(runnable) ?? []
-               ).flatMap((graft) => graft.givenNames),
+               decision.grafts.flatMap((graft) => graft.givenNames),
             ) ?? multipleRunStatementsError(runCount)
          );
       }
@@ -3281,10 +3215,14 @@ export class Model {
          // so this decides nothing new; it is what keeps an ungoverned live
          // runnable from ever running if that refusal narrows. Outside the
          // retry's try, so a denial answers 403, not a mapped run error.
-         const governedLive = await this.governor.authorizeAndBindRunnable(
-            liveRunnable!,
-            givens ?? {},
-            { ...bindOptions, bypassAlreadyNoted: true },
+         const { runnable: governedLive } = await this.governor.govern(
+            {
+               ...governRequest,
+               boundary: undefined,
+               ceiling: undefined,
+               bypassAlreadyNoted: true,
+            },
+            { runnable: liveRunnable!, live: liveRunnable },
          );
          try {
             // A fresh prepare re-derives the row cap from the live shape (a
@@ -3326,12 +3264,8 @@ export class Model {
 
       // A gate that matched nothing is a normal 200 with zero rows,
       // indistinguishable from an empty source, so record it.
-      if (
-         this.governor.queryHadRowLevelFilterAttached(runnable) &&
-         queryResults.totalRows === 0
-      ) {
-         const first =
-            this.governor.rowLevelFilteredRunnables.get(runnable)?.[0];
+      if (decision.grafts.length > 0 && queryResults.totalRows === 0) {
+         const first = decision.grafts[0];
          recordRowLevelGateDecision(
             "empty_after_filter",
             first?.callerJoinPath ? "caller_join" : "entry_point",
@@ -3372,13 +3306,13 @@ export class Model {
             // The storage serve shape carries no annotations; the live one does.
             runnable: liveRunnable ?? runnable,
             modelDef: this.modelDef,
-            enforced: this.governor.enforcedGatesByRunnable.get(runnable),
+            enforced: decision.enforced,
             apiSources: this.sources,
             modelGivens: this.givens,
             source: compiledSource ?? sourceName,
             givens,
             bypassAuthorize,
-            grafts: this.governor.rowLevelFilteredRunnables.get(runnable) ?? [],
+            grafts: decision.grafts,
             rowCount: queryResults.totalRows,
          });
       } catch (err) {
@@ -4074,7 +4008,7 @@ export class Model {
             // bind below. Skipped with no refinement: the bind would see the
             // same runnable.
             if (cell.modelMaterializer && cellFilters.length > 0) {
-               await this.governor.probeEntryPointGates(
+               await this.governor.oracle.beforeCellRefinement(
                   cell.runnable,
                   givens ?? {},
                   graftScope,
@@ -4114,18 +4048,19 @@ export class Model {
                   givens,
                );
 
-            // The AUTHORITATIVE bind, on the runnable that actually executes
-            // (after refinement, so the graft composes with the `#(filter)`
-            // refinement instead of dropping it). Cells are author-curated, so
-            // the recompile uses `loadQuery`, not `loadRestrictedQuery`.
-            // What governance returned: the only thing this cell may run.
-            let cellGoverned: GovernedRunnable;
-            if (cell.modelMaterializer) {
-               const textForRecompile = textToExecute;
-               // Own scope: graft the compiled queryDef (read off
-               // `runnableToExecute`, so the refinement survives) with its
-               // paired proof; see `ownScopeQueryDefBinder`.
-               const ownScopeBinder = usesOwnScope
+            // The AUTHORITATIVE governance, on the runnable that actually
+            // executes (after refinement, so the graft composes with the
+            // `#(filter)` refinement instead of dropping it). Cells are
+            // author-curated, so the recompile uses `loadQuery`, not
+            // `loadRestrictedQuery`. The boundary was settled above
+            // (`assertNotebookCellOnSurface`), and a cell has no caller text.
+            // What governance returned is the only thing this cell may run.
+            const textForRecompile = textToExecute;
+            // Own scope: graft the compiled queryDef (read off
+            // `runnableToExecute`, so the refinement survives) with its
+            // paired proof; see `ownScopeQueryDefBinder`.
+            const ownScopeBinder =
+               cell.modelMaterializer && usesOwnScope
                   ? this.governor.ownScopeQueryDefBinder(
                        (
                           (await runnableToExecute.getPreparedQuery()) as {
@@ -4135,39 +4070,33 @@ export class Model {
                        graftScope!,
                     )
                   : undefined;
-               cellGoverned = await this.governor.authorizeAndBindRunnable(
-                  runnableToExecute,
-                  givens ?? {},
+            const { runnable: cellGoverned, decision: cellDecision } =
+               await this.governor.govern(
                   {
-                     recompile: ownScopeBinder
-                        ? ownScopeBinder.recompile
-                        : (mm) => mm.loadQuery(textForRecompile),
-                     proveGraft: ownScopeBinder?.prove,
-                     graftScope,
+                     givens,
+                     ...(cell.modelMaterializer
+                        ? {
+                             recompile: ownScopeBinder
+                                ? ownScopeBinder.recompile
+                                : (mm: ModelMaterializer) =>
+                                     mm.loadQuery(textForRecompile),
+                             proveGraft: ownScopeBinder?.prove,
+                             graftScope,
+                          }
+                        : // No materializer to recompile against, so a
+                          // row-level gate denies.
+                          { bypassAuthorize: false }),
+                     ceiling: {
+                        audit,
+                        source: async (governed) =>
+                           (await this.governor.resolveAuthorizeSourceFromRunnable(
+                              governed,
+                           )) ?? extractRunTargetSourceName(cell.text),
+                     },
                   },
+                  { runnable: runnableToExecute },
                );
-               runnableToExecute = cellGoverned;
-            } else {
-               // No materializer to recompile against, so a row-level gate
-               // denies here (as `assertAuthorizedForAllSources` did); the
-               // same bind, kept so the cell runs what governance returned.
-               cellGoverned = await this.governor.authorizeAndBindRunnable(
-                  runnableToExecute,
-                  givens ?? {},
-                  { bypassAuthorize: false },
-               );
-               runnableToExecute = cellGoverned;
-            }
-            await this.governor.assertWithinCarriesCeiling(
-               audit,
-               runnableToExecute,
-               runnableToExecute,
-               (await this.governor.resolveAuthorizeSourceFromRunnable(
-                  runnableToExecute,
-               )) ?? extractRunTargetSourceName(cell.text),
-               givens,
-               undefined,
-            );
+            runnableToExecute = cellGoverned;
             // After the gate, as on the query path; before prepare.
             this.assertFilterGivens(givens);
 
@@ -4216,8 +4145,7 @@ export class Model {
                audit.summary = await summarizeQueryAccess({
                   runnable: cellRunnable,
                   modelDef: this.modelDef,
-                  enforced:
-                     this.governor.enforcedGatesByRunnable.get(cellRunnable),
+                  enforced: cellDecision.enforced,
                   apiSources: this.sources,
                   modelGivens: this.givens,
                   source:
@@ -4226,10 +4154,7 @@ export class Model {
                      )) ?? extractRunTargetSourceName(cell.text),
                   givens,
                   bypassAuthorize: false,
-                  grafts:
-                     this.governor.rowLevelFilteredRunnables.get(
-                        cellRunnable,
-                     ) ?? [],
+                  grafts: cellDecision.grafts,
                   rowCount: result?.totalRows ?? 0,
                });
             } catch (err) {
@@ -4242,7 +4167,7 @@ export class Model {
             if (
                result?._queryResult &&
                result.totalRows === 0 &&
-               this.governor.queryHadRowLevelFilterAttached(runnableToExecute)
+               cellDecision.grafts.length > 0
             ) {
                recordRowLevelGateDecision("empty_after_filter");
             }
