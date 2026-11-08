@@ -207,6 +207,20 @@ source: comp_own is compose(locked, scoped)
 source: qs_over_comp is comp_bare -> { group_by: region }
 
 source: qs_over_comp_second is comp_bare_second_gated -> { group_by: region }
+`,
+});
+
+/**
+ * A `sql()` source embedding a gated source (`%{ locked -> {...} }`). Its own
+ * package, because a model carrying one is refused at load
+ * (`sql_embed_gates.ts`), so it would take the matrix down with it. The gate
+ * walks still compare it, over a raw compile.
+ */
+export const sqlEmbedsGatedPackage = (): Record<string, string> => ({
+   "sql_embeds.malloy": `${GIVENS_FLAG}given: ROLES :: string[]
+
+#(authorize) 'admin' in $ROLES
+source: locked is ${ACCOUNTS}
 
 source: sql_embeds_locked is duckdb.sql("""select * from (%{ locked -> { select: * } })""")
 `,
@@ -253,4 +267,5 @@ export const GATE_WALK_PACKAGES: ReadonlyArray<{
    ...CUSTOMER_GATE_PACKAGES,
    { name: "inheritance matrix", files: inheritanceMatrixPackage },
    { name: "gated import chain", files: gatedImportChainPackage },
+   { name: "sql embeds gated", files: sqlEmbedsGatedPackage },
 ];
