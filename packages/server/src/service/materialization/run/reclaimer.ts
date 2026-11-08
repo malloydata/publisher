@@ -22,6 +22,7 @@ import type { MaterializationEnvironment, MaterializationHost } from "../host";
 import { ManifestEntry } from "../types";
 import { dropStorageTable } from "./materialization_build_session";
 import {
+   backupSuffix,
    BuildEnvironment,
    connectionMetadataLayers,
    redactConnectionSecrets,
@@ -474,6 +475,14 @@ export class Reclaimer {
             await connection.runSQL(
                `DROP TABLE IF EXISTS ${quoteTablePath(
                   `${physicalTableName}${stagingSuffix(entry.sourceEntityId)}`,
+                  dialect,
+               )}`,
+               dropOptions,
+            );
+            // And a crash between the swap's two renames, the previous copy.
+            await connection.runSQL(
+               `DROP TABLE IF EXISTS ${quoteTablePath(
+                  `${physicalTableName}${backupSuffix(entry.sourceEntityId)}`,
                   dialect,
                )}`,
                dropOptions,

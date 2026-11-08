@@ -388,6 +388,15 @@ export function stagingSuffix(sourceEntityId: string): string {
 }
 
 /**
+ * Suffix of the name a served table is moved aside to while its rebuilt
+ * replacement is renamed into place. The same length as {@link stagingSuffix},
+ * so it fits wherever a staging name does, and never equal to it.
+ */
+export function backupSuffix(sourceEntityId: string): string {
+   return `_o${sourceEntityId.replace(/-/g, "").substring(0, STAGING_ID_LEN - 1)}`;
+}
+
+/**
  * Physical table name the publisher self-assigns in auto-run mode: the
  * `#@ persist name=<table>` value if present, else the Malloy source name.
  * The author owns quoting the `name=` value for the dialect.

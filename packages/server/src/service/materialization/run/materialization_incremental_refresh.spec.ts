@@ -391,8 +391,11 @@ describe("buildOneSource: incremental refresh", () => {
       expect(statements).toEqual([
          'DROP TABLE IF EXISTS "orders_v1_abcdef123456"',
          'CREATE TABLE "orders_v1_abcdef123456" AS (SELECT * FROM t)',
-         'DROP TABLE IF EXISTS "orders_v1"',
+         'SELECT 1 FROM "orders_v1" WHERE 1 = 0',
+         'DROP TABLE IF EXISTS "orders_v1_oabcdef12345"',
+         'ALTER TABLE "orders_v1" RENAME TO "orders_v1_oabcdef12345"',
          'ALTER TABLE "orders_v1_abcdef123456" RENAME TO "orders_v1"',
+         'DROP TABLE IF EXISTS "orders_v1_oabcdef12345"',
       ]);
       expect(upsert.called).toBe(false);
       expect(remove.called).toBe(false);
@@ -436,7 +439,7 @@ describe("buildOneSource: incremental refresh", () => {
          context,
          "abcdef1234567890",
       );
-      expect(runSQL.getCalls().map((c) => c.args[0])).toHaveLength(4);
+      expect(runSQL.getCalls().map((c) => c.args[0])).toHaveLength(7);
       expect(upsert.called).toBe(false);
    });
 
