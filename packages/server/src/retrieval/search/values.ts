@@ -27,7 +27,6 @@ import {
 import { quoteMalloyIdentifier } from "../../service/authorize";
 import type { EnvironmentStore } from "../../service/environment_store";
 import { QueryPrivileges } from "../../service/model_query_request";
-import { tryAcquireQuerySlot } from "../../query_concurrency";
 import { runWithQueryTimeout } from "../../query_timeout";
 import { ModelNotFoundError } from "../../errors";
 import type { Environment } from "../../service/environment";
@@ -35,6 +34,7 @@ import type { Model } from "../../service/model";
 import type { Package } from "../../service/package";
 import { resolveQueryModel } from "../../service/run_model_query";
 import type { SearchErrorDetails } from "../model/types";
+import { retrievalRegistry } from "../registry";
 
 /**
  * The model a value lookup queries, or why there is none: `error` is the
@@ -54,7 +54,7 @@ export type QueryModelResolver = (
 
 /**
  * The resolver with no adapter installed: a failure is its own error, unworded.
- * The server installs the MCP tools' resolver (setQueryModelResolver), whose
+ * The composition root gives the RetrievalRegistry the MCP tools' resolver, whose
  * refusal is worded the way execute_query words it, because a value lookup's
  * refusal reaches the agent in a get_context warning.
  */
@@ -76,18 +76,6 @@ const plainQueryModelResolver: QueryModelResolver = async (
    await model.getModel();
    return { model, environment, pkg };
 };
-
-let queryModelResolver: QueryModelResolver = plainQueryModelResolver;
-
-/**
- * Install the resolver value lookups use (the composition root passes the MCP
- * tools' getModelForQuery); `undefined` restores the plain one.
- */
-export function setQueryModelResolver(
-   resolver: QueryModelResolver | undefined,
-): void {
-   queryModelResolver = resolver ?? plainQueryModelResolver;
-}
 
 /** What one lookup query returns. */
 interface DistinctValues {
@@ -147,7 +135,7 @@ interface DistinctValueQuery {
    filterParams?: Record<string, string | string[]>;
    /** Also count each value's rows (`n`) and read the most frequent first. */
    counted: boolean;
-   /** Labels a refusal at the query cap; see tryAcquireQuerySlot. */
+   /** Labels a refusal at the query cap; see QuerySlots.tryAcquire. */
    routeLabel: string;
    /** Who asked, from the request headers, for the access record. */
    identity?: AccessIdentity;
@@ -165,6 +153,9 @@ export async function queryDistinctValues(
    request: DistinctValueQuery,
 ): Promise<Array<Record<string, unknown>>> {
    let refusal: SearchErrorDetails | undefined;
+   const registry = retrievalRegistry();
+   const queryModelResolver =
+      registry.queryModelResolver ?? plainQueryModelResolver;
    try {
       const run = async (audit: QueryAudit) => {
          const found = await queryModelResolver(
@@ -188,7 +179,7 @@ export async function queryDistinctValues(
             ? `where: ${where} group_by: v is ${dim} aggregate: n is count() order_by: n desc limit: ${request.limit + 1}`
             : `where: ${where} group_by: v is ${dim} limit: ${request.limit + 1}`;
          const query = `run: ${quoteMalloyIdentifier(request.source)} -> { ${body} }`;
-         const slot = tryAcquireQuerySlot(request.routeLabel);
+         const slot = registry.querySlots.tryAcquire(request.routeLabel);
          try {
             const { compactResult } = await runWithQueryTimeout(
                (signal) =>

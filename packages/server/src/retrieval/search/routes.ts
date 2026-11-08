@@ -20,6 +20,7 @@
 
 import type { Relationship } from "@malloydata/malloy-interfaces";
 import { entityId } from "./response";
+import { retrievalRegistry } from "../registry";
 import {
    ROUTE_MAX_DEPTH,
    type Catalog,
@@ -37,13 +38,15 @@ export interface Route {
    id: string;
 }
 
-const reverseCache = new WeakMap<
+/** Reverse join walks per catalog (RetrievalRegistry.reverseJoins). */
+export type ReverseJoinsCache = WeakMap<
    Catalog,
    Map<string, Array<{ from: string; path: string[]; fanout: Relationship }>>
->();
+>;
 
 /** For each source, every (source, path) that reaches it, shortest first. */
 function reverseJoins(catalog: Catalog) {
+   const reverseCache = retrievalRegistry().reverseJoins;
    let rev = reverseCache.get(catalog);
    if (rev) return rev;
    rev = new Map();

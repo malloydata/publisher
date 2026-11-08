@@ -13,6 +13,11 @@ import {
    startPackageEmbeddingSync,
 } from "./index/package_embedding";
 import type { SearchResult } from "./model/types";
+import {
+   installRetrievalRegistry,
+   type RetrievalRegistry,
+   retrievalRegistry,
+} from "./registry";
 import { type FcjQueryArgs, runFcjQuery } from "./search/engine";
 
 /** One ranked search: everything runFcjQuery takes but the store and its own signal. */
@@ -21,14 +26,28 @@ export type SearchArgs = Omit<FcjQueryArgs, "environmentStore" | "signal">;
 /**
  * The one door into retrieval for the rest of the server: the get_context
  * search, a package's index status, the build a load starts, and the purge a
- * delete owes. Holds nothing but the store; the index state behind it is
- * still module-level (RetrievalRegistry, a later step, takes that over).
+ * delete owes. Holds the store and the RetrievalRegistry that owns every
+ * piece of state retrieval keeps (index builds, caches, held pages, the
+ * embedding queue, the chat model, the value-lookup resolver and slot pool).
+ *
+ * The registry is also the one retrieval's modules read: given one, the
+ * service installs it (the composition root builds one per process); given
+ * none, it adopts the registry already in force, which is how a spec that
+ * builds a service over a stub store shares the state its own seams set.
  *
  * A search answers a domain SearchResult; turning it into an MCP result is
  * the get_context tool's job, not retrieval's.
  */
 export class RetrievalService {
-   constructor(private readonly environmentStore: EnvironmentStore) {}
+   readonly registry: RetrievalRegistry;
+
+   constructor(
+      private readonly environmentStore: EnvironmentStore,
+      registry?: RetrievalRegistry,
+   ) {
+      if (registry) installRetrievalRegistry(registry);
+      this.registry = registry ?? retrievalRegistry();
+   }
 
    /** A ranked get_context search over one package's index. */
    search(args: SearchArgs): Promise<SearchResult> {

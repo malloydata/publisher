@@ -10,12 +10,12 @@ import {
    MAX_CACHED_SCHEMAS,
    MAX_INDEXED_TABLES,
    SchemaTableEntity,
-   _resetSchemaIndexStateForTests,
    rankLexically,
    rankTables,
    schemaFingerprint,
    tableIndexText,
 } from "./schema_index";
+import { installRetrievalRegistry, RetrievalRegistry } from "../registry";
 
 function table(
    resource: string,
@@ -80,8 +80,9 @@ function fakeProvider(
    } as unknown as EmbeddingProvider;
 }
 
+// A fresh registry per case: no cached index or cooldown carries over.
 beforeEach(() => {
-   _resetSchemaIndexStateForTests();
+   installRetrievalRegistry(new RetrievalRegistry());
 });
 
 describe("tableIndexText", () => {

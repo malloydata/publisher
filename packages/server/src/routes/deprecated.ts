@@ -15,7 +15,7 @@ import type express from "express";
 import { LegacyReportController } from "../controller/legacy_report.controller";
 import { setFilterDeprecationHeaders } from "../filter_deprecation";
 import { BadRequestError, internalErrorToHttpError } from "../errors";
-import { queryConcurrency } from "../query_concurrency";
+import type { QuerySlots } from "../query_concurrency";
 import { optionalBooleanParam } from "../route_params";
 import { accessIdentityOf } from "../service/access_record";
 import type { EnvironmentStore } from "../service/environment_store";
@@ -78,7 +78,12 @@ export function notebookCellHandlers(
    {
       environmentParam,
       legacy,
-   }: { environmentParam: "environmentName" | "projectName"; legacy: boolean },
+      querySlots,
+   }: {
+      environmentParam: "environmentName" | "projectName";
+      legacy: boolean;
+      querySlots: QuerySlots;
+   },
 ): (express.RequestHandler | express.ErrorRequestHandler)[] {
    const recordCellRefusal = (req: express.Request, error: Error) =>
       controller.recordCellRefusal(
@@ -112,13 +117,14 @@ export function notebookCellHandlers(
       if (!legacy) setFilterDeprecationHeaders(res, cell);
       return result;
    });
-   return [queryConcurrency(), run, recordGateRefusal(recordCellRefusal)];
+   return [querySlots.middleware, run, recordGateRefusal(recordCellRefusal)];
 }
 
 export function registerDeprecatedRoutes(
    app: express.Express,
    apiPrefix: string,
    environmentStore: EnvironmentStore,
+   querySlots: QuerySlots,
 ): void {
    const controller = new LegacyReportController(environmentStore);
    const pkg = `${apiPrefix}/environments/:environmentName/packages/:packageName`;
@@ -166,6 +172,7 @@ export function registerDeprecatedRoutes(
       ...notebookCellHandlers(controller, {
          environmentParam: "environmentName",
          legacy: false,
+         querySlots,
       }),
    );
 

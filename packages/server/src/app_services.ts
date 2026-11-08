@@ -18,6 +18,7 @@ import type { RetrievalService } from "./retrieval/service";
 import type { EnvironmentStore } from "./service/environment_store";
 import type { ThemeStore } from "./service/theme_store";
 import type { QueryUseCase } from "./usecases/query";
+import type { QuerySlots } from "./query_concurrency";
 
 /**
  * The application services the composition root (main_server.ts) builds once
@@ -46,6 +47,11 @@ export interface AppServices {
    materializationController: MaterializationController;
    storageDestinationController: StorageDestinationController;
    versionController: VersionController;
+   /**
+    * The one query-slot pool per process: every gated REST route, the MCP
+    * tools that take a slot, the query use case and retrieval share it.
+    */
+   querySlots: QuerySlots;
 }
 
 /** The services the MCP server's tools call. */
@@ -57,4 +63,5 @@ export type McpServices = Pick<
    | "compileController"
    | "packageController"
    | "connectionController"
+   | "querySlots"
 >;

@@ -13,6 +13,7 @@ import {
 } from "../test_helpers/temp_package";
 import { runQueryPositional } from "../test_helpers/positional_query_args";
 import { QueryUseCase } from "../usecases/query";
+import { QuerySlots } from "../query_concurrency";
 import { QueryController, type QueryRequest } from "./query.controller";
 
 /**
@@ -89,7 +90,9 @@ function controllerWith({
    });
    const store = { getEnvironment } as unknown as EnvironmentStore;
    return {
-      controller: new QueryController(new QueryUseCase(store)),
+      controller: new QueryController(
+         new QueryUseCase(store, new QuerySlots()),
+      ),
       getQueryResults,
       getEnvironment,
    };

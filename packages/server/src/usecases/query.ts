@@ -19,10 +19,7 @@
 
 import type { GivenValue } from "@malloydata/malloy";
 import { BadRequestError, ModelNotFoundError } from "../errors";
-import {
-   tryAcquireQuerySlot,
-   type QuerySlotHandle,
-} from "../query_concurrency";
+import type { QuerySlotHandle, QuerySlots } from "../query_concurrency";
 import {
    type AccessIdentity,
    type AccessRecordBase,
@@ -188,7 +185,7 @@ export const REST_QUERY_OPTIONS: Omit<QueryTransportOptions, "shape"> = {
       new ModelNotFoundError(`No queryable model "${modelPath}".`),
    // From the `x-publisher-bypass-authorize` header the route reads.
    honorBypassAuthorize: true,
-   // queryConcurrency() middleware holds the slot for the whole request.
+   // The route's QuerySlots middleware holds the slot for the whole request.
    querySlotLabel: undefined,
    adHocRunsAlone: false,
    noLayersLogMessage: "No query-metadata layers for connection",
@@ -232,7 +229,11 @@ function accessBase({
 }
 
 export class QueryUseCase {
-   constructor(private readonly environmentStore: EnvironmentStore) {}
+   constructor(
+      private readonly environmentStore: EnvironmentStore,
+      /** The process's slot pool; taken here when the transport names a label. */
+      private readonly querySlots: QuerySlots,
+   ) {}
 
    /**
     * Run a query and emit its access record (`access_record.ts`), on success
@@ -274,7 +275,9 @@ export class QueryUseCase {
             let querySlot: QuerySlotHandle | null = null;
             try {
                if (options.querySlotLabel !== undefined) {
-                  querySlot = tryAcquireQuerySlot(options.querySlotLabel);
+                  querySlot = this.querySlots.tryAcquire(
+                     options.querySlotLabel,
+                  );
                }
                const queryMetadataInput = buildQueryMetadataInput({
                   environmentName: command.environmentName,

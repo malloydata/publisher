@@ -141,7 +141,7 @@ const MCP_QUERY_OPTIONS: QueryTransportOptions = {
 export function registerExecuteQueryTool(
    mcpServer: McpServer,
    environmentStore: EnvironmentStore,
-   queryUseCase: QueryUseCase = new QueryUseCase(environmentStore),
+   queryUseCase: QueryUseCase,
 ): void {
    const offerHidden =
       environmentStore.mcpIncludeHiddenFilesAndSources === true;
