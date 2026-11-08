@@ -232,6 +232,7 @@ source: a is duckdb.table('child') extend { join_one: b on b.id = id }
                }),
             },
             modelDef,
+            enforced: undefined,
             apiSources: [],
             modelGivens: [],
             source: "patients",
@@ -249,6 +250,7 @@ source: a is duckdb.table('child') extend { join_one: b on b.id = id }
       const summary = await summarizeQueryAccess({
          runnable: { getPreparedQuery: async () => ({ _query: {} }) },
          modelDef: undefined,
+         enforced: undefined,
          apiSources: [],
          modelGivens: [],
          source: undefined,
