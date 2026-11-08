@@ -9,6 +9,7 @@ SPDX-License-Identifier: MIT
 > tools, and where to find the live API explorer. For connecting an AI agent, see [ai-agents.md](ai-agents.md); for the
 > Console, see [console.md](console.md). The design decisions behind v1 are recorded in
 > [issue #1562](https://github.com/malloydata/publisher/issues/1562).
+> The plan that builds v1, moves every client to it and retires v0 is [api-and-storage-plan.md](api-and-storage-plan.md).
 
 ## Two surfaces
 
