@@ -6,9 +6,22 @@
  * source as an entry point, and what an `#(access_filter)` body says.
  *
  * Reports what the query path enforces and never decides access. Kept free of
- * the extraction and the Malloy SDK so both `source_extraction` and
- * `dim_index_discovery` can import it without a cycle.
+ * the extraction so both `source_extraction` and `dim_index_discovery` can
+ * import it without a cycle. What counts as a gate note, and what a gate body
+ * may say, are the query path's own answers (`../authorize.ts`'s Malloy note
+ * routing, `../authorize_grammar.ts`), never a second grammar of this file's.
  */
+
+import {
+   collectAuthorizeNearMissesAllRoutes,
+   parseAuthorizeAnnotation,
+} from "../authorize";
+import {
+   AuthorizeGrammarError,
+   parseAuthorizeGrammarBody,
+   type AuthorizeGrammarTerm,
+} from "../authorize_grammar";
+import { ACCESS_FILTER_ROUTE } from "../authorize_routes";
 
 export type GateRoute = "authorize" | "access_filter";
 
@@ -27,40 +40,18 @@ export interface AccessFilterTerm {
    op: "=" | "in";
 }
 
-// Malloy routes an annotation by NAME inside any of four bracket pairs, after
-// a `#` or `##` sigil and an optional block `|` — `#(x)`, `#[x]`, `#{x}`,
-// `#<x>`, `##|(x)` all reach the same route, pinned in
-// ../malloy_annotation_invariants.spec.ts. Matching only the parenthesis form
-// fails in the dangerous direction: the query path enforces `#[access_filter]
-// org in $GROUPS` while this file reports the source ungated.
-//
-// Padding is tolerated on both sides of the bracket (`# (authorize)`,
-// `#( authorize )`). Malloy routes neither, but the server refuses BOTH at load
-// (`assertNoAuthorizeNearMisses`), so over-matching a padded form can only mark
-// a source that will never load — the safe direction.
-//
-// The closing bracket is required, which keeps this off an unrelated annotation
-// whose name merely starts with the route (`#(authorized-users)`); hyphenated
-// spellings stay excluded because the server refuses them at load.
-const GATE_ROUTE_ALTERNATION = "authorize|access_filter";
-const GATE_TAGLINE_RE = new RegExp(
-   "^##?\\|?\\s*(?:" +
-      [
-         ["\\(", "\\)"],
-         ["\\[", "\\]"],
-         ["\\{", "\\}"],
-         ["<", ">"],
-      ]
-         .map(
-            ([open, close]) =>
-               `${open}\\s*(?:${GATE_ROUTE_ALTERNATION})\\s*${close}`,
-         )
-         .join("|") +
-      ")",
-);
-
 /** Extract the route and Malloy expression from an `#(authorize)` or
- *  `#(access_filter)` annotation. Two payload shapes are read:
+ *  `#(access_filter)` annotation.
+ *
+ *  Whether a note IS a gate is Malloy's note routing, the same test the query
+ *  path enforces with (`parseAuthorizeAnnotation`): every bracket pair, the
+ *  `##` and block `#|` sigils, and nothing Malloy routes elsewhere. A near miss
+ *  Malloy does not route as a gate (`# (authorize)`, `#( authorize )`,
+ *  `#(AUTHORIZE)`) is refused at load (`assertNoAuthorizeNearMisses`), so a
+ *  package carrying one never serves; it throws here, which every caller
+ *  treats as fail-closed (deny, or skip-and-warn for a file-level note).
+ *
+ *  Two payload shapes are read:
  *
  *   - A bare expression (`#(authorize) $ROLE = 'analyst'`), returned verbatim.
  *   - A double-quoted string, from which exactly one layer of wrapping quotes
@@ -71,22 +62,24 @@ const GATE_TAGLINE_RE = new RegExp(
  *  payload is metadata here, never enforcement.
  *
  *  Returns `null` if the string is not a gate annotation. Throws on an empty
- *  payload, or on a quoted payload with missing/mismatched quotes. Callers differ
- *  on purpose: the file-level reader skip-and-warns, while a source's own gate
- *  resolution fails closed (deny).
+ *  payload, a near miss, or a quoted payload with missing/mismatched quotes.
+ *  Callers differ on purpose: the file-level reader skip-and-warns, while a
+ *  source's own gate resolution fails closed (deny).
  *
- *  Deliberately looser than the query path: it reads a file-level `##(...)` gate
- *  (refused at load) and matches by pattern rather than asking
- *  Malloy's note routing, so it can only over-report a gate. */
+ *  Deliberately looser than the query path in one way: it reads a file-level
+ *  `##(...)` gate (refused at load), so it can only over-report a gate. */
 export const parseGateAnnotation = (annotation: string): GateExpr | null => {
-   const trimmed = annotation.trim();
-   const match = GATE_TAGLINE_RE.exec(trimmed);
-   if (!match) return null;
-   const route = (/access_filter|authorize/.exec(match[0]) ?? [])[0] as
-      | GateRoute
-      | undefined;
-   if (!route) return null;
-   const body = trimmed.slice(match[0].length).trim();
+   const parsed = parseAuthorizeAnnotation(annotation);
+   if (parsed === null) {
+      if (collectAuthorizeNearMissesAllRoutes([annotation]).length > 0) {
+         throw new Error(
+            `authorize annotation is not routed as a gate by Malloy (a near miss, refused at load): ${annotation.trim().split(/[\r\n]/, 1)[0]}`,
+         );
+      }
+      return null;
+   }
+   const route = parsed.route as GateRoute;
+   const body = parsed.expr.trim();
    if (body.length === 0) {
       throw new Error("authorize annotation has an empty expression body");
    }
@@ -383,11 +376,11 @@ export const resolveGates = (
 };
 
 // --- `#(access_filter)` body grammar ---------------------------------------
-// Must agree with ../authorize_grammar.ts (`parseAuthorizeGrammarBody` on the
+// A projection of ../authorize_grammar.ts (`parseAuthorizeGrammarBody` on the
 // access_filter route), narrowed to the row-level shape an index needs:
 // `field_path <op> $GIVEN` terms joined by `and`, `=` for a scalar given and
-// `in` for a list one. The conformance test replays vectors recorded from
-// `parseAuthorizeGrammarBody`.
+// `in` for a list one. There is one grammar; this only reshapes its answer.
+// The conformance test replays vectors recorded from `parseAuthorizeGrammarBody`.
 
 export type AccessFilterRejection =
    | "empty_body"
@@ -409,242 +402,64 @@ export type AccessFilterParse =
    | { ok: true; terms: AccessFilterTerm[] }
    | { ok: false; cause: AccessFilterRejection };
 
-const IDENT = "[A-Za-z_][A-Za-z0-9_]*";
-const QUOTED_IDENT = "`[^`]+`";
-const SEGMENT = `(?:${IDENT}|${QUOTED_IDENT})`;
-const FIELD_PATH_RE = new RegExp(`^${SEGMENT}(?:\\.${SEGMENT})*$`);
-const GIVEN_REF_RE = new RegExp(`^\\$(${IDENT})$`);
-const STRING_LITERAL_RE = /^(?:'(?:\\.|[^'\\])*'|"(?:\\.|[^"\\])*")$/;
-const NEGATED_OPERATOR_RE = /!=/gu;
-const COMPARISON_OPERATOR_RE = /(?:>=|<=|>|<)/gu;
-const IN_OPERATOR_RE = /\bin\b/giu;
-const EQ_OPERATOR_RE = /=/gu;
-
-type Quote = "'" | '"' | "`";
-const isQuote = (ch: string): ch is Quote =>
-   ch === "'" || ch === '"' || ch === "`";
-
-/** Split a validated field path on its top-level dots, unquoting each backtick
- *  segment (a dot inside backticks belongs to the segment's name). */
-const splitFieldPathSegments = (fieldPath: string): string[] => {
-   const segments: string[] = [];
-   let i = 0;
-   while (i < fieldPath.length) {
-      if (fieldPath[i] === "`") {
-         const end = fieldPath.indexOf("`", i + 1);
-         segments.push(fieldPath.slice(i + 1, end));
-         i = end + 1;
-      } else {
-         const dot = fieldPath.indexOf(".", i);
-         const end = dot === -1 ? fieldPath.length : dot;
-         segments.push(fieldPath.slice(i, end));
-         i = end;
-      }
-      if (fieldPath[i] === ".") i++;
-   }
-   return segments;
-};
-
-/** Split on a word-bounded, depth-0, outside-any-quote `and`, collecting any
- *  depth-0 `or`/`not` token so a compound boolean is refused while one buried in
- *  a string literal is not. */
-const splitTerms = (
-   body: string,
-): { terms: string[]; compoundTokens: string[] } => {
-   const terms: string[] = [];
-   const compoundTokens: string[] = [];
-   let depth = 0;
-   let quote: Quote | undefined;
-   let start = 0;
-   let i = 0;
-   while (i < body.length) {
-      const ch = body[i];
-      if (quote) {
-         if (ch === "\\" && quote !== "`") {
-            i += 2;
-            continue;
-         }
-         if (ch === quote) quote = undefined;
-         i++;
-         continue;
-      }
-      if (isQuote(ch)) {
-         quote = ch;
-         i++;
-         continue;
-      }
-      if (ch === "(") {
-         depth++;
-         i++;
-         continue;
-      }
-      if (ch === ")") {
-         depth = Math.max(0, depth - 1);
-         i++;
-         continue;
-      }
-      if (depth === 0) {
-         const wordMatch = /^(and|or|not)\b/i.exec(body.slice(i));
-         if (wordMatch && (i === 0 || !/[A-Za-z0-9_]/.test(body[i - 1]))) {
-            const word = wordMatch[1].toLowerCase();
-            if (word === "and") {
-               terms.push(body.slice(start, i));
-               i += wordMatch[0].length;
-               start = i;
-               continue;
-            }
-            compoundTokens.push(word);
-         }
-      }
-      i++;
-   }
-   terms.push(body.slice(start));
-   return { terms, compoundTokens };
-};
-
-/** Index of an operator token outside any quoted substring, or -1. */
-const findOperatorOutsideQuotes = (s: string, re: RegExp): number => {
-   let quote: Quote | undefined;
-   for (let i = 0; i < s.length; i++) {
-      const ch = s[i];
-      if (quote) {
-         if (ch === "\\" && quote !== "`") {
-            i++;
-            continue;
-         }
-         if (ch === quote) quote = undefined;
-         continue;
-      }
-      if (isQuote(ch)) {
-         quote = ch;
-         continue;
-      }
-      re.lastIndex = i;
-      const m = re.exec(s);
-      if (m && m.index === i) return i;
-   }
-   return -1;
-};
-
-interface RowTerm {
-   segments: string[];
-   given: string;
-   op: "=" | "in";
-}
-
-const parseRowTerm = (
-   term: string,
-   givenTypes: ReadonlyMap<string, string>,
-): RowTerm | "source_level" | AccessFilterRejection => {
-   const trimmed = term.trim();
-   if (findOperatorOutsideQuotes(trimmed, NEGATED_OPERATOR_RE) !== -1) {
-      return "negated_operator";
-   }
-   if (findOperatorOutsideQuotes(trimmed, COMPARISON_OPERATOR_RE) !== -1) {
-      return "comparison_operator";
-   }
-   const inIdx = findOperatorOutsideQuotes(trimmed, IN_OPERATOR_RE);
-   const eqIdx = findOperatorOutsideQuotes(trimmed, EQ_OPERATOR_RE);
-   let op: "=" | "in";
-   let opIdx: number;
-   let opLen: number;
-   if (inIdx !== -1 && (eqIdx === -1 || inIdx < eqIdx)) {
-      op = "in";
-      opIdx = inIdx;
-      opLen = 2;
-   } else if (eqIdx !== -1) {
-      op = "=";
-      opIdx = eqIdx;
-      opLen = 1;
-   } else {
-      return "malformed_body";
-   }
-
-   let left = trimmed.slice(0, opIdx).trim();
-   let right = trimmed.slice(opIdx + opLen).trim();
-   // `$GIVEN = 'literal'` reads either way round for a source-level term; `in`
-   // does not reverse (array-in-string), so it is refused instead of swapped.
-   if (GIVEN_REF_RE.test(left) && STRING_LITERAL_RE.test(right)) {
-      if (op === "in") return "reversed_in_operands";
-      [left, right] = [right, left];
-   }
-
-   const leftIsFieldPath = FIELD_PATH_RE.test(left);
-   if (!leftIsFieldPath && !STRING_LITERAL_RE.test(left)) {
-      return "left_not_field_path";
-   }
-   const givenMatch = GIVEN_REF_RE.exec(right);
-   if (!givenMatch) return "missing_given_reference";
-   const given = givenMatch[1];
-
-   // A bare `array` or `<elem>[]` rendering is a list; a given absent from the map
-   // skips the check rather than guessing.
-   const declaredType = givenTypes.get(given);
-   if (declaredType !== undefined) {
-      const isListType =
-         declaredType === "array" || declaredType.endsWith("[]");
-      if (isListType !== (op === "in")) return "operator_arity_mismatch";
-   }
-   if (!leftIsFieldPath) return "source_level";
-   return { segments: splitFieldPathSegments(left), given, op };
-};
+const ACCESS_FILTER_REJECTIONS: ReadonlySet<string> =
+   new Set<AccessFilterRejection>([
+      "empty_body",
+      "compound_boolean",
+      "negated_operator",
+      "comparison_operator",
+      "left_not_field_path",
+      "missing_given_reference",
+      "malformed_body",
+      "duplicate_given",
+      "duplicate_field_path",
+      "operator_arity_mismatch",
+      "sentinel_in_access_filter",
+      "source_level_term_in_access_filter",
+      "reversed_in_operands",
+      "unsupported_field_path",
+   ]);
 
 /** Parse an `#(access_filter)` body into its row-level terms, or say which
- *  grammar rule it breaks. Anything that does not parse is opaque to callers. */
+ *  grammar rule it breaks. Anything that does not parse is opaque to callers.
+ *  Never throws: a failure of any kind is a refusal (opaque, the safe side). */
 export const parseAccessFilterBody = (
    body: string,
    givenTypes: ReadonlyMap<string, string> = new Map(),
 ): AccessFilterParse => {
-   const trimmedBody = body.trim();
-   if (trimmedBody.length === 0) return { ok: false, cause: "empty_body" };
-   const sentinel = trimmedBody.toLowerCase();
-   if (sentinel === "false" || sentinel === "true") {
-      return { ok: false, cause: "sentinel_in_access_filter" };
+   let parsed: AuthorizeGrammarTerm[];
+   try {
+      parsed = parseAuthorizeGrammarBody(
+         "",
+         body,
+         givenTypes,
+         ACCESS_FILTER_ROUTE,
+      );
+   } catch (err) {
+      const cause =
+         err instanceof AuthorizeGrammarError &&
+         ACCESS_FILTER_REJECTIONS.has(err.rejectionCause)
+            ? (err.rejectionCause as AccessFilterRejection)
+            : "malformed_body";
+      return { ok: false, cause };
    }
-   const { terms: rawTerms, compoundTokens } = splitTerms(trimmedBody);
-   if (compoundTokens.length > 0)
-      return { ok: false, cause: "compound_boolean" };
-
-   // Scope is checked only once every term has parsed, so a later malformed term
-   // outranks an earlier source-level one, as in `parseAuthorizeGrammarBody`.
-   const rowTerms: RowTerm[] = [];
-   let sawSourceLevel = false;
-   for (const raw of rawTerms) {
-      const parsed = parseRowTerm(raw, givenTypes);
-      if (parsed === "source_level") {
-         sawSourceLevel = true;
-      } else if (typeof parsed === "string") {
-         return { ok: false, cause: parsed };
-      } else {
-         rowTerms.push(parsed);
-      }
-   }
-   if (sawSourceLevel) {
-      return { ok: false, cause: "source_level_term_in_access_filter" };
-   }
-
    const terms: AccessFilterTerm[] = [];
-   const seenGivens = new Set<string>();
-   const seenPaths = new Set<string>();
-   for (const parsed of rowTerms) {
+   for (const term of parsed) {
+      // The grammar admits only row-level terms on this route; anything else
+      // is not a shape this projection can carry.
+      if (term.scope !== "row_level") {
+         return { ok: false, cause: "malformed_body" };
+      }
       // A dot inside a segment cannot round-trip through a dotted `field_path`.
-      if (parsed.segments.some((s) => s.includes(".") || s.includes("`"))) {
+      if (
+         term.fieldPathSegments.some((s) => s.includes(".") || s.includes("`"))
+      ) {
          return { ok: false, cause: "unsupported_field_path" };
       }
-      if (seenGivens.has(parsed.given)) {
-         return { ok: false, cause: "duplicate_given" };
-      }
-      seenGivens.add(parsed.given);
-      // Canonical on the segments: `` `region` `` and `region` name one column.
-      const canonicalPath = JSON.stringify(parsed.segments);
-      if (seenPaths.has(canonicalPath)) {
-         return { ok: false, cause: "duplicate_field_path" };
-      }
-      seenPaths.add(canonicalPath);
       terms.push({
-         field_path: parsed.segments.join("."),
-         given: parsed.given,
-         op: parsed.op,
+         field_path: term.fieldPathSegments.join("."),
+         given: term.given,
+         op: term.operator,
       });
    }
    return { ok: true, terms };

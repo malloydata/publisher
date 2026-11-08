@@ -116,6 +116,25 @@ describe("parseGateAnnotation", () => {
       );
       assert.strictEqual(parseGateAnnotation("#(authorized-users) a"), null);
    });
+
+   test("a spelling Malloy does not route as a gate is a near miss and throws (callers fail closed)", () => {
+      // Malloy's routing decides, as on the query path; the load refuses
+      // these, and a reader that meets one anyway denies rather than
+      // reporting the source ungated.
+      for (const text of [
+         "# (authorize) false",
+         "#( authorize ) false",
+         "#(AUTHORIZE) false",
+         "#( access_filter ) a = $A",
+      ]) {
+         assert.throws(() => parseGateAnnotation(text), /near miss/);
+      }
+   });
+
+   test("an ordinary render tag is not a gate", () => {
+      assert.strictEqual(parseGateAnnotation("# bar_chart"), null);
+      assert.strictEqual(parseGateAnnotation("#(doc) about authorize"), null);
+   });
 });
 
 describe("resolveGates", () => {
