@@ -45,12 +45,12 @@ import {
 } from "../annotations";
 import {
    containsAuthorizeAnnotationTag,
-   hasCallerAuthorizeAnnotation,
    referencedGivenNames,
    type RowLevelGateRejectionCause,
 } from "../authorize";
 import { ACCESS_FILTER_ROUTE, AUTHORIZE_ROUTE } from "../authorize_routes";
 import { type NotebookFormat } from "../../notebook_metrics";
+import { OracleGuard } from "./oracle_guard";
 import { parseFilterAnnotation, type FilterDefinition } from "../filter";
 import {
    buildDerivationBaseMap,
@@ -197,6 +197,87 @@ export const REQUEST_CHAIN_MAX_NAMES = 64;
 /** The one sentence a gated model answers a hidden, hidden-and-locked or absent name with. */
 const GENERIC_NOT_QUERYABLE = "Query target is not queryable.";
 
+/**
+ * One request to {@link QueryGovernor.govern}: who is asking (givens and
+ * privileges), and what the caller wrote.
+ */
+export interface GovernRequest {
+   /** The caller's givens as supplied; gates read `givens ?? {}`. */
+   givens: Record<string, GivenValue> | undefined;
+   /** Skip the gate walk (never settable from ingress); the bypass is audited. */
+   bypassAuthorize?: boolean;
+   /**
+    * The compiled half of the query boundary, for an admission the early
+    * check DEFERRED (see `Model.assertQueryBoundaryEarly`). Absent when the
+    * boundary is already settled: cleared early, lifted by privilege, or (a
+    * notebook cell) checked by the caller before anything ran.
+    */
+   boundary?: { compiledSource: string | undefined; query?: string };
+   /**
+    * Where caller-written text sits. Its joins are found in
+    * {@link CompiledQuery.live} and gated like extra run targets.
+    */
+   callerRegion?: CallerRegion;
+   /** The caller's own query text; arms the laundered-entry-point check. */
+   callerQueryText?: string;
+   /** See `authorizeAndBindRunnable`'s options. */
+   recompile?: (
+      materializer: ModelMaterializer,
+      grafts: ReadonlyArray<{
+         graftTarget: string;
+         condition: FilterCondition;
+      }>,
+   ) => QueryMaterializer;
+   /** See `authorizeAndBindRunnable`'s options. */
+   proveGraft?: (recompiled: QueryMaterializer) => Promise<void>;
+   /** See `authorizeAndBindRunnable`'s options. */
+   graftScope?: GraftScope;
+   /** See `authorizeAndBindRunnable`'s options. */
+   bypassAlreadyNoted?: boolean;
+   /**
+    * The caller will never execute what comes back (`/compile`); see
+    * `authorizeAndBindRunnable`'s options.
+    */
+   checkOnly?: boolean;
+   /** See `authorizeAndBindRunnable`'s options. */
+   skipOwnSourceGate?: boolean;
+   /** See `authorizeAndBindRunnable`'s options. */
+   compileCallerText?: string;
+   /**
+    * The `#(carries)` ceiling: checked unless absent or bypassed. `source`
+    * names the entry for a refusal's access record, read off the governed
+    * runnable when it needs one.
+    */
+   ceiling?: {
+      audit: QueryAudit;
+      source: (
+         governed: GovernedRunnable,
+      ) => string | undefined | Promise<string | undefined>;
+   };
+}
+
+/** The compiled query {@link QueryGovernor.govern} decides. */
+export interface CompiledQuery {
+   /** The runnable to govern; what comes back is it, or its grafted recompile. */
+   runnable: QueryMaterializer;
+   /**
+    * The LIVE compile of the caller's text, where caller joins are found and
+    * the ceiling reads. Defaults to the governed runnable.
+    */
+   live?: QueryMaterializer;
+}
+
+/** What {@link QueryGovernor.govern} decided, for the access record. */
+export interface GovernDecision {
+   /**
+    * The gates enforcement evaluated (on the bypass: found in force and
+    * skipped); undefined when the bypass could not read the run target.
+    */
+   enforced: EnforcedGates | undefined;
+   /** The row-level grafts attached to the governed runnable; empty if none. */
+   grafts: readonly RowLevelGraftEntry[];
+}
+
 type ApiSource = components["schemas"]["Source"];
 type ApiGiven = components["schemas"]["Given"];
 type ApiQuery = components["schemas"]["Query"];
@@ -242,6 +323,11 @@ export interface GovernorHost {
       query?: string,
       derivationContext?: string,
    ): "cleared" | "deferred";
+   assertQueryBoundaryCompiled(
+      compiledSource: string | undefined,
+      query?: string,
+      derivationContext?: string,
+   ): void;
    ensureSharedQueryModel(
       materializer: ModelMaterializer | undefined,
    ): Promise<void>;
@@ -397,8 +483,67 @@ export class QueryGovernor {
       readonly RowLevelGraftEntry[]
    >();
 
+   /**
+    * The advisory pre-compile checks (see {@link OracleGuard}), sequenced
+    * over this governor's own gates. Never the authority: {@link govern} is.
+    */
+   public readonly oracle: OracleGuard;
+
    constructor(private readonly host: GovernorHost) {
       this.gateRuntime = host.gateRuntime;
+      this.oracle = new OracleGuard({
+         assertAuthorized: (sourceName, givens, bypassAuthorize, graftScope) =>
+            this.assertAuthorized(
+               sourceName,
+               givens,
+               bypassAuthorize,
+               graftScope,
+            ),
+         assertCallerJoinBasesEarly: (
+            query,
+            givens,
+            phase,
+            decided,
+            includeHiddenFilesAndSources,
+         ) =>
+            this.assertCallerJoinBasesEarly(
+               query,
+               givens,
+               phase,
+               decided,
+               includeHiddenFilesAndSources,
+            ),
+         assertLocksOnAppearingNames: (
+            text,
+            givens,
+            bypassAuthorize,
+            decided,
+            includeHiddenFilesAndSources,
+         ) =>
+            this.assertLocksOnAppearingNames(
+               text,
+               givens,
+               bypassAuthorize,
+               decided,
+               includeHiddenFilesAndSources,
+            ),
+         assertLocksOnRequestDeclaredBases: (
+            entryPoint,
+            query,
+            givens,
+            bypassAuthorize,
+         ) =>
+            this.assertLocksOnRequestDeclaredBases(
+               entryPoint,
+               query,
+               givens,
+               bypassAuthorize,
+            ),
+         probeEntryPointGates: (runnable, givens, graftScope) =>
+            this.probeEntryPointGates(runnable, givens, graftScope),
+         sources: () => this.sources,
+         queries: () => this.queries,
+      });
       // `collectEntryPointGates` is the single definition of what gates a
       // source as an entry point: it follows the `inherits`/registry chain AND
       // a query-source's derivation base. The extractor's `sources[].authorize`
@@ -437,6 +582,78 @@ export class QueryGovernor {
       } catch {
          this.authorizeReferencedGivenNames = new Set();
       }
+   }
+
+   /**
+    * Govern one compiled query, in a fixed sequence, and return the only
+    * runnable that may execute plus what was decided:
+    *
+    *  1. boundary: the compiled query boundary (404) for a deferred
+    *     admission, then the boundary for the caller's own joins;
+    *  2. locks: every entry-point gate decided ({@link probeEntryPointGates}),
+    *     and a request-declared entry point proven not laundered;
+    *  3. caller joins: each caller-written join gated as an extra run target;
+    *  4. graft + proof: row-level conditions grafted onto one copied model
+    *     and proven landed;
+    *  5. bind guards: every filter proven to read the field it was written
+    *     against;
+    *  6. ceiling: the `#(carries)` ceiling (not under the bypass).
+    *
+    * Steps 2-5 are {@link authorizeAndBindRunnable}, the one minter of a
+    * {@link GovernedRunnable}. Any step refuses by throwing. The pre-compile
+    * checks ({@link OracleGuard}) are advisory and never replace a step here.
+    */
+   public async govern(
+      request: GovernRequest,
+      compiled: CompiledQuery,
+   ): Promise<{ runnable: GovernedRunnable; decision: GovernDecision }> {
+      const { live } = compiled;
+      if (request.boundary) {
+         this.host.assertQueryBoundaryCompiled(
+            request.boundary.compiledSource,
+            request.boundary.query,
+         );
+         // The LIVE compile keeps the caller's joins; a routed one does not.
+         if (request.callerRegion && live) {
+            await this.assertCallerJoinsQueryable(live, request.callerRegion);
+         }
+      }
+      const runnable = await this.authorizeAndBindRunnable(
+         compiled.runnable,
+         request.givens ?? {},
+         {
+            recompile: request.recompile,
+            proveGraft: request.proveGraft,
+            bypassAuthorize: request.bypassAuthorize,
+            graftScope: request.graftScope,
+            skipOwnSourceGate: request.skipOwnSourceGate,
+            compileCallerText: request.compileCallerText,
+            callerQueryText: request.callerQueryText,
+            checkOnly: request.checkOnly,
+            callerJoins:
+               request.callerRegion && live
+                  ? { runnable: live, region: request.callerRegion }
+                  : undefined,
+            bypassAlreadyNoted: request.bypassAlreadyNoted,
+         },
+      );
+      if (request.ceiling && !request.bypassAuthorize) {
+         await this.assertWithinCarriesCeiling(
+            request.ceiling.audit,
+            live ?? runnable,
+            runnable,
+            await request.ceiling.source(runnable),
+            request.givens,
+            request.callerRegion,
+         );
+      }
+      return {
+         runnable,
+         decision: {
+            enforced: this.enforcedGatesByRunnable.get(runnable),
+            grafts: this.rowLevelFilteredRunnables.get(runnable) ?? [],
+         },
+      };
    }
 
    /**
@@ -922,20 +1139,19 @@ export class QueryGovernor {
       options?: { checkOnly?: boolean; callerRegion?: CallerRegion },
    ): Promise<void> {
       // Check-only: there is no runnable to swap in, so a row-level gate
-      // denies here rather than admitting unfiltered.
-      await this.authorizeAndBindRunnable(
-         runnable as QueryMaterializer,
-         givens,
+      // denies here rather than admitting unfiltered. The caller's joins are
+      // found in this same runnable (`live`).
+      await this.govern(
          {
+            givens,
             bypassAuthorize,
             checkOnly: options?.checkOnly,
             compileCallerText: options?.callerRegion?.text,
-            callerJoins: options?.callerRegion
-               ? {
-                    runnable: runnable as QueryMaterializer,
-                    region: options.callerRegion,
-                 }
-               : undefined,
+            callerRegion: options?.callerRegion,
+         },
+         {
+            runnable: runnable as QueryMaterializer,
+            live: runnable as QueryMaterializer,
          },
       );
    }
@@ -1120,13 +1336,9 @@ export class QueryGovernor {
       runnable: { getPreparedQuery(): Promise<unknown> },
       givens: Record<string, GivenValue>,
    ): Promise<void> {
-      await this.authorizeAndBindRunnable(
-         runnable as QueryMaterializer,
-         givens,
-         {
-            skipOwnSourceGate: true,
-            checkOnly: true,
-         },
+      await this.govern(
+         { givens, skipOwnSourceGate: true, checkOnly: true },
+         { runnable: runnable as QueryMaterializer },
       );
    }
 
@@ -3020,17 +3232,10 @@ export class QueryGovernor {
    }
 
    /**
-    * Gate ad-hoc `/compile` text before compiling. Caller text (`append`
-    * scope) has every locked name that appears anywhere in it decided, after
-    * the last `run:` target and the locks its caller-written joins reach — a
-    * caller-owned fragment has no legitimate need to name a base it may not
-    * read. At file and package scope (`wholeFile`) the text IS the author's
-    * file, so only the last `run:` target is checked, plus a derivation walk
-    * from it ({@link assertLocksOnRequestDeclaredBases}); a mention that is
-    * not what Malloy will run must still compile.
-    *
-    * Takes no bypass argument, deliberately: `/compile` returns schema and SQL,
-    * and no caller needs to compile through a gate.
+    * Gate ad-hoc `/compile` text before compiling: the advisory
+    * {@link OracleGuard.beforeCompileText}. Kept as a method for callers and
+    * specs written against it; the compiled backstop
+    * ({@link assertAuthorizedForRunnable}) is the authority.
     */
    public async assertAuthorizedForText(
       text: string,
@@ -3038,26 +3243,7 @@ export class QueryGovernor {
       /** `wholeFile`: file or package scope, where the text is the author's file. */
       options?: { wholeFile?: boolean },
    ): Promise<void> {
-      const target = extractRunTargetSourceName(text);
-      await this.assertAuthorized(target, givens);
-      // Text carrying an annotation is left to the forgery rejecter, whose
-      // refusal is the specific one.
-      if (hasCallerAuthorizeAnnotation(text)) return;
-      if (options?.wholeFile) {
-         // `/compile` answers WITH the compiler's diagnostics, so a lock not
-         // decided first makes them readable for a source the caller is
-         // refused. Text with no `run:` resolves no target and is walked anyway.
-         await this.assertLocksOnRequestDeclaredBases(
-            target ?? "",
-            text,
-            givens,
-         );
-         return;
-      }
-      // Locks only: `/compile` is exempt from the query boundary.
-      const decided = new Set(target ? [target] : []);
-      await this.assertCallerJoinBasesEarly(text, givens, "locks", decided);
-      await this.assertLocksOnAppearingNames(text, givens, false, decided);
+      await this.oracle.beforeCompileText(text, givens, options);
    }
 
    /**

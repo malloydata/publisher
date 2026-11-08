@@ -678,6 +678,16 @@ export class Model {
                query,
                derivationContext,
             ),
+         assertQueryBoundaryCompiled: (
+            compiledSource,
+            query,
+            derivationContext,
+         ) =>
+            this.assertQueryBoundaryCompiled(
+               compiledSource,
+               query,
+               derivationContext,
+            ),
          ensureSharedQueryModel: (materializer) =>
             this.ensureSharedQueryModel(materializer),
       };
