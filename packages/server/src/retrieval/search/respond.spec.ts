@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
-import { DEFAULT_PACKAGE_RETRIEVAL } from "../package_retrieval";
+import { DEFAULT_PACKAGE_RETRIEVAL } from "../../service/package_retrieval_settings";
 import {
    FCJ_PAYMENTS_FILES,
    FCJ_PEERS_FILES,

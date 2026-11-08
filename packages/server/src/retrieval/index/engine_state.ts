@@ -26,14 +26,17 @@ import { deleteEngineRows } from "./catalog_store";
 import {
    embeddingConfigured,
    getEmbeddingProvider,
-} from "../../service/embedding_provider";
+} from "../llm/embedding_provider";
 import type {
    CatalogDatabase,
    EnvironmentPeek,
    PackageLookup,
 } from "../../service/environment_ports";
 import type { Package } from "../../service/package";
-import { type FcjJudgeLlm, fcjSettingsOf } from "../package_retrieval";
+import {
+   type FcjJudgeLlm,
+   fcjSettingsOf,
+} from "../../service/package_retrieval_settings";
 import { logger } from "../../logger";
 import { PROVIDER_FAILURE_COOLDOWN_MS } from "../shared";
 import { retrievalRegistry } from "../registry";

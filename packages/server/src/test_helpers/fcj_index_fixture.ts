@@ -10,7 +10,7 @@
 import {
    DEFAULT_FCJ_SETTINGS,
    type FcjSettings,
-} from "../retrieval/package_retrieval";
+} from "../service/package_retrieval_settings";
 
 /**
  * The engine's settings as most specs below were written against: clusters

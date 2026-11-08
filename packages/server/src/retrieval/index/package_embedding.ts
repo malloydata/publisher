@@ -11,7 +11,7 @@ import { Package } from "../../service/package";
 import {
    embeddingConfigured,
    getEmbeddingProvider,
-} from "../../service/embedding_provider";
+} from "../llm/embedding_provider";
 import {
    fcjLastSyncedAtOf,
    fcjStatusOf,

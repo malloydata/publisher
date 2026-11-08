@@ -8,16 +8,16 @@ import {
    PackageManifestError,
    ServiceUnavailableError,
 } from "../errors";
+import { operatorLlmConfigured } from "../config";
 import { logger } from "../logger";
 import type { LoadPackageOutcome } from "../package_load/package_load_pool";
 import { PackageLoadProtocolError } from "../package_load/protocol_decode";
-import { llmConfigured } from "../retrieval/llm/active";
-import type { PreparedCeilingQueries } from "./classification";
+import type { PreparedCeilingQueries } from "./classification_report";
 import type { ApiPackage, Package } from "./package";
 import {
    DEFAULT_PACKAGE_RETRIEVAL,
    assertRequiredStagesAvailable,
-} from "../retrieval/package_retrieval";
+} from "./package_retrieval_settings";
 
 /**
  * Await a package-load worker job, rewrapping a pool-infrastructure failure as
@@ -64,7 +64,7 @@ export function assertOutcomeStagesAvailable(
 ): void {
    assertRequiredStagesAvailable(
       outcome.packageMetadata.retrieval ?? DEFAULT_PACKAGE_RETRIEVAL,
-      llmConfigured(),
+      operatorLlmConfigured(),
    );
 }
 

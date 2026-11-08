@@ -43,7 +43,8 @@ import {
    type AuthorizeGrammarParsedTerm,
 } from "./authorize_grammar";
 import { ACCESS_FILTER_ROUTE, AUTHORIZE_ROUTE } from "./authorize_routes";
-import { isDeniedToAll, isDenyAll, packageSources } from "./classification";
+import { isDeniedToAll, isDenyAll } from "./classification";
+import { packageSources } from "./classification_report";
 import {
    MAX_JOIN_PATHS,
    MAX_JOIN_RECURSION_DEPTH,

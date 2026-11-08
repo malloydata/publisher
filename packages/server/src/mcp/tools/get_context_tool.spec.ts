@@ -13,7 +13,7 @@ import { EnvironmentNotFoundError, PackageNotFoundError } from "../../errors";
 import {
    _clearEmbeddingProviderForTests,
    _setEmbeddingProviderForTests,
-} from "../../service/embedding_provider";
+} from "../../retrieval/llm/embedding_provider";
 
 // Pin the baseline: every test in this file runs with no embedding provider,
 // regardless of ambient EMBEDDING_* env vars in the developer's shell.

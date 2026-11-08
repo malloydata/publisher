@@ -19,7 +19,7 @@
 import type { ChatModel } from "../llm/types";
 import type { DuckDBConnection } from "../../storage/duckdb/DuckDBConnection";
 import type { SyncRequestBudget } from "../llm/llm_calls";
-import { DEFAULT_QUESTIONS_PER_NODE } from "../llm/prompts/questions";
+import { DEFAULT_QUESTIONS_PER_NODE } from "../../service/package_retrieval_settings";
 import type { CatalogNode } from "../model/catalog";
 import {
    generateCached,

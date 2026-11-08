@@ -13,7 +13,7 @@ import {
    EmbeddingProvider,
    _clearEmbeddingProviderForTests,
    _setEmbeddingProviderForTests,
-} from "../../service/embedding_provider";
+} from "../llm/embedding_provider";
 import { withSettings } from "../../test_helpers/settings_env";
 import { getPackageEmbeddingStatus } from "./package_embedding";
 import { fakeOf } from "../../test_helpers/store_fakes";

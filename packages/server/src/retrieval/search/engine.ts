@@ -29,13 +29,16 @@ import { sourceContextKey } from "../model/package_entities";
 import {
    EMBEDDING_QUERY_TIMEOUT_MS,
    embeddingConfigured,
-} from "../../service/embedding_provider";
+} from "../llm/embedding_provider";
 import type {
    CatalogDatabase,
    EnvironmentPeek,
    PackageLookup,
 } from "../../service/environment_ports";
-import { alsoLikelyOn, fcjSettingsOf } from "../package_retrieval";
+import {
+   alsoLikelyOn,
+   fcjSettingsOf,
+} from "../../service/package_retrieval_settings";
 import { logger } from "../../logger";
 import { activeLlmSettings } from "../llm/active";
 import { settings } from "../../settings";
@@ -69,14 +72,8 @@ import type { FcjIndex } from "../index/index_build";
 import { connect, type ConnectResult } from "./connect";
 import { retrievalRegistry } from "../registry";
 import { dropBesideRoutes, dropTwins, judge, type JudgeVerdict } from "./judge";
-import {
-   FCJ_MAX_CHARS,
-   FCJ_RESERVE_CHARS,
-   FCJ_RESULT_TTL_MS,
-   pageAt,
-   resultKey,
-   type HeldResult,
-} from "./pages";
+import { FCJ_RESULT_TTL_MS, type HeldResult } from "./held_results";
+import { FCJ_MAX_CHARS, FCJ_RESERVE_CHARS, pageAt, resultKey } from "./pages";
 import { respond } from "./respond";
 import { optionId, routesOf } from "./routes";
 import { toUnit } from "../index/vectors";

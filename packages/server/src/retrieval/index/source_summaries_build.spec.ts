@@ -23,7 +23,7 @@ import * as path from "path";
 import { _clearChatModelForTests, _setChatModelForTests } from "../llm/active";
 import { setRetrievalConfig } from "../config";
 import type { Package } from "../../service/package";
-import type { PackageRetrievalSettings } from "../package_retrieval";
+import type { PackageRetrievalSettings } from "../../service/package_retrieval_settings";
 import {
    scriptedChat,
    summaryReply,

@@ -58,6 +58,7 @@ import {
    classifyMeasureAdditivity,
    type ReaggregateFunction,
 } from "./preaggregation_classifier";
+import { isSpliceableNamespace } from "./preaggregation_namespace";
 import type { ValidatableSource } from "./preaggregation_validation";
 
 /** The alias the base is imported under, and the last compose() member. */
@@ -147,31 +148,6 @@ export function rollupSourceName(
       .replace(/\./g, "_")
       .slice(0, NAME_SLUG_LIMIT);
    return `${baseSourceName}__preagg__${slug}__${grainDigest(grainDimensions)}`;
-}
-
-/**
- * One segment of a namespace: a plain identifier, plus the hyphen.
- *
- * {@link assertSafeSqlIdentifier}'s `[A-Za-z_][A-Za-z0-9_$]*` plus the hyphen:
- * that rule excludes hyphens because BigQuery never reaches it, but a rollup
- * namespace does reach BigQuery, where `my-project.analytics` is ordinary.
- *
- * Everything else is out: a space or a quote cannot be spliced bare, and a name
- * needing quotes cannot be joined to a generated table name (see
- * {@link persistNamespace}).
- */
-const NAMESPACE_SEGMENT = /^[A-Za-z_][A-Za-z0-9_$-]*$/;
-
-/**
- * Whether every dot-separated segment can be spliced into a generated name.
- *
- * Dots are the one separator that survives: BigQuery addresses a dataset as
- * `project.dataset`, so a namespace is a path, not a single identifier.
- *
- * An empty string is refused by the per-segment test, which `""` fails.
- */
-export function isSpliceableNamespace(namespace: string): boolean {
-   return namespace.split(".").every((s) => NAMESPACE_SEGMENT.test(s));
 }
 
 /** The alias the author's base source is imported under. */

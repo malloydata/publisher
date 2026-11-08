@@ -28,7 +28,7 @@ import type { PackageIndex } from "../retrieval/model/types";
 import {
    DEFAULT_PACKAGE_RETRIEVAL,
    type PackageRetrievalSettings,
-} from "../retrieval/package_retrieval";
+} from "../service/package_retrieval_settings";
 import { getPackageIndex } from "../retrieval/model/package_entities";
 import {
    buildCatalog,

@@ -21,7 +21,10 @@
  */
 
 import type { ChatModel, EmbeddingModel } from "../llm/types";
-import { DEFAULT_FCJ_SETTINGS, type FcjSettings } from "../package_retrieval";
+import {
+   DEFAULT_FCJ_SETTINGS,
+   type FcjSettings,
+} from "../../service/package_retrieval_settings";
 import type { PackageLookup } from "../../service/environment_ports";
 import type { DuckDBConnection } from "../../storage/duckdb/DuckDBConnection";
 import { logger } from "../../logger";

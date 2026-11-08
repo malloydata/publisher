@@ -8,11 +8,11 @@ import * as path from "path";
 import { DuckDBConnection as MalloyDuckDB } from "@malloydata/db-duckdb";
 import type { Connection } from "@malloydata/malloy";
 import { Model } from "../../service/model";
-import { DEFAULT_PACKAGE_RETRIEVAL } from "../package_retrieval";
+import { DEFAULT_PACKAGE_RETRIEVAL } from "../../service/package_retrieval_settings";
 import { getPackageIndex } from "../model/package_entities";
 import { storeServing } from "../../test_helpers/get_context_join_fixture";
 import { setRetrievalConfig } from "../config";
-import { DEFAULT_FCJ_SETTINGS } from "../package_retrieval";
+import { DEFAULT_FCJ_SETTINGS } from "../../service/package_retrieval_settings";
 import { createCatalogTables } from "../../storage/duckdb/schema";
 import type { DuckDBConnection } from "../../storage/duckdb/DuckDBConnection";
 import {

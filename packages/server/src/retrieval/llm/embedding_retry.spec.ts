@@ -9,7 +9,7 @@ import {
    EmbeddingRetryPolicy,
    withEmbeddingRetry,
 } from "./embedding_provider";
-import { DEFAULT_EMBEDDING_MIN_SIMILARITY } from "../config";
+import { DEFAULT_EMBEDDING_MIN_SIMILARITY } from "../../config";
 
 const API_KEY = "sk-secret-key-123";
 

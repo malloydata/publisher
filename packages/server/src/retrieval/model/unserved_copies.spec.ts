@@ -6,7 +6,7 @@ import {
    compileFcjFixture,
    type FcjFixture,
 } from "../../test_helpers/fcj_fixture";
-import { DEFAULT_PACKAGE_RETRIEVAL } from "../package_retrieval";
+import { DEFAULT_PACKAGE_RETRIEVAL } from "../../service/package_retrieval_settings";
 import { buildCatalog, catalogInputOf, type Catalog } from "./catalog";
 import { catalogReportLine } from "../index/catalog_store";
 
