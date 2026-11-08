@@ -24,11 +24,10 @@
  * become the only one.
  */
 
-export const QUESTIONS_PROMPTS = ["questions", "phrases", "values"] as const;
-export type QuestionsPrompt = (typeof QUESTIONS_PROMPTS)[number];
-
-/** Rows a node gets by default; also the count the default text was written for. */
-export const DEFAULT_QUESTIONS_PER_NODE = 3;
+import {
+   DEFAULT_QUESTIONS_PER_NODE,
+   type QuestionsPrompt,
+} from "../../../service/package_retrieval_settings";
 
 /** Whether a variant shows the field's values on its line. */
 export function promptShowsValues(variant: QuestionsPrompt): boolean {

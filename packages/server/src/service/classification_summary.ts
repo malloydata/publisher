@@ -17,7 +17,7 @@
  */
 
 import type { components } from "../api";
-import { publishedSources } from "./classification";
+import { publishedSources } from "./classification_report";
 import type { Model } from "./model";
 
 export type ApiClassificationSummary =

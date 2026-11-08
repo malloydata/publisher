@@ -3,11 +3,8 @@
 
 import { describe, expect, it } from "bun:test";
 import { createHash } from "crypto";
-import {
-   promptShowsValues,
-   questionsInstructions,
-   QUESTIONS_PROMPTS,
-} from "./questions";
+import { QUESTIONS_PROMPTS } from "../../../service/package_retrieval_settings";
+import { promptShowsValues, questionsInstructions } from "./questions";
 
 const hash = (t: string) =>
    createHash("sha256").update(t).digest("hex").slice(0, 16);

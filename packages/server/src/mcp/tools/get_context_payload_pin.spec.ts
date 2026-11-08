@@ -42,7 +42,7 @@ import { setRetrievalConfig } from "../../retrieval/config";
 import {
    _clearEmbeddingProviderForTests,
    _setEmbeddingProviderForTests,
-} from "../../service/embedding_provider";
+} from "../../retrieval/llm/embedding_provider";
 import type { EnvironmentStore } from "../../service/environment_store";
 import { _setFcjValueFetcherForTests } from "../../retrieval/index/engine_state";
 import { compileFcjFixture } from "../../test_helpers/fcj_fixture";

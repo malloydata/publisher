@@ -13,13 +13,8 @@ import type { SourceCard } from "./response";
 import { connect } from "./connect";
 import { unjudged } from "./engine";
 import { find, KINDS_BY_FIND_TARGET, type FindTarget } from "./find";
-import {
-   HeldResults,
-   pageAt,
-   resultKey,
-   shrinkCard,
-   type HeldResult,
-} from "./pages";
+import { HeldResults, type HeldResult } from "./held_results";
+import { pageAt, resultKey, shrinkCard } from "./pages";
 import { respond } from "./respond";
 import { toUnit } from "../index/vectors";
 

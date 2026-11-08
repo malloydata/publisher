@@ -19,10 +19,10 @@ import {
    loadTestModel,
 } from "../../../test_helpers/incremental_test_harness";
 import { readPreaggregateAnnotation } from "./preaggregation_annotation";
+import { isSpliceableNamespace } from "./preaggregation_namespace";
 import {
    baseAlias,
    planModelPreaggregation,
-   isSpliceableNamespace,
    persistNamespace,
    planSourcePreaggregation,
    rollupSourceName,

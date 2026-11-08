@@ -52,7 +52,7 @@
  */
 
 import { Annotations } from "@malloydata/malloy";
-import { isSpliceableNamespace } from "./preaggregation_synthesis";
+import { isSpliceableNamespace } from "./preaggregation_namespace";
 import type { LogMessage } from "@malloydata/malloy";
 
 /** One grain a measure is declared at — one rollup. */

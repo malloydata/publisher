@@ -11,8 +11,11 @@ import {
    getEmbeddingProvider,
    prepareEmbeddingInput,
 } from "./embedding_provider";
-import { DEFAULT_EMBEDDING_MIN_SIMILARITY, EmbeddingConfig } from "../config";
-import { installSettings, withSettings } from "../test_helpers/settings_env";
+import {
+   DEFAULT_EMBEDDING_MIN_SIMILARITY,
+   EmbeddingConfig,
+} from "../../config";
+import { installSettings, withSettings } from "../../test_helpers/settings_env";
 
 const CONFIG: EmbeddingConfig = {
    apiKey: "test-key",

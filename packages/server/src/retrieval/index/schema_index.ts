@@ -8,7 +8,7 @@ import { logger } from "../../logger";
 import {
    EMBEDDING_BATCH_TIMEOUT_MS,
    EMBEDDING_QUERY_TIMEOUT_MS,
-} from "../../service/embedding_provider";
+} from "../llm/embedding_provider";
 // Shared with the package index so a query is humanized the same way
 // whichever index answers it.
 import { humanizeName } from "./embedding_index";
@@ -221,7 +221,7 @@ function cosineSimilarity(a: number[], b: number[]): number {
    return dot / (Math.sqrt(magA) * Math.sqrt(magB));
 }
 
-interface VectorCacheEntry {
+export interface VectorCacheEntry {
    /** Keyed by table resource. */
    vectors: Map<string, number[]>;
    fingerprint: string;
@@ -236,7 +236,7 @@ interface VectorCacheEntry {
 const vectorCache = (): Map<string, VectorCacheEntry> =>
    retrievalRegistry().schemaIndex.vectors;
 
-interface LexicalCacheEntry {
+export interface LexicalCacheEntry {
    index: lunr.Index;
    byResource: Map<string, SchemaTableEntity>;
    fingerprint: string;
@@ -252,16 +252,6 @@ const lexicalCache = (): Map<string, LexicalCacheEntry> =>
    retrievalRegistry().schemaIndex.lexical;
 const cooldownUntilMs = (): Map<string, number> =>
    retrievalRegistry().schemaIndex.cooldownUntilMs;
-
-/**
- * The caches above, held by the RetrievalRegistry: in memory only, keyed by
- * schema and bounded by MAX_CACHED_SCHEMAS.
- */
-export class SchemaIndexCaches {
-   readonly vectors = new Map<string, VectorCacheEntry>();
-   readonly lexical = new Map<string, LexicalCacheEntry>();
-   readonly cooldownUntilMs = new Map<string, number>();
-}
 
 /** Read an entry and mark it most-recently-used (Map insertion order is the LRU). */
 function touchCacheEntry(key: string): VectorCacheEntry | undefined {

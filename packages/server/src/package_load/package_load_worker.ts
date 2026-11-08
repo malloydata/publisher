@@ -68,7 +68,7 @@ import {
    type PackageRetrievalSettings,
    ignoredRetrievalWarnings,
    readPackageRetrieval,
-} from "../retrieval/package_retrieval";
+} from "../service/package_retrieval_settings";
 import { errMessage, ignoreDotfiles } from "../utils";
 import { RpcWaitAccountant } from "./rpc_wait_accountant";
 import { acceptBundledExperimentalDialects } from "../service/experimental_dialects";

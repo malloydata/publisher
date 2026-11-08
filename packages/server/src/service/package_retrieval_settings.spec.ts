@@ -17,7 +17,7 @@ import {
    readPackageRetrieval,
    resolvePromptPath,
    sourceSummaryConfigOf,
-} from "./package_retrieval";
+} from "./package_retrieval_settings";
 
 describe("publisher.json retrieval block", () => {
    it("defaults to no overrides, so every package gets the engine's defaults", async () => {

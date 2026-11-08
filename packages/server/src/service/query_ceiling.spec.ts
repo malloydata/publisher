@@ -10,12 +10,11 @@ import { describe, expect, it } from "bun:test";
 import { BadRequestError } from "../errors";
 import { withAuthorizeModel } from "../test_helpers/authorize_fixture";
 import { unrecordedAudit, type QueryAudit } from "./access_record";
+import { ceilingRefusal, modelDeclaresCarries } from "./classification";
 import {
    carriesCeilingLeaks,
-   ceilingRefusal,
-   modelDeclaresCarries,
    prepareCeilingQueries,
-} from "./classification";
+} from "./classification_report";
 import type { Model } from "./model";
 
 const MODEL = `##! experimental { access_modifiers composite_sources }

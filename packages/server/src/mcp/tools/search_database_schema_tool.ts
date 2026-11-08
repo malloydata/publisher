@@ -6,7 +6,7 @@ import { z } from "zod/v3";
 import type { ConnectionController } from "../../controller/connection.controller";
 import type { EnvironmentCatalog } from "../../service/environment_ports";
 import { schemaEmbeddingEnabled } from "../../config";
-import { getEmbeddingProvider } from "../../service/embedding_provider";
+import { getEmbeddingProvider } from "../../retrieval/llm/embedding_provider";
 import { buildMalloyUri } from "../handler_utils";
 import { registerGuardedTool } from "../register_tool";
 import { jsonResource, jsonToolError } from "../tool_response";

@@ -14,7 +14,7 @@ import { DEFAULT_EMBEDDING_MIN_SIMILARITY } from "../../config";
 import {
    EmbeddingProvider,
    _setEmbeddingProviderForTests,
-} from "../../service/embedding_provider";
+} from "../llm/embedding_provider";
 import { createCatalogTables } from "../../storage/duckdb/schema";
 import { compileFcjFixture } from "../../test_helpers/fcj_fixture";
 import { fcjValueFetcher } from "../../test_helpers/fcj_index_fixture";
@@ -58,7 +58,7 @@ import type { ChatModel } from "../llm/types";
 import {
    DEFAULT_FCJ_SETTINGS,
    DEFAULT_PACKAGE_RETRIEVAL,
-} from "../package_retrieval";
+} from "../../service/package_retrieval_settings";
 
 let harness: SemanticHarness;
 beforeAll(async () => {
