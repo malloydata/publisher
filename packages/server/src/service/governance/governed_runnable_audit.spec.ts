@@ -3,7 +3,7 @@
 
 /**
  * `GovernedRunnable` is a type brand, so the compiler cannot stop a file from
- * minting one: this spec does. Only `Model.authorizeAndBindRunnable` (which
+ * minting one: this spec does. Only `QueryGovernor.authorizeAndBindRunnable` (which
  * holds the explicit bypass branch too) may call `mintGovernedRunnable`, and
  * no production file may cast to the type. A new minter is a new way to run a
  * query nobody governed; adding one means changing this spec on purpose.
@@ -14,7 +14,7 @@ import * as path from "path";
 
 const SRC = path.resolve(__dirname, "..", "..");
 const MODULE = path.join("service", "governance", "governed_runnable.ts");
-const MODEL = path.join("service", "model.ts");
+const GOVERNOR = path.join("service", "governance", "query_governor.ts");
 
 function sourceFiles(dir: string): string[] {
    return fs.readdirSync(dir, { withFileTypes: true }).flatMap((entry) => {
@@ -33,7 +33,7 @@ const production = () =>
          text: fs.readFileSync(path.join(SRC, file), "utf8"),
       }));
 
-/** The body of `Model.authorizeAndBindRunnable`, up to its closing brace. */
+/** The body of `QueryGovernor.authorizeAndBindRunnable`, up to its closing brace. */
 function authorizeAndBindBody(text: string): { start: number; end: number } {
    const start = text.indexOf("   public async authorizeAndBindRunnable(");
    expect(start).toBeGreaterThan(-1);
@@ -43,18 +43,18 @@ function authorizeAndBindBody(text: string): { start: number; end: number } {
 }
 
 describe("GovernedRunnable minting", () => {
-   it("only model.ts calls mintGovernedRunnable", () => {
+   it("only the QueryGovernor calls mintGovernedRunnable", () => {
       const callers = production()
          .filter(
             ({ file, text }) =>
                file !== MODULE && text.includes("mintGovernedRunnable("),
          )
          .map(({ file }) => file);
-      expect(callers).toEqual([MODEL]);
+      expect(callers).toEqual([GOVERNOR]);
    });
 
-   it("every mint in model.ts is inside authorizeAndBindRunnable", () => {
-      const text = fs.readFileSync(path.join(SRC, MODEL), "utf8");
+   it("every mint in the governor is inside authorizeAndBindRunnable", () => {
+      const text = fs.readFileSync(path.join(SRC, GOVERNOR), "utf8");
       const { start, end } = authorizeAndBindBody(text);
       const sites: number[] = [];
       for (

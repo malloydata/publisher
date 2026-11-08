@@ -14,6 +14,7 @@ import fs from "fs/promises";
 import path from "path";
 import { AccessDeniedError, NotQueryableError } from "../../src/errors";
 import { Model, ModelPolicy } from "../../src/service/model";
+import { governorOf } from "../../src/test_helpers/governor";
 import {
    seededDuckdb,
    writeTempPackage,
@@ -1154,10 +1155,10 @@ describe("record and array literals are not joins", () => {
 describe("caller joins are resolved once per request", () => {
    it("walks the compiled query once for the boundary and authorize passes", async () => {
       const model = await loadModel(true);
-      const internals = model as unknown as {
+      const internals = governorOf(model) as unknown as {
          computeCallerJoins: (...args: unknown[]) => Promise<unknown>;
       };
-      const original = internals.computeCallerJoins.bind(model);
+      const original = internals.computeCallerJoins.bind(internals);
       let calls = 0;
       internals.computeCallerJoins = (...args: unknown[]) => {
          calls++;

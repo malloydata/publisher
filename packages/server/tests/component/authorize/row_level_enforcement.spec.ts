@@ -48,6 +48,7 @@ import {
 } from "../../../src/test_helpers/metrics_harness";
 import { installSettings } from "../../../src/test_helpers/settings_env";
 import { duckdbMalloyConfig } from "../../../src/test_helpers/temp_package";
+import { governorOf } from "../../../src/test_helpers/governor";
 
 /**
  * The matrix's shared model: `X` is gated; `cp_joiner` joins it with no
@@ -2125,7 +2126,7 @@ source: gated is duckdb.sql("SELECT 1 as org_id, 1 as x") extend {
 
    /** Reach the private cache and the private builder the request path uses. */
    function internals(model: Model) {
-      return model as unknown as {
+      return governorOf(model) as unknown as {
          graftedMaterializerCache: Map<string, unknown>;
          defaultGraftScope(): {
             modelDef: unknown;
