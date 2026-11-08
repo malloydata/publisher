@@ -360,8 +360,13 @@ export class Environment {
    /**
     * The connection counterpart of {@link destinationsAuthoritative}: false
     * when the list is a fallback (the config standing in for a missing
-    * directory) or torn down, so the database sync must not prune stored
-    * connections against it. Replacing the list makes it authoritative again.
+    * directory, or a reload from config) or torn down, so the database sync
+    * must not prune stored connections against it. Only a wholesale
+    * replacement of the list (an environment create or PATCH carrying
+    * `connections`, or a restore from the stored rows) makes it authoritative
+    * again. Adding, updating or deleting one connection edits one entry of
+    * whatever list is in memory, so it leaves the flag as it was: a fallback
+    * list with one connection added is still a fallback.
     */
    private connectionsAuthoritative = true;
    private environmentPath: string;
@@ -507,6 +512,8 @@ export class Environment {
             );
 
             this.updateConnections(nextMalloyConfig);
+            // A wholesale replacement: the list is now the desired state.
+            this.connectionsAuthoritative = true;
 
             logger.info(
                `Successfully updated connections for environment ${this.environmentName}`,
@@ -3764,7 +3771,9 @@ export class Environment {
       const previousMalloyConfig = this.malloyConfig;
       this.malloyConfig = malloyConfig;
       this.apiConnections = malloyConfig.apiConnections;
-      this.connectionsAuthoritative = true;
+      // Deliberately leaves connectionsAuthoritative alone: ConnectionService
+      // calls this for a single-connection edit, which does not make a
+      // fallback list the desired state. See {@link connectionsAuthoritative}.
 
       if (previousMalloyConfig !== malloyConfig) {
          this.retireConnectionGeneration(

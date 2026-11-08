@@ -158,6 +158,87 @@ describe("environment connection list persistence", () => {
       expect(await connectionNames(second)).toEqual(["a", "b"]);
    });
 
+   async function storedConnectionNames(current: EnvironmentStore) {
+      const repository = current.storageManager.getRepository();
+      const dbEnvironment = await repository.getEnvironmentByName(ENV);
+      return (await repository.listConnections(dbEnvironment!.id))
+         .map((row) => row.name)
+         .sort();
+   }
+
+   it("keeps a fallback list a fallback after a single connection is added", async () => {
+      const first = await openStore();
+      await first.addEnvironment({
+         name: ENV,
+         connections: [pg("a"), pg("b")],
+      } as never);
+      // A reload replaces the list with the config's, here none: a fallback.
+      await first.getEnvironment(parseEnvironmentName(ENV), true);
+      expect(await connectionNames(first)).toEqual([]);
+
+      // One connection edit must not make that partial list the desired
+      // state, or the next PATCH prunes every row it lacks.
+      await new ConnectionService(first).addConnection(ENV, "c", pg("c"));
+      await first.updateEnvironment({ name: ENV, readme: "hi" } as never);
+      expect(await storedConnectionNames(first)).toEqual(["a", "b", "c"]);
+
+      const second = await restart();
+      expect(await connectionNames(second)).toEqual(["a", "b", "c"]);
+   });
+
+   it("keeps a boot fallback a fallback after a single connection is updated", async () => {
+      const first = await openStore();
+      await first.addEnvironment({
+         name: ENV,
+         connections: [pg("a"), pg("b")],
+      } as never);
+      await first.addEnvironment(
+         { name: ENV, connections: [pg("a")] } as never,
+         true,
+         { connectionsAreFallback: true },
+      );
+      await new ConnectionService(first).updateConnection(ENV, "a", {
+         postgresConnection: { port: 6543 },
+      } as never);
+      await first.updateEnvironment({ name: ENV, readme: "hi" } as never);
+      expect(await storedConnectionNames(first)).toEqual(["a", "b"]);
+
+      const second = await restart();
+      expect(await connectionNames(second)).toEqual(["a", "b"]);
+   });
+
+   it("prunes against a fallback list once a PATCH replaces it", async () => {
+      const first = await openStore();
+      await first.addEnvironment({
+         name: ENV,
+         connections: [pg("a"), pg("b")],
+      } as never);
+      await first.getEnvironment(parseEnvironmentName(ENV), true);
+      await new ConnectionService(first).addConnection(ENV, "c", pg("c"));
+      await first.updateEnvironment({
+         name: ENV,
+         connections: [pg("a")],
+      } as never);
+      expect(await storedConnectionNames(first)).toEqual(["a"]);
+
+      const second = await restart();
+      expect(await connectionNames(second)).toEqual(["a"]);
+   });
+
+   it("deletes the row of a single connection deleted from an authoritative list", async () => {
+      const first = await openStore();
+      await first.addEnvironment({
+         name: ENV,
+         connections: [pg("a"), pg("b")],
+      } as never);
+      await new ConnectionService(first).deleteConnection(ENV, "b");
+      expect(await storedConnectionNames(first)).toEqual(["a"]);
+      await first.updateEnvironment({ name: ENV, readme: "hi" } as never);
+
+      const second = await restart();
+      expect(await connectionNames(second)).toEqual(["a"]);
+   });
+
    it("keeps the row of a connection added while an environment PATCH syncs", async () => {
       const first = await openStore();
       await first.addEnvironment({
