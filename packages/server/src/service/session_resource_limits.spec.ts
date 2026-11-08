@@ -11,7 +11,7 @@ import os from "node:os";
 import path from "node:path";
 import { DuckDBConnection } from "@malloydata/db-duckdb";
 import { applySessionResourceLimits } from "./connection";
-import { createIsolatedBuildSession } from "./materialization_build_session";
+import { createIsolatedBuildSession } from "./materialization/run/materialization_build_session";
 import { applyExtensionSessionSettings } from "./connection";
 import { DuckDBConnection as MetadataStoreConnection } from "../storage/duckdb/DuckDBConnection";
 import {

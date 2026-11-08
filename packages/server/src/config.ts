@@ -307,7 +307,7 @@ export const getDuckLakeTargetFileSizeBytes = (): string | undefined =>
  * manager, so this term fails as `failed to pin block`. The threshold bounds
  * rows buffered before a flush; the per-partition up-front cost is bounded by
  * the ordered, single-threaded insert (`orderByPartitionColumns` in
- * service/materialization_build_session.ts). Neither half suffices alone. See
+ * service/materialization/run/materialization_build_session.ts). Neither half suffices alone. See
  * docs/configuration.md.
  */
 export const DEFAULT_PARTITIONED_WRITE_FLUSH_THRESHOLD = 8192;

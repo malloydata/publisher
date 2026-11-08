@@ -18,7 +18,7 @@ import {
 } from "@malloydata/malloy";
 import { afterEach, describe, expect, it } from "bun:test";
 import { Model } from "./model";
-import type { ServeBinding } from "./materialization_serve_transform";
+import type { ServeBinding } from "./materialization/serve/materialization_serve_transform";
 import { installSettings } from "../test_helpers/settings_env";
 
 /** Puts back the settings the current test installed. */

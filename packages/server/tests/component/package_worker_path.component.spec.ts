@@ -1246,7 +1246,7 @@ source: orders is duckdb.sql("""
             );
 
             const { computePackageBuildPlan } = await import(
-               "../../src/service/build_plan_compile"
+               "../../src/service/materialization/plan/build_plan_compile"
             );
             const mainThread = await computePackageBuildPlan(pkg);
             expect(workerPlan.outcome).toEqual(mainThread);

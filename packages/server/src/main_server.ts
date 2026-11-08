@@ -67,8 +67,8 @@ import {
 } from "./mcp_config";
 import { observePackageStates } from "./package_state_metrics";
 import { EnvironmentStore } from "./service/environment_store";
-import { MaterializationScheduler } from "./service/materialization_scheduler";
-import { MaterializationService } from "./service/materialization_service";
+import { MaterializationScheduler } from "./service/materialization/run/materialization_scheduler";
+import { MaterializationService } from "./service/materialization/run/materialization_service";
 import { PackageMemoryGovernor } from "./service/package_memory_governor";
 import { ThemeStore } from "./service/theme_store";
 import { createAdminApp } from "./routes/admin";

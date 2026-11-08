@@ -23,7 +23,7 @@ import * as fs from "fs/promises";
 import * as os from "os";
 import * as path from "path";
 import { pathToFileURL } from "url";
-import type { ServeBinding } from "./materialization_serve_transform";
+import type { ServeBinding } from "./materialization/serve/materialization_serve_transform";
 import { Model } from "./model";
 import { installSettings } from "../test_helpers/settings_env";
 

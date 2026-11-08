@@ -9,8 +9,8 @@ import path from "node:path";
 
 import { DuckDBConnection } from "@malloydata/db-duckdb";
 import { storageDestinationRoot } from "../../src/service/connection_config";
-import { buildSourceIntoStorage } from "../../src/service/materialization_build_session";
-import { MaterializationService } from "../../src/service/materialization_service";
+import { buildSourceIntoStorage } from "../../src/service/materialization/run/materialization_build_session";
+import { MaterializationService } from "../../src/service/materialization/run/materialization_service";
 
 /**
  * The `storage=` build's warehouse read, against a REAL BigQuery project.

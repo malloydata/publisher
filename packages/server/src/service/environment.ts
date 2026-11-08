@@ -69,7 +69,7 @@ import {
    fetchManifestEntries,
    splitManifestEntries,
    type FetchedManifest,
-} from "./manifest_loader";
+} from "./materialization/run/manifest_loader";
 import { ApiConnection } from "./model";
 import { Package } from "./package";
 import { applyLoadGates } from "./package_load_gates";
@@ -89,7 +89,7 @@ import {
    type TaggedLogMessage,
 } from "./compile_source";
 import { type OverlayFile } from "./request_overlay";
-import { destinationSchemaOf } from "./storage_table_path";
+import { destinationSchemaOf } from "./materialization/run/storage_table_path";
 
 export {
    COMPILE_SCOPES,
