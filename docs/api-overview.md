@@ -5,134 +5,170 @@ SPDX-License-Identifier: MIT
 
 # API overview
 
-> What this is: the shape of Publisher's programmatic surfaces — the resource hierarchy, the REST and
-> MCP APIs, and where to find the live, interactive API explorer. For connecting an AI agent, see
-> [ai-agents.md](ai-agents.md); for the Console, see [console.md](console.md).
+> What this is: the shape of Publisher's programmatic surfaces — the resource model, the REST API at `/api/v1`, the MCP
+> tools, and where to find the live API explorer. For connecting an AI agent, see [ai-agents.md](ai-agents.md); for the
+> Console, see [console.md](console.md). The design decisions behind v1 are recorded in
+> [issue #1562](https://github.com/malloydata/publisher/issues/1562).
 
 ## Two surfaces
 
-| Surface      | Port                         | For                                                                                                                                                                                             |
-| ------------ | ---------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| **REST API** | `4000` (base path `/api/v0`) | Applications, reports, scripts, and unattended agents: list content, compile models, run queries. See the [REST loop](ai-agents.md#unattended-and-one-shot-agents-the-rest-loop).               |
-| **MCP API**  | `4040` (`/mcp`)              | AI agents in interactive sessions: discovery, query, and authoring over the [Model Context Protocol](https://modelcontextprotocol.io), via the ten MCP tools. See [ai-agents.md](ai-agents.md). |
+| Surface      | Port                         | For                                                                                                                                                                       |
+| ------------ | ---------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **REST API** | `4000` (base path `/api/v1`) | Applications, reports, scripts, and unattended agents: list content, compile models, run queries. See the [REST loop](ai-agents.md#unattended-and-one-shot-agents-the-rest-loop). |
+| **MCP API**  | `4040` (`/mcp`)              | AI agents in interactive sessions: discovery, query, and authoring over the [Model Context Protocol](https://modelcontextprotocol.io). See [ai-agents.md](ai-agents.md).   |
 
-Both are read-through onto the same resource hierarchy. Neither surface authenticates callers —
-put the server behind your own gateway before exposing it beyond localhost.
+Both read and write the same resources, in the same vocabulary. Neither surface authenticates callers — put the server
+behind your own gateway before exposing it beyond localhost ([security-posture.md](security-posture.md)).
 
-## Resource hierarchy
+**The previous API, `/api/v0`, is deprecated as a whole.** It keeps working, takes bug fixes only, and every response
+carries a `Deprecation` header. Its retirement is announced in the release notes once every first-party client has
+moved. Its spec is served at `/api-doc.v0.yaml`. `GET /status` is served at both base paths with the v1 shape.
+
+## The model
 
 ```
-/api/v0
-└── /environments/{env}
-    ├── /packages/{pkg}
-    │   ├── /models/{path}              a .malloy model
-    │   │   ├── /query                  POST — run a Malloy query
-    │   │   └── /compile                POST — compile to SQL / metadata
-    │   ├── /reports                    GET, every report in the package (an `## artifact` .malloy, anywhere)
-    │   │   └── /{path}                 GET, one report's manifest
-    │   ├── /data-apps                  in-package HTML data apps
-    │   ├── /skills                     agent skills in force, bundled plus the package's own
-    │   ├── /agents                     agents the package declares in publisher.json
-    │   │   └── /{name}                 GET, one agent's resolved definition
-    │   ├── /events                     GET, the live-reload SSE stream (held open)
-    │   ├── /databases                  the package's embedded data files (e.g. parquet)
-    │   └── /materializations           persisted-source builds
-    └── /connections/{name}             database connections
+Environment                     a namespace for packages and connections; the unit of tenancy
+├── Connection                  a warehouse handle with a role: source, destination, or both
+│   ├── schemas / tables        what the connection can read
+│   ├── sql                     ad-hoc SQL: run, or describe a statement's columns
+│   └── tables (physical)       tables the server created or serves here, with their life cycle
+└── Package                     a record with pointers (source, description, latestVersionId); holds no content
+    ├── status                  how this server holds the package's versions
+    ├── runs                    attempts to build persisted sources, each with a manifest
+    └── Version                 an immutable snapshot of the package's content; `latest` is a reserved segment
+        ├── models              compiled sources, views and givens; query; compile; the report write
+        ├── reports             a `.malloy` file with an `## artifact` tag (grid or linear); `.malloynb` read-only
+        ├── data-apps, public/  HTML data apps and the static files they load
+        ├── data-files          embedded CSV, Parquet, JSON and Excel files
+        ├── agents, skills      what the package declares for agents
+        ├── entities, classification, index
+        ├── build-plan, bindings
+        └── connections         the version's own `duckdb` sandbox over its data files
 ```
 
-(`/projects/{env}/…` is accepted as an alias for `/environments/{env}/…`.)
+Every content read is of exactly one version, named in the path. A publish, a report write and a reload that finds
+changed content each make a version; nothing edits one in place, and undo is pointing `latestVersionId` back at the
+parent.
+
+## The grammar
+
+- **Names.** Paths are kebab-case; parameters and fields are camelCase. `{path}` is a file inside a version; `{name}` a
+  named resource. `versionId` is the one spelling of a version, everywhere.
+- **Reads never change state.** Reload is `POST …/reload`, which answers with what it did (`unchanged`, `published`, or
+  `recompiled` for a live package).
+- **State changes are fields.** `PATCH …/versions/{versionId}` with `archived`, `loaded`, `pinned` or
+  `manifestLocation`; `PATCH …/packages/{packageName}` with `latestVersionId`; `PATCH …/runs/{runId}` with
+  `status: "cancelled"`. The one explicit action is `POST …/connections/{connectionName}/test`; to test an unsaved
+  configuration, create or update with `?dryRun=true`.
+- **One mutation shape.** `PATCH` is JSON merge-patch: present fields are set, `null` unsets, absent fields are untouched,
+  lists replace. `PUT` replaces the whole resource where that is wanted (environments, for an orchestrator's push; the
+  theme). `POST` on a collection answers 201 with the resource and a `Location`; `DELETE` answers 204.
+- **Concurrency.** Every mutable resource carries a `revision`, returned as `ETag` on reads. Send it back as `If-Match` on
+  a write; 412 `REVISION_MISMATCH` when the resource has moved on. The report write also takes `expectedHash`, the
+  SHA-256 of the text you read.
+- **Lists.** Every list is `{items, nextCursor}`, paged with `limit` (default 100, at most 1000) and `after`. `/status` is
+  the one unpaged snapshot, narrowable with `?environment=`.
+- **Typed responses.** A query answers `{rows, schema, metadata}`, plus `malloyResult` when asked for with
+  `include: ["malloyResult"]`. Nothing is a JSON string inside JSON.
+- **Errors.** Every error is `{status, reason, message, details?}`, `reason` from one closed enum. Branch on `status` and
+  `reason`, never on `message`. 400 is your request or your Malloy (`COMPILE_ERROR` carries `details.problems`); 424 is
+  your connection (`CONNECTION_AUTH_FAILED`, `CONNECTION_NOT_FOUND`); 502 is the database (`CONNECTION_FAILED`).
+- **Booleans** are JSON `true`/`false` in bodies and `true`/`false` in query strings; anything else is 400.
 
 ## Key endpoints
 
-| Method & path                                                                                                                      | Does                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  |
-| ---------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `GET /api/v0/status`                                                                                                               | Server lifecycle (`operationalState`) and release `version`, plus `loadErrors` for anything configured that did not load, or that is still serving an older model because its most recent reload failed to compile (`stale: true`), and `emptyReason` when no config was found. Each listed package carries `status: { serving, loading }`: `serving` while a compiled copy answers queries here, `loading` while a load, reinstall or recompile is in progress (both during a reload). Add `?includeLoading=true` to also list packages loading for the first time, which cannot serve yet.                                                                                                                                                          |
-| `GET /api/v0/environments`                                                                                                         | List environments, each with its packages.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            |
-| `GET /api/v0/environments/{env}/packages/{pkg}`                                                                                    | Package metadata (models, `explores`, `warnings`, …). Add `?reload=true` to recompile the package from disk first, the REST form of `reload_package`. How the package is served (`status`, `servedRevision`, `sourceContentSha`, manifest binding, `storageServeBindings`) is at `GET …/packages/{pkg}/status`; the fields that once rode this response besides are marked deprecated in `api-doc.yaml` and stay on it only while `PUBLISHER_PACKAGE_INLINE_FIELDS` is `on` ([configuration.md](configuration.md)).                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                |
-| `POST /api/v0/environments/{env}/packages`                                                                                         | Register a package at runtime; body `{ "name": "…", "location": "…" }` ([packages.md](packages.md)).                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  |
-| `GET  …/packages/{pkg}/status`                                                                                                     | How this server holds the package right now, without loading it: `status` (`serving`, `loading`), `servedRevision`, `sourceContentSha`, `manifestBindingStatus`, `manifestEntryCount`, `boundManifestUri`, `storageServeBindings`; for a version, `loaded` and `archiveStatus`. `GET /api/v0/status` carries only what a reconcile reads (`status` and the manifest binding) for every package at once. |
-| `GET  …/packages/{pkg}/entities`                                                                                                   | What each `.malloy` model of the loaded package declares, for an indexer: public fields, per-source facts and access gates, givens (with `secure` and `required`), source schemas and `#(index)` fingerprints. By default only the package's surface under the rules of `GET …/models/{path}` (files on the surface, the names each publishes, no locked source); `?includeHiddenFilesAndSources=true` returns every file and source. Computed at load, before any manifest is bound. |
-| `GET  …/packages/{pkg}/build-plan`                                                                                                 | The load's persist build plan: empty when the package declares no persist source; `409` with `reason` `BUILD_PLAN_UNAVAILABLE` when it could not be derived at load (reload the package to derive it again). |
-| `GET  …/packages/{pkg}/embedding-index`                                                                                            | The state of the package's semantic discovery index (`status` `lexical`, `indexing`, `ready` or `error`, with progress); poll it after a load until it settles ([configuration.md](configuration.md#semantic-retrieval-for-get_context)). |
-| `GET  …/packages/{pkg}/classification`                                                                                             | For each published entry point, the classes its `#(carries)` declares and how many of its fields carry each ([classification.md](classification.md#the-classification-summary)). |
-| `GET  …/packages/{pkg}/models/{path}`                                                                                              | A model's compiled metadata (sources, views, givens), limited to the names the file publishes, plus `sourceText`, the file's Malloy verbatim. `404` for a file off the package's surface. `sourceText` is left out when the text names a source the file does not publish, unless `?includeHiddenFilesAndSources=true`; a report's text is always returned.                                                                                                                                                                                                                                                                                                                                                                                           |
-| `POST …/packages/{pkg}/models/{path}/query`                                                                                        | Run a Malloy query; see [request shapes](#query-request-shapes) below.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                |
-| `POST …/packages/{pkg}/models/{path}/compile`                                                                                      | Compile Malloy to SQL / metadata.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                     |
-| `PUT …/packages/{pkg}/models/{path}`                                                                                               | Write a report into the package and reload it, the builder's save. **Create** (no `expectedHash`) at any `.malloy` path that does not exist yet, outside `public/` and never at the root `index.malloy`, with text that carries an artifact tag; missing directories are created. **Replace** (with `expectedHash`, the sha256 of the text you read) only a file the package serves as an editable report, so it never overwrites a model, an untagged file, a `.malloynb` or `index.malloy`. Compile-first, atomic, restored on a failed reload; `409` when the file changed since it was read, or when a create finds a file already there. Two reports may share a basename. Gated by `frozenConfig`. See [reports.md](reports.md#the-write-path). |
-| `GET  …/packages/{pkg}/reports`                                                                                                    | List every report in the package, wherever it lives: `path`, `name` (a display label), `layout` (`grid` or `linear`), `title`, `description`, `editable` (false for a `.malloynb`), and the load `error` for one that does not compile. The `path` is the report's identity.                                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
-| `GET  …/packages/{pkg}/reports/{path}`                                                                                             | One report's manifest: its `layout`, tiles, and the control row derived from the givens its tiles reference (widened to the file's surfaced set when a tile cannot be resolved); for a `.malloynb`, its cells. There is no run endpoint; run tiles through `…/models/{path}/query` with `givens`. A tile's `query` is an expression: send it as `query`, prefixed `run:`. Every tile has a `kind`: skip the `kind=text` tiles when running queries, they carry `markdown` and no `query`.                                                                                                                                                                                                                                                             |
-| `GET  …/packages/{pkg}/dashboards`, `…/dashboards/{name}`, `…/notebooks`, `…/notebooks/{path}`, `…/notebooks/{path}/cells/{index}` | **Deprecated aliases** for `…/reports`, removed in a later release. The dashboard routes answer for grid reports, resolving `{name}` as a unique basename (`409` naming every match when it is ambiguous); the notebook routes answer for linear reports.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                             |
-| `GET  …/packages/{pkg}/data-apps`                                                                                                  | List a package's HTML data apps.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      |
-| `GET  …/packages/{pkg}/skills`, `…/skills/{name}`                                                                                  | List the agent skills in force for a package (bundled, plus the package's own `skills/`, which replace a bundled skill of the same name), and fetch one. The REST form of `get_skill`.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                |
-| `GET  …/packages/{pkg}/agents`, `…/agents/{name}`                                                                                  | List the agents a package declares in `publisher.json`, and fetch one resolved definition: instructions, its skill files, declared schedules (never run), warnings, and `source` with `sourceContentSha` and `definitionSha`. The REST form of `get_agent`; adopt an agent only when the user names it. See [packages.md](packages.md#agents).                                                                                                                                                                                                                                                                                                                                                                                                        |
-| `GET  …/packages/{pkg}/events`                                                                                                     | Live-reload SSE stream ([html-data-apps.md](html-data-apps.md#live-reload)). Held open by design.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                     |
-| `GET  …/environments/{env}/connections`                                                                                            | List database connections.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            |
+| Method & path                                                              | Does                                                                                                                                                                                      |
+| -------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `GET /status`                                                              | `operationalState`, `version`, `hostname`, `loadErrors` (with `stale` for a version serving a model older than its content), and every version this server holds with its `ServingState`. |
+| `GET /environments`, `POST /environments`                                  | List and create. `PUT /environments/{env}` replaces one whole, `PATCH` merges, `DELETE` removes it and everything in it.                                                                 |
+| `GET …/connections?role=destination`                                       | Connections by role. `POST` creates (`?dryRun=true` tests without storing); `PATCH` merges; `POST …/{name}/test` tests a stored one.                                                      |
+| `GET …/connections/{name}/schemas`, `…/tables`, `POST …/sql`               | Browse what a connection can read; run or describe SQL. The same routes exist under a version for its `duckdb` sandbox.                                                                     |
+| `GET …/connections/{name}/tables`                                          | Physical tables the server created or serves, with `state` (`staging`, `serving`, `superseded`, `reclaimable`, `dropped`) and `generation`.                                              |
+| `GET …/packages`, `POST …/packages`                                        | List records; publish a version from `source.location` (`?dryRun=true` checks without storing). Publish answers the `Version`.                                                             |
+| `PATCH …/packages/{pkg}`                                                   | `description`, `latestVersionId` (a compare-and-swap under `If-Match`; moving it back is undo), `source`. Scope and schedule come from a version's `publisher.json`.                     |
+| `POST …/packages/{pkg}/reload`                                             | Fetch the source again; publish `<parent>+reload.N` if it changed, else `unchanged`. Also the guaranteed schema refresh.                                                                   |
+| `GET …/packages/{pkg}/status`                                              | The `ServingState` of one version (`?versionId=`, `latest` by default), with the per-package fields (`servedRevision`, `sourceContentSha`, `bindings`). Loads nothing.                   |
+| `GET …/versions`, `GET …/versions/{v}`, `PATCH`, `DELETE`                  | The package's versions, newest `seq` first; one version; its lifecycle fields; delete for good.                                                                                           |
+| `GET …/versions/{v}/models`, `GET …/models/{path}`                         | Model files; one model's sources, views and givens (`?include=sourceText,modelInfo,sourceInfos` for the larger parts).                                                                   |
+| `POST …/versions/{v}/models/{path}/query`                                  | Run a query. See [request shapes](#query-request-shapes).                                                                                                                                 |
+| `POST …/versions/{v}/models/{path}/compile`                                | Compile-check Malloy text at `append`, `file` or `package` scope.                                                                                                                         |
+| `PUT …/versions/{v}/models/{path}`                                         | The builder's save: write a report file, which makes version `<parent>+edit.N` and moves `latestVersionId`. Create (201) without `expectedHash`, replace (200) with it.                  |
+| `GET …/versions/{v}/reports`, `…/reports/{path}`                           | Reports by `path`, `kind` and `layout`; one report's manifest (tiles, or cells for a `.malloynb`). Run a tile through `query`; run a `.malloynb` cell with `cell` on the query request.      |
+| `GET …/versions/{v}/data-apps`, `…/public/{path}`                          | HTML data apps and the static files they load, served from the version they were published with.                                                                                        |
+| `GET …/versions/{v}/data-files`                                            | Embedded data files and their schemas.                                                                                                                                                    |
+| `GET …/versions/{v}/agents`, `…/agents/{name}`, `…/skills`, `…/skills/{name}` | What the version declares for agents, and the skills in force for it. Adopt an agent only when the user names it.                                                                        |
+| `GET …/versions/{v}/entities`, `…/classification`, `…/index`               | What each model declares for an indexer; the classification summary; the discovery index's state.                                                                                        |
+| `GET …/versions/{v}/build-plan`, `…/bindings`                              | The persist build plan (`state`: `ready`, `empty`, `unavailable`); what the version serves per source, with `tableId`.                                                                   |
+| `GET …/packages/{pkg}/runs`, `POST`, `GET …/runs/{id}`, `PATCH`, `DELETE`  | Materialization runs (`status`, `trigger`, `mode`, `scope`); start one (auto, or orchestrated with `buildInstructions`); cancel with `{"status": "cancelled"}`.                            |
+| `GET …/runs/{id}/manifest`                                                 | What a run produced: one entry per `sourceEntityId`, each naming its `tableId`.                                                                                                           |
 
-Example — run a query against the bundled `storefront` package:
+Example — run a query against the bundled `storefront` package's latest version:
 
 ```bash
 curl -s -X POST \
-  http://localhost:4000/api/v0/environments/examples/packages/storefront/models/storefront.malloy/query \
+  http://localhost:4000/api/v1/environments/examples/packages/storefront/versions/latest/models/storefront.malloy/query \
   -H 'content-type: application/json' \
-  -d '{"query":"run: order_items -> by_category"}'
+  -d '{"query":"run: order_items -> by_category"}' | jq .rows
 ```
 
 ### Query request shapes
 
-The query body takes one of two shapes: `query` alone (ad-hoc Malloy, compiled in the model's
-context), or `queryName` without `query` (a named view when `sourceName` is set; a model-level
-named query when it is not). Any other combination returns a 400. On the named shape, `sourceName`
-and `queryName` are names and not Malloy code: send one name per field, bare, exactly as the model
-response's `sources` listing returns it — the server quotes it, so a name needing quotes works and
-backticks of your own do not. Anything richer than a name goes in `query`.
+The body takes one of two shapes: `query` alone (ad-hoc Malloy, compiled in the model's context), or `queryName`
+without `query` (a view when `sourceName` is set, a model-level named query when it is not). Names are names, not
+Malloy code: send one name per field, bare, exactly as the model's `sources` listing returns it. Anything richer goes in
+`query`. `givens` ride on either shape to supply [runtime parameters](givens.md); `rowLimit` caps the rows; `cell`
+selects a `.malloynb` cell when the path is a legacy report.
 
-The response's `result` field is a JSON string, so parse it; with `"compactJson": true` it holds
-plain row objects, without it the full Malloy result envelope with type metadata. `givens` rides on
-either shape to supply model-declared [runtime parameters](givens.md).
+The response is `{rows, schema, metadata}`: plain row objects, the column schema, and `metadata` with `rowLimit`,
+`rowLimitSource`, `rowLimitHit`, `elapsedMs`, `servedFrom`, `costBytes`, `queryCorrelationId` and `renderLogs`. Add
+`"include": ["malloyResult"]` for the full Malloy result the renderer consumes, or `["sql"]` for the SQL that ran.
 
-A query that fails tells you whose problem it is. Branch on `reason`, not on the message:
+A query that fails says whose problem it is. Branch on `reason`:
 
-- **400:** the request or the query was rejected. When Malloy rejected the query, `problems` lists
-  its diagnostics; when the database ran it and rejected it (a type mismatch, a division by zero),
-  the message carries the database's text. Fix what the message names.
-- **424 with a connection `reason`:** the connection is misconfigured, so the query never ran. The
-  query is fine; do not rewrite it, and do not retry until the connection is fixed.
-  - `CONNECTION_AUTH_FAILED`: the database rejected the connection's user, password, key or token.
-  - `CONNECTION_NOT_FOUND`: the model names a connection the environment does not have, usually
-    one deleted after the package was loaded.
-- **502 with `reason: CONNECTION_FAILED`:** the database connection is down: the database could not
-  be reached, so the query never ran. The query is fine; retry once, then report it. Without that reason, a 502 is some other
-  failure in the database behind the connection.
+- **400** `COMPILE_ERROR` or `QUERY_REJECTED`: your Malloy, or the database rejected the statement; `details.problems`
+  carries the compiler's diagnostics. Fix what the message names.
+- **424** `CONNECTION_AUTH_FAILED` or `CONNECTION_NOT_FOUND`: the connection is misconfigured; the query never ran. Do
+  not rewrite it or retry until the connection is fixed.
+- **502** `CONNECTION_FAILED`: the database could not be reached; the query never ran. Retry once, then report it.
 
-For `CONNECTION_FAILED` and `CONNECTION_AUTH_FAILED` the body carries a fixed message, because the
-driver's text can name a host or a user; it is in the server log.
+## Vocabulary
+
+The spec's nouns are the vocabulary, and the Console and the docs follow them:
+
+| Noun             | Means                                                                                                   |
+| ---------------- | ------------------------------------------------------------------------------------------------------- |
+| environment      | a namespace for packages and connections                                                                |
+| connection       | a warehouse handle; its `role` says whether models read it, builds write to it, or both                 |
+| package          | a record with pointers; its content is a version                                                        |
+| version          | an immutable snapshot of a package's content; `latest` is the package's pointer to one of them          |
+| model            | a `.malloy` file; compiled, it yields sources, views, named queries and givens                          |
+| report           | a `.malloy` file with an `## artifact` tag, `layout` grid or linear; a `.malloynb` is a read-only legacy kind |
+| data app         | an HTML page under `public/`                                                                            |
+| data file        | a CSV, Parquet, JSON or Excel file embedded in a version                                                |
+| agent, skill     | what a package declares for agents; the guides in force for it                                          |
+| run              | one attempt to build a slot's persisted sources; "materialization" is the feature's name                |
+| manifest entry   | what a run produced for one source; `tableId` names the physical table                                  |
+| binding          | what a version serves for one source right now                                                          |
+| table            | a physical table the server created or serves, with `state` and `generation`                            |
+| given            | a runtime parameter a model declares; reports render the ones their tiles read as filter controls       |
+| index            | the discovery index `get_context` ranks against                                                         |
+| stale            | a version serving a model older than its content because the newer content failed to compile           |
 
 ## Live API explorer
 
-The running server hosts the full, interactive **Swagger UI** and the OpenAPI 3.1 spec:
+The running server hosts the interactive **Swagger UI** and the OpenAPI 3.1 specs:
 
-| URL                                    | What                                                                       |
-| -------------------------------------- | -------------------------------------------------------------------------- |
-| **http://localhost:4000/api-doc.html** | Interactive Swagger UI — browse every endpoint, see schemas, try requests. |
-| **http://localhost:4000/api-doc.yaml** | The raw OpenAPI 3.1 spec (feed it to codegen or Postman).                  |
+| URL                                       | What                                                      |
+| ----------------------------------------- | --------------------------------------------------------- |
+| **http://localhost:4000/api-doc.html**    | Interactive explorer over the v1 spec.                    |
+| **http://localhost:4000/api-doc.yaml**    | The v1 OpenAPI spec (feed it to codegen or Postman).      |
+| **http://localhost:4000/api-doc.v0.yaml** | The deprecated v0 spec, for clients that have not moved.  |
 
-The Console's footer **Publisher API** link opens the same explorer.
-
-The spec file ships inside the npm package, so every running server serves `/api-doc.yaml` even
-with no internet access. `/api-doc.html` loads the Swagger UI assets from a CDN, so in a sandbox
-that blocks CDNs the page can come up blank; the YAML is the dependable artifact. Without a
-running server, the same spec is at
-`https://raw.githubusercontent.com/malloydata/publisher/main/api-doc.yaml`.
-
-![The interactive Swagger UI Publisher serves at /api-doc.html](screenshots/api-explorer.png)
-
-> **Why isn't the explorer embedded directly in this page?** GitHub-rendered Markdown strips the
-> JavaScript that Swagger UI needs, so an interactive explorer can't live inside a `.md` file on
-> GitHub. Open the hosted URL above instead. (A docs site that permits inline HTML — e.g.
-> docs.malloydata.dev — can embed Swagger/Redoc against `/api-doc.yaml`.)
+Without a running server, the same specs are at
+`https://raw.githubusercontent.com/malloydata/publisher/main/api-doc.v1.yaml` and `…/api-doc.yaml` (v0).
 
 ## Generated clients
 
-The spec drives a generated **Python client** ([`packages/python-client`](../packages/python-client))
-and the TypeScript client the SDK uses. Regenerate them from `api-doc.yaml` after any spec change —
+The v1 spec drives the TypeScript client the SDK and CLI use and the generated Python client
+([`packages/python-client`](../packages/python-client)). Regenerate them from `api-doc.v1.yaml` after any spec change —
 see [CONTRIBUTING.md](../CONTRIBUTING.md).
