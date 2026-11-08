@@ -3,91 +3,58 @@
 
 import { describe, test } from "bun:test";
 import assert from "node:assert";
-import vectors from "./__fixtures__/access-filter-grammar-vectors.json";
+import { parseAuthorizeGrammarBody } from "../authorize_grammar";
 import {
-   AuthorizeGrammarError,
-   parseAuthorizeGrammarBody,
-} from "../authorize_grammar";
-import {
-   parseAccessFilterBody,
+   accessFilterTerms,
    parseGateAnnotation,
    resolveGates,
    type GateStructDef,
 } from "./access_gates";
 
-describe("parseAccessFilterBody conformance with the authorize grammar", () => {
-   // `parseAuthorizeGrammarBody` accepts a backtick segment containing a dot; a dotted `field_path`
-   // can't round-trip it, so it is refused here and stays opaque (safe direction).
-   const NARROWER = new Map([
-      ["account.`cost.center` = $REGION", "unsupported_field_path"],
-   ]);
-
-   for (const v of vectors.vectors) {
-      test(`\`${v.body}\` ${v.expect.ok ? "parses" : `is refused (${v.expect.cause})`}`, () => {
-         const got = parseAccessFilterBody(
-            v.body,
-            new Map(Object.entries(v.givens)),
-         );
-         const narrowed = NARROWER.get(v.body);
-         if (narrowed) {
-            assert.deepStrictEqual(got, { ok: false, cause: narrowed });
-         } else if (v.expect.ok) {
-            assert.deepStrictEqual(got, { ok: true, terms: v.expect.terms });
-         } else {
-            assert.deepStrictEqual(got, { ok: false, cause: v.expect.cause });
-         }
-      });
-   }
-
-   test("the vector set exercises both outcomes, so a parser that refused everything would fail", () => {
-      assert.ok(vectors.vectors.filter((v) => v.expect.ok).length >= 10);
-      assert.ok(vectors.vectors.filter((v) => !v.expect.ok).length >= 20);
+describe("accessFilterTerms", () => {
+   // The grammar's own cases live in ../authorize_grammar.spec.ts; these pin
+   // only the reshaping into the /entities wire shape.
+   test("maps each row-level term to field_path, given and op, in order", () => {
+      assert.deepStrictEqual(
+         accessFilterTerms(
+            "`region` = $REGION and org.id in $GROUPS",
+            new Map([
+               ["REGION", "string"],
+               ["GROUPS", "array"],
+            ]),
+         ),
+         [
+            { field_path: "region", given: "REGION", op: "=" },
+            { field_path: "org.id", given: "GROUPS", op: "in" },
+         ],
+      );
    });
-});
 
-describe("the recorded vectors still describe the server's live grammar", () => {
-   // The vectors were recorded from `parseAuthorizeGrammarBody`; re-deriving
-   // each one live means a grammar change fails here instead of drifting.
-   for (const v of vectors.vectors) {
-      test(`\`${v.body}\``, () => {
-         let live:
-            | {
-                 ok: true;
-                 terms: { field_path: string; given: string; op: string }[];
-              }
-            | { ok: false; cause: string };
-         try {
-            const terms = parseAuthorizeGrammarBody(
-               "s",
-               v.body,
-               new Map(Object.entries(v.givens)),
-               "access_filter",
-            );
-            live = {
-               ok: true,
-               terms: terms.flatMap((t) =>
-                  t.scope === "row_level"
-                     ? [
-                          {
-                             field_path: t.fieldPathSegments.join("."),
-                             given: t.given,
-                             op: t.operator,
-                          },
-                       ]
-                     : [],
-               ),
-            };
-         } catch (error) {
-            if (!(error instanceof AuthorizeGrammarError)) throw error;
-            live = { ok: false, cause: error.rejectionCause };
-         }
-         if (v.expect.ok) {
-            assert.deepStrictEqual(live, { ok: true, terms: v.expect.terms });
-         } else {
-            assert.deepStrictEqual(live, { ok: false, cause: v.expect.cause });
-         }
-      });
-   }
+   test("a backticked segment holding a dot is opaque: a dotted field_path cannot carry it", () => {
+      // The grammar accepts it; the wire shape cannot say it.
+      assert.deepStrictEqual(
+         parseAuthorizeGrammarBody(
+            "s",
+            "account.`cost.center` = $REGION",
+            new Map([["REGION", "string"]]),
+            "access_filter",
+         ).map((t) => (t.scope === "row_level" ? t.fieldPathSegments : [])),
+         [["account", "cost.center"]],
+      );
+      assert.strictEqual(
+         accessFilterTerms(
+            "account.`cost.center` = $REGION",
+            new Map([["REGION", "string"]]),
+         ),
+         undefined,
+      );
+   });
+
+   test("a body the grammar refuses is opaque, never a throw", () => {
+      for (const body of ["", "true", "region != $R", "'admin' = $ROLE"]) {
+         assert.strictEqual(accessFilterTerms(body), undefined, body);
+      }
+   });
 });
 
 describe("parseGateAnnotation", () => {

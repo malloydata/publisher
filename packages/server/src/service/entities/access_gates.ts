@@ -18,12 +18,12 @@ import {
    parseAuthorizeAnnotation,
 } from "../authorize";
 import {
-   AuthorizeGrammarError,
    parseAuthorizeGrammarBody,
    type AuthorizeGrammarTerm,
 } from "../authorize_grammar";
 import { ACCESS_FILTER_ROUTE } from "../authorize_routes";
 import { gatePlan, type GateGraph } from "../governance/gate_plan";
+import type { AuthorizeTerm } from "./internal_types";
 
 export type GateRoute = "authorize" | "access_filter";
 
@@ -33,13 +33,6 @@ export const GATE_ROUTES: readonly GateRoute[] = ["authorize", "access_filter"];
 export interface GateExpr {
    route: GateRoute;
    expr: string;
-}
-
-/** One `field_path <op> $GIVEN` conjunct of an `#(access_filter)` body. */
-export interface AccessFilterTerm {
-   field_path: string;
-   given: string;
-   op: "=" | "in";
 }
 
 /** Extract the route and Malloy expression from an `#(authorize)` or
@@ -244,58 +237,22 @@ export const resolveGates = (
    return { gates, composite: plan.metComposite };
 };
 
-// --- `#(access_filter)` body grammar ---------------------------------------
-// A projection of ../authorize_grammar.ts (`parseAuthorizeGrammarBody` on the
-// access_filter route), narrowed to the row-level shape an index needs:
-// `field_path <op> $GIVEN` terms joined by `and`, `=` for a scalar given and
-// `in` for a list one. There is one grammar; this only reshapes its answer.
-// The conformance test replays vectors recorded from `parseAuthorizeGrammarBody`.
-
-export type AccessFilterRejection =
-   | "empty_body"
-   | "compound_boolean"
-   | "negated_operator"
-   | "comparison_operator"
-   | "left_not_field_path"
-   | "missing_given_reference"
-   | "malformed_body"
-   | "duplicate_given"
-   | "duplicate_field_path"
-   | "operator_arity_mismatch"
-   | "sentinel_in_access_filter"
-   | "source_level_term_in_access_filter"
-   | "reversed_in_operands"
-   | "unsupported_field_path";
-
-export type AccessFilterParse =
-   | { ok: true; terms: AccessFilterTerm[] }
-   | { ok: false; cause: AccessFilterRejection };
-
-const ACCESS_FILTER_REJECTIONS: ReadonlySet<string> =
-   new Set<AccessFilterRejection>([
-      "empty_body",
-      "compound_boolean",
-      "negated_operator",
-      "comparison_operator",
-      "left_not_field_path",
-      "missing_given_reference",
-      "malformed_body",
-      "duplicate_given",
-      "duplicate_field_path",
-      "operator_arity_mismatch",
-      "sentinel_in_access_filter",
-      "source_level_term_in_access_filter",
-      "reversed_in_operands",
-      "unsupported_field_path",
-   ]);
-
-/** Parse an `#(access_filter)` body into its row-level terms, or say which
- *  grammar rule it breaks. Anything that does not parse is opaque to callers.
- *  Never throws: a failure of any kind is a refusal (opaque, the safe side). */
-export const parseAccessFilterBody = (
+/**
+ * The row-level terms of an `#(access_filter)` body, in the `/entities` wire
+ * shape (`field_path <op> $GIVEN`), or undefined when the body is opaque to an
+ * index. The server's grammar (`parseAuthorizeGrammarBody` on the
+ * access_filter route) reads the body; this only reshapes its answer:
+ *  - a body the grammar refuses is opaque (the load refuses it too, so a
+ *    served package never carries one);
+ *  - a term whose segment holds a dot (`` reps.`cost.center` ``) is opaque,
+ *    because a dotted `field_path` cannot carry it. Opaque is the safe side:
+ *    the source's row filter stays withheld from the index.
+ * Never throws.
+ */
+export const accessFilterTerms = (
    body: string,
    givenTypes: ReadonlyMap<string, string> = new Map(),
-): AccessFilterParse => {
+): AuthorizeTerm[] | undefined => {
    let parsed: AuthorizeGrammarTerm[];
    try {
       parsed = parseAuthorizeGrammarBody(
@@ -304,34 +261,21 @@ export const parseAccessFilterBody = (
          givenTypes,
          ACCESS_FILTER_ROUTE,
       );
-   } catch (err) {
-      const cause =
-         err instanceof AuthorizeGrammarError &&
-         ACCESS_FILTER_REJECTIONS.has(err.rejectionCause)
-            ? (err.rejectionCause as AccessFilterRejection)
-            : "malformed_body";
-      return { ok: false, cause };
+   } catch {
+      return undefined;
    }
-   const terms: AccessFilterTerm[] = [];
+   const terms: AuthorizeTerm[] = [];
    for (const term of parsed) {
-      // The grammar admits only row-level terms on this route; anything else
-      // is not a shape this projection can carry.
-      if (term.scope !== "row_level") {
-         return { ok: false, cause: "malformed_body" };
-      }
-      // A dot inside a segment cannot round-trip through a dotted `field_path`.
-      if (
-         term.fieldPathSegments.some((s) => s.includes(".") || s.includes("`"))
-      ) {
-         return { ok: false, cause: "unsupported_field_path" };
-      }
+      // The grammar admits only row-level terms on this route.
+      if (term.scope !== "row_level") return undefined;
+      if (term.fieldPathSegments.some((s) => s.includes("."))) return undefined;
       terms.push({
          field_path: term.fieldPathSegments.join("."),
          given: term.given,
          op: term.operator,
       });
    }
-   return { ok: true, terms };
+   return terms;
 };
 
 /**

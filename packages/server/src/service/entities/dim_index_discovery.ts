@@ -18,9 +18,8 @@
  */
 
 import {
-   parseAccessFilterBody,
+   accessFilterTerms,
    resolveGates,
-   type AccessFilterTerm,
    type GateExpr,
    type GateStructDef,
 } from "./access_gates";
@@ -28,7 +27,7 @@ import { sourceFilters } from "./filters";
 import { findForbiddenIndexPolicyKeys } from "./index_annotation_parsing";
 import { walkExploreTree, type JoinDescentRule } from "./explore_walk";
 import { getAccessModifier } from "./field_helpers";
-import { AccessModifierEnum } from "./internal_types";
+import { AccessModifierEnum, type AuthorizeTerm } from "./internal_types";
 import type {
    Explore as MalloyExplore,
    Field as MalloyField,
@@ -467,7 +466,7 @@ export function accessFilterTermsForGates(args: {
    explore: MalloyExplore;
    givenTypes: ReadonlyMap<string, string>;
 }): {
-   terms: Array<AccessFilterTerm[] | undefined>;
+   terms: Array<AuthorizeTerm[] | undefined>;
    withheld?: GateTermsWithheldReason;
 } {
    const { gates, composite, explore, givenTypes } = args;
@@ -478,8 +477,7 @@ export function accessFilterTermsForGates(args: {
 
    const terms = gates.map((g) => {
       if (g.route !== "access_filter") return undefined;
-      const parsed = parseAccessFilterBody(g.expr, givenTypes);
-      return parsed.ok ? parsed.terms : undefined;
+      return accessFilterTerms(g.expr, givenTypes);
    });
    const unqueryable = terms.some((entryTerms) =>
       entryTerms?.some(
@@ -510,7 +508,7 @@ export const SCALAR_GIVEN_TYPES: ReadonlySet<string> = new Set([
 
 /** A gate keys a dimension only through `=` over a scalar-typed given. */
 function isScalarEqualityTerm(
-   term: AccessFilterTerm,
+   term: AuthorizeTerm,
    givenTypes: ReadonlyMap<string, string>,
 ): boolean {
    const declared = givenTypes.get(term.given)?.trim().toLowerCase();
