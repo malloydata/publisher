@@ -3,7 +3,7 @@
 
 /**
  * Golden access records, one per decision path: the whole record one query
- * emits through `withAccessRecord` around `Model.getQueryResults`, minus the
+ * emits through `withAccessRecord` around `Model.runQuery`, minus the
  * timing. Each golden pins what an auditor reads off the line (decision,
  * gates, outcome, status, the fields read with their classes), so a refactor
  * of the governance path that changes any of it fails here by name.
@@ -17,6 +17,7 @@ import { logger } from "../logger";
 import { withAuthorizeModel } from "../test_helpers/authorize_fixture";
 import type { Model } from "./model";
 import { withAccessRecord, type AccessRecord } from "./access_record";
+import { QueryPrivileges } from "./model_query_request";
 
 const MODEL = `##! experimental.givens
 #(secure)
@@ -81,18 +82,13 @@ async function recordOf(
    opts: { bypassAuthorize?: boolean } = {},
 ): Promise<Record<string, unknown>> {
    await withAccessRecord(BASE, undefined, (audit) =>
-      model.getQueryResults(
+      model.runQuery(
          audit,
-         undefined,
-         undefined,
-         query,
-         {},
-         true,
-         givens,
-         undefined,
-         undefined,
-         "compact",
-         opts.bypassAuthorize ?? false,
+         { query, filterParams: {}, givens, responseShape: "compact" },
+         QueryPrivileges.of({
+            bypassFilters: true,
+            bypassAuthorize: opts.bypassAuthorize ?? false,
+         }),
       ),
    ).catch(() => undefined);
    const records = (info.mock.calls as unknown[][])

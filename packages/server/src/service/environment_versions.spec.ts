@@ -59,12 +59,9 @@ function source(version: string, answer: number): string {
 async function answerOf(pkg: Package): Promise<number> {
    const model = pkg.getModel("model.malloy");
    expect(model).toBeDefined();
-   const result = await model!.getQueryResults(
-      unrecordedAudit(),
-      undefined,
-      undefined,
-      "run: numbers -> which_version",
-   );
+   const result = await model!.runQuery(unrecordedAudit(), {
+      query: "run: numbers -> which_version",
+   });
    const rows = (result as unknown as { compactResult?: { answer: number }[] })
       .compactResult;
    return Number(rows![0].answer);

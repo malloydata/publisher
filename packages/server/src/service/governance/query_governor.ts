@@ -979,7 +979,7 @@ export class QueryGovernor {
    /**
     * Whether this model carries an `#(authorize)` annotation ANYWHERE, so an
     * ungated deployment with pre-aggregation skips a per-query live compile
-    * (see `getQueryResults`'s routing pre-check).
+    * (see `runQuery`'s routing pre-check).
     *
     * Deliberately wider than {@link hasAuthorize}, which reads only top-level
     * sources' extracted gates and can miss an inherited one. This sweeps the
@@ -1092,7 +1092,7 @@ export class QueryGovernor {
       }
       // Not a declared top-level source: nothing gates it here. A caller
       // cannot reach the warehouse through an inline source without restricted
-      // mode refusing it first (see `getQueryResults`); a notebook cell's
+      // mode refusing it first (see `runQuery`); a notebook cell's
       // inline source is author-written.
    }
 

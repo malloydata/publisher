@@ -280,14 +280,9 @@ describe("a storage destination is not in the namespace a tenant authors in", ()
       );
 
       await expect(
-         pkg
-            .getModel("plain.malloy")!
-            .getQueryResults(
-               unrecordedAudit(),
-               undefined,
-               undefined,
-               `run: ${DESTINATION_NAME}.sql('SELECT 1 AS x') -> { select: x }`,
-            ),
+         pkg.getModel("plain.malloy")!.runQuery(unrecordedAudit(), {
+            query: `run: ${DESTINATION_NAME}.sql('SELECT 1 AS x') -> { select: x }`,
+         }),
       ).rejects.toThrow();
    });
 
@@ -365,12 +360,9 @@ describe("a storage destination is not in the namespace a tenant authors in", ()
          restoreMode = installSettings({
             env: { ...BASE_ENV, PERSIST_STORAGE_MODE: "on" },
          }).restore;
-         const answered = await model.getQueryResults(
-            unrecordedAudit(),
-            undefined,
-            undefined,
-            "run: nums -> { select: a }",
-         );
+         const answered = await model.runQuery(unrecordedAudit(), {
+            query: "run: nums -> { select: a }",
+         });
          expect(answered.compactResult).toEqual([{ a: 1 }]);
          expect(shapes).toHaveBeenCalledTimes(1);
          await expect(shapes.mock.results[0].value).rejects.toThrow(

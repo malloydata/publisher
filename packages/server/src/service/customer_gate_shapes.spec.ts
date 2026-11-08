@@ -24,6 +24,7 @@ import {
    __setPackageLoadPoolForTests,
 } from "../package_load/package_load_pool";
 import { unrecordedAudit } from "./access_record";
+import { QueryPrivileges } from "./model_query_request";
 
 beforeAll(async () => {
    await __setPackageLoadPoolForTests(new PackageLoadPool(1));
@@ -55,14 +56,10 @@ async function run(
 ) {
    const model = pkg.getModel(modelPath);
    if (!model) throw new Error(`no model ${modelPath}`);
-   const { compactResult } = await model.getQueryResults(
+   const { compactResult } = await model.runQuery(
       unrecordedAudit(),
-      undefined,
-      undefined,
-      query,
-      undefined,
-      true,
-      givens,
+      { query, givens },
+      QueryPrivileges.of({ bypassFilters: true }),
    );
    return compactResult as unknown as Array<Record<string, unknown>>;
 }

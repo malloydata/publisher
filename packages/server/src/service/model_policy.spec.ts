@@ -1,7 +1,7 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
-import { afterAll, beforeAll, describe, expect, it, spyOn } from "bun:test";
+import { afterAll, beforeAll, describe, expect, it } from "bun:test";
 import type { Connection } from "@malloydata/malloy";
 import {
    createTempModel,
@@ -146,52 +146,5 @@ describe("QueryPrivileges", () => {
          bypassAuthorize: true,
          includeHiddenFilesAndSources: false,
       });
-   });
-
-   it("getQueryResults maps its positions onto runQuery", async () => {
-      const model = Model.fromCompilationError(
-         "pkg",
-         "m.malloy",
-         "model",
-         new Error("unused"),
-         { policy: ModelPolicy.standalone() },
-      );
-      const run = spyOn(model, "runQuery").mockResolvedValue(
-         undefined as never,
-      );
-      const audit = unrecordedAudit();
-      const signal = new AbortController().signal;
-      await model.getQueryResults(
-         audit,
-         "s",
-         "q",
-         "run: s -> v",
-         { f: "1" },
-         true,
-         { G: "g" },
-         signal,
-         undefined,
-         "compact",
-         false,
-         true,
-      );
-      expect(run).toHaveBeenCalledWith(
-         audit,
-         {
-            sourceName: "s",
-            queryName: "q",
-            query: "run: s -> v",
-            filterParams: { f: "1" },
-            givens: { G: "g" },
-            abortSignal: signal,
-            queryMetadataInput: undefined,
-            responseShape: "compact",
-         },
-         {
-            bypassFilters: true,
-            bypassAuthorize: false,
-            includeHiddenFilesAndSources: true,
-         },
-      );
    });
 });

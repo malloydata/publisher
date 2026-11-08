@@ -649,7 +649,7 @@ export class Package {
 
    /**
     * Decide each model's query boundary in the model policy, where
-    * `Model.getQueryResults` enforces it (`/compile` is exempt; only
+    * `Model.runQuery` enforces it (`/compile` is exempt; only
     * `#(authorize)` gates it). Policy: queryable == discoverable. Inert unless
     * the package resolved a surface AND `queryableSources` is "declared" (the
     * default). When active, a model file is an entry point only if it is on

@@ -314,17 +314,9 @@ describe("compile-path authorize gate (compileSource)", () => {
          const { model } = (
             await env.getPackage(parsePackageName("pkg"))
          ).getCompileAuthorizationModel("model.malloy");
-         const { compactResult, result } = await model!.getQueryResults(
+         const { compactResult, result } = await model!.runQuery(
             unrecordedAudit(),
-            undefined,
-            undefined,
-            text,
-            undefined,
-            false,
-            givens,
-            undefined,
-            undefined,
-            "full",
+            { query: text, givens, responseShape: "full" },
          );
          return {
             rows: compactResult as unknown as Record<string, unknown>[],
@@ -984,18 +976,13 @@ describe("caller-annotation guard on markdown prose (compileSource)", () => {
       /** The rows the query returns, or the error it was refused with. */
       const run = (query: string, groups: number[]) =>
          model
-            ?.getQueryResults(
-               unrecordedAudit(),
-               undefined,
-               undefined,
+            ?.runQuery(unrecordedAudit(), {
                query,
-               undefined,
-               undefined,
-               {
+               givens: {
                   ROLE: "nobody",
                   GROUPS: groups,
                },
-            )
+            })
             .then(
                (r) => rowsOf(r),
                (e: Error) => e,
@@ -1072,14 +1059,9 @@ export { customers }`,
    it("the QUERY path still denies the same hidden targets (exemption is compile-only)", async () => {
       const pkg = await env.getPackage(parsePackageName("pkg"));
       await expect(
-         pkg
-            .getModel("index.malloy")!
-            .getQueryResults(
-               unrecordedAudit(),
-               undefined,
-               undefined,
-               "run: helper -> { aggregate: hc }",
-            ),
+         pkg.getModel("index.malloy")!.runQuery(unrecordedAudit(), {
+            query: "run: helper -> { aggregate: hc }",
+         }),
       ).rejects.toBeInstanceOf(NotQueryableError);
    });
 });

@@ -317,12 +317,9 @@ describe("reclaiming an archived version's tables", () => {
       });
       const result = await pkg
          .getModel("model.malloy")!
-         .getQueryResults(
-            unrecordedAudit(),
-            undefined,
-            undefined,
-            "run: summary -> { select: answer }",
-         );
+         .runQuery(unrecordedAudit(), {
+            query: "run: summary -> { select: answer }",
+         });
       const rows = (
          result as unknown as { compactResult?: { answer: number }[] }
       ).compactResult;
@@ -1235,12 +1232,9 @@ describe("the archive hook and the startup sweep, as main_server.ts wires them",
       });
       const result = await pkg
          .getModel("model.malloy")!
-         .getQueryResults(
-            unrecordedAudit(),
-            undefined,
-            undefined,
-            "run: summary -> { select: answer }",
-         );
+         .runQuery(unrecordedAudit(), {
+            query: "run: summary -> { select: answer }",
+         });
       const rows = (
          result as unknown as { compactResult?: { answer: number }[] }
       ).compactResult;

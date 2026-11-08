@@ -16,6 +16,7 @@ import {
    prepareCeilingQueries,
 } from "./classification_report";
 import type { Model } from "./model";
+import { QueryPrivileges } from "./model_query_request";
 
 const MODEL = `##! experimental { access_modifiers composite_sources }
 source: people is duckdb.table("child") include { internal: * } extend {
@@ -95,18 +96,10 @@ async function run(
    audit: QueryAudit = unrecordedAudit(),
    bypassAuthorize = false,
 ) {
-   return model.getQueryResults(
+   return model.runQuery(
       audit,
-      undefined,
-      undefined,
-      query,
-      {},
-      true,
-      {},
-      undefined,
-      undefined,
-      "full",
-      bypassAuthorize,
+      { query, filterParams: {}, givens: {}, responseShape: "full" },
+      QueryPrivileges.of({ bypassFilters: true, bypassAuthorize }),
    );
 }
 

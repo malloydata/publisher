@@ -157,7 +157,7 @@ export function compilationErrorOf(model: Model): Error | undefined {
    return (model as unknown as { compilationError?: Error }).compilationError;
 }
 
-/** `compactResult` rows of an ad-hoc query through `getQueryResults`. */
+/** `compactResult` rows of an ad-hoc query through `runQuery`. */
 export async function queryRows(
    model: Model,
    query: string,

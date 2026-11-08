@@ -35,6 +35,7 @@ import path from "path";
 import { CompileRefusedError } from "../../src/errors";
 import { Environment } from "../../src/service/environment";
 import { parsePackageName } from "../../src/service/identity";
+import { QueryPrivileges } from "../../src/service/model_query_request";
 
 /** The tracked example packages, not the gitignored `publisher_data/` copy. */
 const EXAMPLES = path.resolve(import.meta.dir, "../../../../examples");
@@ -208,13 +209,13 @@ describe("append scope on a shipped package still serves ordinary work", () => {
       const pkg = await env.getPackage(parsePackageName("storefront"), false);
       const model = await pkg.getModel("storefront.malloy");
       expect(model).toBeDefined();
-      const result = await model!.getQueryResults(
+      const result = await model!.runQuery(
          unrecordedAudit(),
-         undefined,
-         undefined,
-         "run: order_items -> { aggregate: n is count() }",
-         {},
-         true,
+         {
+            query: "run: order_items -> { aggregate: n is count() }",
+            filterParams: {},
+         },
+         QueryPrivileges.of({ bypassFilters: true }),
       );
       const rows = result.compactResult as unknown as { n: number }[];
       expect(rows.length).toBeGreaterThan(0);

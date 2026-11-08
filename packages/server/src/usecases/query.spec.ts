@@ -23,7 +23,6 @@ import { logger } from "../logger";
 import { QuerySlots } from "../query_concurrency";
 import type { AccessRecord } from "../service/access_record";
 import type { Model } from "../service/model";
-import { positionalQueryArgs } from "../test_helpers/positional_query_args";
 import { withSettings } from "../test_helpers/settings_env";
 import {
    loadTempPackage,
@@ -102,18 +101,20 @@ const COMMAND: QueryCommand = {
 
 const REST: QueryTransportOptions = { ...REST_QUERY_OPTIONS, shape: "full" };
 
-/** What Model.runQuery was called with, in `getQueryResults`'s positional order. */
+/** What Model.runQuery was called with. */
 function spyRun() {
    const spy = sinon.spy(model, "runQuery");
    return () => {
-      const args = positionalQueryArgs(...spy.firstCall.args);
+      const [, request, privileges] = spy.firstCall.args;
       return {
-         sourceName: args[1],
-         queryName: args[2],
-         query: args[3],
-         metadata: args[8] as { version?: string } | undefined,
-         shape: args[9],
-         bypassAuthorize: args[10],
+         sourceName: request.sourceName,
+         queryName: request.queryName,
+         query: request.query,
+         metadata: request.queryMetadataInput as
+            | { version?: string }
+            | undefined,
+         shape: request.responseShape,
+         bypassAuthorize: privileges?.bypassAuthorize ?? false,
       };
    };
 }

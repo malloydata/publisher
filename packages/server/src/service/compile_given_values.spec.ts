@@ -148,15 +148,10 @@ describe("compileSource checks filter given values", () => {
          "model.malloy",
       )!;
       const queryError = await model
-         .getQueryResults(
-            unrecordedAudit(),
-            undefined,
-            undefined,
-            "run: gated -> filtered",
-            undefined,
-            undefined,
-            { FLAG: "asdf" },
-         )
+         .runQuery(unrecordedAudit(), {
+            query: "run: gated -> filtered",
+            givens: { FLAG: "asdf" },
+         })
          .then(
             () => undefined,
             (e: unknown) => e,

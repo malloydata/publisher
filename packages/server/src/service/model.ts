@@ -1850,7 +1850,7 @@ export class Model {
    /**
     * Whether the query route would refuse this request for being off the
     * surface, for the load-time dashboard lint. Runs the same two checks as
-    * {@link getQueryResults}, so the lint and the query cannot disagree.
+    * {@link runQuery}, so the lint and the query cannot disagree.
     *
     * Returns undefined when the request would pass, or when it does not
     * compile: a tile that fails to compile is a different finding, and a
@@ -2515,45 +2515,6 @@ export class Model {
                span.setAttribute("publisher.served_from", result.servedFrom);
             return result;
          },
-      );
-   }
-
-   /**
-    * {@link runQuery} with positional arguments, kept for callers written
-    * against it (malloy-code-server passes the first four). New code calls
-    * {@link runQuery}.
-    */
-   public async getQueryResults(
-      audit: QueryAudit,
-      sourceName?: string,
-      queryName?: string,
-      query?: string,
-      filterParams?: FilterParams,
-      bypassFilters?: boolean,
-      givens?: Record<string, GivenValue>,
-      abortSignal?: AbortSignal,
-      queryMetadataInput?: ModelQueryMetadataInput,
-      responseShape: "full" | "compact" = "full",
-      bypassAuthorize = false,
-      includeHiddenFilesAndSources = false,
-   ): Promise<ModelQueryResults> {
-      return this.runQuery(
-         audit,
-         {
-            sourceName,
-            queryName,
-            query,
-            filterParams,
-            givens,
-            abortSignal,
-            queryMetadataInput,
-            responseShape,
-         },
-         QueryPrivileges.of({
-            bypassFilters,
-            bypassAuthorize,
-            includeHiddenFilesAndSources,
-         }),
       );
    }
 
@@ -3881,7 +3842,7 @@ export class Model {
       filterParams?: FilterParams,
       bypassFilters?: boolean,
       givens?: Record<string, GivenValue>,
-      // Cancels the query on timeout (see `getQueryResults`).
+      // Cancels the query on timeout (see `runQuery`).
       abortSignal?: AbortSignal,
       // Tagged like any query, but with no correlation id: the cell response
       // has no field to return it on.
@@ -4028,7 +3989,7 @@ export class Model {
                runnableToExecute =
                   cell.modelMaterializer.loadQuery(textToExecute);
                // The same fail-closed `#(filter)` bind check as
-               // `getQueryResults`, over the injected filters only.
+               // `runQuery`, over the injected filters only.
                const injectedCellFilters = cellFilters.filter((f) =>
                   filterHasValue(f, filterParams ?? {}),
                );
@@ -4128,7 +4089,7 @@ export class Model {
                      this.packageName,
                   ),
                   queryMetadata: async (connectionName) => {
-                     // The compiled run target, as in getQueryResults.
+                     // The compiled run target, as in runQuery.
                      const cellCompiledSource =
                         await this.governor.resolveAuthorizeSourceFromRunnable(
                            cellRunnable,
@@ -4166,7 +4127,7 @@ export class Model {
                   error: (err as Error).message,
                });
             }
-            // As in getQueryResults.
+            // As in runQuery.
             if (
                result?._queryResult &&
                result.totalRows === 0 &&
@@ -4174,7 +4135,7 @@ export class Model {
             ) {
                recordRowLevelGateDecision("empty_after_filter");
             }
-            // Same caps and ordering as getQueryResults.
+            // Same caps and ordering as runQuery.
             if (result?._queryResult) {
                if (this.modelInfo) {
                   queryResult = serializeWithinCaps(result, {
@@ -4198,7 +4159,7 @@ export class Model {
             if (error instanceof FilterValidationError) {
                throw new BadRequestError(error.message);
             }
-            // Same error mapping as getQueryResults.
+            // Same error mapping as runQuery.
             mapRunError(error, {
                packageName: this.packageName,
                modelPath: this.modelPath,

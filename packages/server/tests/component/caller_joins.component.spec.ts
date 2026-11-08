@@ -19,6 +19,7 @@ import {
    seededDuckdb,
    writeTempPackage,
 } from "../../src/test_helpers/temp_package";
+import { QueryPrivileges } from "../../src/service/model_query_request";
 
 let PKG_DIR: string;
 let removePkgDir: () => void;
@@ -129,18 +130,10 @@ async function run(
    givens: Record<string, GivenValue>,
    bypassAuthorize = false,
 ): Promise<{ rows: Record<string, unknown>[]; sql: string }> {
-   const { compactResult, result } = await model.getQueryResults(
+   const { compactResult, result } = await model.runQuery(
       unrecordedAudit(),
-      undefined,
-      undefined,
-      query,
-      undefined,
-      undefined,
-      givens,
-      undefined,
-      undefined,
-      "full",
-      bypassAuthorize,
+      { query, givens, responseShape: "full" },
+      QueryPrivileges.of({ bypassAuthorize }),
    );
    return {
       rows: compactResult as unknown as Record<string, unknown>[],

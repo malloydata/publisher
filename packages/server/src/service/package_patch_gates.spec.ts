@@ -18,6 +18,7 @@ import { Model } from "./model";
 import * as loadGates from "./package_load_gates";
 import { writePackageFiles } from "../test_helpers/temp_package";
 import { parsePackageName } from "./identity";
+import { QueryPrivileges } from "./model_query_request";
 
 const ROWS = `duckdb.sql("select * from (values (1,'org-a'),(2,'org-b')) as t(id, org)")`;
 
@@ -277,13 +278,13 @@ source: bridge is ${ROWS} extend {
       const queryHidden = async () =>
          (await env.getPackage(parsePackageName("pkg"), false))
             .getModel("hidden.malloy")!
-            .getQueryResults(
+            .runQuery(
                unrecordedAudit(),
-               undefined,
-               undefined,
-               "run: leaky -> { aggregate: c is count() }",
-               {},
-               true,
+               {
+                  query: "run: leaky -> { aggregate: c is count() }",
+                  filterParams: {},
+               },
+               QueryPrivileges.of({ bypassFilters: true }),
             );
 
       const patchToAll = () =>

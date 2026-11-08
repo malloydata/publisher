@@ -23,7 +23,7 @@ import { defaultIndexValueFetcher } from "../retrieval/index/values_index";
 import { queryDistinctValues } from "../retrieval/search/values";
 import { QuerySlots } from "../query_concurrency";
 import { withAuthorizeModel } from "../test_helpers/authorize_fixture";
-import { runQueryPositional } from "../test_helpers/positional_query_args";
+import type { QueryRequest } from "./model_query_request";
 import { buildRouteApp } from "../test_helpers/route_app";
 import { withSettings } from "../test_helpers/settings_env";
 import { accessIdentityOf, type AccessRecord } from "./access_record";
@@ -100,14 +100,12 @@ function storeOf(model: unknown, version?: string): AccessStore {
 /** A model whose query runs until it is aborted, by the client or the timeout. */
 const HUNG = {
    carriesReportTag: () => false,
-   runQuery: runQueryPositional(
-      (_audit: unknown, ...args: unknown[]): Promise<never> =>
-         new Promise((_, reject) =>
-            (args[6] as AbortSignal).addEventListener("abort", () =>
-               reject(new Error("aborted")),
-            ),
+   runQuery: (_audit: unknown, request: QueryRequest): Promise<never> =>
+      new Promise((_, reject) =>
+         request.abortSignal?.addEventListener("abort", () =>
+            reject(new Error("aborted")),
          ),
-   ),
+      ),
 };
 
 /** The one slot pool every adapter in this file shares, as buildApp shares one. */

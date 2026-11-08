@@ -49,6 +49,7 @@ import {
 import { installSettings } from "../../../src/test_helpers/settings_env";
 import { duckdbMalloyConfig } from "../../../src/test_helpers/temp_package";
 import { governorOf } from "../../../src/test_helpers/governor";
+import { QueryPrivileges } from "../../../src/service/model_query_request";
 
 /**
  * The matrix's shared model: `X` is gated; `cp_joiner` joins it with no
@@ -630,7 +631,7 @@ source: X is duckdb.table('parent') extend {
          // value, so the run throws at RUN time — the "self-triggering" case
          // the matrix calls out. It must surface as a clean failure, never as
          // a silent, unfiltered success from some fallback path. (This test
-         // never configures serve bindings or calls getQueryResults, so it
+         // never configures serve bindings or calls runQuery, so it
          // does not itself exercise storage routing — see the "storage
          // routing" describe block below for that claim.)
          const runnable = mm.loadRestrictedQuery(
@@ -865,14 +866,14 @@ source: X is duckdb.table('parent') extend {
       );
       try {
          const err = await model
-            .getQueryResults(
+            .runQuery(
                unrecordedAudit(),
-               undefined,
-               undefined,
-               "run: X -> { group_by: org_id; aggregate: n is count() }",
-               {},
-               true,
-               {},
+               {
+                  query: "run: X -> { group_by: org_id; aggregate: n is count() }",
+                  filterParams: {},
+                  givens: {},
+               },
+               QueryPrivileges.of({ bypassFilters: true }),
             )
             .catch((e) => e);
          expect(err).toBeInstanceOf(AccessDeniedError);
@@ -1093,7 +1094,7 @@ source: X is duckdb.table('parent') extend {
          // The RAW internal _queryResult carries the filter's code in its own
          // structDef.resultMetadata.filterList — that is never what a caller
          // sees. API.util.wrapResult is the "to stable" conversion callers
-         // actually receive (the same call model.ts's getQueryResults makes),
+         // actually receive (the same call model.ts's runQuery makes),
          // and Malloy's to_stable.js skips isSourceFilter conditions when
          // building drill_filters there — assert on THAT observable, not the
          // internal shape.
@@ -1666,14 +1667,14 @@ source: X is duckdb.table('parent') extend {
             },
          ]);
 
-         const result = await model.getQueryResults(
+         const result = await model.runQuery(
             unrecordedAudit(),
-            undefined,
-            undefined,
-            "run: X -> { aggregate: n is count() }",
-            {},
-            true,
-            { GROUPS: [1] },
+            {
+               query: "run: X -> { aggregate: n is count() }",
+               filterParams: {},
+               givens: { GROUPS: [1] },
+            },
+            QueryPrivileges.of({ bypassFilters: true }),
          );
          // The observable a caller actually reads — not an internal
          // implementation detail like whether `serveVirtualMap` was set.
@@ -1740,14 +1741,14 @@ source: X is duckdb.table('parent') extend {
             },
          ]);
 
-         const result = await model.getQueryResults(
+         const result = await model.runQuery(
             unrecordedAudit(),
-            undefined,
-            undefined,
-            "run: X -> { aggregate: n is count() }",
-            {},
-            true,
-            { GROUPS: [1] },
+            {
+               query: "run: X -> { aggregate: n is count() }",
+               filterParams: {},
+               givens: { GROUPS: [1] },
+            },
+            QueryPrivileges.of({ bypassFilters: true }),
          );
          expect(result.servedFrom).not.toBe("storage");
          // org_id=1 rows are ids 1,2 — the live, gate-filtered count is 2,
@@ -1819,19 +1820,19 @@ source: W_except is X -> { group_by: id, val; aggregate: n is count() }
          ]);
 
          const result = await model
-            .getQueryResults(
+            .runQuery(
                unrecordedAudit(),
-               undefined,
-               undefined,
-               "run: W_except -> { aggregate: n is count() }",
-               {},
-               true,
-               { GROUPS: [1] },
+               {
+                  query: "run: W_except -> { aggregate: n is count() }",
+                  filterParams: {},
+                  givens: { GROUPS: [1] },
+               },
+               QueryPrivileges.of({ bypassFilters: true }),
             )
             .catch((e) => e);
          // `W_except`'s own gate resolution denies this request regardless of
          // storage routing (a second, independent defense — see the surface-
-         // syntax early gate at `getQueryResults`' `earlySource` check, which
+         // syntax early gate at `runQuery`' `earlySource` check, which
          // also resolves this same `deny` before compilation). This assertion
          // is the OBSERVABLE the finding calls for; it is NOT, on its own,
          // proof that `queryEntryPointHasRowLevelGate`'s predicate is what
@@ -1846,7 +1847,7 @@ source: W_except is X -> { group_by: id, val; aggregate: n is count() }
 
    it("CRITICAL — queryEntryPointHasRowLevelGate itself returns true (blocks routing) for a `deny` resolution, not just `row_level` (isolated)", async () => {
       // The end-to-end test above denies the request either way, because
-      // `getQueryResults`' surface-syntax early gate (`earlySource`) ALSO
+      // `runQuery`' surface-syntax early gate (`earlySource`) ALSO
       // resolves `W_except` by name and denies before compilation even
       // starts — so it cannot, on its own, tell a fixed predicate apart from
       // the original bug for a directly-named top-level source. This test
@@ -1936,14 +1937,14 @@ source: X is duckdb.table('parent') extend {
             },
          ]);
 
-         const result = await model.getQueryResults(
+         const result = await model.runQuery(
             unrecordedAudit(),
-            undefined,
-            undefined,
-            "run: X -> { aggregate: n is count() }",
-            {},
-            true,
-            { ROLE: "analyst" },
+            {
+               query: "run: X -> { aggregate: n is count() }",
+               filterParams: {},
+               givens: { ROLE: "analyst" },
+            },
+            QueryPrivileges.of({ bypassFilters: true }),
          );
          expect(result.servedFrom).not.toBe("storage");
          // The live, unfiltered count (no row field is gated) is 4 — not the
@@ -1959,7 +1960,7 @@ source: X is duckdb.table('parent') extend {
 
    // The storage serve-shape re-emits a plain author `where:` verbatim onto
    // its own transient struct, so `assertNoMisboundInheritedFilters` still
-   // sees and denies a genuinely misbound one even after `getQueryResults`
+   // sees and denies a genuinely misbound one even after `runQuery`
    // swaps `runnable` for the shape and routing succeeds. A regression pin,
    // not a gap: a misbound plain `where:` must still deny, routed or not.
    it("CRITICAL — a plain (unannotated) where:-filtered source's misbound derivation still denies under storage routing", async () => {
@@ -2016,14 +2017,14 @@ source: X is duckdb.table('parent') extend {
          // filter with NO access_filter annotation" tests prove denies with
          // storage routing off.
          await expect(
-            model.getQueryResults(
+            model.runQuery(
                unrecordedAudit(),
-               undefined,
-               undefined,
-               "run: X extend { except: org_id } extend { rename: org_id is val } -> { aggregate: n is count() }",
-               {},
-               true,
-               {},
+               {
+                  query: "run: X extend { except: org_id } extend { rename: org_id is val } -> { aggregate: n is count() }",
+                  filterParams: {},
+                  givens: {},
+               },
+               QueryPrivileges.of({ bypassFilters: true }),
             ),
          ).rejects.toBeInstanceOf(AccessDeniedError);
       } finally {
@@ -2076,18 +2077,15 @@ source: X is duckdb.table('parent') extend {
             (model as unknown as { compilationError?: Error }).compilationError,
          ).toBeUndefined();
 
-         const result = await model.getQueryResults(
+         const result = await model.runQuery(
             unrecordedAudit(),
-            undefined,
-            undefined,
-            "run: X -> { group_by: org_id; aggregate: n is count() }",
-            {},
-            true,
-            { GROUPS: [] },
-            undefined,
-            undefined,
-            "full",
-            /* bypassAuthorize */ true,
+            {
+               query: "run: X -> { group_by: org_id; aggregate: n is count() }",
+               filterParams: {},
+               givens: { GROUPS: [] },
+               responseShape: "full",
+            },
+            QueryPrivileges.of({ bypassFilters: true, bypassAuthorize: true }),
          );
 
          // The unfiltered live rows — bypassing authorize skips the gate

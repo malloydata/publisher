@@ -43,6 +43,7 @@ import {
 } from "../../src/service/filter_binding_guard";
 import type { Package } from "../../src/service/package";
 import { writePackageFiles } from "../../src/test_helpers/temp_package";
+import { QueryPrivileges } from "../../src/service/model_query_request";
 
 /** The guard logs its reason under one of these: the inherited-filter walk, or a grafted gate's proof. */
 const DENY_MESSAGES = [
@@ -215,17 +216,16 @@ async function serve(
          files,
          async ({ env, pkg }) => {
             const ran = await withDenialSpy(async () => {
-               const r = await pkg
-                  .getModel("index.malloy")!
-                  .getQueryResults(
-                     unrecordedAudit(),
-                     undefined,
-                     namedQuery,
-                     namedQuery ? undefined : query,
-                     {},
-                     true,
+               const r = await pkg.getModel("index.malloy")!.runQuery(
+                  unrecordedAudit(),
+                  {
+                     queryName: namedQuery,
+                     query: namedQuery ? undefined : query,
+                     filterParams: {},
                      givens,
-                  );
+                  },
+                  QueryPrivileges.of({ bypassFilters: true }),
+               );
                return {
                   kind: "SERVED",
                   detail: firstValue(
@@ -1075,21 +1075,16 @@ ${BASE}`,
       const id = "I5-caller-where-before-dim-bypass";
       const outcome = await withPackage({ "index.malloy": BASE }, ({ pkg }) =>
          withDenialSpy(async () => {
-            const r = await pkg
-               .getModel("index.malloy")!
-               .getQueryResults(
-                  unrecordedAudit(),
-                  undefined,
-                  undefined,
-                  CALLER_Z,
-                  {},
-                  undefined,
-                  {},
-                  undefined,
-                  undefined,
-                  "full",
-                  true,
-               );
+            const r = await pkg.getModel("index.malloy")!.runQuery(
+               unrecordedAudit(),
+               {
+                  query: CALLER_Z,
+                  filterParams: {},
+                  givens: {},
+                  responseShape: "full",
+               },
+               QueryPrivileges.of({ bypassAuthorize: true }),
+            );
             return {
                kind: "SERVED",
                detail: firstValue(

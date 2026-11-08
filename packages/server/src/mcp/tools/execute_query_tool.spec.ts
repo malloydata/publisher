@@ -17,7 +17,10 @@ import {
 } from "../../package_load/package_load_pool";
 import type { EnvironmentStore } from "../../service/environment_store";
 import { Package } from "../../service/package";
-import { runQueryPositional } from "../../test_helpers/positional_query_args";
+import type {
+   QueryPrivileges,
+   QueryRequest,
+} from "../../service/model_query_request";
 import { withSettings } from "../../test_helpers/settings_env";
 import type { ModelQueryMetadataInput } from "../../service/model";
 import {
@@ -118,7 +121,7 @@ function parse(result: { content: Array<{ resource?: { text: string } }> }) {
  * getModelForQuery already homes a back-pressure error from
  * `environment.assertCanAdmitQuery()`, which runs outside it, so a test that
  * trips that path passes even with the catch's classifyToolError call reverted.
- * Failing at getQueryResults puts the error where QuerySlots.tryAcquire's
+ * Failing at runQuery puts the error where QuerySlots.tryAcquire's
  * ServiceUnavailableError lands, which is the case that was reported.
  */
 function storeWhoseQueryThrows(error: unknown): Partial<EnvironmentStore> {
@@ -163,11 +166,11 @@ function storeCapturingMetadata(
    store: Partial<EnvironmentStore>;
    captured: () => ModelQueryMetadataInput | undefined;
    capturedShape: () => string | undefined;
-   capturedArgs: () => unknown[];
+   capturedPrivileges: () => QueryPrivileges | undefined;
 } {
    let captured: ModelQueryMetadataInput | undefined;
    let capturedShape: string | undefined;
-   let capturedArgs: unknown[] = [];
+   let capturedPrivileges: QueryPrivileges | undefined;
    const store: Partial<EnvironmentStore> = {
       getEnvironment: async () =>
          ({
@@ -186,15 +189,14 @@ function storeCapturingMetadata(
                   getType: () => "model",
                   carriesReportTag: () => false,
                   getModel: async () => ({}),
-                  runQuery: runQueryPositional(async (..._args: unknown[]) => {
-                     // Positional: audit, sourceName, queryName, query, filterParams,
-                     // bypassFilters, givens, abortSignal, metadata input,
-                     // responseShape. Indexed rather than destructured off the
-                     // end, because the argument list has grown twice and a
-                     // trailing-element type went stale both times.
-                     capturedArgs = _args;
-                     captured = _args[8] as ModelQueryMetadataInput | undefined;
-                     capturedShape = _args[9] as string | undefined;
+                  runQuery: async (
+                     _audit: unknown,
+                     request: QueryRequest,
+                     privileges?: QueryPrivileges,
+                  ) => {
+                     capturedPrivileges = privileges;
+                     captured = request.queryMetadataInput;
+                     capturedShape = request.responseShape;
                      return {
                         result: {
                            schema: { fields: [] },
@@ -205,7 +207,7 @@ function storeCapturingMetadata(
                         rowLimitSource: "server_default",
                         queryCorrelationId: "corr-1",
                      };
-                  }),
+                  },
                }),
             }),
          }) as never,
@@ -214,7 +216,7 @@ function storeCapturingMetadata(
       store,
       captured: () => captured,
       capturedShape: () => capturedShape,
-      capturedArgs: () => capturedArgs,
+      capturedPrivileges: () => capturedPrivileges,
    };
 }
 
@@ -492,8 +494,6 @@ describe("execute_query per-query metadata", () => {
 });
 
 describe("execute_query includeHiddenFilesAndSources", () => {
-   // getQueryResults positions: 10 is bypassAuthorize, 11 is
-   // includeHiddenFilesAndSources.
    const calls = [
       args,
       { ...args, query: undefined, sourceName: "orders", queryName: "v" },
@@ -501,25 +501,25 @@ describe("execute_query includeHiddenFilesAndSources", () => {
 
    it("is offered, and passes true through on both call paths, when the config turns it on", async () => {
       for (const call of calls) {
-         const { store, capturedArgs } = storeCapturingMetadata();
+         const { store, capturedPrivileges } = storeCapturingMetadata();
          const { handler, shape } = captureTool(
             store,
             serverRootWith(AUTHORING),
          );
          expect(shape).toHaveProperty("includeHiddenFilesAndSources");
          await handler({ ...call, includeHiddenFilesAndSources: true });
-         expect(capturedArgs()[10]).toBe(false);
-         expect(capturedArgs()[11]).toBe(true);
+         expect(capturedPrivileges()?.bypassAuthorize).toBe(false);
+         expect(capturedPrivileges()?.includeHiddenFilesAndSources).toBe(true);
       }
    });
 
    it("sends false when the argument is omitted or false", async () => {
       for (const extra of [{}, { includeHiddenFilesAndSources: false }]) {
-         const { store, capturedArgs } = storeCapturingMetadata();
+         const { store, capturedPrivileges } = storeCapturingMetadata();
          const { handler } = captureTool(store, serverRootWith(AUTHORING));
          await handler({ ...args, ...extra });
-         expect(capturedArgs()[10]).toBe(false);
-         expect(capturedArgs()[11]).toBe(false);
+         expect(capturedPrivileges()?.bypassAuthorize).toBe(false);
+         expect(capturedPrivileges()?.includeHiddenFilesAndSources).toBe(false);
       }
    });
 
@@ -535,11 +535,13 @@ describe("execute_query includeHiddenFilesAndSources", () => {
          "on",
       ]) {
          for (const call of calls) {
-            const { store, capturedArgs } = storeCapturingMetadata();
+            const { store, capturedPrivileges } = storeCapturingMetadata();
             const { handler, shape } = captureTool(store, serverRootWith(mcp));
             expect(shape).not.toHaveProperty("includeHiddenFilesAndSources");
             await handler({ ...call, includeHiddenFilesAndSources: true });
-            expect(capturedArgs()[11]).toBe(false);
+            expect(capturedPrivileges()?.includeHiddenFilesAndSources).toBe(
+               false,
+            );
          }
       }
    });
@@ -808,15 +810,13 @@ describe("execute_query cancellation", () => {
                ...pkg,
                getModel: () => ({
                   ...pkg.getModel(),
-                  runQuery: runQueryPositional(
-                     (...queryArgs: unknown[]) =>
-                        new Promise((_resolve, reject) => {
-                           querySignal = queryArgs[7] as AbortSignal;
-                           querySignal.addEventListener("abort", () =>
-                              reject(new Error("query cancelled")),
-                           );
-                        }),
-                  ),
+                  runQuery: (_audit: unknown, request: QueryRequest) =>
+                     new Promise((_resolve, reject) => {
+                        querySignal = request.abortSignal as AbortSignal;
+                        querySignal.addEventListener("abort", () =>
+                           reject(new Error("query cancelled")),
+                        );
+                     }),
                }),
             }),
          } as never;

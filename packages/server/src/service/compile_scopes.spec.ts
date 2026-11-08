@@ -214,7 +214,7 @@ source: broken is duckdb.sql("select 1 as id") extend {
       expect(pkg.getModel("tracks.malloy")).toBe(servedBefore);
       const { result } = await pkg
          .getModel("tracks.malloy")!
-         .getQueryResults(unrecordedAudit(), "tracks", "v");
+         .runQuery(unrecordedAudit(), { sourceName: "tracks", queryName: "v" });
       expect(result.data).toBeDefined();
       expect(env.getFailedPackages().size).toBe(0);
    });

@@ -12,7 +12,7 @@
  * filter to a DIFFERENT physical column instead of failing to compile.
  *
  * Every test here is written against the REAL `Model.create` /
- * `Model.getQueryResults` path (`createModel`) except where the shape is
+ * `Model.runQuery` path (`createModel`) except where the shape is
  * deliberately unexpressible at its one entry point, which instead uses
  * `buildGatedModel` to skip `Model.create`'s load-time preflight — same
  * convention, and same two helpers (copied rather than imported, this
@@ -51,6 +51,7 @@ import {
    type LoadedTempPackage,
    type TempModel,
 } from "../../src/test_helpers/temp_package";
+import { QueryPrivileges } from "../../src/service/model_query_request";
 
 const ROOT = "file:///filter-binding-guard-tests/";
 
@@ -131,14 +132,10 @@ async function expectDeniedViaPackage(
    const model = pkg.getModel(modelPath);
    expect(model).toBeDefined();
    await expect(
-      model!.getQueryResults(
+      model!.runQuery(
          unrecordedAudit(),
-         undefined,
-         undefined,
-         queryText,
-         {},
-         true,
-         givens,
+         { query: queryText, filterParams: {}, givens },
+         QueryPrivileges.of({ bypassFilters: true }),
       ),
    ).rejects.toBeInstanceOf(AccessDeniedError);
 }
@@ -180,14 +177,10 @@ async function expectServesWithCountViaPackage(
 ): Promise<void> {
    const model = pkg.getModel(modelPath);
    expect(model).toBeDefined();
-   const result = await model!.getQueryResults(
+   const result = await model!.runQuery(
       unrecordedAudit(),
-      undefined,
-      undefined,
-      queryText,
-      {},
-      true,
-      givens,
+      { query: queryText, filterParams: {}, givens },
+      QueryPrivileges.of({ bypassFilters: true }),
    );
    expect((result.compactResult as unknown as { n: number }[])[0].n).toBe(
       expected,
@@ -199,7 +192,7 @@ function compilationErrorOf(model: Model): Error | undefined {
 }
 
 /** A notebook cell's `result` is Malloy's own wire-format JSON, not the
- *  `compactResult` shape `getQueryResults` returns — same helper
+ *  `compactResult` shape `runQuery` returns — same helper
  *  `tests/component/authorize/row_level_enforcement.spec.ts` keeps its own copy of. */
 function firstCellResultValue(resultJson: string): unknown {
    const parsed = JSON.parse(resultJson);
@@ -221,14 +214,10 @@ async function expectDenied(
    givens: Record<string, GivenValue> = {},
 ): Promise<void> {
    await expect(
-      model.getQueryResults(
+      model.runQuery(
          unrecordedAudit(),
-         undefined,
-         undefined,
-         queryText,
-         {},
-         true,
-         givens,
+         { query: queryText, filterParams: {}, givens },
+         QueryPrivileges.of({ bypassFilters: true }),
       ),
    ).rejects.toBeInstanceOf(AccessDeniedError);
 }
@@ -241,14 +230,10 @@ async function expectServesWithCount(
    expected: number,
    givens: Record<string, GivenValue> = {},
 ): Promise<void> {
-   const result = await model.getQueryResults(
+   const result = await model.runQuery(
       unrecordedAudit(),
-      undefined,
-      undefined,
-      queryText,
-      {},
-      true,
-      givens,
+      { query: queryText, filterParams: {}, givens },
+      QueryPrivileges.of({ bypassFilters: true }),
    );
    expect((result.compactResult as unknown as { n: number }[])[0].n).toBe(
       expected,
@@ -326,14 +311,14 @@ source: w_misbind is gated_parent extend { except: org_id } extend { rename: org
 `);
       try {
          await expect(
-            model.getQueryResults(
+            model.runQuery(
                unrecordedAudit(),
-               undefined,
-               undefined,
-               "run: w_misbind -> { group_by: id; aggregate: n is count() }",
-               {},
-               true,
-               { GROUPS: [1] },
+               {
+                  query: "run: w_misbind -> { group_by: id; aggregate: n is count() }",
+                  filterParams: {},
+                  givens: { GROUPS: [1] },
+               },
+               QueryPrivileges.of({ bypassFilters: true }),
             ),
          ).rejects.toBeInstanceOf(AccessDeniedError);
       } finally {
@@ -356,14 +341,14 @@ source: w_misbind is gated_parent extend { accept: id, val, n, owner } extend { 
 `);
       try {
          await expect(
-            model.getQueryResults(
+            model.runQuery(
                unrecordedAudit(),
-               undefined,
-               undefined,
-               "run: w_misbind -> { group_by: id; aggregate: n is count() }",
-               {},
-               true,
-               { GROUPS: [1] },
+               {
+                  query: "run: w_misbind -> { group_by: id; aggregate: n is count() }",
+                  filterParams: {},
+                  givens: { GROUPS: [1] },
+               },
+               QueryPrivileges.of({ bypassFilters: true }),
             ),
          ).rejects.toBeInstanceOf(AccessDeniedError);
       } finally {
@@ -387,14 +372,14 @@ source: w_misbind is gated_parent extend { except: org_id } extend { rename: org
 `);
       try {
          await expect(
-            model.getQueryResults(
+            model.runQuery(
                unrecordedAudit(),
-               undefined,
-               undefined,
-               "run: w_misbind -> { group_by: id; aggregate: n is count() }",
-               {},
-               true,
-               { GROUPS: [1] },
+               {
+                  query: "run: w_misbind -> { group_by: id; aggregate: n is count() }",
+                  filterParams: {},
+                  givens: { GROUPS: [1] },
+               },
+               QueryPrivileges.of({ bypassFilters: true }),
             ),
          ).rejects.toBeInstanceOf(AccessDeniedError);
       } finally {
@@ -417,17 +402,17 @@ source: gated_parent is duckdb.table('orgtable') extend {
       try {
          expect(compilationErrorOf(model)).toBeUndefined();
          await expect(
-            model.getQueryResults(
+            model.runQuery(
                unrecordedAudit(),
-               undefined,
-               undefined,
-               `
+               {
+                  query: `
 source: mine is gated_parent extend { except: org_id } extend { rename: org_id is owner }
 run: mine -> { group_by: id; aggregate: n is count() }
 `,
-               {},
-               true,
-               { GROUPS: [1] },
+                  filterParams: {},
+                  givens: { GROUPS: [1] },
+               },
+               QueryPrivileges.of({ bypassFilters: true }),
             ),
          ).rejects.toBeInstanceOf(AccessDeniedError);
       } finally {
@@ -459,14 +444,14 @@ source: w_misbind is gated_parent extend { except: org_id } extend { rename: org
       try {
          expect(compilationErrorOf(model)).toBeUndefined();
          await expect(
-            model.getQueryResults(
+            model.runQuery(
                unrecordedAudit(),
-               undefined,
-               undefined,
-               "run: w_misbind -> { group_by: id; aggregate: n is count() }",
-               {},
-               true,
-               { GROUPS: [1] },
+               {
+                  query: "run: w_misbind -> { group_by: id; aggregate: n is count() }",
+                  filterParams: {},
+                  givens: { GROUPS: [1] },
+               },
+               QueryPrivileges.of({ bypassFilters: true }),
             ),
          ).rejects.toBeInstanceOf(AccessDeniedError);
       } finally {
@@ -490,14 +475,14 @@ source: renamed_unrelated is gated_parent extend { rename: label is val }
 `);
       try {
          expect(compilationErrorOf(model)).toBeUndefined();
-         const result = await model.getQueryResults(
+         const result = await model.runQuery(
             unrecordedAudit(),
-            undefined,
-            undefined,
-            "run: renamed_unrelated -> { aggregate: n is count() }",
-            {},
-            true,
-            { GROUPS: [1] },
+            {
+               query: "run: renamed_unrelated -> { aggregate: n is count() }",
+               filterParams: {},
+               givens: { GROUPS: [1] },
+            },
+            QueryPrivileges.of({ bypassFilters: true }),
          );
          expect((result.compactResult as unknown as { n: number }[])[0].n).toBe(
             2,
@@ -523,14 +508,14 @@ source: qchild is gated_parent -> { group_by: id, org_id, val; aggregate: n is c
 `);
       try {
          expect(compilationErrorOf(model)).toBeUndefined();
-         const result = await model.getQueryResults(
+         const result = await model.runQuery(
             unrecordedAudit(),
-            undefined,
-            undefined,
-            "run: qchild -> { aggregate: n is count() }",
-            {},
-            true,
-            { GROUPS: [1] },
+            {
+               query: "run: qchild -> { aggregate: n is count() }",
+               filterParams: {},
+               givens: { GROUPS: [1] },
+            },
+            QueryPrivileges.of({ bypassFilters: true }),
          );
          expect((result.compactResult as unknown as { n: number }[])[0].n).toBe(
             2,
@@ -556,26 +541,26 @@ source: locked_renamed is locked extend { rename: owner_id is owner }
 `);
       try {
          expect(compilationErrorOf(model)).toBeUndefined();
-         const ok = await model.getQueryResults(
+         const ok = await model.runQuery(
             unrecordedAudit(),
-            undefined,
-            undefined,
-            "run: locked_renamed -> { aggregate: n is count() }",
-            {},
-            true,
-            { ROLE: "analyst" },
+            {
+               query: "run: locked_renamed -> { aggregate: n is count() }",
+               filterParams: {},
+               givens: { ROLE: "analyst" },
+            },
+            QueryPrivileges.of({ bypassFilters: true }),
          );
          expect((ok.compactResult as unknown as { n: number }[])[0].n).toBe(4);
 
          await expect(
-            model.getQueryResults(
+            model.runQuery(
                unrecordedAudit(),
-               undefined,
-               undefined,
-               "run: locked_renamed -> { aggregate: n is count() }",
-               {},
-               true,
-               { ROLE: "guest" },
+               {
+                  query: "run: locked_renamed -> { aggregate: n is count() }",
+                  filterParams: {},
+                  givens: { ROLE: "guest" },
+               },
+               QueryPrivileges.of({ bypassFilters: true }),
             ),
          ).rejects.toBeInstanceOf(AccessDeniedError);
       } finally {
@@ -602,14 +587,14 @@ source: joiner is duckdb.table('orgtable') extend {
       try {
          expect(compilationErrorOf(model)).toBeUndefined();
          await expect(
-            model.getQueryResults(
+            model.runQuery(
                unrecordedAudit(),
-               undefined,
-               undefined,
-               "run: joiner -> { aggregate: n is count() }",
-               {},
-               true,
-               {},
+               {
+                  query: "run: joiner -> { aggregate: n is count() }",
+                  filterParams: {},
+                  givens: {},
+               },
+               QueryPrivileges.of({ bypassFilters: true }),
             ),
          ).rejects.toBeInstanceOf(AccessDeniedError);
       } finally {
@@ -631,14 +616,14 @@ source: joiner is duckdb.table('orgtable') extend {
 `);
       try {
          expect(compilationErrorOf(model)).toBeUndefined();
-         const result = await model.getQueryResults(
+         const result = await model.runQuery(
             unrecordedAudit(),
-            undefined,
-            undefined,
-            "run: joiner -> { aggregate: n is count() }",
-            {},
-            true,
-            {},
+            {
+               query: "run: joiner -> { aggregate: n is count() }",
+               filterParams: {},
+               givens: {},
+            },
+            QueryPrivileges.of({ bypassFilters: true }),
          );
          expect((result.compactResult as unknown as { n: number }[])[0].n).toBe(
             4,
@@ -662,17 +647,13 @@ source: filtered_parent is duckdb.table('orgtable') extend {
       try {
          expect(compilationErrorOf(model)).toBeUndefined();
          await expect(
-            model.getQueryResults(
-               unrecordedAudit(),
-               undefined,
-               undefined,
-               `
+            model.runQuery(unrecordedAudit(), {
+               query: `
 run: filtered_parent extend { except: val } extend { rename: val is note } -> { group_by: id; aggregate: n is count() }
 `,
-               { val: "a" },
-               false,
-               {},
-            ),
+               filterParams: { val: "a" },
+               givens: {},
+            }),
          ).rejects.toBeInstanceOf(AccessDeniedError);
       } finally {
          await cleanup();
@@ -688,15 +669,11 @@ source: filtered_parent is duckdb.table('orgtable') extend {
 `);
       try {
          expect(compilationErrorOf(model)).toBeUndefined();
-         const result = await model.getQueryResults(
-            unrecordedAudit(),
-            undefined,
-            undefined,
-            "run: filtered_parent -> { aggregate: n is count() }",
-            { val: "a" },
-            false,
-            {},
-         );
+         const result = await model.runQuery(unrecordedAudit(), {
+            query: "run: filtered_parent -> { aggregate: n is count() }",
+            filterParams: { val: "a" },
+            givens: {},
+         });
          expect((result.compactResult as unknown as { n: number }[])[0].n).toBe(
             1,
          );
@@ -723,15 +700,11 @@ source: filtered_parent is duckdb.table('orgtable') extend {
       try {
          expect(compilationErrorOf(model)).toBeUndefined();
          await expect(
-            model.getQueryResults(
-               unrecordedAudit(),
-               undefined,
-               undefined,
-               "run: filtered_parent extend { except: val } extend { rename: val is note } -> { group_by: id; aggregate: n is count() }",
-               { safe_col: "a" },
-               false,
-               {},
-            ),
+            model.runQuery(unrecordedAudit(), {
+               query: "run: filtered_parent extend { except: val } extend { rename: val is note } -> { group_by: id; aggregate: n is count() }",
+               filterParams: { safe_col: "a" },
+               givens: {},
+            }),
          ).rejects.toBeInstanceOf(AccessDeniedError);
       } finally {
          await cleanup();
@@ -748,15 +721,11 @@ source: filtered_parent is duckdb.table('orgtable') extend {
 `);
       try {
          expect(compilationErrorOf(model)).toBeUndefined();
-         const result = await model.getQueryResults(
-            unrecordedAudit(),
-            undefined,
-            undefined,
-            "run: filtered_parent -> { aggregate: n is count() }",
-            { safe_col: "a" },
-            false,
-            {},
-         );
+         const result = await model.runQuery(unrecordedAudit(), {
+            query: "run: filtered_parent -> { aggregate: n is count() }",
+            filterParams: { safe_col: "a" },
+            givens: {},
+         });
          expect((result.compactResult as unknown as { n: number }[])[0].n).toBe(
             1,
          );
@@ -775,15 +744,11 @@ source: filtered_parent is duckdb.table('orgtable') extend {
       try {
          expect(compilationErrorOf(model)).toBeUndefined();
          await expect(
-            model.getQueryResults(
-               unrecordedAudit(),
-               undefined,
-               undefined,
-               "run: filtered_parent extend { except: val } -> { aggregate: n is count() }",
-               { val: "a" },
-               false,
-               {},
-            ),
+            model.runQuery(unrecordedAudit(), {
+               query: "run: filtered_parent extend { except: val } -> { aggregate: n is count() }",
+               filterParams: { val: "a" },
+               givens: {},
+            }),
          ).rejects.toBeInstanceOf(MalloyError);
       } finally {
          await cleanup();
@@ -811,18 +776,14 @@ source: filtered_parent is duckdb.table('orgtable') extend {
       try {
          expect(compilationErrorOf(model)).toBeUndefined();
          await expect(
-            model.getQueryResults(
-               unrecordedAudit(),
-               undefined,
-               undefined,
-               `
+            model.runQuery(unrecordedAudit(), {
+               query: `
 source: mine is filtered_parent extend { except: val } extend { rename: val is note }
 run: mine -> { group_by: id; aggregate: n is count() }
 `,
-               { val: "a" },
-               false,
-               {},
-            ),
+               filterParams: { val: "a" },
+               givens: {},
+            }),
          ).rejects.toBeInstanceOf(AccessDeniedError);
       } finally {
          await cleanup();
@@ -848,15 +809,11 @@ source: mine is filtered_parent extend { except: val } extend { rename: val is n
       try {
          expect(compilationErrorOf(model)).toBeUndefined();
          await expect(
-            model.getQueryResults(
-               unrecordedAudit(),
-               undefined,
-               undefined,
-               "run: mine -> { group_by: id; aggregate: n is count() }",
-               { val: "a" },
-               false,
-               {},
-            ),
+            model.runQuery(unrecordedAudit(), {
+               query: "run: mine -> { group_by: id; aggregate: n is count() }",
+               filterParams: { val: "a" },
+               givens: {},
+            }),
          ).rejects.toBeInstanceOf(AccessDeniedError);
       } finally {
          await cleanup();
@@ -1107,14 +1064,14 @@ source: gated_parent is duckdb.table('orgtable') extend {
       );
       try {
          expect(compilationErrorOf(model)).toBeUndefined();
-         const res = model.getQueryResults(
+         const res = model.runQuery(
             unrecordedAudit(),
-            undefined,
-            undefined,
-            "run: gated_parent include { private: org_id } extend { dimension: org_id is 1 } -> { aggregate: n is count() }",
-            {},
-            true,
-            { GROUPS: [1] },
+            {
+               query: "run: gated_parent include { private: org_id } extend { dimension: org_id is 1 } -> { aggregate: n is count() }",
+               filterParams: {},
+               givens: { GROUPS: [1] },
+            },
+            QueryPrivileges.of({ bypassFilters: true }),
          );
          await expect(res).rejects.toThrow(/Cannot redefine/);
       } finally {
@@ -1233,15 +1190,11 @@ source: filtered_parent is duckdb.table('orgtable') extend {
 `);
          try {
             expect(compilationErrorOf(model)).toBeUndefined();
-            const result = await model.getQueryResults(
-               unrecordedAudit(),
-               undefined,
-               undefined,
-               "run: filtered_parent extend { where: id = 1 } -> { aggregate: n is count() }",
-               { note: "x" },
-               false,
-               {},
-            );
+            const result = await model.runQuery(unrecordedAudit(), {
+               query: "run: filtered_parent extend { where: id = 1 } -> { aggregate: n is count() }",
+               filterParams: { note: "x" },
+               givens: {},
+            });
             expect(
                (result.compactResult as unknown as { n: number }[])[0].n,
             ).toBe(1);
@@ -1306,18 +1259,15 @@ source: base_filtered is duckdb.table('orgtable') extend {
       try {
          expect(compilationErrorOf(model)).toBeUndefined();
          await expect(
-            model.getQueryResults(
+            model.runQuery(
                unrecordedAudit(),
-               undefined,
-               undefined,
-               "run: base_filtered extend { except: org_id } extend { rename: org_id is owner } -> { aggregate: n is count() }",
-               {},
-               undefined,
-               {},
-               undefined,
-               undefined,
-               "full",
-               true,
+               {
+                  query: "run: base_filtered extend { except: org_id } extend { rename: org_id is owner } -> { aggregate: n is count() }",
+                  filterParams: {},
+                  givens: {},
+                  responseShape: "full",
+               },
+               QueryPrivileges.of({ bypassAuthorize: true }),
             ),
          ).rejects.toBeInstanceOf(AccessDeniedError);
       } finally {
@@ -1790,14 +1740,10 @@ query: q1 is base_filtered extend { except: org_id } extend { rename: org_id is 
       try {
          expect(compilationErrorOf(model)).toBeUndefined();
          await expect(
-            model.getQueryResults(
+            model.runQuery(
                unrecordedAudit(),
-               undefined,
-               "q1",
-               undefined,
-               {},
-               true,
-               {},
+               { queryName: "q1", filterParams: {}, givens: {} },
+               QueryPrivileges.of({ bypassFilters: true }),
             ),
          ).rejects.toBeInstanceOf(AccessDeniedError);
       } finally {
@@ -1821,16 +1767,16 @@ query: q1 is gated_parent extend { except: org_id } extend { rename: org_id is o
       try {
          expect(compilationErrorOf(model)).toBeUndefined();
          await expect(
-            model.getQueryResults(
+            model.runQuery(
                unrecordedAudit(),
-               undefined,
-               "q1",
-               undefined,
-               {},
-               true,
                {
-                  GROUPS: [1],
+                  queryName: "q1",
+                  filterParams: {},
+                  givens: {
+                     GROUPS: [1],
+                  },
                },
+               QueryPrivileges.of({ bypassFilters: true }),
             ),
          ).rejects.toBeInstanceOf(AccessDeniedError);
       } finally {
@@ -1850,14 +1796,10 @@ query: q2 is base_filtered extend { where: val = 'a' } -> { aggregate: n is coun
       );
       try {
          expect(compilationErrorOf(model)).toBeUndefined();
-         const result = await model.getQueryResults(
+         const result = await model.runQuery(
             unrecordedAudit(),
-            undefined,
-            "q2",
-            undefined,
-            {},
-            true,
-            {},
+            { queryName: "q2", filterParams: {}, givens: {} },
+            QueryPrivileges.of({ bypassFilters: true }),
          );
          expect((result.compactResult as unknown as { n: number }[])[0].n).toBe(
             1,
@@ -2079,14 +2021,14 @@ source: base is duckdb.table('orgtable') extend {
       const { model, cleanup } = await createModel(MODEL);
       try {
          expect(compilationErrorOf(model)).toBeUndefined();
-         const result = await model.getQueryResults(
+         const result = await model.runQuery(
             unrecordedAudit(),
-            undefined,
-            undefined,
-            "run: base extend { join_one: g is gated_child on id = g.id } -> { group_by: id, gorg is g.org_id; order_by: id }",
-            {},
-            true,
-            { GROUPS: [1] },
+            {
+               query: "run: base extend { join_one: g is gated_child on id = g.id } -> { group_by: id, gorg is g.org_id; order_by: id }",
+               filterParams: {},
+               givens: { GROUPS: [1] },
+            },
+            QueryPrivileges.of({ bypassFilters: true }),
          );
          expect(result.compactResult).toEqual([
             { id: 1, gorg: 1 },
@@ -2131,14 +2073,14 @@ source: base is duckdb.table('orgtable') extend {
       const { model, cleanup } = await createModel(MODEL);
       try {
          expect(compilationErrorOf(model)).toBeUndefined();
-         const result = await model.getQueryResults(
+         const result = await model.runQuery(
             unrecordedAudit(),
-            undefined,
-            undefined,
-            "run: base extend { join_one: p is plain_child on id = p.id } -> { group_by: id, porg is p.org_id; order_by: id }",
-            {},
-            true,
-            {},
+            {
+               query: "run: base extend { join_one: p is plain_child on id = p.id } -> { group_by: id, porg is p.org_id; order_by: id }",
+               filterParams: {},
+               givens: {},
+            },
+            QueryPrivileges.of({ bypassFilters: true }),
          );
          expect(result.compactResult).toEqual([
             { id: 1, porg: 1 },

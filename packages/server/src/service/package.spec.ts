@@ -238,10 +238,9 @@ describe("service/package", () => {
                      "models/root_read.malloy",
                   );
                   expect(rootModel).toBeDefined();
-                  const rootResults = await rootModel!.getQueryResults(
+                  const rootResults = await rootModel!.runQuery(
                      unrecordedAudit(),
-                     undefined,
-                     "row_count",
+                     { queryName: "row_count" },
                   );
                   expect(
                      (rootResults.compactResult as { c: number }[])[0]?.c,
@@ -315,10 +314,9 @@ describe("service/package", () => {
                      "models/outside_read.malloy",
                   );
                   expect(outsideModel).toBeDefined();
-                  const outsideResults = await outsideModel!.getQueryResults(
+                  const outsideResults = await outsideModel!.runQuery(
                      unrecordedAudit(),
-                     undefined,
-                     "row_count",
+                     { queryName: "row_count" },
                   );
                   expect(
                      (outsideResults.compactResult as { c: number }[])[0]?.c,

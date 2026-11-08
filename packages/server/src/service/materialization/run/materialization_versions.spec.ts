@@ -213,12 +213,9 @@ async function answerOf(versionId?: string): Promise<number> {
    });
    const model = pkg.getModel("model.malloy");
    expect(model).toBeDefined();
-   const result = await model!.getQueryResults(
-      unrecordedAudit(),
-      undefined,
-      undefined,
-      "run: summary -> { select: answer }",
-   );
+   const result = await model!.runQuery(unrecordedAudit(), {
+      query: "run: summary -> { select: answer }",
+   });
    const rows = (result as unknown as { compactResult?: { answer: number }[] })
       .compactResult;
    return Number(rows![0].answer);
@@ -520,12 +517,9 @@ describe('scope "version": each version builds and serves its own tables', () =>
       const other = await env.getPackage(parsePackageName(OTHER), false);
       const result = await other
          .getModel("model.malloy")!
-         .getQueryResults(
-            unrecordedAudit(),
-            undefined,
-            undefined,
-            "run: summary -> { select: answer }",
-         );
+         .runQuery(unrecordedAudit(), {
+            query: "run: summary -> { select: answer }",
+         });
       expect(
          (result as unknown as { compactResult: { answer: number }[] })
             .compactResult[0].answer,
@@ -1417,12 +1411,9 @@ describe("a package with no versions", () => {
       expect(pkg).toBeInstanceOf(Package);
       const result = await pkg
          .getModel("model.malloy")!
-         .getQueryResults(
-            unrecordedAudit(),
-            undefined,
-            undefined,
-            "run: summary -> { select: answer }",
-         );
+         .runQuery(unrecordedAudit(), {
+            query: "run: summary -> { select: answer }",
+         });
       expect(
          (result as unknown as { compactResult: { answer: number }[] })
             .compactResult[0].answer,

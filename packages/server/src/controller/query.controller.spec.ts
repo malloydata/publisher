@@ -10,9 +10,9 @@ import {
    loadTempPackage,
    type LoadedTempPackage,
 } from "../test_helpers/temp_package";
-import { runQueryPositional } from "../test_helpers/positional_query_args";
 import { QueryUseCase } from "../usecases/query";
 import { QuerySlots } from "../query_concurrency";
+import type { QueryRequest as ModelQueryRequest } from "../service/model_query_request";
 import { QueryController, type QueryRequest } from "./query.controller";
 import { fakeOf } from "../test_helpers/store_fakes";
 import type { PackageLookup } from "../service/environment_ports";
@@ -33,14 +33,7 @@ beforeAll(async () => {
    });
    const model = temp.pkg.getModel("m.malloy")!;
    const run = async (query: string) =>
-      (
-         await model.getQueryResults(
-            unrecordedAudit(),
-            undefined,
-            undefined,
-            query,
-         )
-      ).result;
+      (await model.runQuery(unrecordedAudit(), { query })).result;
    tagged = await run(
       "run: s -> {\n # bogus_tag\n group_by: a\n # drill\n aggregate: n is count() }",
    );
@@ -61,7 +54,7 @@ function controllerWith({
    model?: boolean;
    carriesReportTag?: boolean;
 } = {}) {
-   const getQueryResults = sinon.stub().resolves({
+   const runQuery = sinon.stub().resolves({
       result,
       serializedResult: "SERIALIZED",
       rowLimit: 10,
@@ -72,8 +65,7 @@ function controllerWith({
       queryCostBytes: 345,
    });
    const fakeModel = {
-      // The specs below read the call in `getQueryResults`'s positional order.
-      runQuery: runQueryPositional(getQueryResults),
+      runQuery,
       carriesReportTag: () => carriesReportTag,
    };
    const pkg = {
@@ -94,7 +86,7 @@ function controllerWith({
       controller: new QueryController(
          new QueryUseCase(store, new QuerySlots()),
       ),
-      getQueryResults,
+      runQuery,
       getEnvironment,
    };
 }
@@ -153,7 +145,7 @@ describe("QueryController.getQuery", () => {
    });
 
    it("passes the result shape, flags and request metadata through to the model", async () => {
-      const { controller, getQueryResults } = controllerWith();
+      const { controller, runQuery } = controllerWith();
       await run(controller, {
          compactJson: true,
          bypassAuthorize: true,
@@ -162,11 +154,22 @@ describe("QueryController.getQuery", () => {
          queryClass: "interactive",
       });
       await run(controller);
-      const [compact, full] = getQueryResults.getCalls().map((c) => c.args);
-      expect(compact.slice(9)).toEqual(["compact", true, true]);
+      const [compact, full] = runQuery.getCalls().map((c) => ({
+         request: c.args[1],
+         privileges: c.args[2],
+      }));
+      expect(compact.request.responseShape).toBe("compact");
+      expect(compact.privileges).toMatchObject({
+         bypassAuthorize: true,
+         includeHiddenFilesAndSources: true,
+      });
+      expect(full.request.responseShape).toBe("full");
       // Ungranted privileges arrive as `false` (QueryPrivileges.of), never unset.
-      expect(full.slice(9)).toEqual(["full", false, false]);
-      expect(compact[8]).toMatchObject({
+      expect(full.privileges).toMatchObject({
+         bypassAuthorize: false,
+         includeHiddenFilesAndSources: false,
+      });
+      expect(compact.request.queryMetadataInput).toMatchObject({
          request: { team: "x" },
          queryClass: "interactive",
          environment: "env",
@@ -175,14 +178,16 @@ describe("QueryController.getQuery", () => {
    });
 
    it("cancels the model's query when the client goes away", async () => {
-      const { controller, getQueryResults } = controllerWith();
+      const { controller, runQuery } = controllerWith();
       const client = new AbortController();
       let seen: AbortSignal | undefined;
-      getQueryResults.callsFake(async (...args: unknown[]) => {
-         seen = args[7] as AbortSignal;
-         client.abort("client gone");
-         return { result: plain, serializedResult: "S" };
-      });
+      runQuery.callsFake(
+         async (_audit: unknown, request: ModelQueryRequest) => {
+            seen = request.abortSignal;
+            client.abort("client gone");
+            return { result: plain, serializedResult: "S" };
+         },
+      );
       await run(controller, { clientSignal: client.signal });
       expect(seen?.aborted).toBe(true);
       expect(seen?.reason).toBe("client gone");
