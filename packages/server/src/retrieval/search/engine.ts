@@ -72,14 +72,8 @@ import type { FcjIndex } from "../index/index_build";
 import { connect, type ConnectResult } from "./connect";
 import { retrievalRegistry } from "../registry";
 import { dropBesideRoutes, dropTwins, judge, type JudgeVerdict } from "./judge";
-import {
-   FCJ_MAX_CHARS,
-   FCJ_RESERVE_CHARS,
-   FCJ_RESULT_TTL_MS,
-   pageAt,
-   resultKey,
-   type HeldResult,
-} from "./pages";
+import { FCJ_RESULT_TTL_MS, type HeldResult } from "./held_results";
+import { FCJ_MAX_CHARS, FCJ_RESERVE_CHARS, pageAt, resultKey } from "./pages";
 import { respond } from "./respond";
 import { optionId, routesOf } from "./routes";
 import { toUnit } from "../index/vectors";

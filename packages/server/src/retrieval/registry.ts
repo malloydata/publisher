@@ -21,14 +21,14 @@ import type { Package } from "../service/package";
 import type { FcjState } from "./index/engine_state";
 import { SerialQueue } from "./index/embedding_sync_queue";
 import type { FcjIndex } from "./index/index_build";
-import { SchemaIndexCaches } from "./index/schema_index";
+import { SchemaIndexCaches } from "./index/schema_index_caches";
 import type { SummaryHashesCache } from "./index/source_summaries";
 import type { IndexValueFetcher } from "./index/values_index";
-import { ChatModelSlot } from "./llm/active";
+import { ChatModelSlot } from "./llm/chat_model_slot";
 import type { ChatModel } from "./llm/types";
 import type { SourceStartsCache } from "./model/catalog";
 import type { PackageIndex } from "./model/types";
-import { HeldResults } from "./search/pages";
+import { HeldResults } from "./search/held_results";
 import type { ReverseJoinsCache } from "./search/routes";
 import type { QueryModelResolver } from "./search/values";
 
@@ -85,9 +85,9 @@ export class RetrievalRegistry {
    }
 }
 
-// Built on first use, not at import: the modules this one imports import it
-// back, and a registry built while they are still evaluating would meet their
-// classes uninitialized.
+// Built on first use, not at import. The classes it builds live in leaf
+// modules that do not import this one (src/import_cycles.spec.ts keeps it so);
+// the modules that read the registry are named here by type only.
 let current: RetrievalRegistry | undefined;
 
 /** The registry retrieval's modules read: the RetrievalService's, or a default one. */
