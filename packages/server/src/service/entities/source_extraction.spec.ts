@@ -1070,15 +1070,15 @@ describe("sourceExtraction.extractMetadataFromExplores", () => {
       ]);
    });
 
-   test("#( authorize ) with inner whitespace is matched", () => {
+   test("#( authorize ) with inner whitespace is a near miss: not a gate to Malloy, refused at load, skipped here", () => {
       const model = mockAuthorizeModel(["##( authorize ) \"$ROLE = 'admin'\""]);
       const out = sourceExtraction.extractAuthorizeFromModel(
          model,
          "model.malloy",
       );
-      assert.deepStrictEqual(out, [
-         { route: "authorize", expr: "$ROLE = 'admin'" },
-      ]);
+      // Malloy does not route this spelling as a gate, so it is
+      // not one; the load refuses it (`assertNoAuthorizeNearMisses`).
+      assert.deepStrictEqual(out, []);
    });
 
    test("an annotation whose name merely starts with 'authorize' is NOT matched", () => {
@@ -1092,26 +1092,26 @@ describe("sourceExtraction.extractMetadataFromExplores", () => {
       assert.deepStrictEqual(out, []);
    });
 
-   test("# (authorize) with whitespace between sigil and paren is matched (wider than Malloy's routing)", () => {
+   test("# (authorize) with whitespace between sigil and paren is a near miss: skipped, as Malloy routes it", () => {
       const model = mockAuthorizeModel(["# (authorize) \"$ROLE = 'admin'\""]);
       const out = sourceExtraction.extractAuthorizeFromModel(
          model,
          "model.malloy",
       );
-      assert.deepStrictEqual(out, [
-         { route: "authorize", expr: "$ROLE = 'admin'" },
-      ]);
+      // Malloy does not route this spelling as a gate, so it is
+      // not one; the load refuses it (`assertNoAuthorizeNearMisses`).
+      assert.deepStrictEqual(out, []);
    });
 
-   test("## (authorize) with whitespace between sigil and paren is matched (wider than Malloy's routing)", () => {
+   test("## (authorize) with whitespace between sigil and paren is a near miss: skipped, as Malloy routes it", () => {
       const model = mockAuthorizeModel(["## (authorize) \"$ROLE = 'admin'\""]);
       const out = sourceExtraction.extractAuthorizeFromModel(
          model,
          "model.malloy",
       );
-      assert.deepStrictEqual(out, [
-         { route: "authorize", expr: "$ROLE = 'admin'" },
-      ]);
+      // Malloy does not route this spelling as a gate, so it is
+      // not one; the load refuses it (`assertNoAuthorizeNearMisses`).
+      assert.deepStrictEqual(out, []);
    });
 
    test("#(authorize_foo) is NOT matched (no over-match past the widened sigil-paren gap)", () => {
@@ -1138,7 +1138,7 @@ describe("sourceExtraction.extractMetadataFromExplores", () => {
       ]);
    });
 
-   test("#( access_filter ) is matched — the widened sigil-paren gap applies to both routes", () => {
+   test("#( access_filter ) is a near miss on the row-filter route too: skipped", () => {
       const model = mockAuthorizeModel([
          "##( access_filter ) \"$ROLE = 'admin'\"",
       ]);
@@ -1146,9 +1146,9 @@ describe("sourceExtraction.extractMetadataFromExplores", () => {
          model,
          "model.malloy",
       );
-      assert.deepStrictEqual(out, [
-         { route: "access_filter", expr: "$ROLE = 'admin'" },
-      ]);
+      // Malloy does not route this spelling as a gate, so it is
+      // not one; the load refuses it (`assertNoAuthorizeNearMisses`).
+      assert.deepStrictEqual(out, []);
    });
 
    test("#(access_filtered) is NOT matched (no over-match past the route word)", () => {
