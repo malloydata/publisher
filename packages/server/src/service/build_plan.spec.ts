@@ -18,17 +18,17 @@ import {
    sourceBuildsOf,
    sourcesInBuildOrder,
    type SourceBuild,
-} from "./build_plan";
-import { computePackageBuildPlan } from "./build_plan_compile";
-import { MaterializationEligibilityError } from "../../../errors";
+} from "./materialization/plan/build_plan";
+import { computePackageBuildPlan } from "./materialization/plan/build_plan_compile";
+import { MaterializationEligibilityError } from "../errors";
 import {
    compilePersistSources,
    duckdbTestConnections,
    loadTestRuntime,
    tempBuildPlanPackages,
-} from "../../../test_helpers/incremental_test_harness";
-import { fakeSource } from "../../../test_helpers/materialization_test_fixtures";
-import { installSettings } from "../../../test_helpers/settings_env";
+} from "../test_helpers/incremental_test_harness";
+import { fakeSource } from "../test_helpers/materialization_test_fixtures";
+import { installSettings } from "../test_helpers/settings_env";
 
 describe("source builds from getBuildTargets", () => {
    // a <- b <- c, plus `a_ext`, which extends `a` without changing its SQL and
