@@ -7,7 +7,18 @@
  * not content are kept (see PackageController.updateVersionedPackage). Clients
  * send whole objects, though, so a body that merely says what `latest`
  * already is must not be read as a change.
+ *
+ * What a field reads as when unset (the spec defaults, isUnset, isEmpty) is
+ * shared with the PATCH of a package installed from a location
+ * (service/package_patch.ts). How a sent value is compared differs, and
+ * package_patch.ts's sameValue says why.
  */
+
+import {
+   PACKAGE_FIELD_DEFAULTS,
+   isEmpty,
+   isUnset,
+} from "../service/package_patch";
 
 /** The fields a PATCH of a versioned package applies, rather than checks. */
 export const APPLIED_TO_A_VERSIONED_PACKAGE = new Set([
@@ -35,35 +46,6 @@ export const READ_ONLY_PACKAGE_FIELDS = new Set([
    "buildPlan",
    "embeddingIndex",
 ]);
-
-/** The spec's defaults: a generated client sends them for a field it was never given. */
-const PACKAGE_FIELD_DEFAULTS: Record<string, unknown> = { scope: "package" };
-
-/**
- * A top-level field a client left unset: null, absent, an empty string, or an
- * empty list. A client generated with defaults starts every optional list
- * empty and sends it so (Java's okhttp-gson does), so at the top level `[]`
- * cannot be told from "not given". An empty object is not unset: no
- * generated client sends one for a field it was never given.
- */
-function isUnset(value: unknown): boolean {
-   return (
-      value === undefined ||
-      value === null ||
-      value === "" ||
-      (Array.isArray(value) && value.length === 0)
-   );
-}
-
-/** Nothing in it: null, absent, an empty list, or an object of nothing. */
-function isEmpty(value: unknown): boolean {
-   if (value === undefined || value === null) return true;
-   if (Array.isArray(value)) return value.length === 0;
-   if (typeof value === "object") {
-      return Object.values(value as object).every(isEmpty);
-   }
-   return false;
-}
 
 /**
  * Whether `sent` says only what `current` already is. An object is compared
@@ -105,11 +87,10 @@ export function changedFields(
    current: Record<string, unknown>,
    packageName: string,
    publishedFrom: string | null,
-   applied: ReadonlySet<string> = APPLIED_TO_A_VERSIONED_PACKAGE,
 ): string[] {
    return Object.entries(body)
       .filter(([key, value]) => {
-         if (applied.has(key)) return false;
+         if (APPLIED_TO_A_VERSIONED_PACKAGE.has(key)) return false;
          if (READ_ONLY_PACKAGE_FIELDS.has(key)) return false;
          if (isUnset(value)) return false;
          if (key === "name") return value !== packageName;
