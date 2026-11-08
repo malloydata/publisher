@@ -21,13 +21,15 @@
  * over a composite, `compositeResolvedSourceDef`). Embedded structs are inlined
  * by value, so a nested embed (`%{ s1 }` where `s1` itself embeds) is a
  * `sql_select` deeper in the same tree; the walk below reaches every one,
- * including one inline in a join or a named query.
+ * including one inline in a join or a named query. A model's `run:`
+ * statements are on `modelDef.queryList` and are read the same way.
  *
  * Fail closed: a segment of any other shape, a `structRef` naming nothing in
  * the model, or a gate walk that throws refuses the load.
  *
- * Worker-safe (no logging): runs inside `extractCheckedModel`, on both load
- * paths.
+ * Worker-safe (no logging). Runs on both load paths: inside
+ * `extractCheckedModel` for a model's sources and `run:` statements, and in
+ * `compileNotebookCells` for each notebook cell's own `run:` statements.
  */
 import { isSourceDef, type ModelDef, type SourceDef } from "@malloydata/malloy";
 import { ModelCompilationError } from "../errors";
@@ -35,8 +37,13 @@ import { collectEntryPointGates } from "./gate_classification";
 
 /** One embedded gated (or unreadable) source in one model entry's `sql()`. */
 export interface SqlEmbedFinding {
-   /** The `modelDef.contents` entry (source or query) carrying the `sql()`. */
+   /**
+    * What carries the `sql()`: a `modelDef.contents` entry (source or named
+    * query) by name, or a `run:` statement by position.
+    */
    embeddingSource: string;
+   /** `run` for a `run:` statement (a model's, or a notebook cell's). */
+   embeddingKind: "source" | "run";
    /** The `sql()` source the embed is written in, when it is not `embeddingSource` itself. */
    via?: string;
    /** The embedded source, as the author named it. */
@@ -118,14 +125,60 @@ function embeddedStructs(
    };
 }
 
+/** Where to look: every model entry, or only a notebook cell's own `run:`s. */
+export interface SqlEmbedScope {
+   /**
+    * A notebook cell's 1-based position. Only that cell's `run:` statements
+    * (its `modelDef.queryList`, which an extended model does not accumulate)
+    * are read: the sources every cell declares land in the notebook's final
+    * model, which the load checks as a whole.
+    */
+   notebookCell?: number;
+}
+
+interface EmbedRoot {
+   label: string;
+   kind: SqlEmbedFinding["embeddingKind"];
+   node: unknown;
+}
+
+/** A `run:` statement, named by where it is written. */
+function runLabel(query: unknown, index: number, cell?: number): string {
+   const line = isObj(query)
+      ? (
+           query.location as
+              | { range?: { start?: { line?: number } } }
+              | undefined
+        )?.range?.start?.line
+      : undefined;
+   const at = typeof line === "number" ? `line ${line + 1}` : `#${index + 1}`;
+   return cell === undefined
+      ? `run: statement at ${at}`
+      : `run: statement in notebook cell ${cell} (${at})`;
+}
+
+function rootsOf(modelDef: ModelDef, scope: SqlEmbedScope): EmbedRoot[] {
+   const runs: EmbedRoot[] = (modelDef.queryList ?? []).map((query, i) => ({
+      label: runLabel(query, i, scope.notebookCell),
+      kind: "run",
+      node: query,
+   }));
+   if (scope.notebookCell !== undefined) return runs;
+   const entries: EmbedRoot[] = Object.entries(modelDef.contents).map(
+      ([name, entry]) => ({ label: name, kind: "source", node: entry }),
+   );
+   return [...entries, ...runs];
+}
+
 /**
  * Every `%{ ... }` embed of a gated source in any `sql()` reachable from a
- * model entry, plus every embed that cannot be read (fail closed). Uses
- * `collectEntryPointGates`, the walk query-time enforcement uses, so an
- * embedded source is gated here exactly when querying it would be.
+ * model entry or `run:` statement, plus every embed that cannot be read (fail
+ * closed). Uses `collectEntryPointGates`, the walk query-time enforcement
+ * uses, so an embedded source is gated here exactly when querying it would be.
  */
 export function findSqlEmbedsOfGatedSources(
    modelDef: ModelDef,
+   scope: SqlEmbedScope = {},
 ): SqlEmbedFinding[] {
    const findings: SqlEmbedFinding[] = [];
    const reported = new Set<string>();
@@ -135,14 +188,17 @@ export function findSqlEmbedsOfGatedSources(
       reported.add(key);
       findings.push(finding);
    };
-   for (const [entryName, entry] of Object.entries(modelDef.contents)) {
-      for (const sqlSelect of sqlSelectsWithin(entry)) {
+   for (const root of rootsOf(modelDef, scope)) {
+      const entryName = root.label;
+      const embeddingKind = root.kind;
+      for (const sqlSelect of sqlSelectsWithin(root.node)) {
          const sqlLabel = labelOf(sqlSelect);
-         const via = sqlSelect === (entry as unknown) ? undefined : sqlLabel;
+         const via = sqlSelect === root.node ? undefined : sqlLabel;
          for (const segment of sqlSelect.selectSegments as unknown[]) {
             if (!isObj(segment)) {
                report({
                   embeddingSource: entryName,
+                  embeddingKind,
                   via,
                   embeddedSource: "<unknown>",
                   routes: [],
@@ -156,6 +212,7 @@ export function findSqlEmbedsOfGatedSources(
             if ("unreadable" in embedded) {
                report({
                   embeddingSource: entryName,
+                  embeddingKind,
                   via,
                   embeddedSource: embedded.label,
                   routes: [],
@@ -176,6 +233,7 @@ export function findSqlEmbedsOfGatedSources(
                } catch (err) {
                   report({
                      embeddingSource: entryName,
+                     embeddingKind,
                      via,
                      embeddedSource: labelOf(struct as unknown as Obj),
                      routes: [],
@@ -186,6 +244,7 @@ export function findSqlEmbedsOfGatedSources(
                if (routes.length === 0) continue;
                report({
                   embeddingSource: entryName,
+                  embeddingKind,
                   via,
                   embeddedSource: labelOf(struct as unknown as Obj),
                   routes: routes.sort(),
@@ -202,9 +261,11 @@ function describeFinding(finding: SqlEmbedFinding): string {
       finding.via === INLINE_SQL
          ? "an inline sql()"
          : `the sql() source "${finding.via}"`;
-   const where = finding.via
-      ? `"${finding.embeddingSource}" (through ${through})`
-      : `"${finding.embeddingSource}"`;
+   const embedding =
+      finding.embeddingKind === "run"
+         ? `the ${finding.embeddingSource}`
+         : `"${finding.embeddingSource}"`;
+   const where = finding.via ? `${embedding} (through ${through})` : embedding;
    if (finding.unreadable) {
       return `${where} embeds "${finding.embeddedSource}", and ${finding.unreadable}, so whether it is gated cannot be decided`;
    }
@@ -218,12 +279,15 @@ function describeFinding(finding: SqlEmbedFinding): string {
  * (and so the same status and `loadErrors` entry) as a gate that does not
  * parse.
  */
-export function assertNoSqlEmbedsOfGatedSources(modelDef: ModelDef): void {
-   const findings = findSqlEmbedsOfGatedSources(modelDef);
+export function assertNoSqlEmbedsOfGatedSources(
+   modelDef: ModelDef,
+   scope: SqlEmbedScope = {},
+): void {
+   const findings = findSqlEmbedsOfGatedSources(modelDef, scope);
    if (findings.length === 0) return;
    throw new ModelCompilationError({
       message:
-         `A sql() source embeds a gated source with %{ ... }:\n` +
+         `A sql() embeds a gated source with %{ ... }:\n` +
          `${findings.map((f) => `  - ${describeFinding(f)}`).join("\n")}\n` +
          `Malloy compiles the embedded read into the SQL text, where no ` +
          `#(authorize) or #(access_filter) gate can be enforced, so every ` +

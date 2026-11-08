@@ -87,6 +87,34 @@ given: ROLE :: string
 source: s is ${ROWS}
 source: e is duckdb.sql("""select * from (%{ s -> { select: * } })""")
 `,
+   "a run: statement whose sql() embeds a gated source": `##! experimental.givens
+given: ROLE :: string
+#(authorize) 'a' = $ROLE
+source: s is ${ROWS}
+run: duckdb.sql("""select * from (%{ s -> { select: * } })""") -> { select: * }
+`,
+};
+
+/** Notebooks the load refuses, compared the same way. */
+const REFUSED_NOTEBOOKS: Record<string, string> = {
+   "a notebook cell's run: whose sql() embeds a gated source": `>>>malloy
+##! experimental.givens
+given: ROLE :: string
+#(authorize) 'a' = $ROLE
+source: s is ${ROWS}
+>>>markdown
+# Rows
+>>>malloy
+run: duckdb.sql("""select * from (%{ s -> { select: * } })""") -> { select: * }
+`,
+   "a notebook cell's source whose sql() embeds a gated source": `>>>malloy
+##! experimental.givens
+given: ROLE :: string
+#(authorize) 'a' = $ROLE
+source: s is ${ROWS}
+>>>malloy
+source: e is duckdb.sql("""select * from (%{ s -> { select: * } })""")
+`,
 };
 
 /** A cell's `newSources` entry is a serialized `SourceInfo`. */
@@ -172,10 +200,22 @@ describe("Model.create and the worker load the same model", () => {
       });
    }
 
-   for (const [name, text] of Object.entries(REFUSED)) {
+   const refused: [string, string, string][] = [
+      ...Object.entries(REFUSED).map(
+         ([name, text]): [string, string, string] => [name, "m.malloy", text],
+      ),
+      ...Object.entries(REFUSED_NOTEBOOKS).map(
+         ([name, text]): [string, string, string] => [
+            name,
+            "nb.malloynb",
+            text,
+         ],
+      ),
+   ];
+   for (const [name, entry, text] of refused) {
       it(`refuses with the same message: ${name}`, async () => {
-         const files = { "m.malloy": text };
-         const temp = await createTempModel(files, "m.malloy");
+         const files = { [entry]: text };
+         const temp = await createTempModel(files, entry);
          const inProcess = withoutProbeIds(
             temp.model.getCompilationError()?.message,
          );
