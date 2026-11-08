@@ -267,13 +267,8 @@ export class EnvironmentStore
     * re-parse the config each time.
     */
    public readonly mcpIncludeHiddenFilesAndSources: boolean;
-   /**
-    * Settles when {@link start}'s initialization has finished, successfully
-    * or not (a failure is recorded, not thrown). Pending until `start()` is
-    * called, so a request that arrives first waits rather than reading an
-    * empty store.
-    */
-   public readonly finishedInitialization: Promise<void>;
+   /** Settles when initialization has finished; see {@link finishedInitialization}. */
+   private readonly initialization: Promise<void>;
    private settleInitialization!: (outcome: Promise<void>) => void;
    private started = false;
    private isInitialized: boolean = false;
@@ -323,15 +318,26 @@ export class EnvironmentStore
       this.storageManager =
          deps.storageManager ?? new StorageManager(storageConfig);
 
-      this.finishedInitialization = new Promise<void>((resolve) => {
+      this.initialization = new Promise<void>((resolve) => {
          this.settleInitialization = resolve;
       });
    }
 
    /**
+    * Settles when initialization has finished, successfully or not (a failure
+    * is recorded, not thrown). Reading it starts the store if nothing has
+    * yet, so a store built outside the composition root initializes on first
+    * use instead of leaving every lookup pending. The root still calls
+    * {@link start} itself, after installing its hooks.
+    */
+   public get finishedInitialization(): Promise<void> {
+      return this.start();
+   }
+
+   /**
     * Open the metadata store and load the configured (or persisted)
     * environments. Idempotent: a later call returns the first one's
-    * {@link finishedInitialization}. Never rejects; a failure is logged,
+    * promise. Never rejects; a failure is logged,
     * printed as `PUBLISHER_INIT_FAILED`, and reported on `/status`.
     */
    public start(): Promise<void> {
@@ -339,7 +345,7 @@ export class EnvironmentStore
          this.started = true;
          this.settleInitialization(this.initialize());
       }
-      return this.finishedInitialization;
+      return this.initialization;
    }
 
    /** True if this env should mount package dirs in place (symlinks). */
