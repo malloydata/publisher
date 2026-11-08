@@ -38,6 +38,7 @@ import {
    type SourceDef,
 } from "@malloydata/malloy";
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
+import { ModelCompilationError } from "../errors";
 import {
    expectAccessDenied,
    queryRows,
@@ -46,6 +47,7 @@ import {
 import {
    GATE_WALK_PACKAGES,
    inheritanceMatrixPackage,
+   sqlEmbedsGatedPackage,
 } from "../test_helpers/gate_shape_fixtures";
 import { ACCESS_FILTER_ROUTE, AUTHORIZE_ROUTE } from "./authorize_routes";
 import { resolveGates, type GateStructDef } from "./entities/access_gates";
@@ -168,6 +170,7 @@ afterAll(async () => {
 });
 
 const MATRIX = "inheritance matrix › matrix.malloy";
+const SQL_EMBEDS = "sql embeds gated › sql_embeds.malloy";
 
 /**
  * Bare composites, where C follows the documented composite rule: per route,
@@ -196,7 +199,7 @@ const COMPOSITE_RULE: Record<string, WalkResult> = {
 /** Disagreements beyond the composite rule, each pinned by its own `it` below. */
 const PINNED_DISAGREEMENTS = new Set([
    `${MATRIX} › qs_then_extend_own`,
-   `${MATRIX} › sql_embeds_locked`,
+   `${SQL_EMBEDS} › sql_embeds_locked`,
 ]);
 
 const verdict = (key: string): SourceVerdict => {
@@ -326,43 +329,35 @@ describe("gate walk differential", () => {
       );
    });
 
-   it("PINNED DISAGREEMENT: C refuses a sql_select embedding a gated source, A and B report no gate", async () => {
+   it("PINNED DISAGREEMENT: C refuses a sql_select embedding a gated source, A and B report no gate; the load refuses it", async () => {
       // `sql_embeds_locked is duckdb.sql("""... %{ locked -> {...} } ...""")`.
       // A and B never look inside `selectSegments`, so they report the source
       // ungated. C throws (its caller withholds the source from the value
       // index: fail closed) because it cannot walk the embedded query.
       //
-      // For `gatePlan` (Phase 3): the embedded query's source is reachable and
-      // gated; a single walk must decide whether that gate applies to the
-      // sql_select and report it consistently.
-      const { A, B, C } = verdict(`${MATRIX} › sql_embeds_locked`);
+      // The embedded read used to bypass `locked`'s gate: a caller with no
+      // ROLES was answered with its rows through the author's sql_select.
+      // The load now refuses any `sql()` embedding a gated source
+      // (`sql_embed_gates.ts`), so the walks' disagreement never reaches a
+      // served model.
+      const { A, B, C } = verdict(`${SQL_EMBEDS} › sql_embeds_locked`);
       expect(A).toEqual({ authorize: [], access_filter: [] });
       expect(B).toEqual(A);
       expect(C).toEqual({
          throws:
             "resolveGates does not walk an embedded query/source in sql_select.selectSegments",
       });
-      // Control: enforcement agrees with A. A caller with no ROLES is answered
-      // with `locked`'s rows through the author's sql_select. This is the
-      // model AUTHOR's construct (restricted mode refuses `duckdb.sql` in
-      // caller text), the same stance as a join, which is not walked either;
-      // but unlike a join it reads `locked` as a derivation would, and a
-      // derivation (`->`) is additive. Pinned so `gatePlan` changes it on
-      // purpose, not by accident.
+      // Control: the model does not load, naming both sources.
       await withAuthorizeModel(
-         inheritanceMatrixPackage(),
-         async ({ model }) => {
-            const outcome = await queryRows(
-               model,
-               "run: sql_embeds_locked -> { aggregate: n is count() }",
-               {},
-            ).then(
-               (rows) => ({ rows }),
-               (err: Error) => ({ refused: err.constructor.name }),
+         sqlEmbedsGatedPackage(),
+         async ({ model, error }) => {
+            expect(error).toBeInstanceOf(ModelCompilationError);
+            expect(error?.message).toContain(
+               `"sql_embeds_locked" embeds "locked", which carries #(authorize)`,
             );
-            expect(outcome).toEqual({ rows: [{ n: 2 }] });
+            expect(model.getSources()).toBeUndefined();
          },
-         "matrix.malloy",
+         "sql_embeds.malloy",
       );
    });
 });
