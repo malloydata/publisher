@@ -40,7 +40,7 @@ v1 is the release that settles all four and promises them. Each surface is held 
 
 1. **Storage mirrors the API, but is loosely coupled to it.** Stored entities match the API's resources; the stored formats are the storage layer's own, so either side can change without breaking the other.
 2. **A request touches only the storage it needs.** Reading or changing one resource reads or writes that resource. It does not load the environment, rewrite a large blob, or recompile a package.
-3. **It follows system-design practice.** Each piece of state has one owner and one source of truth. Invariants hold inside transactions. Crashes recover. Growth is bounded, and the schema is versioned.
+3. **It follows system-design best practices.** Each piece of state has one owner and one source of truth. Invariants hold inside transactions. Crashes recover. Growth is bounded, and the schema is versioned.
 4. **Its state lives in the server's own DuckDB or in a remote Postgres.** The catalog of record has two shipped backends behind one interface, the embedded `publisher.db` and a Postgres server the operator points it at, with the same records, the same migrations and the same tests on both; which one is a setting, and nothing above the storage layer knows the difference.
 
 **The rollout** (#1540) is one rule: ship the new API, move everything we own to it, warn on everything users own that is deprecated, give the community 90 days, then remove v0 and every deprecated feature on every surface in one release. That release is 1.0.0.
