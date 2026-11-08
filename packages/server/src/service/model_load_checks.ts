@@ -42,6 +42,7 @@ import {
    type MalloyGiven,
    type MalloyGivenApi,
 } from "./given";
+import { assertNoSqlEmbedsOfGatedSources } from "./sql_embed_gates";
 import {
    collectSourceInfos,
    extractQueriesFromModelDef,
@@ -124,6 +125,9 @@ export async function extractCheckedModel(
       (_sourceName, route) => recordAuthorizeAdmitAllGate(route),
       extracted.attributedAuthorizeOwnNotes,
    );
+   // A `sql()` that embeds a gated source reads it with no gate enforced.
+   // After the grammar check, so a malformed gate gets its own message.
+   assertNoSqlEmbedsOfGatedSources(modelDef);
 
    const warnings: CheckedModel["warnings"] = [];
    // Probe-compiles every entry point's gate, so an unknown given or field

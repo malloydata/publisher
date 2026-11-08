@@ -81,6 +81,12 @@ source: s is ${ROWS}
    "a retired route marker": `#(partition) day
 source: s is ${ROWS}
 `,
+   "a sql() embedding a gated source": `##! experimental.givens
+given: ROLE :: string
+#(authorize) 'a' = $ROLE
+source: s is ${ROWS}
+source: e is duckdb.sql("""select * from (%{ s -> { select: * } })""")
+`,
 };
 
 /** A cell's `newSources` entry is a serialized `SourceInfo`. */
