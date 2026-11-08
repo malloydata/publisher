@@ -13,7 +13,9 @@ SPDX-License-Identifier: MIT
 
 ## 1. The goal
 
-Publisher has shipped as 0.x releases while its API, package format and storage took shape, and each carries the marks of that: three naming conventions in one spec, four homes for one status, a database that is a copy of memory. v1 is the release where the shape is settled and promised. Three pieces of work with one shape: the API is designed first, the storage is rebuilt under it, and the old API and every deprecated feature are retired on a date.
+Publisher has three user-facing surfaces: the **API** that clients, agents and Credible's service call; the **package**, the `publisher.json` manifest and the model annotations an author writes; and the **configuration** an operator starts the server with. Each took shape over the 0.x releases one addition at a time, and each carries the debt of that: three naming conventions in one spec and four homes for one status; two spellings of the same manifest key and annotations that are read but never documented; sixty environment variables that follow no rule and booleans read five ways. Under all three sits the **storage**, which was never designed as one thing: a database that is a copy of memory, mutable package copies that mix three roles, and derived state in the same file as the records.
+
+v1 is the release that settles all four and promises them. Each surface is held to its own expectations below, its accumulated debt is removed in this pass, and the storage is rebuilt so the surfaces can be kept. Publisher's internal domain model and software architecture are also being improved, in their own work ([#1559](https://github.com/malloydata/publisher/pull/1559) and what follows it); that is out of scope for this document except where a surface depends on it.
 
 **The API** (#1562) is held to three expectations:
 
@@ -21,15 +23,25 @@ Publisher has shipped as 0.x releases while its API, package format and storage 
 2. **A well-defined, simple domain model.** Each concept has one name and one representation; identity, content and derived state are told apart; nothing internal leaks.
 3. **The minimum surface** that the CLI, the Console, Credible's service and the bundled agent skills need, with every deprecated route having a replacement its callers can move to.
 
-**The storage** (#1560) is held to three more:
+**The package** (the manifest and the annotations; #1540 and its side track) is held to three:
+
+1. **One documented form for each thing an author can say.** Every `publisher.json` key and every annotation has one spelling and one home, described in the docs; a second spelling is a deprecation, never a feature.
+2. **A deprecated form is a warning with its rewrite, then a refusal with its rewrite, then gone.** Every deprecated key and annotation is counted before it goes, and the migration guide maps each old form to its new one.
+3. **An invalid form fails loudly, at publish.** A malformed annotation, a name that resolves to nothing, or a tag on the wrong kind of field refuses the publish with a coded message; nothing loads clean with part of its meaning silently dropped, and nothing that would fail open is ever accepted.
+
+**The configuration** ([Appendix F](#appendix-f-the-configuration-registry-and-mapping)) is held to three:
+
+1. **One registry.** Every setting is declared once, with one key, one type, one default and one description, and `--help` and the configuration reference are generated from it.
+2. **Three sources, one precedence.** Any setting can be given in the file, as `PUBLISHER_<KEY>` or as `--<key>`, with the variable and flag derived from the key; a flag wins over a variable, which wins over the file.
+3. **One parser.** A value is read the same way from every source, `${VAR}` substitution included; a bad value, an unknown key or an unknown flag fails startup with a message naming the setting. The file holds settings only; resources are created through the API.
+
+**The storage** (#1560) is held to three:
 
 1. **Storage mirrors the API, but is loosely coupled to it.** Stored entities match the API's resources; the stored formats are the storage layer's own, so either side can change without breaking the other.
 2. **A request touches only the storage it needs.** Reading or changing one resource reads or writes that resource. It does not load the environment, rewrite a large blob, or recompile a package.
 3. **It follows system-design practice.** Each piece of state has one owner and one source of truth. Invariants hold inside transactions. Crashes recover. Growth is bounded, and the schema is versioned.
 
-**The configuration** ([Appendix F](#appendix-f-the-configuration-registry-and-mapping)) is held to one: every setting is declared once, in one registry, with one name, one type and one default, and can be given in the config file, as an environment variable or as a flag, read the same way from each, with one precedence. Its first step is built; its second and third are sequenced below.
-
-**The rollout** (#1540) is one rule: ship the new API, move everything we own to it, warn on everything users own that is deprecated, give the community 90 days, then remove v0 and every deprecated feature in one release. That release is 1.0.0.
+**The rollout** (#1540) is one rule: ship the new API, move everything we own to it, warn on everything users own that is deprecated, give the community 90 days, then remove v0 and every deprecated feature on every surface in one release. That release is 1.0.0.
 
 ### What 1.0 promises
 
@@ -1078,6 +1090,7 @@ Each with a recommendation; the first two are Kyle's to call, the rest are settl
 
 ## 8. Not in scope
 
+- Publisher's internal domain model and software architecture (the explicit domain model, one governance policy and the enforced dependency direction of [#1559](https://github.com/malloydata/publisher/pull/1559), and the work that follows it). It continues in its own PRs; this document names it only where a surface depends on it.
 - Authentication, tenancy and the gateway ([security-posture.md](security-posture.md)); nothing here changes who may call what.
 - The query engine, result caching and the materialization *planner*; only where runs and tables are recorded changes.
 - Row-level access to dimension values through `get_context`.
