@@ -31,13 +31,13 @@ import {
    CLASSIFICATION_COVERAGE,
    CLASSIFICATION_DOWNGRADE,
    CLASSIFICATION_MALFORMED,
-   classificationLeaks,
    isClassificationLine,
    readCarries,
    readClassification,
    readSourceClassifications,
 } from "./classification";
-import * as classificationModule from "./classification";
+import { classificationLeaks } from "./classification_report";
+import * as classificationReportModule from "./classification_report";
 import type { AnnotationsDef } from "./annotations";
 import { compileModelFiles } from "../test_helpers/get_context_join_fixture";
 import type { ModelDef } from "@malloydata/malloy";
@@ -1579,7 +1579,7 @@ export { s0 }
       );
       const pkg = await Package.create("env", "pkg", tempDir, config);
       pkg.getPackageMetadata();
-      const walk = spyOn(classificationModule, "classificationWarnings");
+      const walk = spyOn(classificationReportModule, "classificationWarnings");
       try {
          pkg.getPackageMetadata();
          pkg.getPackageMetadata();
