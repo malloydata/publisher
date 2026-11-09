@@ -91,6 +91,8 @@ info:
     `GET` of its own. Relative, so it stays right behind a gateway that serves the API under another prefix; a link and
     a stable key, never parsed.
 
+    - A resource read two ways is `X` from its own `GET` and `XSummary` in its list, and its list is `XList`.
+
     - Every read but `/status` answers with an `ETag` and takes `If-None-Match`, answering 304 with no body when nothing
     changed. `Cache-Control` is `private, max-age=31536000, immutable` only on raw file reads under a concrete version
     id (`…/public/{path}`, an agent's skill file), whose bytes never change; every other read is `private, no-cache`,
@@ -1380,7 +1382,7 @@ paths:
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/CompiledModel"
+                $ref: "#/components/schemas/Model"
           headers:
             X-Request-Id:
               $ref: "#/components/headers/RequestId"
@@ -1662,7 +1664,7 @@ paths:
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/ReportManifest"
+                $ref: "#/components/schemas/Report"
           headers:
             X-Request-Id:
               $ref: "#/components/headers/RequestId"
@@ -2807,7 +2809,7 @@ paths:
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/TableSummaryList"
+                $ref: "#/components/schemas/TableList"
           headers:
             X-Request-Id:
               $ref: "#/components/headers/RequestId"
@@ -2858,7 +2860,7 @@ paths:
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/TableDetail"
+                $ref: "#/components/schemas/Table"
           headers:
             X-Request-Id:
               $ref: "#/components/headers/RequestId"
@@ -3042,7 +3044,7 @@ paths:
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/TableSummaryList"
+                $ref: "#/components/schemas/TableList"
           headers:
             X-Request-Id:
               $ref: "#/components/headers/RequestId"
@@ -3097,7 +3099,7 @@ paths:
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/TableDetail"
+                $ref: "#/components/schemas/Table"
           headers:
             X-Request-Id:
               $ref: "#/components/headers/RequestId"
@@ -4041,58 +4043,6 @@ components:
           description: "The text a tile's `run:` is appended to when it is run or exported on its own: the document's definitions,
             in file order. Never an `import`, a `##!` flag or a `given:`, which the model supplies, and never a
             definition the caller may not read. Empty when the document defines nothing."
-    CompiledModel:
-      type: object
-      description: "One model file compiled: its sources, named queries and givens. Larger parts are included on request with
-        `?include=`."
-      required:
-        - resource
-        - path
-        - malloyVersion
-        - sources
-        - queries
-        - givens
-      properties:
-        resource:
-          $ref: "#/components/schemas/ResourcePath"
-        versionId:
-          $ref: "#/components/schemas/VersionId"
-        path:
-          type: string
-        malloyVersion:
-          type: string
-        imports:
-          type: array
-          items:
-            type: string
-          description: The version-relative paths of the files this model imports, directly; empty when it imports none.
-        sources:
-          type: array
-          items:
-            $ref: "#/components/schemas/Source"
-        queries:
-          type: array
-          items:
-            $ref: "#/components/schemas/Query"
-        givens:
-          type: array
-          items:
-            $ref: "#/components/schemas/Given"
-        sourceText:
-          type: string
-          description: The file's Malloy text, verbatim. Included with `?include=sourceText`; omitted when the text names a source
-            the file does not publish, unless `includeHidden` is set.
-        modelInfo:
-          type: object
-          additionalProperties: true
-          description: Malloy's own model structure, as an object. Included with `?include=modelInfo`. Its shape is the
-            compiler's, not this API's.
-        sourceInfos:
-          type: array
-          description: Malloy's own per-source structure, as objects. Included with `?include=sourceInfos`.
-          items:
-            type: object
-            additionalProperties: true
     CompileProblem:
       type: object
       description: A compilation problem reported by the Malloy compiler
@@ -4612,8 +4562,7 @@ components:
     EncodedGivenValues:
       type: object
       description: "Given values as a report declares them for its controls: a map of given name to its encoded value.
-        `ReportManifest.startingGivens` and `CompiledDocument.startingGivens` carry this shape; URL parameters override
-        it."
+        `Report.startingGivens` and `CompiledDocument.startingGivens` carry this shape; URL parameters override it."
       additionalProperties:
         type: string
     EntitiesList:
@@ -4928,7 +4877,7 @@ components:
       type: object
       description: |
         A given (runtime parameter) declared on a Malloy model via the
-        `given:` keyword. Surfaced on `CompiledModel.givens` and `Source.givens`
+        `given:` keyword. Surfaced on `Model.givens` and `Source.givens`
         so callers can introspect what runtime values a model accepts.
 
         `givens` always names a collection of these declarations. Values keyed
@@ -5303,9 +5252,15 @@ components:
           type: string
     Model:
       type: object
+      description: "One model file compiled: its sources, named queries and givens. Larger parts are included on request with
+        `?include=`."
       required:
         - resource
         - path
+        - malloyVersion
+        - sources
+        - queries
+        - givens
       properties:
         resource:
           $ref: "#/components/schemas/ResourcePath"
@@ -5313,16 +5268,40 @@ components:
           $ref: "#/components/schemas/VersionId"
         path:
           type: string
-          description: The file's path within the version, its identity.
-        hidden:
-          type: boolean
-          description: "True for a file listed only because the request set `includeHidden`: one the package's `index.malloy` does
-            not expose."
-        isReport:
-          type: boolean
-          description: True when the file carries an `## artifact` tag and is also listed under `reports`.
-        error:
+        malloyVersion:
           type: string
+        imports:
+          type: array
+          items:
+            type: string
+          description: The version-relative paths of the files this model imports, directly; empty when it imports none.
+        sources:
+          type: array
+          items:
+            $ref: "#/components/schemas/Source"
+        queries:
+          type: array
+          items:
+            $ref: "#/components/schemas/Query"
+        givens:
+          type: array
+          items:
+            $ref: "#/components/schemas/Given"
+        sourceText:
+          type: string
+          description: The file's Malloy text, verbatim. Included with `?include=sourceText`; omitted when the text names a source
+            the file does not publish, unless `includeHidden` is set.
+        modelInfo:
+          type: object
+          additionalProperties: true
+          description: Malloy's own model structure, as an object. Included with `?include=modelInfo`. Its shape is the
+            compiler's, not this API's.
+        sourceInfos:
+          type: array
+          description: Malloy's own per-source structure, as objects. Included with `?include=sourceInfos`.
+          items:
+            type: object
+            additionalProperties: true
     ModelEntities:
       type: object
       readOnly: true
@@ -5378,9 +5357,31 @@ components:
         items:
           type: array
           items:
-            $ref: "#/components/schemas/Model"
+            $ref: "#/components/schemas/ModelSummary"
         nextCursor:
           $ref: "#/components/schemas/Cursor"
+    ModelSummary:
+      type: object
+      required:
+        - resource
+        - path
+      properties:
+        resource:
+          $ref: "#/components/schemas/ResourcePath"
+        versionId:
+          $ref: "#/components/schemas/VersionId"
+        path:
+          type: string
+          description: The file's path within the version, its identity.
+        hidden:
+          type: boolean
+          description: "True for a file listed only because the request set `includeHidden`: one the package's `index.malloy` does
+            not expose."
+        isReport:
+          type: boolean
+          description: True when the file carries an `## artifact` tag and is also listed under `reports`.
+        error:
+          type: string
     ModelWriteRequest:
       type: object
       description: The whole text of a report file to write into a version, making a new version.
@@ -6162,6 +6163,22 @@ components:
           description: How this server now serves the version the reload or re-fetch left in place, with its per-package fields;
             the receipt that a live edit is being served.
     Report:
+      description: A `ReportSummary` plus what a viewer needs to draw it, which is the compiled document.
+      allOf:
+        - $ref: "#/components/schemas/ReportSummary"
+        - $ref: "#/components/schemas/CompiledDocument"
+    ReportList:
+      type: object
+      required:
+        - items
+      properties:
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/ReportSummary"
+        nextCursor:
+          $ref: "#/components/schemas/Cursor"
+    ReportSummary:
       type: object
       description: A `.malloy` file carrying an `## artifact` tag, wherever it lives in the version.
       required:
@@ -6197,22 +6214,6 @@ components:
             splice). The report write refuses it the same way.
         error:
           type: string
-    ReportList:
-      type: object
-      required:
-        - items
-      properties:
-        items:
-          type: array
-          items:
-            $ref: "#/components/schemas/Report"
-        nextCursor:
-          $ref: "#/components/schemas/Cursor"
-    ReportManifest:
-      description: A `Report` plus what a viewer needs to draw it, which is the compiled document.
-      allOf:
-        - $ref: "#/components/schemas/Report"
-        - $ref: "#/components/schemas/CompiledDocument"
     ReportTile:
       type: object
       description: One tile of a report. A `query` tile (the default) runs a query; a `text` tile shows markdown and runs
@@ -6258,7 +6259,7 @@ components:
             could not resolve the tile (its expression neither compiles nor is
             a plain `source -> view` or named query the static walk reads), in
             which case send the whole control row. One such tile
-            widens `ReportManifest.givens` to every given the entry file
+            widens `Report.givens` to every given the entry file
             surfaces, rather than the union over the resolvable tiles, so that
             the row actually contains the givens that tile filters by.
         label:
@@ -6900,9 +6901,8 @@ components:
             $ref: "#/components/schemas/View"
         givens:
           type: array
-          description: Model-level givens (runtime parameters) available to queries on this source. Identical to
-            `CompiledModel.givens`; repeated here for SDK ergonomics so consumers iterating sources can render inputs
-            without a second lookup.
+          description: Model-level givens (runtime parameters) available to queries on this source. Identical to `Model.givens`;
+            repeated here for SDK ergonomics so consumers iterating sources can render inputs without a second lookup.
           items:
             $ref: "#/components/schemas/Given"
         authorize:
@@ -7189,22 +7189,7 @@ components:
             — only the key blob is compared, never the hostname. When omitted, the
             tunnel connects without host-key verification (the self-service
             default); the SSH transport is still encrypted.
-    TableDescription:
-      type: object
-      description: Database table structure and metadata
-      properties:
-        name:
-          type: string
-          description: Name of the table
-        rowCount:
-          type: integer
-          description: Number of rows in the table
-        columns:
-          type: array
-          description: List of columns in the table
-          items:
-            $ref: "#/components/schemas/Column"
-    TableDetail:
+    Table:
       type: object
       description: A table with its columns.
       required:
@@ -7226,6 +7211,32 @@ components:
           type:
             - integer
             - "null"
+    TableDescription:
+      type: object
+      description: Database table structure and metadata
+      properties:
+        name:
+          type: string
+          description: Name of the table
+        rowCount:
+          type: integer
+          description: Number of rows in the table
+        columns:
+          type: array
+          description: List of columns in the table
+          items:
+            $ref: "#/components/schemas/Column"
+    TableList:
+      type: object
+      required:
+        - items
+      properties:
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/TableSummary"
+        nextCursor:
+          $ref: "#/components/schemas/Cursor"
     TableSummary:
       type: object
       description: A table as a schema listing names it.
@@ -7244,17 +7255,6 @@ components:
           items:
             $ref: "#/components/schemas/Column"
           description: Present only with `?include=columns`.
-    TableSummaryList:
-      type: object
-      required:
-        - items
-      properties:
-        items:
-          type: array
-          items:
-            $ref: "#/components/schemas/TableSummary"
-        nextCursor:
-          $ref: "#/components/schemas/Cursor"
     TrinoConnection:
       type: object
       description: Trino database connection configuration
