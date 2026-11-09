@@ -80,6 +80,25 @@ describe("doc parts by rules", () => {
       });
    });
 
+   it("keeps a link, a quoted value and Malloy code inside their sentence", () => {
+      const example = 'Example: run: orders -> { where: country = "U.S." }';
+      expect(splitDocByRules(`Amount. ${example}`)).toEqual({
+         what: "Amount.",
+         values: [],
+         rules: [],
+         examples: [example],
+      });
+      expect(splitDocByRules('Channel. Values: "Really? yes", "No".')).toEqual({
+         what: "Channel.",
+         values: ["Really? yes", "No"],
+         rules: [],
+         examples: [],
+      });
+      expect(splitDocByRules("Link to https://example.com/?q=x.").what).toBe(
+         "Link to https://example.com/?q=x.",
+      );
+   });
+
    it("does not read a prose colon as a list", () => {
       expect(
          listItems("Note: the amount is gross of tax and of shipping fees"),
@@ -104,6 +123,25 @@ describe("doc parts by the model", () => {
       "Order amount in dollars. Exclude test orders when summing.",
       "City name.",
    ];
+
+   it("counts the sentences of a doc in any script", async () => {
+      const multi = [
+         "Bestellbetrag in Euro. Über alle Währungen nie summieren.",
+         "Importe del pedido. ¿Incluye impuestos?",
+         "Сумма заказа в рублях. Исключайте тестовые заказы.",
+         "Ποσό παραγγελίας. Εξαιρέστε τις δοκιμαστικές παραγγελίες.",
+         "注文金額です。テスト注文は除外してください。",
+         "مبلغ الطلب. استبعد طلبات الاختبار.",
+         "Amount. (exclude test orders.)",
+      ];
+      const single = [
+         "Сумма заказа в рублях.",
+         "注文金額です。",
+         "Run: orders -> { group_by: a; aggregate: b }",
+      ];
+      const out = await resolveDocParts({ docs: [...multi, ...single] });
+      expect(out.longDocs).toBe(multi.length);
+   });
 
    it("sends only multi-sentence docs, keeps the reply, and reuses it on the next build", async () => {
       const chat = scriptedChat((prompt) => {

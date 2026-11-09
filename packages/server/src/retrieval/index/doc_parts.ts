@@ -125,9 +125,24 @@ export function splitDocByRules(doc: string): DocParts {
    };
 }
 
+/**
+ * Unicode's sentence boundaries, which also end a sentence at "。" or before
+ * "Ü", "И" or "¿". They only add docs for the model: the rule split keeps
+ * {@link sentencesOf}, so its parts do not change. The locale is fixed so the
+ * runtime's default does not change the count (Greek ends a sentence at
+ * ";"); ICU versions may still differ.
+ */
+const SENTENCES = new Intl.Segmenter("en", { granularity: "sentence" });
+
 /** Whether a doc is worth splitting at all: more than one sentence. */
 function needsSplit(doc: string): boolean {
-   return sentencesOf(doc).length > 1;
+   if (sentencesOf(doc).length > 1) return true;
+   let count = 0;
+   const text = doc.replace(/\s+/g, " ").trim();
+   for (const { segment } of SENTENCES.segment(text)) {
+      if (segment.trim() && ++count > 1) return true;
+   }
+   return false;
 }
 
 export const DEFAULT_DOC_PARTS_INSTRUCTIONS = `You split the documentation of fields in a data model into parts.
