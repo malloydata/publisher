@@ -31,8 +31,7 @@ info:
 
     - A **version** is an immutable snapshot of a package's content. Every content read is of exactly one version, named
     in the path; `latest` is a reserved segment for the package's latest, and a live (watched) package has one
-    pseudo-version, `live`. A publish, a report write and a reload that finds changed content each make a version;
-    nothing edits one in place.
+    pseudo-version, `live`. A publish and a report write each make a version; nothing edits one in place.
 
     - Under a version: **models** (compiled metadata, query, compile), **reports** (a `.malloy` file carrying an `##
     artifact` tag, grid or linear), **data apps**, **data files**, **agents**, **skills**, its **entities**,
@@ -58,9 +57,9 @@ info:
 
     - State changes are fields: `PATCH …/versions/{versionId}` with `archived`, `loaded`, `pinned` or
     `manifestLocation`; `PATCH …/packages/{packageName}` with `latestVersionId`; `PATCH …/runs/{runId}` with `status:
-    "cancelled"`. Actions are `POST` with a `:verb` suffix on the resource they act on (`:reload`, `:refresh-schema`,
-    `:query`, `:compile`, `:run-sql`), so an action can never collide with a child's name; an unsaved connection is
-    tested with `?dryRun=true` on create or update.
+    "cancelled"`. Actions are `POST` with a `:verb` suffix on the resource they act on (`:reload`, `:query`, `:compile`,
+    `:run-sql`), so an action can never collide with a child's name; an unsaved connection is tested with `?dryRun=true`
+    on create or update.
 
     - `PATCH` is JSON merge-patch: present fields are set, `null` unsets, absent fields are untouched, lists replace. An
     orchestrator pushes an environment's desired state as a `PATCH` whose `connections` list replaces the stored one.
@@ -97,8 +96,8 @@ info:
     - Every read but `/status` answers with an `ETag` and takes `If-None-Match`, answering 304 with no body when nothing
     changed. `Cache-Control` is `private, max-age=31536000, immutable` only on raw file reads under a concrete version
     id (`…/public/{path}`, an agent's skill file), whose bytes never change; every other read is `private, no-cache`,
-    because a compiled model under a concrete version can still change with `:refresh-schema`, and a read through
-    `latest` or `live` can resolve differently next time.
+    because a compiled model under a concrete version can still change with `:reload`, and a read through `latest` or
+    `live` can resolve differently next time.
 
     - Every operation but `/status` may answer 429 `RATE_LIMITED`; 429 and 503 carry `Retry-After` in seconds. `/status`
     is never rate-limited, because it is the orchestrator's heartbeat.
@@ -107,16 +106,20 @@ info:
     response carries it as `X-Request-Id`, and every error body repeats it as `requestId`.
 
     - Lowercase snake_case, except a `reason`, which is always a code from a closed list in UPPER_SNAKE (an error's, an
-    index's, a refused source's; free text is a `message`), values that name a response field (`include:
-    ["malloyResult"]`), and values that echo another vocabulary (a setting's value, Postgres's `sslmode`).
+    index's, a refused source's; free text is a `message`), a warning's or problem's `code`, a stable kebab-case family
+    listed in `docs/packages.md`, values that name a response field (`include: ["malloyResult"]`), and values that echo
+    another vocabulary (a setting's value, Postgres's `sslmode`).
 
     - Every list is `{items, nextCursor}`, paged with `limit` and `after`. `/status` is the one unpaged snapshot.
 
     - Query results are typed: `rows` always, and Malloy's full result, with column types and render metadata, only on
     request. Nothing is a JSON string inside JSON.
 
-    - Every error is `{status, reason, message, details?}` with `reason` from one closed enum. Branch on `status` and
-    `reason`, never on `message`.
+    - Every error is `{status, reason, message, requestId, details?}`. Branch on `status` and `reason`, never on
+    `message`; treat a reason you do not know as the status's generic case.
+
+    - A dry run (`?dryRun=true`) runs every check and stores nothing: a connection's answers its test result, a
+    publish's the version it would make.
 
     - Booleans are JSON `true`/`false` in bodies and `true`/`false` in query strings; anything else is 400
     `INVALID_REQUEST`.
@@ -183,6 +186,10 @@ paths:
           headers:
             X-Request-Id:
               $ref: "#/components/headers/RequestId"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "404":
+          $ref: "#/components/responses/NotFound"
         "503":
           $ref: "#/components/responses/Unavailable"
 
@@ -362,6 +369,8 @@ paths:
           $ref: "#/components/responses/Conflict"
         "412":
           $ref: "#/components/responses/PreconditionFailed"
+        "428":
+          $ref: "#/components/responses/RevisionRequired"
         "429":
           $ref: "#/components/responses/RateLimited"
         "500":
@@ -396,6 +405,8 @@ paths:
           $ref: "#/components/responses/Conflict"
         "412":
           $ref: "#/components/responses/PreconditionFailed"
+        "428":
+          $ref: "#/components/responses/RevisionRequired"
         "429":
           $ref: "#/components/responses/RateLimited"
         "500":
@@ -603,6 +614,8 @@ paths:
           $ref: "#/components/responses/Conflict"
         "412":
           $ref: "#/components/responses/PreconditionFailed"
+        "428":
+          $ref: "#/components/responses/RevisionRequired"
         "429":
           $ref: "#/components/responses/RateLimited"
         "500":
@@ -634,6 +647,8 @@ paths:
           $ref: "#/components/responses/Conflict"
         "412":
           $ref: "#/components/responses/PreconditionFailed"
+        "428":
+          $ref: "#/components/responses/RevisionRequired"
         "429":
           $ref: "#/components/responses/RateLimited"
         "500":
@@ -693,29 +708,11 @@ paths:
       operationId: create-package
       tags:
         - packages
-      summary: Create a package and publish its first version
-      description: "Records the package with its `source`, fetches it, and publishes the version its `publisher.json`
-        declares. A package that already exists answers 409 `CONFLICT`: publish its later versions with `POST
-        …/packages/{packageName}/versions`. With `dryRun`, every publish check runs and nothing is stored."
+      summary: Create a package
+      description: Records the package with its `source`. Publish its versions with `POST …/packages/{packageName}/versions`,
+        the one way a version is made. A package that already exists answers 409 `CONFLICT`.
       parameters:
         - $ref: "#/components/parameters/idempotencyKey"
-        - name: dryRun
-          in: query
-          schema:
-            type: boolean
-            default: false
-        - name: profile
-          in: query
-          schema:
-            type: string
-            enum:
-              - full
-              - light
-            default: full
-          description: "`light` compiles and runs the authorize validation, so a broken model still answers 4xx, and defers what a
-            draft checkpoint does not need to serve: the build plan and preaggregation companions, render-tag prepares,
-            report lint, the discovery-index build, and the per-file row counts of `data-files`. Each deferred part is
-            derived on its first read. For a package whose every edit publishes a version."
       requestBody:
         required: true
         content:
@@ -723,26 +720,19 @@ paths:
             schema:
               $ref: "#/components/schemas/Package"
       responses:
-        "200":
-          description: A dry run.
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/Version"
-          headers:
-            X-Request-Id:
-              $ref: "#/components/headers/RequestId"
         "201":
-          description: Published.
+          description: Created.
           headers:
             X-Request-Id:
               $ref: "#/components/headers/RequestId"
             Location:
               $ref: "#/components/headers/Location"
+            ETag:
+              $ref: "#/components/headers/ETag"
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/Version"
+                $ref: "#/components/schemas/Package"
         "400":
           $ref: "#/components/responses/BadRequest"
         "401":
@@ -755,8 +745,6 @@ paths:
           $ref: "#/components/responses/Conflict"
         "412":
           $ref: "#/components/responses/PreconditionFailed"
-        "424":
-          $ref: "#/components/responses/ConnectionUnavailable"
         "429":
           $ref: "#/components/responses/RateLimited"
         "500":
@@ -852,6 +840,8 @@ paths:
           $ref: "#/components/responses/Gone"
         "412":
           $ref: "#/components/responses/PreconditionFailed"
+        "428":
+          $ref: "#/components/responses/RevisionRequired"
         "429":
           $ref: "#/components/responses/RateLimited"
         "500":
@@ -885,53 +875,8 @@ paths:
           $ref: "#/components/responses/Conflict"
         "412":
           $ref: "#/components/responses/PreconditionFailed"
-        "429":
-          $ref: "#/components/responses/RateLimited"
-        "500":
-          $ref: "#/components/responses/Internal"
-        "503":
-          $ref: "#/components/responses/Unavailable"
-
-
-  /environments/{environmentName}/packages/{packageName}:reload:
-    parameters:
-      - $ref: "#/components/parameters/environmentName"
-      - $ref: "#/components/parameters/packageName"
-    post:
-      operationId: reload-package
-      tags:
-        - packages
-      summary: Recompile a live package from its files and wait for the result
-      description: "A live package only (watch mode, a draft): recompiles the author's files in place, settling any recompile
-        the watcher already started, and answers when it is done, with the compile errors if it failed. This is the
-        handshake an edit loop needs and watch mode alone does not give: watch mode recompiles in the background and
-        skips a save that does not compile without saying so. A package that is not live answers 409 `PACKAGE_NOT_LIVE`:
-        an immutable version has nothing to reload. To pick up a changed source, publish a version (`POST …/versions`,
-        with no body to fetch the recorded source); to make a version resident, `PATCH …/versions/{versionId}` with
-        `{\"loaded\": true}`; to recompile against current warehouse schemas, `POST
-        …/versions/{versionId}:refresh-schema`."
-      responses:
-        "200":
-          description: Recompiled; the version and how it is now served.
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/ReloadResult"
-          headers:
-            X-Request-Id:
-              $ref: "#/components/headers/RequestId"
-        "400":
-          $ref: "#/components/responses/BadRequest"
-        "401":
-          $ref: "#/components/responses/Unauthorized"
-        "403":
-          $ref: "#/components/responses/Forbidden"
-        "404":
-          $ref: "#/components/responses/NotFound"
-        "409":
-          $ref: "#/components/responses/Conflict"
-        "412":
-          $ref: "#/components/responses/PreconditionFailed"
+        "428":
+          $ref: "#/components/responses/RevisionRequired"
         "429":
           $ref: "#/components/responses/RateLimited"
         "500":
@@ -998,13 +943,15 @@ paths:
       tags:
         - versions
       summary: Publish a new version of the package
-      description: Fetches a source and publishes the version its `publisher.json` declares, or `<parent>+reload.N` when that
-        version already exists with other content, re-applying the overlay of report writes. With no body it fetches the
-        package's recorded `source` again, which is how a package installed from a git branch or an object-store prefix
-        picks up a change; when the fetched tree matches the current version (by git commit sha, object etag or md5, or
-        the tree's hash) nothing is made and it answers 200 with that version. `latestVersionId` moves per the promotion
-        rule. A live package answers 409 `PACKAGE_IS_LIVE` (use `:reload` instead). With `dryRun`, every publish check
-        runs and nothing is stored.
+      description: "Fetches a source and publishes the version its `publisher.json` declares, or `<parent>+refetch.N` when
+        that version already exists with other content, re-applying the overlay of report writes. With no body it
+        fetches the package's recorded `source` again, which is how a package installed from a git branch or an
+        object-store prefix picks up a change; when the fetched tree matches the current version (by git commit sha,
+        object etag or md5, or the tree's hash) nothing is made and it answers 200 with that version. `latestVersionId`
+        moves per the promotion rule. The body is a `Version` with only its writable fields: `source` to publish from a
+        new location (it becomes the package's recorded source), `manifestLocation` to bind on publish, and `pinned`. A
+        live package answers 409 `PACKAGE_IS_LIVE` (use `:reload`). With `dryRun`, every publish check runs, the answer
+        is the version the publish would make, and nothing is stored."
       parameters:
         - $ref: "#/components/parameters/idempotencyKey"
         - name: dryRun
@@ -1020,13 +967,16 @@ paths:
               - full
               - light
             default: full
-          description: As on `POST …/packages`.
+          description: "`light` compiles and runs the authorize validation, so a broken model still answers 4xx, and defers what a
+            draft checkpoint does not need to serve: the build plan and preaggregation companions, render-tag prepares,
+            report lint, the discovery-index build, and the per-file row counts of `data-files`. Each deferred part is
+            derived on its first read. For a package whose every edit publishes a version."
       requestBody:
         required: false
         content:
           application/json:
             schema:
-              $ref: "#/components/schemas/VersionPublishRequest"
+              $ref: "#/components/schemas/Version"
       responses:
         "200":
           description: Nothing new (the fetched content is the current version's), or a dry run.
@@ -1037,6 +987,8 @@ paths:
           headers:
             X-Request-Id:
               $ref: "#/components/headers/RequestId"
+            ETag:
+              $ref: "#/components/headers/ETag"
         "201":
           description: Published.
           headers:
@@ -1044,6 +996,8 @@ paths:
               $ref: "#/components/headers/RequestId"
             Location:
               $ref: "#/components/headers/Location"
+            ETag:
+              $ref: "#/components/headers/ETag"
           content:
             application/json:
               schema:
@@ -1061,7 +1015,58 @@ paths:
         "412":
           $ref: "#/components/responses/PreconditionFailed"
         "424":
-          $ref: "#/components/responses/ConnectionUnavailable"
+          $ref: "#/components/responses/DependencyFailed"
+        "429":
+          $ref: "#/components/responses/RateLimited"
+        "500":
+          $ref: "#/components/responses/Internal"
+        "503":
+          $ref: "#/components/responses/Unavailable"
+
+
+  /environments/{environmentName}/packages/{packageName}/versions/{versionId}:reload:
+    parameters:
+      - $ref: "#/components/parameters/environmentName"
+      - $ref: "#/components/parameters/packageName"
+      - $ref: "#/components/parameters/versionId"
+    post:
+      operationId: reload-version
+      tags:
+        - versions
+      summary: Recompile a version from its files against the warehouse's current schemas, and wait
+      description: "Recompiles the version now, with the schema cache bypassed, replaces its compiled-model store entry, and
+        answers when it is done, with the compile errors if it failed (the version then keeps serving its last good
+        compile). On a live package (`live`, which `latest` resolves to) it first re-reads the author's files, settling
+        any recompile the watcher already started: the handshake an edit loop needs, since watch mode recompiles in the
+        background and skips a save that does not compile without saying so. On a published version the files cannot
+        change, so a reload is a schema refresh. No version is made. Loads the version if it is not resident. 409
+        `VERSION_BUILDING` while a run holds it. To pick up a changed source, publish a version (`POST …/versions`)."
+      responses:
+        "200":
+          description: Recompiled; the version and its status.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ReloadResult"
+          headers:
+            X-Request-Id:
+              $ref: "#/components/headers/RequestId"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "410":
+          $ref: "#/components/responses/Gone"
+        "412":
+          $ref: "#/components/responses/PreconditionFailed"
+        "424":
+          $ref: "#/components/responses/DependencyFailed"
         "429":
           $ref: "#/components/responses/RateLimited"
         "500":
@@ -1088,7 +1093,7 @@ paths:
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/ServingState"
+                $ref: "#/components/schemas/VersionStatus"
           headers:
             X-Request-Id:
               $ref: "#/components/headers/RequestId"
@@ -1120,50 +1125,6 @@ paths:
           $ref: "#/components/responses/Unavailable"
       parameters:
         - $ref: "#/components/parameters/ifNoneMatch"
-
-
-  /environments/{environmentName}/packages/{packageName}/versions/{versionId}:refresh-schema:
-    parameters:
-      - $ref: "#/components/parameters/environmentName"
-      - $ref: "#/components/parameters/packageName"
-      - $ref: "#/components/parameters/versionId"
-    post:
-      operationId: refresh-schema
-      tags:
-        - versions
-      summary: Recompile a version against the warehouse's current schemas
-      description: A compiled version bakes in the schema of every table it reads. This recompiles the version's unchanged
-        files with the schema cache bypassed and replaces its compiled-model store entry, loading the version if it is
-        not resident. No version is made, because the content did not change. 409 `PACKAGE_IS_LIVE` on a live package
-        (reload it instead) and `VERSION_BUILDING` while a run holds the version.
-      responses:
-        "200":
-          description: The version, recompiled.
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/Version"
-          headers:
-            X-Request-Id:
-              $ref: "#/components/headers/RequestId"
-        "400":
-          $ref: "#/components/responses/BadRequest"
-        "401":
-          $ref: "#/components/responses/Unauthorized"
-        "403":
-          $ref: "#/components/responses/Forbidden"
-        "404":
-          $ref: "#/components/responses/NotFound"
-        "409":
-          $ref: "#/components/responses/Conflict"
-        "412":
-          $ref: "#/components/responses/PreconditionFailed"
-        "429":
-          $ref: "#/components/responses/RateLimited"
-        "500":
-          $ref: "#/components/responses/Internal"
-        "503":
-          $ref: "#/components/responses/Unavailable"
 
 
   /environments/{environmentName}/packages/{packageName}/versions/{versionId}:
@@ -1226,7 +1187,7 @@ paths:
         (`VERSION_IS_LATEST`), the last active version (`VERSION_IS_LAST_ACTIVE`) or building (`VERSION_BUILDING`).
         `loaded: false` drains and unloads; 409 while a run holds the version. `manifestLocation` binds an external
         manifest (`null` clears it and the version serves live); a bind failure leaves the previous binding and answers
-        424."
+        424 `MANIFEST_UNAVAILABLE`."
       parameters:
         - $ref: "#/components/parameters/ifMatch"
       requestBody:
@@ -1262,7 +1223,9 @@ paths:
         "412":
           $ref: "#/components/responses/PreconditionFailed"
         "424":
-          $ref: "#/components/responses/ConnectionUnavailable"
+          $ref: "#/components/responses/DependencyFailed"
+        "428":
+          $ref: "#/components/responses/RevisionRequired"
         "429":
           $ref: "#/components/responses/RateLimited"
         "500":
@@ -1274,9 +1237,9 @@ paths:
       tags:
         - versions
       summary: Delete a version for good
-      description: Refused with 409 on a live package's `live` (`PACKAGE_IS_LIVE`), and while it is `latest` and other
-        versions remain, or the last active version while archived ones remain. Deleting the only version deletes the
-        package.
+      description: "Deletes the version and its compiled models. Refused with 409 on a live package's `live`
+        (`PACKAGE_IS_LIVE`), while it is `latest` (`VERSION_IS_LATEST`), while a run holds it (`VERSION_BUILDING`), and
+        when it is the package's last version (`VERSION_IS_LAST_ACTIVE`): delete the package instead."
       parameters:
         - $ref: "#/components/parameters/ifMatch"
       responses:
@@ -1297,6 +1260,8 @@ paths:
           $ref: "#/components/responses/Conflict"
         "412":
           $ref: "#/components/responses/PreconditionFailed"
+        "428":
+          $ref: "#/components/responses/RevisionRequired"
         "429":
           $ref: "#/components/responses/RateLimited"
         "500":
@@ -1370,7 +1335,7 @@ paths:
         - models
       summary: Read a model's compiled sources, queries and givens
       description: Loads the version when it is not in memory (a hydrate when the compiled-model store has an entry); check
-        `ServingState.loaded` first to know the cost.
+        `VersionStatus.loaded` first to know the cost.
       parameters:
         - $ref: "#/components/parameters/includeHidden"
         - name: include
@@ -1382,7 +1347,7 @@ paths:
             items:
               type: string
               enum:
-                - sourceText
+                - content
                 - modelInfo
                 - sourceInfos
           description: Larger parts to include.
@@ -1425,7 +1390,7 @@ paths:
         "412":
           $ref: "#/components/responses/PreconditionFailed"
         "424":
-          $ref: "#/components/responses/ConnectionUnavailable"
+          $ref: "#/components/responses/DependencyFailed"
         "429":
           $ref: "#/components/responses/RateLimited"
         "500":
@@ -1480,7 +1445,7 @@ paths:
         "413":
           $ref: "#/components/responses/PayloadTooLarge"
         "424":
-          $ref: "#/components/responses/ConnectionUnavailable"
+          $ref: "#/components/responses/DependencyFailed"
         "429":
           $ref: "#/components/responses/RateLimited"
         "500":
@@ -1537,7 +1502,7 @@ paths:
         "413":
           $ref: "#/components/responses/PayloadTooLarge"
         "424":
-          $ref: "#/components/responses/ConnectionUnavailable"
+          $ref: "#/components/responses/DependencyFailed"
         "429":
           $ref: "#/components/responses/RateLimited"
         "500":
@@ -1711,6 +1676,8 @@ paths:
           $ref: "#/components/responses/Gone"
         "412":
           $ref: "#/components/responses/PreconditionFailed"
+        "428":
+          $ref: "#/components/responses/RevisionRequired"
         "429":
           $ref: "#/components/responses/RateLimited"
         "500":
@@ -2168,7 +2135,7 @@ paths:
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/EntitiesList"
+                $ref: "#/components/schemas/ModelEntitiesList"
           headers:
             X-Request-Id:
               $ref: "#/components/headers/RequestId"
@@ -2216,7 +2183,7 @@ paths:
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/ClassificationSummary"
+                $ref: "#/components/schemas/Classification"
           headers:
             X-Request-Id:
               $ref: "#/components/headers/RequestId"
@@ -2318,7 +2285,7 @@ paths:
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/BuildPlanResult"
+                $ref: "#/components/schemas/BuildPlan"
           headers:
             X-Request-Id:
               $ref: "#/components/headers/RequestId"
@@ -2358,7 +2325,7 @@ paths:
       - $ref: "#/components/parameters/packageName"
       - $ref: "#/components/parameters/versionId"
     get:
-      operationId: list-version-connections
+      operationId: list-connections-in-version
       tags:
         - connections
       summary: List the version's own connections
@@ -2412,7 +2379,7 @@ paths:
       - $ref: "#/components/parameters/versionId"
       - $ref: "#/components/parameters/connectionName"
     get:
-      operationId: get-version-connection
+      operationId: get-connection-in-version
       tags:
         - connections
       summary: Read one of the version's connections
@@ -2528,7 +2495,7 @@ paths:
         - $ref: "#/components/parameters/idempotencyKey"
       description: "Loads the version first if this server does not hold it, so a run (a re-run of a failed version among
         them) needs no separate load. 409 `RUN_ACTIVE` while another run holds the slot; 409 `TABLE_OWNED_ELSEWHERE`
-        when an instruction names a table another package or slot owns; 400 `VERSION_NOT_LATEST` for an auto-run of a
+        when an instruction names a table another package or slot owns; 409 `VERSION_NOT_LATEST` for an auto-run of a
         non-latest version under `scope: package`."
       requestBody:
         required: true
@@ -2544,6 +2511,8 @@ paths:
               $ref: "#/components/headers/RequestId"
             Location:
               $ref: "#/components/headers/Location"
+            ETag:
+              $ref: "#/components/headers/ETag"
           content:
             application/json:
               schema:
@@ -2655,6 +2624,8 @@ paths:
           $ref: "#/components/responses/Conflict"
         "412":
           $ref: "#/components/responses/PreconditionFailed"
+        "428":
+          $ref: "#/components/responses/RevisionRequired"
         "429":
           $ref: "#/components/responses/RateLimited"
         "500":
@@ -2692,6 +2663,8 @@ paths:
           $ref: "#/components/responses/Conflict"
         "412":
           $ref: "#/components/responses/PreconditionFailed"
+        "428":
+          $ref: "#/components/responses/RevisionRequired"
         "429":
           $ref: "#/components/responses/RateLimited"
         "500":
@@ -2787,7 +2760,7 @@ paths:
         "412":
           $ref: "#/components/responses/PreconditionFailed"
         "424":
-          $ref: "#/components/responses/ConnectionUnavailable"
+          $ref: "#/components/responses/DependencyFailed"
         "429":
           $ref: "#/components/responses/RateLimited"
         "500":
@@ -2864,7 +2837,7 @@ paths:
         "412":
           $ref: "#/components/responses/PreconditionFailed"
         "424":
-          $ref: "#/components/responses/ConnectionUnavailable"
+          $ref: "#/components/responses/DependencyFailed"
         "429":
           $ref: "#/components/responses/RateLimited"
         "500":
@@ -2915,7 +2888,7 @@ paths:
         "412":
           $ref: "#/components/responses/PreconditionFailed"
         "424":
-          $ref: "#/components/responses/ConnectionUnavailable"
+          $ref: "#/components/responses/DependencyFailed"
         "429":
           $ref: "#/components/responses/RateLimited"
         "500":
@@ -2965,7 +2938,7 @@ paths:
         "413":
           $ref: "#/components/responses/PayloadTooLarge"
         "424":
-          $ref: "#/components/responses/ConnectionUnavailable"
+          $ref: "#/components/responses/DependencyFailed"
         "429":
           $ref: "#/components/responses/RateLimited"
         "500":
@@ -3022,7 +2995,7 @@ paths:
         "412":
           $ref: "#/components/responses/PreconditionFailed"
         "424":
-          $ref: "#/components/responses/ConnectionUnavailable"
+          $ref: "#/components/responses/DependencyFailed"
         "429":
           $ref: "#/components/responses/RateLimited"
         "500":
@@ -3105,7 +3078,7 @@ paths:
         "412":
           $ref: "#/components/responses/PreconditionFailed"
         "424":
-          $ref: "#/components/responses/ConnectionUnavailable"
+          $ref: "#/components/responses/DependencyFailed"
         "429":
           $ref: "#/components/responses/RateLimited"
         "500":
@@ -3160,7 +3133,7 @@ paths:
         "412":
           $ref: "#/components/responses/PreconditionFailed"
         "424":
-          $ref: "#/components/responses/ConnectionUnavailable"
+          $ref: "#/components/responses/DependencyFailed"
         "429":
           $ref: "#/components/responses/RateLimited"
         "500":
@@ -3212,7 +3185,7 @@ paths:
         "413":
           $ref: "#/components/responses/PayloadTooLarge"
         "424":
-          $ref: "#/components/responses/ConnectionUnavailable"
+          $ref: "#/components/responses/DependencyFailed"
         "429":
           $ref: "#/components/responses/RateLimited"
         "500":
@@ -3251,7 +3224,7 @@ components:
       description: A version id, `latest`, or `live`. Every content read is of exactly one version; the response carries the
         id `latest` resolved to. A content read of a version that is not in memory loads it first, as a hydrate when the
         compiled-model store has an entry; `GET /status`, `GET …/versions`, `GET …/versions/{versionId}`, its `…/status`
-        and `…/index` never load. `ServingState.loaded` says what a read will cost.
+        and `…/index` never load. `VersionStatus.loaded` says what a read will cost.
     connectionName:
       name: connectionName
       in: path
@@ -3287,7 +3260,8 @@ components:
       in: path
       required: true
       schema:
-        $ref: "#/components/schemas/IdentifierPattern"
+        $ref: "#/components/schemas/PathPattern"
+      description: A skill's name; `<skill>/<stem>` names one of its on-demand reference files.
     path:
       name: path
       in: path
@@ -3407,7 +3381,7 @@ components:
         X-Request-Id:
           $ref: "#/components/headers/RequestId"
     NotFound:
-      description: No such resource (`NOT_FOUND`, `VERSION_NOT_FOUND`, `CONNECTION_NOT_FOUND`, `TABLE_NOT_FOUND`).
+      description: No such resource (`NOT_FOUND`, `VERSION_NOT_FOUND`, `TABLE_NOT_FOUND`).
       content:
         application/json:
           schema:
@@ -3417,8 +3391,9 @@ components:
           $ref: "#/components/headers/RequestId"
     Conflict:
       description: The write conflicts with the resource's state (`CONFLICT`, `VERSION_CONFLICT`, `VERSION_IS_LATEST`,
-        `VERSION_IS_LAST_ACTIVE`, `VERSION_BUILDING`, `FILE_EXISTS`, `RUN_ACTIVE`, `TABLE_OWNED_ELSEWHERE`,
-        `INVALID_TRANSITION`, `RESOURCE_NOT_EMPTY`, `IDEMPOTENCY_KEY_REUSED`).
+        `VERSION_IS_LAST_ACTIVE`, `VERSION_NOT_LATEST`, `VERSION_BUILDING`, `PACKAGE_IS_LIVE`, `FILE_EXISTS`,
+        `FILE_NOT_WRITABLE`, `RUN_ACTIVE`, `TABLE_OWNED_ELSEWHERE`, `INVALID_TRANSITION`, `RESOURCE_NOT_EMPTY`,
+        `IDEMPOTENCY_KEY_REUSED`
       content:
         application/json:
           schema:
@@ -3427,8 +3402,7 @@ components:
         X-Request-Id:
           $ref: "#/components/headers/RequestId"
     PreconditionFailed:
-      description: "`If-Match` did not match the resource's revision (`REVISION_MISMATCH`; `details.currentRevision` carries
-        it), or a required `If-Match` was missing (428 `REVISION_REQUIRED`)."
+      description: "`If-Match` did not match the resource's revision (`REVISION_MISMATCH`; `details.currentRevision` carries it)."
       content:
         application/json:
           schema:
@@ -3454,9 +3428,21 @@ components:
       headers:
         X-Request-Id:
           $ref: "#/components/headers/RequestId"
-    ConnectionUnavailable:
-      description: The connection is misconfigured, so nothing ran (`CONNECTION_AUTH_FAILED`, `CONNECTION_NOT_FOUND`). Fix the
-        connection; retrying fails the same way.
+    DependencyFailed:
+      description: "Something the operation depends on failed, so nothing changed: a connection is misconfigured
+        (`CONNECTION_AUTH_FAILED`), a model names a connection that does not exist (`CONNECTION_NOT_FOUND`), or a
+        manifest could not be fetched or bound (`MANIFEST_UNAVAILABLE`). Fix the dependency; retrying fails the same
+        way."
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+      headers:
+        X-Request-Id:
+          $ref: "#/components/headers/RequestId"
+    RevisionRequired:
+      description: This server requires `If-Match` on writes and the request sent none (`REVISION_REQUIRED`). Read the
+        resource and send its `ETag`.
       content:
         application/json:
           schema:
@@ -3536,7 +3522,7 @@ components:
           type: string
         model:
           type: string
-          description: The model the agent asks for; `inherit` when the manifest sets none.
+          description: The model the agent asks for; `inherit` when `publisher.json` sets none.
         instructions:
           type: string
           description: The instructions file's Markdown, at most 16 KB.
@@ -3575,8 +3561,13 @@ components:
             each skill ships."
           additionalProperties:
             type: integer
+        versionId:
+          $ref: "#/components/schemas/VersionId"
+          readOnly: true
+          description: The version that answered, with `latest` resolved.
       required:
         - resource
+        - versionId
     AgentAsset:
       type: object
       readOnly: true
@@ -3597,8 +3588,8 @@ components:
       readOnly: true
       description: "The run limits an agent declares. Validated and exposed only: the server never enforces them. A platform
         that runs the agent decides how to apply them and may clamp each to its own maximum. Every field is optional and
-        only the fields the manifest sets are present; an unset field keeps the platform's default. Absent when the
-        manifest sets none."
+        only the fields `publisher.json` sets are present; an unset field keeps the platform's default. Absent when
+        `publisher.json` sets none."
       properties:
         turns:
           type: integer
@@ -3633,7 +3624,7 @@ components:
           description: A 5-field UNIX cron expression, evaluated in UTC.
         task:
           type: string
-          description: Package-relative path of the task file, as written in the manifest.
+          description: Package-relative path of the task file, as written in `publisher.json`.
         taskContent:
           type: string
           description: The task file's Markdown. Only on the resolved agent, not the listing.
@@ -3663,20 +3654,22 @@ components:
             are served raw. Present only when the agent is read with `?include=skills`.
         source:
           $ref: "#/components/schemas/AgentSource"
+        versionId:
+          $ref: "#/components/schemas/VersionId"
+          readOnly: true
+          description: The version that answered, with `latest` resolved.
       required:
         - resource
+        - versionId
     AgentSource:
       type: object
       readOnly: true
       description: What a resolved agent was read from, so a runner can prove which bytes ran.
       properties:
         versionId:
-          $ref: "#/components/schemas/VersionIdPattern"
+          $ref: "#/components/schemas/VersionId"
           description: The version the definition was read from. After `latest` moves, the same definition is at
             `…/versions/{versionId}/agents/{agentName}`.
-        servedRevision:
-          type: string
-          description: The package's `servedRevision` at the load this definition came from.
         environmentName:
           type: string
         packageName:
@@ -3698,20 +3691,26 @@ components:
           $ref: "#/components/schemas/ResourcePath"
         name:
           type: string
-          description: The agent's name (its key in the manifest's `agents` object).
+          description: The agent's name (its key in `publisher.json`'s `agents` object).
         description:
           type: string
         model:
           type: string
-          description: The model the agent asks for; `inherit` when the manifest sets none.
+          description: The model the agent asks for; `inherit` when `publisher.json` sets none.
         schedules:
           type: array
           items:
             $ref: "#/components/schemas/AgentSchedule"
         budget:
           $ref: "#/components/schemas/AgentBudget"
+        versionId:
+          $ref: "#/components/schemas/VersionId"
+          readOnly: true
+          description: The version that answered, with `latest` resolved.
       required:
         - resource
+        - name
+        - versionId
     AttachedDatabase:
       type: object
       description: Attached DuckDB database
@@ -3760,6 +3759,7 @@ components:
             Full SAS URL including token; required for sas_token auth. Supports single file, directory glob (*.ext), or
             recursive (**) patterns. Example:
             https://account.blob.core.windows.net/container/path/*.parquet?sp=rl&st=...
+          writeOnly: true
         tenantId:
           type: string
           description: Azure AD tenant ID (required for service_principal)
@@ -3769,6 +3769,7 @@ components:
         clientSecret:
           type: string
           description: Azure AD client secret (required for service_principal)
+          writeOnly: true
         accountName:
           type: string
           description: Azure Storage account name (required for service_principal)
@@ -3795,6 +3796,7 @@ components:
         serviceAccountKeyJson:
           type: string
           description: JSON string containing Google Cloud service account credentials
+          writeOnly: true
         impersonateServiceAccount:
           type: string
           description: Email of a Google Cloud service account this connection impersonates for every BigQuery call, via
@@ -3812,8 +3814,8 @@ components:
           default: false
           description: Copy table and column descriptions from BigQuery onto the schema as `#(dbmeta)` annotations.
         queryTimeoutMs:
-          type: string
-          description: Query timeout in milliseconds
+          type: integer
+          description: Query timeout in milliseconds.
     Binding:
       type: object
       description: What a version serves for one source right now.
@@ -3872,9 +3874,9 @@ components:
       properties:
         sourceEntityId:
           type: string
-        tableId:
+        callerTableId:
           type: string
-          description: The caller's own id for the table, echoed on the manifest entry's `callerTableId`.
+          description: The caller's own id for the table, echoed on the manifest entry's and the source failure's `callerTableId`.
         tableName:
           type: string
           description: Logical, fully-qualified, unquoted table name to create; the server quotes each segment for the dialect.
@@ -3927,23 +3929,32 @@ components:
           description: The source this node builds.
     BuildPlan:
       type: object
-      description: |
-        The package's persist build plan, from Malloy's build targets: the order
-        its persist sources build in, the tables each reads, and the minimal
-        per-source detail a caller needs to assign identity/naming/realization.
-        Policy and connection capability are intentionally omitted until they
-        carry real data.
+      description: The version's persist build plan, as the last load derived it. A read, never a command.
       required:
-        - graphs
-        - sources
+        - resource
+        - status
+        - versionId
       properties:
-        graphs:
-          type: array
-          description: "Dependency-ordered build graphs. One per connection per model, not one per connection: a model contributes
-            a graph for each connection its persist sources use, and a package's plan concatenates every model's, so the
-            same source appears in the graph of every model that imports it."
-          items:
-            $ref: "#/components/schemas/BuildGraph"
+        resource:
+          $ref: "#/components/schemas/ResourcePath"
+        status:
+          type: string
+          enum:
+            - ready
+            - empty
+            - deferred
+            - unavailable
+          description: "`ready`: the plan is present. `empty`: the version declares no persist source. `deferred`: the version was
+            published with `profile=light` and the plan is being derived now that it was read; read again.
+            `unavailable`: the plan could not be derived at load (see `error`); reload the version to derive it again."
+        error:
+          type: object
+          description: Why the plan is `unavailable`.
+          required:
+            - message
+          properties:
+            message:
+              type: string
         sources:
           type: object
           description: The plan per persisted source, keyed by its `sourceEntityId`.
@@ -3952,40 +3963,28 @@ components:
         refusedSources:
           type: array
           description: The sources the package declared `#@ persist` on that are ineligible to build, so they have no entry in
-            `sources`. A source is identified by `modelPath` and `name`, since a refused source has no `sourceEntityId`.
+            `sources`. A refused source has no `sourceEntityId`; it is identified by `name` and, where known,
+            `modelPath`.
           items:
             $ref: "#/components/schemas/RefusedSource"
-    BuildPlanResult:
-      type: object
-      description: The version's persist build plan, as the last load derived it. A read, never a command.
-      required:
-        - resource
-        - state
-      properties:
-        resource:
-          $ref: "#/components/schemas/ResourcePath"
-        state:
-          type: string
-          enum:
-            - ready
-            - empty
-            - deferred
-            - unavailable
-          description: "`ready`: `plan` is present. `empty`: the version declares no persist source. `deferred`: the version was
-            published with `profile=light` and the plan is being derived now that it was read; read again.
-            `unavailable`: the plan could not be derived at load; reload the package to derive it again."
-        plan:
-          $ref: "#/components/schemas/BuildPlan"
-        message:
-          type: string
-    ClassificationSummary:
+        graphs:
+          type: array
+          description: The build order, one graph per connected group of sources.
+          items:
+            $ref: "#/components/schemas/BuildGraph"
+        versionId:
+          $ref: "#/components/schemas/VersionId"
+          readOnly: true
+          description: The version that answered, with `latest` resolved.
+    Classification:
       type: object
       readOnly: true
       required:
         - resource
         - sources
-      description: "Server-computed, read-only, as `GET …/packages/{packageName}/classification` returns it: for each
-        published entry point, the classes its `#(carries)` declares and how many of its fields carry each class
+        - versionId
+      description: "Server-computed, read-only, as `GET …/versions/{versionId}/classification` returns it: for each published
+        entry point, the classes its `#(carries)` declares and how many of its fields carry each class
         (`#(classification)`, declared or inherited). Covers only the sources discovery shows, so it reveals nothing
         curation hides; a source locked to every caller is left out. A field's own classes, and what they were inherited
         from, are on its `get_context` card. `sources` is empty when no published field carries a class."
@@ -3997,6 +3996,10 @@ components:
           description: Sorted by model path, then name.
           items:
             $ref: "#/components/schemas/ClassificationSummarySource"
+        versionId:
+          $ref: "#/components/schemas/VersionId"
+          readOnly: true
+          description: The version that answered, with `latest` resolved.
     ClassificationSummarySource:
       type: object
       readOnly: true
@@ -4087,17 +4090,10 @@ components:
             - debug
         code:
           type: string
-          description: Machine-readable error code
+          description: The problem's family, a stable kebab-case code from the list in `docs/packages.md` (for example
+            `render-tag`, `report-lint`).
         at:
-          type: object
-          description: Source location of the problem
-          properties:
-            url:
-              type: string
-              description: URL of the source file
-            range:
-              type: object
-              description: Character range within the source file
+          $ref: "#/components/schemas/SourceLocation"
         modelPath:
           type: string
           description: Package-relative path of the model file the problem points at, derived from `at.url`. Load-bearing at scope
@@ -4128,12 +4124,12 @@ components:
             compiles the source AS that model, replacing its on-disk content for the check — validates an edit before
             saving, at true file coordinates. "package" runs the same worker compiler and file selection as reload over
             every .malloy file, without swapping the result into the served package; with a source, importers compile
-            against the replacement. It also reports the render-tag findings (code "render-tag") and the dashboard,
-            given and drill findings (code "dashboard-lint") a reload would put on the package's warnings, at their own
-            severity and with no position. The package's other warnings (storage, persist, materialization, explores,
-            surface and discovery warnings, among others) are not reported. Package diagnostics can name files hidden
-            from discovery. No rows or SQL are returned, and caller-provided source remains subject to authorize gates.
-            includeSql is not available at "package".
+            against the replacement. It also reports the render-tag findings (code "render-tag") and the report, given
+            and drill findings (code "report-lint") a reload would put on the package's warnings, at their own severity
+            and with no position. The package's other warnings (storage, persist, materialization, explores, surface and
+            discovery warnings, among others) are not reported. Package diagnostics can name files hidden from
+            discovery. No rows or SQL are returned, and caller-provided source remains subject to authorize gates.
+            `include: ["sql"]` is not available at `package`.
 
             "append" text is checked against the model's PUBLISHED surface, so it may not declare its own data roots:
             import, connection.table(…), connection.sql(…), given:, ##! compiler flags and the raw-SQL function forms
@@ -4153,11 +4149,6 @@ components:
             declaration of the same name in the same extend chain, and more than 1,000 annotations or 64 KB of them.
             Plain "append" text without that tag keeps those tags; a model file defines them itself, and its edit is
             checked at "file".
-        includeSql:
-          type: boolean
-          default: false
-          description: If true, returns the generated SQL alongside compilation results (only available at scope "append"/"file",
-            when compilation succeeds and the source contains a runnable query).
         givens:
           $ref: "#/components/schemas/GivenValues"
         files:
@@ -4174,6 +4165,14 @@ components:
             file, or appears twice is a 400; more than 500 files or 8 MiB of text is a 413."
           items:
             $ref: "#/components/schemas/OverlayFile"
+        include:
+          type: array
+          items:
+            type: string
+            enum:
+              - sql
+          description: Larger parts to include. `sql` returns the generated SQL, at scope `append` or `file`, when the compile
+            succeeds and the text holds a runnable query.
     CompileResult:
       type: object
       description: Result of a Malloy source compilation check
@@ -4191,8 +4190,8 @@ components:
             $ref: "#/components/schemas/CompileProblem"
         sql:
           type: string
-          description: Generated SQL for the compiled query. Only present when includeSql is true and compilation succeeds with a
-            runnable query.
+          description: 'Generated SQL for the compiled query. Only present with `include: ["sql"]` and compilation succeeds with a
+            runnable query.'
         document:
           $ref: "#/components/schemas/CompiledDocument"
     Connection:
@@ -4252,6 +4251,15 @@ components:
           type: string
           description: Opaque, stable fingerprint of the data the connection reaches, excluding credentials; part of every
             content-addressed build id. Derived locally when omitted.
+        configStamp:
+          type: string
+          maxLength: 255
+          description: An opaque stamp the caller sets with each configuration it pushes, credentials included, and changes
+            whenever any part of that configuration changes (a rotated password among them). The server stores it and
+            returns it on every read and on `/status` exactly as sent, and never interprets it, compares it or folds it
+            into a build id, so changing it alone rebuilds nothing. An orchestrator compares what a server echoes with
+            what it last pushed to find a server still holding an old configuration, whose credentials a read never
+            shows.
         queryMetadata:
           $ref: "#/components/schemas/QueryMetadata"
         queryMetadataEnforced:
@@ -4286,10 +4294,16 @@ components:
           type: string
           format: date-time
           readOnly: true
+          description: "For the version's `duckdb` sandbox (`scope: version`), the version's own; likewise `updatedAt` and
+            `revision`."
         updatedAt:
           type: string
           format: date-time
           readOnly: true
+        versionId:
+          $ref: "#/components/schemas/VersionId"
+          readOnly: true
+          description: The version that answered, on a read under a version; absent at environment scope.
     ConnectionList:
       type: object
       required:
@@ -4337,6 +4351,7 @@ components:
         - resource
         - path
         - title
+        - versionId
       properties:
         resource:
           $ref: "#/components/schemas/ResourcePath"
@@ -4375,19 +4390,21 @@ components:
         token:
           type: string
           description: Personal access token for authentication
+          writeOnly: true
         oauthClientId:
           type: string
           description: OAuth M2M client ID (service principal)
         oauthClientSecret:
           type: string
           description: OAuth M2M client secret (service principal)
+          writeOnly: true
         defaultCatalog:
           type: string
           description: Default Unity Catalog to use for queries
         defaultSchema:
           type: string
           description: Default schema to use for queries
-        setupSQL:
+        setupSql:
           type: string
           description: SQL statements to run when the connection is established
     DataFile:
@@ -4396,6 +4413,7 @@ components:
         DuckDB connection.
       required:
         - path
+        - versionId
       properties:
         path:
           type: string
@@ -4425,6 +4443,10 @@ components:
           properties:
             message:
               type: string
+        versionId:
+          $ref: "#/components/schemas/VersionId"
+          readOnly: true
+          description: The version that answered, with `latest` resolved.
     DataFileList:
       type: object
       required:
@@ -4456,6 +4478,15 @@ components:
           description: The kinds of warehouse a build can write to; today only DuckLake.
         ducklakeConnection:
           $ref: "#/components/schemas/DucklakeConnection"
+        configStamp:
+          type: string
+          maxLength: 255
+          description: An opaque stamp the caller sets with each configuration it pushes, credentials included, and changes
+            whenever any part of that configuration changes (a rotated password among them). The server stores it and
+            returns it on every read and on `/status` exactly as sent, and never interprets it, compares it or folds it
+            into a build id, so changing it alone rebuilds nothing. An orchestrator compares what a server echoes with
+            what it last pushed to find a server still holding an old configuration, whose credentials a read never
+            shows.
         withheldFields:
           type: array
           readOnly: true
@@ -4468,6 +4499,7 @@ components:
       required:
         - resource
         - status
+        - versionId
       properties:
         resource:
           $ref: "#/components/schemas/ResourcePath"
@@ -4477,7 +4509,7 @@ components:
             - lexical
             - indexing
             - ready
-            - error
+            - failed
         progress:
           type: object
           properties:
@@ -4491,7 +4523,7 @@ components:
           readOnly: true
         error:
           type: object
-          description: Present when `status` is `error`, or when the last build stopped short and the index serves `lexical`.
+          description: Present when `status` is `failed`, or when the last build stopped short and the index serves `lexical`.
           required:
             - reason
             - message
@@ -4513,6 +4545,10 @@ components:
               format: date-time
               description: When a retry may succeed. Absent when retrying will not help.
               readOnly: true
+        versionId:
+          $ref: "#/components/schemas/VersionId"
+          readOnly: true
+          description: The version that answered, with `latest` resolved.
     DuckdbConnection:
       type: object
       description: >
@@ -4522,7 +4558,11 @@ components:
         working directories, filesystem/network policy, extension loading, temp directories, and resource knobs remain
         owned by Publisher.
       properties:
-        setupSQL:
+        attachedDatabases:
+          type: array
+          items:
+            $ref: "#/components/schemas/AttachedDatabase"
+        setupSql:
           type: string
           description: >
             Optional initialization SQL script executed against the DuckDB session upon connection (e.g. ATTACH commands
@@ -4530,10 +4570,6 @@ components:
             absolute paths: a relative path resolves against the server's working directory. Withheld from responses
             like a credential; an update that omits it keeps the stored script, and an empty string removes it. Refused
             unless the deployment sets PUBLISHER_ALLOW_DUCKDB_SETUP_SQL=true.
-        attachedDatabases:
-          type: array
-          items:
-            $ref: "#/components/schemas/AttachedDatabase"
     DucklakeConnection:
       type: object
       description: DuckLake lakehouse connection configuration
@@ -4548,7 +4584,7 @@ components:
                 Given, it is the path every attach uses, and the first read-write attach of a catalog that does not
                 exist yet creates it there: the pre-existing behavior. Omitted, the catalog must already exist, every
                 attach uses the data path the catalog recorded at its creation, and no attach ever creates a catalog:
-                the shape for a catalog created elsewhere, through the admin API (admin-api-doc.yaml) or by another
+                the shape for a catalog created elsewhere, through the admin API (admin-api-doc.v1.yaml) or by another
                 tool. Either way the storage secret is scoped to the data path, the given one or the recorded one: a
                 read of any other object through this connection is unsigned, and on S3 the host's AWS_* environment
                 never signs it either. A catalog with neither is not attached."
@@ -4620,17 +4656,6 @@ components:
         `Report.startingGivens` and `CompiledDocument.startingGivens` carry this shape; URL parameters override it."
       additionalProperties:
         type: string
-    EntitiesList:
-      type: object
-      required:
-        - items
-      properties:
-        items:
-          type: array
-          items:
-            $ref: "#/components/schemas/ModelEntities"
-        nextCursor:
-          $ref: "#/components/schemas/Cursor"
     EntityField:
       type: object
       readOnly: true
@@ -4846,7 +4871,7 @@ components:
         packages:
           type: array
           items:
-            $ref: "#/components/schemas/PackageStatusEntry"
+            $ref: "#/components/schemas/PackageStatus"
     Error:
       type: object
       description: "The one error body every operation answers with. Branch on `status` and `reason`, never on `message`: the
@@ -4879,9 +4904,8 @@ components:
           additionalProperties: true
     ErrorReason:
       type: string
-      description: The closed set of machine-readable reasons. Each operation lists the reasons it can answer. A client
-        written against this spec may treat the enum as closed; a new reason is a new minor release of the spec and is
-        announced as such.
+      description: The machine-readable reasons, listed by status in each shared error response. A new reason is an additive
+        change within v1, so a client treats a reason it does not know as the status's generic case.
       enum:
         - INVALID_REQUEST
         - UNAUTHORIZED
@@ -4915,9 +4939,9 @@ components:
         - VERSION_BUILDING
         - VERSION_NOT_LATEST
         - PACKAGE_IS_LIVE
-        - PACKAGE_NOT_LIVE
         - RESOURCE_NOT_EMPTY
         - IDEMPOTENCY_KEY_REUSED
+        - MANIFEST_UNAVAILABLE
         - FILE_EXISTS
         - FILE_NOT_WRITABLE
         - RUN_ACTIVE
@@ -4927,10 +4951,6 @@ components:
       description: Freshness policy declared in publisher.json's `materialization.freshness` block. Fields are surfaced
         verbatim; invalid values are dropped (reported as absent), never defaulted.
       properties:
-        window:
-          type: string
-          description: Maximum acceptable staleness of the package's materialized sources, as a duration string (e.g. "24h"). The
-            control plane schedules refreshes to meet it.
         fallback:
           type: string
           enum:
@@ -4939,6 +4959,10 @@ components:
             - fail
           description: "Declared query-time behavior when the freshness window is missed: serve live, serve the stale table, or
             fail the query."
+        windowSeconds:
+          type: integer
+          description: The maximum acceptable staleness of the package's materialized sources, in seconds. An orchestrator
+            schedules refreshes to meet it. `publisher.json` writes it as a duration (`"24h"`).
     GCSConnection:
       type: object
       description: Google Cloud Storage connection configuration for DuckDB
@@ -4949,30 +4973,46 @@ components:
         secret:
           type: string
           description: GCS HMAC secret key
+          writeOnly: true
       required:
         - keyId
         - secret
     Given:
       type: object
-      description: |
+      description: >
         A given (runtime parameter) declared on a Malloy model via the
+
         `given:` keyword. Surfaced on `Model.givens` and `Source.givens`
+
         so callers can introspect what runtime values a model accepts.
 
+
         `givens` always names a collection of these declarations. Values keyed
+
         by given name are `GivenValues` (or `EncodedGivenValues` in the form
+
         that survives a URL), and a bare list of names is spelled `givenNames`.
 
+
         It also carries how the given should be presented as an input control
+
         (`label`, `description`, `control`, `rangeMin`, `rangeMax`, `suggest`),
+
         derived from the declaration's own tags. That contract belongs to the
-        given rather than to any one surface, which is what lets a notebook and
-        an SDK host render the same control without restating it. Each of those
+
+        given rather than to any one surface, which is what lets a report and an SDK host render the same control
+        without restating it. Each of those
+
         six is present only when the declaration carries the tag it reads, so a
+
         given tagged with none of them carries none of them. A tag whose value is
+
         not one this contract accepts is dropped the same way rather than
+
         reported, so an unrecognized `control`, or a `rangeMin`/`rangeMax` that is
+
         not a number, is absent here and indistinguishable from never having been
+
         written.
       properties:
         name:
@@ -4989,8 +5029,7 @@ components:
         secure:
           type: boolean
           description: "True when the declaration carries `#(secure)`: its value is the host's to set. The builder withholds its
-            control only when it edits a document held as text; a saved dashboard or notebook renders it as before.
-            Absent otherwise."
+            control only when it edits a document held as text; a saved report renders it as before. Absent otherwise."
         required:
           type: boolean
           description: True when the given declares no default, so a query that reads it fails until a value is supplied ("Given
@@ -5198,27 +5237,6 @@ components:
       type: object
       description: A log message from render tag validation
       properties:
-        url:
-          type: string
-          description: URL of the source file related to this message
-        range:
-          type: object
-          description: Source location range for this message
-          properties:
-            start:
-              type: object
-              properties:
-                line:
-                  type: integer
-                character:
-                  type: integer
-            end:
-              type: object
-              properties:
-                line:
-                  type: integer
-                character:
-                  type: integer
         severity:
           type: string
           description: Severity level of the log message
@@ -5230,6 +5248,8 @@ components:
         message:
           type: string
           description: Human-readable log message
+        at:
+          $ref: "#/components/schemas/SourceLocation"
     ManifestEntry:
       type: object
       description: "One source a run built, and the table it landed in. An external manifest, the file `manifestLocation`
@@ -5262,6 +5282,9 @@ components:
           type: string
           readOnly: true
           description: The physical table's stable identity across the runs that write it; `tableName` is its name in the warehouse.
+        callerTableId:
+          type: string
+          description: The caller's own id for the table, from the build instruction that made it; absent for an auto-run.
         tableName:
           type: string
           description: "The table's name in the warehouse, schema-qualified where the connection has schemas: what a reader
@@ -5300,18 +5323,12 @@ components:
           type: string
           format: date-time
           readOnly: true
-        freshnessWindowSeconds:
-          type: integer
-          format: int64
-        freshnessFallback:
-          type: string
-          enum:
-            - live
-            - stale_ok
-            - fail
+        freshness:
+          $ref: "#/components/schemas/Freshness"
+          description: The freshness objective the entry was built under.
         incremental:
           $ref: "#/components/schemas/IncrementalBoundary"
-        refresh:
+        refreshed:
           type: string
           enum:
             - delta
@@ -5344,6 +5361,7 @@ components:
         - sources
         - queries
         - givens
+        - versionId
       properties:
         resource:
           $ref: "#/components/schemas/ResourcePath"
@@ -5358,6 +5376,12 @@ components:
           items:
             type: string
           description: The version-relative paths of the files this model imports, directly; empty when it imports none.
+        hidden:
+          type: boolean
+          description: True when the package's `index.malloy` does not expose the file; it is read only with `includeHidden`.
+        report:
+          type: boolean
+          description: True when the file carries an `## artifact` tag and is also a report.
         sources:
           type: array
           items:
@@ -5370,9 +5394,9 @@ components:
           type: array
           items:
             $ref: "#/components/schemas/Given"
-        sourceText:
+        content:
           type: string
-          description: The file's Malloy text, verbatim. Included with `?include=sourceText`; omitted when the text names a source
+          description: The file's Malloy text, verbatim. Included with `?include=content`; omitted when the text names a source
             the file does not publish, unless `includeHidden` is set.
         modelInfo:
           type: object
@@ -5391,6 +5415,7 @@ components:
       description: What one `.malloy` model file declares, in the form an indexer reads. See `GET …/entities`.
       required:
         - modelPath
+        - versionId
       properties:
         modelPath:
           type: string
@@ -5437,6 +5462,21 @@ components:
             fields, a join's fields nested under it."
           items:
             $ref: "#/components/schemas/SourceSchema"
+        versionId:
+          $ref: "#/components/schemas/VersionId"
+          readOnly: true
+          description: The version that answered, with `latest` resolved.
+    ModelEntitiesList:
+      type: object
+      required:
+        - items
+      properties:
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/ModelEntities"
+        nextCursor:
+          $ref: "#/components/schemas/Cursor"
     ModelList:
       type: object
       required:
@@ -5453,6 +5493,7 @@ components:
       required:
         - resource
         - path
+        - versionId
       properties:
         resource:
           $ref: "#/components/schemas/ResourcePath"
@@ -5483,6 +5524,7 @@ components:
         accessToken:
           type: string
           description: MotherDuck access token
+          writeOnly: true
         database:
           type: string
           description: MotherDuck database name
@@ -5505,6 +5547,7 @@ components:
         password:
           type: string
           description: MySQL password for authentication
+          writeOnly: true
     OverlayFile:
       type: object
       description: One file of a request's `files` overlay.
@@ -5540,21 +5583,15 @@ components:
           type:
             - string
             - "null"
-          description: Server-owned. When null, readers fall back to the latest version's `publisher.json` description.
+          description: The package's own description, set with `PATCH`; `null` clears it, and readers then fall back to the latest
+            version's `publisher.json` description.
         source:
           $ref: "#/components/schemas/PackageSource"
         latestVersionId:
-          oneOf:
-            - $ref: "#/components/schemas/VersionId"
-            - type: "null"
-          description: The version served when a request names `latest`. Null under `explicit` promotion until it is set. Moved
-            with `PATCH` under `If-Match`; moving it back to a parent version is the undo of a server-made version.
-        manifestLocation:
-          type:
-            - string
-            - "null"
-          writeOnly: true
-          description: On publish only, a manifest to bind the published version to. Afterwards it is a field of the version.
+          $ref: "#/components/schemas/VersionId"
+          description: The version served when a request names `latest`. Absent under `explicit` promotion until one is promoted.
+            Moved with `PATCH` under `If-Match`; moving it back to a parent version is the undo of a server-made
+            version.
         revision:
           $ref: "#/components/schemas/Revision"
         createdAt:
@@ -5578,46 +5615,21 @@ components:
           $ref: "#/components/schemas/Cursor"
     PackageMaterializationConfig:
       type: object
-      description: Package-level Malloy Persistence policy from publisher.json's `materialization` block. Surfaced verbatim so
-        the control plane can drive scheduled version-level re-materialization without re-reading the package files. The
-        object is emitted whenever the package is loaded, even when no policy is declared (all fields null), so its
-        presence is an authoritative "the manifest says this" signal rather than "policy missing".
+      description: The package's materialization policy from `publisher.json`'s `materialization` block, read verbatim so an
+        orchestrator can schedule re-materialization without reading the files. A field the block does not declare is
+        absent.
       properties:
         schedule:
-          type:
-            - string
-            - "null"
-          description: "5-field UNIX cron controlling how often the control plane re-materializes this package's published
-            versions. Null = no scheduled re-materialization declared in the manifest (publish / on-demand only). A cron
-            is the power tier of artifact-anchored scheduling and is package-root-only: it is valid only when the
-            package declares `scope: version` (a package-scoped lineage is reused across versions, so a single
-            per-version cadence is meaningless), and it is mutually exclusive with freshness — declare either a
-            `schedule` (power tier) or `freshness` (objective tier), never both. A schedule on a `scope: package`
-            package, or alongside any freshness, is rejected at publish."
+          type: string
+          description: The cron schedule the package declares for re-materialization.
         freshness:
           oneOf:
             - $ref: "#/components/schemas/Freshness"
             - type: "null"
-          description: The manifest's `materialization.freshness` block, verbatim. Null = no freshness policy declared. `window`
-            is the control plane's refresh objective for the package's materialized sources; `fallback` is the declared
-            query-time behavior when the objective is missed. The publisher only surfaces the values — the control plane
-            owns the scheduling and gating logic.
-        queryMetadata:
-          oneOf:
-            - $ref: "#/components/schemas/QueryMetadata"
-            - type: "null"
-          description: >-
-            DEPRECATED home for the package's per-query metadata; read `Package.queryMetadata`, which is canonical. Null
-            = none declared.
-
-            NOT the manifest's `materialization.queryMetadata` verbatim: it is the RESOLVED winner across both manifest
-            homes, and it is synthesized for a package whose manifest has no `materialization` block at all — a package
-            that declares tags the canonical way has no build policy to carry them, and its tags must not be lost for
-            want of one. Both homes are populated on read, so this and `Package.queryMetadata` agree.
-
-            The package-level layer of per-query metadata: it applies to every statement the package's sources issue — a
-            build and a served query alike — and a model-file, source or per-request declaration overrides it property
-            by property.
+          description: "`publisher.json`'s `materialization.freshness` block, verbatim; absent when none is declared.
+            `windowSeconds` is the control plane's refresh objective for the package's materialized sources; `fallback`
+            is the declared query-time behavior when the objective is missed. The publisher only surfaces the values —
+            the control plane owns the scheduling and gating logic."
     PackageSource:
       type: object
       description: Where a package's content comes from.
@@ -5637,11 +5649,12 @@ components:
           description: Derived from `location`. `live` is a watched environment's package, read in place.
         location:
           type: string
-          description: A local path, a git or GitHub URL, a `gs://` or `s3://` URI, or a `.zip`. What a reload fetches again.
+          description: A local path, a git or GitHub URL, a `gs://` or `s3://` URI, or a `.zip`. What `POST …/versions` fetches
+            when given no source.
         credentialsRef:
           type: string
           description: Name of a stored secret used to fetch a private location. Write-only.
-    PackageStatusEntry:
+    PackageStatus:
       type: object
       required:
         - name
@@ -5658,7 +5671,7 @@ components:
           type: array
           description: One entry per version this server holds, loaded or not.
           items:
-            $ref: "#/components/schemas/ServingState"
+            $ref: "#/components/schemas/VersionStatus"
     PathPattern:
       type: string
       pattern: ^[a-zA-Z0-9_/.-]+$
@@ -5711,8 +5724,10 @@ components:
             token and use the supplied value verbatim.
         refresh:
           type: string
-          description: The source's declared `#@ persist refresh=` value, verbatim (`full` or `incremental`). Absent when unset,
-            which means `full`.
+          enum:
+            - full
+            - incremental
+          description: The source's declared `#@ persist refresh=` policy. Absent when unset, which means `full`.
         freshness:
           $ref: "#/components/schemas/Freshness"
           description: The source's effective freshness objective after most-specific-wins resolution (source, then model file,
@@ -5780,9 +5795,11 @@ components:
         password:
           type: string
           description: PostgreSQL password for authentication
+          writeOnly: true
         connectionString:
           type: string
           description: Complete PostgreSQL connection string (alternative to individual parameters)
+          writeOnly: true
         sslmode:
           type: string
           enum:
@@ -5831,7 +5848,7 @@ components:
         one grain should be one table and one CTAS rather than ten. So the plan has one entry per DISTINCT grain
         declared anywhere on the source, which is neither the number of annotated measures nor the number of
         annotations: a measure declared at two grains appears in two entries, and two measures sharing a grain appear in
-        one. To recover the per-measure view that was written, iterate `buildPlan.sources`, keep the `origin:
+        one. To recover the per-measure view that was written, iterate `BuildPlan.sources`, keep the `origin:
         preaggregate` entries, and invert each entry's grain-to-measures pairing.
 
 
@@ -5915,6 +5932,7 @@ components:
         accessToken:
           type: string
           description: Bearer token for the remote dataplane (user-scoped, short-lived)
+          writeOnly: true
       required:
         - connectionUri
     Query:
@@ -6081,8 +6099,8 @@ components:
       type: object
       description: One `#@ persist` source refused at compile time, and why. It is computed from the same tier-appropriate
         eligibility check the build enforces, so a source reported refused is refused for the tier it would actually
-        build under. A `preaggregate`-tier refusal can coexist with an entry for the same source in `BuildPlan.sources`;
-        for the `storage` and `colocated` tiers a refusal means the source is absent from `sources`.
+        build under. A refusal of a source whose `origin` is `preaggregate` can coexist with an entry for the same
+        source in `BuildPlan.sources`; for a `persist` source a refusal means it is absent from `sources`.
       required:
         - name
         - modelPath
@@ -6135,9 +6153,8 @@ components:
             `MERGE_KEY_SCOPE_UNRESOLVED` (a `merge_key=` whose caller scope cannot be expressed over the stored table's
             own columns), `PREAGGREGATE_OVER_DYNAMIC_SOURCE` (a rollup whose base is scoped by a given, which has no
             read-time re-application to put the term back), and `READ_ONLY_DIALECT` (a colocated `#@ persist` on a
-            source whose dialect cannot create tables; SQL Server today, whose connection reports `canPersist: false`) —
-            those being the only reasons the two compile-time eligibility asserts this collection is computed from
-            produce.
+            source whose dialect cannot create tables; SQL Server today) — those being the only reasons the two
+            compile-time eligibility asserts this collection is computed from produce.
 
 
             `GIVEN_IN_PERSISTED_QUERY` is raised by BOTH gates, for one condition: the BUILD would substitute a given's
@@ -6156,20 +6173,20 @@ components:
         message:
           type: string
           description: The full, human-readable refusal message the eligibility assert produced — the same text a build attempting
-            this source would 422 with.
+            this source would fail with.
     ReloadResult:
       type: object
-      description: What recompiling a live package from its files did (`POST …:reload`).
+      description: "What a reload did (`POST …/versions/{versionId}:reload`): the version, and its status now."
       required:
         - version
-        - servingState
+        - status
       properties:
         version:
           $ref: "#/components/schemas/Version"
-          description: The live package's pseudo-version, `live`.
-        servingState:
-          $ref: "#/components/schemas/ServingState"
-          description: How this server now serves it, with its per-package fields; the receipt that the edit is being served.
+        status:
+          $ref: "#/components/schemas/VersionStatus"
+          description: The version's status after the reload; for a live package, the receipt that the edit is served
+            (`contentHash`, `servedRevision`).
     Report:
       description: A `ReportSummary` plus what a viewer needs to draw it, which is the compiled document.
       allOf:
@@ -6195,6 +6212,7 @@ components:
         - name
         - layout
         - title
+        - versionId
       properties:
         resource:
           $ref: "#/components/schemas/ResourcePath"
@@ -6273,7 +6291,7 @@ components:
             `#(access_filter)` gates. A control not listed does not change the
             tile, which is what a viewer's "Doesn't respond to" chip says. It
             also tells a caller which tiles a changed control needs to re-run;
-            running a tile with the dashboard's whole control row also works,
+            running a tile with the report's whole control row also works,
             because an unreferenced given is ignored. Absent when discovery
             could not resolve the tile (its expression neither compiles nor is
             a plain `source -> view` or named query the static walk reads), in
@@ -6292,7 +6310,7 @@ components:
           type: integer
           description: Grid columns this tile spans, from `colspan=N` on the tile's entry in `tiles=[…]`, or else from a `#
             colspan=N` on the view or query it names. The entry wins, so one view can sit at a different width on each
-            report. Clamped to `dashboardColumns` at render time. Absent means one column.
+            report. Clamped to the report's `columns` at render time. Absent means one column.
         break:
           type: boolean
           description: Start a new grid row at this tile, from `break` on the tile's entry in `tiles=[…]`, or else from a `#
@@ -6325,10 +6343,11 @@ components:
       type: object
       description: The whole text of a report file, written into a version by making a new version.
       required:
-        - source
+        - content
       properties:
-        source:
+        content:
           type: string
+          description: The file's whole text.
         expectedHash:
           type: string
           description: The `sourceHash` of the report as the caller last read it. The write is refused with 409 `CONFLICT` when
@@ -6392,7 +6411,7 @@ components:
           enum:
             - on_demand
             - scheduler
-            - orchestrated
+            - publish
         mode:
           readOnly: true
           type: string
@@ -6565,6 +6584,7 @@ components:
         secretAccessKey:
           type: string
           description: "AWS secret access key (required for `provider: config`)"
+          writeOnly: true
         region:
           type: string
           description: "AWS region (e.g., us-east-1). Optional, and Publisher falls back to us-east-1 when it is absent — but the
@@ -6580,6 +6600,7 @@ components:
         sessionToken:
           type: string
           description: AWS session token for temporary credentials (optional)
+          writeOnly: true
     Schema:
       description: A schema name in a Connection.
       type: object
@@ -6596,6 +6617,10 @@ components:
         hidden:
           type: boolean
           description: Whether this schema is hidden
+        versionId:
+          $ref: "#/components/schemas/VersionId"
+          readOnly: true
+          description: The version that answered, on a read under a version; absent at environment scope.
     SchemaList:
       type: object
       required:
@@ -6708,112 +6733,6 @@ components:
           type: array
           items:
             $ref: "#/components/schemas/EnvironmentStatus"
-    ServingState:
-      type: object
-      description: "How this server holds one version right now. The same schema in two reads: per version under `GET
-        /status`, and for one version at `GET …/versions/{versionId}/status`, where its status-only fields are also
-        present. Reading it never loads the version."
-      required:
-        - resource
-        - versionId
-        - status
-        - loaded
-      properties:
-        resource:
-          $ref: "#/components/schemas/ResourcePath"
-        versionId:
-          $ref: "#/components/schemas/VersionId"
-        status:
-          type: object
-          required:
-            - serving
-            - loading
-          properties:
-            serving:
-              type: boolean
-              description: A compiled copy answers queries here now.
-            loading:
-              type: boolean
-              description: A load or recompile is in progress here. A first load reports `loading` without `serving`.
-            loadingStartedAt:
-              type: string
-              format: date-time
-              readOnly: true
-        loaded:
-          type: boolean
-          description: Whether this server holds the version in memory.
-        lastReadAt:
-          type: string
-          format: date-time
-          description: When a request last read this version here.
-          readOnly: true
-        inFlightQueries:
-          type: integer
-          description: Queries running against this version right now.
-        compiledFrom:
-          type: string
-          enum:
-            - compile
-            - cache
-          description: Whether the served models came from a fresh compile or from the compiled-model store.
-        compiledAt:
-          type: string
-          format: date-time
-          readOnly: true
-        schemaAsOf:
-          type: string
-          format: date-time
-          description: When the warehouse schema the served models carry was read. Equals `compiledAt` unless the compile was a
-            refresh.
-          readOnly: true
-        compiledModelBytes:
-          type: integer
-          format: int64
-          description: Serialized size of the compiled-model entry, the cheapest honest memory proxy.
-        manifestBinding:
-          type: object
-          description: Whether the version serves from materialized tables, and from which manifest.
-          required:
-            - status
-          properties:
-            status:
-              type: string
-              enum:
-                - unbound
-                - bound
-                - live_fallback
-              description: "`unbound`: no manifest, the version serves live. `bound`: the configured manifest was applied.
-                `live_fallback`: a manifest is configured but its fetch or bind failed, so what `location` names is
-                still what is served."
-            location:
-              type: string
-              description: The manifest actually bound, which after a failed rebind differs from the configured one.
-            entryCount:
-              type: integer
-        stale:
-          type: object
-          description: Present when the version serves a model older than its content because the newer content failed to compile.
-          properties:
-            failedAt:
-              type: string
-              format: date-time
-              readOnly: true
-            message:
-              type: string
-        servedRevision:
-          type: string
-          description: Version status read only (`GET …/versions/{versionId}/status`). An identifier minted per load; moves on
-            every reload whether or not content changed.
-        contentHash:
-          type: string
-          description: Version status read only (`GET …/versions/{versionId}/status`). SHA-256 (hex) over the model, skill and
-            agent files being served; for a live package, whose version is always `live`, the receipt that an edit is
-            served.
-        bindings:
-          type: array
-          description: Version status read only (`GET …/versions/{versionId}/status`). What this version serves per source.
-          items:
-            $ref: "#/components/schemas/Binding"
     Skill:
       type: object
       readOnly: true
@@ -6836,8 +6755,14 @@ components:
             - bundled
             - package
           description: Where this skill came from. See SkillSummary.origin.
+        versionId:
+          $ref: "#/components/schemas/VersionId"
+          readOnly: true
+          description: The version that answered, with `latest` resolved.
       required:
         - resource
+        - name
+        - versionId
     SkillList:
       type: object
       required:
@@ -6873,8 +6798,14 @@ components:
           description: "`bundled` = shipped with this server. `package` = shipped by the package under `skills/`, which includes a
             package skill whose name matches a bundled one and therefore REPLACES it for this package. Present so a
             caller can tell a replaced skill from the original, which is otherwise invisible."
+        versionId:
+          $ref: "#/components/schemas/VersionId"
+          readOnly: true
+          description: The version that answered, with `latest` resolved.
       required:
         - resource
+        - name
+        - versionId
     SnowflakeConnection:
       type: object
       description: Snowflake database connection configuration
@@ -6890,14 +6821,17 @@ components:
             - string
             - "null"
           description: Snowflake password for authentication
+          writeOnly: true
         privateKey:
           type: string
           description: Snowflake private key for authentication
+          writeOnly: true
         privateKeyPass:
           type:
             - string
             - "null"
           description: Passphrase for the Snowflake private key
+          writeOnly: true
         warehouse:
           type: string
           description: Snowflake warehouse name
@@ -7021,14 +6955,14 @@ components:
           type: boolean
           description: Whether this server runs a query against the source directly. False for a source outside the package's
             query surface.
-        servedFrom:
-          $ref: "#/components/schemas/EntitySourceAddress"
         authorize:
           type: array
           description: "The source's effective access gates: file-level ones first, then its own, `authorize` before
             `access_filter`."
           items:
             $ref: "#/components/schemas/EntityGate"
+        servedSource:
+          $ref: "#/components/schemas/EntitySourceAddress"
     SourceFailure:
       type: object
       description: One source that failed to materialize, and why. Kept beside the entries because a failed source names no
@@ -7062,6 +6996,30 @@ components:
           type: boolean
           description: True when the eligibility gate refused the source before any build ran, so retrying returns the same answer
             until the model changes.
+    SourceLocation:
+      type: object
+      description: Where in a file a problem or message points.
+      properties:
+        url:
+          type: string
+          description: The file. A compile-check's appended text is named by a temporary overlay URL rather than the file itself.
+        range:
+          type: object
+          properties:
+            start:
+              type: object
+              properties:
+                line:
+                  type: integer
+                character:
+                  type: integer
+            end:
+              type: object
+              properties:
+                line:
+                  type: integer
+                character:
+                  type: integer
     SourceSchema:
       type: object
       readOnly: true
@@ -7148,11 +7106,8 @@ components:
           items:
             type: object
             additionalProperties: true
-        rowLimitHit:
-          type: boolean
-        queryCorrelationId:
-          type: string
-          description: The id the server attached to the warehouse statement, as on `QueryResultMetadata`.
+        metadata:
+          $ref: "#/components/schemas/QueryResultMetadata"
     SqlserverConnection:
       type: object
       description: "Microsoft SQL Server connection configuration: a SQL Server login over TCP. Field names are the
@@ -7176,6 +7131,7 @@ components:
         password:
           type: string
           description: SQL Server login password
+          writeOnly: true
         encrypt:
           type: boolean
           description: Encrypt the connection with TLS. On when omitted, as the driver defaults it; a server that requires
@@ -7216,9 +7172,11 @@ components:
           type: string
           description: PEM-encoded SSH private key used to authenticate to the bastion. The customer authorizes the matching
             public key in the bastion's authorized_keys; public-key auth only.
+          writeOnly: true
         privateKeyPass:
           type: string
           description: Passphrase for the encrypted private key, if any.
+          writeOnly: true
         hostKey:
           type: string
           description: |
@@ -7251,6 +7209,10 @@ components:
         rowCount:
           type: integer
           description: Absent when the warehouse does not report it.
+        versionId:
+          $ref: "#/components/schemas/VersionId"
+          readOnly: true
+          description: The version that answered, on a read under a version; absent at environment scope.
     TableList:
       type: object
       required:
@@ -7280,6 +7242,10 @@ components:
           items:
             $ref: "#/components/schemas/Column"
           description: Present only with `?include=columns`.
+        versionId:
+          $ref: "#/components/schemas/VersionId"
+          readOnly: true
+          description: The version that answered, on a read under a version; absent at environment scope.
     TrinoConnection:
       type: object
       description: Trino database connection configuration
@@ -7288,8 +7254,8 @@ components:
           type: string
           description: Trino server hostname or IP address
         port:
-          type: number
-          description: Trino server port number
+          type: integer
+          description: Trino server port number.
         catalog:
           type: string
           description: Trino catalog name
@@ -7302,6 +7268,7 @@ components:
         password:
           type: string
           description: Trino password for authentication
+          writeOnly: true
         peakaKey:
           type: string
           description: Peaka API key for authentication with Peaka-hosted Trino clusters
@@ -7317,6 +7284,7 @@ components:
         - pinned
         - createdAt
         - updatedAt
+        - loaded
       properties:
         resource:
           $ref: "#/components/schemas/ResourcePath"
@@ -7330,16 +7298,25 @@ components:
           type: string
           enum:
             - publish
-            - reload
+            - refetch
             - edit
             - migration
           readOnly: true
-          description: "`publish`: the author's. `reload`: a re-fetch of the source that changed. `edit`: a report write.
-            `migration`: imported from a pre-v1 store."
+          description: "`publish`: the author's. `refetch`: a publish from the package's recorded source, which had changed.
+            `edit`: a report write. `migration`: imported from a pre-v1 store."
         parentVersionId:
           $ref: "#/components/schemas/VersionId"
           readOnly: true
           description: The version a server-made version was made from; undo is pointing `latestVersionId` back at it.
+        source:
+          $ref: "#/components/schemas/PackageSource"
+          x-immutable: true
+          description: Where the version was fetched from. Set on publish (absent there means the package's recorded source) and
+            never changed.
+        queryMetadata:
+          $ref: "#/components/schemas/QueryMetadata"
+          readOnly: true
+          description: The per-query metadata the version's `publisher.json` declares at its root.
         description:
           type: string
           readOnly: true
@@ -7403,15 +7380,6 @@ components:
       description: "A resolved version: a semantic version, or `live` for a live (watched) package, which has no stored
         versions. A `live` version is never listed by `GET …/versions` and refuses `PATCH` and `DELETE` with 409
         `PACKAGE_IS_LIVE`."
-    VersionIdPattern:
-      type: string
-      pattern: ^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?(\+[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$
-      description: "A package version: a semantic version (SemVer 2.0), MAJOR.MINOR.PATCH with an optional pre-release suffix
-        (`-rc1`, `-alpha.2`) and optional build metadata (`+20231120.deadbeef`). Pre-release and build suffixes are
-        accepted so release-candidate builds can be published. A numeric identifier may have leading zeros (`01.0.0`),
-        which strict SemVer 2.0 does not allow, so a version a system in front of Publisher validated with this same
-        pattern is never refused. Such a version compares equal to the one without the zeros, and a package holds only
-        one of the two: publishing the other is 409 `VERSION_CONFLICT`."
     VersionList:
       type: object
       required:
@@ -7423,16 +7391,6 @@ components:
             $ref: "#/components/schemas/Version"
         nextCursor:
           $ref: "#/components/schemas/Cursor"
-    VersionPublishRequest:
-      type: object
-      description: Where to fetch a new version from. Omit the body, or `source`, to fetch the package's recorded source again.
-      properties:
-        source:
-          $ref: "#/components/schemas/PackageSource"
-          description: A source to publish from instead of the recorded one; it becomes the package's recorded source.
-        manifestLocation:
-          type: string
-          description: A manifest to bind the published version to, as `PATCH …/versions/{versionId}` with `manifestLocation` would.
     VersionRef:
       type: string
       pattern: ^(latest|live|\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?)$
@@ -7440,6 +7398,108 @@ components:
         names a server-made version), the reserved word `latest` for the package's latest version, or the reserved word
         `live`, the one pseudo-version of a live (watched) package, which `latest` resolves to there. A request that
         names `latest` on a package with none answers 404 `VERSION_NOT_FOUND`."
+    VersionStatus:
+      type: object
+      description: "How this server holds one version right now. The same schema in two reads: per version under `GET
+        /status`, and for one version at `GET …/versions/{versionId}/status`, where its status-only fields are also
+        present. Reading it never loads the version."
+      required:
+        - resource
+        - versionId
+        - status
+        - loaded
+      properties:
+        resource:
+          $ref: "#/components/schemas/ResourcePath"
+        versionId:
+          $ref: "#/components/schemas/VersionId"
+        status:
+          type: string
+          enum:
+            - loading
+            - serving
+          description: "`serving`: a compiled copy answers queries here now, even while a recompile runs. `loading`: the first
+            load is in progress and nothing answers yet."
+        loadingStartedAt:
+          type: string
+          format: date-time
+          description: When the load or recompile in progress began. Absent when none is.
+          readOnly: true
+        loaded:
+          type: boolean
+          description: Whether this server holds the version in memory.
+        lastReadAt:
+          type: string
+          format: date-time
+          description: When a request last read this version here.
+          readOnly: true
+        inFlightQueries:
+          type: integer
+          description: Queries running against this version right now.
+        compiledFrom:
+          type: string
+          enum:
+            - compile
+            - cache
+          description: Whether the served models came from a fresh compile or from the compiled-model store.
+        compiledAt:
+          type: string
+          format: date-time
+          readOnly: true
+        schemaAsOf:
+          type: string
+          format: date-time
+          description: When the warehouse schema the served models carry was read. Equals `compiledAt` unless the compile was a
+            refresh.
+          readOnly: true
+        compiledModelBytes:
+          type: integer
+          format: int64
+          description: Serialized size of the compiled-model entry, the cheapest honest memory proxy.
+        manifestBinding:
+          type: object
+          description: Whether the version serves from materialized tables, and from which manifest.
+          required:
+            - status
+          properties:
+            status:
+              type: string
+              enum:
+                - unbound
+                - bound
+                - live_fallback
+              description: "`unbound`: no manifest, the version serves live. `bound`: the configured manifest was applied.
+                `live_fallback`: a manifest is configured but its fetch or bind failed, so what `location` names is
+                still what is served."
+            location:
+              type: string
+              description: The manifest actually bound, which after a failed rebind differs from the configured one.
+            entryCount:
+              type: integer
+        stale:
+          type: object
+          description: Present when the version serves a model older than its content because the newer content failed to compile.
+          properties:
+            failedAt:
+              type: string
+              format: date-time
+              readOnly: true
+            message:
+              type: string
+        servedRevision:
+          type: string
+          description: Version status read only (`GET …/versions/{versionId}/status`). An identifier minted per load; moves on
+            every reload whether or not content changed.
+        contentHash:
+          type: string
+          description: Version status read only (`GET …/versions/{versionId}/status`). SHA-256 (hex) over the model, skill and
+            agent files being served; for a live package, whose version is always `live`, the receipt that an edit is
+            served.
+        bindings:
+          type: array
+          description: Version status read only (`GET …/versions/{versionId}/status`). What this version serves per source.
+          items:
+            $ref: "#/components/schemas/Binding"
     View:
       type: object
       description: Named model view definition
