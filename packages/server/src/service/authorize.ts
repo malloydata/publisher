@@ -1145,9 +1145,24 @@ export function legacyGatePayloadExpression(
       : undefined;
 }
 
-/** True when every quote in `expr` belongs to a complete string literal. */
+/**
+ * A string literal in either quote, or a backtick-quoted identifier, read
+ * left to right so whichever opens first claims the text up to its close: an
+ * apostrophe inside `` `owner's region` `` is part of the name, and a backtick
+ * inside `'a`b'` is part of the string. The backtick alternative is Malloy's
+ * own `BQ_STRING` token: a backslash escapes the next character (`` \` ``
+ * included), and it does not span a line.
+ */
+const QUOTED_TOKEN_PATTERN =
+   /'(?:\\.|[^'\\])*'|"(?:\\.|[^"\\])*"|`(?:\\.|[^`\\\n])*`/g;
+
+/**
+ * True when every string quote in `expr` belongs to a complete string literal.
+ * Backtick-quoted identifiers are set aside first, so a quote character inside
+ * one (`` `owner's region` = $X ``, which the load accepts) is not a stray.
+ */
 export function quotesAreBalanced(expr: string): boolean {
-   return !/['"]/.test(expr.replace(STRING_LITERAL_PATTERN, ""));
+   return !/['"]/.test(expr.replace(QUOTED_TOKEN_PATTERN, ""));
 }
 
 function unquoteLegacyGatePayload(payload: string): string {

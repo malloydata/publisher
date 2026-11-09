@@ -139,6 +139,51 @@ describe("parseGateAnnotation", () => {
       }
    });
 
+   test("a quote inside a backtick-quoted identifier is part of the name, read verbatim as the load reads it", () => {
+      for (const [text, route, expr] of [
+         [
+            "#(access_filter) `owner's region` = $X",
+            "access_filter",
+            "`owner's region` = $X",
+         ],
+         [
+            '#(access_filter) `say "hi"` = $X',
+            "access_filter",
+            '`say "hi"` = $X',
+         ],
+         // Malloy's BQ_STRING escapes with a backslash, a backtick included.
+         ["#(access_filter) `it\\`s` = $X", "access_filter", "`it\\`s` = $X"],
+         [
+            "#(authorize) `a'b` = $X and 'x' = $Y",
+            "authorize",
+            "`a'b` = $X and 'x' = $Y",
+         ],
+      ] as const) {
+         assert.deepStrictEqual(
+            parseGateAnnotation(text),
+            { route, expr },
+            text,
+         );
+      }
+   });
+
+   test("a stray quote outside every backtick identifier still throws", () => {
+      for (const text of [
+         "#(access_filter) `owner's region` = $X and region = 'us",
+         "#(access_filter) `owner` region' = $X",
+         // A backtick identifier does not span a line, so it hides nothing here.
+         "#(access_filter) `owner's\nregion` = $X",
+         // A backtick inside a string literal opens no identifier.
+         "#(access_filter) 'a`b' = $X and `c'd = $Y",
+      ]) {
+         assert.throws(
+            () => parseGateAnnotation(text),
+            /mismatched quotes/,
+            text,
+         );
+      }
+   });
+
    test("an ordinary render tag is not a gate", () => {
       assert.strictEqual(parseGateAnnotation("# bar_chart"), null);
       assert.strictEqual(parseGateAnnotation("#(doc) about authorize"), null);
@@ -146,6 +191,18 @@ describe("parseGateAnnotation", () => {
 });
 
 describe("resolveGates", () => {
+   test("a source gated on a backtick identifier holding an apostrophe is reported with that gate, not as locked", () => {
+      const gated = {
+         type: "table",
+         annotations: {
+            blockNotes: [{ text: "#(access_filter) `owner's region` = $X" }],
+         },
+      } satisfies GateStructDef;
+      assert.deepStrictEqual(resolveGates(gated, new Map()).gates, [
+         { route: "access_filter", expr: "`owner's region` = $X" },
+      ]);
+   });
+
    test("a source gated by an expression that starts with a string literal is reported with that gate, not as locked", () => {
       const gated = {
          type: "table",
