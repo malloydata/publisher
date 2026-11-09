@@ -62,6 +62,12 @@ info:
 
     - `/status`, a version's `status`, the versions list, the version record, `:unload` and `…/index` never load a
     version that is not loaded; every other content read loads it on demand, as each such operation's description says.
+    A version that cannot load (its models no longer compile, or its stored content cannot be read) answers 424
+    `VERSION_LOAD_FAILED` with `details.problems` on every operation that loads it, `:load` and a run included, and its
+    `VersionStatus.status` reads `failed`; the next such operation tries the load again. `:reload` is the exception:
+    compiling is what it is asked to do, so a compile that fails is its 400 `COMPILE_ERROR`, and the version keeps
+    serving its last good compile with `VersionStatus.stale` and `error` set. `:load`, `:unload` and `:reload` each
+    answer the version's `VersionStatus`, whose `warnings` are the load's non-fatal findings.
 
     - State changes are fields: `PATCH …/versions/{versionId}` with `archived`, `pinned` or `manifestLocation`; `PATCH
     …/packages/{packageName}` with `latestVersionId`; `PATCH …/runs/{runId}` with `status: "cancelled"`. What is not a
@@ -69,12 +75,13 @@ info:
     `:reload`, `:query`, `:compile`, `:run-sql`), so an action can never collide with a child's name; an unsaved
     connection is tested with `?dryRun=true` on create or update.
 
-    - `PATCH` is JSON merge-patch: present fields are set, `null` unsets, absent fields are untouched, lists replace. An
-    orchestrator pushes an environment's desired state as a `PATCH` whose `connections` list replaces the stored one.
-    `PUT` is used only by the report write, which replaces a file. `POST` on a collection answers 201 with the resource
-    and a `Location`; `DELETE` answers 204. A create or a write takes its own resource's writable fields; an action that
-    takes input (`:query`, `:compile`, `:run-sql`) takes an `…Request` body, since it creates no resource, and
-    `:reload`, `:load` and `:unload` take none.
+    - `PATCH` is JSON merge-patch: present fields are set, `null` unsets, absent fields are untouched, lists replace. A
+    merge-patch body, its nested objects included, is not checked against the schema's `required`, and its `null` clears
+    an optional field although no schema spells `null`. An orchestrator pushes an environment's desired state as a
+    `PATCH` whose `connections` list replaces the stored one. `PUT` is used only by the report write, which replaces a
+    file. `POST` on a collection answers 201 with the resource and a `Location`; `DELETE` answers 204. A create or a
+    write takes its own resource's writable fields; an action that takes input (`:query`, `:compile`, `:run-sql`) takes
+    an `…Request` body, since it creates no resource, and `:reload`, `:load` and `:unload` take none.
 
     - Every mutable resource but a report carries a `revision`, returned as `ETag` on reads; every `PATCH` and `DELETE`
     accepts `If-Match` and answers 412 when the resource has moved on. A report is revisioned by its `contentHash`,
@@ -94,10 +101,11 @@ info:
     - A write body is the resource itself, one schema for reading and writing it. `required` describes a read: what
     every read of the object carries. In a request, a `readOnly` field is ignored and never required (OpenAPI 3.0's
     rule, adopted here because 3.1 dropped it), a field with a `default` is never `required` and a request may leave it
-    out, and a write-only field is never in `required`: a field a create needs says "Required on create." in its
-    description. A `PATCH` body is a JSON merge-patch of the resource: any subset of its writable fields, `null`
-    clearing an optional one; no schema spells `null`, since a read never returns it. Generated clients get request and
-    response types from the one schema (openapi-typescript's `--read-write-markers --default-non-nullable false`).
+    out, though every read carries it, and a write-only field is never in `required`: a field a create needs says
+    "Required on create." in its description. A `PATCH` body is a JSON merge-patch of the resource: any subset of its
+    writable fields, `null` clearing an optional one; no schema spells `null`, since a read never returns it. Generated
+    clients get request and response types from the one schema (openapi-typescript's `--read-write-markers
+    --default-non-nullable false`).
 
     - Every `POST` that creates or starts something (an environment, a connection, a package, a version, a run), and the
     report write, accepts an `Idempotency-Key` header: a retry with the same key and body within 24 hours answers with
@@ -172,7 +180,7 @@ info:
 
     - A dry run (`?dryRun=true`) runs every check and stores nothing, and answers 200 with no `Location`, ignoring
     `Idempotency-Key`: a connection's answers its test result, a publish's the `Version` it would make, with no
-    `resource`, `revision` or timestamps.
+    `resource`, `revision` or timestamps, although `Version` requires them, and with no `ETag`.
 
     - Booleans are JSON `true`/`false` in bodies and `true`/`false` in query strings; anything else is 400
     `INVALID_REQUEST`.
@@ -186,7 +194,7 @@ info:
     resource write under `resources.readOnly` and on an `#(authorize)` gate, `410` when it uses an archived version's
     content (a content read, an action on it, the report write, a run, or `latestVersionId`'s target), never on that
     version's record, its status, its `PATCH`, `DELETE` or `:unload`, or the index, and `424`, `502` and `504` when it
-    loads a version or reaches a warehouse.
+    loads a version or reaches a warehouse (424 `VERSION_LOAD_FAILED` on every operation that loads one).
 servers:
   - url: /api/v1
     description: This server
@@ -1007,7 +1015,7 @@ paths:
       description: "Fetches a source and publishes the version its `publisher.json` declares, or `<parent>+republish.N`
         (`origin: republish`) when that version already exists with other content, whichever source it came from,
         re-applying the overlay of report writes. With no body it fetches the package's recorded `source` again, which
-        is how a package installed from a git branch or an object-store prefix picks up a change; when the fetched tree
+        is how a package published from a git branch or an object-store prefix picks up a change; when the fetched tree
         matches the current version (by git commit sha, object etag or md5, or the tree's hash) nothing is made and it
         answers 200 with that version. Whether `latestVersionId` moves to it is `ServerStatus.versionPromotion`. The
         body is a `Version`, `Version`'s writable fields: `source` to publish from a new location, which moves the
@@ -1015,11 +1023,12 @@ paths:
         a body with `archived: true` answers 400 `INVALID_REQUEST`, since a new version cannot be archived. A publish
         that moves the package's `source` or `latestVersionId` advances the package's `revision`. A live package answers
         409 `PACKAGE_IS_LIVE` (use `:reload`). A declared version that differs from a stored one only by letter case or
-        leading zeros answers 409 `VERSION_CONFLICT`; with versioning on, a `publisher.json` with no `version` answers
-        400 `PACKAGE_VERSION_MISSING`, and one that is not a semantic version 400 `PACKAGE_VERSION_INVALID`. With
-        `dryRun`, every publish check runs and nothing is stored; the answer is always 200, with no `Location`: the
+        leading zeros answers 409 `VERSION_CONFLICT`; a `publisher.json` with no `version` answers 400
+        `PACKAGE_VERSION_MISSING`, and one that is not a semantic version 400 `PACKAGE_VERSION_INVALID`. With `dryRun`,
+        every publish check runs and nothing is stored; the answer is always 200, with no `Location` and no `ETag`: the
         `Version` the publish would make, with no `resource`, `revision` or timestamps since nothing is stored, or the
-        current `Version` when it would make nothing."
+        current `Version` when it would make nothing. The load's warnings are on the version's status (`GET
+        …/versions/{versionId}/status`), not its record."
       parameters:
         - $ref: "#/components/parameters/idempotencyKey"
         - $ref: "#/components/parameters/dryRun"
@@ -1116,28 +1125,25 @@ paths:
       summary: Recompile a version from its files against the warehouse's current schemas, and wait
       description: "Recompiles the version now, with the schema cache bypassed, replaces its compiled-model store entry, and
         answers when it is done, with the compile errors if it failed (the version then keeps serving its last good
-        compile). The result carries the version's record, and its status; a live package's has the status only, since
-        `live` has no record. On a live package (`live`, which `latest` resolves to) it first re-reads the author's
-        files, settling any recompile the watcher already started: the handshake an edit loop needs, since watch mode
-        recompiles in the background and skips a save that does not compile without saying so. On a stored version the
-        files cannot change, so a reload is a schema refresh. No version is made. Loads the version if it is not loaded.
-        409 `VERSION_BUILDING` while a run is building it. To pick up a changed source, publish a version (`POST
-        …/versions`)."
+        compile, and its status says `stale`). It answers the version's status, as `:load` and `:unload` do: for a live
+        package, the receipt that the edit is served (`contentHash`, `loadId`), with the load's `warnings`. It changes
+        no record, so it sends no `ETag`; a `PATCH` after it sends the `ETag` of `GET …/versions/{versionId}`. A compile
+        that fails answers 400 `COMPILE_ERROR`, not 424, because compiling is what a reload is asked to do. On a live
+        package (`live`, which `latest` resolves to) it first re-reads the author's files, settling any recompile the
+        watcher already started: the handshake an edit loop needs, since watch mode recompiles in the background and
+        skips a save that does not compile without saying so. On a stored version the files cannot change, so a reload
+        is a schema refresh. No version is made. Loads the version if it is not loaded. 409 `VERSION_BUILDING` while a
+        run is building it. To pick up a changed source, publish a version (`POST …/versions`)."
       responses:
         "200":
-          description: Recompiled; the version and its status.
-          headers:
-            X-Request-Id:
-              $ref: "#/components/headers/RequestId"
-            ETag:
-              description: The reloaded version's revision (`version.revision`), quoted, to send as `If-Match` on its next `PATCH`.
-                Absent for a live package, whose `live` has no record.
-              schema:
-                type: string
+          description: Recompiled; the version's status.
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/ReloadResult"
+                $ref: "#/components/schemas/VersionStatus"
+          headers:
+            X-Request-Id:
+              $ref: "#/components/headers/RequestId"
         "400":
           $ref: "#/components/responses/BadRequest"
           description: "The request is malformed, or the Malloy or SQL in it was refused. `reason`: `INVALID_REQUEST`,
@@ -1178,8 +1184,8 @@ paths:
       tags:
         - versions
       summary: Read a version's serving state on this server
-      description: "The version's serving state, with the fields `/status` leaves out (`loadId`, `contentHash`, `bindings`).
-        Loads nothing: an unloaded version answers `status: unloaded`."
+      description: "The version's serving state, with the fields `/status` leaves out (`loadId`, `contentHash`, `bindings`,
+        `warnings`). Loads nothing: an unloaded version answers `status: unloaded`."
       responses:
         "200":
           description: The serving state.
@@ -1376,7 +1382,8 @@ paths:
       summary: Load a version on this server, and wait
       description: "Loads the version into this server's memory if it is not loaded, without reading any content and without
         changing it, and answers when it is serving (as a hydrate when the compiled-model store has an entry). A loaded
-        version answers at once. Changes no record: memory state is `VersionStatus.status`. `live` answers 409
+        version answers at once. Changes no record: memory state is `VersionStatus.status`. A version that cannot load
+        answers 424 `VERSION_LOAD_FAILED` with `details.problems`, and its status reads `failed`. `live` answers 409
         `PACKAGE_IS_LIVE`, since a watched package is loaded while it is watched."
       responses:
         "200":
@@ -1402,7 +1409,7 @@ paths:
         "424":
           $ref: "#/components/responses/DependencyFailed"
           description: "Something the operation depends on failed, so nothing changed. Fix the dependency; retrying fails the same
-            way. `reason`: `CONNECTION_AUTH_FAILED`, `CONNECTION_NOT_FOUND`."
+            way. `reason`: `CONNECTION_AUTH_FAILED`, `CONNECTION_NOT_FOUND`, `VERSION_LOAD_FAILED`."
         "429":
           $ref: "#/components/responses/RateLimited"
         "500":
@@ -1502,7 +1509,7 @@ paths:
         "424":
           $ref: "#/components/responses/DependencyFailed"
           description: "Something the operation depends on failed, so nothing changed. Fix the dependency; retrying fails the same
-            way. `reason`: `CONNECTION_AUTH_FAILED`, `CONNECTION_NOT_FOUND`."
+            way. `reason`: `CONNECTION_AUTH_FAILED`, `CONNECTION_NOT_FOUND`, `VERSION_LOAD_FAILED`."
         "429":
           $ref: "#/components/responses/RateLimited"
         "500":
@@ -1581,7 +1588,7 @@ paths:
         "424":
           $ref: "#/components/responses/DependencyFailed"
           description: "Something the operation depends on failed, so nothing changed. Fix the dependency; retrying fails the same
-            way. `reason`: `CONNECTION_AUTH_FAILED`, `CONNECTION_NOT_FOUND`."
+            way. `reason`: `CONNECTION_AUTH_FAILED`, `CONNECTION_NOT_FOUND`, `VERSION_LOAD_FAILED`."
         "429":
           $ref: "#/components/responses/RateLimited"
         "500":
@@ -1645,7 +1652,7 @@ paths:
         "424":
           $ref: "#/components/responses/DependencyFailed"
           description: "Something the operation depends on failed, so nothing changed. Fix the dependency; retrying fails the same
-            way. `reason`: `CONNECTION_AUTH_FAILED`, `CONNECTION_NOT_FOUND`."
+            way. `reason`: `CONNECTION_AUTH_FAILED`, `CONNECTION_NOT_FOUND`, `VERSION_LOAD_FAILED`."
         "429":
           $ref: "#/components/responses/RateLimited"
         "500":
@@ -1709,7 +1716,7 @@ paths:
         "424":
           $ref: "#/components/responses/DependencyFailed"
           description: "Something the operation depends on failed, so nothing changed. Fix the dependency; retrying fails the same
-            way. `reason`: `CONNECTION_AUTH_FAILED`, `CONNECTION_NOT_FOUND`."
+            way. `reason`: `CONNECTION_AUTH_FAILED`, `CONNECTION_NOT_FOUND`, `VERSION_LOAD_FAILED`."
         "429":
           $ref: "#/components/responses/RateLimited"
         "500":
@@ -1774,7 +1781,7 @@ paths:
         "424":
           $ref: "#/components/responses/DependencyFailed"
           description: "Something the operation depends on failed, so nothing changed. Fix the dependency; retrying fails the same
-            way. `reason`: `CONNECTION_AUTH_FAILED`, `CONNECTION_NOT_FOUND`."
+            way. `reason`: `CONNECTION_AUTH_FAILED`, `CONNECTION_NOT_FOUND`, `VERSION_LOAD_FAILED`."
         "429":
           $ref: "#/components/responses/RateLimited"
         "500":
@@ -1843,7 +1850,7 @@ paths:
         "424":
           $ref: "#/components/responses/DependencyFailed"
           description: "Something the operation depends on failed, so nothing changed. Fix the dependency; retrying fails the same
-            way. `reason`: `CONNECTION_AUTH_FAILED`, `CONNECTION_NOT_FOUND`."
+            way. `reason`: `CONNECTION_AUTH_FAILED`, `CONNECTION_NOT_FOUND`, `VERSION_LOAD_FAILED`."
         "429":
           $ref: "#/components/responses/RateLimited"
         "500":
@@ -1934,7 +1941,7 @@ paths:
         "424":
           $ref: "#/components/responses/DependencyFailed"
           description: "Something the operation depends on failed, so nothing changed. Fix the dependency; retrying fails the same
-            way. `reason`: `CONNECTION_AUTH_FAILED`, `CONNECTION_NOT_FOUND`."
+            way. `reason`: `CONNECTION_AUTH_FAILED`, `CONNECTION_NOT_FOUND`, `VERSION_LOAD_FAILED`."
         "429":
           $ref: "#/components/responses/RateLimited"
         "500":
@@ -1991,7 +1998,7 @@ paths:
         "424":
           $ref: "#/components/responses/DependencyFailed"
           description: "Something the operation depends on failed, so nothing changed. Fix the dependency; retrying fails the same
-            way. `reason`: `CONNECTION_AUTH_FAILED`, `CONNECTION_NOT_FOUND`."
+            way. `reason`: `CONNECTION_AUTH_FAILED`, `CONNECTION_NOT_FOUND`, `VERSION_LOAD_FAILED`."
         "429":
           $ref: "#/components/responses/RateLimited"
         "500":
@@ -2049,7 +2056,7 @@ paths:
         "424":
           $ref: "#/components/responses/DependencyFailed"
           description: "Something the operation depends on failed, so nothing changed. Fix the dependency; retrying fails the same
-            way. `reason`: `CONNECTION_AUTH_FAILED`, `CONNECTION_NOT_FOUND`."
+            way. `reason`: `CONNECTION_AUTH_FAILED`, `CONNECTION_NOT_FOUND`, `VERSION_LOAD_FAILED`."
         "429":
           $ref: "#/components/responses/RateLimited"
         "500":
@@ -2104,7 +2111,7 @@ paths:
         "424":
           $ref: "#/components/responses/DependencyFailed"
           description: "Something the operation depends on failed, so nothing changed. Fix the dependency; retrying fails the same
-            way. `reason`: `CONNECTION_AUTH_FAILED`, `CONNECTION_NOT_FOUND`."
+            way. `reason`: `CONNECTION_AUTH_FAILED`, `CONNECTION_NOT_FOUND`, `VERSION_LOAD_FAILED`."
         "429":
           $ref: "#/components/responses/RateLimited"
         "500":
@@ -2171,7 +2178,7 @@ paths:
         "424":
           $ref: "#/components/responses/DependencyFailed"
           description: "Something the operation depends on failed, so nothing changed. Fix the dependency; retrying fails the same
-            way. `reason`: `CONNECTION_AUTH_FAILED`, `CONNECTION_NOT_FOUND`."
+            way. `reason`: `CONNECTION_AUTH_FAILED`, `CONNECTION_NOT_FOUND`, `VERSION_LOAD_FAILED`."
         "429":
           $ref: "#/components/responses/RateLimited"
         "500":
@@ -2229,7 +2236,7 @@ paths:
         "424":
           $ref: "#/components/responses/DependencyFailed"
           description: "Something the operation depends on failed, so nothing changed. Fix the dependency; retrying fails the same
-            way. `reason`: `CONNECTION_AUTH_FAILED`, `CONNECTION_NOT_FOUND`."
+            way. `reason`: `CONNECTION_AUTH_FAILED`, `CONNECTION_NOT_FOUND`, `VERSION_LOAD_FAILED`."
         "429":
           $ref: "#/components/responses/RateLimited"
         "500":
@@ -2306,7 +2313,7 @@ paths:
         "424":
           $ref: "#/components/responses/DependencyFailed"
           description: "Something the operation depends on failed, so nothing changed. Fix the dependency; retrying fails the same
-            way. `reason`: `CONNECTION_AUTH_FAILED`, `CONNECTION_NOT_FOUND`."
+            way. `reason`: `CONNECTION_AUTH_FAILED`, `CONNECTION_NOT_FOUND`, `VERSION_LOAD_FAILED`."
         "429":
           $ref: "#/components/responses/RateLimited"
         "500":
@@ -2363,7 +2370,7 @@ paths:
         "424":
           $ref: "#/components/responses/DependencyFailed"
           description: "Something the operation depends on failed, so nothing changed. Fix the dependency; retrying fails the same
-            way. `reason`: `CONNECTION_AUTH_FAILED`, `CONNECTION_NOT_FOUND`."
+            way. `reason`: `CONNECTION_AUTH_FAILED`, `CONNECTION_NOT_FOUND`, `VERSION_LOAD_FAILED`."
         "429":
           $ref: "#/components/responses/RateLimited"
         "500":
@@ -2414,7 +2421,7 @@ paths:
         "424":
           $ref: "#/components/responses/DependencyFailed"
           description: "Something the operation depends on failed, so nothing changed. Fix the dependency; retrying fails the same
-            way. `reason`: `CONNECTION_AUTH_FAILED`, `CONNECTION_NOT_FOUND`."
+            way. `reason`: `CONNECTION_AUTH_FAILED`, `CONNECTION_NOT_FOUND`, `VERSION_LOAD_FAILED`."
         "429":
           $ref: "#/components/responses/RateLimited"
         "500":
@@ -2515,7 +2522,7 @@ paths:
         "424":
           $ref: "#/components/responses/DependencyFailed"
           description: "Something the operation depends on failed, so nothing changed. Fix the dependency; retrying fails the same
-            way. `reason`: `CONNECTION_AUTH_FAILED`, `CONNECTION_NOT_FOUND`."
+            way. `reason`: `CONNECTION_AUTH_FAILED`, `CONNECTION_NOT_FOUND`, `VERSION_LOAD_FAILED`."
         "429":
           $ref: "#/components/responses/RateLimited"
         "500":
@@ -2576,7 +2583,7 @@ paths:
         "424":
           $ref: "#/components/responses/DependencyFailed"
           description: "Something the operation depends on failed, so nothing changed. Fix the dependency; retrying fails the same
-            way. `reason`: `CONNECTION_AUTH_FAILED`, `CONNECTION_NOT_FOUND`."
+            way. `reason`: `CONNECTION_AUTH_FAILED`, `CONNECTION_NOT_FOUND`, `VERSION_LOAD_FAILED`."
         "429":
           $ref: "#/components/responses/RateLimited"
         "500":
@@ -2629,7 +2636,7 @@ paths:
         "424":
           $ref: "#/components/responses/DependencyFailed"
           description: "Something the operation depends on failed, so nothing changed. Fix the dependency; retrying fails the same
-            way. `reason`: `CONNECTION_AUTH_FAILED`, `CONNECTION_NOT_FOUND`."
+            way. `reason`: `CONNECTION_AUTH_FAILED`, `CONNECTION_NOT_FOUND`, `VERSION_LOAD_FAILED`."
         "429":
           $ref: "#/components/responses/RateLimited"
         "500":
@@ -2758,7 +2765,7 @@ paths:
         "424":
           $ref: "#/components/responses/DependencyFailed"
           description: "Something the operation depends on failed, so nothing changed. Fix the dependency; retrying fails the same
-            way. `reason`: `CONNECTION_AUTH_FAILED`, `CONNECTION_NOT_FOUND`."
+            way. `reason`: `CONNECTION_AUTH_FAILED`, `CONNECTION_NOT_FOUND`, `VERSION_LOAD_FAILED`."
         "429":
           $ref: "#/components/responses/RateLimited"
         "500":
@@ -3210,7 +3217,7 @@ paths:
         "424":
           $ref: "#/components/responses/DependencyFailed"
           description: "Something the operation depends on failed, so nothing changed. Fix the dependency; retrying fails the same
-            way. `reason`: `CONNECTION_AUTH_FAILED`, `CONNECTION_NOT_FOUND`."
+            way. `reason`: `CONNECTION_AUTH_FAILED`, `CONNECTION_NOT_FOUND`, `VERSION_LOAD_FAILED`."
         "429":
           $ref: "#/components/responses/RateLimited"
         "500":
@@ -3277,7 +3284,7 @@ paths:
         "424":
           $ref: "#/components/responses/DependencyFailed"
           description: "Something the operation depends on failed, so nothing changed. Fix the dependency; retrying fails the same
-            way. `reason`: `CONNECTION_AUTH_FAILED`, `CONNECTION_NOT_FOUND`."
+            way. `reason`: `CONNECTION_AUTH_FAILED`, `CONNECTION_NOT_FOUND`, `VERSION_LOAD_FAILED`."
         "429":
           $ref: "#/components/responses/RateLimited"
         "500":
@@ -3333,7 +3340,7 @@ paths:
         "424":
           $ref: "#/components/responses/DependencyFailed"
           description: "Something the operation depends on failed, so nothing changed. Fix the dependency; retrying fails the same
-            way. `reason`: `CONNECTION_AUTH_FAILED`, `CONNECTION_NOT_FOUND`."
+            way. `reason`: `CONNECTION_AUTH_FAILED`, `CONNECTION_NOT_FOUND`, `VERSION_LOAD_FAILED`."
         "429":
           $ref: "#/components/responses/RateLimited"
         "500":
@@ -3389,7 +3396,7 @@ paths:
         "424":
           $ref: "#/components/responses/DependencyFailed"
           description: "Something the operation depends on failed, so nothing changed. Fix the dependency; retrying fails the same
-            way. `reason`: `CONNECTION_AUTH_FAILED`, `CONNECTION_NOT_FOUND`."
+            way. `reason`: `CONNECTION_AUTH_FAILED`, `CONNECTION_NOT_FOUND`, `VERSION_LOAD_FAILED`."
         "429":
           $ref: "#/components/responses/RateLimited"
         "500":
@@ -3436,7 +3443,8 @@ components:
         id `latest` resolved to. A content read of a version that is not loaded loads it first, as a hydrate when the
         compiled-model store has an entry; `GET /status`, `GET …/versions`, `GET …/versions/{versionId}`, its
         `…/status`, `…/index` and `:unload` never load, and every operation that loads says so in its description.
-        `VersionStatus.status` says what a read will cost.
+        `VersionStatus.status` says what a read will cost. A version that cannot load answers 424 `VERSION_LOAD_FAILED`
+        on every operation that loads it.
     connectionName:
       name: connectionName
       in: path
@@ -3503,7 +3511,7 @@ components:
       description: "Run every check the write would run and store nothing. Every dry run answers 200, never with a `Location`,
         and ignores `Idempotency-Key`. A connection's answers its test result, every failure (unreachable, refused
         credentials, timeout) a 200 with `ok: false`; a publish's answers the `Version` the publish would make, with no
-        `resource`, `revision` or timestamps, or the current one when it would make nothing."
+        `resource`, `revision` or timestamps and no `ETag`, or the current one when it would make nothing."
     tableNames:
       name: name
       in: query
@@ -4445,6 +4453,7 @@ components:
       required:
         - resource
         - name
+        - type
         - createdAt
         - updatedAt
         - revision
@@ -4458,8 +4467,8 @@ components:
           $ref: "#/components/schemas/IdentifierPattern"
         type:
           type: string
-          description: The dialect. Required on create; an environment push may name a stored connection without it to keep it as
-            stored.
+          description: The dialect. Set on create and carried on every read, as `Destination.type` is; an environment push may
+            name a stored connection without it to keep it as stored (`Environment.connections`).
           enum:
             - postgres
             - bigquery
@@ -5279,7 +5288,8 @@ components:
             `CompileErrorDetails`. `REVISION_MISMATCH`: `RevisionMismatchDetails`. `INVALID_TRANSITION`:
             `InvalidTransitionDetails`. `TABLE_OWNED_ELSEWHERE`: `TableOwnedElsewhereDetails`. `INVALID_REQUEST`:
             `InvalidRequestDetails`, when one field is at fault. `RESULT_TOO_LARGE`: `ResultTooLargeDetails`.
-            `CONTENT_CHANGED`: `ContentChangedDetails`. Pick the shape by `reason`."
+            `CONTENT_CHANGED`: `ContentChangedDetails`. `VERSION_LOAD_FAILED`: `VersionLoadFailedDetails`. Pick the
+            shape by `reason`."
           oneOf:
             - $ref: "#/components/schemas/CompileErrorDetails"
             - $ref: "#/components/schemas/RevisionMismatchDetails"
@@ -5288,6 +5298,7 @@ components:
             - $ref: "#/components/schemas/InvalidRequestDetails"
             - $ref: "#/components/schemas/ResultTooLargeDetails"
             - $ref: "#/components/schemas/ContentChangedDetails"
+            - $ref: "#/components/schemas/VersionLoadFailedDetails"
       readOnly: true
 
     ErrorReason:
@@ -5329,6 +5340,7 @@ components:
         - RESOURCE_NOT_EMPTY
         - IDEMPOTENCY_KEY_REUSED
         - MANIFEST_UNAVAILABLE
+        - VERSION_LOAD_FAILED
         - FILE_EXISTS
         - FILE_NOT_WRITABLE
         - RUN_ACTIVE
@@ -6150,10 +6162,10 @@ components:
             type: string
           description: "The `#@ persist` keys the server does not recognize, as `key=value` strings read from the effective merged
             tag (a source extending a persisted parent inherits its keys, its own merging over them per key), so a new
-            directive needs no server change. Each is also reported as a `Version.warnings` entry, never a rejection.
-            Every key the server recognizes has its own field (`tableName`, `realization`, `destinationName`, `refresh`,
-            `watermark`, `mergeKeys`) and is not repeated here. For a synthesized rollup (`kind: preaggregate`) the
-            annotation was generated rather than typed, and is reported the same way."
+            directive needs no server change. Each is also reported as a `VersionStatus.warnings` entry, never a
+            rejection. Every key the server recognizes has its own field (`tableName`, `realization`, `destinationName`,
+            `refresh`, `watermark`, `mergeKeys`) and is not repeated here. For a synthesized rollup (`kind:
+            preaggregate`) the annotation was generated rather than typed, and is reported the same way."
         modelPath:
           type: string
           description: "Version-relative path of the `.malloy` model that declares this source (for example
@@ -6529,6 +6541,9 @@ components:
             - type: object
               required:
                 - versionId
+              properties:
+                versionId:
+                  $ref: "#/components/schemas/VersionId"
         malloyResult:
           type: object
           additionalProperties: true
@@ -6677,22 +6692,6 @@ components:
         kind:
           $ref: "#/components/schemas/PersistedSourceKind"
           description: What declared the refused source, as on `PersistSourcePlan.kind`.
-      readOnly: true
-
-    ReloadResult:
-      type: object
-      description: "What a reload did (`POST …/versions/{versionId}:reload`): the version, and its status now."
-      required:
-        - status
-      properties:
-        version:
-          $ref: "#/components/schemas/Version"
-          description: The reloaded version's record. Absent for a live package, whose `live` has no record.
-        status:
-          $ref: "#/components/schemas/VersionStatus"
-          description: The version's status after the reload; for a live package, the receipt that the edit is served
-            (`contentHash`, `loadId`).
-          readOnly: true
       readOnly: true
 
     Report:
@@ -7188,13 +7187,13 @@ components:
         from. The one unpaged snapshot in the API, narrowable with `?environmentName=`. Reading it loads nothing. Not a
         resource, so it carries no `resource`."
       required:
-        - operationalState
+        - status
         - serverVersion
         - hostname
         - generatedAt
         - environments
       properties:
-        operationalState:
+        status:
           type: string
           enum:
             - initializing
@@ -7240,12 +7239,12 @@ components:
           readOnly: true
         initError:
           $ref: "#/components/schemas/EmbeddedError"
-          description: Present only when initialization failed; `operationalState` then stays `initializing`.
+          description: Present only when initialization failed; `status` then stays `initializing`.
           readOnly: true
         loadErrors:
           type: array
           description: Versions that did not load, or that serve a model older than their content (`stale`). A version that loaded
-            but is stale also says so in its own `VersionStatus.stale`.
+            but is stale also says so in its own `VersionStatus` (`stale`, with `error`).
           items:
             $ref: "#/components/schemas/LoadError"
         environments:
@@ -7365,7 +7364,7 @@ components:
         description:
           type: string
           description: One line saying when to read this skill. Empty when the package author omitted it, which is also reported
-            as a `Version.warnings` entry.
+            as a `VersionStatus.warnings` entry.
         origin:
           type: string
           enum:
@@ -7970,12 +7969,6 @@ components:
           description: "The location of an externally computed manifest bound to this version: a JSON array of `ManifestEntry`
             with its read-only fields left out. Absent when none is bound, and the version serves from the warehouse.
             Set with `PATCH`; `null` clears it."
-        warnings:
-          type: array
-          readOnly: true
-          description: Non-fatal findings from the load, as the package's `publisher.json`, models and reports produced them.
-          items:
-            $ref: "#/components/schemas/Problem"
         gitCommitSha:
           type: string
           readOnly: true
@@ -8019,6 +8012,23 @@ components:
           $ref: "#/components/schemas/Cursor"
       readOnly: true
 
+    VersionLoadFailedDetails:
+      type: object
+      description: "`details` of a `VERSION_LOAD_FAILED`: why the version named could not load, so nothing answered. The
+        request is not at fault: the stored version no longer compiles (against a drifted warehouse schema, say) or
+        cannot be read. Fix the cause and publish a version, or `:reload` it once the warehouse is fixed; retrying the
+        same request fails the same way."
+      required:
+        - problems
+      properties:
+        problems:
+          type: array
+          description: The problems the load found, each located by `modelPath` and `range` where it has a place; a failure that
+            is not a compile's (the stored content cannot be read) is one `error` problem with no location.
+          items:
+            $ref: "#/components/schemas/Problem"
+      readOnly: true
+
     VersionRef:
       type: string
       pattern: ^(latest|live|\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?)$
@@ -8054,8 +8064,10 @@ components:
             compiled copy answers queries here now, even while a recompile runs. `loading`: the first load is in
             progress and nothing answers yet. `unloaded`: this server knows the version but has not loaded it, or
             unloaded it (`:unload`); the next content read or `:load` loads it. `failed`: the last load failed and
-            nothing answers; `error` says why, and `/status` names it under `loadErrors`. Memory state is not on the
-            version's record: `Version` carries none of it."
+            nothing answers; `error` says why, and `/status` names it under `loadErrors`. A content read or `:load` of a
+            `failed` version tries the load again, so a fixed dependency recovers with no other step, and answers 424
+            `VERSION_LOAD_FAILED` when it fails again. Memory state is not on the version's record: `Version` carries
+            none of it."
         loadingStartedAt:
           type: string
           format: date-time
@@ -8094,40 +8106,48 @@ components:
           $ref: "#/components/schemas/ManifestBinding"
           readOnly: true
         stale:
-          type: object
-          description: Present when the version serves a model older than its content because the newer content failed to compile.
-          required:
-            - failedAt
-            - message
-          properties:
-            failedAt:
-              type: string
-              format: date-time
-              description: When the newer content failed to compile.
-              readOnly: true
-            message:
-              type: string
-              description: Why it failed to compile.
+          type: boolean
+          description: True while the version serves a model older than its content because the newer content failed to compile;
+            `status` stays `serving` and `error` says why. As `LoadError.stale` on `/status`.
         error:
-          $ref: "#/components/schemas/EmbeddedError"
-          description: "Present when `status` is `failed`: why the last load failed."
-          readOnly: true
+          description: "Present when the last load or compile failed: with `status: failed`, why nothing answers; with `stale`,
+            why the newer content did not compile while the last good compile keeps serving. Absent otherwise.
+            `failedAt` is when it failed."
+          allOf:
+            - $ref: "#/components/schemas/EmbeddedError"
+            - type: object
+              required:
+                - failedAt
+              properties:
+                failedAt:
+                  type: string
+                  format: date-time
+                  readOnly: true
+                  description: When the load or compile failed.
         loadId:
           type: string
-          description: "On a version's own status read (`GET …/versions/{versionId}/status`) and in a reload's result; left out of
-            `GET /status`. An opaque identifier minted per load, which moves on every load and reload whether or not
-            content changed. Not a `revision`: never send it as `If-Match`."
+          description: "On a version's own status read (`GET …/versions/{versionId}/status`) and in the answers of `:load` and
+            `:reload`; left out of `GET /status`. An opaque identifier minted per load, which moves on every load and
+            reload whether or not content changed. Not a `revision`: never send it as `If-Match`."
         contentHash:
           type: string
-          description: On a version's own status read (`GET …/versions/{versionId}/status`) and in a reload's result; left out of
-            `GET /status`. SHA-256 (hex) over the model, skill and agent files being served; for a live package, whose
-            version is always `live`, the receipt that an edit is served.
+          description: On a version's own status read (`GET …/versions/{versionId}/status`) and in the answers of `:load` and
+            `:reload`; left out of `GET /status`. SHA-256 (hex) over the model, skill and agent files being served; for
+            a live package, whose version is always `live`, the receipt that an edit is served.
         bindings:
           type: array
-          description: On a version's own status read (`GET …/versions/{versionId}/status`) and in a reload's result; left out of
-            `GET /status`. What this version serves per source.
+          description: On a version's own status read (`GET …/versions/{versionId}/status`) and in the answers of `:load` and
+            `:reload`; left out of `GET /status`. What this version serves per source.
           items:
             $ref: "#/components/schemas/Binding"
+        warnings:
+          type: array
+          description: On a version's own status read and in the answers of `:load` and `:reload`, while a compiled copy is
+            served; left out of `GET /status`. Non-fatal findings from the compile being served, as the version's
+            `publisher.json`, models and reports produced it. Every load and reload computes them again, which is why
+            they are here and not on the version's record.
+          items:
+            $ref: "#/components/schemas/Problem"
       readOnly: true
 
     View:

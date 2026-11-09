@@ -73,14 +73,20 @@ These are the rules the spec's `info` states, in the same words where they can b
 - **Which reads load.** `/status`, a version's `status`, the versions list, the version record, `:unload` and
   `…/index` never load a version that is not loaded. Every other content read loads it on demand (a hydrate when the
   compiled-model store has it), as each such operation's description says; read `VersionStatus.status` first to know
-  what a read will cost.
+  what a read will cost. A version that cannot load (its models no longer compile, or its stored content cannot be
+  read) answers 424 `VERSION_LOAD_FAILED` with `details.problems` on every operation that loads it, `:load` and a run
+  included, and its status reads `failed`; the next such operation tries the load again. `:reload` is the exception: a
+  compile that fails is its 400 `COMPILE_ERROR`, and the version keeps serving its last good compile, its status
+  `stale` with `error` set. `:load`, `:unload` and `:reload` each answer the version's `VersionStatus`, whose
+  `warnings` are the load's non-fatal findings.
 - **State changes are fields.** `PATCH …/versions/{versionId}` with `archived`, `pinned` or `manifestLocation`;
   `PATCH …/packages/{packageName}` with `latestVersionId`; `PATCH …/runs/{runId}` with `status: "cancelled"`. What is
   not a field of a record is an action, `POST` with a `:verb` suffix on the resource it acts on (`:load`, `:unload`,
   `:reload`, `:query`, `:compile`, `:run-sql`), so an action can never collide with a child's name. An unsaved
   connection is tested with `?dryRun=true` on create or update.
 - **One mutation shape.** `PATCH` is JSON merge-patch: present fields are set, `null` unsets, absent fields are
-  untouched, lists replace. An orchestrator pushes an environment's desired state as a `PATCH` whose `connections` list
+  untouched, lists replace. A merge-patch body, its nested objects included, is not checked against the schema's
+  `required`, and its `null` clears an optional field although no schema spells `null`. An orchestrator pushes an environment's desired state as a `PATCH` whose `connections` list
   replaces the stored one. `PUT` is used only by the report write, which replaces a file. `POST` on a collection answers
   201 with the resource and a `Location`; `DELETE` answers 204. A create or a write takes its own resource's writable
   fields; an action that takes input (`:query`, `:compile`, `:run-sql`) takes an `…Request` body, since it creates no
@@ -99,8 +105,8 @@ These are the rules the spec's `info` states, in the same words where they can b
   by the server and sent back: a report's `contentHash`. An object schema no request can carry is `readOnly` as a whole.
 - **One schema per resource.** A write body is the resource itself, one schema for reading and writing it. `required`
   describes a read: what every read of the object carries. In a request, a `readOnly` field is ignored and never
-  required (OpenAPI 3.0's rule, adopted here because 3.1 dropped it), a field with a `default` is never `required` and a request may leave it out, and a
-  write-only field is never in `required`: a field a create needs says "Required on create." in its description. A
+  required (OpenAPI 3.0's rule, adopted here because 3.1 dropped it), a field with a `default` is never `required` and a request may leave it out, though every
+  read carries it, and a write-only field is never in `required`: a field a create needs says "Required on create." in its description. A
   `PATCH` body is a JSON merge-patch of the resource: any subset of its writable fields, `null` clearing an optional
   one; no schema spells `null`, since a read never returns it. Generated clients get request and response types from the
   one schema (openapi-typescript's `--read-write-markers --default-non-nullable false`).
@@ -155,12 +161,13 @@ These are the rules the spec's `info` states, in the same words where they can b
   `message`; treat a reason you do not know as the status's generic case. Each operation's error responses list the
   reasons it answers, and `details` has one shape per reason a client acts on (`COMPILE_ERROR`: `problems`;
   `REVISION_MISMATCH`: `currentRevision`; `INVALID_TRANSITION`: `currentStatus`; `TABLE_OWNED_ELSEWHERE`:
-  `ownerPackageName` and `ownerVersionId`; `INVALID_REQUEST`: `field`; `RESULT_TOO_LARGE`: `capType`; `CONTENT_CHANGED`: `currentContentHash`). An error inside a successful
+  `ownerPackageName` and `ownerVersionId`; `INVALID_REQUEST`: `field`; `RESULT_TOO_LARGE`: `capType`; `CONTENT_CHANGED`: `currentContentHash`; `VERSION_LOAD_FAILED`: `problems`). An error inside a successful
   response is an `EmbeddedError` (`message`, and a `reason` from that use's own list); every diagnostic, a compile
   problem, a load warning or a render log message, is a `Problem`, located by `modelPath` and a 0-based `range`.
 - **Dry runs.** `?dryRun=true` runs every check and stores nothing, and answers 200 with no `Location`, ignoring
   `Idempotency-Key`: a connection's answers its test result (`ok: false` on any failure), a publish's the version it
-  would make (a `Version` with no `resource`, `revision` or timestamps).
+  would make (a `Version` with no `resource`, `revision` or timestamps, although `Version` requires them, and no
+  `ETag`).
 - **Booleans** are JSON `true`/`false` in bodies and `true`/`false` in query strings; anything else is 400
   `INVALID_REQUEST`.
 - **Status codes.** No operation answers 401; a gateway may answer 401 or 403 before a request reaches Publisher, in its
@@ -170,8 +177,9 @@ These are the rules the spec's `info` states, in the same words where they can b
   `resources.readOnly` (`READ_ONLY`) and on an `#(authorize)` gate (`FORBIDDEN`); 410 `VERSION_ARCHIVED` when it uses
   an archived version's content (a content read, an action on it, the report write, a run, or `latestVersionId`'s
   target), never on that version's record, its status, its `PATCH`, `DELETE` or `:unload`, or the index; and 424, 502 and 504 when it loads a version or reaches a warehouse. 400 is your request or your Malloy; 424
-  is something the operation depends on (your connection: `CONNECTION_AUTH_FAILED`, `CONNECTION_NOT_FOUND`; or an
-  external manifest: `MANIFEST_UNAVAILABLE`), and retrying fails the same way; 502 is the database (`CONNECTION_FAILED`);
+  is something the operation depends on (your connection: `CONNECTION_AUTH_FAILED`, `CONNECTION_NOT_FOUND`; an
+  external manifest: `MANIFEST_UNAVAILABLE`; or the version itself, which cannot load: `VERSION_LOAD_FAILED`), and
+  retrying fails the same way; 502 is the database (`CONNECTION_FAILED`);
   504 is the database not answering in time (`GATEWAY_TIMEOUT`).
 
 ## Key endpoints
@@ -180,17 +188,17 @@ Each row names its operations by `operationId`, which the generated clients use.
 
 | Method & path | Does |
 | --- | --- |
-| `GET /status` | `get-status`: `operationalState`, `serverVersion`, `hostname`, `bootId`, `readOnly`, `versionPromotion`, `loadErrors` (with `stale` for a version serving a model older than its content), and per environment its connections and destinations by `name`, `type`, `fingerprint` and `configStamp` (never their configuration) and every version this server holds with its `VersionStatus`. Loads nothing; `no-store`; never rate-limited. |
+| `GET /status` | `get-status`: `status`, `serverVersion`, `hostname`, `bootId`, `readOnly`, `versionPromotion`, `loadErrors` (with `stale` for a version serving a model older than its content), and per environment its connections and destinations by `name`, `type`, `fingerprint` and `configStamp` (never their configuration) and every version this server holds with its `VersionStatus`. Loads nothing; `no-store`; never rate-limited. |
 | `GET /environments`, `POST /environments` | `list-environments`, `create-environment`. `PATCH /environments/{environmentName}` (`update-environment`) merges: its `connections` and `destinations` lists each replace whole, and an entry with a name and no configuration keeps the stored one, so a push need not resend withheld credentials. `DELETE` removes it and everything in it (`?force=true`). |
 | `GET …/connections`, `POST`, `GET …/connections/{connectionName}`, `PATCH`, `DELETE` | `list-connections`, `create-connection`, `get-connection`, `update-connection`, `delete-connection`. A connection's settings are a block named by its `type` (`"type": "postgres", "postgres": {…}`); a block refuses a field it does not define with 400 naming it. Credentials are write-only and listed in `withheldFields`. `?dryRun=true` on create or update tests without storing, answering 200 with a `ConnectionTestResult`. Destinations are the environment's `destinations` list, not connections. |
 | `GET …/connections/{connectionName}/schemas`, `…/schemas/{schemaName}/tables`, `…/tables/{tableName}`, `POST …/connections/{connectionName}:run-sql` | `list-schemas`, `list-tables`, `get-table`, `run-sql`. Browse what a connection can read; run or describe SQL. The same routes exist under a version for its `duckdb` sandbox (`…-in-version`), beside `list-connections-in-version` and `get-connection-in-version`, which list and read that sandbox. A missing schema or table is 404 `TABLE_NOT_FOUND`. |
 | `GET …/packages`, `POST …/packages` | `list-packages`, `create-package`. List the records; create a record with its `source` (no `latestVersionId`: 400). Every version, the first included, is `POST …/versions`. |
 | `GET …/packages/{packageName}`, `PATCH`, `DELETE` | `get-package`, `update-package`, `delete-package`. `PATCH` sets `description` and `latestVersionId` (send `If-Match` to make the move a compare-and-swap; moving it back is undo). `source` moves only with a publish from a new source. Scope and schedule come from a version's `publisher.json` (`materialization`). |
 | `GET …/versions`, `GET …/versions/{versionId}`, `PATCH`, `DELETE` | `list-versions`, `get-version`, `update-version`, `delete-version`. The package's versions, newest first (`?archived=` narrows); one version (`live` has no record: 404); its lifecycle fields (`archived`, `pinned`, `manifestLocation`; 424 `MANIFEST_UNAVAILABLE` when the manifest cannot be bound); delete for good. |
-| `POST …/versions` | `publish-version`: fetch a source and publish the version its `publisher.json` declares, or `<parent>+republish.N` (`origin: republish`) when that version exists with other content. From a new `source`, which becomes the package's recorded one, or with no body from the recorded one. 201 with the version it made; 200 with the current version when nothing changed. `?dryRun=true` always answers 200, with the `Version` it would make (no `resource`, `revision` or timestamps); `?profile=light` defers what a draft does not need (the build plan, report lint, the discovery index, data-file row counts) to its first read. |
-| `GET …/versions/{versionId}/status` | `get-version-status`: the `VersionStatus` of one version, with the fields `/status` leaves out (`loadId`, `contentHash`, `bindings`). Loads nothing. |
-| `POST …/versions/{versionId}:load`, `POST …/versions/{versionId}:unload` | `load-version`, `unload-version`: load the version on this server and wait, or drain and unload it (409 `VERSION_BUILDING` while a run builds it); each answers the `VersionStatus`. Changes no record. |
-| `POST …/versions/{versionId}:reload` | `reload-version`: recompile the version from its files against current warehouse schemas, and wait: a live package's edit loop, or a stored version's schema refresh. Makes no version. Answers a `ReloadResult` (`version`, absent on `live`, and `status`). |
+| `POST …/versions` | `publish-version`: fetch a source and publish the version its `publisher.json` declares, or `<parent>+republish.N` (`origin: republish`) when that version exists with other content. From a new `source`, which becomes the package's recorded one, or with no body from the recorded one. 201 with the version it made; 200 with the current version when nothing changed. `?dryRun=true` always answers 200, with the `Version` it would make (no `resource`, `revision` or timestamps) and no `ETag`; a `publisher.json` with no `version` is 400 `PACKAGE_VERSION_MISSING`; `?profile=light` defers what a draft does not need (the build plan, report lint, the discovery index, data-file row counts) to its first read. |
+| `GET …/versions/{versionId}/status` | `get-version-status`: the `VersionStatus` of one version, with the fields `/status` leaves out (`loadId`, `contentHash`, `bindings`, `warnings`). Loads nothing. |
+| `POST …/versions/{versionId}:load`, `POST …/versions/{versionId}:unload` | `load-version`, `unload-version`: load the version on this server and wait, or drain and unload it (409 `VERSION_BUILDING` while a run builds it); each answers the `VersionStatus`. Changes no record. A version that cannot load answers 424 `VERSION_LOAD_FAILED`. |
+| `POST …/versions/{versionId}:reload` | `reload-version`: recompile the version from its files against current warehouse schemas, and wait: a live package's edit loop, or a stored version's schema refresh. Makes no version and changes no record. Answers the `VersionStatus` (on `live`, the receipt that the edit is served: `contentHash`, `loadId`, `warnings`), with no `ETag`; a failed compile is 400 `COMPILE_ERROR`. |
 | `GET …/versions/{versionId}/models`, `GET …/models/{path}` | `list-models`, `get-model`: model files; one model's sources, views and givens (`?include=content,modelInfo,sourceInfos` for the larger parts). |
 | `POST …/versions/{versionId}/models/{path}:query` | `query-model`: run a query. See [request shapes](#query-request-shapes). |
 | `POST …/versions/{versionId}/models/{path}:compile` | `compile-model`: compile-check Malloy text at `append`, `file` or `package` scope. Answers `problems` and the `versionId` compiled against; the compile failed exactly when a problem has `severity` `error`. |
@@ -237,6 +245,8 @@ A query that fails says whose problem it is. Branch on `reason`:
 - **410** `VERSION_ARCHIVED`: the version is archived; query another, or restore it with `PATCH` `{"archived": false}`.
 - **424** `CONNECTION_AUTH_FAILED` or `CONNECTION_NOT_FOUND`: the connection is misconfigured; the query never ran. Do
   not rewrite it or retry until the connection is fixed.
+- **424** `VERSION_LOAD_FAILED`: the version itself cannot load (`details.problems` says why); the query never ran.
+  Query another version, or fix the cause and `:reload` or publish.
 - **502** `CONNECTION_FAILED`: the database could not be reached; the query never ran. Retry once, then report it.
 - **504** `GATEWAY_TIMEOUT`: the database did not answer in time.
 
