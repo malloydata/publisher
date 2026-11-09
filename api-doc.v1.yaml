@@ -91,6 +91,21 @@ info:
     `GET` of its own. Relative, so it stays right behind a gateway that serves the API under another prefix; a link and
     a stable key, never parsed.
 
+    - Every read but `/status` answers with an `ETag` and takes `If-None-Match`, answering 304 with no body when nothing
+    changed. `Cache-Control` is `private, max-age=31536000, immutable` only on raw file reads under a concrete version
+    id (`…/public/{path}`, an agent's skill file), whose bytes never change; every other read is `private, no-cache`,
+    because a compiled model under a concrete version can still change with `:refresh-schema`, and a read through
+    `latest` or `live` can resolve differently next time.
+
+    - Every operation but `/status` may answer 429 `RATE_LIMITED`; 429 and 503 carry `Retry-After` in seconds. `/status`
+    is never rate-limited, because it is the orchestrator's heartbeat.
+
+    - The server takes the caller's `X-Request-Id`, else the trace id of a W3C `traceparent`, else makes one; every
+    response carries it as `X-Request-Id`, and every error body repeats it as `requestId`.
+
+    - Lowercase snake_case, except error reasons (UPPER_SNAKE), values that name a response field (`include:
+    ["malloyResult"]`), and values that echo another vocabulary (a setting's value, Postgres's `sslmode`).
+
     - Every list is `{items, nextCursor}`, paged with `limit` and `after`. `/status` is the one unpaged snapshot.
 
     - Query results are typed: `rows` always, and Malloy's full result, with column types and render metadata, only on
@@ -161,6 +176,9 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/ServerStatus"
+          headers:
+            X-Request-Id:
+              $ref: "#/components/headers/RequestId"
         "503":
           $ref: "#/components/responses/Unavailable"
 
@@ -174,6 +192,7 @@ paths:
       parameters:
         - $ref: "#/components/parameters/limit"
         - $ref: "#/components/parameters/after"
+        - $ref: "#/components/parameters/ifNoneMatch"
       responses:
         "200":
           description: A page of environments.
@@ -181,6 +200,15 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/EnvironmentList"
+          headers:
+            X-Request-Id:
+              $ref: "#/components/headers/RequestId"
+            ETag:
+              $ref: "#/components/headers/ETag"
+            Cache-Control:
+              $ref: "#/components/headers/CacheControl"
+        "304":
+          $ref: "#/components/responses/NotModified"
         "400":
           $ref: "#/components/responses/BadRequest"
         "401":
@@ -193,6 +221,8 @@ paths:
           $ref: "#/components/responses/Conflict"
         "412":
           $ref: "#/components/responses/PreconditionFailed"
+        "429":
+          $ref: "#/components/responses/RateLimited"
         "500":
           $ref: "#/components/responses/Internal"
         "503":
@@ -214,6 +244,8 @@ paths:
         "201":
           description: Created.
           headers:
+            X-Request-Id:
+              $ref: "#/components/headers/RequestId"
             ETag:
               $ref: "#/components/headers/ETag"
             Location:
@@ -234,6 +266,8 @@ paths:
           $ref: "#/components/responses/Conflict"
         "412":
           $ref: "#/components/responses/PreconditionFailed"
+        "429":
+          $ref: "#/components/responses/RateLimited"
         "500":
           $ref: "#/components/responses/Internal"
         "503":
@@ -252,12 +286,18 @@ paths:
         "200":
           description: The environment.
           headers:
+            X-Request-Id:
+              $ref: "#/components/headers/RequestId"
             ETag:
               $ref: "#/components/headers/ETag"
+            Cache-Control:
+              $ref: "#/components/headers/CacheControl"
           content:
             application/json:
               schema:
                 $ref: "#/components/schemas/Environment"
+        "304":
+          $ref: "#/components/responses/NotModified"
         "400":
           $ref: "#/components/responses/BadRequest"
         "401":
@@ -270,10 +310,14 @@ paths:
           $ref: "#/components/responses/Conflict"
         "412":
           $ref: "#/components/responses/PreconditionFailed"
+        "429":
+          $ref: "#/components/responses/RateLimited"
         "500":
           $ref: "#/components/responses/Internal"
         "503":
           $ref: "#/components/responses/Unavailable"
+      parameters:
+        - $ref: "#/components/parameters/ifNoneMatch"
     patch:
       operationId: update-environment
       tags:
@@ -294,6 +338,8 @@ paths:
         "200":
           description: Updated.
           headers:
+            X-Request-Id:
+              $ref: "#/components/headers/RequestId"
             ETag:
               $ref: "#/components/headers/ETag"
           content:
@@ -312,6 +358,8 @@ paths:
           $ref: "#/components/responses/Conflict"
         "412":
           $ref: "#/components/responses/PreconditionFailed"
+        "429":
+          $ref: "#/components/responses/RateLimited"
         "500":
           $ref: "#/components/responses/Internal"
         "503":
@@ -329,6 +377,9 @@ paths:
       responses:
         "204":
           description: Deleted.
+          headers:
+            X-Request-Id:
+              $ref: "#/components/headers/RequestId"
         "400":
           $ref: "#/components/responses/BadRequest"
         "401":
@@ -341,6 +392,8 @@ paths:
           $ref: "#/components/responses/Conflict"
         "412":
           $ref: "#/components/responses/PreconditionFailed"
+        "429":
+          $ref: "#/components/responses/RateLimited"
         "500":
           $ref: "#/components/responses/Internal"
         "503":
@@ -367,6 +420,7 @@ paths:
               - destination
               - both
           description: Only connections with this role (a destination is `destination` or `both`).
+        - $ref: "#/components/parameters/ifNoneMatch"
       responses:
         "200":
           description: A page of connections, credentials withheld.
@@ -374,6 +428,15 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/ConnectionList"
+          headers:
+            X-Request-Id:
+              $ref: "#/components/headers/RequestId"
+            ETag:
+              $ref: "#/components/headers/ETag"
+            Cache-Control:
+              $ref: "#/components/headers/CacheControl"
+        "304":
+          $ref: "#/components/responses/NotModified"
         "400":
           $ref: "#/components/responses/BadRequest"
         "401":
@@ -386,6 +449,8 @@ paths:
           $ref: "#/components/responses/Conflict"
         "412":
           $ref: "#/components/responses/PreconditionFailed"
+        "429":
+          $ref: "#/components/responses/RateLimited"
         "500":
           $ref: "#/components/responses/Internal"
         "503":
@@ -416,9 +481,14 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/ConnectionTestResult"
+          headers:
+            X-Request-Id:
+              $ref: "#/components/headers/RequestId"
         "201":
           description: Created.
           headers:
+            X-Request-Id:
+              $ref: "#/components/headers/RequestId"
             ETag:
               $ref: "#/components/headers/ETag"
             Location:
@@ -439,6 +509,8 @@ paths:
           $ref: "#/components/responses/Conflict"
         "412":
           $ref: "#/components/responses/PreconditionFailed"
+        "429":
+          $ref: "#/components/responses/RateLimited"
         "500":
           $ref: "#/components/responses/Internal"
         "503":
@@ -458,12 +530,18 @@ paths:
         "200":
           description: The connection, credentials withheld.
           headers:
+            X-Request-Id:
+              $ref: "#/components/headers/RequestId"
             ETag:
               $ref: "#/components/headers/ETag"
+            Cache-Control:
+              $ref: "#/components/headers/CacheControl"
           content:
             application/json:
               schema:
                 $ref: "#/components/schemas/Connection"
+        "304":
+          $ref: "#/components/responses/NotModified"
         "400":
           $ref: "#/components/responses/BadRequest"
         "401":
@@ -476,10 +554,14 @@ paths:
           $ref: "#/components/responses/Conflict"
         "412":
           $ref: "#/components/responses/PreconditionFailed"
+        "429":
+          $ref: "#/components/responses/RateLimited"
         "500":
           $ref: "#/components/responses/Internal"
         "503":
           $ref: "#/components/responses/Unavailable"
+      parameters:
+        - $ref: "#/components/parameters/ifNoneMatch"
     patch:
       operationId: update-connection
       tags:
@@ -504,6 +586,8 @@ paths:
         "200":
           description: Updated (or, with `dryRun`, the test result).
           headers:
+            X-Request-Id:
+              $ref: "#/components/headers/RequestId"
             ETag:
               $ref: "#/components/headers/ETag"
           content:
@@ -524,6 +608,8 @@ paths:
           $ref: "#/components/responses/Conflict"
         "412":
           $ref: "#/components/responses/PreconditionFailed"
+        "429":
+          $ref: "#/components/responses/RateLimited"
         "500":
           $ref: "#/components/responses/Internal"
         "503":
@@ -538,6 +624,9 @@ paths:
       responses:
         "204":
           description: Deleted.
+          headers:
+            X-Request-Id:
+              $ref: "#/components/headers/RequestId"
         "400":
           $ref: "#/components/responses/BadRequest"
         "401":
@@ -550,6 +639,8 @@ paths:
           $ref: "#/components/responses/Conflict"
         "412":
           $ref: "#/components/responses/PreconditionFailed"
+        "429":
+          $ref: "#/components/responses/RateLimited"
         "500":
           $ref: "#/components/responses/Internal"
         "503":
@@ -568,6 +659,7 @@ paths:
       parameters:
         - $ref: "#/components/parameters/limit"
         - $ref: "#/components/parameters/after"
+        - $ref: "#/components/parameters/ifNoneMatch"
       responses:
         "200":
           description: A page of packages.
@@ -575,6 +667,15 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/PackageList"
+          headers:
+            X-Request-Id:
+              $ref: "#/components/headers/RequestId"
+            ETag:
+              $ref: "#/components/headers/ETag"
+            Cache-Control:
+              $ref: "#/components/headers/CacheControl"
+        "304":
+          $ref: "#/components/responses/NotModified"
         "400":
           $ref: "#/components/responses/BadRequest"
         "401":
@@ -587,6 +688,8 @@ paths:
           $ref: "#/components/responses/Conflict"
         "412":
           $ref: "#/components/responses/PreconditionFailed"
+        "429":
+          $ref: "#/components/responses/RateLimited"
         "500":
           $ref: "#/components/responses/Internal"
         "503":
@@ -631,9 +734,14 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/Version"
+          headers:
+            X-Request-Id:
+              $ref: "#/components/headers/RequestId"
         "201":
           description: Published.
           headers:
+            X-Request-Id:
+              $ref: "#/components/headers/RequestId"
             Location:
               $ref: "#/components/headers/Location"
           content:
@@ -656,6 +764,8 @@ paths:
           $ref: "#/components/responses/PreconditionFailed"
         "424":
           $ref: "#/components/responses/ConnectionUnavailable"
+        "429":
+          $ref: "#/components/responses/RateLimited"
         "500":
           $ref: "#/components/responses/Internal"
         "503":
@@ -675,12 +785,18 @@ paths:
         "200":
           description: The package.
           headers:
+            X-Request-Id:
+              $ref: "#/components/headers/RequestId"
             ETag:
               $ref: "#/components/headers/ETag"
+            Cache-Control:
+              $ref: "#/components/headers/CacheControl"
           content:
             application/json:
               schema:
                 $ref: "#/components/schemas/Package"
+        "304":
+          $ref: "#/components/responses/NotModified"
         "400":
           $ref: "#/components/responses/BadRequest"
         "401":
@@ -693,10 +809,14 @@ paths:
           $ref: "#/components/responses/Conflict"
         "412":
           $ref: "#/components/responses/PreconditionFailed"
+        "429":
+          $ref: "#/components/responses/RateLimited"
         "500":
           $ref: "#/components/responses/Internal"
         "503":
           $ref: "#/components/responses/Unavailable"
+      parameters:
+        - $ref: "#/components/parameters/ifNoneMatch"
     patch:
       operationId: update-package
       tags:
@@ -717,6 +837,8 @@ paths:
         "200":
           description: Updated.
           headers:
+            X-Request-Id:
+              $ref: "#/components/headers/RequestId"
             ETag:
               $ref: "#/components/headers/ETag"
           content:
@@ -737,6 +859,8 @@ paths:
           $ref: "#/components/responses/Gone"
         "412":
           $ref: "#/components/responses/PreconditionFailed"
+        "429":
+          $ref: "#/components/responses/RateLimited"
         "500":
           $ref: "#/components/responses/Internal"
         "503":
@@ -753,6 +877,9 @@ paths:
       responses:
         "204":
           description: Deleted.
+          headers:
+            X-Request-Id:
+              $ref: "#/components/headers/RequestId"
         "400":
           $ref: "#/components/responses/BadRequest"
         "401":
@@ -765,6 +892,8 @@ paths:
           $ref: "#/components/responses/Conflict"
         "412":
           $ref: "#/components/responses/PreconditionFailed"
+        "429":
+          $ref: "#/components/responses/RateLimited"
         "500":
           $ref: "#/components/responses/Internal"
         "503":
@@ -794,6 +923,9 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/ReloadResult"
+          headers:
+            X-Request-Id:
+              $ref: "#/components/headers/RequestId"
         "400":
           $ref: "#/components/responses/BadRequest"
         "401":
@@ -806,6 +938,8 @@ paths:
           $ref: "#/components/responses/Conflict"
         "412":
           $ref: "#/components/responses/PreconditionFailed"
+        "429":
+          $ref: "#/components/responses/RateLimited"
         "500":
           $ref: "#/components/responses/Internal"
         "503":
@@ -827,6 +961,7 @@ paths:
           schema:
             $ref: "#/components/schemas/VersionRef"
           description: One version; `latest` by default. Loads nothing.
+        - $ref: "#/components/parameters/ifNoneMatch"
       responses:
         "200":
           description: The serving state, with the per-package fields.
@@ -834,6 +969,15 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/ServingState"
+          headers:
+            X-Request-Id:
+              $ref: "#/components/headers/RequestId"
+            ETag:
+              $ref: "#/components/headers/ETag"
+            Cache-Control:
+              $ref: "#/components/headers/CacheControl"
+        "304":
+          $ref: "#/components/responses/NotModified"
         "400":
           $ref: "#/components/responses/BadRequest"
         "401":
@@ -846,6 +990,8 @@ paths:
           $ref: "#/components/responses/Conflict"
         "412":
           $ref: "#/components/responses/PreconditionFailed"
+        "429":
+          $ref: "#/components/responses/RateLimited"
         "500":
           $ref: "#/components/responses/Internal"
         "503":
@@ -870,6 +1016,7 @@ paths:
           schema:
             type: boolean
           description: Only archived, or only active, versions.
+        - $ref: "#/components/parameters/ifNoneMatch"
       responses:
         "200":
           description: A page of versions, newest first.
@@ -877,6 +1024,15 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/VersionList"
+          headers:
+            X-Request-Id:
+              $ref: "#/components/headers/RequestId"
+            ETag:
+              $ref: "#/components/headers/ETag"
+            Cache-Control:
+              $ref: "#/components/headers/CacheControl"
+        "304":
+          $ref: "#/components/responses/NotModified"
         "400":
           $ref: "#/components/responses/BadRequest"
         "401":
@@ -889,6 +1045,8 @@ paths:
           $ref: "#/components/responses/Conflict"
         "412":
           $ref: "#/components/responses/PreconditionFailed"
+        "429":
+          $ref: "#/components/responses/RateLimited"
         "500":
           $ref: "#/components/responses/Internal"
         "503":
@@ -913,12 +1071,18 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/ReloadResult"
+          headers:
+            X-Request-Id:
+              $ref: "#/components/headers/RequestId"
         "201":
           description: A version was published (`outcome` is `published`).
           content:
             application/json:
               schema:
                 $ref: "#/components/schemas/ReloadResult"
+          headers:
+            X-Request-Id:
+              $ref: "#/components/headers/RequestId"
         "400":
           $ref: "#/components/responses/BadRequest"
         "401":
@@ -931,6 +1095,8 @@ paths:
           $ref: "#/components/responses/Conflict"
         "412":
           $ref: "#/components/responses/PreconditionFailed"
+        "429":
+          $ref: "#/components/responses/RateLimited"
         "500":
           $ref: "#/components/responses/Internal"
         "503":
@@ -958,6 +1124,9 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/Version"
+          headers:
+            X-Request-Id:
+              $ref: "#/components/headers/RequestId"
         "400":
           $ref: "#/components/responses/BadRequest"
         "401":
@@ -970,6 +1139,8 @@ paths:
           $ref: "#/components/responses/Conflict"
         "412":
           $ref: "#/components/responses/PreconditionFailed"
+        "429":
+          $ref: "#/components/responses/RateLimited"
         "500":
           $ref: "#/components/responses/Internal"
         "503":
@@ -991,12 +1162,18 @@ paths:
         "200":
           description: The version.
           headers:
+            X-Request-Id:
+              $ref: "#/components/headers/RequestId"
             ETag:
               $ref: "#/components/headers/ETag"
+            Cache-Control:
+              $ref: "#/components/headers/CacheControl"
           content:
             application/json:
               schema:
                 $ref: "#/components/schemas/Version"
+        "304":
+          $ref: "#/components/responses/NotModified"
         "400":
           $ref: "#/components/responses/BadRequest"
         "401":
@@ -1011,10 +1188,14 @@ paths:
           $ref: "#/components/responses/Gone"
         "412":
           $ref: "#/components/responses/PreconditionFailed"
+        "429":
+          $ref: "#/components/responses/RateLimited"
         "500":
           $ref: "#/components/responses/Internal"
         "503":
           $ref: "#/components/responses/Unavailable"
+      parameters:
+        - $ref: "#/components/parameters/ifNoneMatch"
     patch:
       operationId: update-version
       tags:
@@ -1039,6 +1220,8 @@ paths:
         "200":
           description: Updated.
           headers:
+            X-Request-Id:
+              $ref: "#/components/headers/RequestId"
             ETag:
               $ref: "#/components/headers/ETag"
           content:
@@ -1061,6 +1244,8 @@ paths:
           $ref: "#/components/responses/PreconditionFailed"
         "424":
           $ref: "#/components/responses/ConnectionUnavailable"
+        "429":
+          $ref: "#/components/responses/RateLimited"
         "500":
           $ref: "#/components/responses/Internal"
         "503":
@@ -1078,6 +1263,9 @@ paths:
       responses:
         "204":
           description: Deleted.
+          headers:
+            X-Request-Id:
+              $ref: "#/components/headers/RequestId"
         "400":
           $ref: "#/components/responses/BadRequest"
         "401":
@@ -1090,6 +1278,8 @@ paths:
           $ref: "#/components/responses/Conflict"
         "412":
           $ref: "#/components/responses/PreconditionFailed"
+        "429":
+          $ref: "#/components/responses/RateLimited"
         "500":
           $ref: "#/components/responses/Internal"
         "503":
@@ -1110,6 +1300,7 @@ paths:
         - $ref: "#/components/parameters/limit"
         - $ref: "#/components/parameters/after"
         - $ref: "#/components/parameters/includeHidden"
+        - $ref: "#/components/parameters/ifNoneMatch"
       responses:
         "200":
           description: A page of models.
@@ -1117,6 +1308,15 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/ModelList"
+          headers:
+            X-Request-Id:
+              $ref: "#/components/headers/RequestId"
+            ETag:
+              $ref: "#/components/headers/ETag"
+            Cache-Control:
+              $ref: "#/components/headers/CacheControl"
+        "304":
+          $ref: "#/components/responses/NotModified"
         "400":
           $ref: "#/components/responses/BadRequest"
         "401":
@@ -1131,6 +1331,8 @@ paths:
           $ref: "#/components/responses/Gone"
         "412":
           $ref: "#/components/responses/PreconditionFailed"
+        "429":
+          $ref: "#/components/responses/RateLimited"
         "500":
           $ref: "#/components/responses/Internal"
         "503":
@@ -1170,6 +1372,7 @@ paths:
           schema:
             type: string
           description: Given values as a URL-encoded JSON object, for a model whose sources depend on them.
+        - $ref: "#/components/parameters/ifNoneMatch"
       responses:
         "200":
           description: The compiled model.
@@ -1177,6 +1380,15 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/CompiledModel"
+          headers:
+            X-Request-Id:
+              $ref: "#/components/headers/RequestId"
+            ETag:
+              $ref: "#/components/headers/ETag"
+            Cache-Control:
+              $ref: "#/components/headers/CacheControl"
+        "304":
+          $ref: "#/components/responses/NotModified"
         "400":
           $ref: "#/components/responses/BadRequest"
         "401":
@@ -1193,6 +1405,8 @@ paths:
           $ref: "#/components/responses/PreconditionFailed"
         "424":
           $ref: "#/components/responses/ConnectionUnavailable"
+        "429":
+          $ref: "#/components/responses/RateLimited"
         "500":
           $ref: "#/components/responses/Internal"
         "503":
@@ -1223,9 +1437,14 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/ModelWriteResult"
+          headers:
+            X-Request-Id:
+              $ref: "#/components/headers/RequestId"
         "201":
           description: Created.
           headers:
+            X-Request-Id:
+              $ref: "#/components/headers/RequestId"
             Location:
               $ref: "#/components/headers/Location"
           content:
@@ -1246,6 +1465,8 @@ paths:
           $ref: "#/components/responses/Gone"
         "412":
           $ref: "#/components/responses/PreconditionFailed"
+        "429":
+          $ref: "#/components/responses/RateLimited"
         "500":
           $ref: "#/components/responses/Internal"
         "503":
@@ -1278,6 +1499,9 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/QueryResult"
+          headers:
+            X-Request-Id:
+              $ref: "#/components/headers/RequestId"
         "400":
           $ref: "#/components/responses/BadRequest"
         "401":
@@ -1296,6 +1520,8 @@ paths:
           $ref: "#/components/responses/PayloadTooLarge"
         "424":
           $ref: "#/components/responses/ConnectionUnavailable"
+        "429":
+          $ref: "#/components/responses/RateLimited"
         "500":
           $ref: "#/components/responses/Internal"
         "502":
@@ -1330,6 +1556,9 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/CompileResult"
+          headers:
+            X-Request-Id:
+              $ref: "#/components/headers/RequestId"
         "400":
           $ref: "#/components/responses/BadRequest"
         "401":
@@ -1348,6 +1577,8 @@ paths:
           $ref: "#/components/responses/PayloadTooLarge"
         "424":
           $ref: "#/components/responses/ConnectionUnavailable"
+        "429":
+          $ref: "#/components/responses/RateLimited"
         "500":
           $ref: "#/components/responses/Internal"
         "503":
@@ -1374,6 +1605,7 @@ paths:
             enum:
               - grid
               - linear
+        - $ref: "#/components/parameters/ifNoneMatch"
       responses:
         "200":
           description: A page of reports.
@@ -1381,6 +1613,15 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/ReportList"
+          headers:
+            X-Request-Id:
+              $ref: "#/components/headers/RequestId"
+            ETag:
+              $ref: "#/components/headers/ETag"
+            Cache-Control:
+              $ref: "#/components/headers/CacheControl"
+        "304":
+          $ref: "#/components/responses/NotModified"
         "400":
           $ref: "#/components/responses/BadRequest"
         "401":
@@ -1395,6 +1636,8 @@ paths:
           $ref: "#/components/responses/Gone"
         "412":
           $ref: "#/components/responses/PreconditionFailed"
+        "429":
+          $ref: "#/components/responses/RateLimited"
         "500":
           $ref: "#/components/responses/Internal"
         "503":
@@ -1419,6 +1662,15 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/ReportManifest"
+          headers:
+            X-Request-Id:
+              $ref: "#/components/headers/RequestId"
+            ETag:
+              $ref: "#/components/headers/ETag"
+            Cache-Control:
+              $ref: "#/components/headers/CacheControl"
+        "304":
+          $ref: "#/components/responses/NotModified"
         "400":
           $ref: "#/components/responses/BadRequest"
         "401":
@@ -1433,10 +1685,14 @@ paths:
           $ref: "#/components/responses/Gone"
         "412":
           $ref: "#/components/responses/PreconditionFailed"
+        "429":
+          $ref: "#/components/responses/RateLimited"
         "500":
           $ref: "#/components/responses/Internal"
         "503":
           $ref: "#/components/responses/Unavailable"
+      parameters:
+        - $ref: "#/components/parameters/ifNoneMatch"
 
 
   /environments/{environmentName}/packages/{packageName}/versions/{versionId}/data-apps:
@@ -1452,6 +1708,7 @@ paths:
       parameters:
         - $ref: "#/components/parameters/limit"
         - $ref: "#/components/parameters/after"
+        - $ref: "#/components/parameters/ifNoneMatch"
       responses:
         "200":
           description: A page of data apps.
@@ -1459,6 +1716,15 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/DataAppList"
+          headers:
+            X-Request-Id:
+              $ref: "#/components/headers/RequestId"
+            ETag:
+              $ref: "#/components/headers/ETag"
+            Cache-Control:
+              $ref: "#/components/headers/CacheControl"
+        "304":
+          $ref: "#/components/responses/NotModified"
         "400":
           $ref: "#/components/responses/BadRequest"
         "401":
@@ -1473,6 +1739,8 @@ paths:
           $ref: "#/components/responses/Gone"
         "412":
           $ref: "#/components/responses/PreconditionFailed"
+        "429":
+          $ref: "#/components/responses/RateLimited"
         "500":
           $ref: "#/components/responses/Internal"
         "503":
@@ -1500,6 +1768,15 @@ paths:
               schema:
                 type: string
                 format: binary
+          headers:
+            X-Request-Id:
+              $ref: "#/components/headers/RequestId"
+            ETag:
+              $ref: "#/components/headers/ETag"
+            Cache-Control:
+              $ref: "#/components/headers/CacheControl"
+        "304":
+          $ref: "#/components/responses/NotModified"
         "400":
           $ref: "#/components/responses/BadRequest"
         "401":
@@ -1514,10 +1791,14 @@ paths:
           $ref: "#/components/responses/Gone"
         "412":
           $ref: "#/components/responses/PreconditionFailed"
+        "429":
+          $ref: "#/components/responses/RateLimited"
         "500":
           $ref: "#/components/responses/Internal"
         "503":
           $ref: "#/components/responses/Unavailable"
+      parameters:
+        - $ref: "#/components/parameters/ifNoneMatch"
 
 
   /environments/{environmentName}/packages/{packageName}/versions/{versionId}/data-files:
@@ -1533,6 +1814,7 @@ paths:
       parameters:
         - $ref: "#/components/parameters/limit"
         - $ref: "#/components/parameters/after"
+        - $ref: "#/components/parameters/ifNoneMatch"
       responses:
         "200":
           description: A page of data files.
@@ -1540,6 +1822,15 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/DataFileList"
+          headers:
+            X-Request-Id:
+              $ref: "#/components/headers/RequestId"
+            ETag:
+              $ref: "#/components/headers/ETag"
+            Cache-Control:
+              $ref: "#/components/headers/CacheControl"
+        "304":
+          $ref: "#/components/responses/NotModified"
         "400":
           $ref: "#/components/responses/BadRequest"
         "401":
@@ -1554,6 +1845,8 @@ paths:
           $ref: "#/components/responses/Gone"
         "412":
           $ref: "#/components/responses/PreconditionFailed"
+        "429":
+          $ref: "#/components/responses/RateLimited"
         "500":
           $ref: "#/components/responses/Internal"
         "503":
@@ -1573,6 +1866,7 @@ paths:
       parameters:
         - $ref: "#/components/parameters/limit"
         - $ref: "#/components/parameters/after"
+        - $ref: "#/components/parameters/ifNoneMatch"
       responses:
         "200":
           description: A page of agent summaries.
@@ -1580,6 +1874,15 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/AgentList"
+          headers:
+            X-Request-Id:
+              $ref: "#/components/headers/RequestId"
+            ETag:
+              $ref: "#/components/headers/ETag"
+            Cache-Control:
+              $ref: "#/components/headers/CacheControl"
+        "304":
+          $ref: "#/components/responses/NotModified"
         "400":
           $ref: "#/components/responses/BadRequest"
         "401":
@@ -1594,6 +1897,8 @@ paths:
           $ref: "#/components/responses/Gone"
         "412":
           $ref: "#/components/responses/PreconditionFailed"
+        "429":
+          $ref: "#/components/responses/RateLimited"
         "500":
           $ref: "#/components/responses/Internal"
         "503":
@@ -1618,6 +1923,7 @@ paths:
             type: boolean
             default: true
           description: Include the agent's skill files.
+        - $ref: "#/components/parameters/ifNoneMatch"
       responses:
         "200":
           description: The agent.
@@ -1625,6 +1931,15 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/Agent"
+          headers:
+            X-Request-Id:
+              $ref: "#/components/headers/RequestId"
+            ETag:
+              $ref: "#/components/headers/ETag"
+            Cache-Control:
+              $ref: "#/components/headers/CacheControl"
+        "304":
+          $ref: "#/components/responses/NotModified"
         "400":
           $ref: "#/components/responses/BadRequest"
         "401":
@@ -1639,6 +1954,8 @@ paths:
           $ref: "#/components/responses/Gone"
         "412":
           $ref: "#/components/responses/PreconditionFailed"
+        "429":
+          $ref: "#/components/responses/RateLimited"
         "500":
           $ref: "#/components/responses/Internal"
         "503":
@@ -1664,6 +1981,15 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/AgentSkillRead"
+          headers:
+            X-Request-Id:
+              $ref: "#/components/headers/RequestId"
+            ETag:
+              $ref: "#/components/headers/ETag"
+            Cache-Control:
+              $ref: "#/components/headers/CacheControl"
+        "304":
+          $ref: "#/components/responses/NotModified"
         "400":
           $ref: "#/components/responses/BadRequest"
         "401":
@@ -1678,10 +2004,14 @@ paths:
           $ref: "#/components/responses/Gone"
         "412":
           $ref: "#/components/responses/PreconditionFailed"
+        "429":
+          $ref: "#/components/responses/RateLimited"
         "500":
           $ref: "#/components/responses/Internal"
         "503":
           $ref: "#/components/responses/Unavailable"
+      parameters:
+        - $ref: "#/components/parameters/ifNoneMatch"
 
 
   /environments/{environmentName}/packages/{packageName}/versions/{versionId}/skills:
@@ -1698,6 +2028,7 @@ paths:
       parameters:
         - $ref: "#/components/parameters/limit"
         - $ref: "#/components/parameters/after"
+        - $ref: "#/components/parameters/ifNoneMatch"
       responses:
         "200":
           description: A page of skill summaries.
@@ -1705,6 +2036,15 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/SkillList"
+          headers:
+            X-Request-Id:
+              $ref: "#/components/headers/RequestId"
+            ETag:
+              $ref: "#/components/headers/ETag"
+            Cache-Control:
+              $ref: "#/components/headers/CacheControl"
+        "304":
+          $ref: "#/components/responses/NotModified"
         "400":
           $ref: "#/components/responses/BadRequest"
         "401":
@@ -1719,6 +2059,8 @@ paths:
           $ref: "#/components/responses/Gone"
         "412":
           $ref: "#/components/responses/PreconditionFailed"
+        "429":
+          $ref: "#/components/responses/RateLimited"
         "500":
           $ref: "#/components/responses/Internal"
         "503":
@@ -1743,6 +2085,15 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/Skill"
+          headers:
+            X-Request-Id:
+              $ref: "#/components/headers/RequestId"
+            ETag:
+              $ref: "#/components/headers/ETag"
+            Cache-Control:
+              $ref: "#/components/headers/CacheControl"
+        "304":
+          $ref: "#/components/responses/NotModified"
         "400":
           $ref: "#/components/responses/BadRequest"
         "401":
@@ -1757,10 +2108,14 @@ paths:
           $ref: "#/components/responses/Gone"
         "412":
           $ref: "#/components/responses/PreconditionFailed"
+        "429":
+          $ref: "#/components/responses/RateLimited"
         "500":
           $ref: "#/components/responses/Internal"
         "503":
           $ref: "#/components/responses/Unavailable"
+      parameters:
+        - $ref: "#/components/parameters/ifNoneMatch"
 
 
   /environments/{environmentName}/packages/{packageName}/versions/{versionId}/entities:
@@ -1777,6 +2132,7 @@ paths:
         - $ref: "#/components/parameters/limit"
         - $ref: "#/components/parameters/after"
         - $ref: "#/components/parameters/includeHidden"
+        - $ref: "#/components/parameters/ifNoneMatch"
       responses:
         "200":
           description: A page of per-model entity declarations.
@@ -1784,6 +2140,15 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/EntitiesList"
+          headers:
+            X-Request-Id:
+              $ref: "#/components/headers/RequestId"
+            ETag:
+              $ref: "#/components/headers/ETag"
+            Cache-Control:
+              $ref: "#/components/headers/CacheControl"
+        "304":
+          $ref: "#/components/responses/NotModified"
         "400":
           $ref: "#/components/responses/BadRequest"
         "401":
@@ -1798,6 +2163,8 @@ paths:
           $ref: "#/components/responses/Gone"
         "412":
           $ref: "#/components/responses/PreconditionFailed"
+        "429":
+          $ref: "#/components/responses/RateLimited"
         "500":
           $ref: "#/components/responses/Internal"
         "503":
@@ -1821,6 +2188,15 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/ClassificationSummary"
+          headers:
+            X-Request-Id:
+              $ref: "#/components/headers/RequestId"
+            ETag:
+              $ref: "#/components/headers/ETag"
+            Cache-Control:
+              $ref: "#/components/headers/CacheControl"
+        "304":
+          $ref: "#/components/responses/NotModified"
         "400":
           $ref: "#/components/responses/BadRequest"
         "401":
@@ -1835,10 +2211,14 @@ paths:
           $ref: "#/components/responses/Gone"
         "412":
           $ref: "#/components/responses/PreconditionFailed"
+        "429":
+          $ref: "#/components/responses/RateLimited"
         "500":
           $ref: "#/components/responses/Internal"
         "503":
           $ref: "#/components/responses/Unavailable"
+      parameters:
+        - $ref: "#/components/parameters/ifNoneMatch"
 
 
   /environments/{environmentName}/packages/{packageName}/versions/{versionId}/index:
@@ -1860,6 +2240,15 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/DiscoveryIndex"
+          headers:
+            X-Request-Id:
+              $ref: "#/components/headers/RequestId"
+            ETag:
+              $ref: "#/components/headers/ETag"
+            Cache-Control:
+              $ref: "#/components/headers/CacheControl"
+        "304":
+          $ref: "#/components/responses/NotModified"
         "400":
           $ref: "#/components/responses/BadRequest"
         "401":
@@ -1874,10 +2263,14 @@ paths:
           $ref: "#/components/responses/Gone"
         "412":
           $ref: "#/components/responses/PreconditionFailed"
+        "429":
+          $ref: "#/components/responses/RateLimited"
         "500":
           $ref: "#/components/responses/Internal"
         "503":
           $ref: "#/components/responses/Unavailable"
+      parameters:
+        - $ref: "#/components/parameters/ifNoneMatch"
 
 
   /environments/{environmentName}/packages/{packageName}/versions/{versionId}/build-plan:
@@ -1897,6 +2290,15 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/BuildPlanResult"
+          headers:
+            X-Request-Id:
+              $ref: "#/components/headers/RequestId"
+            ETag:
+              $ref: "#/components/headers/ETag"
+            Cache-Control:
+              $ref: "#/components/headers/CacheControl"
+        "304":
+          $ref: "#/components/responses/NotModified"
         "400":
           $ref: "#/components/responses/BadRequest"
         "401":
@@ -1911,10 +2313,14 @@ paths:
           $ref: "#/components/responses/Gone"
         "412":
           $ref: "#/components/responses/PreconditionFailed"
+        "429":
+          $ref: "#/components/responses/RateLimited"
         "500":
           $ref: "#/components/responses/Internal"
         "503":
           $ref: "#/components/responses/Unavailable"
+      parameters:
+        - $ref: "#/components/parameters/ifNoneMatch"
 
 
   /environments/{environmentName}/packages/{packageName}/versions/{versionId}/connections:
@@ -1935,6 +2341,15 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/ConnectionList"
+          headers:
+            X-Request-Id:
+              $ref: "#/components/headers/RequestId"
+            ETag:
+              $ref: "#/components/headers/ETag"
+            Cache-Control:
+              $ref: "#/components/headers/CacheControl"
+        "304":
+          $ref: "#/components/responses/NotModified"
         "400":
           $ref: "#/components/responses/BadRequest"
         "401":
@@ -1949,10 +2364,14 @@ paths:
           $ref: "#/components/responses/Gone"
         "412":
           $ref: "#/components/responses/PreconditionFailed"
+        "429":
+          $ref: "#/components/responses/RateLimited"
         "500":
           $ref: "#/components/responses/Internal"
         "503":
           $ref: "#/components/responses/Unavailable"
+      parameters:
+        - $ref: "#/components/parameters/ifNoneMatch"
 
 
   /environments/{environmentName}/packages/{packageName}/versions/{versionId}/connections/{connectionName}:
@@ -1974,6 +2393,15 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/Connection"
+          headers:
+            X-Request-Id:
+              $ref: "#/components/headers/RequestId"
+            ETag:
+              $ref: "#/components/headers/ETag"
+            Cache-Control:
+              $ref: "#/components/headers/CacheControl"
+        "304":
+          $ref: "#/components/responses/NotModified"
         "400":
           $ref: "#/components/responses/BadRequest"
         "401":
@@ -1988,10 +2416,14 @@ paths:
           $ref: "#/components/responses/Gone"
         "412":
           $ref: "#/components/responses/PreconditionFailed"
+        "429":
+          $ref: "#/components/responses/RateLimited"
         "500":
           $ref: "#/components/responses/Internal"
         "503":
           $ref: "#/components/responses/Unavailable"
+      parameters:
+        - $ref: "#/components/parameters/ifNoneMatch"
 
 
   /environments/{environmentName}/packages/{packageName}/runs:
@@ -2021,6 +2453,7 @@ paths:
               - committed
               - failed
               - cancelled
+        - $ref: "#/components/parameters/ifNoneMatch"
       responses:
         "200":
           description: A page of runs, newest first, without their manifests.
@@ -2028,6 +2461,15 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/RunList"
+          headers:
+            X-Request-Id:
+              $ref: "#/components/headers/RequestId"
+            ETag:
+              $ref: "#/components/headers/ETag"
+            Cache-Control:
+              $ref: "#/components/headers/CacheControl"
+        "304":
+          $ref: "#/components/responses/NotModified"
         "400":
           $ref: "#/components/responses/BadRequest"
         "401":
@@ -2040,6 +2482,8 @@ paths:
           $ref: "#/components/responses/Conflict"
         "412":
           $ref: "#/components/responses/PreconditionFailed"
+        "429":
+          $ref: "#/components/responses/RateLimited"
         "500":
           $ref: "#/components/responses/Internal"
         "503":
@@ -2065,6 +2509,8 @@ paths:
         "201":
           description: Started.
           headers:
+            X-Request-Id:
+              $ref: "#/components/headers/RequestId"
             Location:
               $ref: "#/components/headers/Location"
           content:
@@ -2085,6 +2531,8 @@ paths:
           $ref: "#/components/responses/Gone"
         "412":
           $ref: "#/components/responses/PreconditionFailed"
+        "429":
+          $ref: "#/components/responses/RateLimited"
         "500":
           $ref: "#/components/responses/Internal"
         "503":
@@ -2105,12 +2553,18 @@ paths:
         "200":
           description: The run.
           headers:
+            X-Request-Id:
+              $ref: "#/components/headers/RequestId"
             ETag:
               $ref: "#/components/headers/ETag"
+            Cache-Control:
+              $ref: "#/components/headers/CacheControl"
           content:
             application/json:
               schema:
                 $ref: "#/components/schemas/Run"
+        "304":
+          $ref: "#/components/responses/NotModified"
         "400":
           $ref: "#/components/responses/BadRequest"
         "401":
@@ -2123,10 +2577,14 @@ paths:
           $ref: "#/components/responses/Conflict"
         "412":
           $ref: "#/components/responses/PreconditionFailed"
+        "429":
+          $ref: "#/components/responses/RateLimited"
         "500":
           $ref: "#/components/responses/Internal"
         "503":
           $ref: "#/components/responses/Unavailable"
+      parameters:
+        - $ref: "#/components/parameters/ifNoneMatch"
     patch:
       operationId: update-run
       tags:
@@ -2146,6 +2604,8 @@ paths:
         "200":
           description: The run after the transition took.
           headers:
+            X-Request-Id:
+              $ref: "#/components/headers/RequestId"
             ETag:
               $ref: "#/components/headers/ETag"
           content:
@@ -2164,6 +2624,8 @@ paths:
           $ref: "#/components/responses/Conflict"
         "412":
           $ref: "#/components/responses/PreconditionFailed"
+        "429":
+          $ref: "#/components/responses/RateLimited"
         "500":
           $ref: "#/components/responses/Internal"
         "503":
@@ -2184,6 +2646,9 @@ paths:
       responses:
         "204":
           description: Deleted.
+          headers:
+            X-Request-Id:
+              $ref: "#/components/headers/RequestId"
         "400":
           $ref: "#/components/responses/BadRequest"
         "401":
@@ -2196,6 +2661,8 @@ paths:
           $ref: "#/components/responses/Conflict"
         "412":
           $ref: "#/components/responses/PreconditionFailed"
+        "429":
+          $ref: "#/components/responses/RateLimited"
         "500":
           $ref: "#/components/responses/Internal"
         "503":
@@ -2219,6 +2686,15 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/RunManifest"
+          headers:
+            X-Request-Id:
+              $ref: "#/components/headers/RequestId"
+            ETag:
+              $ref: "#/components/headers/ETag"
+            Cache-Control:
+              $ref: "#/components/headers/CacheControl"
+        "304":
+          $ref: "#/components/responses/NotModified"
         "400":
           $ref: "#/components/responses/BadRequest"
         "401":
@@ -2231,10 +2707,14 @@ paths:
           $ref: "#/components/responses/Conflict"
         "412":
           $ref: "#/components/responses/PreconditionFailed"
+        "429":
+          $ref: "#/components/responses/RateLimited"
         "500":
           $ref: "#/components/responses/Internal"
         "503":
           $ref: "#/components/responses/Unavailable"
+      parameters:
+        - $ref: "#/components/parameters/ifNoneMatch"
 
 
   /environments/{environmentName}/connections/{connectionName}/schemas:
@@ -2246,6 +2726,7 @@ paths:
       parameters:
         - $ref: "#/components/parameters/limit"
         - $ref: "#/components/parameters/after"
+        - $ref: "#/components/parameters/ifNoneMatch"
       responses:
         "200":
           description: A page of schemas.
@@ -2253,6 +2734,15 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/SchemaList"
+          headers:
+            X-Request-Id:
+              $ref: "#/components/headers/RequestId"
+            ETag:
+              $ref: "#/components/headers/ETag"
+            Cache-Control:
+              $ref: "#/components/headers/CacheControl"
+        "304":
+          $ref: "#/components/responses/NotModified"
         "400":
           $ref: "#/components/responses/BadRequest"
         "401":
@@ -2267,6 +2757,8 @@ paths:
           $ref: "#/components/responses/PreconditionFailed"
         "424":
           $ref: "#/components/responses/ConnectionUnavailable"
+        "429":
+          $ref: "#/components/responses/RateLimited"
         "500":
           $ref: "#/components/responses/Internal"
         "502":
@@ -2296,6 +2788,7 @@ paths:
           description: Only tables whose name is in this comma-separated list.
           schema:
             type: string
+        - $ref: "#/components/parameters/ifNoneMatch"
       responses:
         "200":
           description: A page of tables.
@@ -2303,6 +2796,15 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/TableSummaryList"
+          headers:
+            X-Request-Id:
+              $ref: "#/components/headers/RequestId"
+            ETag:
+              $ref: "#/components/headers/ETag"
+            Cache-Control:
+              $ref: "#/components/headers/CacheControl"
+        "304":
+          $ref: "#/components/responses/NotModified"
         "400":
           $ref: "#/components/responses/BadRequest"
         "401":
@@ -2317,6 +2819,8 @@ paths:
           $ref: "#/components/responses/PreconditionFailed"
         "424":
           $ref: "#/components/responses/ConnectionUnavailable"
+        "429":
+          $ref: "#/components/responses/RateLimited"
         "500":
           $ref: "#/components/responses/Internal"
         "502":
@@ -2343,6 +2847,15 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/TableDetail"
+          headers:
+            X-Request-Id:
+              $ref: "#/components/headers/RequestId"
+            ETag:
+              $ref: "#/components/headers/ETag"
+            Cache-Control:
+              $ref: "#/components/headers/CacheControl"
+        "304":
+          $ref: "#/components/responses/NotModified"
         "400":
           $ref: "#/components/responses/BadRequest"
         "401":
@@ -2357,12 +2870,16 @@ paths:
           $ref: "#/components/responses/PreconditionFailed"
         "424":
           $ref: "#/components/responses/ConnectionUnavailable"
+        "429":
+          $ref: "#/components/responses/RateLimited"
         "500":
           $ref: "#/components/responses/Internal"
         "502":
           $ref: "#/components/responses/DatabaseUnreachable"
         "503":
           $ref: "#/components/responses/Unavailable"
+      parameters:
+        - $ref: "#/components/parameters/ifNoneMatch"
 
 
   /environments/{environmentName}/connections/{connectionName}:run-sql:
@@ -2384,6 +2901,9 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/SqlResult"
+          headers:
+            X-Request-Id:
+              $ref: "#/components/headers/RequestId"
         "400":
           $ref: "#/components/responses/BadRequest"
         "401":
@@ -2400,6 +2920,8 @@ paths:
           $ref: "#/components/responses/PayloadTooLarge"
         "424":
           $ref: "#/components/responses/ConnectionUnavailable"
+        "429":
+          $ref: "#/components/responses/RateLimited"
         "500":
           $ref: "#/components/responses/Internal"
         "502":
@@ -2422,6 +2944,7 @@ paths:
       parameters:
         - $ref: "#/components/parameters/limit"
         - $ref: "#/components/parameters/after"
+        - $ref: "#/components/parameters/ifNoneMatch"
       responses:
         "200":
           description: A page of schemas.
@@ -2429,6 +2952,15 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/SchemaList"
+          headers:
+            X-Request-Id:
+              $ref: "#/components/headers/RequestId"
+            ETag:
+              $ref: "#/components/headers/ETag"
+            Cache-Control:
+              $ref: "#/components/headers/CacheControl"
+        "304":
+          $ref: "#/components/responses/NotModified"
         "400":
           $ref: "#/components/responses/BadRequest"
         "401":
@@ -2445,6 +2977,8 @@ paths:
           $ref: "#/components/responses/PreconditionFailed"
         "424":
           $ref: "#/components/responses/ConnectionUnavailable"
+        "429":
+          $ref: "#/components/responses/RateLimited"
         "500":
           $ref: "#/components/responses/Internal"
         "502":
@@ -2478,6 +3012,7 @@ paths:
           description: Only tables whose name is in this comma-separated list.
           schema:
             type: string
+        - $ref: "#/components/parameters/ifNoneMatch"
       responses:
         "200":
           description: A page of tables.
@@ -2485,6 +3020,15 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/TableSummaryList"
+          headers:
+            X-Request-Id:
+              $ref: "#/components/headers/RequestId"
+            ETag:
+              $ref: "#/components/headers/ETag"
+            Cache-Control:
+              $ref: "#/components/headers/CacheControl"
+        "304":
+          $ref: "#/components/responses/NotModified"
         "400":
           $ref: "#/components/responses/BadRequest"
         "401":
@@ -2501,6 +3045,8 @@ paths:
           $ref: "#/components/responses/PreconditionFailed"
         "424":
           $ref: "#/components/responses/ConnectionUnavailable"
+        "429":
+          $ref: "#/components/responses/RateLimited"
         "500":
           $ref: "#/components/responses/Internal"
         "502":
@@ -2529,6 +3075,15 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/TableDetail"
+          headers:
+            X-Request-Id:
+              $ref: "#/components/headers/RequestId"
+            ETag:
+              $ref: "#/components/headers/ETag"
+            Cache-Control:
+              $ref: "#/components/headers/CacheControl"
+        "304":
+          $ref: "#/components/responses/NotModified"
         "400":
           $ref: "#/components/responses/BadRequest"
         "401":
@@ -2545,12 +3100,16 @@ paths:
           $ref: "#/components/responses/PreconditionFailed"
         "424":
           $ref: "#/components/responses/ConnectionUnavailable"
+        "429":
+          $ref: "#/components/responses/RateLimited"
         "500":
           $ref: "#/components/responses/Internal"
         "502":
           $ref: "#/components/responses/DatabaseUnreachable"
         "503":
           $ref: "#/components/responses/Unavailable"
+      parameters:
+        - $ref: "#/components/parameters/ifNoneMatch"
 
 
   /environments/{environmentName}/packages/{packageName}/versions/{versionId}/connections/{connectionName}:run-sql:
@@ -2572,6 +3131,9 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/SqlResult"
+          headers:
+            X-Request-Id:
+              $ref: "#/components/headers/RequestId"
         "400":
           $ref: "#/components/responses/BadRequest"
         "401":
@@ -2590,6 +3152,8 @@ paths:
           $ref: "#/components/responses/PayloadTooLarge"
         "424":
           $ref: "#/components/responses/ConnectionUnavailable"
+        "429":
+          $ref: "#/components/responses/RateLimited"
         "500":
           $ref: "#/components/responses/Internal"
         "502":
@@ -2706,6 +3270,13 @@ components:
         default: false
       description: Required to delete a resource that holds other resources, which are deleted with it. Without it such a
         delete answers 409 `RESOURCE_NOT_EMPTY` and deletes nothing.
+    ifNoneMatch:
+      name: If-None-Match
+      in: header
+      required: false
+      schema:
+        type: string
+      description: An `ETag` from an earlier read. When the representation still matches, the answer is 304 with no body.
     ifMatch:
       name: If-Match
       in: header
@@ -2714,7 +3285,26 @@ components:
       description: The resource's `ETag` as last read (`"<revision>"`). The write is refused with 412 when it no longer matches.
   headers:
     ETag:
-      description: The resource's revision, quoted. Send it back as `If-Match` on a write.
+      description: "A strong validator, quoted: the resource's revision on a mutable resource (send it back as `If-Match` on a
+        write), or a digest of the representation on any other read (send it back as `If-None-Match` to revalidate)."
+      schema:
+        type: string
+    CacheControl:
+      description: "`private, max-age=31536000, immutable` on a raw file read under a concrete version id (`…/public/{path}`,
+        an agent's skill file), whose bytes can never change; `private, no-cache` on every other read, which a client
+        may store but must revalidate with `If-None-Match`. A read through `latest` or `live` is always `no-cache`.
+        Always `private`, because the gateway in front authenticates the caller."
+      schema:
+        type: string
+    RetryAfter:
+      description: Seconds to wait before retrying.
+      schema:
+        type: integer
+        minimum: 0
+    RequestId:
+      description: "This request's id: the caller's `X-Request-Id` when it sent one, else the trace id of its W3C
+        `traceparent`, else one the server made. Every response carries it and every error body repeats it as
+        `requestId`."
       schema:
         type: string
     Location:
@@ -2729,24 +3319,36 @@ components:
         application/json:
           schema:
             $ref: "#/components/schemas/Error"
+      headers:
+        X-Request-Id:
+          $ref: "#/components/headers/RequestId"
     Unauthorized:
       description: The gateway in front of this server refused the caller (`UNAUTHORIZED`). Publisher itself authenticates nobody.
       content:
         application/json:
           schema:
             $ref: "#/components/schemas/Error"
+      headers:
+        X-Request-Id:
+          $ref: "#/components/headers/RequestId"
     Forbidden:
       description: "Refused by policy: `READ_ONLY` under `resources.readOnly`, or `FORBIDDEN` from an authorize gate."
       content:
         application/json:
           schema:
             $ref: "#/components/schemas/Error"
+      headers:
+        X-Request-Id:
+          $ref: "#/components/headers/RequestId"
     NotFound:
       description: No such resource (`NOT_FOUND`, `VERSION_NOT_FOUND`, `CONNECTION_NOT_FOUND`, `TABLE_NOT_FOUND`).
       content:
         application/json:
           schema:
             $ref: "#/components/schemas/Error"
+      headers:
+        X-Request-Id:
+          $ref: "#/components/headers/RequestId"
     Conflict:
       description: The write conflicts with the resource's state (`CONFLICT`, `VERSION_CONFLICT`, `VERSION_IS_LATEST`,
         `VERSION_IS_LAST_ACTIVE`, `VERSION_BUILDING`, `FILE_EXISTS`, `RUN_ACTIVE`, `TABLE_OWNED_ELSEWHERE`,
@@ -2755,6 +3357,9 @@ components:
         application/json:
           schema:
             $ref: "#/components/schemas/Error"
+      headers:
+        X-Request-Id:
+          $ref: "#/components/headers/RequestId"
     PreconditionFailed:
       description: "`If-Match` did not match the resource's revision (`REVISION_MISMATCH`; `details.currentRevision` carries
         it), or a required `If-Match` was missing (428 `REVISION_REQUIRED`)."
@@ -2762,18 +3367,27 @@ components:
         application/json:
           schema:
             $ref: "#/components/schemas/Error"
+      headers:
+        X-Request-Id:
+          $ref: "#/components/headers/RequestId"
     Gone:
       description: The version is archived (`VERSION_ARCHIVED`).
       content:
         application/json:
           schema:
             $ref: "#/components/schemas/Error"
+      headers:
+        X-Request-Id:
+          $ref: "#/components/headers/RequestId"
     PayloadTooLarge:
       description: The request or the response exceeds a size limit (`PAYLOAD_TOO_LARGE`).
       content:
         application/json:
           schema:
             $ref: "#/components/schemas/Error"
+      headers:
+        X-Request-Id:
+          $ref: "#/components/headers/RequestId"
     ConnectionUnavailable:
       description: The connection is misconfigured, so nothing ran (`CONNECTION_AUTH_FAILED`, `CONNECTION_NOT_FOUND`). Fix the
         connection; retrying fails the same way.
@@ -2781,31 +3395,66 @@ components:
         application/json:
           schema:
             $ref: "#/components/schemas/Error"
+      headers:
+        X-Request-Id:
+          $ref: "#/components/headers/RequestId"
     DatabaseUnreachable:
       description: The database could not be reached (`CONNECTION_FAILED`), so nothing ran. Retry once, then report it.
       content:
         application/json:
           schema:
             $ref: "#/components/schemas/Error"
+      headers:
+        X-Request-Id:
+          $ref: "#/components/headers/RequestId"
     GatewayTimeout:
       description: The database did not answer in time (`GATEWAY_TIMEOUT`).
       content:
         application/json:
           schema:
             $ref: "#/components/schemas/Error"
+      headers:
+        X-Request-Id:
+          $ref: "#/components/headers/RequestId"
     Internal:
       description: The server failed (`INTERNAL`).
       content:
         application/json:
           schema:
             $ref: "#/components/schemas/Error"
+      headers:
+        X-Request-Id:
+          $ref: "#/components/headers/RequestId"
     Unavailable:
       description: The server is initializing, draining, or refusing load under memory back-pressure (`UNAVAILABLE`,
-        `ADMISSION_REFUSED`).
+        `ADMISSION_REFUSED`). Retry after `Retry-After` seconds.
       content:
         application/json:
           schema:
             $ref: "#/components/schemas/Error"
+      headers:
+        X-Request-Id:
+          $ref: "#/components/headers/RequestId"
+        Retry-After:
+          $ref: "#/components/headers/RetryAfter"
+    RateLimited:
+      description: Too many requests from this caller (`RATE_LIMITED`). Retry after `Retry-After` seconds.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+      headers:
+        X-Request-Id:
+          $ref: "#/components/headers/RequestId"
+        Retry-After:
+          $ref: "#/components/headers/RetryAfter"
+    NotModified:
+      description: The representation matches `If-None-Match`; there is no body.
+      headers:
+        X-Request-Id:
+          $ref: "#/components/headers/RequestId"
+        ETag:
+          $ref: "#/components/headers/ETag"
   schemas:
     Agent:
       type: object
@@ -4119,10 +4768,15 @@ components:
         - status
         - reason
         - message
+        - requestId
       properties:
         status:
           type: integer
           description: The HTTP status, repeated in the body.
+        requestId:
+          type: string
+          description: The request's id, as its `X-Request-Id` response header carries it. Quote it when reporting the error; it
+            names the server's log lines and access record for this request.
         reason:
           $ref: "#/components/schemas/ErrorReason"
         message:
@@ -4156,6 +4810,7 @@ components:
         - INTERNAL
         - UNAVAILABLE
         - ADMISSION_REFUSED
+        - RATE_LIMITED
         - CONNECTION_FAILED
         - CONNECTION_AUTH_FAILED
         - CONNECTION_NOT_FOUND
@@ -5330,9 +5985,9 @@ components:
     Realization:
       type: string
       enum:
-        - SNAPSHOT
-        - COPY
-      description: SNAPSHOT = warehouse clone/snapshot; COPY = CREATE TABLE AS SELECT.
+        - snapshot
+        - copy
+      description: "`snapshot`: a warehouse clone or snapshot. `copy`: `CREATE TABLE AS SELECT`."
     RefusedSource:
       type: object
       description: One `#@ persist` source refused at compile time, and why. Computed from the SAME tier-appropriate

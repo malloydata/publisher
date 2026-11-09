@@ -197,7 +197,7 @@ Three things that exist today are not in the model: the **theme** (the Console k
 
 ### 3.2 The API: `/api/v1`
 
-The spec is [`api-doc.v1.yaml`](../api-doc.v1.yaml); the reference, with every route, is [api-overview.md](api-overview.md). The 30 decisions it was drafted from are the register in [Decisions](#6-decisions), A1 to A30; this is what they add up to.
+The spec is [`api-doc.v1.yaml`](../api-doc.v1.yaml); the reference, with every route, is [api-overview.md](api-overview.md). The 31 decisions it was drafted from are the register in [Decisions](#6-decisions), A1 to A31; this is what they add up to.
 
 **Structure.**
 
@@ -238,6 +238,10 @@ Every content read is of exactly one version, named in the path. A publish, a re
 - **Guarded deletes.** A delete that would delete other resources with it (an environment's packages and connections, a package's versions) requires `?force=true`, and answers 409 `RESOURCE_NOT_EMPTY` without it.
 - **Timestamps.** Every timestamp is an RFC 3339 `date-time` in UTC, read-only, and absent until it has a value, never `null`. An event's time ends in `At` (`createdAt`, `startedAt`, `failedAt`); the moment some data reflects ends in `AsOf` (`dataAsOf`, `schemaAsOf`). Every stored resource, one with a `revision`, carries `createdAt` and `updatedAt`. Durations are integers whose name carries the unit (`durationMs`, `freshnessWindowSeconds`).
 - **Resource paths.** Every object a `GET` can read carries `resource`, its canonical path relative to the API's base: no leading slash, and the resolved version id in place of `latest` (`environments/acme/packages/sales/versions/1.4.0/models/orders.malloy`). A list item carries it when its item has a `GET` of its own. Relative, so it stays right behind a gateway that serves the API under another prefix; a link and a stable key, never parsed.
+- **Conditional reads.** Every read but `/status` answers with an `ETag` and takes `If-None-Match`, answering 304 with no body when nothing changed. `Cache-Control` is `private, max-age=31536000, immutable` only on raw file reads under a concrete version id (`…/public/{path}`, an agent's skill file), whose bytes never change; every other read is `private, no-cache`, because a compiled model under a concrete version can still change with `:refresh-schema`, and a read through `latest` or `live` can resolve differently next time.
+- **Back-pressure.** Every operation but `/status` may answer 429 `RATE_LIMITED`; 429 and 503 carry `Retry-After` in seconds. `/status` is never rate-limited, because it is the orchestrator's heartbeat.
+- **Request ids.** The server takes the caller's `X-Request-Id`, else the trace id of a W3C `traceparent`, else makes one; every response carries it as `X-Request-Id`, and every error body repeats it as `requestId`.
+- **Enum values.** Lowercase snake_case, except error reasons (UPPER_SNAKE), values that name a response field (`include: ["malloyResult"]`), and values that echo another vocabulary (a setting's value, Postgres's `sslmode`).
 - **Typed responses.** A query answers `{rows, schema, metadata}` plus the full Malloy result on request; nothing is a JSON string inside JSON. Every list is `{items, nextCursor}`, cursor-paged; `/status` is the one unpaged snapshot.
 - **Errors.** One `Error {status, reason, message, details?}`, `reason` from one closed enum, the same base statuses on every operation. Clients branch on `status` and `reason`, never on `message`.
 - **MCP** is a second surface over the same model: snake_case tool names, v1 schemas for arguments and results, switched by the `mcp.api` setting together with the skills.
@@ -831,6 +835,7 @@ R is the last 0.x minor before 1.0.0, the first release in which steps 4, 5 and 
 - [ ] Release R's notes carry a **BREAKING (announced)** section: the removal date, what goes, the migration guide, and how to read your own `publisher_deprecated_usage_total` counters.
 - [ ] The date also appears in every `Deprecation`/`Link` header's target, in the load warnings' messages, and at the top of `docs/api-overview.md`.
 - [ ] Midway (day 45) and two weeks before the date, a reminder in the release notes with the counters we can see.
+- [ ] Every v0 response carries an RFC 8594 `Sunset` header with the 1.0.0 date, beside its `Deprecation` and `Link` headers (decision A31), so clients and proxies can warn on their own.
 - [ ] No deprecated surface is removed during the window. Bug fixes to v0 continue.
 
 ### Step 8: the 1.0.0 release (no earlier than R + 90 days)
@@ -1080,7 +1085,7 @@ Every deprecated variable and flag name the registry lists as an alias (the mapp
 
 The register, by surface and then the rollout. **A** numbers the API decisions (#1562); the package, configuration and rollout decisions are from #1540 and the configuration design; **S** and **D** are the storage design's own and the durability program folded into it (D settled with Kyle on 2026-10-24, from ms2data/service PR 7237). Dates are when Kyle decided.
 
-### The API (A1 to A30, 2026-11-08)
+### The API (A1 to A31, 2026-11-08)
 
 Each on the recommended option except A22, which Kyle called directly, A4, which Kyle revised to leave `.malloynb` out, and A2 and A6, revised when the spec was drafted. They are the rules the v1 spec is drafted from.
 
@@ -1118,6 +1123,8 @@ Each on the recommended option except A22, which Kyle called directly, A4, which
 29. **A29. One rule for timestamps.** Every timestamp is an RFC 3339 `date-time` in UTC, read-only, and absent until set, never `null`; an event's time ends in `At`, the moment data reflects ends in `AsOf`; every stored resource (one with a `revision`) carries required `createdAt` and `updatedAt`. Applying it renamed `ServerStatus.timestamp` to `generatedAt`, `ServingState.status.loadingSince` to `loadingStartedAt` and `ServingState.stale.since` to `failedAt` (matching `loadErrors[].failedAt`), gave `Version` an `updatedAt` for its state changes, made `createdAt` and `updatedAt` required on environments, connections, packages, versions and runs, and dropped `null` from `Run.startedAt`, `completedAt`, `durationMs` and `Version.archivedAt`. The spec composer enforces it. (Decided 2026-11-08.)
 
 30. **A30. Every addressable object says where it lives.** Every object a `GET` can read, and every list item whose item has a `GET` of its own, carries a required `resource`: one `ResourcePath` schema, the canonical path relative to the API's base, with no leading slash and the resolved version id in place of `latest`. Relative because Credible's router serves Publisher under its own prefix, so an absolute path would be wrong for every customer behind it, and because it stays valid across a future major version. Added to agents, skills and an agent's skill files, the run manifest, the build plan, the index and the classification summary; the report manifest inherits it from `Report`; removed from `DataFile`, which no route reads. Results of actions (query, compile, SQL, reload, a model write), envelopes, nested values and `/status`, the server's snapshot, carry none. Clients use it as a link and a key and never parse it; the control plane's positional parse of v0's `resource` does not carry over. The spec composer applies and enforces it. (Decided 2026-11-08.)
+
+31. **A31. HTTP practice: caching, back-pressure, request ids, enum casing, and `Sunset` at release R.** Every read but `/status` answers with an `ETag` and takes `If-None-Match` (304 with no body); `Cache-Control` is `private, max-age=31536000, immutable` only on raw file reads under a concrete version id, because `:refresh-schema` can change a compiled model without making a version, and `private, no-cache` everywhere else, `private` because the gateway authenticates. Every operation but `/status` declares 429 `RATE_LIMITED`; 429 and 503 carry `Retry-After`. `/status` is never rate-limited: it is the orchestrator's heartbeat, and the control plane evicts a worker after six missed ones, so the v1 limiter exempts it, which today's (`rate_limit.ts`, exempting only `/metrics` and `/health`) does not. Every response carries `X-Request-Id` (the caller's, else the trace id of its `traceparent`, else the server's own) and every error body repeats it as `requestId`. Enum values are lowercase snake_case, with three named exceptions (error reasons, values that name a field, values that echo another vocabulary); `Realization` became `snapshot` and `copy`. The composer applies the headers and enforces the casing. v0 responses gain an RFC 8594 `Sunset` header carrying the 1.0.0 date from release R (step 7). (Decided 2026-11-08.)
 
 ### The package (2026-11-08)
 
@@ -1742,7 +1749,7 @@ Every claim about today's storage, with the file and lines it rests on, under `p
 
 **The configuration design** (`docs/configuration-design.md`, now retired) is carried whole: its shape in section 3.4, its steps 2 and 3 as track D and the alias removal in step 8, its decisions and open questions in sections 6 and 7, and its text, the registry rules and the mapping, as [Appendix C](#appendix-c-the-configuration-registry-and-mapping).
 
-**The issues, now closed.** #1562 held the API review's findings (Appendix A), the usage matrix (Appendix B) and decisions A1 to A30; #1539 (per-package reads loading a package not in memory) is decision A24; #1538 (the entities extraction's duplicate gate and queryability rules) is decision A25 and a step 4 item; ms2data/service#7479's Publisher half is decision A26 (the light load profile), the load-time quick wins in step 2, and the cross-version reuse and Malloy cache notes in track B3. #1560 held the storage design, decisions S and D, and the hand-off checklist (Appendix F); its phases are steps 1 to 3, 5 and track B here. #1540 held the rollout and decisions R; its stages are steps 4 and 6 to 8 here, and its side track is track C.
+**The issues, now closed.** #1562 held the API review's findings (Appendix A), the usage matrix (Appendix B) and decisions A1 to A31; #1539 (per-package reads loading a package not in memory) is decision A24; #1538 (the entities extraction's duplicate gate and queryability rules) is decision A25 and a step 4 item; ms2data/service#7479's Publisher half is decision A26 (the light load profile), the load-time quick wins in step 2, and the cross-version reuse and Malloy cache notes in track B3. #1560 held the storage design, decisions S and D, and the hand-off checklist (Appendix F); its phases are steps 1 to 3, 5 and track B here. #1540 held the rollout and decisions R; its stages are steps 4 and 6 to 8 here, and its side track is track C.
 
 | Old label | Here |
 |---|---|
