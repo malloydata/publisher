@@ -1109,8 +1109,10 @@ const WHOLE_BODY_SINGLE_QUOTED_STRING = /^'(?:\\.|[^'\\])*'$/;
  * sub-expression (`where: ("admin" = $ROLE)` compiles), so a legal unquoted
  * gate can legitimately START with one (`#(authorize) "admin" = $ROLE`) — a
  * test that only looked at the first character would misidentify it as
- * legacy. Decides only what {@link findLegacyStringGates} reports, not how a
- * payload is parsed.
+ * legacy. Decides what {@link findLegacyStringGates} reports, and, through
+ * {@link legacyGatePayloadExpression}, how the entities extraction reads a
+ * gate: a legacy payload is decoded, anything else is read verbatim. Not how
+ * the load parses a payload, which compiles it as written.
  */
 export function isLegacyQuotedPayload(payload: string): boolean {
    const trimmed = payload.trim();
@@ -1124,11 +1126,22 @@ export function isLegacyQuotedPayload(payload: string): boolean {
  * The expression a legacy quoted-string gate MEANT: the payload's string
  * literal decoded to its contents, for {@link assertNoLegacyStringGate}'s
  * paste-ready rewrite (the verbatim payload would reproduce the refused text).
+ * Also what {@link legacyGatePayloadExpression} decodes for the entities.
  * Only called on a payload {@link isLegacyQuotedPayload} accepted.
  *
  * Decodes only the quote and backslash escapes; any other backslash sequence
  * passes through as authored rather than being silently mangled.
  */
+function unquoteLegacyGatePayload(payload: string): string {
+   const trimmed = payload.trim();
+   const inner = trimmed.slice(1, -1);
+   // Decode only the quote character this payload actually used, so a literal
+   // `\'` inside a double-quoted gate (and vice versa) is left as authored.
+   return trimmed[0] === "'"
+      ? inner.replace(SINGLE_QUOTE_ESCAPE, "$1")
+      : inner.replace(DOUBLE_QUOTE_ESCAPE, "$1");
+}
+
 /**
  * The expression a gate payload means when it is the legacy quoted-string form
  * (the whole payload one string literal, {@link isLegacyQuotedPayload}), or
@@ -1163,16 +1176,6 @@ const QUOTED_TOKEN_PATTERN =
  */
 export function quotesAreBalanced(expr: string): boolean {
    return !/['"]/.test(expr.replace(QUOTED_TOKEN_PATTERN, ""));
-}
-
-function unquoteLegacyGatePayload(payload: string): string {
-   const trimmed = payload.trim();
-   const inner = trimmed.slice(1, -1);
-   // Decode only the quote character this payload actually used, so a literal
-   // `\'` inside a double-quoted gate (and vice versa) is left as authored.
-   return trimmed[0] === "'"
-      ? inner.replace(SINGLE_QUOTE_ESCAPE, "$1")
-      : inner.replace(DOUBLE_QUOTE_ESCAPE, "$1");
 }
 
 /**
