@@ -1204,6 +1204,29 @@ export function storageDestinationsEqual(
 }
 
 /**
+ * The names in `next` whose config differs from the same-named destination in
+ * `previous`, or that `previous` did not hold, compared by content as
+ * {@link storageDestinationsEqual} compares a whole list.
+ */
+export function changedDestinationNames(
+   previous: ApiConnection[],
+   next: ApiConnection[],
+): Set<string> {
+   const before = new Map(
+      previous.map((destination) => [destination.name, destination]),
+   );
+   const changed = new Set<string>();
+   for (const destination of next) {
+      if (!destination.name) continue;
+      const prior = before.get(destination.name);
+      if (!prior || !storageDestinationsEqual([prior], [destination])) {
+         changed.add(destination.name);
+      }
+   }
+   return changed;
+}
+
+/**
  * Content-determined, order-independent serialization of a destination list.
  * Sorted by code unit rather than by collation, which is a strict total order on
  * the distinct names a validated list holds and does not vary with the locale the

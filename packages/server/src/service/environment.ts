@@ -60,6 +60,7 @@ import {
    InternalConnection,
 } from "./connection";
 import {
+   changedDestinationNames,
    storageDestinationRoot,
    processStorageDestinations,
    processStorageDestinationsOrThrow,
@@ -703,7 +704,7 @@ export class Environment {
          return;
       }
 
-      this.rebuildDestinationMalloyConfig();
+      this.rebuildDestinationMalloyConfig(previous);
       if (previous.length > 0 || this.destinations.length > 0) {
          logger.info(
             `Environment ${this.environmentName} has ${this.destinations.length} storage destination(s)`,
@@ -758,8 +759,13 @@ export class Environment {
     * (Re)assemble the destination connections, draining the previous
     * generation's handles. A failure is not fatal: the environment serves on,
     * builds refuse and materialized queries go live.
+    *
+    * @param previousDestinations The list being replaced, so only a
+    *   destination whose config changed re-attaches its catalog.
     */
-   private rebuildDestinationMalloyConfig(): void {
+   private rebuildDestinationMalloyConfig(
+      previousDestinations: ApiConnection[],
+   ): void {
       const previous = this.destinationMalloyConfig;
       try {
          // Rooted apart from the connections' files so a destination never
@@ -769,11 +775,21 @@ export class Environment {
          if (this.destinations.length > 0) {
             fs.mkdirSync(destinationRoot, { recursive: true });
          }
+         // A changed destination's connection reuses the previous generation's
+         // pooled DuckDB instance (same database path), still attached to the
+         // catalog the destination had before, so it re-attaches. An unchanged
+         // one keeps its attach.
+         const changed = previous
+            ? changedDestinationNames(previousDestinations, this.destinations)
+            : new Set<string>();
          this.destinationMalloyConfig = buildEnvironmentMalloyConfig(
             this.destinations,
             destinationRoot,
             false,
-            { origin: "storage-destination" },
+            {
+               origin: "storage-destination",
+               reattachDuckLake: (name) => changed.has(name),
+            },
          );
       } catch (error) {
          logger.error(

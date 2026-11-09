@@ -808,6 +808,8 @@ async function main(): Promise<void> {
             restOf: (name) => bind(mgr.restOf(name)),
             editPackageModel: editPackageModelFor(r),
             operatorSql: operatorSqlFor(r, lakes, warehouses),
+            destinationConfigsFor: (logical) =>
+               destinationsFor(r.envFor(logical)),
             storedTables: (conn, schema) => {
                // DuckLake writes `<storage>/<schema>/<table>/<file>.parquet`.
                const dir = path.join(r.storageDirFor(conn), schema);

@@ -8,6 +8,7 @@
 // scenario that spans modes (migration) or exercises the mode matrix asks for
 // the mode it wants and gets a server in that mode (reused if already running).
 
+import type { ConnectionConfig } from "../lib/config";
 import type { PostgresHandle } from "../lib/postgres";
 import type { PersistStorageMode } from "../lib/server";
 import type { ModelFile } from "../lib/packages";
@@ -122,6 +123,12 @@ export interface ScenarioContext extends ServerControl {
     * provision what it needs.
     */
    operatorSql(conn: string, sql: string): Promise<Record<string, string>[]>;
+   /**
+    * The storage destinations a (logical) environment was configured with, in
+    * full, credentials included: what an orchestrator holds and re-pushes when
+    * it changes one of them.
+    */
+   destinationConfigsFor(env: string): ConnectionConfig[];
    /**
     * The tables that still have data files on disk in a DuckLake destination's
     * storage, read straight from the directory the destination writes to. What

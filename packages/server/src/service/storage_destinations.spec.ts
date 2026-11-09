@@ -23,6 +23,7 @@ import { installSettings } from "../test_helpers/settings_env";
 import { buildEnvironmentMalloyConfig } from "./connection";
 import {
    assembleEnvironmentConnections,
+   changedDestinationNames,
    STORAGE_DESTINATIONS_DIR,
    storageDestinationRoot,
    processStorageDestinations,
@@ -253,6 +254,46 @@ describe("storageDestinationsEqual", () => {
             [{ ...managed, fingerprint: undefined }],
          ),
       ).toBe(true);
+   });
+});
+
+// Which destinations re-attach their catalog after a list change: only these.
+// An unchanged destination keeps its attach, so a change to one destination
+// never interrupts queries reading another.
+describe("changedDestinationNames", () => {
+   const managed = ducklakeDestination("managed", "org_a");
+   const archive = ducklakeDestination("archive", "org_b");
+
+   it("names only the destination whose config changed", () => {
+      const moved = ducklakeDestination("managed", "org_c");
+      moved.ducklakeConnection!.destinationSchema = "materialized";
+      expect(
+         changedDestinationNames([managed, archive], [moved, archive]),
+      ).toEqual(new Set(["managed"]));
+   });
+
+   it("names a destination the previous list did not hold", () => {
+      expect(changedDestinationNames([managed], [managed, archive])).toEqual(
+         new Set(["archive"]),
+      );
+   });
+
+   it("names nothing for an equal list, whatever its order or key order", () => {
+      expect(
+         changedDestinationNames(
+            [managed, archive],
+            [archive, withReorderedKeys(managed)],
+         ),
+      ).toEqual(new Set());
+   });
+
+   it("names a rotated password, which a re-attach needs to pick up", () => {
+      expect(
+         changedDestinationNames(
+            [managed],
+            [ducklakeDestination("managed", "org_a", "rotated-secret")],
+         ),
+      ).toEqual(new Set(["managed"]));
    });
 });
 

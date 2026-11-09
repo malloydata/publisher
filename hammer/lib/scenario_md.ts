@@ -21,10 +21,12 @@
 //   ## Delete [<pkg>]                    -> unload + DELETE the package from serving
 //   ## Reclaim [<pkg>]                   -> DELETE the latest materialization with dropTables
 //                                        (destination-aware physical-table drop / GC)
-//   ## Destination tables|files|drop <table>|cleanup [(dest=lake, schema=main, snapshots=7d, files=1d)]
+//   ## Destination tables|files|drop <table>|cleanup|repoint [(dest=lake, schema=main, snapshots=7d, files=1d, to=lake2)]
 //                                        -> the storage-destination table routes; `tables` and
 //                                        `files` take an Expect: table (`name` / `table`),
-//                                        `cleanup` an optional `deleted: <n>` body key
+//                                        `cleanup` an optional `deleted: <n>` body key;
+//                                        `repoint` PATCHes the environment so `dest` takes
+//                                        `to`'s catalog with `destinationSchema` = `schema`
 //   ## Build refused [<pkg>]             [body: `cites: <substring>`, `excludes: <substring>`;
 //                                        `${pg.password}` / `${pg.user}` / `${pg.host}` are
 //                                        substituted with the throwaway container's values, so a
@@ -181,9 +183,11 @@ type Step =
         pub?: string;
         env: string;
         mode: PersistStorageMode;
-        action: "tables" | "files" | "drop" | "cleanup";
+        action: "tables" | "files" | "drop" | "cleanup" | "repoint";
         dest: string;
         schema: string;
+        /** `repoint` only: the declared destination whose catalog and storage `dest` takes. */
+        to?: string;
         table?: string;
         snapshotsAgeMs?: number;
         filesAgeMs?: number;
@@ -404,7 +408,7 @@ const SECTION_SPEC: Record<string, { attrs?: string[]; keys?: string[] }> = {
    delete: {},
    reclaim: {},
    destination: {
-      attrs: ["dest", "schema", "snapshots", "files"],
+      attrs: ["dest", "schema", "snapshots", "files", "to"],
       keys: ["deleted", "status"],
    },
    build: {
@@ -791,9 +795,16 @@ function parseMarkdown(text: string, fallbackId: string): ParsedMd {
                   filesAgeMs: parseAge(attrs.files, "files"),
                   deleted: deleted === undefined ? undefined : Number(deleted),
                });
+            } else if (action === "repoint") {
+               const to = attrs.to as string | undefined;
+               if (!to || !attrs.schema)
+                  throw new Error(
+                     `## Destination repoint: (to=<declared destination>, schema=<schema>) are both required`,
+                  );
+               steps.push({ ...base, action, to });
             } else {
                throw new Error(
-                  `## Destination ${arg}: expected tables, files, drop <table> or cleanup`,
+                  `## Destination ${arg}: expected tables, files, drop <table>, cleanup or repoint`,
                );
             }
             break;
@@ -2959,7 +2970,37 @@ export async function parseScenarioFile(dir: string): Promise<Scenario> {
                   break;
                }
                const rest = await serverFor(step.pub, step.env);
-               if (step.action === "tables" && step.status !== undefined) {
+               if (step.action === "repoint") {
+                  // The cutover an orchestrator pushes: `dest` keeps its name
+                  // and takes another catalog's config, with a schema its
+                  // tables live in there. Every other destination is re-pushed
+                  // unchanged, since the list replaces the stored one.
+                  const configs = ctx.destinationConfigsFor(step.env);
+                  const target = configs.find((c) => c.name === step.to);
+                  if (!target || target.type !== "ducklake")
+                     throw new Error(
+                        `## Destination repoint: to=${step.to} is not a declared ducklake destination`,
+                     );
+                  const repointed = {
+                     ...target,
+                     name: step.dest,
+                     ducklakeConnection: {
+                        ...target.ducklakeConnection,
+                        destinationSchema: step.schema,
+                     },
+                  };
+                  await rest.setStorageDestinations(
+                     configs.map((c) => (c.name === step.dest ? repointed : c)),
+                  );
+                  assert.ok(
+                     label,
+                     true,
+                     `${step.dest} -> ${step.to}.${step.schema}`,
+                  );
+               } else if (
+                  step.action === "tables" &&
+                  step.status !== undefined
+               ) {
                   const { status, body } =
                      await rest.listDestinationTablesStatus(
                         step.dest,

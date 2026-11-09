@@ -2960,9 +2960,13 @@ function isDuckDBConnection(
  * @param isUpdateConnectionRequest Forces a DuckLake re-ATTACH even when the
  *   catalog is already attached, so a generation replacing one after a config
  *   change rebinds to the new catalog DSN and storage secrets rather than the
- *   prior attach state. Only the DuckLake branch reads it.
+ *   prior attach state. Once per connection: later lookups attach only if the
+ *   alias is missing. Only the DuckLake branch reads it.
  * @param options.origin "storage-destination" for the operator's own storage
  *   destinations, which the S3 credential-chain policy treats differently.
+ * @param options.reattachDuckLake The same forced re-ATTACH, for only the named
+ *   connections: a caller that knows which configs changed re-attaches those
+ *   and leaves an unchanged catalog's attach in place.
  */
 export function buildEnvironmentMalloyConfig(
    connections: ApiConnection[] = [],
@@ -2971,7 +2975,12 @@ export function buildEnvironmentMalloyConfig(
    {
       origin = "connection",
       openProxy: openTunnel = openProxy,
-   }: { origin?: ConnectionOrigin; openProxy?: typeof openProxy } = {},
+      reattachDuckLake,
+   }: {
+      origin?: ConnectionOrigin;
+      openProxy?: typeof openProxy;
+      reattachDuckLake?: (connectionName: string) => boolean;
+   } = {},
 ): EnvironmentMalloyConfig {
    const assembled = assembleEnvironmentConnections(
       connections,
@@ -2993,6 +3002,9 @@ export function buildEnvironmentMalloyConfig(
    >();
    const proxyEndpoints = new Map<string, ProxyEndpoint>();
    const attachPromises = new WeakMap<Connection, Promise<void>>();
+   // DuckLake connections this generation has re-attached (see
+   // isUpdateConnectionRequest): once each, not on every lookup.
+   const reattachedDuckLakes = new WeakSet<Connection>();
    const closePromises = new WeakMap<Connection, Promise<void>>();
    // An evicted tunnel has left the caches, so release finds its cleanup here.
    const evictions = new Set<Promise<void>>();
@@ -3061,10 +3073,24 @@ export function buildEnvironmentMalloyConfig(
                   duckLakeCache.set(name!, connectionPromise);
                }
                const connection = await connectionPromise;
-               if (
-                  isUpdateConnectionRequest ||
-                  !(await isDatabaseAttached(connection, name!))
-               ) {
+               // A replacing generation's connection shares the pooled DuckDB
+               // instance of the one it replaces (same database path), where
+               // the alias is already attached to the previous catalog, so the
+               // attach check alone would keep serving that catalog.
+               const reattach =
+                  (isUpdateConnectionRequest ||
+                     reattachDuckLake?.(name!) === true) &&
+                  !reattachedDuckLakes.has(connection);
+               const attached = await isDatabaseAttached(connection, name!);
+               if (reattach || !attached) {
+                  if (attached) {
+                     // Detached first: an ATTACH OR REPLACE over a live DuckLake
+                     // alias leaves its `__ducklake_metadata_<alias>` catalog
+                     // detached, and every query then fails to find it.
+                     await connection.runSQL(
+                        `DETACH ${quoteIdentifier(name!, "duckdb")};`,
+                     );
+                  }
                   await attachDuckLake(
                      connection,
                      name!,
@@ -3077,6 +3103,7 @@ export function buildEnvironmentMalloyConfig(
                   if (metadata.apiConnection.managed === true) {
                      await setManagedSearchPath(connection, name!);
                   }
+                  reattachedDuckLakes.add(connection);
                }
                return connection;
             }

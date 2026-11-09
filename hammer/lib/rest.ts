@@ -95,6 +95,29 @@ export class Rest {
       return res.status;
    }
 
+   /**
+    * `PATCH /environments/{env}` with a whole storage destination list, as an
+    * orchestrator re-pushes its desired state. The list replaces the stored one.
+    */
+   async setStorageDestinations(destinations: unknown[]): Promise<void> {
+      const res = await fetch(
+         `${this.baseUrl}/api/v0/environments/${this.env}`,
+         {
+            method: "PATCH",
+            headers: { "Content-Type": "application/json" },
+            // The server reads the environment's name from the body.
+            body: JSON.stringify({
+               name: this.env,
+               storageDestinations: destinations,
+            }),
+         },
+      );
+      if (!res.ok)
+         throw new Error(
+            `setStorageDestinations ${this.env} ${res.status}: ${await res.text()}`,
+         );
+   }
+
    /** `POST …/storageDestinations/{dest}/fileCleanups` — what it reclaimed. */
    async createFileCleanup(
       dest: string,

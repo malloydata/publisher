@@ -139,6 +139,36 @@ status: 404
       ).toThrow(/not both/);
    });
 
+   it("parses ## Destination repoint, which needs both to= and schema=", () => {
+      const parsed = parseMarkdownForTest(
+         `${FRONT}\n## Destination repoint (dest=lake, to=lake2, schema=materialized)\n`,
+         "t",
+      );
+      const step = parsed.steps[0]!;
+      expect(
+         step.kind === "destination" && [
+            step.action,
+            step.dest,
+            step.to,
+            step.schema,
+         ],
+      ).toEqual(["repoint", "lake", "lake2", "materialized"]);
+      expect(() =>
+         parseMarkdownForTest(
+            `${FRONT}\n## Destination repoint (to=lake2)\n`,
+            "t",
+         ),
+      ).toThrow(
+         /to=<declared destination>, schema=<schema>\) are both required/,
+      );
+      expect(() =>
+         parseMarkdownForTest(
+            `${FRONT}\n## Destination repoint (schema=materialized)\n`,
+            "t",
+         ),
+      ).toThrow(/are both required/);
+   });
+
    it("parses dataPath=recorded on a ducklake connection, and only there", () => {
       const parsed = parseMarkdownForTest(
          `${FRONT}\n## Connection nb (type=ducklake, dataPath=recorded)\n`,
