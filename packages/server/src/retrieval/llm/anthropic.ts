@@ -13,6 +13,7 @@ const ANTHROPIC_DEFAULT_MAX_TOKENS = 1_024;
 
 interface AnthropicReply {
    content?: { type?: string; text?: unknown }[];
+   stop_reason?: unknown;
    usage?: { input_tokens?: unknown; output_tokens?: unknown };
 }
 
@@ -99,7 +100,12 @@ export class AnthropicChat implements RawChat {
          .filter((b) => b?.type === "text" && typeof b.text === "string")
          .map((b) => b.text as string)
          .join("");
-      if (!Array.isArray(reply?.content) || text === "") {
+      // Cut off at max_tokens or at the context window. Thinking counts
+      // against max_tokens and can spend all of it, leaving no text block.
+      const truncated =
+         reply?.stop_reason === "max_tokens" ||
+         reply?.stop_reason === "model_context_window_exceeded";
+      if (!truncated && (!Array.isArray(reply?.content) || text === "")) {
          throw malformedReply("Chat response", url, "no text content block");
       }
       return {
@@ -108,6 +114,7 @@ export class AnthropicChat implements RawChat {
             inputTokens: tokenCount(reply.usage?.input_tokens),
             outputTokens: tokenCount(reply.usage?.output_tokens),
          },
+         ...(truncated ? { truncated } : {}),
       };
    }
 }

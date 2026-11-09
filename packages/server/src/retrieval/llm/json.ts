@@ -1,7 +1,10 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
-/** The reply was not usable JSON for the caller, even after one re-ask. */
+/**
+ * The reply was not usable JSON for the caller: cut off at its output limit,
+ * or still wrong after one re-ask.
+ */
 export class LlmJsonError extends Error {
    constructor(message: string) {
       super(message);

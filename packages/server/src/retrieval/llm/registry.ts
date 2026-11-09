@@ -125,6 +125,7 @@ export function createChatModel(
       }
    }
    return new ChatModelImpl(settings.provider, settings.model, raw, {
+      maxOutputTokens: settings.maxOutputTokens,
       timeoutMs: settings.timeoutMs,
       retry: deps.retry,
    });
