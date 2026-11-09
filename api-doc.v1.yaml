@@ -35,11 +35,11 @@ info:
 
     - Under a version: **models** (compiled metadata, query, compile), **reports** (a `.malloy` file carrying an `##
     artifact` tag, grid or linear), **data apps**, **data files**, **agents**, **skills**, its **entities**,
-    **classification**, **index**, **build plan**, **bindings**, and its one own **connection**, the in-memory `duckdb`
-    sandbox over its data files.
+    **classification**, **index**, **build plan**, **status** (with the **bindings** it serves per source), and its one
+    own **connection**, the in-memory `duckdb` sandbox over its data files.
 
     - Under a package: **runs**, each an attempt to build a slot's persisted sources, with a **manifest** of one entry
-    per source; under a connection: the physical **tables** those entries landed in.
+    per source, each naming the table it landed in.
 
 
     ## The grammar
@@ -53,7 +53,7 @@ info:
     {"loaded": true}`.
 
     - `/status`, a version's `status`, the versions list, the version record and `…/index` never load a version that is
-    not in memory; every other content read loads it on demand and says so.
+    not in memory; every other content read loads it on demand, as the `versionId` parameter says on each.
 
     - State changes are fields: `PATCH …/versions/{versionId}` with `archived`, `loaded`, `pinned` or
     `manifestLocation`; `PATCH …/packages/{packageName}` with `latestVersionId`; `PATCH …/runs/{runId}` with `status:
@@ -83,7 +83,7 @@ info:
     - Every timestamp is an RFC 3339 `date-time` in UTC, read-only, and absent until it has a value, never `null`. An
     event's time ends in `At` (`createdAt`, `startedAt`, `failedAt`); the moment some data reflects ends in `AsOf`
     (`dataAsOf`, `schemaAsOf`). Every stored resource, one with a `revision`, carries `createdAt` and `updatedAt`.
-    Durations are integers whose name carries the unit (`durationMs`, `freshnessWindowSeconds`).
+    Durations are integers whose name carries the unit (`durationMs`, `windowSeconds`).
 
     - Every object a `GET` can read carries `resource`, its canonical path relative to the API's base: no leading slash,
     and the resolved version id in place of `latest`
@@ -138,8 +138,6 @@ tags:
   - name: connections
     description: Warehouse handles the models read. Schema browsing and ad-hoc SQL hang under a connection. Where builds
       write is an environment's `destinations`, which are not connections.
-  - name: tables
-    description: Tables the server created or serves in a connection, with their life cycle.
   - name: packages
     description: A package's record and pointers; its content is a version.
   - name: versions
@@ -190,6 +188,8 @@ paths:
           $ref: "#/components/responses/BadRequest"
         "404":
           $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/Internal"
         "503":
           $ref: "#/components/responses/Unavailable"
 
@@ -943,15 +943,16 @@ paths:
       tags:
         - versions
       summary: Publish a new version of the package
-      description: "Fetches a source and publishes the version its `publisher.json` declares, or `<parent>+refetch.N` when
-        that version already exists with other content, re-applying the overlay of report writes. With no body it
-        fetches the package's recorded `source` again, which is how a package installed from a git branch or an
-        object-store prefix picks up a change; when the fetched tree matches the current version (by git commit sha,
-        object etag or md5, or the tree's hash) nothing is made and it answers 200 with that version. `latestVersionId`
-        moves per the promotion rule. The body is a `Version` with only its writable fields: `source` to publish from a
-        new location (it becomes the package's recorded source), `manifestLocation` to bind on publish, and `pinned`. A
-        live package answers 409 `PACKAGE_IS_LIVE` (use `:reload`). With `dryRun`, every publish check runs, the answer
-        is the version the publish would make, and nothing is stored."
+      description: "Fetches a source and publishes the version its `publisher.json` declares, or `<parent>+refetch.N`
+        (`origin: refetch`) when that version already exists with other content, whichever source it came from,
+        re-applying the overlay of report writes. With no body it fetches the package's recorded `source` again, which
+        is how a package installed from a git branch or an object-store prefix picks up a change; when the fetched tree
+        matches the current version (by git commit sha, object etag or md5, or the tree's hash) nothing is made and it
+        answers 200 with that version. `latestVersionId` moves per the promotion rule. The body is a `Version` with only
+        its writable fields: `source` to publish from a new location (it becomes the package's recorded source),
+        `manifestLocation` to bind on publish, and `pinned`. A live package answers 409 `PACKAGE_IS_LIVE` (use
+        `:reload`). With `dryRun`, every publish check runs, the answer is the version the publish would make, and
+        nothing is stored."
       parameters:
         - $ref: "#/components/parameters/idempotencyKey"
         - name: dryRun
@@ -1631,8 +1632,6 @@ paths:
         author's directory. Without `expectedHash` it creates the file (201; 409 `FILE_EXISTS` if one is there); with
         it, it replaces the file (200; 409 `CONFLICT` when the file no longer hashes to it). Either way it answers with
         the report as it now reads in the version the write made, which its `resource` and the `Location` header name.
-      parameters:
-        - $ref: "#/components/parameters/ifMatch"
       requestBody:
         required: true
         content:
@@ -1676,8 +1675,6 @@ paths:
           $ref: "#/components/responses/Gone"
         "412":
           $ref: "#/components/responses/PreconditionFailed"
-        "428":
-          $ref: "#/components/responses/RevisionRequired"
         "429":
           $ref: "#/components/responses/RateLimited"
         "500":
@@ -3393,7 +3390,7 @@ components:
       description: The write conflicts with the resource's state (`CONFLICT`, `VERSION_CONFLICT`, `VERSION_IS_LATEST`,
         `VERSION_IS_LAST_ACTIVE`, `VERSION_NOT_LATEST`, `VERSION_BUILDING`, `PACKAGE_IS_LIVE`, `FILE_EXISTS`,
         `FILE_NOT_WRITABLE`, `RUN_ACTIVE`, `TABLE_OWNED_ELSEWHERE`, `INVALID_TRANSITION`, `RESOURCE_NOT_EMPTY`,
-        `IDEMPOTENCY_KEY_REUSED`
+        `IDEMPOTENCY_KEY_REUSED`).
       content:
         application/json:
           schema:
@@ -3567,6 +3564,7 @@ components:
           description: The version that answered, with `latest` resolved.
       required:
         - resource
+        - name
         - versionId
     AgentAsset:
       type: object
@@ -3859,8 +3857,8 @@ components:
       properties:
         nodes:
           type: array
-          description: A single level holding every persist source of the graph, in build order. Each node's `dependsOn` names
-            every source on every table it reads, so the edges are complete without walking anything.
+          description: "The graph's sources in build order, as levels: every source in one level can build once the levels before
+            it have, so a level's sources may build in parallel."
           items:
             type: array
             items:
@@ -4407,6 +4405,7 @@ components:
         setupSql:
           type: string
           description: SQL statements to run when the connection is established
+          writeOnly: true
     DataFile:
       type: object
       description: A data file embedded in the version (CSV, Parquet, JSON, Excel) that its models read through the version's
@@ -4568,8 +4567,9 @@ components:
             Optional initialization SQL script executed against the DuckDB session upon connection (e.g. ATTACH commands
             for external lakehouses). Multiple statements must be separated by a semicolon and newline (;\n). Use
             absolute paths: a relative path resolves against the server's working directory. Withheld from responses
-            like a credential; an update that omits it keeps the stored script, and an empty string removes it. Refused
-            unless the deployment sets PUBLISHER_ALLOW_DUCKDB_SETUP_SQL=true.
+            like a credential; an update that omits it keeps the stored script, and `null` removes it, as merge-patch
+            clears any field. Refused unless the deployment sets PUBLISHER_ALLOW_DUCKDB_SETUP_SQL=true.
+          writeOnly: true
     DucklakeConnection:
       type: object
       description: DuckLake lakehouse connection configuration
@@ -4841,6 +4841,7 @@ components:
     EnvironmentStatus:
       type: object
       required:
+        - resource
         - name
         - packages
       properties:
@@ -5623,13 +5624,8 @@ components:
           type: string
           description: The cron schedule the package declares for re-materialization.
         freshness:
-          oneOf:
-            - $ref: "#/components/schemas/Freshness"
-            - type: "null"
-          description: "`publisher.json`'s `materialization.freshness` block, verbatim; absent when none is declared.
-            `windowSeconds` is the control plane's refresh objective for the package's materialized sources; `fallback`
-            is the declared query-time behavior when the objective is missed. The publisher only surfaces the values —
-            the control plane owns the scheduling and gating logic."
+          $ref: "#/components/schemas/Freshness"
+          description: "`publisher.json`'s `materialization.freshness` block; absent when none is declared."
     PackageSource:
       type: object
       description: Where a package's content comes from.
@@ -5654,9 +5650,11 @@ components:
         credentialsRef:
           type: string
           description: Name of a stored secret used to fetch a private location. Write-only.
+          writeOnly: true
     PackageStatus:
       type: object
       required:
+        - resource
         - name
         - versions
       properties:
@@ -6103,8 +6101,8 @@ components:
         source in `BuildPlan.sources`; for a `persist` source a refusal means it is absent from `sources`.
       required:
         - name
-        - modelPath
         - tier
+        - origin
         - reason
         - message
       properties:
@@ -6120,18 +6118,11 @@ components:
           enum:
             - storage
             - colocated
-            - preaggregate
-          description: "Which build path this source was evaluated against: `storage` for a source declaring `#@ persist
-            storage=<ref>` (evaluated against the full storage-destination eligibility gate, which never admits an
-            authorize-gated source); `colocated` for a plain `#@ persist` (evaluated against the colocated gate, which
-            admits a proven row-level, fully-attributed gate); `preaggregate` for a `#@ preaggregate` rollup (evaluated
-            against the pre-aggregation gate, which refuses unconditionally when the rollup's base is authorize-gated —
-            rollups group away the gate column, so there is no row-level admission the way colocated has)."
+          description: The tier the source would have built in.
         reason:
           type: string
           enum:
             - FREE_PARAMETER
-            - GIVEN
             - GIVEN_IN_PERSISTED_QUERY
             - DYNAMIC_PROJECTION
             - DYNAMIC_JOIN
@@ -6164,7 +6155,7 @@ components:
             both tiers.
 
 
-            `GIVEN` is retained for records that already carry it and is no longer produced. It was the storage tier's
+            `given` is retained for records that already carry it and is no longer produced. It was the storage tier's
             blanket refusal of any given reference, and the positional reasons above replaced it: where a given sits
             decides the outcome, so a single reason covering every placement can no longer be raised.
             `NOT_DUCKDB_PORTABLE` is decided against the post-build captured schema, which does not exist at compile
@@ -6174,6 +6165,12 @@ components:
           type: string
           description: The full, human-readable refusal message the eligibility assert produced — the same text a build attempting
             this source would fail with.
+        origin:
+          type: string
+          enum:
+            - persist
+            - preaggregate
+          description: What declared the refused source, as on `PersistSourcePlan.origin`.
     ReloadResult:
       type: object
       description: "What a reload did (`POST …/versions/{versionId}:reload`): the version, and its status now."
@@ -6705,8 +6702,8 @@ components:
               type: string
         loadErrors:
           type: array
-          description: Versions that did not load, or that serve a model older than their content (`stale`). The only place either
-            is reported.
+          description: Versions that did not load, or that serve a model older than their content (`stale`). A version that loaded
+            but is stale also says so in its own `VersionStatus.stale`.
           items:
             type: object
             required:
@@ -7272,6 +7269,7 @@ components:
         peakaKey:
           type: string
           description: Peaka API key for authentication with Peaka-hosted Trino clusters
+          writeOnly: true
     Version:
       type: object
       description: An immutable snapshot of a package's content. Its content never changes; its lifecycle fields (`archived`,
@@ -7302,8 +7300,8 @@ components:
             - edit
             - migration
           readOnly: true
-          description: "`publish`: the author's. `refetch`: a publish from the package's recorded source, which had changed.
-            `edit`: a report write. `migration`: imported from a pre-v1 store."
+          description: "`publish`: the author's. `refetch`: a publish whose declared version already existed with other content,
+            named `<parent>+refetch.N`. `edit`: a report write. `migration`: imported from a pre-v1 store."
         parentVersionId:
           $ref: "#/components/schemas/VersionId"
           readOnly: true
@@ -7488,16 +7486,17 @@ components:
               type: string
         servedRevision:
           type: string
-          description: Version status read only (`GET …/versions/{versionId}/status`). An identifier minted per load; moves on
-            every reload whether or not content changed.
+          description: On a version's own status read (`GET …/versions/{versionId}/status`) and in a reload's result; left out of
+            `GET /status`. An identifier minted per load; moves on every reload whether or not content changed.
         contentHash:
           type: string
-          description: Version status read only (`GET …/versions/{versionId}/status`). SHA-256 (hex) over the model, skill and
-            agent files being served; for a live package, whose version is always `live`, the receipt that an edit is
-            served.
+          description: On a version's own status read (`GET …/versions/{versionId}/status`) and in a reload's result; left out of
+            `GET /status`. SHA-256 (hex) over the model, skill and agent files being served; for a live package, whose
+            version is always `live`, the receipt that an edit is served.
         bindings:
           type: array
-          description: Version status read only (`GET …/versions/{versionId}/status`). What this version serves per source.
+          description: On a version's own status read (`GET …/versions/{versionId}/status`) and in a reload's result; left out of
+            `GET /status`. What this version serves per source.
           items:
             $ref: "#/components/schemas/Binding"
     View:
