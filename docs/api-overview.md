@@ -84,7 +84,7 @@ These are the rules the spec's `info` states, in the same words where they can b
 - **Concurrency.** Every mutable resource but a report carries a `revision`, returned as `ETag` on reads. Every `PATCH`
   and `DELETE` accepts `If-Match` and answers 412 `REVISION_MISMATCH` (with `details.currentRevision`) when the resource
   has moved on. A report is revisioned by its `contentHash`, which is the report write's precondition in place of
-  `If-Match`.
+  `If-Match`; a stale one answers 409 `CONTENT_CHANGED` with `details.currentContentHash`.
 - **Field behavior.** What only the server sets is `readOnly` (`resource`, `revision`, timestamps, and every run field
   but `versionId`, `trigger`, `callerRunId`, `options`, `buildInstructions` and `status`), and a write that sends it
   back as read ignores it, so a client can `PATCH` a resource it just read. A field set on create is writable on create
@@ -93,8 +93,8 @@ These are the rules the spec's `info` states, in the same words where they can b
   sent on create. A run's `status` is the one field a client changes later. One field is both set by the server and
   sent back: a report's `contentHash`. A schema no request can carry is `readOnly` as a whole.
 - **Write views.** `required` describes a read: what every read of the object carries. A write body names a view
-  generated from the resource: `XInput` for a create or the report write (the writable fields, `required` naming only
-  what a create must send) and `XPatch` for a merge-patch (no `required`; a nested object is a patch too, a list's items
+  generated from the resource and named for the method that sends it: `XCreate` for a `POST` create and `XReplace` for
+  the `PUT` report write (the writable fields, `required` naming only what the write must send) and `XPatch` for a merge-patch (no `required`; a nested object is a patch too, a list's items
   are whole). A write-only field, such as a credential, is never in `required`; its description says "Required on
   create." when a create needs it. `null` appears only in the `XPatch` views, on a writable optional field a `PATCH` can
   clear, never one set on create; a read never returns it.
@@ -149,7 +149,7 @@ These are the rules the spec's `info` states, in the same words where they can b
   `message`; treat a reason you do not know as the status's generic case. Each operation's error responses list the
   reasons it answers, and `details` has one shape per reason a client acts on (`COMPILE_ERROR`: `problems`;
   `REVISION_MISMATCH`: `currentRevision`; `INVALID_TRANSITION`: `currentStatus`; `TABLE_OWNED_ELSEWHERE`:
-  `ownerPackageName`; `INVALID_REQUEST`: `field`; `RESULT_TOO_LARGE`: `capType`). An error inside a successful
+  `ownerPackageName`; `INVALID_REQUEST`: `field`; `RESULT_TOO_LARGE`: `capType`; `CONTENT_CHANGED`: `currentContentHash`). An error inside a successful
   response is an `EmbeddedError` (`message`, and a `reason` from that use's own list); every diagnostic, a compile
   problem, a load warning or a render log message, is a `Problem`, located by `modelPath` and a 0-based `range`.
 - **Dry runs.** `?dryRun=true` runs every check and stores nothing, and answers 200 with no `Location`, ignoring
@@ -188,7 +188,7 @@ Each row names its operations by `operationId`, which the generated clients use.
 | `POST …/versions/{versionId}/models/{path}:query` | `query-model`: run a query. See [request shapes](#query-request-shapes). |
 | `POST …/versions/{versionId}/models/{path}:compile` | `compile-model`: compile-check Malloy text at `append`, `file` or `package` scope. Answers `problems` and the `versionId` compiled against; the compile failed exactly when a problem has `severity` `error`. |
 | `GET …/versions/{versionId}/reports`, `…/reports/{path}` | `list-reports`, `get-report`: reports by `path` and `layout` (`?layout=` narrows); one report, with its tiles, givens and layout (`?include=content` for its text). Run a `query` tile's `query` through `…/models/{path}:query`, prefixed with `run:`; a `text` tile runs nothing. |
-| `PUT …/versions/{versionId}/reports/{path}` | `write-report`, the builder's save. The body is a `ReportInput`: `content`, and `contentHash` as read. Without `contentHash` it creates the file (201; 409 `FILE_EXISTS`); with it, it replaces the file (200; 409 `CONFLICT` when the file no longer hashes to it). On a stored version it makes version `<parent>+edit.N` and moves `latestVersionId` unless `versionPromotion` is `explicit`; on a live package it writes through to the author's directory. Identical `content` answers 200 and makes no version, so a retry is safe; takes `Idempotency-Key`. Only the latest version can be written (409 `VERSION_NOT_LATEST`); `index.malloy`, `public/`, a non-report and a `readOnly` report answer 409 `FILE_NOT_WRITABLE`. Answers the `Report`. |
+| `PUT …/versions/{versionId}/reports/{path}` | `write-report`, the builder's save. The body is a `ReportReplace`: `content`, and `contentHash` as read. Without `contentHash` it creates the file (201; 409 `FILE_EXISTS`); with it, it replaces the file (200; 409 `CONTENT_CHANGED` when the file no longer hashes to it). On a stored version it makes version `<parent>+edit.N` and moves `latestVersionId` unless `versionPromotion` is `explicit`; on a live package it writes through to the author's directory. Identical `content` answers 200 and makes no version, so a retry is safe; takes `Idempotency-Key`. Only the latest version can be written (409 `VERSION_NOT_LATEST`); `index.malloy`, `public/`, a non-report and a `readOnly` report answer 409 `FILE_NOT_WRITABLE`. Answers the `Report`. |
 | `GET …/versions/{versionId}/data-apps`, `…/public/{path}` | `list-data-apps`, `get-public-file`: HTML data apps and the static files they load, served from the version they were published with. |
 | `GET …/versions/{versionId}/data-files` | `list-data-files`: embedded data files and their schemas (`rowCountStatus` is `deferred` after a `profile=light` publish, until the count this read starts finishes). |
 | `GET …/versions/{versionId}/agents`, `…/agents/{agentName}`, `…/skills`, `…/skills/{skillName}` | `list-agents`, `get-agent`, `list-skills`, `get-skill`: what the version declares for agents, and the skills in force for it (`origin`: `bundled`, `package` or `agent`); a skill's `SKILL.md` text comes on both reads, its files' content with `?include=files`. Adopt an agent only when the user names it. |

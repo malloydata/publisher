@@ -76,7 +76,8 @@ info:
 
     - Every mutable resource but a report carries a `revision`, returned as `ETag` on reads; every `PATCH` and `DELETE`
     accepts `If-Match` and answers 412 when the resource has moved on. A report is revisioned by its `contentHash`,
-    which is the report write's precondition in place of `If-Match`.
+    which is the report write's precondition in place of `If-Match`: a stale one answers 409 `CONTENT_CHANGED`, since
+    the precondition travels in the body, not a header.
 
     - What only the server sets is `readOnly` (`resource`, `revision`, timestamps, and every run field but `versionId`,
     `trigger`, `callerRunId`, `options`, `buildInstructions` and `status`), and a write that sends it back as read
@@ -88,11 +89,12 @@ info:
     a whole.
 
     - `required` describes a read: what every read of the object carries. A write body names a view the composer derives
-    from the resource: `XInput` for a create or the report write (the writable fields, `required` naming only what a
-    create must send) and `XPatch` for a merge-patch (no `required`; a nested object is a patch too, a list's items are
-    whole). A write-only field is never in `required`; its description says "Required on create." when a create needs
-    it. `null` appears only in the `XPatch` views, on a writable optional field a `PATCH` can clear (`[T, "null"]`),
-    never one set on create; the resource itself, and so every read, is never `null`.
+    from the resource: named for the method that sends it: `XCreate` for a `POST` create and `XReplace` for the `PUT`
+    report write (the writable fields, `required` naming only what the write must send) and `XPatch` for a merge-patch
+    (no `required`; a nested object is a patch too, a list's items are whole). A write-only field is never in
+    `required`; its description says "Required on create." when a create needs it. `null` appears only in the `XPatch`
+    views, on a writable optional field a `PATCH` can clear (`[T, "null"]`), never one set on create; the resource
+    itself, and so every read, is never `null`.
 
     - Every `POST` that creates or starts something (an environment, a connection, a package, a version, a run), and the
     report write, accepts an `Idempotency-Key` header: a retry with the same key and body within 24 hours answers with
@@ -290,7 +292,7 @@ paths:
         content:
           application/json:
             schema:
-              $ref: "#/components/schemas/EnvironmentInput"
+              $ref: "#/components/schemas/EnvironmentCreate"
       responses:
         "201":
           description: Created.
@@ -516,7 +518,7 @@ paths:
         content:
           application/json:
             schema:
-              $ref: "#/components/schemas/ConnectionInput"
+              $ref: "#/components/schemas/ConnectionCreate"
       responses:
         "200":
           description: Dry run; nothing stored.
@@ -760,7 +762,7 @@ paths:
         content:
           application/json:
             schema:
-              $ref: "#/components/schemas/PackageInput"
+              $ref: "#/components/schemas/PackageCreate"
       responses:
         "201":
           description: Created.
@@ -994,7 +996,7 @@ paths:
         is how a package installed from a git branch or an object-store prefix picks up a change; when the fetched tree
         matches the current version (by git commit sha, object etag or md5, or the tree's hash) nothing is made and it
         answers 200 with that version. Whether `latestVersionId` moves to it is `ServerStatus.versionPromotion`. The
-        body is a `VersionInput`, `Version`'s writable fields: `source` to publish from a new location, which moves the
+        body is a `VersionCreate`, `Version`'s writable fields: `source` to publish from a new location, which moves the
         package's recorded `source` to it (the one way to move it), `manifestLocation` to bind on publish, and `pinned`.
         A publish that moves the package's `source` or `latestVersionId` advances the package's `revision`. A live
         package answers 409 `PACKAGE_IS_LIVE` (use `:reload`). A declared version that differs from a stored one only by
@@ -1024,7 +1026,7 @@ paths:
         content:
           application/json:
             schema:
-              $ref: "#/components/schemas/VersionInput"
+              $ref: "#/components/schemas/VersionCreate"
       responses:
         "200":
           description: "Nothing new (the fetched content is the current version's): that `Version`. Every dry run also answers
@@ -1841,15 +1843,15 @@ paths:
         anything under `public/`, a file that is not a report, and a report whose `readOnly` is set answer 409
         `FILE_NOT_WRITABLE`. The text is compiled first (400 `COMPILE_ERROR` with `problems`). On a stored version the
         write makes version `<parent>+edit.N` and moves `latestVersionId` to it unless `ServerStatus.versionPromotion`
-        is `explicit`; on a live package it writes through to the author's directory. The body is a `ReportInput`:
+        is `explicit`; on a live package it writes through to the author's directory. The body is a `ReportReplace`:
         `content`, the file's text, with `contentHash` as read. Without `contentHash` it creates the file (201; 409
-        `FILE_EXISTS` if one is there); with it, it replaces the file (200; 409 `CONFLICT` when the file no longer
-        hashes to it). Either way it answers with the report as it now reads in the version the write made, which its
-        `resource` and the `Location` header name. A write whose `content` equals the file's current text answers 200
-        with the current report and makes no version, so a retried write that already succeeded is a no-op; it also
-        accepts `Idempotency-Key`. Only the package's latest version (named directly, as `latest`, or `live`) can be
-        written: any other answers 409 `VERSION_NOT_LATEST`, so a write never forks an older version or moves
-        `latestVersionId` back."
+        `FILE_EXISTS` if one is there); with it, it replaces the file (200; 409 `CONTENT_CHANGED`, with the current hash
+        in `details`, when the file no longer hashes to it). Either way it answers with the report as it now reads in
+        the version the write made, which its `resource` and the `Location` header name. A write whose `content` equals
+        the file's current text answers 200 with the current report and makes no version, so a retried write that
+        already succeeded is a no-op; it also accepts `Idempotency-Key`. Only the package's latest version (named
+        directly, as `latest`, or `live`) can be written: any other answers 409 `VERSION_NOT_LATEST`, so a write never
+        forks an older version or moves `latestVersionId` back."
       parameters:
         - $ref: "#/components/parameters/idempotencyKey"
         - $ref: "#/components/parameters/requestId"
@@ -1858,7 +1860,7 @@ paths:
         content:
           application/json:
             schema:
-              $ref: "#/components/schemas/ReportInput"
+              $ref: "#/components/schemas/ReportReplace"
       responses:
         "200":
           description: Replaced, or unchanged when `content` equals the current text (no version made).
@@ -1898,7 +1900,7 @@ paths:
           description: "Something the request names does not exist. `reason`: `NOT_FOUND`, `VERSION_NOT_FOUND`."
         "409":
           $ref: "#/components/responses/Conflict"
-          description: "The request conflicts with the state of what it names. `reason`: `CONFLICT`, `FILE_EXISTS`,
+          description: "The request conflicts with the state of what it names. `reason`: `CONTENT_CHANGED`, `FILE_EXISTS`,
             `FILE_NOT_WRITABLE`, `VERSION_NOT_LATEST`, `IDEMPOTENCY_KEY_REUSED`."
         "410":
           $ref: "#/components/responses/Gone"
@@ -2729,7 +2731,7 @@ paths:
         content:
           application/json:
             schema:
-              $ref: "#/components/schemas/RunInput"
+              $ref: "#/components/schemas/RunCreate"
       responses:
         "201":
           description: Started.
@@ -4609,9 +4611,9 @@ components:
           readOnly: true
           description: The version that answered, on a read under a version; absent at environment scope.
 
-    ConnectionInput:
+    ConnectionCreate:
       type: object
-      description: "`Connection` as a create or write sends it: its writable fields. Generated from `Connection`."
+      description: "`Connection` as a create sends it: its writable fields. Generated from `Connection`."
       required:
         - name
       properties:
@@ -4870,6 +4872,18 @@ components:
                     - CONNECTION_AUTH_FAILED
                   description: "`CONNECTION_FAILED`: the database could not be reached. `CONNECTION_AUTH_FAILED`: it refused the
                     credentials."
+      readOnly: true
+
+    ContentChangedDetails:
+      type: object
+      description: "`details` of a `CONTENT_CHANGED`: the hash the file has now. Read the report again, merge, and write with
+        this `contentHash`."
+      required:
+        - currentContentHash
+      properties:
+        currentContentHash:
+          type: string
+          description: SHA-256 (hex) of the file's current text.
       readOnly: true
 
     Cursor:
@@ -5633,9 +5647,9 @@ components:
           readOnly: true
           description: When the environment, one of its connections or one of its destinations last changed.
 
-    EnvironmentInput:
+    EnvironmentCreate:
       type: object
-      description: "`Environment` as a create or write sends it: its writable fields. Generated from `Environment`."
+      description: "`Environment` as a create sends it: its writable fields. Generated from `Environment`."
       required:
         - name
       properties:
@@ -5651,7 +5665,7 @@ components:
           description: On a read, the environment's connections with credentials withheld. On `PATCH`, the whole list, which
             replaces what is stored; a connection named with no config is kept as stored. Absent means untouched.
           items:
-            $ref: "#/components/schemas/ConnectionInput"
+            $ref: "#/components/schemas/ConnectionCreate"
         destinations:
           type: array
           description: "Where materialization builds write: the `#@ persist storage=<name>` targets. Read and written as
@@ -5696,7 +5710,7 @@ components:
           description: On a read, the environment's connections with credentials withheld. On `PATCH`, the whole list, which
             replaces what is stored; a connection named with no config is kept as stored. Absent means untouched.
           items:
-            $ref: "#/components/schemas/ConnectionInput"
+            $ref: "#/components/schemas/ConnectionCreate"
         destinations:
           type:
             - array
@@ -5764,8 +5778,8 @@ components:
           description: "Typed per reason, for the reasons a client acts on; absent for the rest. `COMPILE_ERROR`:
             `CompileErrorDetails`. `REVISION_MISMATCH`: `RevisionMismatchDetails`. `INVALID_TRANSITION`:
             `InvalidTransitionDetails`. `TABLE_OWNED_ELSEWHERE`: `TableOwnedElsewhereDetails`. `INVALID_REQUEST`:
-            `InvalidRequestDetails`, when one field is at fault. `RESULT_TOO_LARGE`: `ResultTooLargeDetails`. Pick the
-            shape by `reason`."
+            `InvalidRequestDetails`, when one field is at fault. `RESULT_TOO_LARGE`: `ResultTooLargeDetails`.
+            `CONTENT_CHANGED`: `ContentChangedDetails`. Pick the shape by `reason`."
           oneOf:
             - $ref: "#/components/schemas/CompileErrorDetails"
             - $ref: "#/components/schemas/RevisionMismatchDetails"
@@ -5773,6 +5787,7 @@ components:
             - $ref: "#/components/schemas/TableOwnedElsewhereDetails"
             - $ref: "#/components/schemas/InvalidRequestDetails"
             - $ref: "#/components/schemas/ResultTooLargeDetails"
+            - $ref: "#/components/schemas/ContentChangedDetails"
       readOnly: true
 
     ErrorReason:
@@ -5786,6 +5801,7 @@ components:
         - NOT_FOUND
         - CONFLICT
         - REVISION_MISMATCH
+        - CONTENT_CHANGED
         - INVALID_TRANSITION
         - COMPILE_ERROR
         - QUERY_REJECTED
@@ -6530,9 +6546,9 @@ components:
           format: date-time
           readOnly: true
 
-    PackageInput:
+    PackageCreate:
       type: object
-      description: "`Package` as a create or write sends it: its writable fields. Generated from `Package`."
+      description: "`Package` as a create sends it: its writable fields. Generated from `Package`."
       required:
         - name
         - source
@@ -7326,25 +7342,6 @@ components:
               description: The report file's whole text. On a read, present only with `?include=content`; on a write, the text to
                 write, and the one field a write sets.
 
-    ReportInput:
-      type: object
-      description: "`Report` as a create or write sends it: its writable fields. Generated from `Report`."
-      required:
-        - content
-      properties:
-        contentHash:
-          type: string
-          description: "SHA-256 (hex) of the file's text, `content`. The server sets it on every read; a write sends it back as
-            read, and is refused with 409 `CONFLICT` when the file no longer hashes to it, so a write over a newer text
-            is refused rather than lost. A write without it creates the file. The one field the server sets that a
-            client also sends, as Google's `etag` field is, and the report's revision: a report has no `revision`, and
-            the report write takes no `If-Match`. It is separate from the HTTP `ETag`, which covers the compiled
-            report."
-        content:
-          type: string
-          description: The report file's whole text. On a read, present only with `?include=content`; on a write, the text to
-            write, and the one field a write sets.
-
     ReportList:
       type: object
       required:
@@ -7357,6 +7354,25 @@ components:
         nextCursor:
           $ref: "#/components/schemas/Cursor"
       readOnly: true
+
+    ReportReplace:
+      type: object
+      description: "`Report` as a replace sends it: its writable fields. Generated from `Report`."
+      required:
+        - content
+      properties:
+        contentHash:
+          type: string
+          description: "SHA-256 (hex) of the file's text, `content`. The server sets it on every read; a write sends it back as
+            read, and is refused with 409 `CONTENT_CHANGED` when the file no longer hashes to it, so a write over a
+            newer text is refused rather than lost. A write without it creates the file. The one field the server sets
+            that a client also sends, as Google's `etag` field is, and the report's revision: a report has no
+            `revision`, and the report write takes no `If-Match`. It is separate from the HTTP `ETag`, which covers the
+            compiled report."
+        content:
+          type: string
+          description: The report file's whole text. On a read, present only with `?include=content`; on a write, the text to
+            write, and the one field a write sets.
 
     ReportSummary:
       type: object
@@ -7396,11 +7412,11 @@ components:
         contentHash:
           type: string
           description: "SHA-256 (hex) of the file's text, `content`. The server sets it on every read; a write sends it back as
-            read, and is refused with 409 `CONFLICT` when the file no longer hashes to it, so a write over a newer text
-            is refused rather than lost. A write without it creates the file. The one field the server sets that a
-            client also sends, as Google's `etag` field is, and the report's revision: a report has no `revision`, and
-            the report write takes no `If-Match`. It is separate from the HTTP `ETag`, which covers the compiled
-            report."
+            read, and is refused with 409 `CONTENT_CHANGED` when the file no longer hashes to it, so a write over a
+            newer text is refused rather than lost. A write without it creates the file. The one field the server sets
+            that a client also sends, as Google's `etag` field is, and the report's revision: a report has no
+            `revision`, and the report write takes no `If-Match`. It is separate from the HTTP `ETag`, which covers the
+            compiled report."
         error:
           $ref: "#/components/schemas/EmbeddedError"
           description: Present when the report did not compile.
@@ -7649,9 +7665,9 @@ components:
           format: date-time
           readOnly: true
 
-    RunInput:
+    RunCreate:
       type: object
-      description: "`Run` as a create or write sends it: its writable fields. Generated from `Run`."
+      description: "`Run` as a create sends it: its writable fields. Generated from `Run`."
       required:
         - versionId
       properties:
@@ -8979,16 +8995,9 @@ components:
           readOnly: true
           description: When the version was archived. Absent while it is not archived.
 
-    VersionId:
-      type: string
-      pattern: ^(live|\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?)$
-      description: "A resolved version: a semantic version, or `live` for a live (watched) package, which has no stored
-        versions. `live` names content, not a record: it is never listed by `GET …/versions`, `GET …/versions/live`
-        answers 404, and `PATCH`, `DELETE`, `:load` and `:unload` on it answer 409 `PACKAGE_IS_LIVE`."
-
-    VersionInput:
+    VersionCreate:
       type: object
-      description: "`Version` as a create or write sends it: its writable fields. Generated from `Version`."
+      description: "`Version` as a create sends it: its writable fields. Generated from `Version`."
       properties:
         source:
           $ref: "#/components/schemas/PackageSource"
@@ -9008,6 +9017,13 @@ components:
           type: string
           description: An externally computed manifest bound to this version, or `null` to serve from the warehouse. Set with
             `PATCH`. The file is a JSON array of `ManifestEntry` without its read-only fields.
+
+    VersionId:
+      type: string
+      pattern: ^(live|\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?)$
+      description: "A resolved version: a semantic version, or `live` for a live (watched) package, which has no stored
+        versions. `live` names content, not a record: it is never listed by `GET …/versions`, `GET …/versions/live`
+        answers 404, and `PATCH`, `DELETE`, `:load` and `:unload` on it answer 409 `PACKAGE_IS_LIVE`."
 
     VersionList:
       type: object
