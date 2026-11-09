@@ -83,7 +83,7 @@ parent.
 - **Concurrency.** Every mutable resource carries a `revision`, returned as `ETag` on reads. Send it back as `If-Match` on
   a write; 412 `REVISION_MISMATCH` when the resource has moved on. The report write's precondition is the report's `sourceHash`, sent back as read.
 - **Lists.** Every list is `{items, nextCursor}`, paged with `limit` (default 100, at most 1000) and `after`. `/status` is
-  the one unpaged snapshot, narrowable with `?environment=`.
+  the one unpaged snapshot, narrowable with `?environmentName=`.
 - **Typed responses.** A query answers `{rows, schema, metadata}`, plus `malloyResult` when asked for with
   `include: ["malloyResult"]`. Nothing is a JSON string inside JSON.
 - **Errors.** Every error is `{status, reason, message, details?}`, `reason` from one closed enum. Branch on `status` and

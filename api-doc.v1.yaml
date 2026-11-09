@@ -135,10 +135,9 @@ info:
     Publisher authenticates nobody. Put it behind the gateway that authenticates your users before exposing it beyond
     localhost; see `docs/security-posture.md`. No operation here answers `401`: a gateway may answer `401` or `403` on
     its own before a request reaches Publisher, in its own body shape. Each operation declares only the codes its shape
-    can produce: `404` when it names a resource, `409` on writes and `:reload`, `412` and `428` when it takes
-    `If-Match`, `413` when it takes a body, `403` on a resource write under `resources.readOnly` and on an
-    `#(authorize)` gate, `410` when the version it names is archived, and `424`, `502` and `504` when it loads a version
-    or reaches a warehouse.
+    can produce: `404` when it names a resource, `409` on writes and `:reload`, `412` when it takes `If-Match`, `413`
+    when it takes a body, `403` on a resource write under `resources.readOnly` and on an `#(authorize)` gate, `410` when
+    the version it names is archived, and `424`, `502` and `504` when it loads a version or reaches a warehouse.
 servers:
   - url: /api/v1
     description: This server
@@ -181,21 +180,24 @@ paths:
         - server
       summary: Read the server's state and every version it holds
       parameters:
-        - name: environment
+        - name: environmentName
           in: query
           description: Narrow the snapshot to one environment.
           schema:
             $ref: "#/components/schemas/IdentifierPattern"
+        - $ref: "#/components/parameters/requestId"
       responses:
         "200":
           description: The snapshot in the v1 shape. `/api/v0/status` keeps the v0 shape, with additive fields only.
+          headers:
+            X-Request-Id:
+              $ref: "#/components/headers/RequestId"
+            Cache-Control:
+              $ref: "#/components/headers/CacheControl"
           content:
             application/json:
               schema:
                 $ref: "#/components/schemas/ServerStatus"
-          headers:
-            X-Request-Id:
-              $ref: "#/components/headers/RequestId"
         "400":
           $ref: "#/components/responses/BadRequest"
         "404":
@@ -215,6 +217,7 @@ paths:
       parameters:
         - $ref: "#/components/parameters/limit"
         - $ref: "#/components/parameters/after"
+        - $ref: "#/components/parameters/requestId"
         - $ref: "#/components/parameters/ifNoneMatch"
       responses:
         "200":
@@ -247,6 +250,7 @@ paths:
       summary: Create an environment
       parameters:
         - $ref: "#/components/parameters/idempotencyKey"
+        - $ref: "#/components/parameters/requestId"
       requestBody:
         required: true
         content:
@@ -318,6 +322,7 @@ paths:
         "503":
           $ref: "#/components/responses/Unavailable"
       parameters:
+        - $ref: "#/components/parameters/requestId"
         - $ref: "#/components/parameters/ifNoneMatch"
     patch:
       operationId: update-environment
@@ -329,6 +334,7 @@ paths:
         so a push need not resend credentials the server withholds. Use the connection routes to change one connection.
       parameters:
         - $ref: "#/components/parameters/ifMatch"
+        - $ref: "#/components/parameters/requestId"
       requestBody:
         required: true
         content:
@@ -359,8 +365,6 @@ paths:
           $ref: "#/components/responses/PreconditionFailed"
         "413":
           $ref: "#/components/responses/PayloadTooLarge"
-        "428":
-          $ref: "#/components/responses/RevisionRequired"
         "429":
           $ref: "#/components/responses/RateLimited"
         "500":
@@ -377,6 +381,7 @@ paths:
       parameters:
         - $ref: "#/components/parameters/ifMatch"
         - $ref: "#/components/parameters/force"
+        - $ref: "#/components/parameters/requestId"
       responses:
         "204":
           description: Deleted.
@@ -393,8 +398,6 @@ paths:
           $ref: "#/components/responses/Conflict"
         "412":
           $ref: "#/components/responses/PreconditionFailed"
-        "428":
-          $ref: "#/components/responses/RevisionRequired"
         "429":
           $ref: "#/components/responses/RateLimited"
         "500":
@@ -414,6 +417,7 @@ paths:
       parameters:
         - $ref: "#/components/parameters/limit"
         - $ref: "#/components/parameters/after"
+        - $ref: "#/components/parameters/requestId"
         - $ref: "#/components/parameters/ifNoneMatch"
       responses:
         "200":
@@ -454,6 +458,7 @@ paths:
             type: boolean
             default: false
           description: Validate and test the configuration without storing it; answers 200 with the test result.
+        - $ref: "#/components/parameters/requestId"
       requestBody:
         required: true
         content:
@@ -537,6 +542,7 @@ paths:
         "503":
           $ref: "#/components/responses/Unavailable"
       parameters:
+        - $ref: "#/components/parameters/requestId"
         - $ref: "#/components/parameters/ifNoneMatch"
     patch:
       operationId: update-connection
@@ -552,6 +558,7 @@ paths:
             type: boolean
             default: false
           description: Test the merged configuration without storing it; answers 200 with the test result.
+        - $ref: "#/components/parameters/requestId"
       requestBody:
         required: true
         content:
@@ -584,8 +591,6 @@ paths:
           $ref: "#/components/responses/PreconditionFailed"
         "413":
           $ref: "#/components/responses/PayloadTooLarge"
-        "428":
-          $ref: "#/components/responses/RevisionRequired"
         "429":
           $ref: "#/components/responses/RateLimited"
         "500":
@@ -599,6 +604,7 @@ paths:
       summary: Delete a connection
       parameters:
         - $ref: "#/components/parameters/ifMatch"
+        - $ref: "#/components/parameters/requestId"
       responses:
         "204":
           description: Deleted.
@@ -615,8 +621,6 @@ paths:
           $ref: "#/components/responses/Conflict"
         "412":
           $ref: "#/components/responses/PreconditionFailed"
-        "428":
-          $ref: "#/components/responses/RevisionRequired"
         "429":
           $ref: "#/components/responses/RateLimited"
         "500":
@@ -637,6 +641,7 @@ paths:
       parameters:
         - $ref: "#/components/parameters/limit"
         - $ref: "#/components/parameters/after"
+        - $ref: "#/components/parameters/requestId"
         - $ref: "#/components/parameters/ifNoneMatch"
       responses:
         "200":
@@ -673,6 +678,7 @@ paths:
         the one way a version is made. A package that already exists answers 409 `CONFLICT`.
       parameters:
         - $ref: "#/components/parameters/idempotencyKey"
+        - $ref: "#/components/parameters/requestId"
       requestBody:
         required: true
         content:
@@ -747,6 +753,7 @@ paths:
         "503":
           $ref: "#/components/responses/Unavailable"
       parameters:
+        - $ref: "#/components/parameters/requestId"
         - $ref: "#/components/parameters/ifNoneMatch"
     patch:
       operationId: update-package
@@ -758,6 +765,7 @@ paths:
         here: scope and schedule come from a version's `publisher.json`."
       parameters:
         - $ref: "#/components/parameters/ifMatch"
+        - $ref: "#/components/parameters/requestId"
       requestBody:
         required: true
         content:
@@ -790,8 +798,6 @@ paths:
           $ref: "#/components/responses/PreconditionFailed"
         "413":
           $ref: "#/components/responses/PayloadTooLarge"
-        "428":
-          $ref: "#/components/responses/RevisionRequired"
         "429":
           $ref: "#/components/responses/RateLimited"
         "500":
@@ -807,6 +813,7 @@ paths:
       parameters:
         - $ref: "#/components/parameters/ifMatch"
         - $ref: "#/components/parameters/force"
+        - $ref: "#/components/parameters/requestId"
       responses:
         "204":
           description: Deleted.
@@ -823,8 +830,6 @@ paths:
           $ref: "#/components/responses/Conflict"
         "412":
           $ref: "#/components/responses/PreconditionFailed"
-        "428":
-          $ref: "#/components/responses/RevisionRequired"
         "429":
           $ref: "#/components/responses/RateLimited"
         "500":
@@ -850,7 +855,8 @@ paths:
           in: query
           schema:
             type: boolean
-          description: Only archived, or only active, versions.
+          description: "`true` lists only archived versions, `false` only active ones; absent lists both."
+        - $ref: "#/components/parameters/requestId"
         - $ref: "#/components/parameters/ifNoneMatch"
       responses:
         "200":
@@ -900,6 +906,7 @@ paths:
           schema:
             type: boolean
             default: false
+          description: Run every publish check and store nothing; answers with the version the publish would make.
         - name: profile
           in: query
           schema:
@@ -912,6 +919,7 @@ paths:
             draft checkpoint does not need to serve: the build plan and preaggregation companions, render-tag prepares,
             report lint, the discovery-index build, and the per-file row counts of `data-files`. Each deferred part is
             derived on its first read. For a package whose every edit publishes a version."
+        - $ref: "#/components/parameters/requestId"
       requestBody:
         required: false
         content:
@@ -988,13 +996,15 @@ paths:
       responses:
         "200":
           description: Recompiled; the version and its status.
+          headers:
+            X-Request-Id:
+              $ref: "#/components/headers/RequestId"
+            ETag:
+              $ref: "#/components/headers/ETag"
           content:
             application/json:
               schema:
                 $ref: "#/components/schemas/ReloadResult"
-          headers:
-            X-Request-Id:
-              $ref: "#/components/headers/RequestId"
         "400":
           $ref: "#/components/responses/BadRequest"
         "404":
@@ -1015,6 +1025,8 @@ paths:
           $ref: "#/components/responses/Unavailable"
         "504":
           $ref: "#/components/responses/GatewayTimeout"
+      parameters:
+        - $ref: "#/components/parameters/requestId"
 
 
   /environments/{environmentName}/packages/{packageName}/versions/{versionId}/status:
@@ -1056,6 +1068,7 @@ paths:
         "503":
           $ref: "#/components/responses/Unavailable"
       parameters:
+        - $ref: "#/components/parameters/requestId"
         - $ref: "#/components/parameters/ifNoneMatch"
 
 
@@ -1097,6 +1110,7 @@ paths:
         "503":
           $ref: "#/components/responses/Unavailable"
       parameters:
+        - $ref: "#/components/parameters/requestId"
         - $ref: "#/components/parameters/ifNoneMatch"
     patch:
       operationId: update-version
@@ -1112,6 +1126,7 @@ paths:
         424 `MANIFEST_UNAVAILABLE`."
       parameters:
         - $ref: "#/components/parameters/ifMatch"
+        - $ref: "#/components/parameters/requestId"
       requestBody:
         required: true
         content:
@@ -1144,8 +1159,6 @@ paths:
           $ref: "#/components/responses/PayloadTooLarge"
         "424":
           $ref: "#/components/responses/DependencyFailed"
-        "428":
-          $ref: "#/components/responses/RevisionRequired"
         "429":
           $ref: "#/components/responses/RateLimited"
         "500":
@@ -1166,6 +1179,7 @@ paths:
         when it is the package's last version (`VERSION_IS_LAST_ACTIVE`): delete the package instead."
       parameters:
         - $ref: "#/components/parameters/ifMatch"
+        - $ref: "#/components/parameters/requestId"
       responses:
         "204":
           description: Deleted.
@@ -1182,8 +1196,6 @@ paths:
           $ref: "#/components/responses/Conflict"
         "412":
           $ref: "#/components/responses/PreconditionFailed"
-        "428":
-          $ref: "#/components/responses/RevisionRequired"
         "429":
           $ref: "#/components/responses/RateLimited"
         "500":
@@ -1206,6 +1218,7 @@ paths:
         - $ref: "#/components/parameters/limit"
         - $ref: "#/components/parameters/after"
         - $ref: "#/components/parameters/includeHidden"
+        - $ref: "#/components/parameters/requestId"
         - $ref: "#/components/parameters/ifNoneMatch"
       responses:
         "200":
@@ -1278,6 +1291,7 @@ paths:
           schema:
             $ref: "#/components/schemas/EncodedGivenValues"
           description: Given values for a model whose sources depend on them, one per given (`givens[region]=west`).
+        - $ref: "#/components/parameters/requestId"
         - $ref: "#/components/parameters/ifNoneMatch"
       responses:
         "200":
@@ -1328,6 +1342,7 @@ paths:
       summary: Run a Malloy query against the model
       parameters:
         - $ref: "#/components/parameters/includeHidden"
+        - $ref: "#/components/parameters/requestId"
       requestBody:
         required: true
         content:
@@ -1381,6 +1396,7 @@ paths:
       summary: Compile-check Malloy text against the model without running it
       parameters:
         - $ref: "#/components/parameters/includeHidden"
+        - $ref: "#/components/parameters/requestId"
       requestBody:
         required: true
         content:
@@ -1437,10 +1453,16 @@ paths:
         - name: layout
           in: query
           schema:
-            type: string
-            enum:
-              - grid
-              - linear
+            type: array
+            items:
+              type: string
+              enum:
+                - grid
+                - linear
+          style: form
+          explode: false
+          description: Only reports with one of these layouts.
+        - $ref: "#/components/parameters/requestId"
         - $ref: "#/components/parameters/ifNoneMatch"
       responses:
         "200":
@@ -1501,6 +1523,7 @@ paths:
               enum:
                 - content
           description: Larger parts to include. `content` includes the report file's text, which the report write takes.
+        - $ref: "#/components/parameters/requestId"
         - $ref: "#/components/parameters/ifNoneMatch"
       responses:
         "200":
@@ -1562,7 +1585,11 @@ paths:
             X-Request-Id:
               $ref: "#/components/headers/RequestId"
             Location:
-              $ref: "#/components/headers/Location"
+              description: The report in the version the write made, which on a published version is not the URL written to.
+              schema:
+                type: string
+            ETag:
+              $ref: "#/components/headers/ETag"
           content:
             application/json:
               schema:
@@ -1573,7 +1600,11 @@ paths:
             X-Request-Id:
               $ref: "#/components/headers/RequestId"
             Location:
-              $ref: "#/components/headers/Location"
+              description: The report in the version the write made.
+              schema:
+                type: string
+            ETag:
+              $ref: "#/components/headers/ETag"
           content:
             application/json:
               schema:
@@ -1602,6 +1633,8 @@ paths:
           $ref: "#/components/responses/Unavailable"
         "504":
           $ref: "#/components/responses/GatewayTimeout"
+      parameters:
+        - $ref: "#/components/parameters/requestId"
 
 
   /environments/{environmentName}/packages/{packageName}/versions/{versionId}/data-apps:
@@ -1617,6 +1650,7 @@ paths:
       parameters:
         - $ref: "#/components/parameters/limit"
         - $ref: "#/components/parameters/after"
+        - $ref: "#/components/parameters/requestId"
         - $ref: "#/components/parameters/ifNoneMatch"
       responses:
         "200":
@@ -1697,6 +1731,7 @@ paths:
         "503":
           $ref: "#/components/responses/Unavailable"
       parameters:
+        - $ref: "#/components/parameters/requestId"
         - $ref: "#/components/parameters/ifNoneMatch"
 
 
@@ -1713,6 +1748,7 @@ paths:
       parameters:
         - $ref: "#/components/parameters/limit"
         - $ref: "#/components/parameters/after"
+        - $ref: "#/components/parameters/requestId"
         - $ref: "#/components/parameters/ifNoneMatch"
       responses:
         "200":
@@ -1763,6 +1799,7 @@ paths:
       parameters:
         - $ref: "#/components/parameters/limit"
         - $ref: "#/components/parameters/after"
+        - $ref: "#/components/parameters/requestId"
         - $ref: "#/components/parameters/ifNoneMatch"
       responses:
         "200":
@@ -1823,6 +1860,7 @@ paths:
               enum:
                 - skills
           description: Larger parts to include. `skills` includes each skill's `SKILL.md` text and its files' content.
+        - $ref: "#/components/parameters/requestId"
         - $ref: "#/components/parameters/ifNoneMatch"
       responses:
         "200":
@@ -1874,6 +1912,7 @@ paths:
       parameters:
         - $ref: "#/components/parameters/limit"
         - $ref: "#/components/parameters/after"
+        - $ref: "#/components/parameters/requestId"
         - $ref: "#/components/parameters/ifNoneMatch"
       responses:
         "200":
@@ -1934,6 +1973,7 @@ paths:
               enum:
                 - files
           description: Larger parts to include. `files` includes the content of each file the skill ships.
+        - $ref: "#/components/parameters/requestId"
         - $ref: "#/components/parameters/ifNoneMatch"
       responses:
         "200":
@@ -1985,6 +2025,7 @@ paths:
         - $ref: "#/components/parameters/limit"
         - $ref: "#/components/parameters/after"
         - $ref: "#/components/parameters/includeHidden"
+        - $ref: "#/components/parameters/requestId"
         - $ref: "#/components/parameters/ifNoneMatch"
       responses:
         "200":
@@ -2067,6 +2108,7 @@ paths:
         "504":
           $ref: "#/components/responses/GatewayTimeout"
       parameters:
+        - $ref: "#/components/parameters/requestId"
         - $ref: "#/components/parameters/ifNoneMatch"
 
 
@@ -2111,6 +2153,7 @@ paths:
         "503":
           $ref: "#/components/responses/Unavailable"
       parameters:
+        - $ref: "#/components/parameters/requestId"
         - $ref: "#/components/parameters/ifNoneMatch"
 
 
@@ -2159,6 +2202,7 @@ paths:
         "504":
           $ref: "#/components/responses/GatewayTimeout"
       parameters:
+        - $ref: "#/components/parameters/requestId"
         - $ref: "#/components/parameters/ifNoneMatch"
 
 
@@ -2176,6 +2220,7 @@ paths:
       parameters:
         - $ref: "#/components/parameters/limit"
         - $ref: "#/components/parameters/after"
+        - $ref: "#/components/parameters/requestId"
         - $ref: "#/components/parameters/ifNoneMatch"
       responses:
         "200":
@@ -2260,6 +2305,7 @@ paths:
         "504":
           $ref: "#/components/responses/GatewayTimeout"
       parameters:
+        - $ref: "#/components/parameters/requestId"
         - $ref: "#/components/parameters/ifNoneMatch"
 
 
@@ -2278,18 +2324,28 @@ paths:
         - name: versionId
           in: query
           schema:
-            $ref: "#/components/schemas/VersionRef"
-          description: Only runs that built this version.
+            type: array
+            items:
+              $ref: "#/components/schemas/VersionRef"
+          style: form
+          explode: false
+          description: Only runs that built one of these versions.
         - name: status
           in: query
           schema:
-            type: string
-            enum:
-              - pending
-              - running
-              - committed
-              - failed
-              - cancelled
+            type: array
+            items:
+              type: string
+              enum:
+                - pending
+                - running
+                - committed
+                - failed
+                - cancelled
+          style: form
+          explode: false
+          description: Only runs in one of these statuses.
+        - $ref: "#/components/parameters/requestId"
         - $ref: "#/components/parameters/ifNoneMatch"
       responses:
         "200":
@@ -2324,6 +2380,7 @@ paths:
       summary: Start a materialization run
       parameters:
         - $ref: "#/components/parameters/idempotencyKey"
+        - $ref: "#/components/parameters/requestId"
       description: "Loads the version first if this server does not hold it, so a run (a re-run of a failed version among
         them) needs no separate load. 409 `RUN_ACTIVE` while another run holds the slot; 409 `TABLE_OWNED_ELSEWHERE`
         when an instruction names a table another package or slot owns; 409 `VERSION_NOT_LATEST` for an auto-run of a
@@ -2409,6 +2466,7 @@ paths:
         "503":
           $ref: "#/components/responses/Unavailable"
       parameters:
+        - $ref: "#/components/parameters/requestId"
         - $ref: "#/components/parameters/ifNoneMatch"
     patch:
       operationId: update-run
@@ -2419,6 +2477,7 @@ paths:
         `INVALID_TRANSITION` with the current status in `details`.'
       parameters:
         - $ref: "#/components/parameters/ifMatch"
+        - $ref: "#/components/parameters/requestId"
       requestBody:
         required: true
         content:
@@ -2447,8 +2506,6 @@ paths:
           $ref: "#/components/responses/PreconditionFailed"
         "413":
           $ref: "#/components/responses/PayloadTooLarge"
-        "428":
-          $ref: "#/components/responses/RevisionRequired"
         "429":
           $ref: "#/components/responses/RateLimited"
         "500":
@@ -2468,6 +2525,7 @@ paths:
             type: boolean
             default: false
           description: Also drop the server-owned tables only this run's manifest references.
+        - $ref: "#/components/parameters/requestId"
       responses:
         "204":
           description: Deleted.
@@ -2484,8 +2542,6 @@ paths:
           $ref: "#/components/responses/PreconditionFailed"
         "424":
           $ref: "#/components/responses/DependencyFailed"
-        "428":
-          $ref: "#/components/responses/RevisionRequired"
         "429":
           $ref: "#/components/responses/RateLimited"
         "500":
@@ -2535,6 +2591,7 @@ paths:
         "503":
           $ref: "#/components/responses/Unavailable"
       parameters:
+        - $ref: "#/components/parameters/requestId"
         - $ref: "#/components/parameters/ifNoneMatch"
 
 
@@ -2547,6 +2604,7 @@ paths:
       parameters:
         - $ref: "#/components/parameters/limit"
         - $ref: "#/components/parameters/after"
+        - $ref: "#/components/parameters/requestId"
         - $ref: "#/components/parameters/ifNoneMatch"
       responses:
         "200":
@@ -2618,6 +2676,7 @@ paths:
               type: string
               enum:
                 - columns
+        - $ref: "#/components/parameters/requestId"
         - $ref: "#/components/parameters/ifNoneMatch"
       responses:
         "200":
@@ -2697,6 +2756,7 @@ paths:
         "504":
           $ref: "#/components/responses/GatewayTimeout"
       parameters:
+        - $ref: "#/components/parameters/requestId"
         - $ref: "#/components/parameters/ifNoneMatch"
 
 
@@ -2740,6 +2800,8 @@ paths:
           $ref: "#/components/responses/Unavailable"
         "504":
           $ref: "#/components/responses/GatewayTimeout"
+      parameters:
+        - $ref: "#/components/parameters/requestId"
     parameters:
       - $ref: "#/components/parameters/environmentName"
       - $ref: "#/components/parameters/connectionName"
@@ -2754,6 +2816,7 @@ paths:
       parameters:
         - $ref: "#/components/parameters/limit"
         - $ref: "#/components/parameters/after"
+        - $ref: "#/components/parameters/requestId"
         - $ref: "#/components/parameters/ifNoneMatch"
       responses:
         "200":
@@ -2831,6 +2894,7 @@ paths:
               type: string
               enum:
                 - columns
+        - $ref: "#/components/parameters/requestId"
         - $ref: "#/components/parameters/ifNoneMatch"
       responses:
         "200":
@@ -2916,6 +2980,7 @@ paths:
         "504":
           $ref: "#/components/responses/GatewayTimeout"
       parameters:
+        - $ref: "#/components/parameters/requestId"
         - $ref: "#/components/parameters/ifNoneMatch"
 
 
@@ -2961,6 +3026,8 @@ paths:
           $ref: "#/components/responses/Unavailable"
         "504":
           $ref: "#/components/responses/GatewayTimeout"
+      parameters:
+        - $ref: "#/components/parameters/requestId"
     parameters:
       - $ref: "#/components/parameters/environmentName"
       - $ref: "#/components/parameters/packageName"
@@ -2976,12 +3043,14 @@ components:
       required: true
       schema:
         $ref: "#/components/schemas/IdentifierPattern"
+      description: The environment's name.
     packageName:
       name: packageName
       in: path
       required: true
       schema:
         $ref: "#/components/schemas/IdentifierPattern"
+      description: The package's name, unique in its environment.
     versionId:
       name: versionId
       in: path
@@ -2998,36 +3067,46 @@ components:
       required: true
       schema:
         $ref: "#/components/schemas/IdentifierPattern"
+      description: The connection's name, unique in its environment.
     schemaName:
       name: schemaName
       in: path
       required: true
       schema:
         type: string
+        minLength: 1
+      description: A schema as the warehouse names it, percent-encoded (a BigQuery dataset is `project.dataset`). Not an
+        identifier Publisher chose, so it has no pattern.
     tableName:
       name: tableName
       in: path
       required: true
       schema:
         type: string
+        minLength: 1
+      description: A table as the warehouse names it inside the schema, percent-encoded.
     runId:
       name: runId
       in: path
       required: true
       schema:
         type: string
+        minLength: 1
+      description: "The run's id, as `Run.runId` returned it: opaque, assigned by the server."
     agentName:
       name: agentName
       in: path
       required: true
       schema:
         $ref: "#/components/schemas/IdentifierPattern"
+      description: The agent's name, as the version's `publisher.json` declares it.
     skillName:
       name: skillName
       in: path
       required: true
       schema:
         $ref: "#/components/schemas/IdentifierPattern"
+      description: "The skill's name: its directory under the version's `skills/`."
     path:
       name: path
       in: path
@@ -3083,12 +3162,23 @@ components:
       schema:
         type: string
       description: An `ETag` from an earlier read. When the representation still matches, the answer is 304 with no body.
+    requestId:
+      name: X-Request-Id
+      in: header
+      required: false
+      schema:
+        type: string
+        maxLength: 128
+      description: An id for this request, echoed in the response's `X-Request-Id` and in its access record. Without it the
+        server uses the trace id of a W3C `traceparent`, else makes one.
     ifMatch:
       name: If-Match
       in: header
+      required: false
       schema:
         type: string
-      description: The resource's `ETag` as last read (`"<revision>"`). The write is refused with 412 when it no longer matches.
+      description: "The resource's `ETag` as last read (`\"<revision>\"`). The write is refused with 412 when it no longer
+        matches. Optional: a write without it is unconditional."
 
 
   headers:
@@ -3100,8 +3190,8 @@ components:
     CacheControl:
       description: "`private, max-age=31536000, immutable` on a raw file read under a concrete version id (`…/public/{path}`),
         whose bytes can never change; `private, no-cache` on every other read, which a client may store but must
-        revalidate with `If-None-Match`. A read through `latest` or `live` is always `no-cache`. Always `private`,
-        because the gateway in front authenticates the caller."
+        revalidate with `If-None-Match`. A read through `latest` or `live` is always `no-cache`. `no-store` on
+        `/status`, a live snapshot. Always `private`, because the gateway in front authenticates the caller."
       schema:
         type: string
     RetryAfter:
@@ -3194,16 +3284,6 @@ components:
         (`CONNECTION_AUTH_FAILED`), a model names a connection that does not exist (`CONNECTION_NOT_FOUND`), or a
         manifest could not be fetched or bound (`MANIFEST_UNAVAILABLE`). Fix the dependency; retrying fails the same
         way."
-      content:
-        application/json:
-          schema:
-            $ref: "#/components/schemas/Error"
-      headers:
-        X-Request-Id:
-          $ref: "#/components/headers/RequestId"
-    RevisionRequired:
-      description: This server requires `If-Match` on writes and the request sent none (`REVISION_REQUIRED`). Read the
-        resource and send its `ETag`.
       content:
         application/json:
           schema:
@@ -4659,7 +4739,6 @@ components:
         - NOT_FOUND
         - CONFLICT
         - REVISION_MISMATCH
-        - REVISION_REQUIRED
         - INVALID_TRANSITION
         - COMPILE_ERROR
         - QUERY_REJECTED
@@ -6140,7 +6219,7 @@ components:
       minimum: 1
       description: Optimistic-concurrency counter on every mutable resource. Every read of the resource returns it in the body
         and as the `ETag` header (`"<revision>"`); every write may send it back as `If-Match` and answers 412
-        `REVISION_MISMATCH` when the resource has moved on. A server may require it (428 `REVISION_REQUIRED`).
+        `REVISION_MISMATCH` when the resource has moved on.
 
     Run:
       type: object
