@@ -2223,7 +2223,8 @@ paths:
       tags:
         - materialization
       summary: Start a materialization run
-      description: "409 `RUN_ACTIVE` while another run holds the slot; 409 `TABLE_OWNED_ELSEWHERE` when an instruction names a
+      description: "Loads the version first if this server does not hold it, so a run (a re-run of a failed version among
+        them) needs no separate load. 409 `RUN_ACTIVE` while another run holds the slot; 409 `TABLE_OWNED_ELSEWHERE` when an instruction names a
         table another package or slot owns; 400 `VERSION_NOT_LATEST` for an auto-run of a non-latest version under
         `scope: package`."
       requestBody:
