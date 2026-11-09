@@ -120,17 +120,23 @@ info:
     - Every resource a `GET` reads carries `resource`, except `/status`, which is a snapshot of the server, and list
     envelopes: its canonical path relative to the API's base: no leading slash, and the resolved version id in place of
     `latest` (`environments/acme/packages/sales/versions/1.4.0/models/orders.malloy`). A list item carries it when its
-    item has a `GET` of its own, so a data app, whose page is raw bytes, carries none. Relative, so it stays right
-    behind a gateway that serves the API under another prefix; a link and a stable key, never parsed.
+    item has a `GET` of its own, so a data app, whose page is served outside the API, carries none. Relative, so it
+    stays right behind a gateway that serves the API under another prefix; a link and a stable key, never parsed.
 
     - A resource read two ways is `X` from its own `GET` and `XSummary` in its list, and its list is `XList`; nothing
     else is named `…Summary`.
 
     - Every read but `/status` answers with an `ETag` and takes `If-None-Match`, answering 304 with no body when nothing
-    changed. `Cache-Control` is `private, max-age=31536000, immutable` only on raw file reads under a concrete version
-    id (`…/public/{path}`), whose bytes never change; `/status`, a snapshot, is `no-store`; every other read is
-    `private, no-cache`, because a compiled model under a concrete version can still change with `:reload`, and a read
-    through `latest` or `live` can resolve differently next time.
+    changed. `Cache-Control` is `no-store` on `/status` and, on every other read, `private, no-cache`, because a
+    compiled model under a concrete version can still change with `:reload`, and a read through `latest` or `live` can
+    resolve differently next time.
+
+    - A data app's page and the files it loads are not API content. `DataApp.url` names them on Publisher's static
+    route, `/environments/{environmentName}/packages/{packageName}/versions/{versionId}/public/{path}` at the server's
+    root, outside the API base, which serves only a version's `public/` files, each with its own media type: `private,
+    max-age=31536000, immutable` under a concrete version id, whose files never change, and `private, no-cache` through
+    `latest`. v0's `/environments/{environmentName}/packages/{packageName}/{path}` stays as the latest version's short
+    form. Nothing outside `public/` is served, so no model or data file is reachable around the query controls.
 
     - Every operation but `/status` may answer 429 `RATE_LIMITED`; 429 and 503 carry `Retry-After` in seconds. `/status`
     is never rate-limited and never answers 503, because it is the orchestrator's heartbeat: it reports `initializing`
@@ -194,7 +200,7 @@ tags:
   - name: reports
     description: "Reports: a `.malloy` file with an `## artifact` tag, grid or linear."
   - name: data-apps
-    description: HTML data apps under a version's `public/`.
+    description: The catalog of HTML data apps under a version's `public/`; the pages are served outside the API.
   - name: data-files
     description: Data files embedded in a version.
   - name: agents
@@ -1935,6 +1941,7 @@ paths:
       tags:
         - data-apps
       summary: List the version's HTML data apps
+      description: The catalog only. Each page, and the files it loads, is served outside the API at its `url`.
       parameters:
         - $ref: "#/components/parameters/limit"
         - $ref: "#/components/parameters/after"
@@ -1978,55 +1985,6 @@ paths:
           $ref: "#/components/responses/Unavailable"
         "504":
           $ref: "#/components/responses/GatewayTimeout"
-
-
-  /environments/{environmentName}/packages/{packageName}/versions/{versionId}/public/{path}:
-    parameters:
-      - $ref: "#/components/parameters/environmentName"
-      - $ref: "#/components/parameters/packageName"
-      - $ref: "#/components/parameters/versionId"
-      - $ref: "#/components/parameters/publicPath"
-    get:
-      operationId: get-public-file
-      tags:
-        - data-apps
-      summary: Read a static file from the version's `public/` directory
-      description: Served with the file's own media type. A data app and the files it loads by relative URL come from the same
-        version.
-      responses:
-        "200":
-          description: The file.
-          content:
-            "*/*":
-              schema:
-                type: string
-                format: binary
-          headers:
-            X-Request-Id:
-              $ref: "#/components/headers/RequestId"
-            ETag:
-              $ref: "#/components/headers/ETag"
-            Cache-Control:
-              $ref: "#/components/headers/CacheControl"
-        "304":
-          $ref: "#/components/responses/NotModified"
-        "400":
-          $ref: "#/components/responses/BadRequest"
-          description: "The request is malformed, or the Malloy or SQL in it was refused. `reason`: `INVALID_REQUEST`."
-        "404":
-          $ref: "#/components/responses/NotFound"
-          description: "Something the request names does not exist. `reason`: `NOT_FOUND`, `VERSION_NOT_FOUND`."
-        "410":
-          $ref: "#/components/responses/Gone"
-        "429":
-          $ref: "#/components/responses/RateLimited"
-        "500":
-          $ref: "#/components/responses/Internal"
-        "503":
-          $ref: "#/components/responses/Unavailable"
-      parameters:
-        - $ref: "#/components/parameters/requestId"
-        - $ref: "#/components/parameters/ifNoneMatch"
 
 
   /environments/{environmentName}/packages/{packageName}/versions/{versionId}/data-files:
@@ -3489,15 +3447,6 @@ components:
       description: "A file's version-relative path, as the listing returned it. It spans the remaining segments: send each `/`
         literally, never as `%2F`, and percent-encode only within a segment (a space as `%20`). An action's `:verb`
         follows the last segment."
-    publicPath:
-      name: path
-      in: path
-      required: true
-      schema:
-        $ref: "#/components/schemas/PathPattern"
-      x-multi-segment: true
-      description: "A file's path under the version's `public/` directory, not the version's root. It spans the remaining
-        segments: send each `/` literally, never as `%2F`, so the relative URLs a page loads resolve beside it."
     dryRun:
       name: dryRun
       in: query
@@ -3614,10 +3563,9 @@ components:
       schema:
         type: string
     CacheControl:
-      description: "`private, max-age=31536000, immutable` on a raw file read under a concrete version id (`…/public/{path}`),
-        whose bytes can never change; `private, no-cache` on every other read, which a client may store but must
-        revalidate with `If-None-Match`. A read through `latest` or `live` is always `no-cache`. `no-store` on
-        `/status`, a current snapshot. Always `private`, because the gateway in front authenticates the caller."
+      description: "`private, no-cache` on every read, which a client may store but must revalidate with `If-None-Match`,
+        since a compiled model under a concrete version can still change with `:reload`; `no-store` on `/status`, a
+        current snapshot. Always `private`, because the gateway in front authenticates the caller."
       schema:
         type: string
     RetryAfter:
@@ -4892,16 +4840,22 @@ components:
 
     DataApp:
       type: object
-      description: An HTML page under the version's `public/`. It has no read of its own, so it carries no `resource`; `GET
-        …/public/{path}` serves the page itself.
+      description: An HTML page under the version's `public/`. The page and the files it loads are served outside the API, at
+        `url`; it has no API read of its own, so it carries no `resource`.
       required:
         - path
         - title
+        - url
         - versionId
       properties:
         path:
           type: string
-          description: The HTML file's path under `public/`, as `GET …/public/{path}` takes it.
+          description: The HTML file's path under `public/`.
+        url:
+          type: string
+          description: "Where the page is served: root-relative, outside the API base, and pinned to the version that answered
+            (`/environments/acme/packages/sales/versions/1.4.0/public/dashboard.html`). Open it in a browser or a frame;
+            its relative URLs resolve beside it in the same version."
         title:
           type: string
         fit:
