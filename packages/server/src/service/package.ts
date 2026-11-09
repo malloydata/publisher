@@ -25,6 +25,7 @@ import {
    type EntitiesQueryRoute,
    entitiesFindingCode,
    extractPackageEntities,
+   type ModelEntitiesPlan,
 } from "./entities/extract";
 import type { SourceAddress } from "./entities/internal_types";
 import { toApiEntities } from "./entities/to_api";
@@ -37,6 +38,7 @@ import {
    type LoadPackageOutcome,
 } from "../package_load/package_load_pool";
 import type { LoadPackageRequest } from "../package_load/protocol";
+import { queryBoundaryActive } from "./package_manifest";
 import {
    DEFAULT_PACKAGE_RETRIEVAL,
    type PackageRetrievalSettings,
@@ -333,6 +335,11 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
     * rebinds models does not change it.
     */
    private entities: readonly ApiModelEntities[] | undefined;
+   /**
+    * The compiled files whose entities the last {@link computeEntities}
+    * planned on the main thread rather than taking the load worker's plan.
+    */
+   private entitiesPlannedHere: readonly string[] = [];
    private packagePath: string;
    private malloyConfig: MalloyConfig;
    /**
@@ -1220,7 +1227,7 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
       }
       // The dry run reports what the reload warns about the entities too.
       try {
-         await pkg.computeEntities();
+         await pkg.computeEntities(Package.entityPlansOf(outcome));
       } catch (err) {
          logger.warn("Entities lint failed during compile", {
             packageName,
@@ -1259,6 +1266,7 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
             defaultConnectionName: "duckdb",
             computeBuildPlan: true,
             withPreaggregateCompanions: true,
+            withEntities: true,
          }),
       );
       const [outcome, databases] = await Promise.all([
@@ -1363,7 +1371,7 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
 
          await applyLoadGates(pkg);
          const entitiesStarted = performance.now();
-         await pkg.computeEntities();
+         await pkg.computeEntities(Package.entityPlansOf(outcome));
          entitiesMs = performance.now() - entitiesStarted;
          // After the gates, so a bad declaration is rejected before a companion is
          // compiled. Unbound, the companion recomputes from the base until a bind.
@@ -1640,40 +1648,22 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
     * index cannot honor is left out of them and reported as a package warning
     * with a stable code, so the package still loads and a host that indexes can
     * refuse it at its own publish.
+    *
+    * `plans` are the load worker's ({@link Package.entityPlansOf}); a file
+    * without one is planned here, on the main thread.
     */
-   private async computeEntities(): Promise<void> {
-      const modelFiles: EntitiesModelFile[] = [];
-      for (const [modelPath, model] of this.models) {
-         if (!modelPath.endsWith(MODEL_FILE_SUFFIX)) continue;
-         const absolutePath = path.join(this.packagePath, modelPath);
-         const modelDef = model.getModelDef();
-         const compilationError = model.getCompilationError();
-         if (compilationError !== undefined || modelDef === undefined) {
-            modelFiles.push({
-               relativePath: modelPath,
-               absolutePath,
-               error: compilationError?.message ?? "The model did not compile.",
-            });
-            continue;
-         }
-         modelFiles.push({
-            relativePath: modelPath,
-            absolutePath,
-            model: new MalloyModel(modelDef, [], []),
-            // The text the model compiled from, so a field's code is sliced
-            // from the revision its range describes.
-            text:
-               model.getCompiledSourceText() ??
-               (await fs.readFile(absolutePath, "utf-8")),
-         });
-      }
-      const { results, findings } = await extractPackageEntities({
+   private async computeEntities(
+      plans?: ReadonlyMap<string, ModelEntitiesPlan>,
+   ): Promise<void> {
+      const { results, findings, plannedHere } = await extractPackageEntities({
          packageRoot: this.packagePath,
          packageName: this.packageName,
-         modelFiles,
+         modelFiles: await this.entitiesModelFiles(),
          queryRoute: this.entitiesQueryRoute(),
          connections: this.malloyConfig.connections,
+         plans,
       });
+      this.entitiesPlannedHere = Object.freeze(plannedHere);
       this.entitiesWarnings = findings.map((finding) => ({
          model: finding.modelPath,
          message: finding.message,
@@ -1702,7 +1692,67 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
                n + (m.fields?.filter((f) => f.indexFingerprint).length ?? 0),
             0,
          ),
+         // Files the worker left (past its budget) are planned on this thread.
+         plannedOnMainThread: plannedHere.length,
+         workerPlanMs: [...(plans?.values() ?? [])].reduce(
+            (ms, plan) =>
+               ms + (plan.status === "planned" ? plan.durationMs : 0),
+            0,
+         ),
       });
+   }
+
+   /**
+    * The compiled files whose {@link entities} were planned on the main
+    * thread at load, rather than by the load worker: none, unless the worker
+    * ran past its budget or a plan did not hold for the query route.
+    */
+   public getEntitiesPlannedOnMainThread(): readonly string[] {
+      return this.entitiesPlannedHere;
+   }
+
+   /**
+    * Every `.malloy` model now installed, as the entities extraction takes it:
+    * compiled, with the text it compiled from, or the reason it did not.
+    */
+   public async entitiesModelFiles(): Promise<EntitiesModelFile[]> {
+      const modelFiles: EntitiesModelFile[] = [];
+      for (const [modelPath, model] of this.models) {
+         if (!modelPath.endsWith(MODEL_FILE_SUFFIX)) continue;
+         const absolutePath = path.join(this.packagePath, modelPath);
+         const modelDef = model.getModelDef();
+         const compilationError = model.getCompilationError();
+         if (compilationError !== undefined || modelDef === undefined) {
+            modelFiles.push({
+               relativePath: modelPath,
+               absolutePath,
+               error: compilationError?.message ?? "The model did not compile.",
+            });
+            continue;
+         }
+         modelFiles.push({
+            relativePath: modelPath,
+            absolutePath,
+            model: new MalloyModel(modelDef, [], []),
+            // The text the model compiled from, so a field's code is sliced
+            // from the revision its range describes.
+            text:
+               model.getCompiledSourceText() ??
+               (await fs.readFile(absolutePath, "utf-8")),
+         });
+      }
+      return modelFiles;
+   }
+
+   /** The load worker's entities plans in `outcome`, by model path. */
+   private static entityPlansOf(
+      outcome: LoadPackageOutcome,
+   ): Map<string, ModelEntitiesPlan> {
+      const plans = new Map<string, ModelEntitiesPlan>();
+      for (const model of outcome.models) {
+         if (model.entities) plans.set(model.modelPath, model.entities);
+      }
+      return plans;
    }
 
    /** How this package is searched and indexed (publisher.json `retrieval`). */
@@ -2481,8 +2531,7 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
     * this, not the discovery-only `Model.hasEmptyDiscoverySurface`.
     */
    private queryBoundaryActive(): boolean {
-      if (this.packageMetadata.queryableSources === "all") return false;
-      return this.exploresDeclared();
+      return queryBoundaryActive(this.packageMetadata);
    }
 
    /**
