@@ -3,11 +3,10 @@
 
 import { expect, test } from "@playwright/test";
 import { PACKAGES } from "./helpers/fixtures";
-import { gotoHome, openEnvironment, openPackage } from "./helpers/navigation";
 import { filterButton, openFilter } from "./helpers/filters";
 import {
    exampleFixture,
-   registerPackageEnv,
+   publishPackageEnv,
    type PackageEnv,
 } from "./helpers/packageEnv";
 
@@ -73,7 +72,7 @@ let pe: PackageEnv;
 test.describe("notebook-authorize", () => {
    // eslint-disable-next-line no-empty-pattern
    test.beforeAll(async ({}, testInfo) => {
-      pe = await registerPackageEnv(
+      pe = await publishPackageEnv(
          testInfo.project.use.baseURL ?? "http://localhost:4000",
          "nbauthz",
          exampleFixture(PACKAGES.storefront),
@@ -96,7 +95,11 @@ test.describe("notebook-authorize", () => {
          {
             method: "POST",
             headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ query: CELL, givens }),
+            body: JSON.stringify({
+               query: CELL,
+               givens,
+               versionId: pe.versionId,
+            }),
          },
       );
 
@@ -149,9 +152,7 @@ test.describe("notebook-authorize", () => {
    });
 
    async function openNotebook(page: import("@playwright/test").Page) {
-      await gotoHome(page);
-      await openEnvironment(page, pe.env);
-      await openPackage(page, pe.env, pe.pkg);
+      await page.goto(`/${pe.path}`);
       // An untitled report is listed by its basename.
       await page.getByText("authz_gate_notebook", { exact: true }).click();
       await expect(page).toHaveURL(/\/authz_gate_notebook$/);

@@ -7,6 +7,7 @@ import os from "os";
 import path from "path";
 import { fileURLToPath } from "url";
 import { AUTHORING_ENVS } from "./authoringEnvs";
+import { tmpName } from "./fixtures";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 
@@ -21,10 +22,42 @@ export const exampleFixture = (name: string) =>
 export interface PackageEnv {
    env: string;
    pkg: string;
+   /** The version a published copy serves as; absent for one mounted in place. */
+   versionId?: string;
+   /**
+    * The package's Console route, without the leading slash:
+    * `<env>/<pkg>/<versionId>` for a published version, `<env>/<pkg>` for a
+    * package mounted in place.
+    */
+   path: string;
    baseURL: string;
    /** A model file as the server serves it, read through the API. */
    readSource: (modelPath: string) => Promise<string>;
    dispose: () => Promise<void>;
+}
+
+/** A throwaway copy of `source`, with `remove` taken out and `files` written in. */
+function copyFixture(
+   prefix: string,
+   source: string,
+   files: Record<string, string>,
+   remove: string[],
+): string {
+   const location = fs.mkdtempSync(
+      path.join(os.tmpdir(), `publisher-${prefix}-`),
+   );
+   fs.cpSync(source, location, { recursive: true });
+   for (const relative of remove)
+      fs.rmSync(path.join(location, relative), {
+         recursive: true,
+         force: true,
+      });
+   for (const [relative, text] of Object.entries(files)) {
+      const target = path.join(location, relative);
+      fs.mkdirSync(path.dirname(target), { recursive: true });
+      fs.writeFileSync(target, text);
+   }
+   return location;
 }
 
 /** The authoring environments a spec holds now (see AUTHORING_ENVS). */
@@ -54,7 +87,8 @@ async function claimAuthoringEnv(baseURL: string): Promise<string> {
  * place for that. The environment is one the server watches (AUTHORING_ENVS),
  * so it mounts the copy in place: every other package is a published version,
  * which no write or reload changes. A file is read back through the API
- * rather than from disk. Skips the suite on a server that refuses writes.
+ * rather than from disk. Skips the suite on a server that refuses writes. A
+ * spec that only reads a package publishes it instead (publishPackageEnv).
  */
 export async function registerPackageEnv(
    baseURL: string,
@@ -67,20 +101,7 @@ export async function registerPackageEnv(
    remove: string[] = [],
 ): Promise<PackageEnv> {
    const env = await claimAuthoringEnv(baseURL);
-   const location = fs.mkdtempSync(
-      path.join(os.tmpdir(), `publisher-${prefix}-`),
-   );
-   fs.cpSync(source, location, { recursive: true });
-   for (const relative of remove)
-      fs.rmSync(path.join(location, relative), {
-         recursive: true,
-         force: true,
-      });
-   for (const [relative, text] of Object.entries(files)) {
-      const target = path.join(location, relative);
-      fs.mkdirSync(path.dirname(target), { recursive: true });
-      fs.writeFileSync(target, text);
-   }
+   const location = copyFixture(prefix, source, files, remove);
    const res = await fetch(`${baseURL}/api/v0/environments`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -108,6 +129,7 @@ export async function registerPackageEnv(
    return {
       env,
       pkg,
+      path: `${env}/${pkg}`,
       baseURL,
       readSource: async (modelPath) => {
          const r = await fetch(
@@ -122,6 +144,82 @@ export async function registerPackageEnv(
             method: "DELETE",
          }).catch(() => undefined);
          held.delete(env);
+         fs.rmSync(location, { recursive: true, force: true });
+      },
+   };
+}
+
+/**
+ * Publishes a throwaway copy of `source` as version `version` (written into the
+ * copy's publisher.json) in an environment of its own, for a spec that reads a
+ * package and writes nothing into it. The spec browses the version's own
+ * routes, `/<env>/<pkg>/<versionId>/…`, as a published package is served. A
+ * spec that writes into the package (the builders, a report save) needs
+ * registerPackageEnv instead: a published version is immutable. Skips the
+ * suite on a server that refuses writes.
+ */
+export async function publishPackageEnv(
+   baseURL: string,
+   prefix: string,
+   source: string,
+   pkg: string,
+   /** Files added to (or replacing ones in) the copy before it is published. */
+   files: Record<string, string> = {},
+   /** Paths removed from the copy first, to start a package with a section empty. */
+   remove: string[] = [],
+   version = "1.0.0",
+): Promise<PackageEnv> {
+   const env = tmpName(prefix);
+   const location = copyFixture(prefix, source, files, remove);
+   const manifestPath = path.join(location, "publisher.json");
+   const manifest = fs.existsSync(manifestPath)
+      ? (JSON.parse(fs.readFileSync(manifestPath, "utf8")) as Record<
+           string,
+           unknown
+        >)
+      : {};
+   fs.writeFileSync(
+      manifestPath,
+      JSON.stringify({ ...manifest, name: pkg, version }, null, 2),
+   );
+   const api = `${baseURL}/api/v0/environments`;
+   const created = await fetch(api, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ name: env, packages: [], connections: [] }),
+   });
+   test.skip(
+      created.status === 405 || created.status === 403,
+      "publisher is read-only",
+   );
+   expect(created.ok, await created.text()).toBe(true);
+   const published = await fetch(`${api}/${env}/packages`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ name: pkg, location }),
+   });
+   const body = await published.text();
+   expect(published.ok, body).toBe(true);
+   expect((JSON.parse(body) as { versionId?: string }).versionId).toBe(version);
+   const pkgUrl = `${api}/${env}/packages/${pkg}`;
+   return {
+      env,
+      pkg,
+      versionId: version,
+      path: `${env}/${pkg}/${version}`,
+      baseURL,
+      readSource: async (modelPath) => {
+         const r = await fetch(
+            `${pkgUrl}/models/${encodeURIComponent(modelPath)}?versionId=${encodeURIComponent(version)}`,
+         );
+         const text = await r.text();
+         expect(r.ok, text).toBe(true);
+         return (JSON.parse(text) as { sourceText: string }).sourceText;
+      },
+      dispose: async () => {
+         await fetch(`${api}/${env}`, { method: "DELETE" }).catch(
+            () => undefined,
+         );
          fs.rmSync(location, { recursive: true, force: true });
       },
    };

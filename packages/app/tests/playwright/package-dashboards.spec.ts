@@ -8,9 +8,8 @@ import {
    filterButton,
    openFilter,
 } from "./helpers/filters";
-import { gotoHome, openEnvironment, openPackage } from "./helpers/navigation";
 import {
-   registerPackageEnv,
+   publishPackageEnv,
    serverFixture,
    type PackageEnv,
 } from "./helpers/packageEnv";
@@ -21,11 +20,10 @@ import {
  * filter state, Apply mode, and the composite tile grid.
  *
  * Runs against the server's dashboards fixtures rather than the bundled
- * examples, which declare no dashboards. Each is a throwaway copy registered
- * in an authoring environment of its own (see registerPackageEnv) and removed
- * after, so the suite leaves the server as it found it. Mounted in place
- * rather than published, because the package page offers "Add report" only on
- * a package it can write into, and the first test asserts that it does.
+ * examples, which declare no dashboards. Each is a throwaway copy published as
+ * a version in an environment of its own (see publishPackageEnv), browsed on
+ * the version's own routes and removed after, so the suite leaves the server
+ * as it found it.
  */
 
 const PKG = "dashboards-test";
@@ -46,13 +44,13 @@ test.describe("package-dashboards", () => {
    // eslint-disable-next-line no-empty-pattern
    test.beforeAll(async ({}, testInfo) => {
       const baseURL = testInfo.project.use.baseURL ?? "http://localhost:4000";
-      dash = await registerPackageEnv(
+      dash = await publishPackageEnv(
          baseURL,
          "dashboards",
          serverFixture(PKG),
          PKG,
       );
-      linear = await registerPackageEnv(
+      linear = await publishPackageEnv(
          baseURL,
          "linear",
          serverFixture(LINEAR_PKG),
@@ -66,15 +64,13 @@ test.describe("package-dashboards", () => {
    });
 
    const openDashboard = async (page: Page, slug: string) => {
-      await page.goto(`/${dash.env}/${dash.pkg}/dashboards/${slug}`);
+      await page.goto(`/${dash.path}/dashboards/${slug}`);
    };
 
-   test("the package page lists dashboards and notebooks as artifacts, each once, with New on the heading row", async ({
+   test("the package page lists dashboards and notebooks as artifacts, each once", async ({
       page,
    }) => {
-      await gotoHome(page);
-      await openEnvironment(page, dash.env);
-      await openPackage(page, dash.env, dash.pkg);
+      await page.goto(`/${dash.path}`);
 
       await expect(
          page.getByRole("heading", { name: "Reports", level: 6, exact: true }),
@@ -96,9 +92,10 @@ test.describe("package-dashboards", () => {
       await expect(
          artifacts.getByRole("button", { name: /Orders in a window/ }),
       ).toHaveCount(1);
+      // A published version takes no new report, so the section offers none.
       await expect(
          artifacts.getByRole("button", { name: "Add report", exact: true }),
-      ).toBeVisible();
+      ).toHaveCount(0);
       await expect(
          page.getByRole("button", { name: /Business Overview/ }),
       ).toBeVisible();
@@ -120,14 +117,12 @@ test.describe("package-dashboards", () => {
 
       await page.getByRole("button", { name: /Business Overview/ }).click();
       await expect(page).toHaveURL(
-         new RegExp(`/${dash.env}/${dash.pkg}/dashboards/overview$`),
+         new RegExp(`/${dash.path}/dashboards/overview$`),
       );
    });
 
    test("both lists are ordered by the name they show", async ({ page }) => {
-      await gotoHome(page);
-      await openEnvironment(page, dash.env);
-      await openPackage(page, dash.env, dash.pkg);
+      await page.goto(`/${dash.path}`);
       await expect(
          page.getByRole("heading", { name: "Reports", level: 6, exact: true }),
       ).toBeVisible({ timeout: 60_000 });
@@ -232,9 +227,7 @@ test.describe("package-dashboards", () => {
       await expect(page).toHaveURL(/[?&]BRAND=Nike/);
 
       // And that link restores the control on a cold load.
-      await page.goto(
-         `/${dash.env}/${dash.pkg}/dashboards/overview?BRAND=Nike`,
-      );
+      await page.goto(`/${dash.path}/dashboards/overview?BRAND=Nike`);
       await expectFilterValue(page, "Brand", "Nike");
    });
 
@@ -248,7 +241,7 @@ test.describe("package-dashboards", () => {
       // link kept its tracking tag depended on whether the reader had opened that
       // dashboard before.
       await page.goto(
-         `/${dash.env}/${dash.pkg}/dashboards/overview?BRAND=Nike&utm_campaign=spring`,
+         `/${dash.path}/dashboards/overview?BRAND=Nike&utm_campaign=spring`,
       );
       await expect(
          page.getByRole("heading", { name: "Business Overview" }),
@@ -276,7 +269,7 @@ test.describe("package-dashboards", () => {
       // stuck in the address bar, silently re-applying to anyone opening the
       // link.
       await page.goto(
-         `/${dash.env}/${dash.pkg}/dashboards/overview?BRAND=Nike&utm_campaign=spring`,
+         `/${dash.path}/dashboards/overview?BRAND=Nike&utm_campaign=spring`,
       );
       await expect(
          page.getByRole("heading", { name: "Business Overview" }),
@@ -571,7 +564,7 @@ test.describe("package-dashboards", () => {
       {
          name: "linear report",
          open: async (page: Page) => {
-            await page.goto(`/${linear.env}/${linear.pkg}/brands`);
+            await page.goto(`/${linear.path}/brands`);
             await expect(
                page.getByRole("heading", { name: "Brands", level: 1 }).first(),
             ).toBeVisible({ timeout: 60_000 });
@@ -641,9 +634,7 @@ test.describe("package-dashboards", () => {
 
       // The slug becomes the route and the clicked value becomes the given.
       await expect(page).toHaveURL(
-         new RegExp(
-            `/${dash.env}/${dash.pkg}/dashboards/overview\\?BRAND=Nike$`,
-         ),
+         new RegExp(`/${dash.path}/dashboards/overview\\?BRAND=Nike$`),
       );
       // Arriving seeded means arriving filtered, so the destination's control
       // shows the drilled value.
@@ -739,7 +730,7 @@ test.describe("package-dashboards", () => {
          .click();
 
       await expect(page).toHaveURL(
-         new RegExp(`/${dash.env}/${dash.pkg}/dashboards/regions\\?REGION=EU$`),
+         new RegExp(`/${dash.path}/dashboards/regions\\?REGION=EU$`),
       );
       // regions is autorun=false, and a drill arrives applied rather than
       // pending: the point of a drill is to land on the filtered view.
@@ -776,7 +767,7 @@ test.describe("package-dashboards", () => {
          .click();
 
       const seeded = new RegExp(
-         `/${dash.env}/${dash.pkg}/dashboards/regions\\?REGION=EU$`,
+         `/${dash.path}/dashboards/regions\\?REGION=EU$`,
       );
       await expect(page).toHaveURL(seeded);
       // Asserted again AFTER the destination has rendered, because the first
@@ -795,7 +786,7 @@ test.describe("package-dashboards", () => {
       // The payoff of declaring drill on the dimension: `brands.malloy` says
       // nothing about drill, but its cell groups by `brand_name`, so the same
       // click path works with no report-specific code.
-      await page.goto(`/${linear.env}/${linear.pkg}/brands`);
+      await page.goto(`/${linear.path}/brands`);
       await expect(
          page.getByRole("heading", { name: "Brands", level: 1 }).first(),
       ).toBeVisible({ timeout: 60_000 });
@@ -809,9 +800,7 @@ test.describe("package-dashboards", () => {
          .click();
 
       await expect(page).toHaveURL(
-         new RegExp(
-            `/${linear.env}/${linear.pkg}/dashboards/overview\\?BRAND=Nike$`,
-         ),
+         new RegExp(`/${linear.path}/dashboards/overview\\?BRAND=Nike$`),
       );
       await expect(
          page.getByRole("heading", { name: "Business Overview" }),
@@ -826,7 +815,7 @@ test.describe("package-dashboards", () => {
       page,
    }) => {
       // `orders-since.malloy` carries `autorun=false` in its artifact tag.
-      await page.goto(`/${linear.env}/${linear.pkg}/orders-since`);
+      await page.goto(`/${linear.path}/orders-since`);
       await expect(
          page.getByRole("heading", { name: "Orders since" }),
       ).toBeVisible({ timeout: 60_000 });
@@ -864,9 +853,7 @@ test.describe("package-dashboards", () => {
       await expect(count("6")).toBeHidden();
 
       // And the link restores the value on a cold load.
-      await page.goto(
-         `/${linear.env}/${linear.pkg}/orders-since?SINCE=2024-03-01`,
-      );
+      await page.goto(`/${linear.path}/orders-since?SINCE=2024-03-01`);
       await expectFilterValue(page, "Ordered since", "Mar 1, 2024");
    });
 
@@ -874,7 +861,7 @@ test.describe("package-dashboards", () => {
       page,
    }) => {
       // `orders-start.malloy` carries `givens { SINCE=@2024-03-01 }` in its tag.
-      await page.goto(`/${linear.env}/${linear.pkg}/orders-start`);
+      await page.goto(`/${linear.path}/orders-start`);
       await expectFilterValue(page, "Ordered since", "Mar 1, 2024", 60_000);
 
       // Applied, not merely displayed: two of the six orders are in the window.
@@ -886,9 +873,7 @@ test.describe("package-dashboards", () => {
       expect(page.url()).not.toContain("SINCE=");
 
       // A link overrides the file, so a shared URL shows the sender's view.
-      await page.goto(
-         `/${linear.env}/${linear.pkg}/orders-start?SINCE=2024-01-01`,
-      );
+      await page.goto(`/${linear.path}/orders-start?SINCE=2024-01-01`);
       await expectFilterValue(page, "Ordered since", "Jan 1, 2024", 60_000);
       await expect(count("6")).toBeVisible({ timeout: 30_000 });
    });
@@ -896,7 +881,7 @@ test.describe("package-dashboards", () => {
    test("a linear report's cell drills into the report itself", async ({
       page,
    }) => {
-      await page.goto(`/${linear.env}/${linear.pkg}/brands`);
+      await page.goto(`/${linear.path}/brands`);
       await expect(
          page.getByRole("heading", { name: "Brands", level: 1 }).first(),
       ).toBeVisible({ timeout: 60_000 });
@@ -914,7 +899,7 @@ test.describe("package-dashboards", () => {
       // Filtering in place is a URL change, not a navigation: still the
       // report, now with the given set.
       await expect(page).toHaveURL(
-         new RegExp(`/${linear.env}/${linear.pkg}/brands\\?REGION=EU$`),
+         new RegExp(`/${linear.path}/brands\\?REGION=EU$`),
       );
       await expectFilterValue(page, "Region", "EU");
    });
@@ -928,9 +913,7 @@ test.describe("package-dashboards", () => {
       test("lists notebooks by title, the way it lists dashboards", async ({
          page,
       }) => {
-         await gotoHome(page);
-         await openEnvironment(page, dash.env);
-         await openPackage(page, dash.env, dash.pkg);
+         await page.goto(`/${dash.path}`);
 
          await expect(
             page.getByRole("heading", {
@@ -954,14 +937,14 @@ test.describe("package-dashboards", () => {
 
          await titled.click();
          await expect(page).toHaveURL(
-            new RegExp(`/${dash.env}/${dash.pkg}/orders-since.malloynb$`),
+            new RegExp(`/${dash.path}/orders-since.malloynb$`),
          );
       });
 
       test("reads `## autorun=false` and `## givens { … }`", async ({
          page,
       }) => {
-         await page.goto(`/${dash.env}/${dash.pkg}/orders-since.malloynb`);
+         await page.goto(`/${dash.path}/orders-since.malloynb`);
          await expect(
             page.getByRole("heading", { name: "Orders since" }),
          ).toBeVisible({ timeout: 60_000 });
@@ -969,7 +952,7 @@ test.describe("package-dashboards", () => {
             page.getByRole("button", { name: "Apply" }),
          ).toBeVisible();
 
-         await page.goto(`/${dash.env}/${dash.pkg}/orders-start.malloynb`);
+         await page.goto(`/${dash.path}/orders-start.malloynb`);
          await expectFilterValue(page, "Ordered since", "Mar 1, 2024", 60_000);
          await expect(page).toHaveURL(/[?&]SINCE=2024-03-01/);
       });
