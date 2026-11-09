@@ -24,6 +24,7 @@
  * tested in tests/component/explore_visibility.component.spec.ts / the authorize specs. Reports are
  * always public and never gated.
  */
+import { unrecordedAudit } from "../../src/service/access_record";
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import * as fs from "fs";
 import * as os from "os";
@@ -123,10 +124,10 @@ export { customers }`,
    ): Promise<void> {
       let leakedRows: number | undefined;
       try {
-         const { compactResult } = await model.getQueryResults(
+         const { compactResult } = await model.runQuery(unrecordedAudit(), {
             sourceName,
             queryName,
-         );
+         });
          leakedRows = (compactResult as unknown[] | undefined)?.length ?? 0;
       } catch {
          return;
@@ -153,7 +154,7 @@ export { customers }`,
          "run: x -> { aggregate: n is coutn() }";
       const compileError = async (model: Model): Promise<QueryCompileError> => {
          try {
-            await model.getQueryResults(undefined, undefined, query);
+            await model.runQuery(unrecordedAudit(), { query });
          } catch (error) {
             expect(error).toBeInstanceOf(QueryCompileError);
             return error as QueryCompileError;
@@ -215,7 +216,7 @@ export { customers }`,
       const { malloyConfig, duckdb } = duckdbMalloyConfig();
       const refusedNotCompiled = async (model: Model, query: string) => {
          try {
-            await model.getQueryResults(undefined, undefined, query);
+            await model.runQuery(unrecordedAudit(), { query });
          } catch (error) {
             // A boundary 404, never the compiler's problems: returning those
             // would describe a source off the surface.
@@ -272,7 +273,7 @@ export { customers }`,
       query: string,
    ): Promise<QueryCompileError | NotQueryableError> {
       try {
-         await model.getQueryResults(undefined, undefined, query);
+         await model.runQuery(unrecordedAudit(), { query });
       } catch (error) {
          if (
             error instanceof QueryCompileError ||
@@ -518,7 +519,10 @@ source: locked is duckdb.sql("select 1 as id") extend {
          const pkg = await Package.create("env", "pkg", tempDir, malloyConfig);
          const { result } = await pkg
             .getModel("index.malloy")!
-            .getQueryResults("customers", "v", undefined);
+            .runQuery(unrecordedAudit(), {
+               sourceName: "customers",
+               queryName: "v",
+            });
          expect(result.data).toBeDefined();
       } finally {
          await duckdb.close();
@@ -533,9 +537,10 @@ source: locked is duckdb.sql("select 1 as id") extend {
          const pkg = await Package.create("env", "pkg", tempDir, malloyConfig);
          // base.malloy is hidden (not an explore) → not a query entry point.
          await expect(
-            pkg
-               .getModel("base.malloy")!
-               .getQueryResults("base_source", "v", undefined),
+            pkg.getModel("base.malloy")!.runQuery(unrecordedAudit(), {
+               sourceName: "base_source",
+               queryName: "v",
+            }),
          ).rejects.toBeInstanceOf(NotQueryableError);
       } finally {
          await duckdb.close();
@@ -550,7 +555,10 @@ source: locked is duckdb.sql("select 1 as id") extend {
          const pkg = await Package.create("env", "pkg", tempDir, malloyConfig);
          // `helper` compiles and is joinable, but is not in index's export{}.
          await expect(
-            pkg.getModel("index.malloy")!.getQueryResults("helper", "hv"),
+            pkg.getModel("index.malloy")!.runQuery(unrecordedAudit(), {
+               sourceName: "helper",
+               queryName: "hv",
+            }),
          ).rejects.toBeInstanceOf(NotQueryableError);
       } finally {
          await duckdb.close();
@@ -565,19 +573,15 @@ source: locked is duckdb.sql("select 1 as id") extend {
          const pkg = await Package.create("env", "pkg", tempDir, malloyConfig);
          const model = pkg.getModel("index.malloy")!;
 
-         const { result } = await model.getQueryResults(
-            undefined,
-            undefined,
-            "run: customers -> { aggregate: total }",
-         );
+         const { result } = await model.runQuery(unrecordedAudit(), {
+            query: "run: customers -> { aggregate: total }",
+         });
          expect(result.data).toBeDefined();
 
          await expect(
-            model.getQueryResults(
-               undefined,
-               undefined,
-               "run: helper -> { aggregate: c }",
-            ),
+            model.runQuery(unrecordedAudit(), {
+               query: "run: helper -> { aggregate: c }",
+            }),
          ).rejects.toBeInstanceOf(NotQueryableError);
       } finally {
          await duckdb.close();
@@ -596,22 +600,18 @@ source: locked is duckdb.sql("select 1 as id") extend {
          // every `run:`, so it denies `helper` before compile. The compiled
          // backstop, which resolves the LAST statement, would deny it too.
          await expect(
-            model.getQueryResults(
-               undefined,
-               undefined,
-               "run: customers -> { aggregate: total }\nrun: helper -> { aggregate: c }",
-            ),
+            model.runQuery(unrecordedAudit(), {
+               query: "run: customers -> { aggregate: total }\nrun: helper -> { aggregate: c }",
+            }),
          ).rejects.toBeInstanceOf(NotQueryableError);
 
          // Hidden target FIRST is denied before compile too: Malloy runs only
          // the last statement but compiles every one, so the hidden source's
          // compile errors would otherwise answer.
          await expect(
-            model.getQueryResults(
-               undefined,
-               undefined,
-               "run: helper -> { aggregate: c }\nrun: customers -> { aggregate: total }",
-            ),
+            model.runQuery(unrecordedAudit(), {
+               query: "run: helper -> { aggregate: c }\nrun: customers -> { aggregate: total }",
+            }),
          ).rejects.toBeInstanceOf(NotQueryableError);
 
          // Several `run:` statements must not change a denial: a hidden source
@@ -619,7 +619,7 @@ source: locked is duckdb.sql("select 1 as id") extend {
          // they give with one. So the count never reveals which it was.
          const answerFor = async (text: string) => {
             try {
-               await model.getQueryResults(undefined, undefined, text);
+               await model.runQuery(unrecordedAudit(), { query: text });
             } catch (error) {
                return error as Error;
             }
@@ -655,11 +655,9 @@ source: locked is duckdb.sql("select 1 as id") extend {
          // All-curated multi-statement passes the boundary, then is refused as
          // more than one `run:`. The two denials above stay 404s rather than
          // that 400: the count is checked only after every gate.
-         const allCurated = model.getQueryResults(
-            undefined,
-            undefined,
-            "run: customers -> { aggregate: total }\nrun: customers -> { group_by: id }",
-         );
+         const allCurated = model.runQuery(unrecordedAudit(), {
+            query: "run: customers -> { aggregate: total }\nrun: customers -> { group_by: id }",
+         });
          await expect(allCurated).rejects.toBeInstanceOf(BadRequestError);
          await expect(allCurated).rejects.toThrow(
             "The query has 2 run: statements",
@@ -678,7 +676,10 @@ source: locked is duckdb.sql("select 1 as id") extend {
          const model = pkg.getModel("index.malloy")!;
 
          // Positive control: the legitimate named request works.
-         const before = await model.getQueryResults("customers", "v");
+         const before = await model.runQuery(unrecordedAudit(), {
+            sourceName: "customers",
+            queryName: "v",
+         });
          expect(before.result.data).toBeDefined();
 
          // The reported repro. `sourceName` is curated, so the early gate
@@ -735,22 +736,26 @@ source: locked is duckdb.sql("select 1 as id") extend {
          await expectNamedRejected(model, "customers", "v\\u0060 -> \\u0060hv");
          // The ad-hoc equivalent: settled by the compiled backstop instead.
          await expect(
-            model.getQueryResults(
-               undefined,
-               undefined,
-               "run: customers -> v\nrun: helper -> { aggregate: c }",
-            ),
+            model.runQuery(unrecordedAudit(), {
+               query: "run: customers -> v\nrun: helper -> { aggregate: c }",
+            }),
          ).rejects.toBeInstanceOf(NotQueryableError);
 
          // The hidden source is still refused when named honestly, i.e. the
          // boundary itself is intact and the rejections above are the injection
          // being refused, not the boundary firing twice.
          await expect(
-            model.getQueryResults("helper", "hv"),
+            model.runQuery(unrecordedAudit(), {
+               sourceName: "helper",
+               queryName: "hv",
+            }),
          ).rejects.toBeInstanceOf(NotQueryableError);
 
          // …and the legitimate request still works after all of it.
-         const after = await model.getQueryResults("customers", "v");
+         const after = await model.runQuery(unrecordedAudit(), {
+            sourceName: "customers",
+            queryName: "v",
+         });
          expect(after.result.data).toBeDefined();
       } finally {
          await duckdb.close();
@@ -777,7 +782,10 @@ export { \`customer-orders\` }`,
          const pkg = await Package.create("env", "pkg", tempDir, malloyConfig);
          const { result } = await pkg
             .getModel("index.malloy")!
-            .getQueryResults("customer-orders", "by-total");
+            .runQuery(unrecordedAudit(), {
+               sourceName: "customer-orders",
+               queryName: "by-total",
+            });
          expect(result.data).toBeDefined();
       } finally {
          await duckdb.close();
@@ -795,21 +803,17 @@ export { \`customer-orders\` }`,
          // Composing over a queryable source is itself queryable: the compiled
          // structRef names the ad-hoc alias `x`, and the derivation walk maps
          // x → customers (curated).
-         const { result } = await model.getQueryResults(
-            undefined,
-            undefined,
-            "source: x is customers extend { measure: m is count() }\nrun: x -> { aggregate: m }",
-         );
+         const { result } = await model.runQuery(unrecordedAudit(), {
+            query: "source: x is customers extend { measure: m is count() }\nrun: x -> { aggregate: m }",
+         });
          expect(result.data).toBeDefined();
 
          // Laundering a hidden source through an ad-hoc alias is denied: the
          // chain y → helper never reaches the curated surface.
          await expect(
-            model.getQueryResults(
-               undefined,
-               undefined,
-               "source: y is helper extend { measure: m is count() }\nrun: y -> { aggregate: m }",
-            ),
+            model.runQuery(unrecordedAudit(), {
+               query: "source: y is helper extend { measure: m is count() }\nrun: y -> { aggregate: m }",
+            }),
          ).rejects.toBeInstanceOf(NotQueryableError);
       } finally {
          await duckdb.close();
@@ -825,25 +829,19 @@ export { \`customer-orders\` }`,
       try {
          const pkg = await Package.create("env", "pkg", tempDir, malloyConfig);
          const model = pkg.getModel("index.malloy")!;
-         const { result } = await model.getQueryResults(
-            undefined,
-            undefined,
-            "SOURCE: x IS customers EXTEND { measure: m is count() }\nRUN: x -> { aggregate: m }",
-         );
+         const { result } = await model.runQuery(unrecordedAudit(), {
+            query: "SOURCE: x IS customers EXTEND { measure: m is count() }\nRUN: x -> { aggregate: m }",
+         });
          expect(result.data).toBeDefined();
          await expect(
-            model.getQueryResults(
-               undefined,
-               undefined,
-               "SOURCE: y IS helper EXTEND { measure: m is count() }\nRUN: y -> { aggregate: m }",
-            ),
+            model.runQuery(unrecordedAudit(), {
+               query: "SOURCE: y IS helper EXTEND { measure: m is count() }\nRUN: y -> { aggregate: m }",
+            }),
          ).rejects.toBeInstanceOf(NotQueryableError);
          await expect(
-            model.getQueryResults(
-               undefined,
-               undefined,
-               "source: y is `\\helper` extend { measure: m is count() }\nrun: y -> { aggregate: m }",
-            ),
+            model.runQuery(unrecordedAudit(), {
+               query: "source: y is `\\helper` extend { measure: m is count() }\nrun: y -> { aggregate: m }",
+            }),
          ).rejects.toBeInstanceOf(NotQueryableError);
       } finally {
          await duckdb.close();
@@ -867,25 +865,23 @@ export { \`customer-orders\` }`,
          const pkg = await Package.create("env", "pkg", tempDir, malloyConfig);
          const model = pkg.getModel("index.malloy")!;
 
-         const { result } = await model.getQueryResults(
-            undefined,
-            undefined,
-            "query: agg is customers -> { group_by: id aggregate: t is total }\n" +
+         const { result } = await model.runQuery(unrecordedAudit(), {
+            query:
+               "query: agg is customers -> { group_by: id aggregate: t is total }\n" +
                "source: blended is agg extend { primary_key: id }\n" +
                "run: blended -> { group_by: id }",
-         );
+         });
          expect(result.data).toBeDefined();
 
          // Admission still turns on reaching a CURATED name, so the same shape
          // over a hidden source launders nothing.
          await expect(
-            model.getQueryResults(
-               undefined,
-               undefined,
-               "query: agg is helper -> { group_by: id aggregate: n is c }\n" +
+            model.runQuery(unrecordedAudit(), {
+               query:
+                  "query: agg is helper -> { group_by: id aggregate: n is c }\n" +
                   "source: blended is agg extend { primary_key: id }\n" +
                   "run: blended -> { group_by: id }",
-            ),
+            }),
          ).rejects.toBeInstanceOf(NotQueryableError);
       } finally {
          await duckdb.close();
@@ -914,26 +910,24 @@ export { \`customer-orders\` }`,
          // keeping every base per name means it could only add an obligation
          // even if it were.
          await expect(
-            model.getQueryResults(
-               undefined,
-               undefined,
-               "source: mine is helper extend {\n" +
+            model.runQuery(unrecordedAudit(), {
+               query:
+                  "source: mine is helper extend {\n" +
                   "  dimension: note is 'source: mine is customers'\n" +
                   "}\nrun: mine -> { group_by: note }",
-            ),
+            }),
          ).rejects.toBeInstanceOf(NotQueryableError);
 
          // The `query:` spelling of the same forgery, which the replaced scan
          // did not read at all. Widening to `query:` is what makes it reachable,
          // so it is pinned alongside rather than assumed to follow.
          await expect(
-            model.getQueryResults(
-               undefined,
-               undefined,
-               "source: mine is helper extend {\n" +
+            model.runQuery(unrecordedAudit(), {
+               query:
+                  "source: mine is helper extend {\n" +
                   "  dimension: note is 'query: mine is customers'\n" +
                   "}\nrun: mine -> { group_by: note }",
-            ),
+            }),
          ).rejects.toBeInstanceOf(NotQueryableError);
 
          // (b) A second declaration for a name, in a form Malloy itself rejects
@@ -941,14 +935,13 @@ export { \`customer-orders\` }`,
          // guards the shape rather than the boundary's verdict on it; (b2) below
          // is what pins the every-base quantifier.
          await expect(
-            model.getQueryResults(
-               undefined,
-               undefined,
-               "query: mine is helper -> { group_by: id }\n" +
+            model.runQuery(unrecordedAudit(), {
+               query:
+                  "query: mine is helper -> { group_by: id }\n" +
                   "query: mine is customers -> { group_by: id }\n" +
                   "source: alias is mine extend { primary_key: id }\n" +
                   "run: alias -> { group_by: id }",
-            ),
+            }),
          ).rejects.toBeInstanceOf(NotQueryableError);
 
          // (b2) The same pairing, but spelled so that MALLOY accepts the text --
@@ -966,24 +959,22 @@ export { \`customer-orders\` }`,
          // hidden source -- and (b) would not catch that, because Malloy rejects
          // (b) before the boundary ever rules.
          await expect(
-            model.getQueryResults(
-               undefined,
-               undefined,
-               "source: mine is helper extend {\n" +
+            model.runQuery(unrecordedAudit(), {
+               query:
+                  "source: mine is helper extend {\n" +
                   "  dimension: `source: mine is customers` is 1\n" +
                   "}\nrun: mine -> { group_by: id }",
-            ),
+            }),
          ).rejects.toBeInstanceOf(NotQueryableError);
 
          // (c) A derivation cycle grounds nothing and must fail closed.
          await expect(
-            model.getQueryResults(
-               undefined,
-               undefined,
-               "source: a is b extend { measure: m is count() }\n" +
+            model.runQuery(unrecordedAudit(), {
+               query:
+                  "source: a is b extend { measure: m is count() }\n" +
                   "source: b is a extend { measure: m2 is count() }\n" +
                   "run: a -> { aggregate: m }",
-            ),
+            }),
          ).rejects.toBeInstanceOf(NotQueryableError);
       } finally {
          await duckdb.close();
@@ -1013,20 +1004,16 @@ export { customers, helper_stats }`,
          const pkg = await Package.create("env", "pkg", tempDir, malloyConfig);
          const model = pkg.getModel("index.malloy")!;
 
-         const { result } = await model.getQueryResults(
-            undefined,
-            "helper_stats",
-            undefined,
-         );
+         const { result } = await model.runQuery(unrecordedAudit(), {
+            queryName: "helper_stats",
+         });
          expect(result.data).toBeDefined();
 
          // …while the hidden source itself stays non-queryable directly.
          await expect(
-            model.getQueryResults(
-               undefined,
-               undefined,
-               "run: helper -> { aggregate: c }",
-            ),
+            model.runQuery(unrecordedAudit(), {
+               query: "run: helper -> { aggregate: c }",
+            }),
          ).rejects.toBeInstanceOf(NotQueryableError);
       } finally {
          await duckdb.close();
@@ -1060,17 +1047,18 @@ export { customers, stats }`,
          const model = pkg.getModel("index.malloy")!;
 
          // The exported top-level query is reachable on its own name.
-         const { result } = await model.getQueryResults(
-            undefined,
-            "stats",
-            undefined,
-         );
+         const { result } = await model.runQuery(unrecordedAudit(), {
+            queryName: "stats",
+         });
          expect(result.data).toBeDefined();
 
          // …but the hidden source is NOT reachable through the colliding view
          // name when explicitly targeted as the run source.
          await expect(
-            model.getQueryResults("helper", "stats", undefined),
+            model.runQuery(unrecordedAudit(), {
+               sourceName: "helper",
+               queryName: "stats",
+            }),
          ).rejects.toBeInstanceOf(NotQueryableError);
       } finally {
          await duckdb.close();
@@ -1094,11 +1082,9 @@ export { \`customer-orders\` }`,
          const pkg = await Package.create("env", "pkg", tempDir, malloyConfig);
          const model = pkg.getModel("index.malloy")!;
 
-         const { result } = await model.getQueryResults(
-            undefined,
-            undefined,
-            "source: x is `customer-orders` extend { measure: m is count() }\nrun: x -> { aggregate: m }",
-         );
+         const { result } = await model.runQuery(unrecordedAudit(), {
+            query: "source: x is `customer-orders` extend { measure: m is count() }\nrun: x -> { aggregate: m }",
+         });
          expect(result.data).toBeDefined();
       } finally {
          await duckdb.close();
@@ -1135,36 +1121,37 @@ export { \`customer-orders\` }`,
             // base.malloy is not listed, and it exports everything, so the
             // notebook's import can see base_source. Seeing it is not admission.
             await expect(
-               notebook.getQueryResults(
-                  undefined,
-                  undefined,
-                  "run: base_source -> v",
-               ),
+               notebook.runQuery(unrecordedAudit(), {
+                  query: "run: base_source -> v",
+               }),
             ).rejects.toThrow(NotQueryableError);
             await expect(
-               notebook.getQueryResults("base_source", "v", undefined),
+               notebook.runQuery(unrecordedAudit(), {
+                  sourceName: "base_source",
+                  queryName: "v",
+               }),
             ).rejects.toThrow(NotQueryableError);
 
             // What the surface publishes answers through the notebook path too.
-            const published = await notebook.getQueryResults(
-               undefined,
-               undefined,
-               "run: customers -> v",
-            );
+            const published = await notebook.runQuery(unrecordedAudit(), {
+               query: "run: customers -> v",
+            });
             expect(published.result.data).toBeDefined();
 
             // The author's own cell is held to the surface too: it reads
             // base_source, which the surface does not publish.
-            await expect(notebook.executeNotebookCell(1)).rejects.toThrow(
-               NotQueryableError,
-            );
+            await expect(
+               notebook.executeNotebookCell(unrecordedAudit(), 1),
+            ).rejects.toThrow(NotQueryableError);
             // A cell over what the surface publishes runs, and so does one over a
             // source an EARLIER cell derives from it.
             expect(
-               (await notebook.executeNotebookCell(4)).result,
+               (await notebook.executeNotebookCell(unrecordedAudit(), 4))
+                  .result,
             ).toBeDefined();
             expect(
-               (await notebook.executeNotebookCell(3)).result,
+               (await notebook.executeNotebookCell(unrecordedAudit(), 3))
+                  .result,
             ).toBeDefined();
 
             // And the notebook does not show what it may not read: the import
@@ -1215,12 +1202,12 @@ export { \`customer-orders\` }`,
                malloyConfig,
             );
             const notebook = pkg.getModel("report.malloynb")!;
-            await expect(notebook.executeNotebookCell(1)).rejects.toThrow(
-               NotQueryableError,
-            );
-            await expect(notebook.executeNotebookCell(3)).rejects.toThrow(
-               NotQueryableError,
-            );
+            await expect(
+               notebook.executeNotebookCell(unrecordedAudit(), 1),
+            ).rejects.toThrow(NotQueryableError);
+            await expect(
+               notebook.executeNotebookCell(unrecordedAudit(), 3),
+            ).rejects.toThrow(NotQueryableError);
          } finally {
             await duckdb.close();
          }
@@ -1235,7 +1222,7 @@ export { \`customer-orders\` }`,
    // (base_source is visible to it through an import).
    const refusal = async (model: Model, query: string) => {
       try {
-         await model.getQueryResults(undefined, undefined, query);
+         await model.runQuery(unrecordedAudit(), { query });
       } catch (error) {
          expect(error).toBeInstanceOf(NotQueryableError);
          return error as Error;
@@ -1315,7 +1302,12 @@ source: locked is duckdb.sql("select 1 as id") extend {
          // source, and an ad-hoc alias of a hidden source, which only the
          // compiled backstop can refuse.
          const model = pkg.getModel("index.malloy")!;
-         const named = await refusedBy(model.getQueryResults("helper", "hv"));
+         const named = await refusedBy(
+            model.runQuery(unrecordedAudit(), {
+               sourceName: "helper",
+               queryName: "hv",
+            }),
+         );
          expect(named).not.toBeInstanceOf(OffSurfaceError);
          expect(named.message).toBe('No queryable source "helper".');
          const aliased = await refusal(
@@ -1382,7 +1374,12 @@ source: locked is duckdb.sql("select 1 as id") extend {
          // helper is declared in index.malloy itself, so there is nothing to
          // import: the fix is only to export it.
          const index = pkg.getModel("index.malloy")!;
-         const named = await refusedBy(index.getQueryResults("helper", "hv"));
+         const named = await refusedBy(
+            index.runQuery(unrecordedAudit(), {
+               sourceName: "helper",
+               queryName: "hv",
+            }),
+         );
          expect(named).toBeInstanceOf(OffSurfaceError);
          expect(named.message).toBe(
             `No queryable source "helper". ${INDEX_SURFACE} ` +
@@ -1393,7 +1390,12 @@ source: locked is duckdb.sql("select 1 as id") extend {
             "source: x is helper extend {}\nrun: x -> hv",
          );
          expect(aliased).toBeInstanceOf(OffSurfaceError);
-         const unknown = await refusedBy(index.getQueryResults("nope", "hv"));
+         const unknown = await refusedBy(
+            index.runQuery(unrecordedAudit(), {
+               sourceName: "nope",
+               queryName: "hv",
+            }),
+         );
          expect(unknown).not.toBeInstanceOf(OffSurfaceError);
          expect(unknown.message).toBe('No queryable source "nope".');
 
@@ -1471,22 +1473,18 @@ import { customers } from "../index.malloy"`,
          ]);
          // The lint agrees with the query route, both ways.
          await expect(
-            dash.getQueryResults(undefined, undefined, "run: raw_data -> v"),
+            dash.runQuery(unrecordedAudit(), { query: "run: raw_data -> v" }),
          ).rejects.toThrow(NotQueryableError);
-         const customers = await dash.getQueryResults(
-            undefined,
-            undefined,
-            "run: customers -> v",
-         );
+         const customers = await dash.runQuery(unrecordedAudit(), {
+            query: "run: customers -> v",
+         });
          expect(customers.result.data).toBeDefined();
          // A caller join is held to the boundary too, so the hidden import is
          // no more reachable through a join than through `run:`.
          await expect(
-            dash.getQueryResults(
-               undefined,
-               undefined,
-               "run: customers extend { join_one: s is raw_data on id = s.id } -> { group_by: s.id }",
-            ),
+            dash.runQuery(unrecordedAudit(), {
+               query: "run: customers extend { join_one: s is raw_data on id = s.id } -> { group_by: s.id }",
+            }),
          ).rejects.toThrow(NotQueryableError);
 
          // The fix the warning names works.
@@ -1500,15 +1498,13 @@ import { customers } from "../index.malloy"`,
          expect(tileWarnings(fixed)).toEqual([]);
          const ran = await fixed
             .getModel("dashboards/dash.malloy")!
-            .getQueryResults(undefined, undefined, "run: raw_data -> v");
+            .runQuery(unrecordedAudit(), { query: "run: raw_data -> v" });
          expect(ran.result.data).toBeDefined();
          const joined = await fixed
             .getModel("dashboards/dash.malloy")!
-            .getQueryResults(
-               undefined,
-               undefined,
-               "run: customers extend { join_one: s is raw_data on id = s.id } -> { group_by: s.id }",
-            );
+            .runQuery(unrecordedAudit(), {
+               query: "run: customers extend { join_one: s is raw_data on id = s.id } -> { group_by: s.id }",
+            });
          expect(joined.result.data).toBeDefined();
       } finally {
          await duckdb.close();
@@ -1577,11 +1573,9 @@ query: dash is customers -> {
          await expect(
             pkg
                .getModel("dashboards/dash.malloy")!
-               .getQueryResults(
-                  undefined,
-                  undefined,
-                  "run: raw_data -> { group_by: id }",
-               ),
+               .runQuery(unrecordedAudit(), {
+                  query: "run: raw_data -> { group_by: id }",
+               }),
          ).rejects.toThrow(NotQueryableError);
 
          // A gated model's refusal never names the source, and nor does the
@@ -1675,33 +1669,33 @@ source: table_r is duckdb.sql("select 1 as id") extend {
             );
             const report = pkg.getModel(REPORT)!;
             // The tile's own text, as the report page runs it.
-            const tile = await report.getQueryResults(
-               undefined,
-               undefined,
-               "run: r -> kpis_r",
-            );
-            const named = await report.getQueryResults("r", "kpis_r");
+            const tile = await report.runQuery(unrecordedAudit(), {
+               query: "run: r -> kpis_r",
+            });
+            const named = await report.runQuery(unrecordedAudit(), {
+               sourceName: "r",
+               queryName: "kpis_r",
+            });
             expect(named.compactResult).toEqual([
                { flight_count: 3, avg_delay: 35 / 3, total_delay: 35 },
             ]);
             expect(named.compactResult).toEqual(tile.compactResult);
             // The second tile's view.
-            const byCarrier = await report.getQueryResults("r", "carrier_r");
+            const byCarrier = await report.runQuery(unrecordedAudit(), {
+               sourceName: "r",
+               queryName: "carrier_r",
+            });
             expect(byCarrier.compactResult).toEqual(
                (
-                  await report.getQueryResults(
-                     undefined,
-                     undefined,
-                     "run: r -> carrier_r",
-                  )
+                  await report.runQuery(unrecordedAudit(), {
+                     query: "run: r -> carrier_r",
+                  })
                ).compactResult,
             );
             // Ad-hoc text over the report's source, as an agent writes it.
-            const text = await report.getQueryResults(
-               undefined,
-               undefined,
-               "run: r -> { group_by: carrier_code; aggregate: total_delay; order_by: carrier_code }",
-            );
+            const text = await report.runQuery(unrecordedAudit(), {
+               query: "run: r -> { group_by: carrier_code; aggregate: total_delay; order_by: carrier_code }",
+            });
             expect(text.compactResult).toEqual([
                { carrier_code: "AA", total_delay: 30 },
                { carrier_code: "UA", total_delay: 5 },
@@ -1722,7 +1716,12 @@ source: table_r is duckdb.sql("select 1 as id") extend {
                malloyConfig,
             );
             const report = pkg.getModel(REPORT)!;
-            const raw = await refusedBy(report.getQueryResults("raw_r", "rv"));
+            const raw = await refusedBy(
+               report.runQuery(unrecordedAudit(), {
+                  sourceName: "raw_r",
+                  queryName: "rv",
+               }),
+            );
             expect(raw).toBeInstanceOf(OffSurfaceError);
             expect(raw.message).toBe(
                `No queryable source "raw_r". "raw_r" is declared in this ` +
@@ -1742,7 +1741,10 @@ source: table_r is duckdb.sql("select 1 as id") extend {
             );
             // Built on a table, there is no base to publish.
             const table = await refusedBy(
-               report.getQueryResults("table_r", "tv"),
+               report.runQuery(unrecordedAudit(), {
+                  sourceName: "table_r",
+                  queryName: "tv",
+               }),
             );
             expect(table).toBeInstanceOf(OffSurfaceError);
             expect(table.message).toBe(
@@ -1768,20 +1770,21 @@ source: table_r is duckdb.sql("select 1 as id") extend {
             const report = pkg.getModel(REPORT)!;
             // The boundary admits `r`; the gate `flights` carries still denies.
             await expect(
-               report.getQueryResults("r", "kpis_r"),
+               report.runQuery(unrecordedAudit(), {
+                  sourceName: "r",
+                  queryName: "kpis_r",
+               }),
             ).rejects.toBeInstanceOf(AccessDeniedError);
             await expect(
-               report.getQueryResults(undefined, undefined, "run: r -> kpis_r"),
+               report.runQuery(unrecordedAudit(), {
+                  query: "run: r -> kpis_r",
+               }),
             ).rejects.toBeInstanceOf(AccessDeniedError);
             // The same answer the served base itself gets.
             await expect(
-               pkg
-                  .getModel("index.malloy")!
-                  .getQueryResults(
-                     undefined,
-                     undefined,
-                     "run: flights -> { aggregate: flight_count }",
-                  ),
+               pkg.getModel("index.malloy")!.runQuery(unrecordedAudit(), {
+                  query: "run: flights -> { aggregate: flight_count }",
+               }),
             ).rejects.toBeInstanceOf(AccessDeniedError);
          } finally {
             await duckdb.close();
@@ -1844,14 +1847,12 @@ source: mine is orders extend {
                givens: Record<string, number[]>,
             ) =>
                (
-                  await model.getQueryResults(
+                  await model.runQuery(unrecordedAudit(), {
                      sourceName,
                      queryName,
                      query,
-                     undefined,
-                     undefined,
                      givens,
-                  )
+                  })
                ).compactResult;
             const org1 = { GROUPS: [1] };
 
@@ -1903,14 +1904,15 @@ source: mine is orders extend {
                   (e: Error) => e,
                );
             const base = await refused(
-               index.getQueryResults(
-                  undefined,
-                  undefined,
-                  "run: orders -> { aggregate: c }",
-               ),
+               index.runQuery(unrecordedAudit(), {
+                  query: "run: orders -> { aggregate: c }",
+               }),
             );
             const viaReport = await refused(
-               report.getQueryResults("mine", "by_org"),
+               report.runQuery(unrecordedAudit(), {
+                  sourceName: "mine",
+                  queryName: "by_org",
+               }),
             );
             expect(base).toBeInstanceOf(AccessDeniedError);
             expect(base.message).toBe('Access denied for source "orders".');
@@ -1980,14 +1982,11 @@ query: raw_t is ${RAW}`,
                givens?: Record<string, number[]>,
             ) =>
                (
-                  await report.getQueryResults(
-                     undefined,
+                  await report.runQuery(unrecordedAudit(), {
                      queryName,
                      query,
-                     undefined,
-                     undefined,
                      givens,
-                  )
+                  })
                ).compactResult;
             const org1 = { GROUPS: [1] };
             for (const [queryName, query] of [
@@ -2033,13 +2032,21 @@ query: raw_t is ${RAW}`,
             const index = pkg.getModel("index.malloy")!;
             // `r` does not exist in index.malloy: a plain not-found.
             const missing = await refusedBy(
-               index.getQueryResults("r", "kpis_r"),
+               index.runQuery(unrecordedAudit(), {
+                  sourceName: "r",
+                  queryName: "kpis_r",
+               }),
             );
             expect(missing).not.toBeInstanceOf(OffSurfaceError);
             expect(missing.message).toBe('No queryable source "r".');
             // An ordinary model's unexported extension of a served source
             // stays refused, with today's hint.
-            const ext = await refusedBy(index.getQueryResults("ext", "ev"));
+            const ext = await refusedBy(
+               index.runQuery(unrecordedAudit(), {
+                  sourceName: "ext",
+                  queryName: "ev",
+               }),
+            );
             expect(ext).toBeInstanceOf(OffSurfaceError);
             expect(ext.message).toBe(
                `No queryable source "ext". ${INDEX_SURFACE} ` +
@@ -2063,12 +2070,18 @@ query: raw_t is ${RAW}`,
          const pkg = await Package.create("env", "pkg", tempDir, malloyConfig);
          const base = await pkg
             .getModel("base.malloy")!
-            .getQueryResults("base_source", "v", undefined);
+            .runQuery(unrecordedAudit(), {
+               sourceName: "base_source",
+               queryName: "v",
+            });
          expect(base.result.data).toBeDefined();
          // `helper` is non-exported, but nothing curates so there is no boundary.
          const helper = await pkg
             .getModel("surface.malloy")!
-            .getQueryResults("helper", "hv", undefined);
+            .runQuery(unrecordedAudit(), {
+               sourceName: "helper",
+               queryName: "hv",
+            });
          expect(helper.result.data).toBeDefined();
       } finally {
          await duckdb.close();
@@ -2089,7 +2102,10 @@ query: raw_t is ${RAW}`,
          const model = pkg.getModel("surface.malloy")!;
 
          // Control: with nothing curating, `helper` really is queryable by name…
-         const helper = await model.getQueryResults("helper", "hv");
+         const helper = await model.runQuery(unrecordedAudit(), {
+            sourceName: "helper",
+            queryName: "hv",
+         });
          expect(helper.result.data).toBeDefined();
 
          // …so these rejections are the injection being refused, not a boundary.
@@ -2117,20 +2133,27 @@ query: raw_t is ${RAW}`,
          // The exported source is queryable, join-through and all.
          const { result } = await pkg
             .getModel("index.malloy")!
-            .getQueryResults("customers", "v", undefined);
+            .runQuery(unrecordedAudit(), {
+               sourceName: "customers",
+               queryName: "v",
+            });
          expect(result.data).toBeDefined();
 
          // A whole file off the surface is refused...
          await expect(
-            pkg
-               .getModel("base.malloy")!
-               .getQueryResults("base_source", "v", undefined),
+            pkg.getModel("base.malloy")!.runQuery(unrecordedAudit(), {
+               sourceName: "base_source",
+               queryName: "v",
+            }),
          ).rejects.toBeInstanceOf(NotQueryableError);
 
          // ...and so is a source inside the surface file that it does not
          // export, which is the within-file half of the same rule.
          await expect(
-            pkg.getModel("index.malloy")!.getQueryResults("helper", "hv"),
+            pkg.getModel("index.malloy")!.runQuery(unrecordedAudit(), {
+               sourceName: "helper",
+               queryName: "hv",
+            }),
          ).rejects.toBeInstanceOf(NotQueryableError);
       } finally {
          await duckdb.close();
@@ -2178,12 +2201,18 @@ source: leaf_hidden is duckdb.sql("select 1 as id, 5 as n") extend {
          // Declared four files away, still queryable through the surface.
          const { result } = await pkg
             .getModel("index.malloy")!
-            .getQueryResults("leaf_orders", "v", undefined);
+            .runQuery(unrecordedAudit(), {
+               sourceName: "leaf_orders",
+               queryName: "v",
+            });
          expect(result.data).toBeDefined();
 
          // Dropped at the first hop, so it never reaches the surface.
          await expect(
-            pkg.getModel("index.malloy")!.getQueryResults("leaf_hidden", "hv"),
+            pkg.getModel("index.malloy")!.runQuery(unrecordedAudit(), {
+               sourceName: "leaf_hidden",
+               queryName: "hv",
+            }),
          ).rejects.toBeInstanceOf(NotQueryableError);
       } finally {
          await duckdb.close();
@@ -2224,15 +2253,19 @@ export { enriched }`,
          const pkg = await Package.create("env", "pkg", tempDir, malloyConfig);
          const { compactResult } = await pkg
             .getModel("index.malloy")!
-            .getQueryResults("enriched", "by_tier", undefined);
+            .runQuery(unrecordedAudit(), {
+               sourceName: "enriched",
+               queryName: "by_tier",
+            });
          // The value comes from the source that is NOT on the surface.
          expect(compactResult).toEqual([{ tier: "ent", total: 100 }]);
 
          // And it is still not queryable in its own right.
          await expect(
-            pkg
-               .getModel("index.malloy")!
-               .getQueryResults("customers", "by_tier"),
+            pkg.getModel("index.malloy")!.runQuery(unrecordedAudit(), {
+               sourceName: "customers",
+               queryName: "by_tier",
+            }),
          ).rejects.toBeInstanceOf(NotQueryableError);
       } finally {
          await duckdb.close();
@@ -2299,23 +2332,22 @@ export { safe }`,
                // Ad-hoc, explicit sourceName, and the named-view form all resolve
                // `customers` to hidden.malloy's declaration in b's namespace.
                await expect(
-                  b.getQueryResults(
-                     undefined,
-                     undefined,
-                     "run: customers -> { aggregate: c }",
-                  ),
+                  b.runQuery(unrecordedAudit(), {
+                     query: "run: customers -> { aggregate: c }",
+                  }),
                ).rejects.toBeInstanceOf(NotQueryableError);
                await expect(
-                  b.getQueryResults("customers", "v"),
+                  b.runQuery(unrecordedAudit(), {
+                     sourceName: "customers",
+                     queryName: "v",
+                  }),
                ).rejects.toBeInstanceOf(NotQueryableError);
                // a.malloy's own export is untouched, and returns ITS row count.
                const viaOwner = await pkg
                   .getModel("a.malloy")!
-                  .getQueryResults(
-                     undefined,
-                     undefined,
-                     "run: customers -> { aggregate: c }",
-                  );
+                  .runQuery(unrecordedAudit(), {
+                     query: "run: customers -> { aggregate: c }",
+                  });
                expect(
                   (viaOwner.compactResult as { c: number }[] | undefined)?.[0]
                      .c,
@@ -2342,12 +2374,14 @@ export { safe }`,
                   malloyConfig,
                );
                await expect(
-                  pkg.getModel("b.malloy")!.getQueryResults(undefined, "top"),
+                  pkg
+                     .getModel("b.malloy")!
+                     .runQuery(unrecordedAudit(), { queryName: "top" }),
                ).rejects.toBeInstanceOf(NotQueryableError);
                // The genuine export still runs, over a.malloy's 1-row source.
                const owned = await pkg
                   .getModel("a.malloy")!
-                  .getQueryResults(undefined, "top");
+                  .runQuery(unrecordedAudit(), { queryName: "top" });
                expect(
                   (owned.compactResult as { c: number }[] | undefined)?.[0].c,
                ).toBe(1);
@@ -2391,17 +2425,18 @@ export { own }`,
                );
                const viaExporter = await pkg
                   .getModel("reexport.malloy")!
-                  .getQueryResults("shared", "v");
+                  .runQuery(unrecordedAudit(), {
+                     sourceName: "shared",
+                     queryName: "v",
+                  });
                expect(viaExporter.result.data).toBeDefined();
                // Same declaration reached through a sibling explore: the union's
                // whole purpose (CR-5), and it survives the identity check.
                const viaSibling = await pkg
                   .getModel("other.malloy")!
-                  .getQueryResults(
-                     undefined,
-                     undefined,
-                     "run: shared -> { aggregate: c }",
-                  );
+                  .runQuery(unrecordedAudit(), {
+                     query: "run: shared -> { aggregate: c }",
+                  });
                expect(viaSibling.result.data).toBeDefined();
             } finally {
                await duckdb.close();
@@ -2473,16 +2508,14 @@ source: track_analysis is tracks extend {
                   sourceName,
                );
                // Queryable: named view and ad-hoc both clear the boundary.
-               const named = await model!.getQueryResults(
+               const named = await model!.runQuery(unrecordedAudit(), {
                   sourceName,
-                  sourceName === "track_analysis" ? "tv" : "v",
-               );
+                  queryName: sourceName === "track_analysis" ? "tv" : "v",
+               });
                expect(named.result.data).toBeDefined();
-               const adhoc = await model!.getQueryResults(
-                  undefined,
-                  undefined,
-                  `run: ${sourceName} -> { aggregate: c is count() }`,
-               );
+               const adhoc = await model!.runQuery(unrecordedAudit(), {
+                  query: `run: ${sourceName} -> { aggregate: c is count() }`,
+               });
                expect(adhoc.result.data).toBeDefined();
             }
 
@@ -2494,22 +2527,22 @@ source: track_analysis is tracks extend {
             // nothing (it was queryable via tracks.malloy) and broke any client
             // that pins one model path for all queries.
             const importer = pkg.getModel("track_analysis.malloy")!;
-            const viaImporterAdhoc = await importer.getQueryResults(
-               undefined,
-               undefined,
-               "run: tracks -> { aggregate: c is count() }",
+            const viaImporterAdhoc = await importer.runQuery(
+               unrecordedAudit(),
+               { query: "run: tracks -> { aggregate: c is count() }" },
             );
             expect(viaImporterAdhoc.result.data).toBeDefined();
-            const viaImporterNamed = await importer.getQueryResults(
-               "tracks",
-               "v",
+            const viaImporterNamed = await importer.runQuery(
+               unrecordedAudit(),
+               { sourceName: "tracks", queryName: "v" },
             );
             expect(viaImporterNamed.result.data).toBeDefined();
             // Derivation over a package-curated source clears the backstop too.
-            const viaImporterDerived = await importer.getQueryResults(
-               undefined,
-               undefined,
-               "source: t2 is artists extend { measure: m is n.sum() }\nrun: t2 -> { aggregate: m }",
+            const viaImporterDerived = await importer.runQuery(
+               unrecordedAudit(),
+               {
+                  query: "source: t2 is artists extend { measure: m is n.sum() }\nrun: t2 -> { aggregate: m }",
+               },
             );
             expect(viaImporterDerived.result.data).toBeDefined();
          } finally {
@@ -2545,7 +2578,10 @@ source: track_analysis is tracks extend {
                   `model.`,
             );
             const named = await refusedBy(
-               pkg.getModel("surface.malloy")!.getQueryResults("helper", "hv"),
+               pkg.getModel("surface.malloy")!.runQuery(unrecordedAudit(), {
+                  sourceName: "helper",
+                  queryName: "hv",
+               }),
             );
             expect(named.message).toBe(
                `No queryable source "helper". ${surface} ` +
@@ -2585,11 +2621,9 @@ export { listed }`,
             expect(models).toEqual(["dashboards/old.malloy", "index.malloy"]);
             const old = pkg.getModel("dashboards/old.malloy")!;
             expect(() => old.assertFileOnSurface()).not.toThrow();
-            const ran = await old.getQueryResults(
-               undefined,
-               undefined,
-               "run: listed -> { group_by: id }",
-            );
+            const ran = await old.runQuery(unrecordedAudit(), {
+               query: "run: listed -> { group_by: id }",
+            });
             expect(ran.result.data).toBeDefined();
          } finally {
             await duckdb.close();
@@ -2615,11 +2649,17 @@ export { listed }`,
             // …but the non-explores file and the non-exported source are queryable.
             const base = await pkg
                .getModel("base.malloy")!
-               .getQueryResults("base_source", "v", undefined);
+               .runQuery(unrecordedAudit(), {
+                  sourceName: "base_source",
+                  queryName: "v",
+               });
             expect(base.result.data).toBeDefined();
             const helper = await pkg
                .getModel("index.malloy")!
-               .getQueryResults("helper", "hv", undefined);
+               .runQuery(unrecordedAudit(), {
+                  sourceName: "helper",
+                  queryName: "hv",
+               });
             expect(helper.result.data).toBeDefined();
          } finally {
             await duckdb.close();

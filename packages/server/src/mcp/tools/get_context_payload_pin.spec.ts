@@ -38,13 +38,12 @@ import {
 import * as fs from "fs";
 import * as path from "path";
 import { registerGetContextTool } from "./get_context_tool";
-import { setRetrievalConfig } from "../../retrieval_config";
+import { setRetrievalConfig } from "../../retrieval/config";
 import {
    _clearEmbeddingProviderForTests,
    _setEmbeddingProviderForTests,
-} from "../../service/embedding_provider";
+} from "../../retrieval/llm/embedding_provider";
 import type { EnvironmentStore } from "../../service/environment_store";
-import { _setFcjValueFetcherForTests } from "../context/engine_state";
 import { compileFcjFixture } from "../../test_helpers/fcj_fixture";
 import { fcjValueFetcher } from "../../test_helpers/fcj_index_fixture";
 import {
@@ -53,6 +52,7 @@ import {
    untilSemantic,
    type SemanticHarness,
 } from "../../test_helpers/get_context_llm_harness";
+import { testRetrieval } from "../../test_helpers/test_retrieval";
 
 const GOLDEN_PATH = path.join(
    __dirname,
@@ -125,11 +125,15 @@ type Handler = (params: Record<string, unknown>) => Promise<{
 function captureHandler(store: Partial<EnvironmentStore>): Handler {
    let handler: Handler | undefined;
    const fakeServer = {
-      tool: (name: string, _d: string, _s: unknown, h: Handler) => {
+      registerTool: (name: string, _config: unknown, h: Handler) => {
          if (name === "get_context") handler = h;
       },
    };
-   registerGetContextTool(fakeServer as never, store as EnvironmentStore);
+   registerGetContextTool(
+      fakeServer as never,
+      store as EnvironmentStore,
+      testRetrieval(store as EnvironmentStore),
+   );
    if (!handler) throw new Error("get_context was not registered");
    return handler;
 }
@@ -353,10 +357,10 @@ describe("get_context payload pin: ranked answers", () => {
    let harness: SemanticHarness;
    beforeAll(async () => {
       harness = await semanticHarness();
-      _setFcjValueFetcherForTests(fcjValueFetcher);
+      harness.registry.valueFetcherOverride = fcjValueFetcher;
    });
    afterAll(async () => {
-      _setFcjValueFetcherForTests(undefined);
+      harness.registry.valueFetcherOverride = undefined;
       await harness.close();
    });
    beforeEach(() => harness.reset());

@@ -25,6 +25,7 @@ import os from "os";
 import path from "path";
 import { RestE2EEnv, startRestE2E } from "../../harness/rest_e2e";
 import { installVariables } from "../../../src/test_helpers/settings_env";
+import { writePackageFiles } from "../../../src/test_helpers/temp_package";
 
 const ENV_NAME = "versions-api-contract-env";
 const FLAG = "PUBLISHER_PACKAGE_VERSIONING";
@@ -74,22 +75,21 @@ function writePackage(
    answer: number,
 ): string {
    const dir = path.join(root, folder);
-   fs.mkdirSync(dir, { recursive: true });
-   fs.writeFileSync(path.join(dir, "publisher.json"), JSON.stringify(manifest));
-   fs.writeFileSync(
-      path.join(dir, "model.malloy"),
-      [
-         "##! experimental.persistence",
-         `source: base is duckdb.sql("SELECT ${answer} AS answer")`,
-         '#@ persist name="summary"',
-         "source: summary is base -> { group_by: answer }",
-         "",
-      ].join("\n"),
-   );
-   fs.writeFileSync(
-      path.join(dir, "report.malloy"),
-      '## artifact { layout=grid title="Report" tiles=["summary -> { select: answer }"] }\n' +
-         "import { summary } from 'model.malloy'\n",
+   writePackageFiles(
+      dir,
+      {
+         "model.malloy": [
+            "##! experimental.persistence",
+            `source: base is duckdb.sql("SELECT ${answer} AS answer")`,
+            '#@ persist name="summary"',
+            "source: summary is base -> { group_by: answer }",
+            "",
+         ].join("\n"),
+         "report.malloy":
+            '## artifact { layout=grid title="Report" tiles=["summary -> { select: answer }"] }\n' +
+            "import { summary } from 'model.malloy'\n",
+      },
+      { manifest },
    );
    return dir;
 }

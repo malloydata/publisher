@@ -28,7 +28,8 @@ import {
 } from "../package_load/package_load_pool";
 import { Package } from "./package";
 import { computeSourceContentSha } from "./package_revision";
-import type { EnvironmentStore } from "./environment_store";
+import { fakeOf } from "../test_helpers/store_fakes";
+import type { PackageLookup } from "./environment_ports";
 
 describe("package agents", () => {
    let dir: string;
@@ -481,9 +482,9 @@ describe("package agents", () => {
          };
 
          expect(pkg.getAgentSkillFile("analyst", listed)).toEqual(expected);
-         const store = {
+         const store = fakeOf<PackageLookup>({
             getEnvironment: async () => ({ getPackage: async () => pkg }),
-         } as unknown as EnvironmentStore;
+         });
          expect(
             await new SkillController(store).getAgentSkillFile(
                "env",
@@ -498,7 +499,7 @@ describe("package agents", () => {
          let handler: Handler | undefined;
          registerGetAgentTool(
             {
-               tool: (_n: string, _d: string, _s: unknown, h: Handler) => {
+               registerTool: (_n: string, _config: unknown, h: Handler) => {
                   handler = h;
                },
             } as never,
@@ -697,12 +698,12 @@ describe("package agents", () => {
    });
 
    describe("REST and MCP surfaces", () => {
-      const storeFor = (pkg: Package): EnvironmentStore =>
-         ({
+      const storeFor = (pkg: Package): PackageLookup =>
+         fakeOf<PackageLookup>({
             getEnvironment: async () => ({
                getPackage: async () => pkg,
             }),
-         }) as unknown as EnvironmentStore;
+         });
 
       it("serves the listing and the resolved definition from the controller", async () => {
          manifest({ agents: { analyst: analyst() } });
@@ -746,7 +747,11 @@ describe("package agents", () => {
          let description = "";
          registerGetAgentTool(
             {
-               tool: (_n: string, d: string, _s: unknown, h: Handler) => {
+               registerTool: (
+                  _n: string,
+                  { description: d }: { description: string },
+                  h: Handler,
+               ) => {
                   description = d;
                   handler = h;
                },

@@ -17,23 +17,16 @@
  */
 
 import { InvalidArgumentError } from "../../errors";
-import { EnvironmentStore } from "../../service/environment_store";
-import { FCJ_MAX_CHARS } from "../context/pages";
+import type { EnvironmentCatalog } from "../../service/environment_ports";
+import { FCJ_MAX_CHARS } from "../../retrieval/search/pages";
 import type { GetContextParams, ScopedParams } from "./get_context_request";
-import { oneLineSummary } from "./package_entities";
+import type { PackageInfo } from "../../retrieval/model/types";
+import { oneLineSummary } from "../../retrieval/model/package_entities";
 import {
    isServed,
    readPackageCatalog,
    type CatalogEnvironment,
-} from "./package_catalog";
-
-/** What `package_info` carries for a call scoped to one whole package. */
-export interface PackageInfo {
-   environment: string;
-   package: string;
-   description?: string;
-   one_line_summary?: string;
-}
+} from "../../retrieval/model/package_catalog";
 
 export type LevelOutcome =
    /** A listing of environments or packages, answered here. */
@@ -193,7 +186,7 @@ const isWholePackage = (
  */
 export async function resolveLevel(
    params: GetContextParams,
-   environmentStore: EnvironmentStore,
+   environmentStore: EnvironmentCatalog,
 ): Promise<LevelOutcome> {
    const environment = params.environment?.trim() || undefined;
    const scope = params.scopes?.[0];

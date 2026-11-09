@@ -26,9 +26,6 @@ import { BYPASS_AUTHORIZE_SECRET_ENV } from "./authorize_bypass_header";
 import { buildRouteApp } from "./test_helpers/route_app";
 import { installSettings, withSettings } from "./test_helpers/settings_env";
 
-/** Positional index of `bypassAuthorize` in `QueryController.getQuery`. */
-const BYPASS_ARGUMENT = 11;
-
 function buildApp() {
    const getQuery = sinon.stub().resolves({ result: "{}", resource: "r" });
    return { app: buildRouteApp({ queryController: { getQuery } }), getQuery };
@@ -44,7 +41,7 @@ const post = (headers: Record<string, string>, body: object) => {
    }
    return pending.then((response) => ({
       response,
-      bypass: getQuery.firstCall?.args[BYPASS_ARGUMENT],
+      bypass: getQuery.firstCall?.args[0].bypassAuthorize,
    }));
 };
 
@@ -151,7 +148,7 @@ describe("authorize bypass wiring, over HTTP", () => {
             req.end(body);
          });
          expect(status).toBe(200);
-         expect(getQuery.firstCall?.args[BYPASS_ARGUMENT]).toBeUndefined();
+         expect(getQuery.firstCall?.args[0].bypassAuthorize).toBeUndefined();
       } finally {
          server.close();
       }
@@ -223,9 +220,7 @@ describe("the legacy /projects alias accepts no bypass", () => {
                .send({ query: "run: orders -> { aggregate: c is count() }" });
             expect(response.status).toBe(200);
             expect(getQuery.calledOnce).toBe(true);
-            expect(getQuery.firstCall.args.length).toBeLessThanOrEqual(
-               BYPASS_ARGUMENT,
-            );
+            expect(getQuery.firstCall.args[0].bypassAuthorize).toBeUndefined();
          },
       );
    });

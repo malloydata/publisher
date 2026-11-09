@@ -3,7 +3,7 @@
 
 /**
  * What each accepted gate shape does to a real query, through `Model.create`
- * and `getQueryResults` against DuckDB. The two routes answer different
+ * and `runQuery` against DuckDB. The two routes answer different
  * questions and deny differently:
  *
  *  - `#(access_filter)` is a row filter: a caller it admits nowhere gets a

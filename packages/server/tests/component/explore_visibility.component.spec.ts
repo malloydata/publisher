@@ -19,6 +19,7 @@
  *
  * The deprecated `explores` key is pinned in the labelled block at the end.
  */
+import { unrecordedAudit } from "../../src/service/access_record";
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import * as fs from "fs";
 import * as os from "os";
@@ -33,6 +34,7 @@ import {
    listDashboards,
    listNotebooks,
 } from "../../src/service/legacy_report_views";
+import { QueryPrivileges } from "../../src/service/model_query_request";
 
 describe("Explore Visibility via worker pool", () => {
    let tempDir: string;
@@ -120,7 +122,10 @@ export { customers }`,
          // and a query that joins through base_source executes.
          const { result } = await pkg
             .getModel("index.malloy")!
-            .getQueryResults("customers", "v", undefined);
+            .runQuery(unrecordedAudit(), {
+               sourceName: "customers",
+               queryName: "v",
+            });
          expect(result.data).toBeDefined();
 
          // Reports are always public regardless of the surface.
@@ -231,13 +236,10 @@ export { customers }`,
          // Listing it does not open it: without the option on the query too,
          // the query route still refuses it.
          await expect(
-            pkg
-               .getModel("base.malloy")!
-               .getQueryResults(
-                  "base_source",
-                  undefined,
-                  "run: base_source -> { select: * }",
-               ),
+            pkg.getModel("base.malloy")!.runQuery(unrecordedAudit(), {
+               sourceName: "base_source",
+               query: "run: base_source -> { select: * }",
+            }),
          ).rejects.toBeInstanceOf(NotQueryableError);
       } finally {
          await duckdb.close();
@@ -264,18 +266,10 @@ source: open_src is duckdb.sql("select 1 as id")`,
          ) =>
             pkg
                .getModel(file)!
-               .getQueryResults(
-                  undefined,
-                  undefined,
-                  query,
-                  undefined,
-                  undefined,
-                  undefined,
-                  undefined,
-                  undefined,
-                  "full",
-                  false,
-                  includeHiddenFilesAndSources,
+               .runQuery(
+                  unrecordedAudit(),
+                  { query, responseShape: "full" },
+                  QueryPrivileges.of({ includeHiddenFilesAndSources }),
                );
 
          // A hidden file, and a source index.malloy doesn't export, both run.
@@ -757,15 +751,13 @@ source: secret_tiles is secret extend { view: by_id is { group_by: id } }
             expect(namedResponse.modelDef).not.toContain(absent);
             expect(namedResponse.modelInfo).not.toContain(absent);
          }
-         const ran = await namedIndex.getQueryResults(
-            undefined,
-            "through_join",
-            undefined,
-         );
+         const ran = await namedIndex.runQuery(unrecordedAudit(), {
+            queryName: "through_join",
+         });
          expect(ran.result.data).toBeDefined();
          for (const refused of ["unexported", "hidden_ids"]) {
             await expect(
-               namedIndex.getQueryResults(undefined, refused, undefined),
+               namedIndex.runQuery(unrecordedAudit(), { queryName: refused }),
             ).rejects.toThrow(NotQueryableError);
          }
       } finally {

@@ -4,17 +4,16 @@
 import { recordPackageReload } from "../package_state_metrics";
 import chokidar, { FSWatcher } from "chokidar";
 import { EventEmitter } from "events";
-import { RequestHandler } from "express";
 import path from "path";
 import { components } from "../api";
-import { EnvironmentNotFoundError, internalErrorToHttpError } from "../errors";
+import { EnvironmentNotFoundError } from "../errors";
 import { logger } from "../logger";
 import { assertSafePackageName } from "../path_safety";
+import type { PackageLookup } from "../service/environment_ports";
 import { EnvironmentStore } from "../service/environment_store";
+import { parseEnvironmentName, parsePackageName } from "../service/identity";
 
-type StartWatchReq = components["schemas"]["StartWatchRequest"];
 type WatchStatusRes = components["schemas"]["WatchStatus"];
-type Handler<Req = object, Res = void> = RequestHandler<object, Res, Req>;
 
 // Package assets: they trigger a live-reload event but no recompile.
 const ASSET_EXTS = new Set([
@@ -49,7 +48,11 @@ export class WatchModeController {
     */
    public events = new EventEmitter();
 
-   constructor(private environmentStore: EnvironmentStore) {
+   constructor(
+      private environmentStore: PackageLookup & {
+         readonly serverRootPath: string;
+      },
+   ) {
       this.watchingPath = null;
       this.watchingEnvironmentName = null;
       // One live-reload listener per open browser tab.
@@ -78,7 +81,7 @@ export class WatchModeController {
                return;
             }
             const env = await this.environmentStore.getEnvironment(
-               environmentName,
+               parseEnvironmentName(environmentName),
                false,
             );
             const watchPath = env.getEnvironmentPath();
@@ -115,10 +118,10 @@ export class WatchModeController {
       const reloadPackage = async (pkgName: string): Promise<boolean> => {
          try {
             const environment = await this.environmentStore.getEnvironment(
-               watchName,
+               parseEnvironmentName(watchName),
                false,
             );
-            await environment.getPackage(pkgName, true);
+            await environment.getPackage(parsePackageName(pkgName), true);
             recordPackageReload("watch", "success");
             logger.info(
                `Watch: recompiled package "${pkgName}" in environment "${watchName}"`,
@@ -210,37 +213,4 @@ export class WatchModeController {
       this.watchingPath = null;
       this.watchingEnvironmentName = null;
    }
-
-   // DEPRECATED: the main API's `/watch-mode/status|start|stop` handlers, kept
-   // with their response shapes until those routes are removed.
-
-   public getWatchStatus: Handler<void, WatchStatusRes> = async (_req, res) => {
-      return res.json(this.current());
-   };
-
-   public startWatching: Handler<StartWatchReq, { error: string }> = async (
-      req,
-      res,
-   ) => {
-      try {
-         await this.watch(req.body.environmentName ?? "");
-      } catch (error) {
-         if (error instanceof EnvironmentNotFoundError) {
-            res.status(404).json({ error: error.message });
-            return;
-         }
-         logger.error(error);
-         // Take the mapper's message, not error.message: a watch-path
-         // EACCES/ENOSPC carries an internal filesystem path.
-         const { status, json } = internalErrorToHttpError(error as Error);
-         res.status(status).json({ error: json.message });
-         return;
-      }
-      res.json();
-   };
-
-   public stopWatchMode: Handler = async (_req, res) => {
-      await this.unwatch();
-      res.json();
-   };
 }

@@ -6,11 +6,12 @@
  *
  * Malloy executes only the LAST `run:` of a text and drops the others without a
  * word, so a caller that sends several gets one answer back and no sign the
- * rest were lost. `getQueryResults` refuses such text with a 400 instead. The
+ * rest were lost. `runQuery` refuses such text with a 400 instead. The
  * definitions that commonly come before a single `run:` (`source:`, `query:`)
  * must keep working, and so must the named `sourceName`/`queryName` path.
  */
 
+import { unrecordedAudit } from "./access_record";
 import { DuckDBConnection } from "@malloydata/db-duckdb";
 import { Connection } from "@malloydata/malloy";
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
@@ -98,11 +99,7 @@ async function makeModel(): Promise<Model> {
 }
 
 async function runAdHoc(model: Model, query: string): Promise<Row[]> {
-   const { compactResult } = await model.getQueryResults(
-      undefined,
-      undefined,
-      query,
-   );
+   const { compactResult } = await model.runQuery(unrecordedAudit(), { query });
    return compactResult as Row[];
 }
 
@@ -202,9 +199,14 @@ describe("text with exactly one run: statement keeps running", () => {
 
    it("runs a named view and a named query by name", async () => {
       const model = await makeModel();
-      const view = await model.getQueryResults("widgets", "by_region");
+      const view = await model.runQuery(unrecordedAudit(), {
+         sourceName: "widgets",
+         queryName: "by_region",
+      });
       expect((view.compactResult as Row[]).length).toBe(3);
-      const query = await model.getQueryResults(undefined, "widget_count");
+      const query = await model.runQuery(unrecordedAudit(), {
+         queryName: "widget_count",
+      });
       expect(query.compactResult as Row[]).toEqual([{ n: 3 }]);
    });
 });

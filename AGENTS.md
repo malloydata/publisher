@@ -7,6 +7,8 @@ SPDX-License-Identifier: MIT
 
 Publisher is the analytics engine for [Malloy](https://malloydata.dev), created and maintained by [Credible](https://www.credibledata.com). It serves one or more Malloy model packages over a REST API and a single MCP endpoint. If you are an AI agent working in this repo, here is what you can do with it and how to start.
 
+**Operating model.** Publisher is a microservice. It runs locally with the user's own permissions, or inside their cloud behind the gateway or application that authenticates their users; it does not authenticate anyone itself. Its access controls (`#(authorize)`, `#(access_filter)`, `#(secure)` givens, `#(carries)`, the access record) are evaluated against what each request carries, so they enforce a policy only when that gateway authenticates the user, sets the givens from the verified identity, and is the only way to reach Publisher. When you model access controls, say so; never describe them as protecting a directly exposed server. See [the operating model](docs/security-posture.md#operating-model-a-microservice-behind-your-gateway).
+
 **The fast path.** Everything below is detail on these four steps:
 
 1. Start a server (section 1) and poll `GET http://localhost:4000/api/v0/status` until `operationalState` is `"serving"`.

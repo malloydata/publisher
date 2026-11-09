@@ -115,6 +115,10 @@
         {
           "field": "patient.age",
           "max": 90
+        },
+        {
+          "field": "patient.birth_year",
+          "min": 1930
         }
       ]
     },
@@ -163,8 +167,7 @@
       "id": "AC-03",
       "text": "A gate reads only attributes the identity provider sets.",
       "checks": [
-        "secure_gates",
-        "loads:secure"
+        "secure_gates"
       ]
     },
     {
@@ -182,7 +185,7 @@
       "checks": [
         "loads:join"
       ],
-      "why": "Publisher refuses to load a package whose published source joins a gated source it does not scope, so a package that loads satisfies this."
+      "why": "Publisher loads a package whose published source joins a gated source it does not scope, with a join-bypass warning; this review fails that warning, so a package that passes satisfies this."
     },
     {
       "id": "MN-01",
@@ -294,7 +297,7 @@
       "checks": [
         "refusals"
       ],
-      "why": "The load refuses a #(carries) leak, a gate on a caller-set given and a join bypass; this review, run in CI, refuses the rest."
+      "why": "The load refuses a #(carries) leak; a join bypass is a load warning that this review, run in CI, fails, along with the rest."
     }
   ]
 }

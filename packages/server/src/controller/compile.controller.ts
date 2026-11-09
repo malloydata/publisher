@@ -3,7 +3,7 @@
 
 import type { GivenValue } from "@malloydata/malloy";
 import { BadRequestError } from "../errors";
-import { EnvironmentStore } from "../service/environment_store";
+import type { PackageLookup } from "../service/environment_ports";
 import {
    lazyCounter,
    lazyHistogram,
@@ -17,6 +17,7 @@ import {
    withLegacyDocumentKind,
    type LegacyKind,
 } from "../service/legacy_report_views";
+import { parseEnvironmentName, VersionRef } from "../service/identity";
 
 const compiles = lazyCounter(
    "publisher_compiles_total",
@@ -29,9 +30,9 @@ const compileDuration = lazyHistogram(
 );
 
 export class CompileController {
-   private environmentStore: EnvironmentStore;
+   private environmentStore: PackageLookup;
 
-   constructor(environmentStore: EnvironmentStore) {
+   constructor(environmentStore: PackageLookup) {
       this.environmentStore = environmentStore;
    }
 
@@ -43,7 +44,7 @@ export class CompileController {
       includeSql: boolean = false,
       givens?: Record<string, GivenValue>,
       scope: CompileScope = "append",
-      versionId?: unknown,
+      versionId: VersionRef = VersionRef.LATEST,
       /** The request's `files` overlay, unchecked (see `request_overlay.ts`). */
       files?: unknown,
    ): Promise<{
@@ -94,7 +95,7 @@ export class CompileController {
       includeSql: boolean,
       givens: Record<string, GivenValue> | undefined,
       scope: CompileScope,
-      versionId: unknown,
+      versionId: VersionRef,
       files: unknown,
    ): Promise<{
       status: string;
@@ -109,7 +110,7 @@ export class CompileController {
          throw new BadRequestError("`source` must be a string of Malloy text.");
       const overlay = parseOverlayFiles(files);
       const environment = await this.environmentStore.getEnvironment(
-         environmentName,
+         parseEnvironmentName(environmentName),
          false,
       );
       const { problems, sql, document } = await environment.compileSource(

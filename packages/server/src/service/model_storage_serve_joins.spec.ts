@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 // Model-level routing contract for JOINS and VIEWS in the `storage=` serve path,
-// through the real Model.getQueryResults against a real in-memory DuckDB. This
+// through the real Model.runQuery against a real in-memory DuckDB. This
 // exercises the glue the transform-level tests can't: serveBindingsWithRefinements
 // reading a REAL compiled modelDef, mapping a join's `sourceID` to the joined
 // source name, and lifting join/view declarations verbatim from the on-disk
@@ -13,6 +13,7 @@
 // Signals: the live sources return region_name 'LIVE' and amount 10; the bound
 // (materialized) tables return 'STORE' and amount 99 — so the value observed
 // tells which path ran.
+import { unrecordedAudit } from "./access_record";
 import { DuckDBConnection } from "@malloydata/db-duckdb";
 import {
    FixedConnectionMap,
@@ -27,8 +28,9 @@ import { tmpdir } from "os";
 import { join } from "path";
 import { pathToFileURL } from "url";
 import { Model } from "./model";
-import type { ServeBinding } from "./materialization_serve_transform";
+import type { ServeBinding } from "./materialization/serve/materialization_serve_transform";
 import { installSettings } from "../test_helpers/settings_env";
+import { QueryPrivileges } from "./model_query_request";
 
 /** Puts back the settings the current test installed. */
 let restoreSettings: (() => void) | undefined;
@@ -80,11 +82,11 @@ const REGIONS_BINDING: ServeBinding = {
 
 const tmpDirs: string[] = [];
 
-async function buildModel(): Promise<Model> {
+async function buildModel(src: string = MODEL_SRC): Promise<Model> {
    const dir = mkdtempSync(join(tmpdir(), "mz-join-"));
    tmpDirs.push(dir);
    const file = join(dir, "m.malloy");
-   writeFileSync(file, MODEL_SRC);
+   writeFileSync(file, src);
    const fileUrl = pathToFileURL(file).toString();
 
    const duckdb = new DuckDBConnection("duckdb", ":memory:");
@@ -100,7 +102,7 @@ async function buildModel(): Promise<Model> {
 
    // Register the source under its real file:// URL so the compiled modelDef's
    // locations point at the file liftText reads back from disk.
-   const urlReader = new InMemoryURLReader(new Map([[fileUrl, MODEL_SRC]]));
+   const urlReader = new InMemoryURLReader(new Map([[fileUrl, src]]));
    const runtime = new Runtime({
       urlReader,
       connections: new FixedConnectionMap(connMap, "duckdb"),
@@ -112,23 +114,16 @@ async function buildModel(): Promise<Model> {
    // eslint-disable-next-line @typescript-eslint/no-explicit-any
    const modelDef = (compiled as any)._modelDef;
    const modelInfo = modelDefToModelInfo(modelDef);
-   const model = new Model(
-      "pkg",
-      "m.malloy",
-      {},
-      "model",
+   const model = new Model({
+      packageName: "pkg",
+      modelPath: "m.malloy",
+      dataStyles: {},
+      modelType: "model",
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      mm as any,
+      modelMaterializer: mm as any,
       modelDef,
-      undefined,
-      undefined,
-      undefined,
-      undefined,
-      undefined,
-      undefined,
-      undefined,
       modelInfo,
-   );
+   });
    // The serve shape compiles against the destination connections only, so hand
    // it a config carrying just this one — the same disjointness the Environment
    // enforces in production, expressed for a single-connection test.
@@ -140,12 +135,10 @@ async function buildModel(): Promise<Model> {
 
 /** Run a query and return the first result row. */
 async function runRow<T>(model: Model, query: string): Promise<T> {
-   const res = await model.getQueryResults(
-      undefined,
-      undefined,
-      query,
-      {},
-      true,
+   const res = await model.runQuery(
+      unrecordedAudit(),
+      { query, filterParams: {} },
+      QueryPrivileges.of({ bypassFilters: true }),
    );
    return (res.compactResult as unknown as T[])[0];
 }
@@ -166,6 +159,27 @@ describe("storage= serve routing with joins and views (end-to-end)", () => {
       model.setServeBindings([ORDERS_BINDING, REGIONS_BINDING]);
       const row = await runRow<{ region_name: string }>(model, JOIN_QUERY);
       expect(row.region_name).toBe("STORE"); // join ran over the bound tables
+   });
+
+   it("records the classified fields of a query it serves from storage", async () => {
+      setStorageMode("on");
+      const model = await buildModel(
+         MODEL_SRC.replace(
+            "  measure: total",
+            '  #(classification) "phi.direct_identifier"\n  dimension: amt is amount\n  measure: total',
+         ),
+      );
+      model.setServeBindings([ORDERS_BINDING, REGIONS_BINDING]);
+      const audit = unrecordedAudit();
+      await model.runQuery(
+         audit,
+         { query: "run: orders -> { group_by: amt }", filterParams: {} },
+         QueryPrivileges.of({ bypassFilters: true }),
+      );
+      expect(audit.servedFrom).toBe("storage");
+      expect(audit.summary?.fieldsRead).toEqual([
+         { path: "amt", classifications: ["phi.direct_identifier"] },
+      ]);
    });
 
    it("serves a named view (grouping by a joined field) from the materialized tables", async () => {
@@ -255,14 +269,10 @@ async function runGivens(
    model: Model,
    query: string,
 ): Promise<{ region_name?: string; t: number }> {
-   const res = await model.getQueryResults(
-      undefined,
-      undefined,
+   const res = await model.runQuery(unrecordedAudit(), {
       query,
-      undefined,
-      undefined,
-      { REG: ["r1"] },
-   );
+      givens: { REG: ["r1"] },
+   });
    return (
       res.compactResult as unknown as { region_name?: string; t: number }[]
    )[0];

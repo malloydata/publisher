@@ -32,7 +32,7 @@ import {
    cleanupStorageFiles,
    createIsolatedBuildSession,
    dropStorageTable,
-} from "./materialization_build_session";
+} from "./materialization/run/materialization_build_session";
 import { parseS3Endpoint } from "./gcs_s3_utils";
 import { redactPgSecrets } from "../pg_helpers";
 import { quoteIdentifier } from "./quoting";
@@ -42,7 +42,7 @@ import {
    type LoadOptions,
    copyStorageTable,
    loadStorageTable,
-} from "./storage_table_load";
+} from "./materialization/run/storage_table_load";
 
 type ApiConnection = components["schemas"]["Connection"];
 type DucklakeStorage = NonNullable<

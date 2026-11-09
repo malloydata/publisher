@@ -1,19 +1,26 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
-import { afterAll, beforeAll, describe, expect, it } from "bun:test";
+import { afterAll, beforeAll, describe, expect, it, spyOn } from "bun:test";
 import * as fs from "fs";
 import * as os from "os";
 import * as path from "path";
 import { MalloyError } from "@malloydata/malloy";
 import { isMcpIncludeHiddenFilesAndSources } from "../../config";
+import { logger } from "../../logger";
 import { registerExecuteQueryTool } from "./execute_query_tool";
+import { QuerySlots } from "../../query_concurrency";
+import { QueryUseCase } from "../../usecases/query";
 import {
    PackageLoadPool,
    __setPackageLoadPoolForTests,
 } from "../../package_load/package_load_pool";
 import type { EnvironmentStore } from "../../service/environment_store";
 import { Package } from "../../service/package";
+import type {
+   QueryPrivileges,
+   QueryRequest,
+} from "../../service/model_query_request";
 import { withSettings } from "../../test_helpers/settings_env";
 import type { ModelQueryMetadataInput } from "../../service/model";
 import {
@@ -25,7 +32,7 @@ import {
    ServiceUnavailableError,
 } from "../../errors";
 
-// Capture the handler registerExecuteQueryTool passes to McpServer.tool, so it
+// Capture the handler registerExecuteQueryTool passes to McpServer.registerTool, so it
 // can be exercised against a mocked EnvironmentStore. Mirrors the pattern in
 // compile_tool.spec.ts and reload_package_tool.spec.ts.
 type Handler = (params: Record<string, unknown>) => Promise<{
@@ -71,10 +78,9 @@ function captureTool(
    let handler: Handler | undefined;
    let shape: Record<string, unknown> | undefined;
    const fakeServer = {
-      tool: (
+      registerTool: (
          _name: string,
-         _desc: string,
-         s: Record<string, unknown>,
+         { inputSchema: s }: { inputSchema: Record<string, unknown> },
          h: Handler,
       ) => {
          shape = s;
@@ -83,18 +89,19 @@ function captureTool(
    };
    // Registered with the settings read from this server root, so a tool that
    // read the config itself, rather than the store, would see it.
-   withSettings({ cwd: serverRootPath }, () =>
+   withSettings({ cwd: serverRootPath }, () => {
+      const registered = {
+         // What EnvironmentStore's constructor reads from the config, once.
+         mcpIncludeHiddenFilesAndSources: isMcpIncludeHiddenFilesAndSources(),
+         ...store,
+         serverRootPath,
+      } as EnvironmentStore;
       registerExecuteQueryTool(
          fakeServer as never,
-         {
-            // What EnvironmentStore's constructor reads from the config, once.
-            mcpIncludeHiddenFilesAndSources:
-               isMcpIncludeHiddenFilesAndSources(),
-            ...store,
-            serverRootPath,
-         } as EnvironmentStore,
-      ),
-   );
+         registered,
+         new QueryUseCase(registered, new QuerySlots()),
+      );
+   });
    if (!handler || !shape) throw new Error("handler was not registered");
    return { handler, shape };
 }
@@ -114,7 +121,7 @@ function parse(result: { content: Array<{ resource?: { text: string } }> }) {
  * getModelForQuery already homes a back-pressure error from
  * `environment.assertCanAdmitQuery()`, which runs outside it, so a test that
  * trips that path passes even with the catch's classifyToolError call reverted.
- * Failing at getQueryResults puts the error where tryAcquireQuerySlot's
+ * Failing at runQuery puts the error where QuerySlots.tryAcquire's
  * ServiceUnavailableError lands, which is the case that was reported.
  */
 function storeWhoseQueryThrows(error: unknown): Partial<EnvironmentStore> {
@@ -132,7 +139,7 @@ function storeWhoseQueryThrows(error: unknown): Partial<EnvironmentStore> {
                   getType: () => "model",
                   carriesReportTag: () => false,
                   getModel: async () => ({}),
-                  getQueryResults: async () => {
+                  runQuery: async () => {
                      throw error;
                   },
                }),
@@ -154,15 +161,16 @@ function storeCapturingMetadata(
          queryMetadataEnforced?: Record<string, string>;
       }
    > = {},
+   versionId?: string,
 ): {
    store: Partial<EnvironmentStore>;
    captured: () => ModelQueryMetadataInput | undefined;
    capturedShape: () => string | undefined;
-   capturedArgs: () => unknown[];
+   capturedPrivileges: () => QueryPrivileges | undefined;
 } {
    let captured: ModelQueryMetadataInput | undefined;
    let capturedShape: string | undefined;
-   let capturedArgs: unknown[] = [];
+   let capturedPrivileges: QueryPrivileges | undefined;
    const store: Partial<EnvironmentStore> = {
       getEnvironment: async () =>
          ({
@@ -175,20 +183,20 @@ function storeCapturingMetadata(
             getPackage: async () => ({
                // The tool reads the package's own declared bag as the
                // least-specific author layer.
+               getVersionId: () => versionId,
                getDeclaredQueryMetadata: () => null,
                getModel: () => ({
                   getType: () => "model",
                   carriesReportTag: () => false,
                   getModel: async () => ({}),
-                  getQueryResults: async (..._args: unknown[]) => {
-                     // Positional: sourceName, queryName, query, filterParams,
-                     // bypassFilters, givens, abortSignal, metadata input,
-                     // responseShape. Indexed rather than destructured off the
-                     // end, because the argument list has grown twice and a
-                     // trailing-element type went stale both times.
-                     capturedArgs = _args;
-                     captured = _args[7] as ModelQueryMetadataInput | undefined;
-                     capturedShape = _args[8] as string | undefined;
+                  runQuery: async (
+                     _audit: unknown,
+                     request: QueryRequest,
+                     privileges?: QueryPrivileges,
+                  ) => {
+                     capturedPrivileges = privileges;
+                     captured = request.queryMetadataInput;
+                     capturedShape = request.responseShape;
                      return {
                         result: {
                            schema: { fields: [] },
@@ -208,7 +216,7 @@ function storeCapturingMetadata(
       store,
       captured: () => captured,
       capturedShape: () => capturedShape,
-      capturedArgs: () => capturedArgs,
+      capturedPrivileges: () => capturedPrivileges,
    };
 }
 
@@ -243,7 +251,7 @@ describe("execute_query error classification", () => {
    });
 
    it("tells an at-capacity caller to retry, not to check its Malloy", async () => {
-      // The reported bug. tryAcquireQuerySlot runs inside the tool's try, so at
+      // The reported bug. The slot is taken inside the tool's try, so at
       // the concurrency cap its ServiceUnavailableError landed in a catch that
       // funnelled everything through the Malloy helper: a 503 told the agent to
       // go verify its syntax. This is the assertion that fails if the catch
@@ -406,6 +414,12 @@ describe("execute_query per-query metadata", () => {
       });
    });
 
+   it("stamps the version that answered, as the REST route does", async () => {
+      const { store, captured } = storeCapturingMetadata({}, "2.1.0");
+      await captureHandler(store)(args);
+      expect(captured()?.version).toBe("2.1.0");
+   });
+
    it("passes the environment and mints a correlation id", async () => {
       // Both arrive through the input object; neither is derivable inside Model.
       const { store, captured } = storeCapturingMetadata();
@@ -480,8 +494,6 @@ describe("execute_query per-query metadata", () => {
 });
 
 describe("execute_query includeHiddenFilesAndSources", () => {
-   // getQueryResults positions: 9 is bypassAuthorize, 10 is
-   // includeHiddenFilesAndSources.
    const calls = [
       args,
       { ...args, query: undefined, sourceName: "orders", queryName: "v" },
@@ -489,25 +501,25 @@ describe("execute_query includeHiddenFilesAndSources", () => {
 
    it("is offered, and passes true through on both call paths, when the config turns it on", async () => {
       for (const call of calls) {
-         const { store, capturedArgs } = storeCapturingMetadata();
+         const { store, capturedPrivileges } = storeCapturingMetadata();
          const { handler, shape } = captureTool(
             store,
             serverRootWith(AUTHORING),
          );
          expect(shape).toHaveProperty("includeHiddenFilesAndSources");
          await handler({ ...call, includeHiddenFilesAndSources: true });
-         expect(capturedArgs()[9]).toBe(false);
-         expect(capturedArgs()[10]).toBe(true);
+         expect(capturedPrivileges()?.bypassAuthorize).toBe(false);
+         expect(capturedPrivileges()?.includeHiddenFilesAndSources).toBe(true);
       }
    });
 
    it("sends false when the argument is omitted or false", async () => {
       for (const extra of [{}, { includeHiddenFilesAndSources: false }]) {
-         const { store, capturedArgs } = storeCapturingMetadata();
+         const { store, capturedPrivileges } = storeCapturingMetadata();
          const { handler } = captureTool(store, serverRootWith(AUTHORING));
          await handler({ ...args, ...extra });
-         expect(capturedArgs()[9]).toBe(false);
-         expect(capturedArgs()[10]).toBe(false);
+         expect(capturedPrivileges()?.bypassAuthorize).toBe(false);
+         expect(capturedPrivileges()?.includeHiddenFilesAndSources).toBe(false);
       }
    });
 
@@ -523,11 +535,13 @@ describe("execute_query includeHiddenFilesAndSources", () => {
          "on",
       ]) {
          for (const call of calls) {
-            const { store, capturedArgs } = storeCapturingMetadata();
+            const { store, capturedPrivileges } = storeCapturingMetadata();
             const { handler, shape } = captureTool(store, serverRootWith(mcp));
             expect(shape).not.toHaveProperty("includeHiddenFilesAndSources");
             await handler({ ...call, includeHiddenFilesAndSources: true });
-            expect(capturedArgs()[10]).toBe(false);
+            expect(capturedPrivileges()?.includeHiddenFilesAndSources).toBe(
+               false,
+            );
          }
       }
    });
@@ -699,7 +713,7 @@ describe("execute_query on a package with published versions", () => {
                         getType: () => "model",
                         carriesReportTag: () => false,
                         getModel: async () => ({}),
-                        getQueryResults: async () => {
+                        runQuery: async () => {
                            if (options.queryError) throw options.queryError;
                            return {
                               result: { schema: { fields: [] } },
@@ -727,7 +741,11 @@ describe("execute_query on a package with published versions", () => {
    it("queries the package's latest, naming no version", async () => {
       const { store, asked } = versionedStore({ versionId: "1.2.0" });
       expect((await captureHandler(store)(args)).isError).not.toBe(true);
-      expect(asked()).toEqual([undefined]);
+      expect(
+         asked().map(
+            (o) => (o as { versionId?: unknown } | undefined)?.versionId,
+         ),
+      ).toEqual([undefined]);
    });
 
    it("answers a package with no latest yet with its own message, not an internal error", async () => {
@@ -773,4 +791,60 @@ describe("execute_query on a package with published versions", () => {
          expect(suggestions).not.toContain(never);
       },
    );
+});
+
+describe("execute_query cancellation", () => {
+   it("aborts the running query when the MCP client cancels the call", async () => {
+      let querySignal: AbortSignal | undefined;
+      // Settles only when its signal aborts, as a driver does.
+      const store = storeWhoseQueryThrows(undefined);
+      const getEnvironment = store.getEnvironment!;
+      store.getEnvironment = async (...a) => {
+         const environment = (await getEnvironment(...a)) as never as {
+            getPackage: () => Promise<{ getModel: () => object }>;
+         };
+         const pkg = await environment.getPackage();
+         return {
+            ...environment,
+            getPackage: async () => ({
+               ...pkg,
+               getModel: () => ({
+                  ...pkg.getModel(),
+                  runQuery: (_audit: unknown, request: QueryRequest) =>
+                     new Promise((_resolve, reject) => {
+                        querySignal = request.abortSignal as AbortSignal;
+                        querySignal.addEventListener("abort", () =>
+                           reject(new Error("query cancelled")),
+                        );
+                     }),
+               }),
+            }),
+         } as never;
+      };
+      const handler = captureHandler(store) as unknown as (
+         params: Record<string, unknown>,
+         extra: { signal: AbortSignal },
+      ) => Promise<{ isError?: boolean }>;
+      const client = new AbortController();
+      const errors = spyOn(logger, "error");
+      try {
+         const call = handler(args, { signal: client.signal });
+         while (!querySignal) await new Promise((r) => setTimeout(r, 1));
+         expect(querySignal.aborted).toBe(false);
+         client.abort();
+         expect(querySignal.aborted).toBe(true);
+         const answer = (await call) as {
+            isError?: boolean;
+            content?: { text?: string }[];
+         };
+         expect(answer.isError).toBe(true);
+         expect(JSON.stringify(answer.content)).toContain(
+            "cancelled before the query finished",
+         );
+         // A cancel is the client's choice, not a server error.
+         expect(errors).not.toHaveBeenCalled();
+      } finally {
+         errors.mockRestore();
+      }
+   });
 });

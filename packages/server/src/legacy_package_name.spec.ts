@@ -9,7 +9,11 @@ import {
    recoverVersionFromName,
    splitLegacyPackageName,
 } from "./legacy_package_name";
-import { API_PREFIX, buildRouteApp } from "./test_helpers/route_app";
+import {
+   API_PREFIX,
+   buildRouteApp,
+   namedVersions,
+} from "./test_helpers/route_app";
 import { installSettings } from "./test_helpers/settings_env";
 
 // A combined package name, `<package>___<version>`, from an orchestrator that
@@ -87,7 +91,7 @@ describe("routes reached with a combined package name", () => {
       const app = buildRouteApp({
          packageController: {
             getPackage: async (...args: unknown[]) => {
-               calls.push(args);
+               calls.push(namedVersions(args));
                return {} as never;
             },
          },
@@ -103,7 +107,7 @@ describe("routes reached with a combined package name", () => {
       const app = buildRouteApp({
          modelController: {
             getModel: async (...args: unknown[]) => {
-               calls.push(args);
+               calls.push(namedVersions(args));
                return {} as never;
             },
          },
@@ -120,7 +124,7 @@ describe("routes reached with a combined package name", () => {
       const app = buildRouteApp({
          queryController: {
             getQuery: async (...args: unknown[]) => {
-               calls.push(args);
+               calls.push(namedVersions(args));
                return { result: "[]" } as never;
             },
          },
@@ -129,8 +133,11 @@ describe("routes reached with a combined package name", () => {
          .post(`${ENV}/packages/sales___1.0.0/models/flights.malloy/query`)
          .send({ query: "run: flights -> by_carrier", versionId: null })
          .expect(200);
-      expect(calls[0].slice(0, 2)).toEqual(["acme", "sales"]);
-      expect(calls[0][10]).toMatchObject({ versionId: "1.0.0" });
+      expect(calls[0][0]).toMatchObject({
+         environmentName: "acme",
+         packageName: "sales",
+      });
+      expect(calls[0][0]).toMatchObject({ versionId: "1.0.0" });
    });
 
    it("builds that version when the body names none", async () => {
@@ -138,7 +145,7 @@ describe("routes reached with a combined package name", () => {
       const app = buildRouteApp({
          materializationController: {
             createMaterialization: async (...args: unknown[]) => {
-               calls.push(args);
+               calls.push(namedVersions(args));
                return {} as never;
             },
          },
@@ -157,7 +164,7 @@ describe("routes reached with a combined package name", () => {
       const app = buildRouteApp({
          packageController: {
             addPackage: async (...args: unknown[]) => {
-               calls.push(args);
+               calls.push(namedVersions(args));
                return undefined as never;
             },
          },
@@ -221,7 +228,7 @@ describe("routes reached with a combined package name", () => {
       const app = buildRouteApp({
          packageController: {
             deletePackage: async (...args: unknown[]) => {
-               calls.push(args);
+               calls.push(namedVersions(args));
             },
          },
       });
@@ -238,7 +245,7 @@ describe("the legacy /projects routes reached with a combined package name", () 
       const app = buildRouteApp({
          packageController: {
             getPackage: async (...args: unknown[]) => {
-               calls.push(args);
+               calls.push(namedVersions(args));
                return {} as never;
             },
          },
@@ -252,7 +259,7 @@ describe("the legacy /projects routes reached with a combined package name", () 
       const app = buildRouteApp({
          queryController: {
             getQuery: async (...args: unknown[]) => {
-               calls.push(args);
+               calls.push(namedVersions(args));
                return { result: "[]" } as never;
             },
          },
@@ -261,8 +268,11 @@ describe("the legacy /projects routes reached with a combined package name", () 
          .post(`${PROJECT}/packages/sales___1.0.0/models/flights.malloy/query`)
          .send({ query: "run: flights -> by_carrier" })
          .expect(200);
-      expect(calls[0].slice(0, 2)).toEqual(["acme", "sales"]);
-      expect(calls[0][calls[0].length - 1]).toMatchObject({
+      expect(calls[0][0]).toMatchObject({
+         environmentName: "acme",
+         packageName: "sales",
+      });
+      expect(calls[0][0]).toMatchObject({
          versionId: "1.0.0",
       });
    });
@@ -272,7 +282,7 @@ describe("the legacy /projects routes reached with a combined package name", () 
       const app = buildRouteApp({
          materializationController: {
             createMaterialization: async (...args: unknown[]) => {
-               calls.push(args);
+               calls.push(namedVersions(args));
                return {} as never;
             },
          },
@@ -289,7 +299,7 @@ describe("the legacy /projects routes reached with a combined package name", () 
       const app = buildRouteApp({
          packageController: {
             addPackage: async (...args: unknown[]) => {
-               calls.push(args);
+               calls.push(namedVersions(args));
                return undefined as never;
             },
          },

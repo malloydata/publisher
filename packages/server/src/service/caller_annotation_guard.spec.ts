@@ -2,9 +2,11 @@
 // SPDX-License-Identifier: MIT
 
 import { routeOf } from "@malloydata/malloy";
-import { afterEach, describe, expect, it } from "bun:test";
+import { afterEach, describe, expect, it, spyOn } from "bun:test";
 import { createRequire } from "module";
 import { BadRequestError } from "../errors";
+import { logger } from "../logger";
+import { linesMentioning } from "../test_helpers/log_lines";
 import {
    AUTHORIZE_TAG_LIKE,
    assertNoAuthorizeTagLike,
@@ -255,19 +257,18 @@ describe("hasCallerAuthorizeAnnotation: everything outside a prose body is refus
 
       it("warns once, without caller text, and still refuses", () => {
          setMalloyParserLoaderForTest(() => null);
-         const warned: unknown[][] = [];
-         const original = console.warn;
-         console.warn = (...args: unknown[]) => void warned.push(args);
+         const warnSpy = spyOn(logger, "warn");
+         let warned: unknown[][];
          try {
             expect(refuses("#|(markdown)\n#(authorize) SECRET\n")).toBe(true);
             expect(refuses(`#(authorize) true\n${RUN}\n`)).toBe(true);
             expect(refuses(`${RUN}\n`)).toBe(false);
+            warned = linesMentioning(warnSpy, "guard disabled");
          } finally {
-            console.warn = original;
+            warnSpy.mockRestore();
          }
          expect(warned).toHaveLength(1);
-         expect(String(warned[0][0])).toContain("guard disabled");
-         expect(String(warned[0][0])).not.toContain("SECRET");
+         expect(JSON.stringify(warned[0])).not.toContain("SECRET");
          expect(lastCallerGuardRefusalKind()).toBe("no_lexer");
       });
    });

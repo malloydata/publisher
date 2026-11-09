@@ -21,12 +21,13 @@ The review has two halves, and they are kept apart on purpose:
 - **The register** (`policies/controls.json`) is the policy as checks. You draft it from the prose;
   the policy owner approves it. It changes when the policy changes.
 - **The check** (`scripts/compliance.py check`) runs the register against the package as it is
-  served. It changes nothing, reads only aggregates, and exits 1 when a control fails, so the same
+  served. It changes nothing, reads only aggregates, and exits 1 when a control fails (3 when nothing failed but something could not be checked), so the same
   command gates every change in CI.
 
-What Publisher already refuses at load (a domain exposing a class its `#(carries)` omits, a gate
-on a given the caller can set, a join that reaches a gated source around its gate) the check
-reports as the control it breaks. It does not re-derive them.
+What Publisher refuses at load (a domain exposing a class its `#(carries)` omits) the check reports
+as the control it breaks. A join that reaches a gated source around its gate is only a `join-bypass`
+warning on the server, in every package, so the check fails it: this review is the hard stop. It
+does not re-derive either.
 
 ## Before you start
 
@@ -34,6 +35,8 @@ reports as the control it breaks. It does not re-derive them.
   review against a server with **no gateway in front**: each persona's givens are sent with the
   request and honored, which is how the check asks "what would this role see". Never point it at a
   production endpoint, where a trusted tier sets those givens and the probe would be meaningless.
+  A pass certifies the package's controls. In production they hold only behind the gateway that
+  authenticates users, sets the givens and blocks raw SQL, so a report says that alongside the verdict.
 - The policy document.
 - A classified model. If fields are unclassified, `skill:malloy-classify` first.
 
@@ -74,8 +77,14 @@ the MCP endpoint (`--mcp`, default `http://127.0.0.1:4040/mcp`) and `GET /api/v0
 every published domain as every persona with a count, queries every source the package does not
 publish (read from the `.malloy` files in the current directory, or `--package-dir`) to confirm it
 refuses, and profiles every published dimension with aggregates (seconds to a minute for 140
-fields). It writes `review/report.json` and `review/report.md`. Exit 0 means no
-control fails.
+fields). It writes `review/report.json` and `review/report.md`. Against a server that is not on
+localhost, `--mcp` is required (a usage error otherwise).
+
+Exit codes: **0** every control holds, **1** a control fails, **2** usage (a bad flag, or a register that is missing, not JSON or has no `controls`),
+**3** nothing failed but something could not be checked, **4** an internal error (traceback on
+stderr). A probe the server neither answered nor refused (a 400, a 401, a 404 that is not the query
+boundary's refusal, or that names the `--model` itself as missing) is never a pass: it needs review, so a typo cannot make a control hold.
+`--allow-review` turns 3 into 0 for a pipeline that triages review items by hand.
 
 ### 3. Judge what needs a person
 
@@ -85,9 +94,10 @@ Read `review/report.md`. `reference/report.md` explains each section. For each c
 - **FAILS**: name the domain and field from the finding, the requirement it breaks, and the
   smallest change to the model that would fix it. A failure the server refused at load (the report
   says the package is serving a stale model) is already contained: the change was not deployed.
-  Say both.
-- **Needs review**: a value check that could not decide (free text on a de-identified domain, a
-  probe that errored). Look at the evidence and say what you concluded and why; if it needs the
+  Say both. A `join-bypass` failure is not contained: the server serves that package with a warning.
+- **Needs review**: a check that could not decide (free text on a de-identified domain, a probe
+  the server neither answered nor refused, a cap on a field that was not profiled, a field whose
+  declared class is lower than what its expression reads). Look at the evidence and say what you concluded and why; if it needs the
   policy owner, say so.
 - **Not provable here**: say who can prove it.
 
@@ -108,8 +118,21 @@ and rerun.
 ### 5. In CI
 
 Run the same `check` on every change to a `.malloy` file, against a Publisher started on the
-change's checkout, and fail the build on exit 1. `docs/compliance-review.md` has a GitHub Actions
-example. Upload `review/` as the build's artifact so the evidence travels with the change.
+change's checkout, and fail the build on any non-zero exit: 1 and 4 are never acceptable, and 3
+means a person has to look. `docs/compliance-review.md` has a GitHub Actions example. Upload
+`review/` as the build's artifact so the evidence travels with the change.
+
+```yaml
+      - name: Review
+        run: |
+          python3 <skills>/malloy-compliance-review/scripts/compliance.py check \
+            --environment ci --package <pkg> --register policies/controls.json --out-dir review
+          # add --allow-review to pass on exit 3 (needs review, none failing)
+
+      - if: always()
+        uses: actions/upload-artifact@v4
+        with: { name: compliance-review, path: review/ }
+```
 
 ## Rules
 

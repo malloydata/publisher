@@ -585,7 +585,10 @@ describe("an empty versionId answers as no versionId", () => {
          }
       });
 
-      it("creates, then replaces, a report in a package with no versions the same with ?versionId= as with none", async () => {
+      it("answers a report write to a package with no versions the same with ?versionId= as with none", async () => {
+         // PLAIN is published from a location, so both writes are refused (409):
+         // a reload fetches it again and would discard the report. What this
+         // pins is that an empty versionId reads exactly as none.
          const results: Record<string, unknown> = {};
          for (const [label, stem, q] of [
             ["none", "written_with_none", ""],
@@ -613,9 +616,8 @@ describe("an empty versionId answers as no versionId", () => {
          }
          expect(results.empty).toEqual(results.none);
          expect(results.none).toMatchObject({
-            created: { status: 201, body: { created: true } },
-            replaced: { status: 200, body: { created: false } },
-            served: { status: 200, body: { title: "Second" } },
+            created: { status: 409 },
+            replaced: { status: 409 },
          });
       });
    });

@@ -10,12 +10,13 @@ import {
 import { logger } from "../logger";
 import { recordDropTables } from "../materialization_metrics";
 import type { Environment } from "../service/environment";
-import { EnvironmentStore } from "../service/environment_store";
+import type { PackageLookup } from "../service/environment_ports";
 import {
    cleanupStorageFiles,
    dropStorageTable,
    listStorageTables,
-} from "../service/materialization_build_session";
+} from "../service/materialization/run/materialization_build_session";
+import { parseEnvironmentName } from "../service/identity";
 
 type ApiConnection = components["schemas"]["Connection"];
 type ApiStorageTable = components["schemas"]["StorageTable"];
@@ -42,7 +43,7 @@ const IDENTIFIER = /^[a-zA-Z0-9_-]+$/;
  * either.
  */
 export class StorageDestinationController {
-   constructor(private environmentStore: EnvironmentStore) {}
+   constructor(private environmentStore: PackageLookup) {}
 
    async listTables(
       environmentName: string,
@@ -133,7 +134,7 @@ export class StorageDestinationController {
    ): Promise<{ environment: Environment; destination: ApiConnection }> {
       assertIdentifier("storage destination", destinationName);
       const environment = await this.environmentStore.getEnvironment(
-         environmentName,
+         parseEnvironmentName(environmentName),
          false,
       );
       try {

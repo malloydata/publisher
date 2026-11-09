@@ -17,8 +17,8 @@ const argv = process.argv.slice(2);
 printHelpIfAsked(argv);
 
 // Every setting, read once from the flags, the variables and the config file,
-// before any module that reads one is loaded: main_server.ts and
-// admin_server.ts read theirs when they load.
+// before any module that reads one is loaded: admin_server.ts reads its own when
+// it loads, and the config getters buildApp calls read the installed ones.
 const loaded = Settings.load({ argv });
 Settings.install(loaded);
 
@@ -44,6 +44,10 @@ for (const warning of loaded.warnings) {
    logger.warn(warning.message);
 }
 
+// One line naming each setting given and where it came from; secrets show as (set).
+const { settingsLine } = await import("./settings/reference");
+logger.info(settingsLine(loaded));
+
 // Checked before either server's module loads, so a contradiction fails startup
 // before anything binds or opens storage. Imported here, after the version check,
 // because config.ts brings the logger and the rest of the application with it.
@@ -53,7 +57,10 @@ const apis = getServerApiSettings();
 assertServerApis(apis);
 
 if (apis.servingApiEnabled) {
-   await import("./main_server");
+   // The composition root: builds every service once, then binds REST, MCP
+   // and (when configured) admin.
+   const { startMainServer } = await import("./main_server");
+   await startMainServer(loaded);
 } else {
    await import("./admin_server");
 }

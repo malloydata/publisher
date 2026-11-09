@@ -4,6 +4,7 @@
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 
 import {
+   measurePackageOperation,
    recordPackageLoadPhases,
    resetPackageLoadMetricsForTesting,
 } from "./package_load_metrics";
@@ -113,5 +114,27 @@ describe("package_load_metrics", () => {
       );
       expect(compile.boundaries.some((b) => b > 10_000)).toBe(true);
       expect(compile.boundaries[compile.boundaries.length - 1]).toBe(300_000);
+   });
+
+   it("times a reload or install by outcome, and rethrows a failure", async () => {
+      expect(await measurePackageOperation("reload", async () => "ok")).toBe(
+         "ok",
+      );
+      const failure = new Error("did not compile");
+      await expect(
+         measurePackageOperation("install", async () => {
+            throw failure;
+         }),
+      ).rejects.toBe(failure);
+
+      for (const [name, outcome] of [
+         ["publisher_package_reload_duration_ms", "success"],
+         ["publisher_package_install_duration_ms", "failure"],
+      ]) {
+         expect((await harness.collectAttributes(name)).length).toBe(1);
+         expect((await harness.collectHistogram(name, { outcome })).count).toBe(
+            1,
+         );
+      }
    });
 });

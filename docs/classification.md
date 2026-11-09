@@ -13,6 +13,17 @@ SPDX-License-Identifier: MIT
 > [authorize.md](authorize.md); to decide what is discoverable at all, see
 > [discovery-and-access.md](discovery-and-access.md).
 
+> **Operating model.** Publisher is a microservice. It runs locally with your own permissions, or
+> inside your cloud behind the gateway or application that authenticates your users; it does not
+> authenticate anyone itself. The controls on this page are evaluated against what each request
+> carries, so they enforce your policy only when that gateway authenticates the user, sets the
+> givens from the verified identity, and is the only way to reach Publisher. See
+> [the operating model](security-posture.md#operating-model-a-microservice-behind-your-gateway).
+
+> **Preview.** `#(carries)` does not yet close every path a read can take; [Known gaps](#known-gaps)
+> lists the open ones. Treat a `#(carries)` list as a review aid, not an enforcement boundary,
+> until they close. A package that declares neither annotation is unaffected.
+
 **The classes on the field; the ceiling on the source.** Every value is quoted, and every list is a quoted, comma-separated list in brackets, the form every list-valued annotation in Publisher uses (`tiles=[…]`, `# drill { to=[…] }`).
 
 ```malloy
@@ -69,6 +80,34 @@ class and reports `copied` as its input.
   the column, or the measure, and the lineage does the rest.
 - A hidden field (`private:`, `internal:`) is still an input: a public field derived from a
   private identifier carries the identifier's class.
+- A relabelled copy passes its input's classes on. A field that is a plain reference to
+  another (`dimension: yr is birth_year`, with or without a cast) and declares a lower class does
+  not drop the input's classes for whatever reads the copy: a field or view that reads `yr` carries
+  `birth_year`'s classes as well as `yr`'s own declaration.
+- A read Publisher cannot resolve is not skipped. A field whose expression reads something
+  that does not resolve against the source (a name a view declared with `extend:`, a reference
+  through a join the walk could not follow) has no known class. Under `#(carries)` that is a
+  refusal, not an unclassified pass.
+
+## A declared class below its inputs
+
+A declared class wins, but a declaration that is lower than what the field reads is the shape of a
+mistake or of a de-identification, and Publisher cannot tell which. It treats the two kinds of
+field differently:
+
+- A computed field warns. `dimension: birth_year is pick year(BIRTHDATE) when age < 90 else null`
+  with `#(classification) "phi.quasi_identifier"` over a `BIRTHDATE` classified
+  `phi.direct_identifier` loads, with a `classification-downgrade` warning that names the field and
+  the classes it drops. The warning is in `GET …/packages/{pkg}` `warnings` and `get_status`, and a
+  [compliance review](compliance-review.md) reports it as a finding for a person to decide.
+- A passthrough refuses, under `#(carries)`. A plain copy (a reference, optionally cast) cannot
+  de-identify anything, so a copy that declares a class below its input's refuses the package load.
+  Remove the declaration so the copy keeps its input's class, or derive a new field with a
+  function that does the de-identifying.
+
+A declared class is a statement of what the field is, and Publisher checks declarations, not
+truth: nothing reads the values. A field declared `none` whose values are SSNs loads. Proving the
+values match the classes is the review's value check.
 
 ## `#(carries)`: the classes an entry point may expose
 
@@ -78,10 +117,37 @@ entry point, who may enter and what they may see, sit on the same object and can
 that extends another and declares none inherits the base's list, the way it inherits a gate; its
 own declaration replaces it.
 
-**A leak refuses the package load.** When a dimension or measure reachable from a `#(carries)`
-source, its own, inherited, inferred, or reached through a join three deep, carries any class not
+**What refuses and what warns.** These two annotations add to a package and change nothing about
+the ones already there. Only `#(carries)` refuses, and only for what a query or a source can reach:
+a leak from a carried source, or a read of one that Publisher cannot complete. `#(classification)`
+labels and warns (`classification-malformed`, `classification-downgrade`,
+`classification-coverage`). `#(authorize)`, `#(access_filter)` and givens load exactly as in 0.11.2,
+with one added `join-bypass` warning when an author join reaches a stricter gate than the entry
+source's (see [Gates are edge controls](authorize.md#gates-are-edge-controls)). Publisher refuses
+a join bypass in no package, including one that declares `#(carries)`; the hard stop is a
+[compliance review](compliance-review.md) run in CI, which fails on each `join-bypass` warning.
+
+**A leak refuses the package load.** When a dimension, measure or view reachable from a
+`#(carries)` source, its own, inherited, inferred, or reached through a join, carries any class not
 on the list, or carries no class at all, the package does not load, the way a gate that does not
-parse refuses it. The error names every leak, with the lineage it came through:
+parse refuses it. The walk covers:
+
+- views: a view returns what it groups by, aggregates and filters on, so the classes of every
+  field it references count. A view that reads a field with no class, or one it declares itself
+  with `extend:`, refuses; declare the field on the source and read it from there. A view whose
+  references cannot be read refuses too.
+- `->` query sources: the fields of `source: s is base -> { ... }` read what the query reads, and the
+  stage's filters count, since every returned row reveals what they select on. That holds for a
+  field the query declares with `extend:` (read against the query's outputs), for the outputs of a
+  `nest:`, and for a query source that is joined from another source. A filter's class is charged on
+  its own, so an output declared below it is not called a copy of it, and it reaches every field
+  and view that reads the output, hidden or not.
+- joins hidden from discovery: a field reached through a join carries the class declared where it
+  lives, whether or not the joined source is published.
+- fields a source declares as copies of others, as described above.
+
+A read that cannot be resolved fails closed: the field is treated as unknown and refused, not
+skipped. The error names every leak, with the lineage it came through:
 
 ```
 source research (index.malloy) carries [phi.clinical, phi.financial, none] but exposes masked,
@@ -155,24 +221,106 @@ in the review's control register, where a check proves it.
   the usable lines beside it still count. A source gets one such warning however many of its
   fields are malformed, naming up to twelve of them and counting the rest.
 
+## The ceiling is checked per query
+
+The load check above judges what a model exposes. A caller's own query can reach past it: it can
+`extend` a source with a field of its own (`run: s extend { dimension: x is ssn } -> { group_by: x }`),
+join the source to itself, or declare a source over it, and an `internal:` column is readable
+through that. So a query that enters a `#(carries)` source is checked against the list too, on the
+fields the compiled query reads, and refused with a 400 before it runs when a read has no
+`#(classification)`, carries a class off the list, or cannot be read completely. The message names
+the field:
+
+```
+source research carries [none, phi.clinical]; this query reads x, which is classified phi.direct_identifier, not on the list
+```
+
+- The ceiling is the one the entry struct carries, read down its own chain, so a source a caller
+  declares over a carried one (`source: mine is research extend { … }`) has it. A `->` query source
+  is also held to the list of the source its query runs on, and to that source's base in turn: the
+  strictest list along the chain applies, at load as well as per query.
+- A read through a join is held to the list of every carried source it passes through, whether the
+  entry carries a list or not: an open source that joins `research`, in the model, in a file it
+  imports, or in the caller's own `join_one:`, still cannot read `research`'s fields past
+  `research`'s list. The list
+  follows the read to where it comes from: a field a caller's `extend:` or a `->` source's output
+  derives from `research.patient.ssn` is held to `research`'s list, however it is renamed. A
+  source that carries nothing is held to the lists of the carried sources it joins at load too.
+  When a struct on that path cannot be read, or a query's shape cannot (an `index:`), the query is
+  refused rather than assumed clean when it can reach a `#(carries)`, through a source it enters,
+  imports, joins or composes. A query that provably reaches none is not checked, whatever else the
+  model carries; a name Publisher cannot resolve counts as reaching one.
+- Every stage of a pipeline is read: a later stage's own `extend:` (a join to a source, a dimension)
+  is held to the list like the first stage's, against what the stage before it returned. A
+  `compose(…)` source is held to the ceiling of the member Malloy resolved for the query as well as
+  its own.
+- What counts as a read: every field the query selects, aggregates, groups, filters, nests or
+  indexes on, a field a caller's `extend:` adds with the classes of what it reads, and each
+  reference in the `on` of a join the caller writes. An `internal:` field is not exempt here; it
+  is exempt only from the load check. A `count()` that reads no field is served.
+- A caller cannot write a `#(classification)` or a `#(carries)` in query text: either would let the
+  query decide its own check. The query is refused with a 400.
+- Named queries and notebook cells an author declares on a `#(carries)` source are held to the same
+  check at load, so one that reads past the list refuses the package rather than the first request.
+- A source with no `#(carries)` is not checked, and neither is a request carrying the
+  data-management bypass.
+
+This is breaking for a query that reads past a `#(carries)` source's list, which 0.12.0 served.
+
 ## What coverage and the ceiling read
 
 Both follow what a caller can reach, not what a file declares:
 
 - Only models on the package's [surface](discovery-and-access.md) are read, and only the sources
   their `export { … }` publishes. A hidden base is not asked to classify its fields for its own
-  sake.
-- A published source's joined fields count, under their dotted path (`person.ssn`), three joins
-  deep. A hidden base reached through a join from a published source is therefore reported
+  sake. Under `queryableSources: "all"` a hidden source answers a query by name, so every
+  top-level source of every model is read instead.
+- A published source's joined fields count, under their dotted path (`person.ssn`), up to 16
+  joins deep and 1024 join paths per source. Past either bound Publisher cannot read what the
+  source's fields carry, so a `#(carries)` source refuses rather than assume the rest is clean:
+  drop the joins past the bound, or split the source. A hidden base reached through a join from a published source is therefore reported
   **there**, which is where a caller reads it. Classify the field where it is declared; the class
   rides every join to it.
-- Fields with an access modifier (`private:`, `internal:`) never reach a caller, so they are not
-  demanded a class and cannot leak. They still feed lineage.
+- Fields with an access modifier (`private:`, `internal:`) are not demanded a class at load.
+  They still feed lineage, so a public field derived from one carries its class. A `private:` field
+  is never reachable. A caller's own query can re-expose an `internal:` field through `extend`, so
+  `#(carries)` is enforced again per query, on what the query reads: classify any `internal:` field a
+  caller could read (see [The ceiling is checked per query](#the-ceiling-is-checked-per-query)).
 - A source locked with `#(authorize) false` publishes nothing a caller can read, so coverage does
   not report its own fields (its fields reached through a join from an open source are). A
   `#(carries)` on it is still enforced.
-- Views and joins are not classified; a view is a query over classified fields, and a join names a
-  relationship.
+- A view is not classified itself; a view under `#(carries)` is checked by the classes of the
+  fields it reads. A join names a relationship and is not classified.
+- A record or array dimension is a field. One built by an expression (`{ v is ssn }`, `[ssn]`)
+  carries what the expression reads, and each of its parts carries the same. A struct column is
+  charged the union of its parts. A part that cannot be resolved fails closed.
+
+## Known gaps
+
+Reads `#(carries)` does not yet hold to the list:
+
+- A nest of a multi-stage view is not traced past the view's first stage, whether a caller's query
+  writes it (`run: s -> { group_by: k nest: v }`), an author's view does (`view: outer is
+  { group_by: k nest: v }`), or a named query does. Running the multi-stage view directly is held to
+  the list; nesting it is not, and its access record claims a complete field list.
+- An expression over a classified and an unclassified field takes only the classified input's class.
+- A field that is both read and filtered on loses the filter's contribution.
+- In a multi-stage `->` source, a field computed in a middle stage and declared below its inputs
+  (`#(classification) "none"` over `concat(social, '')`) loads with no `classification-downgrade`
+  warning, and a later stage serves it.
+- In a multi-stage `->` source, an earlier stage's filter is dropped when a later stage, or a `->`
+  source built on it, reads or filters a field of the same name, so its class is lost.
+- A `->` source built on another `->` source does not inherit the filters of that source's query.
+  An output there that reads nothing, such as `count()` declared `"none"`, is not charged the
+  filter, so a count can still test which rows a classified filter admits.
+
+The ceiling also refuses shapes it could serve:
+
+- an `index:` query that can reach a `#(carries)`, even on a source with no ceiling of its own;
+- an output Publisher cannot follow to what it reads, such as a `nest:` with stages of its own,
+  whether or not it declares a class. Flatten the nest into one stage, or move it out of the source;
+- a later `->` stage whose `extend:` re-declares a name the source or an earlier stage already has,
+  when either meaning carries a class or a ceiling. Give the new name a different one.
 
 ## What it is not
 

@@ -1,9 +1,8 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
-import type { ObservableGauge } from "@opentelemetry/api";
-import type { EnvironmentStore } from "./service/environment_store";
-import { lazyCounter, publisherMeter } from "./telemetry";
+import type { LoadedEnvironmentsReader } from "./service/environment_ports";
+import { lazyCounter, lazyInstrument, publisherMeter } from "./telemetry";
 
 export type ReloadTrigger = "rest" | "mcp" | "watch";
 export type ReloadOutcome = "success" | "failure";
@@ -20,28 +19,19 @@ export function recordPackageReload(
    reloads().add(1, { trigger, outcome });
 }
 
-let packagesGauge: ObservableGauge | null = null;
+let observedStore: LoadedEnvironmentsReader | null = null;
 
-/**
- * `publisher_packages{state}`: how many packages are serving, failed to load,
- * or serving a stale model after a failed reload, read from the store's
- * in-memory state at each scrape. A package that is both loaded and stale
- * counts under both, matching how /status lists it. Registered once.
- */
-export function observePackageStates(store: EnvironmentStore): void {
-   if (packagesGauge) return;
-   packagesGauge = publisherMeter().createObservableGauge(
-      "publisher_packages",
-      {
-         description:
-            "Packages by state, summed over environments. Label: state ('serving'|'failed'|'stale').",
-      },
-   );
-   packagesGauge.addCallback((result) => {
+const packagesGauge = lazyInstrument(() => {
+   const gauge = publisherMeter().createObservableGauge("publisher_packages", {
+      description:
+         "Packages by state, summed over environments. Label: state ('serving'|'failed'|'stale').",
+   });
+   gauge.addCallback((result) => {
+      if (!observedStore) return;
       let serving = 0;
       let failed = 0;
       let stale = 0;
-      for (const environment of store.getLoadedEnvironments()) {
+      for (const environment of observedStore.getLoadedEnvironments()) {
          serving += environment.getLoadedPackages().length;
          failed += environment.getFailedPackages().size;
          stale += environment.getStaleCompileErrors().size;
@@ -50,9 +40,16 @@ export function observePackageStates(store: EnvironmentStore): void {
       result.observe(failed, { state: "failed" });
       result.observe(stale, { state: "stale" });
    });
-}
+   return gauge;
+});
 
-/** Visible for tests: lets a fresh MeterProvider register the gauge again. */
-export function resetPackageStateGaugeForTesting(): void {
-   packagesGauge = null;
+/**
+ * `publisher_packages{state}`: how many packages are serving, failed to load,
+ * or serving a stale model after a failed reload, read from the store's
+ * in-memory state at each scrape. A package that is both loaded and stale
+ * counts under both, matching how /status lists it.
+ */
+export function observePackageStates(store: LoadedEnvironmentsReader): void {
+   observedStore = store;
+   packagesGauge();
 }
