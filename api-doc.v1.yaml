@@ -71,7 +71,8 @@ info:
 
     - What only the server sets is `readOnly` (`resource`, `revision`, timestamps, a run's every field but `status`),
     and a write that sends it back as read ignores it, so a client can `PATCH` a resource it just read. A `name` is set
-    on create and never changes; a write that changes one answers 400.
+    on create and never changes; a write that changes one answers 400. One field is both set by the server and sent
+    back: a report's `sourceHash`, the precondition of the report write.
 
     - Every `POST` that creates or starts something (an environment, a connection, a package, a version, a run) accepts
     an `Idempotency-Key` header: a retry with the same key and body within 24 hours answers with the first response and
@@ -1660,19 +1661,20 @@ paths:
       tags:
         - reports
       summary: Write a report's text, making a new version
-      description: The report builder's save. The text must carry a model-level `## artifact` tag; the path may not be the
+      description: "The report builder's save. The text must carry a model-level `## artifact` tag; the path may not be the
         root `index.malloy`, anything under `public/`, or a report whose `readOnly` is set. The text is compiled first
         (400 `COMPILE_ERROR` with `problems`). On a published version the write makes version `<parent>+edit.N` and
         moves `latestVersionId` to it unless promotion is `explicit`; on a live package it writes through to the
-        author's directory. Without `expectedHash` it creates the file (201; 409 `FILE_EXISTS` if one is there); with
+        author's directory. The body is a `Report` whose one writable field is `content`, the file's text, with
+        `sourceHash` as read: without `sourceHash` it creates the file (201; 409 `FILE_EXISTS` if one is there); with
         it, it replaces the file (200; 409 `CONFLICT` when the file no longer hashes to it). Either way it answers with
-        the report as it now reads in the version the write made, which its `resource` and the `Location` header name.
+        the report as it now reads in the version the write made, which its `resource` and the `Location` header name."
       requestBody:
         required: true
         content:
           application/json:
             schema:
-              $ref: "#/components/schemas/ReportWriteRequest"
+              $ref: "#/components/schemas/Report"
       responses:
         "200":
           description: Replaced.
@@ -6298,7 +6300,8 @@ components:
           properties:
             content:
               type: string
-              description: The report file's whole text. Present only with `?include=content`.
+              description: The report file's whole text. On a read, present only with `?include=content`; on a write, the text to
+                write, and the one field a write sets.
     ReportList:
       type: object
       required:
@@ -6347,9 +6350,10 @@ components:
             splice). The report write refuses it the same way.
         sourceHash:
           type: string
-          readOnly: true
-          description: SHA-256 (hex) of the file's text. Send it back as `expectedHash` on the next write, so a write over a newer
-            text is refused rather than lost.
+          description: SHA-256 (hex) of the file's text. The server sets it on every read; a write sends it back as read, and is
+            refused with 409 `CONFLICT` when the file no longer hashes to it, so a write over a newer text is refused
+            rather than lost. A write without it creates the file. The one field the server sets that a client also
+            sends, as Google's `etag` field is; it is separate from the HTTP `ETag`, which covers the compiled report.
         error:
           type: object
           description: Present when the report did not compile.
@@ -6446,19 +6450,6 @@ components:
           type: integer
           description: The grid column the tile's left edge sits in, counted from 1, from `col=N` on its entry in `tiles=[…]`. See
             `row`.
-    ReportWriteRequest:
-      type: object
-      description: The whole text of a report file, written into a version by making a new version.
-      required:
-        - content
-      properties:
-        content:
-          type: string
-          description: The file's whole text.
-        expectedHash:
-          type: string
-          description: The `sourceHash` of the report as the caller last read it. The write is refused with 409 `CONFLICT` when
-            the file no longer hashes to it. Omit it to create a file that does not exist yet.
     ResourcePath:
       type: string
       readOnly: true

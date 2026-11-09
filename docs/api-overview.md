@@ -80,8 +80,7 @@ parent.
 - **Request ids.** The server takes the caller's `X-Request-Id`, else the trace id of a W3C `traceparent`, else makes one; every response carries it as `X-Request-Id`, and every error body repeats it as `requestId`.
 - **Enum values.** Lowercase snake_case, except a `reason`, which is always a code from a closed list in UPPER_SNAKE (an error's, an index's, a refused source's; free text is a `message`), values that name a response field (`include: ["malloyResult"]`), and values that echo another vocabulary (a setting's value, Postgres's `sslmode`).
 - **Concurrency.** Every mutable resource carries a `revision`, returned as `ETag` on reads. Send it back as `If-Match` on
-  a write; 412 `REVISION_MISMATCH` when the resource has moved on. The report write also takes `expectedHash`, the
-  SHA-256 of the text you read.
+  a write; 412 `REVISION_MISMATCH` when the resource has moved on. The report write's precondition is the report's `sourceHash`, sent back as read.
 - **Lists.** Every list is `{items, nextCursor}`, paged with `limit` (default 100, at most 1000) and `after`. `/status` is
   the one unpaged snapshot, narrowable with `?environment=`.
 - **Typed responses.** A query answers `{rows, schema, metadata}`, plus `malloyResult` when asked for with
@@ -108,7 +107,7 @@ parent.
 | `GET …/versions/{v}/models`, `GET …/models/{path}`                         | Model files; one model's sources, views and givens (`?include=content,modelInfo,sourceInfos` for the larger parts).                                                                   |
 | `POST …/versions/{v}/models/{path}:query`                                  | Run a query. See [request shapes](#query-request-shapes).                                                                                                                                 |
 | `POST …/versions/{v}/models/{path}:compile`                                | Compile-check Malloy text at `append`, `file` or `package` scope.                                                                                                                         |
-| `PUT …/versions/{v}/reports/{path}`                                        | The builder's save: write a report's text, which makes version `<parent>+edit.N` and moves `latestVersionId`. Create (201) without `expectedHash`, replace (200) with the `sourceHash` you read. Answers the `Report`. |
+| `PUT …/versions/{v}/reports/{path}`                                        | The builder's save: write a report's text, which makes version `<parent>+edit.N` and moves `latestVersionId`. Create (201) without `sourceHash`, replace (200) with the `sourceHash` you read, sending a `Report` with its `content`. Answers the `Report`. |
 | `GET …/versions/{v}/reports`, `…/reports/{path}`                           | Reports by `path` and `layout`; one report's manifest (its tiles and controls). Run a tile through `query`.                                                                          |
 | `GET …/versions/{v}/data-apps`, `…/public/{path}`                          | HTML data apps and the static files they load, served from the version they were published with.                                                                                        |
 | `GET …/versions/{v}/data-files`                                            | Embedded data files and their schemas.                                                                                                                                                    |
