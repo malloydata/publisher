@@ -103,7 +103,8 @@ info:
     - The server takes the caller's `X-Request-Id`, else the trace id of a W3C `traceparent`, else makes one; every
     response carries it as `X-Request-Id`, and every error body repeats it as `requestId`.
 
-    - Lowercase snake_case, except error reasons (UPPER_SNAKE), values that name a response field (`include:
+    - Lowercase snake_case, except a `reason`, which is always a code from a closed list in UPPER_SNAKE (an error's, an
+    index's, a refused source's; free text is a `message`), values that name a response field (`include:
     ["malloyResult"]`), and values that echo another vocabulary (a setting's value, Postgres's `sslmode`).
 
     - Every list is `{items, nextCursor}`, paged with `limit` and `after`. `/status` is the one unpaged snapshot.
@@ -2788,6 +2789,17 @@ paths:
           description: Only tables whose name is in this comma-separated list.
           schema:
             type: string
+        - name: include
+          in: query
+          style: form
+          explode: false
+          description: Larger parts to include in each table. `columns` lists each table's columns, as a read of the table does.
+          schema:
+            type: array
+            items:
+              type: string
+              enum:
+                - columns
         - $ref: "#/components/parameters/ifNoneMatch"
       responses:
         "200":
@@ -3012,6 +3024,17 @@ paths:
           description: Only tables whose name is in this comma-separated list.
           schema:
             type: string
+        - name: include
+          in: query
+          style: form
+          explode: false
+          description: Larger parts to include in each table. `columns` lists each table's columns, as a read of the table does.
+          schema:
+            type: array
+            items:
+              type: string
+              enum:
+                - columns
         - $ref: "#/components/parameters/ifNoneMatch"
       responses:
         "200":
@@ -4003,14 +4026,21 @@ components:
             $ref: "#/components/schemas/ReportTile"
         columns:
           type: integer
+          description: Grid width; 1 on a linear report.
         startingGivens:
           $ref: "#/components/schemas/EncodedGivenValues"
         autorun:
           type: boolean
         givens:
           type: array
+          description: The control row, one entry per given the tiles read.
           items:
             $ref: "#/components/schemas/Given"
+        preamble:
+          type: string
+          description: "The text a tile's `run:` is appended to when it is run or exported on its own: the document's definitions,
+            in file order. Never an `import`, a `##!` flag or a `given:`, which the model supplies, and never a
+            definition the caller may not read. Empty when the document defines nothing."
     CompiledModel:
       type: object
       description: "One model file compiled: its sources, named queries and givens. Larger parts are included on request with
@@ -4031,6 +4061,11 @@ components:
           type: string
         malloyVersion:
           type: string
+        imports:
+          type: array
+          items:
+            type: string
+          description: The version-relative paths of the files this model imports, directly; empty when it imports none.
         sources:
           type: array
           items:
@@ -4090,6 +4125,9 @@ components:
             range:
               type: object
               description: Character range within the source file
+        replacement:
+          type: string
+          description: A suggested fix, the text that replaces the range in `at`. Absent when the problem has no mechanical fix.
     CompileRequest:
       type: object
       description: Request body for compiling Malloy source code
@@ -4447,7 +4485,29 @@ components:
           format: date-time
           readOnly: true
         error:
-          type: string
+          type: object
+          description: Present when `status` is `error`, or when the last build stopped short and the index serves `lexical`.
+          required:
+            - reason
+            - message
+          properties:
+            reason:
+              type: string
+              enum:
+                - INDEX_COOLDOWN
+                - TOO_MANY_ENTITIES
+                - PROVIDER_ERROR
+                - INDEX_UNAVAILABLE
+              description: "`INDEX_COOLDOWN`: the embedding provider is rate-limiting; retry at `retryAt`. `TOO_MANY_ENTITIES`: the
+                version exceeds `retrieval.indexing.maxEntities`; retrying will not help. `PROVIDER_ERROR`: the provider
+                failed. `INDEX_UNAVAILABLE`: no provider is configured."
+            message:
+              type: string
+            retryAt:
+              type: string
+              format: date-time
+              description: When a retry may succeed. Absent when retrying will not help.
+              readOnly: true
     DuckdbConnection:
       type: object
       description: >
@@ -5141,7 +5201,9 @@ components:
           description: Human-readable log message
     ManifestEntry:
       type: object
-      description: One source a run built, and the table it landed in.
+      description: "One source a run built, and the table it landed in. An external manifest, the file `manifestLocation`
+        names, is a JSON array of these with the read-only fields left out: the author names each table with
+        `connectionName` and `tableName`, and the server assigns `entryId` and `tableId` when it binds the file."
       required:
         - entryId
         - sourceEntityId
@@ -5151,6 +5213,7 @@ components:
       properties:
         entryId:
           type: string
+          readOnly: true
         sourceEntityId:
           type: string
           description: Content address of the source definition; the identity across plan, instructions, manifest and bindings.
@@ -5166,6 +5229,7 @@ components:
           default: persist
         tableId:
           type: string
+          readOnly: true
           description: The physical table's stable identity across the runs that write it; `tableName` is its name in the warehouse.
         tableName:
           type: string
@@ -6029,46 +6093,46 @@ components:
         reason:
           type: string
           enum:
-            - free_parameter
-            - given
-            - given_in_persisted_query
-            - dynamic_projection
-            - dynamic_join
-            - dynamic_joined_where
-            - partition_without_storage
-            - partition_column_unknown
-            - partition_column_not_public
-            - merge_key_scope_unresolved
-            - preaggregate_over_dynamic_source
-            - authorize
-            - not_duckdb_portable
-            - public_surface_unknown
-            - read_only_dialect
+            - FREE_PARAMETER
+            - GIVEN
+            - GIVEN_IN_PERSISTED_QUERY
+            - DYNAMIC_PROJECTION
+            - DYNAMIC_JOIN
+            - DYNAMIC_JOINED_WHERE
+            - PARTITION_WITHOUT_STORAGE
+            - PARTITION_COLUMN_UNKNOWN
+            - PARTITION_COLUMN_NOT_PUBLIC
+            - MERGE_KEY_SCOPE_UNRESOLVED
+            - PREAGGREGATE_OVER_DYNAMIC_SOURCE
+            - AUTHORIZE
+            - NOT_DUCKDB_PORTABLE
+            - PUBLIC_SURFACE_UNKNOWN
+            - READ_ONLY_DIALECT
           description: >-
-            The bounded refusal reason. Only the compile-time reasons can appear here — `free_parameter`, `authorize`,
-            the four that name where a given the build could not strip sits (`given_in_persisted_query`,
-            `dynamic_projection`, `dynamic_join`, `dynamic_joined_where`), the three that name an unusable `partition=`
-            (`partition_without_storage`, `partition_column_unknown`, `partition_column_not_public`),
-            `merge_key_scope_unresolved` (a `merge_key=` whose caller scope cannot be expressed over the stored table's
-            own columns), `preaggregate_over_dynamic_source` (a rollup whose base is scoped by a given, which has no
-            read-time re-application to put the term back), and `read_only_dialect` (a colocated `#@ persist` on a
+            The bounded refusal reason. Only the compile-time reasons can appear here — `FREE_PARAMETER`, `AUTHORIZE`,
+            the four that name where a given the build could not strip sits (`GIVEN_IN_PERSISTED_QUERY`,
+            `DYNAMIC_PROJECTION`, `DYNAMIC_JOIN`, `DYNAMIC_JOINED_WHERE`), the three that name an unusable `partition=`
+            (`PARTITION_WITHOUT_STORAGE`, `PARTITION_COLUMN_UNKNOWN`, `PARTITION_COLUMN_NOT_PUBLIC`),
+            `MERGE_KEY_SCOPE_UNRESOLVED` (a `merge_key=` whose caller scope cannot be expressed over the stored table's
+            own columns), `PREAGGREGATE_OVER_DYNAMIC_SOURCE` (a rollup whose base is scoped by a given, which has no
+            read-time re-application to put the term back), and `READ_ONLY_DIALECT` (a colocated `#@ persist` on a
             source whose dialect cannot create tables; SQL Server today, whose connection reports `canPersist: false`) —
             those being the only reasons the two compile-time eligibility asserts this collection is computed from
             produce.
 
 
-            `given_in_persisted_query` is raised by BOTH gates, for one condition: the BUILD would substitute a given's
+            `GIVEN_IN_PERSISTED_QUERY` is raised by BOTH gates, for one condition: the BUILD would substitute a given's
             value, so the artifact holds one caller's slice. On colocated that is a build that runs and lies; on a
             storage destination the same placement also leaves nothing for the read to re-apply. A given in the source's
             extend block is neither — it is left out of the build and applied per caller at read — and is admitted on
             both tiers.
 
 
-            `given` is retained for records that already carry it and is no longer produced. It was the storage tier's
+            `GIVEN` is retained for records that already carry it and is no longer produced. It was the storage tier's
             blanket refusal of any given reference, and the positional reasons above replaced it: where a given sits
             decides the outcome, so a single reason covering every placement can no longer be raised.
-            `not_duckdb_portable` is decided against the post-build captured schema, which does not exist at compile
-            time, and `public_surface_unknown` is raised by the build-time narrowing of a stored table to the source's
+            `NOT_DUCKDB_PORTABLE` is decided against the post-build captured schema, which does not exist at compile
+            time, and `PUBLIC_SURFACE_UNKNOWN` is raised by the build-time narrowing of a stored table to the source's
             public columns; both are listed only because they share the enum the runtime eligibility metric uses.
         message:
           type: string
@@ -6093,6 +6157,10 @@ components:
           $ref: "#/components/schemas/Package"
         version:
           $ref: "#/components/schemas/Version"
+        servingState:
+          $ref: "#/components/schemas/ServingState"
+          description: How this server now serves the version the reload or re-fetch left in place, with its per-package fields;
+            the receipt that a live edit is being served.
     Report:
       type: object
       description: A `.malloy` file carrying an `## artifact` tag, wherever it lives in the version.
@@ -6120,7 +6188,13 @@ components:
             - linear
         title:
           type: string
-        description: "{ type: string }"
+        description:
+          type: string
+        readOnly:
+          type: boolean
+          default: false
+          description: The report builder cannot write this file back, so it opens read-only (a report whose tiles it cannot
+            splice). The report write refuses it the same way.
         error:
           type: string
     ReportList:
@@ -6135,27 +6209,10 @@ components:
         nextCursor:
           $ref: "#/components/schemas/Cursor"
     ReportManifest:
-      description: A `Report` plus what a viewer needs to draw it.
+      description: A `Report` plus what a viewer needs to draw it, which is the compiled document.
       allOf:
         - $ref: "#/components/schemas/Report"
-        - type: object
-          properties:
-            tiles:
-              type: array
-              items:
-                $ref: "#/components/schemas/ReportTile"
-            columns:
-              type: integer
-              description: Grid width; 1 on a linear report.
-            startingGivens:
-              $ref: "#/components/schemas/EncodedGivenValues"
-            autorun:
-              type: boolean
-            givens:
-              type: array
-              description: The control row, one entry per given the tiles read.
-              items:
-                $ref: "#/components/schemas/Given"
+        - $ref: "#/components/schemas/CompiledDocument"
     ReportTile:
       type: object
       description: One tile of a report. A `query` tile (the default) runs a query; a `text` tile shows markdown and runs
@@ -6939,13 +6996,13 @@ components:
         table that exists.
       required:
         - sourceEntityId
-        - reason
+        - message
       properties:
         sourceEntityId:
           type: string
         sourceName:
           type: string
-        reason:
+        message:
           type: string
           description: Why this source failed, in the words the warehouse or compiler reported, redacted against the source's
             connection.
@@ -7182,6 +7239,11 @@ components:
           type: string
         name:
           type: string
+        columns:
+          type: array
+          items:
+            $ref: "#/components/schemas/Column"
+          description: Present only with `?include=columns`.
     TableSummaryList:
       type: object
       required:
@@ -7284,7 +7346,8 @@ components:
           type:
             - string
             - "null"
-          description: An externally computed manifest bound to this version, or null to serve live. Set with `PATCH`.
+          description: An externally computed manifest bound to this version, or null to serve live. Set with `PATCH`. The file is
+            a JSON array of `ManifestEntry` without its read-only fields.
         warnings:
           type: array
           readOnly: true
