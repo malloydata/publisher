@@ -46,14 +46,14 @@ info:
     ## The grammar
 
 
-    - Paths are kebab-case; parameters and fields are camelCase. `{path}` is a file inside a version; `{name}` a named
+    - Paths are kebab-case; parameters and fields are camelCase. `{path}` is a file inside a version; `{xName}` a named
     resource.
 
     - `GET` never changes state, and an immutable version has nothing to reload: `:reload` recompiles a live package;
     publishing a version, from the recorded source or a new one, is `POST …/versions`; loading a version is `PATCH
     {"loaded": true}`.
 
-    - `/status`, a package's `status`, the versions list, the version record and `…/index` never load a version that is
+    - `/status`, a version's `status`, the versions list, the version record and `…/index` never load a version that is
     not in memory; every other content read loads it on demand and says so.
 
     - State changes are fields: `PATCH …/versions/{versionId}` with `archived`, `loaded`, `pinned` or
@@ -166,7 +166,7 @@ paths:
       operationId: get-status
       tags:
         - server
-      summary: Server state and every version it holds
+      summary: Read the server's state and every version it holds
       parameters:
         - name: environment
           in: query
@@ -699,7 +699,7 @@ paths:
         "503":
           $ref: "#/components/responses/Unavailable"
     post:
-      operationId: publish-package
+      operationId: create-package
       tags:
         - packages
       summary: Create a package and publish its first version
@@ -949,58 +949,6 @@ paths:
           $ref: "#/components/responses/Unavailable"
 
 
-  /environments/{environmentName}/packages/{packageName}/status:
-    parameters:
-      - $ref: "#/components/parameters/environmentName"
-      - $ref: "#/components/parameters/packageName"
-    get:
-      operationId: get-package-status
-      tags:
-        - packages
-      summary: How this server holds the package's versions
-      parameters:
-        - name: versionId
-          in: query
-          schema:
-            $ref: "#/components/schemas/VersionRef"
-          description: One version; `latest` by default. Loads nothing.
-        - $ref: "#/components/parameters/ifNoneMatch"
-      responses:
-        "200":
-          description: The serving state, with the per-package fields.
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/ServingState"
-          headers:
-            X-Request-Id:
-              $ref: "#/components/headers/RequestId"
-            ETag:
-              $ref: "#/components/headers/ETag"
-            Cache-Control:
-              $ref: "#/components/headers/CacheControl"
-        "304":
-          $ref: "#/components/responses/NotModified"
-        "400":
-          $ref: "#/components/responses/BadRequest"
-        "401":
-          $ref: "#/components/responses/Unauthorized"
-        "403":
-          $ref: "#/components/responses/Forbidden"
-        "404":
-          $ref: "#/components/responses/NotFound"
-        "409":
-          $ref: "#/components/responses/Conflict"
-        "412":
-          $ref: "#/components/responses/PreconditionFailed"
-        "429":
-          $ref: "#/components/responses/RateLimited"
-        "500":
-          $ref: "#/components/responses/Internal"
-        "503":
-          $ref: "#/components/responses/Unavailable"
-
-
   /environments/{environmentName}/packages/{packageName}/versions:
     parameters:
       - $ref: "#/components/parameters/environmentName"
@@ -1131,13 +1079,65 @@ paths:
           $ref: "#/components/responses/Unavailable"
 
 
+  /environments/{environmentName}/packages/{packageName}/versions/{versionId}/status:
+    parameters:
+      - $ref: "#/components/parameters/environmentName"
+      - $ref: "#/components/parameters/packageName"
+      - $ref: "#/components/parameters/versionId"
+    get:
+      operationId: get-version-status
+      tags:
+        - versions
+      summary: Read how this server holds a version
+      description: "The version's serving state, with the fields `/status` leaves out (`servedRevision`, `contentHash`,
+        `bindings`). Loads nothing: an unloaded version answers `loaded: false`."
+      responses:
+        "200":
+          description: The serving state.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ServingState"
+          headers:
+            X-Request-Id:
+              $ref: "#/components/headers/RequestId"
+            ETag:
+              $ref: "#/components/headers/ETag"
+            Cache-Control:
+              $ref: "#/components/headers/CacheControl"
+        "304":
+          $ref: "#/components/responses/NotModified"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "410":
+          $ref: "#/components/responses/Gone"
+        "412":
+          $ref: "#/components/responses/PreconditionFailed"
+        "429":
+          $ref: "#/components/responses/RateLimited"
+        "500":
+          $ref: "#/components/responses/Internal"
+        "503":
+          $ref: "#/components/responses/Unavailable"
+      parameters:
+        - $ref: "#/components/parameters/ifNoneMatch"
+
+
   /environments/{environmentName}/packages/{packageName}/versions/{versionId}:refresh-schema:
     parameters:
       - $ref: "#/components/parameters/environmentName"
       - $ref: "#/components/parameters/packageName"
       - $ref: "#/components/parameters/versionId"
     post:
-      operationId: refresh-version-schema
+      operationId: refresh-schema
       tags:
         - versions
       summary: Recompile a version against the warehouse's current schemas
@@ -1185,7 +1185,7 @@ paths:
       tags:
         - versions
       summary: Read a version
-      description: The version's record. Never loads it; `GET …/packages/{packageName}/status` says whether it is in memory.
+      description: The version's record. Never loads it; `GET …/versions/{versionId}/status` says whether it is in memory.
       responses:
         "200":
           description: The version.
@@ -1377,7 +1377,7 @@ paths:
       operationId: get-model
       tags:
         - models
-      summary: A model's compiled sources, queries and givens
+      summary: Read a model's compiled sources, queries and givens
       description: Loads the version when it is not in memory (a hydrate when the compiled-model store has an entry); check
         `ServingState.loaded` first to know the cost.
       parameters:
@@ -1397,9 +1397,11 @@ paths:
           description: Larger parts to include.
         - name: givens
           in: query
+          style: deepObject
+          explode: true
           schema:
-            type: string
-          description: Given values as a URL-encoded JSON object, for a model whose sources depend on them.
+            $ref: "#/components/schemas/EncodedGivenValues"
+          description: Given values for a model whose sources depend on them, one per given (`givens[region]=west`).
         - $ref: "#/components/parameters/ifNoneMatch"
       responses:
         "200":
@@ -1788,7 +1790,7 @@ paths:
       operationId: get-public-file
       tags:
         - data-apps
-      summary: A static file from the version's `public/` directory
+      summary: Read a static file from the version's `public/` directory
       description: Served with the file's own media type. A data app and the files it loads by relative URL come from the same
         version.
       responses:
@@ -1893,7 +1895,7 @@ paths:
       operationId: list-agents
       tags:
         - agents
-      summary: Agents the version declares
+      summary: List the agents the version declares
       parameters:
         - $ref: "#/components/parameters/limit"
         - $ref: "#/components/parameters/after"
@@ -1936,24 +1938,29 @@ paths:
           $ref: "#/components/responses/Unavailable"
 
 
-  /environments/{environmentName}/packages/{packageName}/versions/{versionId}/agents/{name}:
+  /environments/{environmentName}/packages/{packageName}/versions/{versionId}/agents/{agentName}:
     parameters:
       - $ref: "#/components/parameters/environmentName"
       - $ref: "#/components/parameters/packageName"
       - $ref: "#/components/parameters/versionId"
-      - $ref: "#/components/parameters/name"
+      - $ref: "#/components/parameters/agentName"
     get:
       operationId: get-agent
       tags:
         - agents
-      summary: One agent's resolved definition
+      summary: Read an agent's resolved definition
       parameters:
-        - name: skills
+        - name: include
           in: query
+          style: form
+          explode: false
           schema:
-            type: boolean
-            default: true
-          description: Include the agent's skill files.
+            type: array
+            items:
+              type: string
+              enum:
+                - skills
+          description: Larger parts to include. `skills` includes the agent's skill files with their content.
         - $ref: "#/components/parameters/ifNoneMatch"
       responses:
         "200":
@@ -1993,25 +2000,25 @@ paths:
           $ref: "#/components/responses/Unavailable"
 
 
-  /environments/{environmentName}/packages/{packageName}/versions/{versionId}/agents/{name}/skills/{path}:
+  /environments/{environmentName}/packages/{packageName}/versions/{versionId}/agents/{agentName}/skills/{path}:
     parameters:
       - $ref: "#/components/parameters/environmentName"
       - $ref: "#/components/parameters/packageName"
       - $ref: "#/components/parameters/versionId"
-      - $ref: "#/components/parameters/name"
+      - $ref: "#/components/parameters/agentName"
       - $ref: "#/components/parameters/path"
     get:
       operationId: get-agent-skill-file
       tags:
         - agents
-      summary: One file of an agent's skills
+      summary: Read one file of an agent's skills
       responses:
         "200":
           description: The file.
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/AgentSkillRead"
+                $ref: "#/components/schemas/AgentSkillFile"
           headers:
             X-Request-Id:
               $ref: "#/components/headers/RequestId"
@@ -2054,7 +2061,7 @@ paths:
       operationId: list-skills
       tags:
         - skills
-      summary: Skills in force for the version
+      summary: List the skills in force for the version
       description: The bundled guides plus the version's own `skills/`, a package skill replacing a bundled one of the same name.
       parameters:
         - $ref: "#/components/parameters/limit"
@@ -2098,17 +2105,17 @@ paths:
           $ref: "#/components/responses/Unavailable"
 
 
-  /environments/{environmentName}/packages/{packageName}/versions/{versionId}/skills/{name}:
+  /environments/{environmentName}/packages/{packageName}/versions/{versionId}/skills/{skillName}:
     parameters:
       - $ref: "#/components/parameters/environmentName"
       - $ref: "#/components/parameters/packageName"
       - $ref: "#/components/parameters/versionId"
-      - $ref: "#/components/parameters/name"
+      - $ref: "#/components/parameters/skillName"
     get:
       operationId: get-skill
       tags:
         - skills
-      summary: One skill
+      summary: Read a skill
       responses:
         "200":
           description: The skill.
@@ -2158,7 +2165,7 @@ paths:
       operationId: list-entities
       tags:
         - discovery
-      summary: What each model declares, for an indexer
+      summary: List what each model declares, for an indexer
       parameters:
         - $ref: "#/components/parameters/limit"
         - $ref: "#/components/parameters/after"
@@ -2211,7 +2218,7 @@ paths:
       operationId: get-classification
       tags:
         - discovery
-      summary: The classification summary of the version's published entry points
+      summary: Read the classification summary of the version's published entry points
       responses:
         "200":
           description: The summary.
@@ -2261,7 +2268,7 @@ paths:
       operationId: get-discovery-index
       tags:
         - discovery
-      summary: The state of the version's discovery index
+      summary: Read the state of the version's discovery index
       description: Never loads the version. Until the derived store is keyed by content, the state is the package's latest
         loaded version's, whatever `versionId` names.
       responses:
@@ -2313,7 +2320,7 @@ paths:
       operationId: get-build-plan
       tags:
         - materialization
-      summary: The version's persist build plan
+      summary: Read the version's persist build plan
       responses:
         "200":
           description: The plan, or why there is none.
@@ -2363,8 +2370,12 @@ paths:
       operationId: list-version-connections
       tags:
         - connections
-      summary: The version's own connections
+      summary: List the version's own connections
       description: "Exactly one, `duckdb`, the version's in-memory sandbox over its data files; read-only, `scope: version`."
+      parameters:
+        - $ref: "#/components/parameters/limit"
+        - $ref: "#/components/parameters/after"
+        - $ref: "#/components/parameters/ifNoneMatch"
       responses:
         "200":
           description: The version's connections.
@@ -2401,8 +2412,6 @@ paths:
           $ref: "#/components/responses/Internal"
         "503":
           $ref: "#/components/responses/Unavailable"
-      parameters:
-        - $ref: "#/components/parameters/ifNoneMatch"
 
 
   /environments/{environmentName}/packages/{packageName}/versions/{versionId}/connections/{connectionName}:
@@ -2415,7 +2424,7 @@ paths:
       operationId: get-version-connection
       tags:
         - connections
-      summary: One of the version's connections
+      summary: Read one of the version's connections
       description: Only the version's own connections resolve here; an environment connection's name is 404.
       responses:
         "200":
@@ -2579,7 +2588,7 @@ paths:
       operationId: get-run
       tags:
         - materialization
-      summary: One run
+      summary: Read a run
       responses:
         "200":
           description: The run.
@@ -2709,7 +2718,7 @@ paths:
       operationId: get-run-manifest
       tags:
         - materialization
-      summary: What the run produced
+      summary: Read what the run produced
       responses:
         "200":
           description: The manifest; empty `entries` until the run commits.
@@ -2753,7 +2762,7 @@ paths:
       operationId: list-schemas
       tags:
         - connections
-      summary: Schemas the connection can read
+      summary: List the schemas the connection can read
       parameters:
         - $ref: "#/components/parameters/limit"
         - $ref: "#/components/parameters/after"
@@ -2810,15 +2819,19 @@ paths:
       operationId: list-tables
       tags:
         - connections
-      summary: Tables in a schema
+      summary: List the tables in a schema
       parameters:
         - $ref: "#/components/parameters/limit"
         - $ref: "#/components/parameters/after"
         - name: name
           in: query
-          description: Only tables whose name is in this comma-separated list.
+          style: form
+          explode: false
+          description: Only tables with one of these names.
           schema:
-            type: string
+            type: array
+            items:
+              type: string
         - name: include
           in: query
           style: form
@@ -2881,7 +2894,7 @@ paths:
       operationId: get-table
       tags:
         - connections
-      summary: A table and its columns
+      summary: Read a table and its columns
       responses:
         "200":
           description: The table.
@@ -2982,7 +2995,7 @@ paths:
       operationId: list-schemas-in-version
       tags:
         - connections
-      summary: Schemas the connection can read
+      summary: List the schemas the connection can read
       parameters:
         - $ref: "#/components/parameters/limit"
         - $ref: "#/components/parameters/after"
@@ -3045,15 +3058,19 @@ paths:
       operationId: list-tables-in-version
       tags:
         - connections
-      summary: Tables in a schema
+      summary: List the tables in a schema
       parameters:
         - $ref: "#/components/parameters/limit"
         - $ref: "#/components/parameters/after"
         - name: name
           in: query
-          description: Only tables whose name is in this comma-separated list.
+          style: form
+          explode: false
+          description: Only tables with one of these names.
           schema:
-            type: string
+            type: array
+            items:
+              type: string
         - name: include
           in: query
           style: form
@@ -3120,7 +3137,7 @@ paths:
       operationId: get-table-in-version
       tags:
         - connections
-      summary: A table and its columns
+      summary: Read a table and its columns
       responses:
         "200":
           description: The table.
@@ -3242,8 +3259,8 @@ components:
         $ref: "#/components/schemas/VersionRef"
       description: A version id, `latest`, or `live`. Every content read is of exactly one version; the response carries the
         id `latest` resolved to. A content read of a version that is not in memory loads it first, as a hydrate when the
-        compiled-model store has an entry; `GET …/status`, `GET …/versions`, `GET …/versions/{versionId}` and `…/index`
-        never load. `ServingState.loaded` says what a read will cost.
+        compiled-model store has an entry; `GET /status`, `GET …/versions`, `GET …/versions/{versionId}`, its `…/status`
+        and `…/index` never load. `ServingState.loaded` says what a read will cost.
     connectionName:
       name: connectionName
       in: path
@@ -3268,13 +3285,18 @@ components:
       required: true
       schema:
         type: string
-    name:
-      name: name
+    agentName:
+      name: agentName
       in: path
       required: true
       schema:
         $ref: "#/components/schemas/IdentifierPattern"
-      description: A named resource's name.
+    skillName:
+      name: skillName
+      in: path
+      required: true
+      schema:
+        $ref: "#/components/schemas/IdentifierPattern"
     path:
       name: path
       in: path
@@ -3529,26 +3551,15 @@ components:
           description: The instructions file's Markdown, at most 16 KB.
         skills:
           type: array
-          description: The agent's own skill files, sorted by `relative_filepath`.
+          description: The agent's own skill files, sorted by `path`. Each carries `content` only with `?include=skills`;
+            otherwise its `bytes`.
           items:
             $ref: "#/components/schemas/AgentSkillFile"
-        asset_roots:
-          type: object
-          description: For each skill that ships assets, the package-relative directory holding it. Absent when no skill does. Not
-            in the `skills=summary` view.
-          additionalProperties:
-            type: string
         assets:
           type: array
-          description: Every asset the agent's skills ship, listed without contents and sorted by `relative_filepath`. Absent when
-            there are none and in the `skills=summary` view.
+          description: Every asset the agent's skills ship, listed without content and sorted by `path`. Absent when there are none.
           items:
             $ref: "#/components/schemas/AgentAsset"
-        asset_counts:
-          type: object
-          description: "Only in the `skills=summary` view, and only when there are assets: how many assets each skill ships."
-          additionalProperties:
-            type: integer
         schedules:
           type: array
           items:
@@ -3561,21 +3572,33 @@ components:
             type: string
         source:
           $ref: "#/components/schemas/AgentSource"
+        assetRoots:
+          type: object
+          description: For each skill that ships assets, the package-relative directory holding it. Absent when no skill does. Not
+            when the agent is read without `?include=skills`.
+          additionalProperties:
+            type: string
+        assetCounts:
+          type: object
+          description: "Only when the agent is read without `?include=skills`, and only when there are assets: how many assets
+            each skill ships."
+          additionalProperties:
+            type: integer
       required:
         - resource
     AgentAsset:
       type: object
       readOnly: true
-      description: A text file a skill ships under `<skill>/assets/` for an agent to copy into an app it builds and not read.
-        Listed without its contents; fetch one with `GET .../agents/{agentName}/skills/{relative_filepath}`.
+      description: A text file a skill ships under `<skill>/assets/` for an agent to copy into an app it builds, not to read.
+        Listed without its content; read one with `GET …/agents/{agentName}/skills/{path}`.
       properties:
-        relative_filepath:
-          type: string
-          description: "`<skill>/assets/...`, relative to the agent's skill roots."
         bytes:
           type: integer
           description: Size in UTF-8 bytes, under 1 MiB.
-        sha256:
+        path:
+          type: string
+          description: "`<skill>/assets/...`, relative to the agent's skill roots."
+        hash:
           type: string
           description: SHA-256 of the file's bytes.
     AgentBudget:
@@ -3589,13 +3612,13 @@ components:
         turns:
           type: integer
           minimum: 1
-        wall_clock_minutes:
+        wallClockMinutes:
           type: integer
           minimum: 1
-        llm_tokens:
+        llmTokens:
           type: integer
           minimum: 1
-        job_minutes:
+        jobMinutes:
           type: integer
           minimum: 1
     AgentList:
@@ -3626,37 +3649,27 @@ components:
     AgentSkillFile:
       type: object
       readOnly: true
-      description: One of an agent's skill files. The snake_case keys (`relative_filepath`, `file_contents`) mirror the MCP
-        `get_agent` tool the shape is shared with, unlike the camelCase used elsewhere in this API.
-      properties:
-        relative_filepath:
-          type: string
-          description: Path relative to the agent's skills directory, for example `analyst-conventions/SKILL.md` or
-            `analyst-conventions/reference/glossary.md`.
-        file_contents:
-          type: string
-          description: A `SKILL.md` is re-emitted with only a quoted `name` and `description` in its frontmatter; reference files
-            are served raw. Absent when the agent was fetched with `skills=summary`.
-        name:
-          type: string
-          description: A `SKILL.md`'s name. Only in the `skills=summary` view.
-        description:
-          type: string
-          description: A `SKILL.md`'s description. Only in the `skills=summary` view.
-        bytes:
-          type: integer
-          description: Size of `file_contents` in UTF-8 bytes. Only in the `skills=summary` view.
-    AgentSkillRead:
-      type: object
-      readOnly: true
-      description: One agent skill file or asset, with the pin of the definition it belongs to.
+      description: One of an agent's skill files.
       properties:
         resource:
           $ref: "#/components/schemas/ResourcePath"
-        relative_filepath:
+        name:
           type: string
-        file_contents:
+          description: A `SKILL.md`'s name. Only when the agent is read without `?include=skills`.
+        description:
           type: string
+          description: A `SKILL.md`'s description. Only when the agent is read without `?include=skills`.
+        bytes:
+          type: integer
+          description: Size of the file's text in UTF-8 bytes.
+        path:
+          type: string
+          description: Path relative to the agent's skills directory, for example `analyst-conventions/SKILL.md` or
+            `analyst-conventions/reference/glossary.md`.
+        content:
+          type: string
+          description: A `SKILL.md` is re-emitted with only a quoted `name` and `description` in its frontmatter; reference files
+            are served raw. Present only when the agent is read with `?include=skills`.
         source:
           $ref: "#/components/schemas/AgentSource"
       required:
@@ -3669,14 +3682,7 @@ components:
         versionId:
           $ref: "#/components/schemas/VersionIdPattern"
           description: The version the definition was read from. After `latest` moves, the same definition is at
-            `…/versions/{versionId}/agents/{name}`.
-        sourceContentSha:
-          type: string
-          description: The package's `sourceContentSha` at the load this definition came from.
-        definitionSha:
-          type: string
-          description: SHA-256 over this agent's canonical config, instructions, skill files and task files. Editing another
-            agent, or a model, does not move it.
+            `…/versions/{versionId}/agents/{agentName}`.
         servedRevision:
           type: string
           description: The package's `servedRevision` at the load this definition came from.
@@ -3684,6 +3690,14 @@ components:
           type: string
         packageName:
           type: string
+        contentHash:
+          type: string
+          description: The hash of the package content being served when this definition was read; the version's `contentHash` on
+            its status.
+        definitionHash:
+          type: string
+          description: SHA-256 over this agent's canonical config, instructions, skill files and task files. Editing another
+            agent, or a model, does not move it.
     AgentSummary:
       type: object
       readOnly: true
@@ -3802,13 +3816,13 @@ components:
         maximumBytesBilled:
           type: string
           description: Maximum bytes to bill for query execution (prevents runaway costs)
-        queryTimeoutMilliseconds:
-          type: string
-          description: Query timeout in milliseconds
         dbmeta:
           type: boolean
           default: false
           description: Copy table and column descriptions from BigQuery onto the schema as `#(dbmeta)` annotations.
+        queryTimeoutMs:
+          type: string
+          description: Query timeout in milliseconds
     Binding:
       type: object
       description: What a version serves for one source right now.
@@ -3908,18 +3922,18 @@ components:
     BuildNode:
       type: object
       required:
-        - sourceID
+        - sourceEntityId
       properties:
-        sourceID:
-          type: string
-          description: sourceName@modelURL
         dependsOn:
           type: array
-          description: sourceIDs of the sources on the tables this source reads. Sources on one table (a source and its
-            extensions) read none of each other. A source Malloy cannot plan, which is refused rather than built, lists
-            none.
+          description: The `sourceEntityId`s of the sources on the tables this source reads. Sources on one table (a source and
+            its extensions) read none of each other. A source Malloy cannot plan, which is refused rather than built,
+            lists none.
           items:
             type: string
+        sourceEntityId:
+          type: string
+          description: The source this node builds.
     BuildPlan:
       type: object
       description: |
@@ -3941,19 +3955,14 @@ components:
             $ref: "#/components/schemas/BuildGraph"
         sources:
           type: object
-          description: Map of sourceID ("sourceName@modelURL") to per-source plan.
+          description: The plan per persisted source, keyed by its `sourceEntityId`.
           additionalProperties:
             $ref: "#/components/schemas/PersistSourcePlan"
         refusedSources:
-          type: object
-          description: "Map of sourceID (\"sourceName@modelURL\") to the sources the package declared `#@ persist` on but that are
-            ineligible to build, so they carry no entry in `sources`. A SEPARATE collection rather than a field on
-            `PersistSourcePlan`: constructing that plan entry requires the source's SQL and content address, and a
-            free-parameter or given-referencing source cannot produce either, so a refused source needs a wire shape
-            that requires neither. Lets a host distinguish \"this package declares no persist source\" (both maps empty)
-            from \"every persist source was refused\" (empty `sources`, populated `refusedSources`) — silence otherwise
-            reads as the former."
-          additionalProperties:
+          type: array
+          description: The sources the package declared `#@ persist` on that are ineligible to build, so they have no entry in
+            `sources`. A source is identified by `modelPath` and `name`, since a refused source has no `sourceEntityId`.
+          items:
             $ref: "#/components/schemas/RefusedSource"
     BuildPlanResult:
       type: object
@@ -4088,11 +4097,6 @@ components:
         code:
           type: string
           description: Machine-readable error code
-        model:
-          type: string
-          description: Package-relative path of the model file the problem points at, derived from `at.url`. Load-bearing at scope
-            "package", where one array carries every file's problems; elsewhere it says when a diagnostic points at
-            pre-existing content rather than the submitted source. Absent when the location is not a package file.
         at:
           type: object
           description: Source location of the problem
@@ -4103,6 +4107,11 @@ components:
             range:
               type: object
               description: Character range within the source file
+        modelPath:
+          type: string
+          description: Package-relative path of the model file the problem points at, derived from `at.url`. Load-bearing at scope
+            "package", where one array carries every file's problems; elsewhere it says when a diagnostic points at
+            pre-existing content rather than the submitted source. Absent when the location is not a package file.
         replacement:
           type: string
           description: A suggested fix, the text that replaces the range in `at`. Absent when the problem has no mechanical fix.
@@ -4419,11 +4428,21 @@ components:
         sizeBytes:
           type: integer
           format: int64
-        info:
-          $ref: "#/components/schemas/TableDescription"
+        rowCount:
+          type: integer
+          description: Rows in the file. Absent under the light load profile until first read.
+        columns:
+          type: array
+          items:
+            $ref: "#/components/schemas/Column"
         error:
-          type: string
-          description: When the file could not be read; `info` is then absent.
+          type: object
+          description: Present when the file could not be read; `rowCount` and `columns` are then absent.
+          required:
+            - message
+          properties:
+            message:
+              type: string
     DataFileList:
       type: object
       required:
@@ -4610,7 +4629,7 @@ components:
       description: One public field of a source. See `ModelEntities.fields`.
       required:
         - name
-        - source
+        - sourceName
         - kind
         - code
         - annotations
@@ -4619,18 +4638,11 @@ components:
         name:
           type: string
           description: The field's name, or its join-qualified path (`people.name`) when it is reached through a join.
-        source:
-          type: string
-          description: The runnable source to query the field from. For a join field it is the source declaring the join, dotted
-            when that source is itself reached through a join.
         kind:
           type: string
           description: "One of `dimension`, `column`, `measure`, `view`, `join` or `hidden`. `column` is a dimension read straight
             from the table; `dimension` is one the model defines with `is`. `hidden` is a field the source hides with a
             `# hidden` tag. A later release may add a kind: skip a field whose kind you do not know."
-        dataType:
-          type: string
-          description: The field's Malloy type, when it has one.
         code:
           type: string
           description: The Malloy text that declares the field.
@@ -4648,6 +4660,13 @@ components:
           $ref: "#/components/schemas/EntityJoin"
         indexFingerprint:
           $ref: "#/components/schemas/IndexFingerprint"
+        sourceName:
+          type: string
+          description: The runnable source to query the field from. For a join field it is the source declaring the join, dotted
+            when that source is itself reached through a join.
+        type:
+          type: string
+          description: The field's Malloy type, when it has one.
     EntityGate:
       type: object
       readOnly: true
@@ -4722,13 +4741,13 @@ components:
       description: The table behind the field's source, split from its table path. Every part is absent when the source is not
         read from a table.
       properties:
-        connection:
-          type: string
         catalog:
           type: string
-        schema:
-          type: string
         name:
+          type: string
+        connectionName:
+          type: string
+        schemaName:
           type: string
     Environment:
       type: object
@@ -4991,8 +5010,6 @@ components:
       properties:
         query:
           type: string
-        source:
-          type: string
         dimension:
           type: string
         givenNames:
@@ -5007,6 +5024,8 @@ components:
             exactly these, so a gated source's options load while the option
             list still does not depend on the page's other filters. Absent
             when the query needs none.
+        sourceName:
+          type: string
     GivenValues:
       type: object
       description: |
@@ -5125,7 +5144,7 @@ components:
         - message
         - severity
       properties:
-        model:
+        modelPath:
           type: string
           description: Package-relative path of the file the finding is on; absent for a package-wide finding.
         subject:
@@ -5227,17 +5246,11 @@ components:
           items:
             $ref: "#/components/schemas/Column"
         rowCount:
-          type:
-            - integer
-            - "null"
+          type: integer
         buildDurationMs:
-          type:
-            - integer
-            - "null"
+          type: integer
         queryCostBytes:
-          type:
-            - integer
-            - "null"
+          type: integer
         upstreamReuse:
           type: string
           enum:
@@ -5341,17 +5354,22 @@ components:
           type: string
           description: Package-relative path of the model file.
         error:
-          type: string
-          description: "Why the model has no entities: its compile error, or the server's failure to extract it (see `errorKind`).
-            When present, every other list is empty."
-        errorKind:
-          type: string
-          enum:
-            - compile
-            - extraction
-          description: "Present with `error`. `compile`: the model did not compile, which its author fixes. `extraction`: it
-            compiled but the server could not extract its entities, a server fault an indexer should not read as the
-            model having none."
+          type: object
+          description: Present when the model has no entities; every other list is then empty.
+          required:
+            - reason
+            - message
+          properties:
+            reason:
+              type: string
+              enum:
+                - COMPILE_ERROR
+                - EXTRACTION_FAILED
+              description: "`COMPILE_ERROR`: the model did not compile, which its author fixes. `EXTRACTION_FAILED`: it compiled but
+                the server could not extract its entities, a server fault an indexer should not read as the model having
+                none."
+            message:
+              type: string
         fields:
           type: array
           description: Every public field of every source the model surfaces, its imported sources included. A field reachable
@@ -5405,11 +5423,17 @@ components:
           type: boolean
           description: "True for a file listed only because the request set `includeHidden`: one the package's `index.malloy` does
             not expose."
-        isReport:
+        report:
           type: boolean
           description: True when the file carries an `## artifact` tag and is also listed under `reports`.
         error:
-          type: string
+          type: object
+          description: Present when the file did not compile.
+          required:
+            - message
+          properties:
+            message:
+              type: string
     MotherDuckConnection:
       type: object
       description: MotherDuck database connection configuration
@@ -5586,9 +5610,8 @@ components:
         name:
           type: string
         latestVersionId:
-          oneOf:
-            - $ref: "#/components/schemas/VersionId"
-            - type: "null"
+          $ref: "#/components/schemas/VersionId"
+          description: Absent while no version is `latest` (explicit promotion, before the first is promoted).
         versions:
           type: array
           description: One entry per version this server holds, loaded or not.
@@ -5602,14 +5625,11 @@ components:
       type: object
       required:
         - name
-        - sourceID
         - connectionName
         - sourceEntityId
         - columns
       properties:
         name:
-          type: string
-        sourceID:
           type: string
         connectionName:
           type: string
@@ -5638,17 +5658,9 @@ components:
             Everything downstream is deliberately indifferent to it: a synthesized entry is built, identified,
             manifested, shared and garbage-collected exactly like a hand-written one.
         preaggregate:
-          oneOf:
-            - $ref: "#/components/schemas/PreaggregatePlan"
-            - type: "null"
-          description: >-
-            What the synthesized rollup covers: the base source it was derived from, the one grain it is built at, and
-            the measures served there. Present only when `origin` is `preaggregate`; null otherwise.
-
-
-            Coverage is complete by construction — a measure that cannot be correctly re-aggregated is refused at
-            publish rather than dropped from the rollup — so there is no per-measure omission list to reconcile against
-            the model.
+          $ref: "#/components/schemas/PreaggregatePlan"
+          description: What the synthesized rollup covers, its base source, grain and measures. Present only when `origin` is
+            `preaggregate`.
         sourceEntityId:
           type: string
           description: Stable, content-addressed identity of this persisted source. A deterministic UUID5 derived from the
@@ -5656,31 +5668,13 @@ components:
             package version, so it changes only when the source's data identity changes. Consumers treat it as an opaque
             token and use the supplied value verbatim.
         refresh:
-          type:
-            - string
-            - "null"
-          description: "The source's declared `#@ persist ... refresh=...` value, reported verbatim; null = unset (which means
-            \"full\"). Read and VALIDATED by the publisher, no longer an inert pass-through: a value outside {\"full\",
-            \"incremental\"} is a publish rejection, and `refresh=\"incremental\"` additionally requires a `watermark=`
-            naming one output dimension (see `annotationFields`). An incremental source advances its serving table by a
-            bounded delta in place instead of being rebuilt, so the mode also governs the build path — which is why it
-            is validated rather than passed through."
+          type: string
+          description: The source's declared `#@ persist refresh=` value, verbatim (`full` or `incremental`). Absent when unset,
+            which means `full`.
         freshness:
-          oneOf:
-            - $ref: "#/components/schemas/Freshness"
-            - type: "null"
-          description: >-
-            The source's EFFECTIVE freshness objective after most-specific-wins resolution (source > model-file >
-            package). Null = unset at every level; the control plane applies the platform default. Reported verbatim
-            (invalid fields dropped, never defaulted). Valid in both scope modes. (Per-source `sharing`/`schedule` were
-            retired: scope is a single package-level mode and a schedule is package-root-only — declaring either on a
-            source is a publish-time manifest error.)
-
-
-            A synthesized rollup (`origin: preaggregate`) declares nothing of its own and gets no freshness policy of
-            its own: it INHERITS its base's, so what is reported here is the base source's effective objective resolved
-            by the rule above. A rollup and its base therefore go stale together, which is what makes "serve the base
-            when the rollup is stale" a safe degradation rather than a change of answer.
+          $ref: "#/components/schemas/Freshness"
+          description: The source's effective freshness objective after most-specific-wins resolution (source, then model file,
+            then package). Absent when unset at every level; the orchestrator then applies its default.
         columns:
           type: array
           description: Output schema of the source.
@@ -5721,15 +5715,10 @@ components:
             is why it is reported the same way: a rollup is an ordinary persist source whose `#@ persist` nobody typed.
         modelPath:
           type: string
-          description: >-
-            Package-relative path of the `.malloy` model that declares this source (e.g. `order_rollup.malloy`). The
-            source's sourceID embeds an absolute `file://` modelURL with no package boundary, so this is the only place
-            the relative path is exposed; callers use it to deep-link the source back to its model.
-
-
-            A synthesized rollup (`origin: preaggregate`) is declared by no model, so this is the model of its base —
-            the file holding the `#@ preaggregate` annotations it was synthesized from, which is where an author would
-            go to change it.
+          description: "Package-relative path of the `.malloy` model that declares this source (for example
+            `order_rollup.malloy`), so a caller can link the source back to its model. A synthesized rollup (`origin:
+            preaggregate`) is declared by no model, so this is the model of its base: the file holding the `#@
+            preaggregate` annotations it was synthesized from."
     PostgresConnection:
       type: object
       description: PostgreSQL database connection configuration
@@ -5773,7 +5762,7 @@ components:
             server-applied default, not a schema default. On a direct connection the same modes apply against the
             configured host; when omitted, the deployment PGSSLMODE applies. Ignored when connectionString is set, which
             carries its own sslmode. Applies to a DuckLake catalog connection as well.
-        statementTimeoutMilliseconds:
+        statementTimeoutMs:
           type: integer
           minimum: 1
           maximum: 2147483647
@@ -6020,27 +6009,22 @@ components:
         elapsedMs:
           type: integer
         servedFrom:
-          type:
-            - string
-            - "null"
+          type: string
           enum:
             - live
             - storage
             - colocated
             - live_fallback
-            - null
           description: "How the answer was produced: `live` from the source warehouse, `storage` or `colocated` from a
             materialized table, `live_fallback` when a storage read failed and the freshness policy allowed the
-            warehouse. Null when the server cannot tell."
+            warehouse. Absent when the server cannot tell."
         costBytes:
-          type:
-            - integer
-            - "null"
-          description: Warehouse bytes scanned, as the backend reported them. Null is "not reported", never zero.
+          type: integer
+          description: Warehouse bytes scanned, as the backend reported them. Absent when not reported, never zero.
         queryCorrelationId:
-          type:
-            - string
-            - "null"
+          type: string
+          description: The id the server attached to the warehouse statement (as its query tag or label), so the warehouse's own
+            logs can be matched to this query. One request can run several statements; `X-Request-Id` names the request.
         renderLogs:
           type: array
           items:
@@ -6053,16 +6037,13 @@ components:
       description: "`snapshot`: a warehouse clone or snapshot. `copy`: `CREATE TABLE AS SELECT`."
     RefusedSource:
       type: object
-      description: One `#@ persist` source refused at compile time, and why. Computed from the SAME tier-appropriate
-        eligibility assert the build path itself enforces (the colocated tier's post-relaxation admission for a proven
-        row-level, fully-attributed authorize gate applies here too), so a source this reports as refused is refused for
-        the tier it would actually build under — never the unconditional `storage=`-destination check applied to a
-        source that declares no `storage=`. A `preaggregate`-tier entry can coexist with an entry of the same sourceID
-        in `BuildPlan.sources` — the one tier where refused-and-present-in-sources is the correct, intended state,
-        unlike `storage`/`colocated` where a refusal means absence from `sources`.
+      description: One `#@ persist` source refused at compile time, and why. It is computed from the same tier-appropriate
+        eligibility check the build enforces, so a source reported refused is refused for the tier it would actually
+        build under. A `preaggregate`-tier refusal can coexist with an entry for the same source in `BuildPlan.sources`;
+        for the `storage` and `colocated` tiers a refusal means the source is absent from `sources`.
       required:
         - name
-        - sourceID
+        - modelPath
         - tier
         - reason
         - message
@@ -6070,9 +6051,6 @@ components:
         name:
           type: string
           description: The source's declared name.
-        sourceID:
-          type: string
-          description: sourceName@modelURL — matches this entry's map key.
         modelPath:
           type: string
           description: Package-relative path of the `.malloy` model that declares this source, mirroring
@@ -6206,7 +6184,13 @@ components:
           description: SHA-256 (hex) of the file's text. Send it back as `expectedHash` on the next write, so a write over a newer
             text is refused rather than lost.
         error:
-          type: string
+          type: object
+          description: Present when the report did not compile.
+          required:
+            - message
+          properties:
+            message:
+              type: string
     ReportTile:
       type: object
       description: One tile of a report. A `query` tile (the default) runs a query; a `text` tile shows markdown and runs
@@ -6394,10 +6378,14 @@ components:
           type: integer
           readOnly: true
         error:
-          type:
-            - string
-            - "null"
+          type: object
           readOnly: true
+          description: Present when the run failed.
+          required:
+            - message
+          properties:
+            message:
+              type: string
         summary:
           readOnly: true
           $ref: "#/components/schemas/RunSummary"
@@ -6560,10 +6548,10 @@ components:
         description:
           type: string
           description: Description of the schema
-        isDefault:
+        default:
           type: boolean
           description: Whether this schema is the default schema
-        isHidden:
+        hidden:
           type: boolean
           description: Whether this schema is hidden
     SchemaList:
@@ -6641,8 +6629,13 @@ components:
                   additionalProperties:
                     type: integer
         initError:
-          type: string
+          type: object
           description: Present only when initialization failed; `operationalState` then stays `initializing`.
+          required:
+            - message
+          properties:
+            message:
+              type: string
         loadErrors:
           type: array
           description: Versions that did not load, or that serve a model older than their content (`stale`). The only place either
@@ -6676,7 +6669,7 @@ components:
     ServingState:
       type: object
       description: "How this server holds one version right now. The same schema in two reads: per version under `GET
-        /status`, and for one package at `GET …/packages/{packageName}/status`, where the per-package fields are also
+        /status`, and for one version at `GET …/versions/{versionId}/status`, where its status-only fields are also
         present. Reading it never loads the version."
       required:
         - resource
@@ -6707,8 +6700,6 @@ components:
         loaded:
           type: boolean
           description: Whether this server holds the version in memory.
-        archived:
-          type: boolean
         lastReadAt:
           type: string
           format: date-time
@@ -6753,9 +6744,7 @@ components:
                 `live_fallback`: a manifest is configured but its fetch or bind failed, so what `location` names is
                 still what is served."
             location:
-              type:
-                - string
-                - "null"
+              type: string
               description: The manifest actually bound, which after a failed rebind differs from the configured one.
             entryCount:
               type: integer
@@ -6771,13 +6760,16 @@ components:
               type: string
         servedRevision:
           type: string
-          description: Per-package read only. An identifier minted per load; moves on every reload whether or not content changed.
-        sourceContentSha:
+          description: Version status read only (`GET …/versions/{versionId}/status`). An identifier minted per load; moves on
+            every reload whether or not content changed.
+        contentHash:
           type: string
-          description: Per-package read only. SHA-256 over the model, skill and agent files being served; the reload receipt.
+          description: Version status read only (`GET …/versions/{versionId}/status`). SHA-256 (hex) over the model, skill and
+            agent files being served; for a live package, whose version is always `live`, the receipt that an edit is
+            served.
         bindings:
           type: array
-          description: Per-package read only. What this version serves per source.
+          description: Version status read only (`GET …/versions/{versionId}/status`). What this version serves per source.
           items:
             $ref: "#/components/schemas/Binding"
     Skill:
@@ -6884,7 +6876,7 @@ components:
             - string
             - "null"
           description: Snowflake role name
-        responseTimeoutMilliseconds:
+        responseTimeoutMs:
           type: integer
           description: Query response timeout in milliseconds
     Source:
@@ -7114,9 +7106,8 @@ components:
         rowLimitHit:
           type: boolean
         queryCorrelationId:
-          type:
-            - string
-            - "null"
+          type: string
+          description: The id the server attached to the warehouse statement, as on `QueryResultMetadata`.
     SqlserverConnection:
       type: object
       description: "Microsoft SQL Server connection configuration: a SQL Server login over TCP. Field names are the
@@ -7213,24 +7204,8 @@ components:
           items:
             $ref: "#/components/schemas/Column"
         rowCount:
-          type:
-            - integer
-            - "null"
-    TableDescription:
-      type: object
-      description: Database table structure and metadata
-      properties:
-        name:
-          type: string
-          description: Name of the table
-        rowCount:
           type: integer
-          description: Number of rows in the table
-        columns:
-          type: array
-          description: List of columns in the table
-          items:
-            $ref: "#/components/schemas/Column"
+          description: Absent when the warehouse does not report it.
     TableList:
       type: object
       required:
@@ -7317,9 +7292,7 @@ components:
           description: "`publish`: the author's. `reload`: a re-fetch of the source that changed. `edit`: a report write.
             `migration`: imported from a pre-v1 store."
         parentVersionId:
-          oneOf:
-            - $ref: "#/components/schemas/VersionId"
-            - type: "null"
+          $ref: "#/components/schemas/VersionId"
           readOnly: true
           description: The version a server-made version was made from; undo is pointing `latestVersionId` back at it.
         description:
@@ -7360,10 +7333,9 @@ components:
           items:
             $ref: "#/components/schemas/LoadWarning"
         gitCommitSha:
-          type:
-            - string
-            - "null"
+          type: string
           readOnly: true
+          description: The git commit the version was published from. Absent for a source that is not git.
         revision:
           $ref: "#/components/schemas/Revision"
         createdAt:
@@ -7414,9 +7386,7 @@ components:
           $ref: "#/components/schemas/PackageSource"
           description: A source to publish from instead of the recorded one; it becomes the package's recorded source.
         manifestLocation:
-          type:
-            - string
-            - "null"
+          type: string
           description: A manifest to bind the published version to, as `PATCH …/versions/{versionId}` with `manifestLocation` would.
     VersionRef:
       type: string

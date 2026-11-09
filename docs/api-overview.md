@@ -53,13 +53,13 @@ parent.
 
 ## The grammar
 
-- **Names.** Paths are kebab-case; parameters and fields are camelCase. `{path}` is a file inside a version; `{name}` a
+- **Names.** Paths are kebab-case; parameters and fields are camelCase. `{path}` is a file inside a version; `{xName}` a
   named resource. `versionId` is the one spelling of a version, everywhere.
 - **Reads never change state, and an immutable version has nothing to reload.** `POST …/packages/{pkg}:reload`
   recompiles a live package and waits for the result. Re-fetching the source is `POST …/packages/{pkg}/versions`;
   loading a version is `PATCH …/versions/{v}` `{"loaded": true}`; recompiling against current warehouse schemas is
   `POST …/versions/{v}:refresh-schema`.
-- **Which reads load.** `/status`, a package's `status`, the versions list, the version record and `…/index` never load a
+- **Which reads load.** `/status`, a version's `status`, the versions list, the version record and `…/index` never load a
   version that is not in memory. Every other content read loads it on demand (a hydrate when the compiled-model store has
   it); read `ServingState.loaded` first to know what a read will cost.
 - **State changes are fields.** `PATCH …/versions/{versionId}` with `archived`, `loaded`, `pinned` or
@@ -75,6 +75,7 @@ parent.
 - **Timestamps.** Every timestamp is an RFC 3339 `date-time` in UTC, read-only, and absent until it has a value, never `null`. An event's time ends in `At` (`createdAt`, `startedAt`, `failedAt`); the moment some data reflects ends in `AsOf` (`dataAsOf`, `schemaAsOf`). Every stored resource, one with a `revision`, carries `createdAt` and `updatedAt`. Durations are integers whose name carries the unit (`durationMs`, `freshnessWindowSeconds`).
 - **Resource paths.** Every object a `GET` can read carries `resource`, its canonical path relative to the API's base: no leading slash, and the resolved version id in place of `latest` (`environments/acme/packages/sales/versions/1.4.0/models/orders.malloy`). A list item carries it when its item has a `GET` of its own. Relative, so it stays right behind a gateway that serves the API under another prefix; a link and a stable key, never parsed.
 - **Names.** A resource read two ways is `X` from its own `GET` and `XSummary` in its list, and its list is `XList` (`Model` and `ModelSummary`, `Report` and `ReportSummary`, `Table` and `TableSummary`).
+- **Field names.** camelCase; a reference is `xName` or `xPath`; a file's path is `path` and its text `content`; a hash is `…Hash`; a duration's unit ends its name; no `is` prefix on a boolean. A connection's own settings keep their warehouse's words. Every embedded error is an object with a `message`; only a writable field may be `null`.
 - **Conditional reads.** Every read but `/status` answers with an `ETag` and takes `If-None-Match`, answering 304 with no body when nothing changed. `Cache-Control` is `private, max-age=31536000, immutable` only on raw file reads under a concrete version id (`…/public/{path}`, an agent's skill file), whose bytes never change; every other read is `private, no-cache`, because a compiled model under a concrete version can still change with `:refresh-schema`, and a read through `latest` or `live` can resolve differently next time.
 - **Back-pressure.** Every operation but `/status` may answer 429 `RATE_LIMITED`; 429 and 503 carry `Retry-After` in seconds. `/status` is never rate-limited, because it is the orchestrator's heartbeat.
 - **Request ids.** The server takes the caller's `X-Request-Id`, else the trace id of a W3C `traceparent`, else makes one; every response carries it as `X-Request-Id`, and every error body repeats it as `requestId`.
@@ -98,11 +99,11 @@ parent.
 | `GET /status`                                                              | `operationalState`, `version`, `hostname`, `loadErrors` (with `stale` for a version serving a model older than its content), and every version this server holds with its `ServingState`. |
 | `GET /environments`, `POST /environments`                                  | List and create. `PATCH /environments/{env}` merges (its `connections` list replaces whole), `DELETE` removes it and everything in it.                                                                 |
 | `GET …/connections?role=destination`                                       | Connections by role. `POST` creates (`?dryRun=true` tests without storing); `PATCH` merges (`?dryRun=true` tests the change).                                                      |
-| `GET …/connections/{name}/schemas`, `…/schemas/{s}/tables`, `POST …:run-sql`| Browse what a connection can read; run or describe SQL. The same routes exist under a version for its `duckdb` sandbox.                                                                     |
+| `GET …/connections/{connectionName}/schemas`, `…/schemas/{s}/tables`, `POST …:run-sql`| Browse what a connection can read; run or describe SQL. The same routes exist under a version for its `duckdb` sandbox.                                                                     |
 | `GET …/packages`, `POST …/packages`                                        | List records; create a package from `source.location` and publish its first version (`?dryRun=true` checks without storing). Later versions are `POST …/versions`. |
 | `PATCH …/packages/{pkg}`                                                   | `description`, `latestVersionId` (a compare-and-swap under `If-Match`; moving it back is undo), `source`. Scope and schedule come from a version's `publisher.json`.                     |
 | `POST …/packages/{pkg}:reload`                                             | A live package only: recompile the author's files and wait; 409 `PACKAGE_NOT_LIVE` otherwise. |
-| `GET …/packages/{pkg}/status`                                              | The `ServingState` of one version (`?versionId=`, `latest` by default), with the per-package fields (`servedRevision`, `sourceContentSha`, `bindings`). Loads nothing.                   |
+| `GET …/versions/{v}/status`                                                | The `ServingState` of one version, with the fields `/status` leaves out (`servedRevision`, `contentHash`, `bindings`). Loads nothing. |
 | `GET …/versions`, `GET …/versions/{v}`, `PATCH`, `DELETE`                  | The package's versions, newest first; one version; its lifecycle fields (`loaded: true` loads it); delete for good.                                                                                           |
 | `POST …/versions`                                                          | Publish a new version: from a new `source`, or with no body from the recorded one. 201 with the version it made; 200 with the current version when nothing changed. |
 | `POST …/versions/{v}:refresh-schema`                                       | Recompile the version against the warehouse's current schemas; makes no version. |
@@ -113,7 +114,7 @@ parent.
 | `GET …/versions/{v}/reports`, `…/reports/{path}`                           | Reports by `path` and `layout`; one report's manifest (its tiles and controls). Run a tile through `query`.                                                                          |
 | `GET …/versions/{v}/data-apps`, `…/public/{path}`                          | HTML data apps and the static files they load, served from the version they were published with.                                                                                        |
 | `GET …/versions/{v}/data-files`                                            | Embedded data files and their schemas.                                                                                                                                                    |
-| `GET …/versions/{v}/agents`, `…/agents/{name}`, `…/skills`, `…/skills/{name}` | What the version declares for agents, and the skills in force for it. Adopt an agent only when the user names it.                                                                        |
+| `GET …/versions/{v}/agents`, `…/agents/{agentName}`, `…/skills`, `…/skills/{skillName}` | What the version declares for agents, and the skills in force for it. Adopt an agent only when the user names it.                                                                        |
 | `GET …/versions/{v}/entities`, `…/classification`, `…/index`               | What each model declares for an indexer; the classification summary; the discovery index's state.                                                                                        |
 | `GET …/versions/{v}/build-plan`                              | The persist build plan (`state`: `ready`, `empty`, `unavailable`). What the version serves per source is `bindings` on the package's `status`.                                                                   |
 | `GET …/packages/{pkg}/runs`, `POST`, `GET …/runs/{id}`, `PATCH`, `DELETE`  | Materialization runs (`status`, `trigger`, `mode`, `scope`); start one (auto, or orchestrated with `buildInstructions`); cancel with `{"status": "cancelled"}`.                            |
