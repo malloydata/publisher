@@ -1180,6 +1180,8 @@ async function loadPackageInWorker(ctx: CompileContext) {
          defaultConnectionName: "duckdb",
          buildManifest: ctx.boundManifestEntries,
          collectProblems: true,
+         // The lint below reports the entities' findings, as a reload does.
+         withEntities: true,
          replacement:
             source === undefined ? undefined : { modelPath: modelName, source },
          ...(ctx.overlay

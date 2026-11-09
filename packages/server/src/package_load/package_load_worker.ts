@@ -59,11 +59,16 @@ import {
    PackageScope,
    materializationWithQueryMetadata,
    parsePackageMaterialization,
+   queryBoundaryActive,
    queryMetadataParseWarnings,
    resolveExplores,
    resolvePackageQueryMetadata,
    resolvePackageScope,
 } from "../service/package_manifest";
+import {
+   type ModelEntitiesPlan,
+   planModelFileEntities,
+} from "../service/entities/plan";
 import {
    type PackageRetrievalSettings,
    ignoredRetrievalWarnings,
@@ -803,6 +808,8 @@ function filterModelPaths(allRelative: string[]): string[] {
 function captureReadText(inner: { readURL: (url: URL) => Promise<string> }): {
    reader: { readURL: (url: URL) => Promise<string> };
    textFor: (url: URL) => string | undefined;
+   /** Every `file:` text read so far, by absolute path. */
+   fileTexts: () => Map<string, string>;
 } {
    const texts = new Map<string, string>();
    return {
@@ -815,6 +822,15 @@ function captureReadText(inner: { readURL: (url: URL) => Promise<string> }): {
          },
       },
       textFor: (url: URL) => texts.get(url.toString()),
+      fileTexts: () => {
+         const byPath = new Map<string, string>();
+         for (const [href, text] of texts) {
+            if (href.startsWith("file:")) {
+               byPath.set(fileURLToPath(href), text);
+            }
+         }
+         return byPath;
+      },
    };
 }
 
@@ -847,11 +863,14 @@ function buildRuntimeForModel(
    runtime: Runtime;
    urlReader: HackyDataStylesAccumulator;
    textFor: (url: URL) => string | undefined;
+   fileTexts: () => Map<string, string>;
 } {
-   const { reader, textFor } = captureReadText(makeWorkerUrlReader(job));
+   const { reader, textFor, fileTexts } = captureReadText(
+      makeWorkerUrlReader(job),
+   );
    const urlReader = new HackyDataStylesAccumulator(reader);
    const runtime = jobRuntime(job, malloyConfig, urlReader);
-   return { runtime, urlReader, textFor };
+   return { runtime, urlReader, textFor, fileTexts };
 }
 
 /**
@@ -881,6 +900,11 @@ interface LoadContext {
    planStart?: number;
    /** A model reached its plan parts past the soft deadline; the main thread derives the plan. */
    planLeftToMainThread: boolean;
+   /**
+    * Plan entities with the boundary's descents taken provisionally: the
+    * manifest declares a query boundary (see `BoundaryDescents`).
+    */
+   provisionalEntities: boolean;
 }
 
 async function compileMalloyModel(
@@ -895,7 +919,7 @@ async function compileMalloyModel(
    const modelURL = pathToFileURL(fullPath);
    const importBaseURL = new URL(".", modelURL);
 
-   const { runtime, urlReader, textFor } = buildRuntimeForModel(
+   const { runtime, urlReader, textFor, fileTexts } = buildRuntimeForModel(
       job,
       malloyConfig,
    );
@@ -917,6 +941,12 @@ async function compileMalloyModel(
          queries,
          sources,
       });
+   const entities = await planEntitiesForMainThread(job, malloyConfig, load, {
+      relativePath: modelPath,
+      absolutePath: fullPath,
+      model: compiled,
+      texts: fileTexts(),
+   });
 
    return {
       modelPath,
@@ -943,7 +973,54 @@ async function compileMalloyModel(
          warnings.length > 0 ? warnings.map((w) => w.message) : undefined,
       renderTagResults,
       preaggregateCompanion,
+      entities,
    };
+}
+
+/**
+ * Plan one compiled model's entities for the main thread, which then only
+ * resolves the plan against the package's query route. Before the soft
+ * deadline only, like the rest of the work done for the main thread: past it,
+ * the main thread plans the model itself. Never throws (a failed plan says so).
+ */
+async function planEntitiesForMainThread(
+   job: LoadPackageRequest,
+   malloyConfig: MalloyConfig,
+   load: LoadContext,
+   file: {
+      relativePath: string;
+      absolutePath: string;
+      model: Awaited<ReturnType<ModelMaterializer["getModel"]>>;
+      /** Every file the compile read, by absolute path. */
+      texts: Map<string, string>;
+   },
+): Promise<ModelEntitiesPlan | undefined> {
+   if (!job.withEntities || load.failed) return undefined;
+   if (performance.now() >= load.softDeadline) return undefined;
+   // The text the model compiled from, as the main thread would read it.
+   let text = file.texts.get(file.absolutePath);
+   if (text === undefined) {
+      try {
+         text = await fs.promises.readFile(file.absolutePath, "utf8");
+      } catch {
+         return undefined;
+      }
+      file.texts.set(file.absolutePath, text);
+   }
+   return planModelFileEntities(
+      {
+         relativePath: file.relativePath,
+         absolutePath: file.absolutePath,
+         model: file.model,
+         text,
+      },
+      {
+         packageRoot: job.packagePath,
+         connections: malloyConfig.connections,
+         provisional: load.provisionalEntities,
+         texts: file.texts,
+      },
+   );
 }
 
 /**
@@ -1244,6 +1321,7 @@ async function loadPackage(
       modelOrder: new Map(modelPaths.map((modelPath, i) => [modelPath, i])),
       failed: false,
       planLeftToMainThread: false,
+      provisionalEntities: queryBoundaryActive(packageMetadata),
    };
    const models = await Promise.all(
       modelPaths.map((modelPath) =>

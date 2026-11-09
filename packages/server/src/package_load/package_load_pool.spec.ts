@@ -327,6 +327,7 @@ source: by_category_table is orders -> by_category
             defaultConnectionName: "duckdb",
             computeBuildPlan: true,
             withPreaggregateCompanions: true,
+            withEntities: true,
          });
       } finally {
          await pool.shutdown();
@@ -343,6 +344,17 @@ source: by_category_table is orders -> by_category
          "sql",
       );
       expect(outcome.models[0].preaggregateCompanion?.modelDef).toBeDefined();
+      const entities = outcome.models[0].entities;
+      expect(entities?.status).toBe("planned");
+      if (entities?.status !== "planned") return;
+      expect(entities.relativePath).toBe(outcome.models[0].modelPath);
+      expect(entities.packageRoot).toBe(tempDir);
+      // No `explores`, so no boundary: nothing is taken provisionally.
+      expect(entities.provisional).toBe(false);
+      expect(entities.metadata.map((s) => s.sourceName)).toEqual([
+         "orders",
+         "by_category_table",
+      ]);
    });
 
    it("leaves the render-tag results, companion and plan to the main thread past the budget", async () => {
@@ -352,6 +364,8 @@ source: by_category_table is orders -> by_category
       expect(outcome.models[0].renderTagResults).toEqual([]);
       expect(outcome.models[0].preaggregateCompanion).toBeUndefined();
       expect(outcome.buildPlan).toBeUndefined();
+      // The main thread plans the entities itself.
+      expect(outcome.models[0].entities).toBeUndefined();
    });
 });
 

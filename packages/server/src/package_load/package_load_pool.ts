@@ -177,6 +177,8 @@ export interface LoadPackageJob {
    computeBuildPlan?: boolean;
    /** See {@link LoadPackageRequest.withPreaggregateCompanions}. */
    withPreaggregateCompanions?: boolean;
+   /** See {@link LoadPackageRequest.withEntities}. */
+   withEntities?: boolean;
 }
 
 /**
@@ -422,6 +424,7 @@ export class PackageLoadPool {
          collectProblems: qj.request.collectProblems,
          computeBuildPlan: qj.request.computeBuildPlan,
          withPreaggregateCompanions: qj.request.withPreaggregateCompanions,
+         withEntities: qj.request.withEntities,
          mainThreadWorkBudgetMs: this.mainThreadWorkBudgetMs,
       };
       pw.worker.postMessage(message);
