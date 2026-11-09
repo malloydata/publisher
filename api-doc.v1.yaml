@@ -3609,6 +3609,7 @@ components:
         - resource
         - name
         - versionId
+
     AgentBudget:
       type: object
       readOnly: true
@@ -3629,6 +3630,7 @@ components:
         jobMinutes:
           type: integer
           minimum: 1
+
     AgentList:
       type: object
       required:
@@ -3640,6 +3642,7 @@ components:
             $ref: "#/components/schemas/AgentSummary"
         nextCursor:
           $ref: "#/components/schemas/Cursor"
+
     AgentSchedule:
       type: object
       readOnly: true
@@ -3654,6 +3657,7 @@ components:
         taskContent:
           type: string
           description: The task file's Markdown. Only on the resolved agent, not the listing.
+
     AgentSource:
       type: object
       readOnly: true
@@ -3675,6 +3679,7 @@ components:
           type: string
           description: SHA-256 over this agent's canonical config, instructions, skill files and task files. Editing another
             agent, or a model, does not move it.
+
     AgentSummary:
       type: object
       readOnly: true
@@ -3704,6 +3709,7 @@ components:
         - resource
         - name
         - versionId
+
     AttachedDatabase:
       type: object
       description: Attached DuckDB database
@@ -3734,6 +3740,7 @@ components:
           $ref: "#/components/schemas/S3Connection"
         azureConnection:
           $ref: "#/components/schemas/AzureConnection"
+
     AzureConnection:
       type: object
       description: >
@@ -3773,6 +3780,7 @@ components:
             or recursive (**) patterns. Example: https://account.blob.core.windows.net/container/path/**
       required:
         - authType
+
     BigqueryConnection:
       type: object
       description: Google BigQuery database connection configuration
@@ -3809,6 +3817,7 @@ components:
         queryTimeoutMs:
           type: integer
           description: Query timeout in milliseconds.
+
     Binding:
       type: object
       description: What a version serves for one source right now.
@@ -3845,6 +3854,7 @@ components:
           type: string
           format: date-time
           readOnly: true
+
     BuildGraph:
       type: object
       required:
@@ -3858,6 +3868,7 @@ components:
             type: array
             items:
               $ref: "#/components/schemas/BuildNode"
+
     BuildInstruction:
       type: object
       required:
@@ -3881,6 +3892,7 @@ components:
         reseed:
           type: boolean
           default: false
+
     BuildInstructions:
       type: object
       description: An orchestrated run's orders, derived from the version's build plan.
@@ -3905,6 +3917,7 @@ components:
             it replaces the server's.
           items:
             $ref: "#/components/schemas/IncrementalBoundaryInput"
+
     BuildNode:
       type: object
       required:
@@ -3920,6 +3933,7 @@ components:
         sourceEntityId:
           type: string
           description: The source this node builds.
+
     BuildPlan:
       type: object
       description: The version's persist build plan, as the last load derived it. A read, never a command.
@@ -3969,6 +3983,7 @@ components:
           $ref: "#/components/schemas/VersionId"
           readOnly: true
           description: The version that answered, with `latest` resolved.
+
     Classification:
       type: object
       readOnly: true
@@ -3993,6 +4008,7 @@ components:
           $ref: "#/components/schemas/VersionId"
           readOnly: true
           description: The version that answered, with `latest` resolved.
+
     ClassificationSummarySource:
       type: object
       readOnly: true
@@ -4024,6 +4040,7 @@ components:
           description: How many of those fields carry each class, keyed by class. A field under several classes counts under each.
           additionalProperties:
             type: integer
+
     Column:
       type: object
       description: Database column definition
@@ -4034,6 +4051,7 @@ components:
         type:
           type: string
           description: Data type of the column
+
     CompiledDocument:
       type: object
       description: The document a compiled text describes, in the shape it serves once saved. Present only when the text
@@ -4067,6 +4085,7 @@ components:
           description: "The text a tile's `run:` is appended to when it is run or exported on its own: the document's definitions,
             in file order. Never an `import`, a `##!` flag or a `given:`, which the model supplies, and never a
             definition the caller may not read. Empty when the document defines nothing."
+
     CompileProblem:
       type: object
       description: A compilation problem reported by the Malloy compiler
@@ -4090,6 +4109,7 @@ components:
         replacement:
           type: string
           description: A suggested fix, the text that replaces the range in `at`. Absent when the problem has no mechanical fix.
+
     CompileRequest:
       type: object
       description: Request body for compiling Malloy source code
@@ -4161,6 +4181,7 @@ components:
               - sql
           description: Larger parts to include. `sql` returns the generated SQL, at scope `append` or `file`, when the compile
             succeeds and the text holds a runnable query.
+
     CompileResult:
       type: object
       description: Result of a Malloy source compilation check
@@ -4182,6 +4203,7 @@ components:
             runnable query.'
         document:
           $ref: "#/components/schemas/CompiledDocument"
+
     Connection:
       type: object
       description: "A warehouse handle the models read. Builds write to destinations, which are not connections
@@ -4293,6 +4315,7 @@ components:
           $ref: "#/components/schemas/VersionId"
           readOnly: true
           description: The version that answered, on a read under a version; absent at environment scope.
+
     ConnectionList:
       type: object
       required:
@@ -4304,6 +4327,7 @@ components:
             $ref: "#/components/schemas/Connection"
         nextCursor:
           $ref: "#/components/schemas/Cursor"
+
     ConnectionProxy:
       type: object
       description: Optional network proxy through which the connection is reached. Applies to any connection type whose
@@ -4321,6 +4345,7 @@ components:
           description: Proxy mechanism. Currently only SSH local port-forwarding.
         ssh:
           $ref: "#/components/schemas/SshProxyConfig"
+
     ConnectionTestResult:
       type: object
       required:
@@ -4331,9 +4356,11 @@ components:
         message:
           type: string
           description: Why the test failed, redacted against the connection. Absent when `ok`.
+
     Cursor:
       type: string
       description: Opaque position in a list. Send it back as `after` to continue; a list with no `nextCursor` is complete.
+
     DataApp:
       type: object
       required:
@@ -4355,6 +4382,7 @@ components:
           type: string
           enum:
             - viewport
+
     DataAppList:
       type: object
       required:
@@ -4366,6 +4394,7 @@ components:
             $ref: "#/components/schemas/DataApp"
         nextCursor:
           $ref: "#/components/schemas/Cursor"
+
     DatabricksConnection:
       type: object
       description: Databricks SQL warehouse connection configuration
@@ -4397,6 +4426,7 @@ components:
           type: string
           description: SQL statements to run when the connection is established
           writeOnly: true
+
     DataFile:
       type: object
       description: A data file embedded in the version (CSV, Parquet, JSON, Excel) that its models read through the version's
@@ -4437,6 +4467,7 @@ components:
           $ref: "#/components/schemas/VersionId"
           readOnly: true
           description: The version that answered, with `latest` resolved.
+
     DataFileList:
       type: object
       required:
@@ -4448,6 +4479,7 @@ components:
             $ref: "#/components/schemas/DataFile"
         nextCursor:
           $ref: "#/components/schemas/Cursor"
+
     Destination:
       type: object
       description: "Where `#@ persist storage=<name>` builds write and their tables are served from. Not a connection: models
@@ -4483,6 +4515,7 @@ components:
           items:
             type: string
           description: Dotted paths of stored fields this response does not return (its credentials).
+
     DiscoveryIndex:
       type: object
       description: The state of the version's semantic discovery index, which `get_context` ranks against.
@@ -4539,6 +4572,7 @@ components:
           $ref: "#/components/schemas/VersionId"
           readOnly: true
           description: The version that answered, with `latest` resolved.
+
     DuckdbConnection:
       type: object
       description: >
@@ -4561,6 +4595,7 @@ components:
             like a credential; an update that omits it keeps the stored script, and `null` removes it, as merge-patch
             clears any field. Refused unless the deployment sets PUBLISHER_ALLOW_DUCKDB_SETUP_SQL=true.
           writeOnly: true
+
     DucklakeConnection:
       type: object
       description: DuckLake lakehouse connection configuration
@@ -4641,12 +4676,14 @@ components:
             the connection.
       required:
         - catalog
+
     EncodedGivenValues:
       type: object
       description: "Given values as a report declares them for its controls: a map of given name to its encoded value.
         `Report.startingGivens` and `CompiledDocument.startingGivens` carry this shape; URL parameters override it."
       additionalProperties:
         type: string
+
     EntityField:
       type: object
       readOnly: true
@@ -4691,6 +4728,7 @@ components:
         type:
           type: string
           description: The field's Malloy type, when it has one.
+
     EntityGate:
       type: object
       readOnly: true
@@ -4714,6 +4752,7 @@ components:
             reduces to such terms on queryable fields.
           items:
             $ref: "#/components/schemas/EntityGateTerm"
+
     EntityGateTerm:
       type: object
       readOnly: true
@@ -4729,6 +4768,7 @@ components:
         op:
           type: string
           description: "`=` or `in`."
+
     EntityJoin:
       type: object
       readOnly: true
@@ -4746,6 +4786,7 @@ components:
           type: boolean
           description: Whether the joined source exists only inside this join (an inline `extend` or a table read), so its fields
             are listed through it.
+
     EntitySourceAddress:
       type: object
       readOnly: true
@@ -4759,6 +4800,7 @@ components:
           type: string
         sourceName:
           type: string
+
     EntityTable:
       type: object
       readOnly: true
@@ -4773,6 +4815,7 @@ components:
           type: string
         schemaName:
           type: string
+
     Environment:
       type: object
       description: A namespace for packages and connections; the unit of tenancy.
@@ -4818,6 +4861,7 @@ components:
           type: string
           format: date-time
           readOnly: true
+
     EnvironmentList:
       type: object
       required:
@@ -4829,6 +4873,7 @@ components:
             $ref: "#/components/schemas/Environment"
         nextCursor:
           $ref: "#/components/schemas/Cursor"
+
     EnvironmentStatus:
       type: object
       required:
@@ -4864,6 +4909,7 @@ components:
           type: array
           items:
             $ref: "#/components/schemas/PackageStatus"
+
     Error:
       type: object
       description: "The one error body every operation answers with. Branch on `status` and `reason`, never on `message`: the
@@ -4894,6 +4940,7 @@ components:
             `ownerPackageName`, `ownerSlot`. `INVALID_REQUEST`: `field`, the request field that failed validation.
             Absent for the rest."
           additionalProperties: true
+
     ErrorReason:
       type: string
       description: The machine-readable reasons, listed by status in each shared error response. A new reason is an additive
@@ -4938,6 +4985,7 @@ components:
         - FILE_NOT_WRITABLE
         - RUN_ACTIVE
         - TABLE_OWNED_ELSEWHERE
+
     Freshness:
       type: object
       description: Freshness policy declared in publisher.json's `materialization.freshness` block. Fields are surfaced
@@ -4955,6 +5003,7 @@ components:
           type: integer
           description: The maximum acceptable staleness of the package's materialized sources, in seconds. An orchestrator
             schedules refreshes to meet it. `publisher.json` writes it as a duration (`"24h"`).
+
     GCSConnection:
       type: object
       description: Google Cloud Storage connection configuration for DuckDB
@@ -4969,6 +5018,7 @@ components:
       required:
         - keyId
         - secret
+
     Given:
       type: object
       description: >
@@ -5059,6 +5109,7 @@ components:
           description: Slider upper bound from `# range_max=`. See `rangeMin` for the rule that turns the pair into a slider.
         suggest:
           $ref: "#/components/schemas/GivenSuggest"
+
     GivenSuggest:
       type: object
       description: |
@@ -5089,6 +5140,7 @@ components:
             when the query needs none.
         sourceName:
           type: string
+
     GivenValues:
       type: object
       description: |
@@ -5101,10 +5153,12 @@ components:
         `timestamp` an ISO string with no zone, a `timestamptz` a full ISO
         string. `EncodedGivenValues` is the string-encoded counterpart.
       additionalProperties: true
+
     IdentifierPattern:
       type: string
       pattern: ^[a-zA-Z0-9_-]+$
       description: Standard identifier pattern for resource names
+
     IncrementalBoundary:
       type: object
       description: For a table refreshed incrementally, the `covered_through` boundary in force and the source definition it
@@ -5144,6 +5198,7 @@ components:
           type: string
           format: date-time
           readOnly: true
+
     IncrementalBoundaryInput:
       type: object
       description: An `IncrementalBoundary` a previous run reported, returned verbatim with the table it belongs to.
@@ -5185,6 +5240,7 @@ components:
             - range_replace
         sourceEntityId:
           type: string
+
     IndexFingerprint:
       type: object
       readOnly: true
@@ -5204,6 +5260,7 @@ components:
             type: string
           description: "The dimensions the index is partitioned by: the source's required filters, in declaration order, then its
             `#(access_filter)` term columns."
+
     LoadWarning:
       type: object
       required:
@@ -5222,6 +5279,7 @@ components:
           description: A stable identifier for the finding's family. The families are listed in docs/packages.md.
         severity:
           $ref: "#/components/schemas/Severity"
+
     LogMessage:
       type: object
       description: A log message from render tag validation
@@ -5233,6 +5291,7 @@ components:
           description: Human-readable log message
         at:
           $ref: "#/components/schemas/SourceLocation"
+
     ManifestEntry:
       type: object
       description: "One source a run built, and the table it landed in. An external manifest, the file `manifestLocation`
@@ -5317,6 +5376,7 @@ components:
             - delta
             - full
             - none
+
     ManifestReference:
       type: object
       required:
@@ -5333,6 +5393,7 @@ components:
         destinationName:
           type: string
           description: The destination of a storage table.
+
     Model:
       type: object
       description: "One model file compiled: its sources, named queries and givens. Larger parts are included on request with
@@ -5392,6 +5453,7 @@ components:
           items:
             type: object
             additionalProperties: true
+
     ModelEntities:
       type: object
       readOnly: true
@@ -5449,6 +5511,7 @@ components:
           $ref: "#/components/schemas/VersionId"
           readOnly: true
           description: The version that answered, with `latest` resolved.
+
     ModelEntitiesList:
       type: object
       required:
@@ -5460,6 +5523,7 @@ components:
             $ref: "#/components/schemas/ModelEntities"
         nextCursor:
           $ref: "#/components/schemas/Cursor"
+
     ModelList:
       type: object
       required:
@@ -5471,6 +5535,7 @@ components:
             $ref: "#/components/schemas/ModelSummary"
         nextCursor:
           $ref: "#/components/schemas/Cursor"
+
     ModelSummary:
       type: object
       required:
@@ -5500,6 +5565,7 @@ components:
           properties:
             message:
               type: string
+
     MotherDuckConnection:
       type: object
       description: MotherDuck database connection configuration
@@ -5511,6 +5577,7 @@ components:
         database:
           type: string
           description: MotherDuck database name
+
     MysqlConnection:
       type: object
       description: MySQL database connection configuration
@@ -5531,6 +5598,7 @@ components:
           type: string
           description: MySQL password for authentication
           writeOnly: true
+
     OverlayFile:
       type: object
       description: One file of a request's `files` overlay.
@@ -5545,6 +5613,7 @@ components:
         content:
           type: string
           description: The file's whole text.
+
     Package:
       type: object
       description: "A package's identity and pointers. It holds no content: content is a Version. Its own fields
@@ -5585,6 +5654,7 @@ components:
           type: string
           format: date-time
           readOnly: true
+
     PackageList:
       type: object
       required:
@@ -5596,6 +5666,7 @@ components:
             $ref: "#/components/schemas/Package"
         nextCursor:
           $ref: "#/components/schemas/Cursor"
+
     PackageMaterializationConfig:
       type: object
       description: The package's materialization policy from `publisher.json`'s `materialization` block, read verbatim so an
@@ -5608,6 +5679,7 @@ components:
         freshness:
           $ref: "#/components/schemas/Freshness"
           description: "`publisher.json`'s `materialization.freshness` block; absent when none is declared."
+
     PackageSource:
       type: object
       description: Where a package's content comes from.
@@ -5633,6 +5705,7 @@ components:
           type: string
           description: Name of a stored secret used to fetch a private location. Write-only.
           writeOnly: true
+
     PackageStatus:
       type: object
       required:
@@ -5652,10 +5725,12 @@ components:
           description: One entry per version this server holds, loaded or not.
           items:
             $ref: "#/components/schemas/VersionStatus"
+
     PathPattern:
       type: string
       pattern: ^[a-zA-Z0-9_/.-]+$
       description: Path pattern supporting slashes, dots, and dashes
+
     PersistSourcePlan:
       type: object
       required:
@@ -5756,6 +5831,7 @@ components:
             `order_rollup.malloy`), so a caller can link the source back to its model. A synthesized rollup (`origin:
             preaggregate`) is declared by no model, so this is the model of its base: the file holding the `#@
             preaggregate` annotations it was synthesized from."
+
     PostgresConnection:
       type: object
       description: PostgreSQL database connection configuration
@@ -5808,6 +5884,7 @@ components:
           description: Maximum run time of each statement on the database, in milliseconds. The database cancels a statement that
             exceeds it. When omitted, the database's own statement_timeout applies. Not applied to a DuckLake catalog
             connection.
+
     PreaggregatePlan:
       type: object
       description: >-
@@ -5899,6 +5976,7 @@ components:
             **Every measure that declared this grain is here.** There is no partial rollup and no per-measure omission
             to check: a measure that cannot be correctly re-aggregated is refused at publish, so a rollup that exists
             carries everything that asked to be in it.
+
     PublisherConnection:
       type: object
       description: >
@@ -5915,6 +5993,7 @@ components:
           writeOnly: true
       required:
         - connectionUri
+
     Query:
       type: object
       description: Named model query definition
@@ -5930,6 +6009,7 @@ components:
           description: Annotations attached to the query
           items:
             type: string
+
     QueryClass:
       type: string
       enum:
@@ -5941,6 +6021,7 @@ components:
         (a user or application query), `materialize` (a persist-source build), `index` (an index build or scan), `ops`
         (platform maintenance). Attribution's primary axis — a backend bill separates traffic from builds only if every
         statement says which it is."
+
     QueryMetadata:
       type: object
       additionalProperties:
@@ -5975,6 +6056,7 @@ components:
         source, including ones its author never sees. Put no secrets or personal data here: a tag is visible to anyone
         who can read the backend's query history, and on a backend with no native tag mechanism it is visible in the
         statement text.
+
     QueryRequest:
       type: object
       description: "One of two shapes: `query` alone (ad-hoc Malloy compiled in the model's context), or `queryName` without
@@ -6006,6 +6088,7 @@ components:
             enum:
               - malloyResult
               - sql
+
     QueryResult:
       type: object
       description: Rows always; the full Malloy result only when asked for.
@@ -6028,6 +6111,7 @@ components:
         sql:
           type: string
           description: 'The SQL that ran. Present only with `include: ["sql"]`.'
+
     QueryResultMetadata:
       type: object
       required:
@@ -6069,12 +6153,14 @@ components:
           type: array
           items:
             $ref: "#/components/schemas/LogMessage"
+
     Realization:
       type: string
       enum:
         - snapshot
         - copy
       description: "`snapshot`: a warehouse clone or snapshot. `copy`: `CREATE TABLE AS SELECT`."
+
     RefusedSource:
       type: object
       description: One `#@ persist` source refused at compile time, and why. It is computed from the same tier-appropriate
@@ -6153,6 +6239,7 @@ components:
             - persist
             - preaggregate
           description: What declared the refused source, as on `PersistSourcePlan.origin`.
+
     ReloadResult:
       type: object
       description: "What a reload did (`POST …/versions/{versionId}:reload`): the version, and its status now."
@@ -6166,6 +6253,7 @@ components:
           $ref: "#/components/schemas/VersionStatus"
           description: The version's status after the reload; for a live package, the receipt that the edit is served
             (`contentHash`, `servedRevision`).
+
     Report:
       description: A `ReportSummary` plus what a viewer needs to draw it, which is the compiled document.
       allOf:
@@ -6177,6 +6265,7 @@ components:
               type: string
               description: The report file's whole text. On a read, present only with `?include=content`; on a write, the text to
                 write, and the one field a write sets.
+
     ReportList:
       type: object
       required:
@@ -6188,6 +6277,7 @@ components:
             $ref: "#/components/schemas/ReportSummary"
         nextCursor:
           $ref: "#/components/schemas/Cursor"
+
     ReportSummary:
       type: object
       description: A `.malloy` file carrying an `## artifact` tag, wherever it lives in the version.
@@ -6237,6 +6327,7 @@ components:
           properties:
             message:
               type: string
+
     ReportTile:
       type: object
       description: One tile of a report. A `query` tile (the default) runs a query; a `text` tile shows markdown and runs
@@ -6325,6 +6416,7 @@ components:
           type: integer
           description: The grid column the tile's left edge sits in, counted from 1, from `col=N` on its entry in `tiles=[…]`. See
             `row`.
+
     ResourcePath:
       type: string
       readOnly: true
@@ -6334,6 +6426,7 @@ components:
         `environments/acme/packages/sales/versions/1.4.0/models/orders.malloy`). A `GET` of the base path joined with it
         reads the resource. It is relative so that it stays right behind a gateway that serves the API under another
         prefix. Use it as a link and a stable key; never parse it.
+
     Revision:
       readOnly: true
       type: integer
@@ -6342,6 +6435,7 @@ components:
       description: Optimistic-concurrency counter on every mutable resource. Every read of the resource returns it in the body
         and as the `ETag` header (`"<revision>"`); every write may send it back as `If-Match` and answers 412
         `REVISION_MISMATCH` when the resource has moved on. A server may require it (428 `REVISION_REQUIRED`).
+
     Run:
       type: object
       description: One attempt to build a slot's persisted sources.
@@ -6441,6 +6535,7 @@ components:
           type: string
           format: date-time
           readOnly: true
+
     RunContext:
       type: object
       description: Caller-supplied context for one materialization run, folded into the per-query metadata of the statements
@@ -6459,6 +6554,7 @@ components:
           type: string
           description: The caller's id for this run, attached as the `run_id` property so every statement of one build groups
             together in the backend's query history.
+
     RunList:
       type: object
       required:
@@ -6470,6 +6566,7 @@ components:
             $ref: "#/components/schemas/Run"
         nextCursor:
           $ref: "#/components/schemas/Cursor"
+
     RunManifest:
       type: object
       description: What a run produced, one entry per source. A document of the run, so it is not paged.
@@ -6494,6 +6591,7 @@ components:
           type: array
           items:
             $ref: "#/components/schemas/SourceFailure"
+
     RunOptions:
       type: object
       properties:
@@ -6512,6 +6610,7 @@ components:
             type: string
         runContext:
           $ref: "#/components/schemas/RunContext"
+
     RunSummary:
       type: object
       properties:
@@ -6525,6 +6624,7 @@ components:
           type: array
           items:
             $ref: "#/components/schemas/RefusedSource"
+
     S3Connection:
       type: object
       description: AWS S3 connection configuration for DuckDB
@@ -6568,6 +6668,7 @@ components:
           type: string
           description: AWS session token for temporary credentials (optional)
           writeOnly: true
+
     Schema:
       description: A schema name in a Connection.
       type: object
@@ -6588,6 +6689,7 @@ components:
           $ref: "#/components/schemas/VersionId"
           readOnly: true
           description: The version that answered, on a read under a version; absent at environment scope.
+
     SchemaList:
       type: object
       required:
@@ -6599,6 +6701,7 @@ components:
             $ref: "#/components/schemas/Schema"
         nextCursor:
           $ref: "#/components/schemas/Cursor"
+
     ServerStatus:
       type: object
       description: "The server's state, and every version it holds with its serving state: what an orchestrator reconciles
@@ -6700,6 +6803,7 @@ components:
           type: array
           items:
             $ref: "#/components/schemas/EnvironmentStatus"
+
     Severity:
       type: string
       enum:
@@ -6709,6 +6813,7 @@ components:
         - debug
       description: How serious a problem, warning or log message is. `error` is a failure; `warn` is valid but worth
         attention; `info` and `debug` are for people reading logs.
+
     Skill:
       type: object
       readOnly: true
@@ -6745,6 +6850,7 @@ components:
         - resource
         - name
         - versionId
+
     SkillFile:
       type: object
       readOnly: true
@@ -6771,6 +6877,7 @@ components:
         - path
         - kind
         - bytes
+
     SkillList:
       type: object
       required:
@@ -6782,6 +6889,7 @@ components:
             $ref: "#/components/schemas/SkillSummary"
         nextCursor:
           $ref: "#/components/schemas/Cursor"
+
     SkillSummary:
       type: object
       readOnly: true
@@ -6813,6 +6921,7 @@ components:
         - resource
         - name
         - versionId
+
     SnowflakeConnection:
       type: object
       description: Snowflake database connection configuration
@@ -6862,6 +6971,7 @@ components:
         responseTimeoutMs:
           type: integer
           description: Query response timeout in milliseconds
+
     Source:
       type: object
       description: A Malloy source defined in a model
@@ -6931,6 +7041,7 @@ components:
             docs/authorize.md.
           items:
             type: string
+
     SourceEntities:
       type: object
       readOnly: true
@@ -6970,6 +7081,7 @@ components:
             gate's `route`: file-level ones first, then its own, `authorize` before `access_filter`."
           items:
             $ref: "#/components/schemas/EntityGate"
+
     SourceFailure:
       type: object
       description: One source that failed to materialize, and why. Kept beside the entries because a failed source names no
@@ -7003,6 +7115,7 @@ components:
           type: boolean
           description: True when the eligibility gate refused the source before any build ran, so retrying returns the same answer
             until the model changes.
+
     SourceLocation:
       type: object
       description: Where in a file a problem or message points.
@@ -7027,6 +7140,7 @@ components:
                   type: integer
                 character:
                   type: integer
+
     SourceSchema:
       type: object
       readOnly: true
@@ -7046,6 +7160,7 @@ components:
           type: array
           items:
             $ref: "#/components/schemas/SourceSchemaField"
+
     SourceSchemaField:
       type: object
       readOnly: true
@@ -7069,6 +7184,7 @@ components:
           description: A join's or a view's own fields.
           items:
             $ref: "#/components/schemas/SourceSchemaField"
+
     SqlRequest:
       type: object
       description: Ad-hoc SQL against a connection, for the schema browser and for operators.
@@ -7092,6 +7208,7 @@ components:
         rowLimit:
           type: integer
           description: Cap on rows returned by `run`. The server's default applies when omitted.
+
     SqlResult:
       type: object
       required:
@@ -7115,6 +7232,7 @@ components:
             additionalProperties: true
         metadata:
           $ref: "#/components/schemas/QueryResultMetadata"
+
     SqlserverConnection:
       type: object
       description: "Microsoft SQL Server connection configuration: a SQL Server login over TCP. Field names are the
@@ -7156,6 +7274,7 @@ components:
         instanceName:
           type: string
           description: A named instance, located through the SQL Browser service (UDP 1434); `port` is then not used.
+
     SshProxyConfig:
       type: object
       description: SSH bastion / jump-host config for reaching a database inside a private network via an SSH local
@@ -7195,6 +7314,7 @@ components:
             — only the key blob is compared, never the hostname. When omitted, the
             tunnel connects without host-key verification (the self-service
             default); the SSH transport is still encrypted.
+
     Table:
       type: object
       description: A table with its columns.
@@ -7220,6 +7340,7 @@ components:
           $ref: "#/components/schemas/VersionId"
           readOnly: true
           description: The version that answered, on a read under a version; absent at environment scope.
+
     TableList:
       type: object
       required:
@@ -7231,6 +7352,7 @@ components:
             $ref: "#/components/schemas/TableSummary"
         nextCursor:
           $ref: "#/components/schemas/Cursor"
+
     TableSummary:
       type: object
       description: A table as a schema listing names it.
@@ -7253,6 +7375,7 @@ components:
           $ref: "#/components/schemas/VersionId"
           readOnly: true
           description: The version that answered, on a read under a version; absent at environment scope.
+
     TrinoConnection:
       type: object
       description: Trino database connection configuration
@@ -7280,6 +7403,7 @@ components:
           type: string
           description: Peaka API key for authentication with Peaka-hosted Trino clusters
           writeOnly: true
+
     Version:
       type: object
       description: An immutable snapshot of a package's content. Its content never changes; its lifecycle fields (`archived`,
@@ -7381,12 +7505,14 @@ components:
           type: string
           format: date-time
           readOnly: true
+
     VersionId:
       type: string
       pattern: ^(live|\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?)$
       description: "A resolved version: a semantic version, or `live` for a live (watched) package, which has no stored
         versions. A `live` version is never listed by `GET …/versions` and refuses `PATCH` and `DELETE` with 409
         `PACKAGE_IS_LIVE`."
+
     VersionList:
       type: object
       required:
@@ -7398,6 +7524,7 @@ components:
             $ref: "#/components/schemas/Version"
         nextCursor:
           $ref: "#/components/schemas/Cursor"
+
     VersionRef:
       type: string
       pattern: ^(latest|live|\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?)$
@@ -7405,6 +7532,7 @@ components:
         names a server-made version), the reserved word `latest` for the package's latest version, or the reserved word
         `live`, the one pseudo-version of a live (watched) package, which `latest` resolves to there. A request that
         names `latest` on a package with none answers 404 `VERSION_NOT_FOUND`."
+
     VersionStatus:
       type: object
       description: "How this server holds one version right now. The same schema in two reads: per version under `GET
@@ -7512,6 +7640,7 @@ components:
             `GET /status`. What this version serves per source.
           items:
             $ref: "#/components/schemas/Binding"
+
     View:
       type: object
       description: Named model view definition
