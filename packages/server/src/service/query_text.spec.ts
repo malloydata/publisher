@@ -686,59 +686,50 @@ describe("service/query_text", () => {
       });
 
       it("is linear on a 1MB adversarial body", () => {
-         const dashes = "a -- ".repeat(100_000);
-         const hashes = "a # ".repeat(125_000);
-         const text = `run: plain extend { join_one: e is plain extend {} on id = e.id } -> { where: name = '${dashes}'; group_by: e.id }\n# ${hashes}\n`;
-         expect(text.length).toBeGreaterThan(1_000_000);
-         expect(
-            fastestMs(() => {
-               stripMalloyCommentsAndLiterals(text);
-               buildDerivationBaseMap(text);
-               buildJoinBaseMap(text);
-               buildIsEdgeMap(text);
-            }),
-         ).toBeLessThan(500);
+         const body = (scale: number) =>
+            `run: plain extend { join_one: e is plain extend {} on id = e.id } -> { where: name = '${"a -- ".repeat(50_000 * scale)}'; group_by: e.id }\n# ${"a # ".repeat(62_500 * scale)}\n`;
+         expect(body(2).length).toBeGreaterThan(1_000_000);
+         expectLinear(body, (text) => {
+            stripMalloyCommentsAndLiterals(text);
+            buildDerivationBaseMap(text);
+            buildJoinBaseMap(text);
+            buildIsEdgeMap(text);
+         });
       });
 
       it("is linear on one 1MB statement", () => {
-         const items = Array.from(
-            { length: 70_000 },
-            (_, i) => `a${i} is plain`,
-         ).join(", ");
-         const joins = `run: plain extend { join_one: ${items} } -> { group_by: a1.id }`;
-         const chain = Array.from({ length: 125_000 }, (_, i) => `x${i}`).join(
-            " is ",
-         );
-         expect(joins.length).toBeGreaterThan(1_000_000);
-         expect(chain.length).toBeGreaterThan(1_000_000);
-         for (const [text, read] of [
-            [joins, buildJoinBaseMap],
-            [chain, buildIsEdgeMap],
-         ] as const) {
-            expect(fastestMs(() => read(text))).toBeLessThan(1000);
-         }
+         const joins = (scale: number) =>
+            `run: plain extend { join_one: ${Array.from(
+               { length: 35_000 * scale },
+               (_, i) => `a${i} is plain`,
+            ).join(", ")} } -> { group_by: a1.id }`;
+         const chain = (scale: number) =>
+            Array.from({ length: 62_500 * scale }, (_, i) => `x${i}`).join(
+               " is ",
+            );
+         expect(joins(2).length).toBeGreaterThan(1_000_000);
+         expect(chain(2).length).toBeGreaterThan(1_000_000);
+         expectLinear(joins, (text) => buildJoinBaseMap(text));
+         expectLinear(chain, (text) => buildIsEdgeMap(text));
       });
 
       it("is linear on 1MB of block annotations, SQL blocks and unterminated literals", () => {
-         for (const text of [
-            "#| a\n".repeat(250_000),
-            "  #| a\n |#\n".repeat(100_000),
-            'x """ y %{ z } '.repeat(70_000),
-            "f''' ".repeat(250_000),
-            "s = 'a\n".repeat(150_000),
-            "`a\n".repeat(400_000),
-            "\n".repeat(1_000_000) + "x -> y",
-         ]) {
-            expect(text.length).toBeGreaterThan(1_000_000);
-            expect(
-               fastestMs(() => {
-                  stripMalloyCommentsAndLiterals(text);
-                  buildDerivationBaseMap(text);
-                  collectIdentifierNames(text);
-                  extractRunTargetSourceName(text);
-               }),
-            ).toBeLessThan(1000);
+         for (const [unit, count] of [
+            ["#| a\n", 250_000],
+            ["  #| a\n |#\n", 100_000],
+            ['x """ y %{ z } ', 70_000],
+            ["f''' ", 250_000],
+            ["s = 'a\n", 150_000],
+            ["`a\n", 400_000],
+         ] as const) {
+            const text = (scale: number) => unit.repeat((count / 2) * scale);
+            expect(text(2).length).toBeGreaterThan(1_000_000);
+            expectLinear(text, readAll);
          }
+         const blankLines = (scale: number) =>
+            "\n".repeat(500_000 * scale) + "x -> y";
+         expect(blankLines(2).length).toBeGreaterThan(1_000_000);
+         expectLinear(blankLines, readAll);
       });
    });
 
@@ -874,6 +865,33 @@ describe("service/query_text", () => {
 });
 
 /** The best of a few runs, each after a full GC, so the suite's leftover heap and a busy machine do not read as super-linearity. */
+/** Every text reader the 1MB cases feed. */
+function readAll(text: string): void {
+   stripMalloyCommentsAndLiterals(text);
+   buildDerivationBaseMap(text);
+   collectIdentifierNames(text);
+   extractRunTargetSourceName(text);
+}
+
+/**
+ * Doubling the input about doubles the time when `read` is linear, and about
+ * quadruples it when it is quadratic, whatever the machine's speed; a fixed
+ * millisecond budget instead fails on a slow CI runner. The smaller time is
+ * floored so that two very fast runs are not read as a ratio of noise, and a
+ * generous ceiling still catches a pathological case outright.
+ */
+function expectLinear(
+   build: (scale: number) => string,
+   read: (text: string) => void,
+): void {
+   const half = build(1);
+   const full = build(2);
+   const halfMs = fastestMs(() => read(half));
+   const fullMs = fastestMs(() => read(full));
+   expect(fullMs / Math.max(halfMs, 5)).toBeLessThan(3);
+   expect(fullMs).toBeLessThan(10_000);
+}
+
 function fastestMs(run: () => void, runs = 5): number {
    let best = Infinity;
    for (let i = 0; i < runs; i++) {
