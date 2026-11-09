@@ -133,7 +133,12 @@ info:
 
 
     Publisher authenticates nobody. Put it behind the gateway that authenticates your users before exposing it beyond
-    localhost; see `docs/security-posture.md`.
+    localhost; see `docs/security-posture.md`. No operation here answers `401`: a gateway may answer `401` or `403` on
+    its own before a request reaches Publisher, in its own body shape. Each operation declares only the codes its shape
+    can produce: `404` when it names a resource, `409` on writes and `:reload`, `412` and `428` when it takes
+    `If-Match`, `413` when it takes a body, `403` on a resource write under `resources.readOnly` and on an
+    `#(authorize)` gate, `410` when the version it names is archived, and `424`, `502` and `504` when it loads a version
+    or reaches a warehouse.
 servers:
   - url: /api/v1
     description: This server
@@ -229,16 +234,6 @@ paths:
           $ref: "#/components/responses/NotModified"
         "400":
           $ref: "#/components/responses/BadRequest"
-        "401":
-          $ref: "#/components/responses/Unauthorized"
-        "403":
-          $ref: "#/components/responses/Forbidden"
-        "404":
-          $ref: "#/components/responses/NotFound"
-        "409":
-          $ref: "#/components/responses/Conflict"
-        "412":
-          $ref: "#/components/responses/PreconditionFailed"
         "429":
           $ref: "#/components/responses/RateLimited"
         "500":
@@ -274,16 +269,12 @@ paths:
                 $ref: "#/components/schemas/Environment"
         "400":
           $ref: "#/components/responses/BadRequest"
-        "401":
-          $ref: "#/components/responses/Unauthorized"
         "403":
           $ref: "#/components/responses/Forbidden"
-        "404":
-          $ref: "#/components/responses/NotFound"
         "409":
           $ref: "#/components/responses/Conflict"
-        "412":
-          $ref: "#/components/responses/PreconditionFailed"
+        "413":
+          $ref: "#/components/responses/PayloadTooLarge"
         "429":
           $ref: "#/components/responses/RateLimited"
         "500":
@@ -318,16 +309,8 @@ paths:
           $ref: "#/components/responses/NotModified"
         "400":
           $ref: "#/components/responses/BadRequest"
-        "401":
-          $ref: "#/components/responses/Unauthorized"
-        "403":
-          $ref: "#/components/responses/Forbidden"
         "404":
           $ref: "#/components/responses/NotFound"
-        "409":
-          $ref: "#/components/responses/Conflict"
-        "412":
-          $ref: "#/components/responses/PreconditionFailed"
         "429":
           $ref: "#/components/responses/RateLimited"
         "500":
@@ -366,8 +349,6 @@ paths:
                 $ref: "#/components/schemas/Environment"
         "400":
           $ref: "#/components/responses/BadRequest"
-        "401":
-          $ref: "#/components/responses/Unauthorized"
         "403":
           $ref: "#/components/responses/Forbidden"
         "404":
@@ -376,6 +357,8 @@ paths:
           $ref: "#/components/responses/Conflict"
         "412":
           $ref: "#/components/responses/PreconditionFailed"
+        "413":
+          $ref: "#/components/responses/PayloadTooLarge"
         "428":
           $ref: "#/components/responses/RevisionRequired"
         "429":
@@ -402,8 +385,6 @@ paths:
               $ref: "#/components/headers/RequestId"
         "400":
           $ref: "#/components/responses/BadRequest"
-        "401":
-          $ref: "#/components/responses/Unauthorized"
         "403":
           $ref: "#/components/responses/Forbidden"
         "404":
@@ -452,16 +433,8 @@ paths:
           $ref: "#/components/responses/NotModified"
         "400":
           $ref: "#/components/responses/BadRequest"
-        "401":
-          $ref: "#/components/responses/Unauthorized"
-        "403":
-          $ref: "#/components/responses/Forbidden"
         "404":
           $ref: "#/components/responses/NotFound"
-        "409":
-          $ref: "#/components/responses/Conflict"
-        "412":
-          $ref: "#/components/responses/PreconditionFailed"
         "429":
           $ref: "#/components/responses/RateLimited"
         "500":
@@ -512,16 +485,14 @@ paths:
                 $ref: "#/components/schemas/Connection"
         "400":
           $ref: "#/components/responses/BadRequest"
-        "401":
-          $ref: "#/components/responses/Unauthorized"
         "403":
           $ref: "#/components/responses/Forbidden"
         "404":
           $ref: "#/components/responses/NotFound"
         "409":
           $ref: "#/components/responses/Conflict"
-        "412":
-          $ref: "#/components/responses/PreconditionFailed"
+        "413":
+          $ref: "#/components/responses/PayloadTooLarge"
         "429":
           $ref: "#/components/responses/RateLimited"
         "500":
@@ -557,16 +528,8 @@ paths:
           $ref: "#/components/responses/NotModified"
         "400":
           $ref: "#/components/responses/BadRequest"
-        "401":
-          $ref: "#/components/responses/Unauthorized"
-        "403":
-          $ref: "#/components/responses/Forbidden"
         "404":
           $ref: "#/components/responses/NotFound"
-        "409":
-          $ref: "#/components/responses/Conflict"
-        "412":
-          $ref: "#/components/responses/PreconditionFailed"
         "429":
           $ref: "#/components/responses/RateLimited"
         "500":
@@ -611,8 +574,6 @@ paths:
                   - $ref: "#/components/schemas/ConnectionTestResult"
         "400":
           $ref: "#/components/responses/BadRequest"
-        "401":
-          $ref: "#/components/responses/Unauthorized"
         "403":
           $ref: "#/components/responses/Forbidden"
         "404":
@@ -621,6 +582,8 @@ paths:
           $ref: "#/components/responses/Conflict"
         "412":
           $ref: "#/components/responses/PreconditionFailed"
+        "413":
+          $ref: "#/components/responses/PayloadTooLarge"
         "428":
           $ref: "#/components/responses/RevisionRequired"
         "429":
@@ -644,8 +607,6 @@ paths:
               $ref: "#/components/headers/RequestId"
         "400":
           $ref: "#/components/responses/BadRequest"
-        "401":
-          $ref: "#/components/responses/Unauthorized"
         "403":
           $ref: "#/components/responses/Forbidden"
         "404":
@@ -695,16 +656,8 @@ paths:
           $ref: "#/components/responses/NotModified"
         "400":
           $ref: "#/components/responses/BadRequest"
-        "401":
-          $ref: "#/components/responses/Unauthorized"
-        "403":
-          $ref: "#/components/responses/Forbidden"
         "404":
           $ref: "#/components/responses/NotFound"
-        "409":
-          $ref: "#/components/responses/Conflict"
-        "412":
-          $ref: "#/components/responses/PreconditionFailed"
         "429":
           $ref: "#/components/responses/RateLimited"
         "500":
@@ -742,16 +695,14 @@ paths:
                 $ref: "#/components/schemas/Package"
         "400":
           $ref: "#/components/responses/BadRequest"
-        "401":
-          $ref: "#/components/responses/Unauthorized"
         "403":
           $ref: "#/components/responses/Forbidden"
         "404":
           $ref: "#/components/responses/NotFound"
         "409":
           $ref: "#/components/responses/Conflict"
-        "412":
-          $ref: "#/components/responses/PreconditionFailed"
+        "413":
+          $ref: "#/components/responses/PayloadTooLarge"
         "429":
           $ref: "#/components/responses/RateLimited"
         "500":
@@ -787,16 +738,8 @@ paths:
           $ref: "#/components/responses/NotModified"
         "400":
           $ref: "#/components/responses/BadRequest"
-        "401":
-          $ref: "#/components/responses/Unauthorized"
-        "403":
-          $ref: "#/components/responses/Forbidden"
         "404":
           $ref: "#/components/responses/NotFound"
-        "409":
-          $ref: "#/components/responses/Conflict"
-        "412":
-          $ref: "#/components/responses/PreconditionFailed"
         "429":
           $ref: "#/components/responses/RateLimited"
         "500":
@@ -835,8 +778,6 @@ paths:
                 $ref: "#/components/schemas/Package"
         "400":
           $ref: "#/components/responses/BadRequest"
-        "401":
-          $ref: "#/components/responses/Unauthorized"
         "403":
           $ref: "#/components/responses/Forbidden"
         "404":
@@ -847,6 +788,8 @@ paths:
           $ref: "#/components/responses/Gone"
         "412":
           $ref: "#/components/responses/PreconditionFailed"
+        "413":
+          $ref: "#/components/responses/PayloadTooLarge"
         "428":
           $ref: "#/components/responses/RevisionRequired"
         "429":
@@ -872,8 +815,6 @@ paths:
               $ref: "#/components/headers/RequestId"
         "400":
           $ref: "#/components/responses/BadRequest"
-        "401":
-          $ref: "#/components/responses/Unauthorized"
         "403":
           $ref: "#/components/responses/Forbidden"
         "404":
@@ -929,16 +870,8 @@ paths:
           $ref: "#/components/responses/NotModified"
         "400":
           $ref: "#/components/responses/BadRequest"
-        "401":
-          $ref: "#/components/responses/Unauthorized"
-        "403":
-          $ref: "#/components/responses/Forbidden"
         "404":
           $ref: "#/components/responses/NotFound"
-        "409":
-          $ref: "#/components/responses/Conflict"
-        "412":
-          $ref: "#/components/responses/PreconditionFailed"
         "429":
           $ref: "#/components/responses/RateLimited"
         "500":
@@ -1013,16 +946,14 @@ paths:
                 $ref: "#/components/schemas/Version"
         "400":
           $ref: "#/components/responses/BadRequest"
-        "401":
-          $ref: "#/components/responses/Unauthorized"
         "403":
           $ref: "#/components/responses/Forbidden"
         "404":
           $ref: "#/components/responses/NotFound"
         "409":
           $ref: "#/components/responses/Conflict"
-        "412":
-          $ref: "#/components/responses/PreconditionFailed"
+        "413":
+          $ref: "#/components/responses/PayloadTooLarge"
         "424":
           $ref: "#/components/responses/DependencyFailed"
         "429":
@@ -1033,6 +964,8 @@ paths:
           $ref: "#/components/responses/DatabaseUnreachable"
         "503":
           $ref: "#/components/responses/Unavailable"
+        "504":
+          $ref: "#/components/responses/GatewayTimeout"
 
 
   /environments/{environmentName}/packages/{packageName}/versions/{versionId}:reload:
@@ -1064,18 +997,12 @@ paths:
               $ref: "#/components/headers/RequestId"
         "400":
           $ref: "#/components/responses/BadRequest"
-        "401":
-          $ref: "#/components/responses/Unauthorized"
-        "403":
-          $ref: "#/components/responses/Forbidden"
         "404":
           $ref: "#/components/responses/NotFound"
         "409":
           $ref: "#/components/responses/Conflict"
         "410":
           $ref: "#/components/responses/Gone"
-        "412":
-          $ref: "#/components/responses/PreconditionFailed"
         "424":
           $ref: "#/components/responses/DependencyFailed"
         "429":
@@ -1086,6 +1013,8 @@ paths:
           $ref: "#/components/responses/DatabaseUnreachable"
         "503":
           $ref: "#/components/responses/Unavailable"
+        "504":
+          $ref: "#/components/responses/GatewayTimeout"
 
 
   /environments/{environmentName}/packages/{packageName}/versions/{versionId}/status:
@@ -1118,16 +1047,8 @@ paths:
           $ref: "#/components/responses/NotModified"
         "400":
           $ref: "#/components/responses/BadRequest"
-        "401":
-          $ref: "#/components/responses/Unauthorized"
-        "403":
-          $ref: "#/components/responses/Forbidden"
         "404":
           $ref: "#/components/responses/NotFound"
-        "409":
-          $ref: "#/components/responses/Conflict"
-        "412":
-          $ref: "#/components/responses/PreconditionFailed"
         "429":
           $ref: "#/components/responses/RateLimited"
         "500":
@@ -1167,16 +1088,8 @@ paths:
           $ref: "#/components/responses/NotModified"
         "400":
           $ref: "#/components/responses/BadRequest"
-        "401":
-          $ref: "#/components/responses/Unauthorized"
-        "403":
-          $ref: "#/components/responses/Forbidden"
         "404":
           $ref: "#/components/responses/NotFound"
-        "409":
-          $ref: "#/components/responses/Conflict"
-        "412":
-          $ref: "#/components/responses/PreconditionFailed"
         "429":
           $ref: "#/components/responses/RateLimited"
         "500":
@@ -1219,8 +1132,6 @@ paths:
                 $ref: "#/components/schemas/Version"
         "400":
           $ref: "#/components/responses/BadRequest"
-        "401":
-          $ref: "#/components/responses/Unauthorized"
         "403":
           $ref: "#/components/responses/Forbidden"
         "404":
@@ -1229,6 +1140,8 @@ paths:
           $ref: "#/components/responses/Conflict"
         "412":
           $ref: "#/components/responses/PreconditionFailed"
+        "413":
+          $ref: "#/components/responses/PayloadTooLarge"
         "424":
           $ref: "#/components/responses/DependencyFailed"
         "428":
@@ -1241,6 +1154,8 @@ paths:
           $ref: "#/components/responses/DatabaseUnreachable"
         "503":
           $ref: "#/components/responses/Unavailable"
+        "504":
+          $ref: "#/components/responses/GatewayTimeout"
     delete:
       operationId: delete-version
       tags:
@@ -1259,8 +1174,6 @@ paths:
               $ref: "#/components/headers/RequestId"
         "400":
           $ref: "#/components/responses/BadRequest"
-        "401":
-          $ref: "#/components/responses/Unauthorized"
         "403":
           $ref: "#/components/responses/Forbidden"
         "404":
@@ -1312,18 +1225,10 @@ paths:
           $ref: "#/components/responses/NotModified"
         "400":
           $ref: "#/components/responses/BadRequest"
-        "401":
-          $ref: "#/components/responses/Unauthorized"
-        "403":
-          $ref: "#/components/responses/Forbidden"
         "404":
           $ref: "#/components/responses/NotFound"
-        "409":
-          $ref: "#/components/responses/Conflict"
         "410":
           $ref: "#/components/responses/Gone"
-        "412":
-          $ref: "#/components/responses/PreconditionFailed"
         "424":
           $ref: "#/components/responses/DependencyFailed"
         "429":
@@ -1334,6 +1239,8 @@ paths:
           $ref: "#/components/responses/DatabaseUnreachable"
         "503":
           $ref: "#/components/responses/Unavailable"
+        "504":
+          $ref: "#/components/responses/GatewayTimeout"
 
 
   /environments/{environmentName}/packages/{packageName}/versions/{versionId}/models/{path}:
@@ -1390,18 +1297,10 @@ paths:
           $ref: "#/components/responses/NotModified"
         "400":
           $ref: "#/components/responses/BadRequest"
-        "401":
-          $ref: "#/components/responses/Unauthorized"
-        "403":
-          $ref: "#/components/responses/Forbidden"
         "404":
           $ref: "#/components/responses/NotFound"
-        "409":
-          $ref: "#/components/responses/Conflict"
         "410":
           $ref: "#/components/responses/Gone"
-        "412":
-          $ref: "#/components/responses/PreconditionFailed"
         "424":
           $ref: "#/components/responses/DependencyFailed"
         "429":
@@ -1412,6 +1311,8 @@ paths:
           $ref: "#/components/responses/DatabaseUnreachable"
         "503":
           $ref: "#/components/responses/Unavailable"
+        "504":
+          $ref: "#/components/responses/GatewayTimeout"
 
 
   /environments/{environmentName}/packages/{packageName}/versions/{versionId}/models/{path}:query:
@@ -1445,18 +1346,12 @@ paths:
               $ref: "#/components/headers/RequestId"
         "400":
           $ref: "#/components/responses/BadRequest"
-        "401":
-          $ref: "#/components/responses/Unauthorized"
         "403":
           $ref: "#/components/responses/Forbidden"
         "404":
           $ref: "#/components/responses/NotFound"
-        "409":
-          $ref: "#/components/responses/Conflict"
         "410":
           $ref: "#/components/responses/Gone"
-        "412":
-          $ref: "#/components/responses/PreconditionFailed"
         "413":
           $ref: "#/components/responses/PayloadTooLarge"
         "424":
@@ -1504,18 +1399,12 @@ paths:
               $ref: "#/components/headers/RequestId"
         "400":
           $ref: "#/components/responses/BadRequest"
-        "401":
-          $ref: "#/components/responses/Unauthorized"
         "403":
           $ref: "#/components/responses/Forbidden"
         "404":
           $ref: "#/components/responses/NotFound"
-        "409":
-          $ref: "#/components/responses/Conflict"
         "410":
           $ref: "#/components/responses/Gone"
-        "412":
-          $ref: "#/components/responses/PreconditionFailed"
         "413":
           $ref: "#/components/responses/PayloadTooLarge"
         "424":
@@ -1528,6 +1417,8 @@ paths:
           $ref: "#/components/responses/DatabaseUnreachable"
         "503":
           $ref: "#/components/responses/Unavailable"
+        "504":
+          $ref: "#/components/responses/GatewayTimeout"
 
 
   /environments/{environmentName}/packages/{packageName}/versions/{versionId}/reports:
@@ -1569,18 +1460,10 @@ paths:
           $ref: "#/components/responses/NotModified"
         "400":
           $ref: "#/components/responses/BadRequest"
-        "401":
-          $ref: "#/components/responses/Unauthorized"
-        "403":
-          $ref: "#/components/responses/Forbidden"
         "404":
           $ref: "#/components/responses/NotFound"
-        "409":
-          $ref: "#/components/responses/Conflict"
         "410":
           $ref: "#/components/responses/Gone"
-        "412":
-          $ref: "#/components/responses/PreconditionFailed"
         "424":
           $ref: "#/components/responses/DependencyFailed"
         "429":
@@ -1591,6 +1474,8 @@ paths:
           $ref: "#/components/responses/DatabaseUnreachable"
         "503":
           $ref: "#/components/responses/Unavailable"
+        "504":
+          $ref: "#/components/responses/GatewayTimeout"
 
 
   /environments/{environmentName}/packages/{packageName}/versions/{versionId}/reports/{path}:
@@ -1635,18 +1520,10 @@ paths:
           $ref: "#/components/responses/NotModified"
         "400":
           $ref: "#/components/responses/BadRequest"
-        "401":
-          $ref: "#/components/responses/Unauthorized"
-        "403":
-          $ref: "#/components/responses/Forbidden"
         "404":
           $ref: "#/components/responses/NotFound"
-        "409":
-          $ref: "#/components/responses/Conflict"
         "410":
           $ref: "#/components/responses/Gone"
-        "412":
-          $ref: "#/components/responses/PreconditionFailed"
         "424":
           $ref: "#/components/responses/DependencyFailed"
         "429":
@@ -1657,6 +1534,8 @@ paths:
           $ref: "#/components/responses/DatabaseUnreachable"
         "503":
           $ref: "#/components/responses/Unavailable"
+        "504":
+          $ref: "#/components/responses/GatewayTimeout"
     put:
       operationId: write-report
       tags:
@@ -1701,8 +1580,6 @@ paths:
                 $ref: "#/components/schemas/Report"
         "400":
           $ref: "#/components/responses/BadRequest"
-        "401":
-          $ref: "#/components/responses/Unauthorized"
         "403":
           $ref: "#/components/responses/Forbidden"
         "404":
@@ -1711,8 +1588,8 @@ paths:
           $ref: "#/components/responses/Conflict"
         "410":
           $ref: "#/components/responses/Gone"
-        "412":
-          $ref: "#/components/responses/PreconditionFailed"
+        "413":
+          $ref: "#/components/responses/PayloadTooLarge"
         "424":
           $ref: "#/components/responses/DependencyFailed"
         "429":
@@ -1723,6 +1600,8 @@ paths:
           $ref: "#/components/responses/DatabaseUnreachable"
         "503":
           $ref: "#/components/responses/Unavailable"
+        "504":
+          $ref: "#/components/responses/GatewayTimeout"
 
 
   /environments/{environmentName}/packages/{packageName}/versions/{versionId}/data-apps:
@@ -1757,18 +1636,10 @@ paths:
           $ref: "#/components/responses/NotModified"
         "400":
           $ref: "#/components/responses/BadRequest"
-        "401":
-          $ref: "#/components/responses/Unauthorized"
-        "403":
-          $ref: "#/components/responses/Forbidden"
         "404":
           $ref: "#/components/responses/NotFound"
-        "409":
-          $ref: "#/components/responses/Conflict"
         "410":
           $ref: "#/components/responses/Gone"
-        "412":
-          $ref: "#/components/responses/PreconditionFailed"
         "424":
           $ref: "#/components/responses/DependencyFailed"
         "429":
@@ -1779,6 +1650,8 @@ paths:
           $ref: "#/components/responses/DatabaseUnreachable"
         "503":
           $ref: "#/components/responses/Unavailable"
+        "504":
+          $ref: "#/components/responses/GatewayTimeout"
 
 
   /environments/{environmentName}/packages/{packageName}/versions/{versionId}/public/{path}:
@@ -1813,26 +1686,14 @@ paths:
           $ref: "#/components/responses/NotModified"
         "400":
           $ref: "#/components/responses/BadRequest"
-        "401":
-          $ref: "#/components/responses/Unauthorized"
-        "403":
-          $ref: "#/components/responses/Forbidden"
         "404":
           $ref: "#/components/responses/NotFound"
-        "409":
-          $ref: "#/components/responses/Conflict"
         "410":
           $ref: "#/components/responses/Gone"
-        "412":
-          $ref: "#/components/responses/PreconditionFailed"
-        "424":
-          $ref: "#/components/responses/DependencyFailed"
         "429":
           $ref: "#/components/responses/RateLimited"
         "500":
           $ref: "#/components/responses/Internal"
-        "502":
-          $ref: "#/components/responses/DatabaseUnreachable"
         "503":
           $ref: "#/components/responses/Unavailable"
       parameters:
@@ -1871,18 +1732,10 @@ paths:
           $ref: "#/components/responses/NotModified"
         "400":
           $ref: "#/components/responses/BadRequest"
-        "401":
-          $ref: "#/components/responses/Unauthorized"
-        "403":
-          $ref: "#/components/responses/Forbidden"
         "404":
           $ref: "#/components/responses/NotFound"
-        "409":
-          $ref: "#/components/responses/Conflict"
         "410":
           $ref: "#/components/responses/Gone"
-        "412":
-          $ref: "#/components/responses/PreconditionFailed"
         "424":
           $ref: "#/components/responses/DependencyFailed"
         "429":
@@ -1893,6 +1746,8 @@ paths:
           $ref: "#/components/responses/DatabaseUnreachable"
         "503":
           $ref: "#/components/responses/Unavailable"
+        "504":
+          $ref: "#/components/responses/GatewayTimeout"
 
 
   /environments/{environmentName}/packages/{packageName}/versions/{versionId}/agents:
@@ -1927,18 +1782,10 @@ paths:
           $ref: "#/components/responses/NotModified"
         "400":
           $ref: "#/components/responses/BadRequest"
-        "401":
-          $ref: "#/components/responses/Unauthorized"
-        "403":
-          $ref: "#/components/responses/Forbidden"
         "404":
           $ref: "#/components/responses/NotFound"
-        "409":
-          $ref: "#/components/responses/Conflict"
         "410":
           $ref: "#/components/responses/Gone"
-        "412":
-          $ref: "#/components/responses/PreconditionFailed"
         "424":
           $ref: "#/components/responses/DependencyFailed"
         "429":
@@ -1949,6 +1796,8 @@ paths:
           $ref: "#/components/responses/DatabaseUnreachable"
         "503":
           $ref: "#/components/responses/Unavailable"
+        "504":
+          $ref: "#/components/responses/GatewayTimeout"
 
 
   /environments/{environmentName}/packages/{packageName}/versions/{versionId}/agents/{agentName}:
@@ -1993,18 +1842,10 @@ paths:
           $ref: "#/components/responses/NotModified"
         "400":
           $ref: "#/components/responses/BadRequest"
-        "401":
-          $ref: "#/components/responses/Unauthorized"
-        "403":
-          $ref: "#/components/responses/Forbidden"
         "404":
           $ref: "#/components/responses/NotFound"
-        "409":
-          $ref: "#/components/responses/Conflict"
         "410":
           $ref: "#/components/responses/Gone"
-        "412":
-          $ref: "#/components/responses/PreconditionFailed"
         "424":
           $ref: "#/components/responses/DependencyFailed"
         "429":
@@ -2015,6 +1856,8 @@ paths:
           $ref: "#/components/responses/DatabaseUnreachable"
         "503":
           $ref: "#/components/responses/Unavailable"
+        "504":
+          $ref: "#/components/responses/GatewayTimeout"
 
 
   /environments/{environmentName}/packages/{packageName}/versions/{versionId}/skills:
@@ -2050,18 +1893,10 @@ paths:
           $ref: "#/components/responses/NotModified"
         "400":
           $ref: "#/components/responses/BadRequest"
-        "401":
-          $ref: "#/components/responses/Unauthorized"
-        "403":
-          $ref: "#/components/responses/Forbidden"
         "404":
           $ref: "#/components/responses/NotFound"
-        "409":
-          $ref: "#/components/responses/Conflict"
         "410":
           $ref: "#/components/responses/Gone"
-        "412":
-          $ref: "#/components/responses/PreconditionFailed"
         "424":
           $ref: "#/components/responses/DependencyFailed"
         "429":
@@ -2072,6 +1907,8 @@ paths:
           $ref: "#/components/responses/DatabaseUnreachable"
         "503":
           $ref: "#/components/responses/Unavailable"
+        "504":
+          $ref: "#/components/responses/GatewayTimeout"
 
 
   /environments/{environmentName}/packages/{packageName}/versions/{versionId}/skills/{skillName}:
@@ -2116,18 +1953,10 @@ paths:
           $ref: "#/components/responses/NotModified"
         "400":
           $ref: "#/components/responses/BadRequest"
-        "401":
-          $ref: "#/components/responses/Unauthorized"
-        "403":
-          $ref: "#/components/responses/Forbidden"
         "404":
           $ref: "#/components/responses/NotFound"
-        "409":
-          $ref: "#/components/responses/Conflict"
         "410":
           $ref: "#/components/responses/Gone"
-        "412":
-          $ref: "#/components/responses/PreconditionFailed"
         "424":
           $ref: "#/components/responses/DependencyFailed"
         "429":
@@ -2138,6 +1967,8 @@ paths:
           $ref: "#/components/responses/DatabaseUnreachable"
         "503":
           $ref: "#/components/responses/Unavailable"
+        "504":
+          $ref: "#/components/responses/GatewayTimeout"
 
 
   /environments/{environmentName}/packages/{packageName}/versions/{versionId}/entities:
@@ -2173,18 +2004,10 @@ paths:
           $ref: "#/components/responses/NotModified"
         "400":
           $ref: "#/components/responses/BadRequest"
-        "401":
-          $ref: "#/components/responses/Unauthorized"
-        "403":
-          $ref: "#/components/responses/Forbidden"
         "404":
           $ref: "#/components/responses/NotFound"
-        "409":
-          $ref: "#/components/responses/Conflict"
         "410":
           $ref: "#/components/responses/Gone"
-        "412":
-          $ref: "#/components/responses/PreconditionFailed"
         "424":
           $ref: "#/components/responses/DependencyFailed"
         "429":
@@ -2195,6 +2018,8 @@ paths:
           $ref: "#/components/responses/DatabaseUnreachable"
         "503":
           $ref: "#/components/responses/Unavailable"
+        "504":
+          $ref: "#/components/responses/GatewayTimeout"
 
 
   /environments/{environmentName}/packages/{packageName}/versions/{versionId}/classification:
@@ -2225,18 +2050,10 @@ paths:
           $ref: "#/components/responses/NotModified"
         "400":
           $ref: "#/components/responses/BadRequest"
-        "401":
-          $ref: "#/components/responses/Unauthorized"
-        "403":
-          $ref: "#/components/responses/Forbidden"
         "404":
           $ref: "#/components/responses/NotFound"
-        "409":
-          $ref: "#/components/responses/Conflict"
         "410":
           $ref: "#/components/responses/Gone"
-        "412":
-          $ref: "#/components/responses/PreconditionFailed"
         "424":
           $ref: "#/components/responses/DependencyFailed"
         "429":
@@ -2247,6 +2064,8 @@ paths:
           $ref: "#/components/responses/DatabaseUnreachable"
         "503":
           $ref: "#/components/responses/Unavailable"
+        "504":
+          $ref: "#/components/responses/GatewayTimeout"
       parameters:
         - $ref: "#/components/parameters/ifNoneMatch"
 
@@ -2281,18 +2100,10 @@ paths:
           $ref: "#/components/responses/NotModified"
         "400":
           $ref: "#/components/responses/BadRequest"
-        "401":
-          $ref: "#/components/responses/Unauthorized"
-        "403":
-          $ref: "#/components/responses/Forbidden"
         "404":
           $ref: "#/components/responses/NotFound"
-        "409":
-          $ref: "#/components/responses/Conflict"
         "410":
           $ref: "#/components/responses/Gone"
-        "412":
-          $ref: "#/components/responses/PreconditionFailed"
         "429":
           $ref: "#/components/responses/RateLimited"
         "500":
@@ -2331,18 +2142,10 @@ paths:
           $ref: "#/components/responses/NotModified"
         "400":
           $ref: "#/components/responses/BadRequest"
-        "401":
-          $ref: "#/components/responses/Unauthorized"
-        "403":
-          $ref: "#/components/responses/Forbidden"
         "404":
           $ref: "#/components/responses/NotFound"
-        "409":
-          $ref: "#/components/responses/Conflict"
         "410":
           $ref: "#/components/responses/Gone"
-        "412":
-          $ref: "#/components/responses/PreconditionFailed"
         "424":
           $ref: "#/components/responses/DependencyFailed"
         "429":
@@ -2353,6 +2156,8 @@ paths:
           $ref: "#/components/responses/DatabaseUnreachable"
         "503":
           $ref: "#/components/responses/Unavailable"
+        "504":
+          $ref: "#/components/responses/GatewayTimeout"
       parameters:
         - $ref: "#/components/parameters/ifNoneMatch"
 
@@ -2390,18 +2195,10 @@ paths:
           $ref: "#/components/responses/NotModified"
         "400":
           $ref: "#/components/responses/BadRequest"
-        "401":
-          $ref: "#/components/responses/Unauthorized"
-        "403":
-          $ref: "#/components/responses/Forbidden"
         "404":
           $ref: "#/components/responses/NotFound"
-        "409":
-          $ref: "#/components/responses/Conflict"
         "410":
           $ref: "#/components/responses/Gone"
-        "412":
-          $ref: "#/components/responses/PreconditionFailed"
         "424":
           $ref: "#/components/responses/DependencyFailed"
         "429":
@@ -2412,6 +2209,8 @@ paths:
           $ref: "#/components/responses/DatabaseUnreachable"
         "503":
           $ref: "#/components/responses/Unavailable"
+        "504":
+          $ref: "#/components/responses/GatewayTimeout"
 
 
   /environments/{environmentName}/packages/{packageName}/versions/{versionId}/connections/{connectionName}:
@@ -2444,18 +2243,10 @@ paths:
           $ref: "#/components/responses/NotModified"
         "400":
           $ref: "#/components/responses/BadRequest"
-        "401":
-          $ref: "#/components/responses/Unauthorized"
-        "403":
-          $ref: "#/components/responses/Forbidden"
         "404":
           $ref: "#/components/responses/NotFound"
-        "409":
-          $ref: "#/components/responses/Conflict"
         "410":
           $ref: "#/components/responses/Gone"
-        "412":
-          $ref: "#/components/responses/PreconditionFailed"
         "424":
           $ref: "#/components/responses/DependencyFailed"
         "429":
@@ -2466,6 +2257,8 @@ paths:
           $ref: "#/components/responses/DatabaseUnreachable"
         "503":
           $ref: "#/components/responses/Unavailable"
+        "504":
+          $ref: "#/components/responses/GatewayTimeout"
       parameters:
         - $ref: "#/components/parameters/ifNoneMatch"
 
@@ -2516,16 +2309,8 @@ paths:
           $ref: "#/components/responses/NotModified"
         "400":
           $ref: "#/components/responses/BadRequest"
-        "401":
-          $ref: "#/components/responses/Unauthorized"
-        "403":
-          $ref: "#/components/responses/Forbidden"
         "404":
           $ref: "#/components/responses/NotFound"
-        "409":
-          $ref: "#/components/responses/Conflict"
-        "412":
-          $ref: "#/components/responses/PreconditionFailed"
         "429":
           $ref: "#/components/responses/RateLimited"
         "500":
@@ -2565,18 +2350,14 @@ paths:
                 $ref: "#/components/schemas/Run"
         "400":
           $ref: "#/components/responses/BadRequest"
-        "401":
-          $ref: "#/components/responses/Unauthorized"
-        "403":
-          $ref: "#/components/responses/Forbidden"
         "404":
           $ref: "#/components/responses/NotFound"
         "409":
           $ref: "#/components/responses/Conflict"
         "410":
           $ref: "#/components/responses/Gone"
-        "412":
-          $ref: "#/components/responses/PreconditionFailed"
+        "413":
+          $ref: "#/components/responses/PayloadTooLarge"
         "424":
           $ref: "#/components/responses/DependencyFailed"
         "429":
@@ -2587,6 +2368,8 @@ paths:
           $ref: "#/components/responses/DatabaseUnreachable"
         "503":
           $ref: "#/components/responses/Unavailable"
+        "504":
+          $ref: "#/components/responses/GatewayTimeout"
 
 
   /environments/{environmentName}/packages/{packageName}/runs/{runId}:
@@ -2617,16 +2400,8 @@ paths:
           $ref: "#/components/responses/NotModified"
         "400":
           $ref: "#/components/responses/BadRequest"
-        "401":
-          $ref: "#/components/responses/Unauthorized"
-        "403":
-          $ref: "#/components/responses/Forbidden"
         "404":
           $ref: "#/components/responses/NotFound"
-        "409":
-          $ref: "#/components/responses/Conflict"
-        "412":
-          $ref: "#/components/responses/PreconditionFailed"
         "429":
           $ref: "#/components/responses/RateLimited"
         "500":
@@ -2664,16 +2439,14 @@ paths:
                 $ref: "#/components/schemas/Run"
         "400":
           $ref: "#/components/responses/BadRequest"
-        "401":
-          $ref: "#/components/responses/Unauthorized"
-        "403":
-          $ref: "#/components/responses/Forbidden"
         "404":
           $ref: "#/components/responses/NotFound"
         "409":
           $ref: "#/components/responses/Conflict"
         "412":
           $ref: "#/components/responses/PreconditionFailed"
+        "413":
+          $ref: "#/components/responses/PayloadTooLarge"
         "428":
           $ref: "#/components/responses/RevisionRequired"
         "429":
@@ -2703,24 +2476,26 @@ paths:
               $ref: "#/components/headers/RequestId"
         "400":
           $ref: "#/components/responses/BadRequest"
-        "401":
-          $ref: "#/components/responses/Unauthorized"
-        "403":
-          $ref: "#/components/responses/Forbidden"
         "404":
           $ref: "#/components/responses/NotFound"
         "409":
           $ref: "#/components/responses/Conflict"
         "412":
           $ref: "#/components/responses/PreconditionFailed"
+        "424":
+          $ref: "#/components/responses/DependencyFailed"
         "428":
           $ref: "#/components/responses/RevisionRequired"
         "429":
           $ref: "#/components/responses/RateLimited"
         "500":
           $ref: "#/components/responses/Internal"
+        "502":
+          $ref: "#/components/responses/DatabaseUnreachable"
         "503":
           $ref: "#/components/responses/Unavailable"
+        "504":
+          $ref: "#/components/responses/GatewayTimeout"
 
 
   /environments/{environmentName}/packages/{packageName}/runs/{runId}/manifest:
@@ -2751,16 +2526,8 @@ paths:
           $ref: "#/components/responses/NotModified"
         "400":
           $ref: "#/components/responses/BadRequest"
-        "401":
-          $ref: "#/components/responses/Unauthorized"
-        "403":
-          $ref: "#/components/responses/Forbidden"
         "404":
           $ref: "#/components/responses/NotFound"
-        "409":
-          $ref: "#/components/responses/Conflict"
-        "412":
-          $ref: "#/components/responses/PreconditionFailed"
         "429":
           $ref: "#/components/responses/RateLimited"
         "500":
@@ -2799,16 +2566,8 @@ paths:
           $ref: "#/components/responses/NotModified"
         "400":
           $ref: "#/components/responses/BadRequest"
-        "401":
-          $ref: "#/components/responses/Unauthorized"
-        "403":
-          $ref: "#/components/responses/Forbidden"
         "404":
           $ref: "#/components/responses/NotFound"
-        "409":
-          $ref: "#/components/responses/Conflict"
-        "412":
-          $ref: "#/components/responses/PreconditionFailed"
         "424":
           $ref: "#/components/responses/DependencyFailed"
         "429":
@@ -2819,6 +2578,8 @@ paths:
           $ref: "#/components/responses/DatabaseUnreachable"
         "503":
           $ref: "#/components/responses/Unavailable"
+        "504":
+          $ref: "#/components/responses/GatewayTimeout"
     parameters:
       - $ref: "#/components/parameters/environmentName"
       - $ref: "#/components/parameters/connectionName"
@@ -2876,16 +2637,8 @@ paths:
           $ref: "#/components/responses/NotModified"
         "400":
           $ref: "#/components/responses/BadRequest"
-        "401":
-          $ref: "#/components/responses/Unauthorized"
-        "403":
-          $ref: "#/components/responses/Forbidden"
         "404":
           $ref: "#/components/responses/NotFound"
-        "409":
-          $ref: "#/components/responses/Conflict"
-        "412":
-          $ref: "#/components/responses/PreconditionFailed"
         "424":
           $ref: "#/components/responses/DependencyFailed"
         "429":
@@ -2896,6 +2649,8 @@ paths:
           $ref: "#/components/responses/DatabaseUnreachable"
         "503":
           $ref: "#/components/responses/Unavailable"
+        "504":
+          $ref: "#/components/responses/GatewayTimeout"
 
 
   /environments/{environmentName}/connections/{connectionName}/schemas/{schemaName}/tables/{tableName}:
@@ -2927,16 +2682,8 @@ paths:
           $ref: "#/components/responses/NotModified"
         "400":
           $ref: "#/components/responses/BadRequest"
-        "401":
-          $ref: "#/components/responses/Unauthorized"
-        "403":
-          $ref: "#/components/responses/Forbidden"
         "404":
           $ref: "#/components/responses/NotFound"
-        "409":
-          $ref: "#/components/responses/Conflict"
-        "412":
-          $ref: "#/components/responses/PreconditionFailed"
         "424":
           $ref: "#/components/responses/DependencyFailed"
         "429":
@@ -2947,6 +2694,8 @@ paths:
           $ref: "#/components/responses/DatabaseUnreachable"
         "503":
           $ref: "#/components/responses/Unavailable"
+        "504":
+          $ref: "#/components/responses/GatewayTimeout"
       parameters:
         - $ref: "#/components/parameters/ifNoneMatch"
 
@@ -2975,16 +2724,8 @@ paths:
               $ref: "#/components/headers/RequestId"
         "400":
           $ref: "#/components/responses/BadRequest"
-        "401":
-          $ref: "#/components/responses/Unauthorized"
-        "403":
-          $ref: "#/components/responses/Forbidden"
         "404":
           $ref: "#/components/responses/NotFound"
-        "409":
-          $ref: "#/components/responses/Conflict"
-        "412":
-          $ref: "#/components/responses/PreconditionFailed"
         "413":
           $ref: "#/components/responses/PayloadTooLarge"
         "424":
@@ -3032,18 +2773,10 @@ paths:
           $ref: "#/components/responses/NotModified"
         "400":
           $ref: "#/components/responses/BadRequest"
-        "401":
-          $ref: "#/components/responses/Unauthorized"
-        "403":
-          $ref: "#/components/responses/Forbidden"
         "404":
           $ref: "#/components/responses/NotFound"
-        "409":
-          $ref: "#/components/responses/Conflict"
         "410":
           $ref: "#/components/responses/Gone"
-        "412":
-          $ref: "#/components/responses/PreconditionFailed"
         "424":
           $ref: "#/components/responses/DependencyFailed"
         "429":
@@ -3054,6 +2787,8 @@ paths:
           $ref: "#/components/responses/DatabaseUnreachable"
         "503":
           $ref: "#/components/responses/Unavailable"
+        "504":
+          $ref: "#/components/responses/GatewayTimeout"
     parameters:
       - $ref: "#/components/parameters/environmentName"
       - $ref: "#/components/parameters/packageName"
@@ -3115,18 +2850,10 @@ paths:
           $ref: "#/components/responses/NotModified"
         "400":
           $ref: "#/components/responses/BadRequest"
-        "401":
-          $ref: "#/components/responses/Unauthorized"
-        "403":
-          $ref: "#/components/responses/Forbidden"
         "404":
           $ref: "#/components/responses/NotFound"
-        "409":
-          $ref: "#/components/responses/Conflict"
         "410":
           $ref: "#/components/responses/Gone"
-        "412":
-          $ref: "#/components/responses/PreconditionFailed"
         "424":
           $ref: "#/components/responses/DependencyFailed"
         "429":
@@ -3137,6 +2864,8 @@ paths:
           $ref: "#/components/responses/DatabaseUnreachable"
         "503":
           $ref: "#/components/responses/Unavailable"
+        "504":
+          $ref: "#/components/responses/GatewayTimeout"
 
 
   /environments/{environmentName}/packages/{packageName}/versions/{versionId}/connections/{connectionName}/schemas/{schemaName}/tables/{tableName}:
@@ -3170,18 +2899,10 @@ paths:
           $ref: "#/components/responses/NotModified"
         "400":
           $ref: "#/components/responses/BadRequest"
-        "401":
-          $ref: "#/components/responses/Unauthorized"
-        "403":
-          $ref: "#/components/responses/Forbidden"
         "404":
           $ref: "#/components/responses/NotFound"
-        "409":
-          $ref: "#/components/responses/Conflict"
         "410":
           $ref: "#/components/responses/Gone"
-        "412":
-          $ref: "#/components/responses/PreconditionFailed"
         "424":
           $ref: "#/components/responses/DependencyFailed"
         "429":
@@ -3192,6 +2913,8 @@ paths:
           $ref: "#/components/responses/DatabaseUnreachable"
         "503":
           $ref: "#/components/responses/Unavailable"
+        "504":
+          $ref: "#/components/responses/GatewayTimeout"
       parameters:
         - $ref: "#/components/parameters/ifNoneMatch"
 
@@ -3220,18 +2943,10 @@ paths:
               $ref: "#/components/headers/RequestId"
         "400":
           $ref: "#/components/responses/BadRequest"
-        "401":
-          $ref: "#/components/responses/Unauthorized"
-        "403":
-          $ref: "#/components/responses/Forbidden"
         "404":
           $ref: "#/components/responses/NotFound"
-        "409":
-          $ref: "#/components/responses/Conflict"
         "410":
           $ref: "#/components/responses/Gone"
-        "412":
-          $ref: "#/components/responses/PreconditionFailed"
         "413":
           $ref: "#/components/responses/PayloadTooLarge"
         "424":
@@ -3410,15 +3125,6 @@ components:
     BadRequest:
       description: The request is malformed, or the Malloy text does not compile (`reason` `INVALID_REQUEST`, `COMPILE_ERROR`,
         `QUERY_REJECTED`, or a `VERSION_*`/`MANIFEST_*` validation reason).
-      content:
-        application/json:
-          schema:
-            $ref: "#/components/schemas/Error"
-      headers:
-        X-Request-Id:
-          $ref: "#/components/headers/RequestId"
-    Unauthorized:
-      description: The gateway in front of this server refused the caller (`UNAUTHORIZED`). Publisher itself authenticates nobody.
       content:
         application/json:
           schema:
