@@ -25,6 +25,7 @@ import {
 import type { NotebookCellSpan } from "./notebook";
 import type { ReportQueryTileSpec } from "./report_manifest";
 import { Environment, resetAdmissionTelemetryForTesting } from "./environment";
+import { writePackageFiles } from "../test_helpers/temp_package";
 
 const manifestOf = (result: { document?: CompiledDocument }) => {
    if (!result.document?.manifest) throw new Error("no manifest");
@@ -78,16 +79,11 @@ describe("compile of a document (compileSource)", () => {
       files: Record<string, string>,
       manifest: Record<string, unknown> = {},
    ) {
-      await env.installPackage("pkg", async (stagingPath) => {
-         await fs.mkdir(stagingPath, { recursive: true });
-         await fs.writeFile(
-            path.join(stagingPath, "publisher.json"),
-            JSON.stringify({ name: "pkg", description: "doc", ...manifest }),
-         );
-         for (const [name, text] of Object.entries(files)) {
-            await fs.writeFile(path.join(stagingPath, name), text);
-         }
-      });
+      await env.installPackage("pkg", async (stagingPath) =>
+         writePackageFiles(stagingPath, files, {
+            manifest: { name: "pkg", description: "doc", ...manifest },
+         }),
+      );
    }
 
    beforeEach(async () => {

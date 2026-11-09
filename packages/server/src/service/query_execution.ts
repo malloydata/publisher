@@ -15,6 +15,7 @@ import {
    type QueryMaterializer,
    type Result,
 } from "@malloydata/malloy";
+import type { GovernedRunnable } from "./governance/governed_runnable";
 import * as Malloy from "@malloydata/malloy-interfaces";
 import { getDefaultQueryRowLimit } from "../config";
 import { BadRequestError, databaseAccessFailure } from "../errors";
@@ -37,7 +38,7 @@ import { withStatementUsage } from "./statement_usage";
  * The options prepare and run must agree on. Spread into both calls, so a key
  * the caller leaves out is left out of both.
  */
-export type PrepareOptions = NonNullable<
+type PrepareOptions = NonNullable<
    Parameters<QueryMaterializer["getPreparedResult"]>[0]
 >;
 
@@ -54,7 +55,8 @@ export interface PreparedRun {
  * name, which only the prepared result knows), then run.
  */
 export async function prepareAndRun(
-   runnable: QueryMaterializer,
+   /** Only a runnable governance returned runs (`./governance/governed_runnable`). */
+   runnable: GovernedRunnable,
    options: PrepareOptions,
    run: {
       abortSignal: AbortSignal | undefined;
@@ -153,7 +155,7 @@ export function serializeWithinCaps(
 
 type ErrorClass = abstract new (...args: never[]) => Error;
 
-export interface RunErrorContext {
+interface RunErrorContext {
    packageName: string;
    modelPath: string;
    /** Prefix of the generic 400's message, e.g. `Query execution failed`. */

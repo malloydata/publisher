@@ -3,7 +3,7 @@
 
 /**
  * Memory guards for the Malloy model-query path (`runnable.run`, used by
- * `getQueryResults` and notebook cell execution), in the order a caller runs
+ * `runQuery` and notebook cell execution), in the order a caller runs
  * them:
  *
  *   1. {@link resolveModelQueryRowLimit}: the `rowLimit` to push down. The

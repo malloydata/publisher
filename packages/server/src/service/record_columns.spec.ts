@@ -3,7 +3,7 @@
 
 import { DuckDBConnection } from "@malloydata/db-duckdb";
 import { afterAll, beforeAll, describe, expect, it, spyOn } from "bun:test";
-import { capColumns, rankLexically } from "../mcp/tools/schema_index";
+import { capColumns, rankLexically } from "../retrieval/index/schema_index";
 import { columnsOfSchema, listTablesForSchema } from "./db_utils";
 import type { ApiConnection } from "./model";
 

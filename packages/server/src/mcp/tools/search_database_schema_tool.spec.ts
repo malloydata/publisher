@@ -1,7 +1,7 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
-import { describe, expect, it, mock } from "bun:test";
+import { describe, expect, it } from "bun:test";
 
 // Tiers 3, 4 and 5 go through ConnectionController, so they were never driven
 // through the handler at all: the tier-5 defect (returning a DIFFERENT table as
@@ -10,18 +10,17 @@ import { describe, expect, it, mock } from "bun:test";
 const controllerCalls: string[] = [];
 let schemasResult: unknown[] = [];
 let tablesResult: unknown[] = [];
-mock.module("../../controller/connection.controller", () => ({
-   ConnectionController: class {
-      async listSchemas() {
-         controllerCalls.push("listSchemas");
-         return schemasResult;
-      }
-      async listTables() {
-         controllerCalls.push("listTables");
-         return tablesResult;
-      }
+const fakeController = {
+   async listSchemas() {
+      controllerCalls.push("listSchemas");
+      return schemasResult;
    },
-}));
+   async listTables() {
+      controllerCalls.push("listTables");
+      return tablesResult;
+   },
+} as unknown as ConnectionController;
+import type { ConnectionController } from "../../controller/connection.controller";
 import type { EnvironmentStore } from "../../service/environment_store";
 import { EnvironmentNotFoundError } from "../../errors";
 import {
@@ -31,6 +30,7 @@ import {
    malloySourceSnippet,
    registerSearchDatabaseSchemaTool,
 } from "./search_database_schema_tool";
+import { testRetrieval } from "../../test_helpers/test_retrieval";
 
 type Handler = (params: Record<string, unknown>) => Promise<{
    isError?: boolean;
@@ -40,13 +40,15 @@ type Handler = (params: Record<string, unknown>) => Promise<{
 function captureHandler(store: Partial<EnvironmentStore>): Handler {
    let handler: Handler | undefined;
    const fakeServer = {
-      tool: (_name: string, _desc: string, _shape: unknown, h: Handler) => {
+      registerTool: (_name: string, _config: unknown, h: Handler) => {
          handler = h;
       },
    };
    registerSearchDatabaseSchemaTool(
       fakeServer as never,
       store as EnvironmentStore,
+      fakeController,
+      testRetrieval(store as EnvironmentStore),
    );
    if (!handler) throw new Error("handler was not registered");
    return handler;

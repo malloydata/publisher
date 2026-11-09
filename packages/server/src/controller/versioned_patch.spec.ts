@@ -53,6 +53,14 @@ describe("changedFields", () => {
       expect(changedFields({ scope: "version" }, {}, "sales", null)).toEqual([
          "scope",
       ]);
+      // An unset queryableSources reads as "declared", as it does on the
+      // PATCH of a package installed from a location (one defaults table).
+      expect(
+         changedFields({ queryableSources: "declared" }, {}, "sales", null),
+      ).toEqual([]);
+      expect(
+         changedFields({ queryableSources: "all" }, {}, "sales", null),
+      ).toEqual(["queryableSources"]);
    });
 
    it("reads a top-level empty list as unset, as a generated Java client sends one", () => {

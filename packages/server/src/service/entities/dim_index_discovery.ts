@@ -18,17 +18,20 @@
  */
 
 import {
-   parseAccessFilterBody,
+   accessFilterTerms,
    resolveGates,
-   type AccessFilterTerm,
    type GateExpr,
    type GateStructDef,
 } from "./access_gates";
 import { sourceFilters } from "./filters";
 import { findForbiddenIndexPolicyKeys } from "./index_annotation_parsing";
-import { walkExploreTree, type JoinDescentRule } from "./explore_walk";
+import {
+   walkExploreTree,
+   type JoinDescentRule,
+   type QueryabilityGuard,
+} from "./explore_walk";
 import { getAccessModifier } from "./field_helpers";
-import { AccessModifierEnum } from "./internal_types";
+import { AccessModifierEnum, type AuthorizeTerm } from "./internal_types";
 import type {
    Explore as MalloyExplore,
    Field as MalloyField,
@@ -85,6 +88,8 @@ export interface DimIndexCandidate {
     * Empty for the common case of a non-parameterized source.
     */
    requiredParameterNames: string[];
+   /** Set when the walk reached the dimension through a provisional descent. */
+   guard?: QueryabilityGuard;
 }
 
 /** Why an ``#(index)`` tag was rejected at publish-time compile. */
@@ -107,8 +112,10 @@ export abstract class DimIndexRejectionError extends Error {
  * Where an extraction reports an annotation an index cannot honor. The
  * default throws; the load passes one that collects, so every such
  * declaration becomes a package warning, not only the first per file.
+ * `guard` is set when the annotation was reached through a provisional
+ * descent, so the refusal holds only where that does.
  */
-export type Refuse = (error: Error) => void;
+export type Refuse = (error: Error, guard?: QueryabilityGuard) => void;
 
 export const throwRefusal: Refuse = (error) => {
    throw error;
@@ -467,7 +474,7 @@ export function accessFilterTermsForGates(args: {
    explore: MalloyExplore;
    givenTypes: ReadonlyMap<string, string>;
 }): {
-   terms: Array<AccessFilterTerm[] | undefined>;
+   terms: Array<AuthorizeTerm[] | undefined>;
    withheld?: GateTermsWithheldReason;
 } {
    const { gates, composite, explore, givenTypes } = args;
@@ -478,8 +485,7 @@ export function accessFilterTermsForGates(args: {
 
    const terms = gates.map((g) => {
       if (g.route !== "access_filter") return undefined;
-      const parsed = parseAccessFilterBody(g.expr, givenTypes);
-      return parsed.ok ? parsed.terms : undefined;
+      return accessFilterTerms(g.expr, givenTypes);
    });
    const unqueryable = terms.some((entryTerms) =>
       entryTerms?.some(
@@ -510,7 +516,7 @@ export const SCALAR_GIVEN_TYPES: ReadonlySet<string> = new Set([
 
 /** A gate keys a dimension only through `=` over a scalar-typed given. */
 function isScalarEqualityTerm(
-   term: AccessFilterTerm,
+   term: AuthorizeTerm,
    givenTypes: ReadonlyMap<string, string>,
 ): boolean {
    const declared = givenTypes.get(term.given)?.trim().toLowerCase();
@@ -628,7 +634,7 @@ export function collectDimIndexCandidates(
       ];
       const requiredParameterNames =
          requiredParameterNamesForExplore(rootExplore);
-      for (const { explore, sourceName } of walkExploreTree(
+      for (const { explore, sourceName, guard } of walkExploreTree(
          [rootExplore],
          descend,
       )) {
@@ -652,6 +658,7 @@ export function collectDimIndexCandidates(
                requiredFilterDimensions,
                gateDimensions,
                requiredParameterNames,
+               ...(guard && { guard }),
             };
             try {
                // The field IS public and #(index)-tagged: it must be a
@@ -669,7 +676,7 @@ export function collectDimIndexCandidates(
                assertNoForbiddenIndexPolicyKeys(candidate, tags, modelFilePath);
             } catch (error) {
                if (!(error instanceof DimIndexRejectionError)) throw error;
-               refuse(error);
+               refuse(error, guard);
                continue;
             }
             candidates.push(candidate);

@@ -9,6 +9,7 @@
 //
 // The LIVE relation behind the fact is empty, so a wrapper answering with rows
 // is provably reading the stored table, and one answering with none fell back.
+import { unrecordedAudit } from "./access_record";
 import { DuckDBConnection } from "@malloydata/db-duckdb";
 import {
    FixedConnectionMap,
@@ -22,9 +23,10 @@ import * as fs from "fs/promises";
 import * as os from "os";
 import * as path from "path";
 import { pathToFileURL } from "url";
-import type { ServeBinding } from "./materialization_serve_transform";
+import type { ServeBinding } from "./materialization/serve/materialization_serve_transform";
 import { Model } from "./model";
 import { installSettings } from "../test_helpers/settings_env";
+import { QueryPrivileges } from "./model_query_request";
 
 /** Puts back the settings the current test installed. */
 let restoreSettings: (() => void) | undefined;
@@ -103,23 +105,17 @@ async function buildModel(): Promise<Model> {
    const compiled = await mm.getModel();
    // eslint-disable-next-line @typescript-eslint/no-explicit-any
    const modelDef = (compiled as any)._modelDef;
-   const model = new Model(
-      "pkg",
-      "m.malloy",
-      {},
-      "model",
+   const model = new Model({
+      packageName: "pkg",
+      modelPath: "m.malloy",
+      dataStyles: {},
+      modelType: "model",
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      mm as any,
+      modelMaterializer: mm as any,
       modelDef,
-      undefined,
-      undefined,
-      undefined,
-      undefined,
-      undefined,
-      undefined,
-      [],
-      modelDefToModelInfo(modelDef),
-   );
+      givens: [],
+      modelInfo: modelDefToModelInfo(modelDef),
+   });
    const serveConfig = new MalloyConfig({ connections: {} });
    serveConfig.wrapConnections(() => new FixedConnectionMap(connMap, "duckdb"));
    model.setServeDestinationConfig(() => serveConfig);
@@ -128,12 +124,10 @@ async function buildModel(): Promise<Model> {
 }
 
 async function rows(model: Model, query: string): Promise<unknown[]> {
-   const res = await model.getQueryResults(
-      undefined,
-      undefined,
-      query,
-      {},
-      true,
+   const res = await model.runQuery(
+      unrecordedAudit(),
+      { query, filterParams: {} },
+      QueryPrivileges.of({ bypassFilters: true }),
    );
    return res.compactResult as unknown as unknown[];
 }

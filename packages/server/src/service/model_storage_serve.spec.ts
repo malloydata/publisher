@@ -2,11 +2,12 @@
 // SPDX-License-Identifier: MIT
 
 // End-to-end routing contract for the `storage=` virtual-source serve path,
-// exercised through the real Model.getQueryResults against a real in-memory
+// exercised through the real Model.runQuery against a real in-memory
 // DuckDB. The ORIGINAL source returns 0; the serve binding points at a table
 // returning 60 — so the value observed proves whether the query was routed
 // through the serve-shape transform (60) or served live from the original
 // model (0). This pins the mode gate, the binding gate, and the safe fallback.
+import { unrecordedAudit } from "./access_record";
 import { DuckDBConnection } from "@malloydata/db-duckdb";
 import {
    FixedConnectionMap,
@@ -17,8 +18,9 @@ import {
 } from "@malloydata/malloy";
 import { afterEach, describe, expect, it } from "bun:test";
 import { Model } from "./model";
-import type { ServeBinding } from "./materialization_serve_transform";
+import type { ServeBinding } from "./materialization/serve/materialization_serve_transform";
 import { installSettings } from "../test_helpers/settings_env";
+import { QueryPrivileges } from "./model_query_request";
 
 /** Puts back the settings the current test installed. */
 let restoreSettings: (() => void) | undefined;
@@ -81,23 +83,16 @@ async function buildModel(opts?: {
    // eslint-disable-next-line @typescript-eslint/no-explicit-any
    const modelDef = (compiled as any)._modelDef;
    const modelInfo = modelDefToModelInfo(modelDef);
-   const model = new Model(
-      "pkg",
-      "m.malloy",
-      {},
-      "model",
+   const model = new Model({
+      packageName: "pkg",
+      modelPath: "m.malloy",
+      dataStyles: {},
+      modelType: "model",
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      mm as any,
+      modelMaterializer: mm as any,
       modelDef,
-      undefined,
-      undefined,
-      undefined,
-      undefined,
-      undefined,
-      undefined,
-      undefined,
       modelInfo,
-   );
+   });
    // The serve shape compiles against the destination connections only, so hand
    // it a config carrying just this one — the same disjointness the Environment
    // enforces in production, expressed for a single-connection test.
@@ -108,12 +103,10 @@ async function buildModel(opts?: {
 }
 
 async function runTotal(model: Model): Promise<number> {
-   const res = await model.getQueryResults(
-      undefined,
-      undefined,
-      QUERY,
-      {},
-      true,
+   const res = await model.runQuery(
+      unrecordedAudit(),
+      { query: QUERY, filterParams: {} },
+      QueryPrivileges.of({ bypassFilters: true }),
    );
    // compactResult is the row value array: [{ t: <sum> }].
    const rows = res.compactResult as unknown as { t: number }[];
@@ -212,12 +205,10 @@ describe("storage= serve routing (end-to-end)", () => {
       ]);
       // 2 rows in storage vs the original source's 1 — so the count proves which
       // path ran without referencing a column.
-      const res = await model.getQueryResults(
-         undefined,
-         undefined,
-         "run: X -> { aggregate: c is count() }",
-         {},
-         true,
+      const res = await model.runQuery(
+         unrecordedAudit(),
+         { query: "run: X -> { aggregate: c is count() }", filterParams: {} },
+         QueryPrivileges.of({ bypassFilters: true }),
       );
       expect((res.compactResult as unknown as { c: number }[])[0].c).toBe(2);
       expect(res.servedFrom).toBe("storage");
@@ -250,12 +241,10 @@ describe("storage= serve routing (end-to-end)", () => {
       expect(await runTotal(model)).toBe(60);
       // ...and the hidden one is still refused, not served as 'from_storage'.
       await expect(
-         model.getQueryResults(
-            undefined,
-            undefined,
-            "run: X -> { group_by: secret }",
-            {},
-            true,
+         model.runQuery(
+            unrecordedAudit(),
+            { query: "run: X -> { group_by: secret }", filterParams: {} },
+            QueryPrivileges.of({ bypassFilters: true }),
          ),
       ).rejects.toThrow();
    });
@@ -285,24 +274,20 @@ describe("storage= serve routing (end-to-end)", () => {
             ],
          },
       ]);
-      const computed = await model.getQueryResults(
-         undefined,
-         undefined,
-         "run: X -> { group_by: Total }",
-         {},
-         true,
+      const computed = await model.runQuery(
+         unrecordedAudit(),
+         { query: "run: X -> { group_by: Total }", filterParams: {} },
+         QueryPrivileges.of({ bypassFilters: true }),
       );
       expect(
          (computed.compactResult as unknown as { Total: number }[])[0].Total,
       ).toBe(20);
       expect(computed.servedFrom).toBe("storage");
       // And the physical column it collides with still resolves to itself.
-      const raw = await model.getQueryResults(
-         undefined,
-         undefined,
-         "run: X -> { group_by: total }",
-         {},
-         true,
+      const raw = await model.runQuery(
+         unrecordedAudit(),
+         { query: "run: X -> { group_by: total }", filterParams: {} },
+         QueryPrivileges.of({ bypassFilters: true }),
       );
       expect(
          (raw.compactResult as unknown as { total: number }[])[0].total,
@@ -338,12 +323,10 @@ describe("storage= serve routing (end-to-end)", () => {
       // `except:` makes `secret` undefined → the query is refused. (Before the
       // fix this returned 'from_storage' — the leak.)
       await expect(
-         model.getQueryResults(
-            undefined,
-            undefined,
-            "run: X -> { group_by: secret }",
-            {},
-            true,
+         model.runQuery(
+            unrecordedAudit(),
+            { query: "run: X -> { group_by: secret }", filterParams: {} },
+            QueryPrivileges.of({ bypassFilters: true }),
          ),
       ).rejects.toThrow();
    });

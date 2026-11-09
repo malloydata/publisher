@@ -23,6 +23,7 @@
  * loaded concurrently into multiple worker isolates of the same Bun
  * process. Production uses one pool; this matches.
  */
+import { unrecordedAudit } from "../../src/service/access_record";
 import { afterEach, beforeEach, describe, expect, it, spyOn } from "bun:test";
 import * as fs from "fs";
 import * as os from "os";
@@ -102,11 +103,10 @@ describe("Package.create via worker pool", () => {
          // recompile, then runs the SQL against the *main thread's*
          // DuckDB connection (the only one with the in-memory `nums`
          // source loaded via duckdb.sql()).
-         const { result } = await model!.getQueryResults(
-            "nums",
-            "total_v",
-            undefined,
-         );
+         const { result } = await model!.runQuery(unrecordedAudit(), {
+            sourceName: "nums",
+            queryName: "total_v",
+         });
          expect(result.data).toBeDefined();
       } finally {
          await duckdb.close();
@@ -329,6 +329,7 @@ run: gated -> { aggregate: c }`,
             const model = pkg.getModel("nb.malloynb");
 
             const preImport = await model!.executeNotebookCell(
+               unrecordedAudit(),
                1,
                undefined,
                false,
@@ -347,6 +348,7 @@ run: gated -> { aggregate: c }`,
             ).toBe(4);
 
             const postImport = await model!.executeNotebookCell(
+               unrecordedAudit(),
                2,
                undefined,
                false,
@@ -380,7 +382,9 @@ run: gated -> { aggregate: c }`,
             );
             const err = await pkg
                .getModel("og_nb.malloynb")!
-               .executeNotebookCell(0, undefined, false, { HIDE: "a" })
+               .executeNotebookCell(unrecordedAudit(), 0, undefined, false, {
+                  HIDE: "a",
+               })
                .catch((e: unknown) => e);
             expect((err as Error).message).toMatch(/unknown given 'HIDE'/);
          } finally {
@@ -560,14 +564,10 @@ run: mid_ungated -> { aggregate: c }`,
          const pkg = await Package.create("env", "pkg", tempDir, malloyConfig);
          const err = await pkg
             .getModel("og_entry.malloy")!
-            .getQueryResults(
-               undefined,
-               undefined,
-               "run: mid_ungated -> { aggregate: c }",
-               undefined,
-               undefined,
-               { HIDE: "a" },
-            )
+            .runQuery(unrecordedAudit(), {
+               query: "run: mid_ungated -> { aggregate: c }",
+               givens: { HIDE: "a" },
+            })
             .catch((e: unknown) => e);
          expect((err as Error).message).toMatch(/unknown given 'HIDE'/);
       } finally {
@@ -1239,7 +1239,7 @@ source: orders is duckdb.sql("""
             );
 
             const { computePackageBuildPlan } = await import(
-               "../../src/service/build_plan_compile"
+               "../../src/service/materialization/plan/build_plan_compile"
             );
             const mainThread = await computePackageBuildPlan(pkg);
             expect(workerPlan.outcome).toEqual(mainThread);

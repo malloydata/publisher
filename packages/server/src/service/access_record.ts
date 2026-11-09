@@ -31,14 +31,15 @@
 import { trace } from "@opentelemetry/api";
 import type { GivenValue, ModelDef } from "@malloydata/malloy";
 import type { components } from "../api";
-import { AccessDeniedError, ModelNotFoundError } from "../errors";
-import { logger } from "../logger";
+import { errorKind, internalErrorToHttpError, type ErrorKind } from "../errors";
+import { logger, traceIdOf } from "../logger";
+import { redactConnectionSecretShapes } from "../pg_helpers";
 import { settings } from "../settings";
-import {
-   fieldPathsIn,
-   findIrSource,
-   readSourceClassifications,
-} from "./classification";
+import { ACCESS_FILTER_ROUTE, AUTHORIZE_ROUTE } from "./authorize_routes";
+import { readQueryFieldReads } from "./classification";
+import { readPreparedQuery } from "./governance/ir/prepared_query";
+
+const MAX_RECORDED_ERROR_CHARS = 2000;
 
 type ApiSource = components["schemas"]["Source"];
 type ApiGiven = components["schemas"]["Given"];
@@ -48,10 +49,28 @@ export function callerHeaderName(): string {
    return settings.get("callerHeader").toLowerCase();
 }
 
+/** Who the gateway says is asking and the trace the request belongs to. */
+export type AccessIdentity = Pick<AccessRecordBase, "caller" | "traceId">;
+
+/** The identity a request's headers carry, with a key only for what is present so it spreads into a record base. */
+export function accessIdentityOf(
+   headers: Record<string, string | string[] | undefined> = {},
+): AccessIdentity {
+   const raw = headers[callerHeaderName()];
+   const caller = (Array.isArray(raw) ? raw[0] : raw) || undefined;
+   const traceId = traceIdOf({ headers });
+   return {
+      ...(caller ? { caller } : {}),
+      ...(traceId ? { traceId } : {}),
+   };
+}
+
 /** A field the compiled query read, with its classes as the model declares or infers them. */
 export interface FieldRead {
    path: string;
    classifications: string[];
+   /** Classes its inputs carry that it declares below; present only when some. */
+   dropped?: string[];
 }
 
 /**
@@ -67,9 +86,9 @@ export interface QueryAccessSummary {
     * `open`: no gate on the source. `admitted`: a lock admitted the caller and
     * no row filter applied. `filtered`: a row filter was grafted (a lock may
     * also have admitted). `bypassed`: the data-management header skipped the
-    * gates.
+    * gates. `ungated`: a route that serves with no gate to run (raw SQL).
     */
-   decision: "open" | "admitted" | "filtered" | "bypassed";
+   decision: "open" | "admitted" | "filtered" | "bypassed" | "ungated";
    /** The names of every given supplied, secure or not; a plain given's value is never recorded. */
    givenNames: string[];
    /**
@@ -82,6 +101,8 @@ export interface QueryAccessSummary {
    gateGivenNames: string[];
    /** The fields the compiled query reads, by path from the source, with classes. */
    fieldsRead: FieldRead[];
+   /** False when a read could not be placed or the join walk was cut short, so `fieldsRead` may be short. */
+   fieldsReadComplete: boolean;
    /** Rows returned, after the cap. */
    rowCount: number;
 }
@@ -89,14 +110,60 @@ export interface QueryAccessSummary {
 const byCodepoint = (a: string, b: string) => (a < b ? -1 : a > b ? 1 : 0);
 
 /**
- * Build the summary for an admitted query. Reads the prepared query's IR for
- * the fields it references and resolves each against the entry source's
- * lineage, so a reference through a join (`patient.ssn`) carries the class
- * declared where the field lives. Anything unresolvable is simply absent.
+ * The gates enforcement evaluated for one bound query, per route: the locks it
+ * decided (and admitted) and the row filters it grafted, read off the entry
+ * point's gate walk, not looked up by source name. A source the caller
+ * declares in the query (`mine is chart extend {}`) has no load-time entry, so
+ * only this says which lock admitted it. On the bypass path, the gates the
+ * walk found in force and skipped.
+ */
+export interface EnforcedGates {
+   authorize: string[];
+   accessFilter: string[];
+}
+
+/**
+ * {@link EnforcedGates} from the gate entries enforcement evaluated, in the
+ * order it evaluated them. A gate is evaluated once per check that reaches it
+ * (a request-declared entry point is decided by the walk and again by the
+ * laundering check, each building its own entry), so an entry is listed once
+ * per route and expression list, not per object.
+ */
+export function enforcedGatesOf(
+   entries: ReadonlyArray<{ route: string; exprs: readonly string[] }>,
+): EnforcedGates {
+   const seen = new Set<string>();
+   const unique = entries.filter((e) => {
+      const key = JSON.stringify([e.route, e.exprs]);
+      if (seen.has(key)) return false;
+      seen.add(key);
+      return true;
+   });
+   const of = (route: string) =>
+      unique.filter((e) => e.route === route).flatMap((e) => [...e.exprs]);
+   return {
+      authorize: of(AUTHORIZE_ROUTE),
+      accessFilter: of(ACCESS_FILTER_ROUTE),
+   };
+}
+
+/**
+ * Build the summary for an admitted query. Resolves the fields the compiled
+ * query's first stage references against the lineage of the struct it ran
+ * against, so a reference through a join (`patient.ssn`) carries the class
+ * declared where the field lives. A read that cannot be placed, or a join
+ * walk that was cut short, sets `fieldsReadComplete` false.
  */
 export async function summarizeQueryAccess(args: {
    runnable: { getPreparedQuery(): Promise<unknown> };
    modelDef: ModelDef | undefined;
+   /**
+    * What enforcement evaluated for this query ({@link EnforcedGates}); the
+    * record's gates and decision come from it. Absent only when no bind
+    * recorded one, and then the load-time `apiSources` entry for `source`
+    * stands in, as before enforcement recorded its own.
+    */
+   enforced: EnforcedGates | undefined;
    apiSources: readonly ApiSource[] | undefined;
    /** The model's givens, for which are `#(secure)`. */
    modelGivens: readonly ApiGiven[] | undefined;
@@ -106,11 +173,13 @@ export async function summarizeQueryAccess(args: {
    grafts: ReadonlyArray<{ givenNames: readonly string[] }>;
    rowCount: number;
 }): Promise<QueryAccessSummary> {
-   const apiSource = args.source
-      ? args.apiSources?.find((s) => s.name === args.source)
-      : undefined;
-   const authorize = apiSource?.authorize ?? [];
-   const accessFilter = apiSource?.accessFilter ?? [];
+   const apiSource =
+      !args.enforced && args.source
+         ? args.apiSources?.find((s) => s.name === args.source)
+         : undefined;
+   const authorize = args.enforced?.authorize ?? apiSource?.authorize ?? [];
+   const accessFilter =
+      args.enforced?.accessFilter ?? apiSource?.accessFilter ?? [];
    const gateGivenNames = Array.from(
       new Set(args.grafts.flatMap((g) => Array.from(g.givenNames))),
    ).sort(byCodepoint);
@@ -123,28 +192,48 @@ export async function summarizeQueryAccess(args: {
           : "open";
 
    let fieldsRead: FieldRead[] = [];
+   let fieldsReadComplete = false;
    try {
-      const prepared = (await args.runnable.getPreparedQuery()) as {
-         _query?: unknown;
-      };
-      const lineage = args.source
-         ? readSourceClassifications(
-              findIrSource(args.modelDef, args.source)?.fields,
-           )
-         : undefined;
-      const paths = new Set(
-         fieldPathsIn(prepared._query).map((p) => p.join(".")),
+      const prepared = await readPreparedQuery(args.runnable);
+      // The compiled model, which holds a source the caller declared in the query.
+      const reads = readQueryFieldReads(
+         prepared.modelDef ?? args.modelDef,
+         prepared.query,
       );
-      fieldsRead = Array.from(paths)
-         .sort(byCodepoint)
-         .flatMap((path) => {
-            const known = lineage?.get(path);
-            // Only dimensions and measures of the entry source (own or
-            // joined): a reference the lineage cannot place is not a field a
-            // caller read from this source.
-            if (!known || !known.isField) return [];
-            return [{ path, classifications: known.classifications }];
-         });
+      if (reads) {
+         const { lineage, paths } = reads;
+         fieldsReadComplete = reads.complete && !lineage.truncated;
+         const found = new Map<string, FieldRead>();
+         const add = (path: string, classifications: string[]): void => {
+            if (found.has(path)) return;
+            const dropped = lineage.get(path)?.dropped ?? [];
+            found.set(path, {
+               path,
+               classifications,
+               ...(dropped.length > 0 ? { dropped } : {}),
+            });
+         };
+         for (const path of paths) {
+            const known = lineage.get(path);
+            if (!known) {
+               fieldsReadComplete = false;
+               continue;
+            }
+            // A view or a join is not a field a caller read.
+            if (!known.isField) continue;
+            if (known.unresolved.length > 0 && known.declared.length === 0) {
+               fieldsReadComplete = false;
+            }
+            add(path, known.classifications);
+            // A derived field reads the classified fields it is built from.
+            for (const input of known.inputs) {
+               add(input.field, input.classifications);
+            }
+         }
+         fieldsRead = Array.from(found.values()).sort((a, b) =>
+            byCodepoint(a.path, b.path),
+         );
+      }
    } catch {
       // The record is emitted with no fields rather than not at all.
    }
@@ -167,6 +256,7 @@ export async function summarizeQueryAccess(args: {
       ...(Object.keys(secureGivens).length > 0 ? { secureGivens } : {}),
       gateGivenNames,
       fieldsRead,
+      fieldsReadComplete,
       rowCount: args.rowCount,
    };
 }
@@ -177,12 +267,14 @@ export type AccessOutcome =
    | "denied_lock"
    | "refused_surface"
    | "bad_request"
+   | "cancelled"
    | "error";
 
-/** The outcome a thrown error means, by its class; the status it maps to is the route's. */
+/** The outcome a thrown error means, by its kind; the status it maps to is the route's. */
 export function outcomeOf(error: unknown, status: number): AccessOutcome {
-   if (error instanceof AccessDeniedError) return "denied_lock";
-   if (error instanceof ModelNotFoundError || status === 404) {
+   const kind = errorKind(error);
+   if (kind === "access_denied") return "denied_lock";
+   if (kind === "model_not_found" || status === 404) {
       return "refused_surface";
    }
    if (status === 403) return "denied_lock";
@@ -196,7 +288,10 @@ export interface AccessRecord extends Partial<QueryAccessSummary> {
    environment: string;
    package: string;
    version?: string;
-   modelPath: string;
+   /** Absent on a route with no model (raw SQL). */
+   modelPath?: string;
+   /** The connection a raw SQL request ran against. */
+   connection?: string;
    /** The named query, when one was run. */
    queryName?: string;
    /** The source named in the request, when one was. */
@@ -226,7 +321,9 @@ export function emitAccessRecord(record: AccessRecord): void {
       "publisher.access.outcome": record.outcome,
       "publisher.access.status": record.status,
       "publisher.access.package": record.package,
-      "publisher.access.model_path": record.modelPath,
+      ...(record.modelPath
+         ? { "publisher.access.model_path": record.modelPath }
+         : {}),
       ...(record.source ? { "publisher.access.source": record.source } : {}),
       ...(record.decision
          ? { "publisher.access.decision": record.decision }
@@ -246,4 +343,137 @@ export function emitAccessRecord(record: AccessRecord): void {
            }
          : {}),
    });
+}
+
+declare const recorded: unique symbol;
+
+/**
+ * The slot a request's access record is read from. Only {@link withAccessRecord}
+ * mints one, so a query cannot run without a record being owed for it. The
+ * Model writes what it learned (`summary`, how the answer was served) here and
+ * never emits; a route writes what only it knows (`version`).
+ */
+export interface QueryAudit {
+   readonly [recorded]: true;
+   summary?: QueryAccessSummary;
+   version?: string;
+   servedFrom?: string | null;
+   executionTimeMs?: number;
+}
+
+/** What a route knows before it runs the request. */
+export type AccessRecordBase = Omit<
+   AccessRecord,
+   "event" | "outcome" | "status" | "durationMs"
+>;
+
+const mintAudit = (): QueryAudit => ({}) as QueryAudit;
+
+/** For specs that call the Model directly; `access_record_audit.spec` fails any other caller. */
+export const unrecordedAudit = mintAudit;
+
+/**
+ * Run a query the system issues for itself (the value-index build at package
+ * load), which no caller asked for and so is owed no record. Nothing else may
+ * call it (`access_record_audit.spec`).
+ */
+export const runUnrecorded = <T>(
+   run: (audit: QueryAudit) => Promise<T>,
+): Promise<T> => run(mintAudit());
+
+/** The kinds whose recorded text is what the HTTP path answered (ConnectionError and its subclasses, and rejected credentials). */
+const ANSWERED_TEXT_KINDS: ReadonlySet<ErrorKind> = new Set<ErrorKind>([
+   "connection",
+   "connection_failed",
+   "connection_pool_exhausted",
+   "connection_auth",
+]);
+
+/** A connection error's text is what the HTTP path answers, since a driver quotes the statement back and given values are literals in it. */
+function recordedErrorText(error: unknown, answered: string): string {
+   const text = ANSWERED_TEXT_KINDS.has(errorKind(error))
+      ? answered
+      : // Driver errors quote connection config back; the record is a log line.
+        redactConnectionSecretShapes(
+           String((error as Error)?.message ?? error),
+        );
+   return text.slice(0, MAX_RECORDED_ERROR_CHARS);
+}
+
+/** Emit a record such that a failure to build or write it never replaces the query's own answer. */
+function emitBestEffort(build: () => AccessRecord): void {
+   try {
+      emitAccessRecord(build());
+   } catch (failure) {
+      try {
+         logger.error("Access record not emitted", { error: failure });
+      } catch {
+         // The sink that failed the record may fail this line too.
+      }
+   }
+}
+
+/**
+ * Run one request and emit exactly one access record for it, the only place
+ * one is emitted: `ok` when `run` resolves, `cancelled` when `signal` aborted,
+ * else the outcome the error maps to. A route wraps its whole request,
+ * pre-model steps included, so a refusal before the model is recorded too.
+ */
+export async function withAccessRecord<T>(
+   base: AccessRecordBase,
+   signal: AbortSignal | undefined,
+   run: (audit: QueryAudit) => Promise<T>,
+): Promise<T> {
+   const started = performance.now();
+   const audit = mintAudit();
+   const durationMs = () => Math.round(performance.now() - started);
+   let result: T;
+   try {
+      result = await run(audit);
+   } catch (error) {
+      emitBestEffort(() => {
+         const { status, json } = internalErrorToHttpError(error as Error, {
+            log: false,
+         });
+         return {
+            event: "access",
+            ...base,
+            ...(audit.version ? { version: audit.version } : {}),
+            // Set by a refusal that read the query first (the ceiling), so the record says what was read.
+            ...audit.summary,
+            ...(signal?.aborted
+               ? { outcome: "cancelled" as const, status: 499 }
+               : { outcome: outcomeOf(error, status), status }),
+            durationMs: durationMs(),
+            error: recordedErrorText(error, json.message),
+         };
+      });
+      throw error;
+   }
+   emitBestEffort(() => ({
+      event: "access",
+      ...base,
+      ...(audit.version ? { version: audit.version } : {}),
+      ...audit.summary,
+      outcome: "ok",
+      status: 200,
+      durationMs: durationMs(),
+      ...(audit.servedFrom !== undefined
+         ? { servedFrom: audit.servedFrom }
+         : {}),
+      ...(audit.executionTimeMs !== undefined
+         ? { executionTimeMs: audit.executionTimeMs }
+         : {}),
+   }));
+   return result;
+}
+
+/** Record a request refused before it reached the controller that wraps it (a bad parameter, the concurrency cap). */
+export async function recordRefusal(
+   base: AccessRecordBase,
+   error: Error,
+): Promise<void> {
+   await withAccessRecord(base, undefined, () => Promise.reject(error)).catch(
+      () => undefined,
+   );
 }

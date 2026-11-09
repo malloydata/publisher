@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
-import { EnvironmentStore } from "../service/environment_store";
+import type { McpServices } from "../app_services";
 
 import { registerCompileTool } from "./tools/compile_tool";
 import { registerDocsSearchTool } from "./tools/docs_search_tool";
@@ -17,11 +17,10 @@ import { registerGetAgentTool } from "./tools/get_agent_tool";
 import { registerGetSkillTool } from "./tools/get_skill_tool";
 import { registerSearchDatabaseSchemaTool } from "./tools/search_database_schema_tool";
 import { registerGetStatusTool } from "./tools/get_status_tool";
-import { BUNDLED_SKILLS } from "./skills/package_skills";
+import { BUNDLED_SKILLS } from "../service/skills/package_skills";
 import { SERVER_VERSION } from "../version";
-import { instrumentTools } from "./tool_telemetry";
 
-export const testServerInfo = {
+const testServerInfo = {
    name: "malloy-publisher-mcp-server",
    version: SERVER_VERSION,
    displayName: "Malloy Publisher MCP Server",
@@ -45,21 +44,36 @@ Task-specific guidance is served two ways. As prompts you can fetch by name: mal
 
 Results and any charts render in the Publisher web UI on the REST port (4000 by default).`;
 
-export function initializeMcpServer(
-   environmentStore: EnvironmentStore,
-): McpServer {
+/**
+ * Builds one MCP server over the services the composition root built. The
+ * tools call those shared instances; none constructs its own controller.
+ */
+export function initializeMcpServer(services: McpServices): McpServer {
+   const {
+      environmentStore,
+      retrieval,
+      queryUseCase,
+      compileController,
+      packageController,
+      connectionController,
+      querySlots,
+   } = services;
    const mcpServer = new McpServer(testServerInfo, {
       instructions: MCP_INSTRUCTIONS,
    });
-   instrumentTools(mcpServer);
 
-   registerExecuteQueryTool(mcpServer, environmentStore);
-   registerGetContextTool(mcpServer, environmentStore);
+   registerExecuteQueryTool(mcpServer, environmentStore, queryUseCase);
+   registerGetContextTool(mcpServer, environmentStore, retrieval);
    registerListPackagesTool(mcpServer, environmentStore);
    registerDocsSearchTool(mcpServer, environmentStore);
-   registerCompileTool(mcpServer, environmentStore);
-   registerReloadPackageTool(mcpServer, environmentStore);
-   registerSearchDatabaseSchemaTool(mcpServer, environmentStore);
+   registerCompileTool(mcpServer, compileController, querySlots);
+   registerReloadPackageTool(mcpServer, packageController);
+   registerSearchDatabaseSchemaTool(
+      mcpServer,
+      environmentStore,
+      connectionController,
+      retrieval,
+   );
    registerGetStatusTool(mcpServer, environmentStore);
    registerGetSkillTool(mcpServer, environmentStore, BUNDLED_SKILLS);
    registerGetAgentTool(mcpServer, environmentStore);
@@ -70,14 +84,18 @@ export function initializeMcpServer(
    // files. Note: MCP prompts are on-demand, so always-on "prevention" skills
    // become on-demand here; see docs/agent-skills/design-principles.md.
    for (const skill of BUNDLED_SKILLS) {
-      mcpServer.prompt(skill.name, skill.description, () => ({
-         messages: [
-            {
-               role: "user" as const,
-               content: { type: "text" as const, text: skill.body },
-            },
-         ],
-      }));
+      mcpServer.registerPrompt(
+         skill.name,
+         { description: skill.description },
+         () => ({
+            messages: [
+               {
+                  role: "user" as const,
+                  content: { type: "text" as const, text: skill.body },
+               },
+            ],
+         }),
+      );
    }
 
    return mcpServer;

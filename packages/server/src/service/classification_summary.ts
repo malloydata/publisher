@@ -17,7 +17,7 @@
  */
 
 import type { components } from "../api";
-import { publishedSources, readCarries } from "./classification";
+import { publishedSources } from "./classification_report";
 import type { Model } from "./model";
 
 export type ApiClassificationSummary =
@@ -67,7 +67,7 @@ export function classificationSummary(
             counts.set(c, (counts.get(c) ?? 0) + 1);
          }
       }
-      const carries = readCarries(s.ir.annotations);
+      const carries = s.carries;
       sources.push({
          modelPath: s.modelPath,
          name: s.source,

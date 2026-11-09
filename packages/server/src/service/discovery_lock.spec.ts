@@ -65,6 +65,14 @@ describe("lockedForCaller", () => {
       expect([...locked].sort()).toEqual(["vault"]);
    });
 
+   it("matches the decoded literal, whichever quote the lock was written with", () => {
+      const quoted: ApiSource[] = [
+         { name: "dq", givens: GIVENS, authorize: ['"it\'s" in $ROLES'] },
+      ];
+      expect(lockedForCaller(quoted, { ROLES: ["it's"] }).size).toBe(0);
+      expect(lockedForCaller(quoted, { ROLES: ['"it\'s"'] }).size).toBe(1);
+   });
+
    it("matches a scalar exactly and an array by membership", () => {
       expect(lockedForCaller(sources, { TIER: "Gold", ROLES: [] })).toContain(
          "gold",

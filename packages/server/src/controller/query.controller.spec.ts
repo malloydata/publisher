@@ -1,16 +1,21 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
+import { unrecordedAudit } from "../service/access_record";
 import type * as Malloy from "@malloydata/malloy-interfaces";
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
 import sinon from "sinon";
 import { BadRequestError, ModelNotFoundError } from "../errors";
-import type { EnvironmentStore } from "../service/environment_store";
 import {
    loadTempPackage,
    type LoadedTempPackage,
 } from "../test_helpers/temp_package";
-import { QueryController } from "./query.controller";
+import { QueryUseCase } from "../usecases/query";
+import { QuerySlots } from "../query_concurrency";
+import type { QueryRequest as ModelQueryRequest } from "../service/model_query_request";
+import { QueryController, type QueryRequest } from "./query.controller";
+import { fakeOf } from "../test_helpers/store_fakes";
+import type { PackageLookup } from "../service/environment_ports";
 
 /**
  * Real Malloy results, so the render-tag validator reads what a model really
@@ -28,7 +33,7 @@ beforeAll(async () => {
    });
    const model = temp.pkg.getModel("m.malloy")!;
    const run = async (query: string) =>
-      (await model.getQueryResults(undefined, undefined, query)).result;
+      (await model.runQuery(unrecordedAudit(), { query })).result;
    tagged = await run(
       "run: s -> {\n # bogus_tag\n group_by: a\n # drill\n aggregate: n is count() }",
    );
@@ -49,7 +54,7 @@ function controllerWith({
    model?: boolean;
    carriesReportTag?: boolean;
 } = {}) {
-   const getQueryResults = sinon.stub().resolves({
+   const runQuery = sinon.stub().resolves({
       result,
       serializedResult: "SERIALIZED",
       rowLimit: 10,
@@ -60,7 +65,7 @@ function controllerWith({
       queryCostBytes: 345,
    });
    const fakeModel = {
-      getQueryResults,
+      runQuery,
       carriesReportTag: () => carriesReportTag,
    };
    const pkg = {
@@ -76,41 +81,28 @@ function controllerWith({
          throw new Error("no such connection");
       },
    });
-   const store = { getEnvironment } as unknown as EnvironmentStore;
+   const store = fakeOf<PackageLookup>({ getEnvironment });
    return {
-      controller: new QueryController(store),
-      getQueryResults,
+      controller: new QueryController(
+         new QueryUseCase(store, new QuerySlots()),
+      ),
+      runQuery,
       getEnvironment,
    };
 }
 
-/** getQuery with only the arguments a case varies; the rest left default. */
-function run(
-   controller: QueryController,
-   opts: {
-      compactJson?: boolean;
-      metadata?: Parameters<QueryController["getQuery"]>[10];
-      bypassAuthorize?: boolean;
-      includeHidden?: boolean;
-      signal?: AbortSignal;
-   } = {},
-) {
-   return controller.getQuery(
-      "env",
-      "pkg",
-      "m.malloy",
-      "s",
-      "",
-      "run: s -> { group_by: a }",
-      opts.compactJson,
-      undefined,
-      undefined,
-      undefined,
-      opts.metadata,
-      opts.bypassAuthorize,
-      opts.includeHidden,
-      opts.signal,
-   );
+/** getQuery with only the fields a case varies; the rest left default. */
+function run(controller: QueryController, opts: Partial<QueryRequest> = {}) {
+   return controller.getQuery({
+      environmentName: "env",
+      packageName: "pkg",
+      modelPath: "m.malloy",
+      sourceName: "s",
+      queryName: "",
+      query: "run: s -> { group_by: a }",
+      identity: {},
+      ...opts,
+   });
 }
 
 describe("QueryController.getQuery", () => {
@@ -122,12 +114,41 @@ describe("QueryController.getQuery", () => {
       "refuses %s with a 400, before touching the environment",
       async (_, metadata) => {
          const { controller, getEnvironment } = controllerWith();
-         await expect(run(controller, { metadata })).rejects.toBeInstanceOf(
+         await expect(run(controller, metadata)).rejects.toBeInstanceOf(
             BadRequestError,
          );
          expect(getEnvironment.called).toBe(false);
       },
    );
+
+   // A REST body is untyped: a non-string reached the model and answered 500.
+   it.each([
+      ["query", { query: { text: "run: s -> { group_by: a }" } }],
+      ["query", { query: 42 }],
+      ["sourceName", { sourceName: ["s"] }],
+      ["queryName", { queryName: { name: "q" } }],
+   ])(
+      "refuses a non-string %s with a 400 naming it, before touching the environment",
+      async (field, body) => {
+         const { controller, getEnvironment } = controllerWith();
+         const error = await run(
+            controller,
+            body as unknown as Partial<QueryRequest>,
+         ).catch((e) => e);
+         expect(error).toBeInstanceOf(BadRequestError);
+         expect(error.message).toBe(`${field} must be a string`);
+         expect(getEnvironment.called).toBe(false);
+      },
+   );
+
+   it("still reads a null query as absent", async () => {
+      const { controller, runQuery } = controllerWith();
+      await run(controller, {
+         query: null as unknown as string,
+         queryName: "q",
+      });
+      expect(runQuery.called).toBe(true);
+   });
 
    it("answers a missing model with a plain 404", async () => {
       const { controller } = controllerWith({ model: false });
@@ -153,18 +174,31 @@ describe("QueryController.getQuery", () => {
    });
 
    it("passes the result shape, flags and request metadata through to the model", async () => {
-      const { controller, getQueryResults } = controllerWith();
+      const { controller, runQuery } = controllerWith();
       await run(controller, {
          compactJson: true,
          bypassAuthorize: true,
-         includeHidden: true,
-         metadata: { queryMetadata: { team: "x" }, queryClass: "interactive" },
+         includeHiddenFilesAndSources: true,
+         queryMetadata: { team: "x" },
+         queryClass: "interactive",
       });
       await run(controller);
-      const [compact, full] = getQueryResults.getCalls().map((c) => c.args);
-      expect(compact.slice(8)).toEqual(["compact", true, true]);
-      expect(full.slice(8)).toEqual(["full", undefined, undefined]);
-      expect(compact[7]).toMatchObject({
+      const [compact, full] = runQuery.getCalls().map((c) => ({
+         request: c.args[1],
+         privileges: c.args[2],
+      }));
+      expect(compact.request.responseShape).toBe("compact");
+      expect(compact.privileges).toMatchObject({
+         bypassAuthorize: true,
+         includeHiddenFilesAndSources: true,
+      });
+      expect(full.request.responseShape).toBe("full");
+      // Ungranted privileges arrive as `false` (QueryPrivileges.of), never unset.
+      expect(full.privileges).toMatchObject({
+         bypassAuthorize: false,
+         includeHiddenFilesAndSources: false,
+      });
+      expect(compact.request.queryMetadataInput).toMatchObject({
          request: { team: "x" },
          queryClass: "interactive",
          environment: "env",
@@ -173,15 +207,17 @@ describe("QueryController.getQuery", () => {
    });
 
    it("cancels the model's query when the client goes away", async () => {
-      const { controller, getQueryResults } = controllerWith();
+      const { controller, runQuery } = controllerWith();
       const client = new AbortController();
       let seen: AbortSignal | undefined;
-      getQueryResults.callsFake(async (...args: unknown[]) => {
-         seen = args[6] as AbortSignal;
-         client.abort("client gone");
-         return { result: plain, serializedResult: "S" };
-      });
-      await run(controller, { signal: client.signal });
+      runQuery.callsFake(
+         async (_audit: unknown, request: ModelQueryRequest) => {
+            seen = request.abortSignal;
+            client.abort("client gone");
+            return { result: plain, serializedResult: "S" };
+         },
+      );
+      await run(controller, { clientSignal: client.signal });
       expect(seen?.aborted).toBe(true);
       expect(seen?.reason).toBe("client gone");
    });

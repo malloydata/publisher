@@ -11,6 +11,7 @@
 // that routing a live query through the synthesized model does not change the
 // answer.
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
+import { unrecordedAudit } from "./access_record";
 import * as fs from "fs/promises";
 import * as os from "os";
 import * as path from "path";
@@ -23,6 +24,9 @@ import {
 import { AccessDeniedError } from "../errors";
 import { Environment } from "./environment";
 import type { Package } from "./package";
+import { writePackageFiles } from "../test_helpers/temp_package";
+import { governorOf } from "../test_helpers/governor";
+import { parsePackageName } from "./identity";
 
 let rootDir: string;
 let envPath: string;
@@ -68,17 +72,16 @@ async function loadPackageFiles(
    files: Record<string, string>,
 ): Promise<Package> {
    const dir = path.join(envPath, "pkg");
-   await fs.mkdir(dir, { recursive: true });
-   await fs.writeFile(
-      path.join(dir, "publisher.json"),
-      JSON.stringify({ name: "pkg", description: "fixture" }),
+   writePackageFiles(
+      dir,
+      {
+         ...files,
+      },
+      { manifest: { name: "pkg", description: "fixture" } },
    );
-   for (const [name, contents] of Object.entries(files)) {
-      await fs.writeFile(path.join(dir, name), contents);
-   }
    const env = await Environment.create("testEnv", envPath, []);
    await env.addPackage("pkg");
-   return env.getPackage("pkg", false);
+   return env.getPackage(parsePackageName("pkg"), false);
 }
 
 async function loadPackage(model = MODEL): Promise<Package> {
@@ -93,14 +96,10 @@ async function runGatedQuery(
 ) {
    const model = pkg.getModel("model.malloy");
    if (!model) throw new Error("model.malloy did not load");
-   const { compactResult } = await model.getQueryResults(
-      undefined,
-      undefined,
+   const { compactResult } = await model.runQuery(unrecordedAudit(), {
       query,
-      undefined,
-      undefined,
-      givens as never,
-   );
+      givens: givens as never,
+   });
    return (compactResult as Record<string, unknown>[]).map((row) =>
       Object.fromEntries(
          Object.entries(row).map(([k, v]) => [
@@ -271,14 +270,10 @@ describe("the serve seam", () => {
    ) {
       const model = pkg.getModel("model.malloy");
       if (!model) throw new Error("model.malloy did not load");
-      const { compactResult } = await model.getQueryResults(
-         undefined,
-         undefined,
+      const { compactResult } = await model.runQuery(unrecordedAudit(), {
          query,
-         undefined,
-         undefined,
-         givens as never,
-      );
+         givens: givens as never,
+      });
       // Numbers arrive as bigint from DuckDB sums; normalize so the assertions
       // read as the numbers an author would expect.
       return (compactResult as Record<string, unknown>[]).map((row) =>
@@ -461,14 +456,10 @@ source: orders is duckdb.sql("""
             ),
          );
          const model = pkg.getModel("model.malloy");
-         const { compactResult } = await model!.getQueryResults(
-            undefined,
-            undefined,
-            "run: orders -> { group_by: category; aggregate: total; order_by: category }",
-            undefined,
-            undefined,
-            { MIN_AMOUNT: 15 },
-         );
+         const { compactResult } = await model!.runQuery(unrecordedAudit(), {
+            query: "run: orders -> { group_by: category; aggregate: total; order_by: category }",
+            givens: { MIN_AMOUNT: 15 },
+         });
          // 15 excludes the amount-10 row, so this also proves the given was
          // applied rather than dropped on the way through.
          expect(
@@ -682,7 +673,6 @@ function bindMissingRollupTables(pkg: Package) {
 describe("pre-aggregation and a row-level gate", () => {
    const GATED = `##! experimental { persistence composite_sources givens }
 
-#(secure)
 given:
   GROUPS :: number[]
 
@@ -826,7 +816,6 @@ source: orders is duckdb.sql("""
 describe("pre-aggregation and a authorize gate", () => {
    const SOURCE_AUTHORIZE_GATED = `##! experimental { persistence composite_sources givens }
 
-#(secure)
 given:
   ROLE :: string[]
 
@@ -918,7 +907,6 @@ describe("a gate reached only through a derivation hop", () => {
    const LAYERED = {
       "base.malloy": `##! experimental { persistence composite_sources givens }
 
-#(secure)
 given:
   GROUPS :: number[]
 
@@ -963,7 +951,9 @@ source: ungated is duckdb.sql("""
          if (!model) throw new Error("model.malloy did not load");
          expect(
             (
-               model as unknown as { hasAnyAuthorizeNote(): boolean }
+               governorOf(model) as unknown as {
+                  hasAnyAuthorizeNote(): boolean;
+               }
             ).hasAnyAuthorizeNote(),
          ).toBe(true);
       },
@@ -993,7 +983,6 @@ source: ungated is duckdb.sql("""
 describe("pre-aggregation and a caller join to a row-gated source", () => {
    const CALLER_JOIN_MODEL = `##! experimental { persistence composite_sources givens }
 
-#(secure)
 given:
   GROUPS :: number[]
 
@@ -1009,6 +998,7 @@ source: orders is duckdb.sql("""
     (30, 'B', 1)
   ) AS t(amount, category, org_id)
 """) extend {
+  join_one: author_org is orgs on org_id = author_org.org_id
   #@ preaggregate grain="category"
   measure: total is amount.sum()
 }
@@ -1026,17 +1016,25 @@ source: orders is duckdb.sql("""
    });
 
    it(
-      "refuses a package whose author join reads a row-gated source the entry does not scope",
+      "does not block routing for an author join into the row-gated source",
       async () => {
-         // The author join used to hand org two's rows to a caller scoped to
-         // org one; the load now refuses it (join_bypass.ts).
-         const withAuthorJoin = CALLER_JOIN_MODEL.replace(
-            '#@ preaggregate grain="category"',
-            'join_one: author_org is orgs on org_id = author_org.org_id\n  #@ preaggregate grain="category"',
-         );
-         await expect(loadPackage(withAuthorJoin)).rejects.toThrow(
-            "joins author_org, whose gate reads $GROUPS",
-         );
+         const pkg = await loadPackage(CALLER_JOIN_MODEL);
+         expect(
+            await runGatedQuery(
+               pkg,
+               "run: orders -> { group_by: author_org.org_name; aggregate: total; order_by: org_name }",
+               { GROUPS: [1] },
+            ),
+         ).toEqual([
+            { org_name: "one", total: 40 },
+            { org_name: "two", total: 20 },
+         ]);
+         expect(
+            await harness.collectCounter(
+               "publisher_storage_serve_routing_total",
+               { outcome: "blocked_by_row_level_gate" },
+            ),
+         ).toBe(0);
       },
       { timeout: 60000 },
    );

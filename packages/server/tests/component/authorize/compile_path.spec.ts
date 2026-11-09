@@ -1,6 +1,7 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
+import { unrecordedAudit } from "../../../src/service/access_record";
 import { type GivenValue } from "@malloydata/malloy";
 import { afterEach, beforeEach, describe, expect, it, spyOn } from "bun:test";
 import fs from "fs/promises";
@@ -9,6 +10,9 @@ import path from "path";
 import { AccessDeniedError, NotQueryableError } from "../../../src/errors";
 import { hasCallerAuthorizeAnnotation } from "../../../src/service/authorize";
 import { Environment } from "../../../src/service/environment";
+import { writePackageFiles } from "../../../src/test_helpers/temp_package";
+import { governorOf } from "../../../src/test_helpers/governor";
+import { parsePackageName } from "../../../src/service/identity";
 
 /** The rows of a query result, whatever wrapper the result carries them in. */
 function rowsOf(result: unknown): unknown[] {
@@ -23,10 +27,10 @@ function rowsOf(result: unknown): unknown[] {
 // the early gate AND the compiled-source backstop fire, the latter REGARDLESS of
 // includeSql (a compile-time schema oracle is closed even with no SQL extraction).
 
-const PUBLISHER_JSON = JSON.stringify({
+const MANIFEST = {
    name: "pkg",
    description: "compile-gate",
-});
+};
 
 // `gated` is locked to $ROLE='analyst'; `open_src` is unrestricted; `row_gated`
 // is locked by a ROW-FIELD condition (`org_id`), not just a given.
@@ -97,14 +101,15 @@ describe("compile-path authorize gate (compileSource)", () => {
       const envPath = path.join(rootDir, "env");
       await fs.mkdir(envPath, { recursive: true });
       env = await Environment.create("testEnv", envPath, []);
-      await env.installPackage("pkg", async (stagingPath) => {
-         await fs.mkdir(stagingPath, { recursive: true });
-         await fs.writeFile(
-            path.join(stagingPath, "publisher.json"),
-            PUBLISHER_JSON,
-         );
-         await fs.writeFile(path.join(stagingPath, "model.malloy"), MODEL);
-      });
+      await env.installPackage("pkg", async (stagingPath) =>
+         writePackageFiles(
+            stagingPath,
+            {
+               "model.malloy": MODEL,
+            },
+            { manifest: MANIFEST },
+         ),
+      );
    });
 
    afterEach(async () => {
@@ -230,7 +235,7 @@ describe("compile-path authorize gate (compileSource)", () => {
          // The early text gate would refuse these first; neutralize it so only
          // `assertAuthorizedForRunnable` is under test.
          const backstopOnly = async () => {
-            const pkg = await env.getPackage("pkg");
+            const pkg = await env.getPackage(parsePackageName("pkg"));
             const { model } = pkg.getCompileAuthorizationModel("model.malloy");
             spyOn(model!, "assertAuthorizedForText").mockResolvedValue(
                undefined,
@@ -256,9 +261,9 @@ describe("compile-path authorize gate (compileSource)", () => {
          });
 
          it("keeps a walk entry that has no on-disk twin (fails closed)", async () => {
-            const pkg = await env.getPackage("pkg");
+            const pkg = await env.getPackage(parsePackageName("pkg"));
             const { model } = pkg.getCompileAuthorizationModel("model.malloy");
-            const internals = model as unknown as {
+            const internals = governorOf(model!) as unknown as {
                entryPointGatesBySource: Map<
                   string,
                   { label: string; route: string; exprs: string[] }[]
@@ -307,18 +312,11 @@ describe("compile-path authorize gate (compileSource)", () => {
          givens: Record<string, GivenValue>,
       ) => {
          const { model } = (
-            await env.getPackage("pkg")
+            await env.getPackage(parsePackageName("pkg"))
          ).getCompileAuthorizationModel("model.malloy");
-         const { compactResult, result } = await model!.getQueryResults(
-            undefined,
-            undefined,
-            text,
-            undefined,
-            false,
-            givens,
-            undefined,
-            undefined,
-            "full",
+         const { compactResult, result } = await model!.runQuery(
+            unrecordedAudit(),
+            { query: text, givens, responseShape: "full" },
          );
          return {
             rows: compactResult as unknown as Record<string, unknown>[],
@@ -399,9 +397,9 @@ describe("compile-path authorize gate (compileSource)", () => {
       describe("fails closed", () => {
          const modelInternals = async () => {
             const { model } = (
-               await env.getPackage("pkg")
+               await env.getPackage(parsePackageName("pkg"))
             ).getCompileAuthorizationModel("model.malloy");
-            return model as unknown as {
+            return governorOf(model!) as unknown as {
                queries: { name: string; sourceName?: string }[];
                entryPointGatesBySource: Map<
                   string,
@@ -841,14 +839,15 @@ describe("caller-annotation guard on markdown prose (compileSource)", () => {
       const envPath = path.join(rootDir, "env");
       await fs.mkdir(envPath, { recursive: true });
       env = await Environment.create("testEnv", envPath, []);
-      await env.installPackage("pkg", async (stagingPath) => {
-         await fs.mkdir(stagingPath, { recursive: true });
-         await fs.writeFile(
-            path.join(stagingPath, "publisher.json"),
-            PUBLISHER_JSON,
-         );
-         await fs.writeFile(path.join(stagingPath, "model.malloy"), model);
-      });
+      await env.installPackage("pkg", async (stagingPath) =>
+         writePackageFiles(
+            stagingPath,
+            {
+               "model.malloy": model,
+            },
+            { manifest: MANIFEST },
+         ),
+      );
    };
 
    afterEach(async () => {
@@ -969,25 +968,21 @@ describe("caller-annotation guard on markdown prose (compileSource)", () => {
 
    it("still filters a derived row-gated source whose caller text wraps #(access_filter) true in prose", async () => {
       await install(MODEL);
-      const model = (await env.getPackage("pkg", false)).getModel(
-         "model.malloy",
-      );
+      const model = (
+         await env.getPackage(parsePackageName("pkg"), false)
+      ).getModel("model.malloy");
       const DERIVED =
          "source: mine is row_gated extend {}\nrun: mine -> { select: org_id }";
       /** The rows the query returns, or the error it was refused with. */
       const run = (query: string, groups: number[]) =>
          model
-            ?.getQueryResults(
-               undefined,
-               undefined,
+            ?.runQuery(unrecordedAudit(), {
                query,
-               undefined,
-               undefined,
-               {
+               givens: {
                   ROLE: "nobody",
                   GROUPS: groups,
                },
-            )
+            })
             .then(
                (r) => rowsOf(r),
                (e: Error) => e,
@@ -1024,26 +1019,17 @@ describe("compile-path is exempt from the query boundary (compileSource)", () =>
       const envPath = path.join(rootDir, "env");
       await fs.mkdir(envPath, { recursive: true });
       env = await Environment.create("testEnv", envPath, []);
-      await env.installPackage("pkg", async (stagingPath) => {
-         await fs.mkdir(stagingPath, { recursive: true });
-         await fs.writeFile(
-            path.join(stagingPath, "publisher.json"),
-            JSON.stringify({ name: "pkg" }),
-         );
-         await fs.writeFile(
-            path.join(stagingPath, "base.malloy"),
-            `source: base_source is duckdb.sql("select 1 as id") extend {
+      await env.installPackage("pkg", async (stagingPath) =>
+         writePackageFiles(stagingPath, {
+            "base.malloy": `source: base_source is duckdb.sql("select 1 as id") extend {
   measure: c is count()
 }`,
-         );
-         await fs.writeFile(
-            path.join(stagingPath, "index.malloy"),
-            `import "base.malloy"
+            "index.malloy": `import "base.malloy"
 source: helper is duckdb.sql("select 1 as id") extend { measure: hc is count() }
 source: customers is duckdb.sql("select 1 as id") extend { measure: c is count() }
 export { customers }`,
-         );
-      });
+         }),
+      );
    });
 
    afterEach(async () => {
@@ -1071,15 +1057,11 @@ export { customers }`,
    });
 
    it("the QUERY path still denies the same hidden targets (exemption is compile-only)", async () => {
-      const pkg = await env.getPackage("pkg");
+      const pkg = await env.getPackage(parsePackageName("pkg"));
       await expect(
-         pkg
-            .getModel("index.malloy")!
-            .getQueryResults(
-               undefined,
-               undefined,
-               "run: helper -> { aggregate: hc }",
-            ),
+         pkg.getModel("index.malloy")!.runQuery(unrecordedAudit(), {
+            query: "run: helper -> { aggregate: hc }",
+         }),
       ).rejects.toBeInstanceOf(NotQueryableError);
    });
 });
@@ -1099,16 +1081,10 @@ describe("compile exemption is not an existence oracle (compileSource)", () => {
       const envPath = path.join(rootDir, "env");
       await fs.mkdir(envPath, { recursive: true });
       env = await Environment.create("testEnv", envPath, []);
-      await env.installPackage("pkg", async (stagingPath) => {
-         await fs.mkdir(stagingPath, { recursive: true });
-         await fs.writeFile(
-            path.join(stagingPath, "publisher.json"),
-            JSON.stringify({ name: "pkg" }),
-         );
-         // Hidden file (not imported by index.malloy's exports) holding a gated source.
-         await fs.writeFile(
-            path.join(stagingPath, "secret.malloy"),
-            `##! experimental.givens
+      await env.installPackage("pkg", async (stagingPath) =>
+         writePackageFiles(stagingPath, {
+            // Hidden file (not imported by index.malloy's exports) holding a gated source.
+            "secret.malloy": `##! experimental.givens
 
 #(secure)
 given:
@@ -1118,14 +1094,11 @@ given:
 source: hidden_gated is duckdb.sql("SELECT 1 as x") extend {
   measure: c is count()
 }`,
-         );
-         // Listed file with a gated source that IS exported (visible). It also
-         // imports the hidden file, so the evasion probes below can resolve
-         // hidden_gated in a LISTED model's namespace; the import does not
-         // export it, so it stays boundary-hidden.
-         await fs.writeFile(
-            path.join(stagingPath, "index.malloy"),
-            `##! experimental.givens
+            // Listed file with a gated source that IS exported (visible). It also
+            // imports the hidden file, so the evasion probes below can resolve
+            // hidden_gated in a LISTED model's namespace; the import does not
+            // export it, so it stays boundary-hidden.
+            "index.malloy": `##! experimental.givens
 import "secret.malloy"
 
 #(authorize) 'analyst' = $ROLE
@@ -1135,8 +1108,8 @@ source: visible_gated is duckdb.sql("SELECT 1 as x") extend {
 
 source: customers is duckdb.sql("SELECT 1 as x") extend { measure: c is count() }
 export { customers, visible_gated }`,
-         );
-      });
+         }),
+      );
    });
 
    afterEach(async () => {

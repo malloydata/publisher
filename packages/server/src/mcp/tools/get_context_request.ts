@@ -3,18 +3,15 @@
 
 import { z } from "zod/v3";
 import type { GivenValue } from "@malloydata/malloy";
-import { getDimensionValueSettings } from "../../retrieval_config";
-import type {
-   ResolvedRequest,
-   ResolvedSearch,
-   ResolvedValueSearch,
-} from "./get_context_types";
-
-/**
- * The most sources one call may return. Shared by the parameter schema, the
- * truncation warnings and the scan, which must agree.
- */
-export const MAX_LIMIT = 150;
+import { getDimensionValueSettings } from "../../retrieval/config";
+import {
+   MAX_LIMIT,
+   SEARCH_TARGET_TYPES,
+   type SearchTargetType,
+   type ResolvedRequest,
+   type ResolvedSearch,
+   type ResolvedValueSearch,
+} from "../../retrieval/model/types";
 
 /**
  * Sources a ranked search returns when the caller sets no limit. A listing
@@ -22,31 +19,6 @@ export const MAX_LIMIT = 150;
  * defaults.
  */
 const DEFAULT_RANKED_LIMIT = 20;
-
-/**
- * The request shape, matching the hosted retrieval API's `GetContextRequest`
- * field for field so one caller and eval harness serve both.
- *
- * Divergences: a search needs exactly one package in `scopes` (or a server
- * serving one), because indexes are built per package and lazily, so an
- * unscoped search could not tell "not modelled" from "not indexed yet"; with
- * no `search_targets` a call lists instead (get_context_levels.ts); there are
- * no organizations or workspaces; and `target_type` adds `join`. `dimensional_value` is answered from the value index built at load
- * (context/values_index.ts), and for a gated source by a lookup through the
- * query path with the caller's givens (get_context_values.ts); with
- * `retrieval.dimensionValues.enabled: false` it is accepted and answered with
- * a warning.
- */
-export const SEARCH_TARGET_TYPES = [
-   "source",
-   "dimension",
-   "measure",
-   "view",
-   "dimensional_value",
-   "join",
-] as const;
-
-export type SearchTargetType = (typeof SEARCH_TARGET_TYPES)[number];
 
 /**
  * Which indexed entity kinds a target selects. `view` covers named queries, as

@@ -3,10 +3,14 @@
 
 import { components } from "../api";
 import { AgentNotFoundError, SkillNotFoundError } from "../errors";
-import { type SkillEntry } from "../mcp/skills/build_skills_bundle";
-import { BUNDLED_SKILLS, resolveSkills } from "../mcp/skills/package_skills";
-import { EnvironmentStore } from "../service/environment_store";
-import { versionOptions } from "./report.controller";
+import { type SkillEntry } from "../service/skills/build_skills_bundle";
+import {
+   BUNDLED_SKILLS,
+   resolveSkills,
+} from "../service/skills/package_skills";
+import type { PackageLookup } from "../service/environment_ports";
+import { VersionRef } from "../service/identity";
+import { loadedPackage } from "./loaded_package";
 
 type ApiAgent = components["schemas"]["Agent"];
 type ApiAgentSummary = components["schemas"]["AgentSummary"];
@@ -22,32 +26,29 @@ type ApiSkillSummary = components["schemas"]["SkillSummary"];
  * agents are served, never `latest`'s.
  */
 export class SkillController {
-   private environmentStore: EnvironmentStore;
+   private environmentStore: PackageLookup;
 
-   constructor(environmentStore: EnvironmentStore) {
+   constructor(environmentStore: PackageLookup) {
       this.environmentStore = environmentStore;
    }
 
-   private async packageOf(
+   private packageOf(
       environmentName: string,
       packageName: string,
-      versionId: unknown,
+      versionId: VersionRef,
    ) {
-      const environment = await this.environmentStore.getEnvironment(
+      return loadedPackage(
+         this.environmentStore,
          environmentName,
-         false,
-      );
-      return environment.getPackage(
          packageName,
-         false,
-         ...versionOptions(versionId),
+         versionId,
       );
    }
 
    private async resolvedSkills(
       environmentName: string,
       packageName: string,
-      versionId: unknown,
+      versionId: VersionRef,
    ): Promise<Array<SkillEntry & { origin: "bundled" | "package" }>> {
       const p = await this.packageOf(environmentName, packageName, versionId);
       return resolveSkills(BUNDLED_SKILLS, p.listSkills());
@@ -57,7 +58,7 @@ export class SkillController {
    public async listSkills(
       environmentName: string,
       packageName: string,
-      versionId?: unknown,
+      versionId: VersionRef = VersionRef.LATEST,
    ): Promise<ApiSkillSummary[]> {
       const resolved = await this.resolvedSkills(
          environmentName,
@@ -81,7 +82,7 @@ export class SkillController {
       environmentName: string,
       packageName: string,
       skillName: string,
-      versionId?: unknown,
+      versionId: VersionRef = VersionRef.LATEST,
    ): Promise<ApiSkill> {
       const resolved = await this.resolvedSkills(
          environmentName,
@@ -106,7 +107,7 @@ export class SkillController {
    public async listAgents(
       environmentName: string,
       packageName: string,
-      versionId?: unknown,
+      versionId: VersionRef = VersionRef.LATEST,
    ): Promise<ApiAgentSummary[]> {
       return (
          await this.packageOf(environmentName, packageName, versionId)
@@ -119,7 +120,7 @@ export class SkillController {
       packageName: string,
       agentName: string,
       skills: "full" | "summary" = "full",
-      versionId?: unknown,
+      versionId: VersionRef = VersionRef.LATEST,
    ): Promise<ApiAgent> {
       const agent = (
          await this.packageOf(environmentName, packageName, versionId)
@@ -138,7 +139,7 @@ export class SkillController {
       packageName: string,
       agentName: string,
       relativeFilepath: string,
-      versionId?: unknown,
+      versionId: VersionRef = VersionRef.LATEST,
    ): Promise<ApiAgentSkillRead> {
       const file = (
          await this.packageOf(environmentName, packageName, versionId)

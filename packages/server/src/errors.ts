@@ -110,6 +110,12 @@ export type ErrorReason =
    // 409: the package's build plan could not be derived at load; a reload
    // derives it again, a retry does not.
    | "BUILD_PLAN_UNAVAILABLE"
+   // 409: the package is fetched again from the location it was installed
+   // from on reload, which would discard the write.
+   | "PACKAGE_INSTALLED_FROM_LOCATION"
+   // 409: a create-only report write found a file at the path; another name
+   // may be free.
+   | "FILE_EXISTS"
    // Package versions; each is raised only as a PackageVersionError, whose
    // reason fixes its status (see PACKAGE_VERSION_ERROR_STATUS).
    | PackageVersionErrorReason;
@@ -149,6 +155,10 @@ const PACKAGE_VERSION_ERROR_STATUS: Record<PackageVersionErrorReason, number> =
 
 /** A package-version request refused for `reason`, which decides its status. */
 export class PackageVersionError extends Error {
+   get kind(): "package_version" {
+      return "package_version";
+   }
+
    constructor(
       readonly reason: PackageVersionErrorReason,
       message: string,
@@ -360,15 +370,45 @@ export function errnoWireFields(
 }
 
 /**
+ * The 4xx status of a request body body-parser refused (too large, malformed
+ * JSON, unsupported charset). Its errors are http-errors, not this module's
+ * classes: they carry a `type` such as `entity.too.large`, a `status`, and
+ * `expose: true` for a message safe to return.
+ */
+function bodyParserClientStatus(error: Error): number | undefined {
+   const e = error as { type?: unknown; status?: unknown; expose?: unknown };
+   if (typeof e.type !== "string" || e.expose !== true) return undefined;
+   const status = e.status;
+   return typeof status === "number" && status >= 400 && status < 500
+      ? status
+      : undefined;
+}
+
+/** What {@link internalErrorToHttpError} answers with. */
+export interface HttpErrorAnswer {
+   status: number;
+   json: {
+      code: number;
+      message: string;
+      reason?: ErrorReason;
+      problems?: ReturnType<typeof toQueryTextProblem>[];
+   };
+}
+
+/**
  * Map an error to the HTTP response it answers with. `log: false` classifies
  * without logging, for a caller that only needs the status and leaves the
  * response, and its log line, to the route handler. `onLogged` is called when
  * the mapping logged the error itself, so a route logs only what it did not.
+ *
+ * The answer is the {@link ERROR_TABLE} row for the error's {@link errorKind},
+ * after one check no kind expresses: a refused filesystem access anywhere on
+ * the `cause` chain.
  */
 export function internalErrorToHttpError(
    error: Error,
    { log = true, onLogged }: { log?: boolean; onLogged?: () => void } = {},
-) {
+): HttpErrorAnswer {
    const logInternal: typeof logInternalFailure = (...args) => {
       if (!log) return;
       logInternalFailure(...args);
@@ -376,8 +416,8 @@ export function internalErrorToHttpError(
    };
    const access = filesystemAccessFailure(error);
    if (access) {
-      // Must precede the typed branches: a PackageNotFoundError wrapping an
-      // EACCES would otherwise answer 404 and hide which path is unreadable.
+      // Must precede the table: a PackageNotFoundError wrapping an EACCES
+      // would otherwise answer 404 and hide which path is unreadable.
       logInternal("Filesystem access refused", error, "warn");
       return httpError(
          500,
@@ -385,122 +425,32 @@ export function internalErrorToHttpError(
             `Give the user the server runs as access to it.`,
       );
    }
-   if (error instanceof PackageVersionError) {
-      return httpError(error.status, error.message, error.reason);
-   } else if (error instanceof BadRequestError) {
-      return httpError(400, error.message);
-   } else if (error instanceof ServerConfigurationError) {
-      logInternal("Server configuration error", error, "warn");
-      return httpError(500, error.message);
-   } else if (error instanceof FrozenConfigError) {
-      return httpError(403, error.message);
-   } else if (error instanceof AccessDeniedError) {
-      return httpError(403, error.message);
-   } else if (error instanceof EnvironmentNotFoundError) {
-      return httpError(404, error.message);
-   } else if (error instanceof PackageNotFoundError) {
-      return httpError(404, error.message);
-   } else if (error instanceof ModelNotFoundError) {
-      return httpError(404, error.message);
-   } else if (error instanceof DashboardNotFoundError) {
-      return httpError(404, error.message);
-   } else if (
-      error instanceof SkillNotFoundError ||
-      error instanceof AgentNotFoundError
-   ) {
-      return httpError(404, error.message);
-   } else if (error instanceof ConflictError) {
-      return httpError(409, error.message);
-   } else if (error instanceof NotQueryableError) {
-      return httpError(404, error.message);
-   } else if (error instanceof QueryCompileError) {
+   const row = errorMapping(error);
+   const logged = resolve(row.log, error);
+   if (logged) logInternal(logged.summary, error, logged.level);
+   const status = resolve(row.status, error);
+   const message =
+      row.message === undefined ? error.message : resolve(row.message, error);
+   if (row.problems) {
       return {
-         status: 400,
-         json: {
-            code: 400,
-            message: error.message,
-            problems: error.problems.map(toQueryTextProblem),
-         },
+         status,
+         json: { code: status, message, problems: row.problems(error) },
       };
-   } else if (error instanceof MalloyError) {
-      return httpError(400, error.message);
-   } else if (error instanceof TableNotFoundError) {
-      return httpError(404, error.message, "TABLE_NOT_FOUND");
-   } else if (error instanceof BuildPlanUnavailableError) {
-      return httpError(409, error.message, "BUILD_PLAN_UNAVAILABLE");
-   } else if (error instanceof ConnectionNotFoundError) {
-      return httpError(404, error.message);
-   } else if (error instanceof StorageDestinationNotFoundError) {
-      return httpError(404, error.message);
-   } else if (error instanceof StorageCatalogNotFoundError) {
-      return httpError(404, error.message);
-   } else if (error instanceof DestinationNotFoundError) {
-      return httpError(422, error.message);
-   } else if (error instanceof ConnectionAuthError) {
-      // The driver's text can name the user, the account or the host, so it
-      // is logged and the body says only what to fix. warn: a misconfigured
-      // connection is the customer's to fix, not our fault.
-      logInternal("Connection credentials rejected", error, "warn");
-      return httpError(424, GENERIC_AUTH_MESSAGE, "CONNECTION_AUTH_FAILED");
-   } else if (error instanceof ConnectionFailedError) {
-      // Checked ahead of ConnectionError, which it extends: the same 502 and
-      // the same logging, plus the reason that says the database is down.
-      logInternal("Database unreachable", error, "warn");
-      return httpError(502, GENERIC_UNREACHABLE_MESSAGE, "CONNECTION_FAILED");
-   } else if (error instanceof UnconfiguredConnectionError) {
-      return httpError(424, error.message, "CONNECTION_NOT_FOUND");
-   } else if (error instanceof UnsupportedCatalogFormatError) {
-      return httpError(422, error.message);
-   } else if (error instanceof MaterializationEligibilityError) {
-      return httpError(422, error.message);
-   } else if (error instanceof ModelCompilationError) {
-      return httpError(424, error.message);
-   } else if (error instanceof VersionFilesMissingError) {
-      return httpError(424, error.message);
-   } else if (error instanceof PackageManifestError) {
-      return httpError(424, error.message);
-   } else if (error instanceof ConnectionError) {
-      // A server-authored message (callerSafe) is returned as-is; a driver
-      // message is logged and generalized, since it can name an internal host,
-      // echo SQL, or act as a failure-mode oracle. This also hides a statement
-      // the warehouse rejected (for every dialect but Postgres, see
-      // statementRejection), because ConnectionError does not distinguish a
-      // rejected statement from a transport failure.
-      if (error.callerSafe) {
-         return httpError(502, error.message);
-      }
-      logInternal("Upstream connection error", error, "warn");
-      return httpError(502, GENERIC_UPSTREAM_MESSAGE);
-   } else if (error instanceof MaterializationNotFoundError) {
-      return httpError(404, error.message);
-   } else if (error instanceof MaterializationConflictError) {
-      return httpError(409, error.message);
-   } else if (error instanceof InvalidStateTransitionError) {
-      return httpError(409, error.message);
-   } else if (error instanceof WriteConflictError) {
-      return httpError(409, error.message);
-   } else if (error instanceof WriteRollbackFailedError) {
-      return httpError(500, error.message);
-   } else if (error instanceof WriteRolledBackError) {
-      // Logged once, where the rollback happened, with the cause.
-      return httpError(500, error.message);
-   } else if (error instanceof ServiceUnavailableError) {
-      return httpError(503, error.message);
-   } else if (error instanceof PayloadTooLargeError) {
-      return httpError(413, error.message);
-   } else if (error instanceof QueryTimeoutError) {
-      return httpError(504, error.message);
-   } else if (error instanceof NotImplementedError) {
-      // A feature the server does not have (e.g. `versionId`) is not an
-      // internal failure; the OpenAPI spec documents 501 on those routes.
-      return httpError(501, error.message);
-   } else {
-      logInternal("Unhandled internal error", error);
-      return httpError(500, GENERIC_INTERNAL_MESSAGE);
    }
+   return httpError(status, message, resolve(row.reason, error));
 }
 
-function httpError(code: number, message: string, reason?: ErrorReason) {
+function resolve<E, T>(value: T | ((error: E) => T), error: E): T {
+   return typeof value === "function"
+      ? (value as (error: E) => T)(error)
+      : value;
+}
+
+function httpError(
+   code: number,
+   message: string,
+   reason?: ErrorReason,
+): HttpErrorAnswer {
    return {
       status: code,
       json: {
@@ -514,6 +464,10 @@ function httpError(code: number, message: string, reason?: ErrorReason) {
 
 /** A loaded package whose build plan could not be derived at load. */
 export class BuildPlanUnavailableError extends Error {
+   get kind(): "build_plan_unavailable" {
+      return "build_plan_unavailable";
+   }
+
    constructor(message: string) {
       super(message);
       this.name = "BuildPlanUnavailableError";
@@ -521,12 +475,20 @@ export class BuildPlanUnavailableError extends Error {
 }
 
 export class NotImplementedError extends Error {
+   get kind(): "not_implemented" {
+      return "not_implemented";
+   }
+
    constructor(message: string) {
       super(message);
    }
 }
 
 export class BadRequestError extends Error {
+   get kind(): BadRequestKind {
+      return "bad_request";
+   }
+
    constructor(message: string) {
       super(message);
    }
@@ -537,7 +499,11 @@ export class BadRequestError extends Error {
  * expected. A subclass so MCP advice does not offer Malloy syntax guidance for
  * a non-Malloy argument error. Still a 400.
  */
-export class InvalidArgumentError extends BadRequestError {}
+export class InvalidArgumentError extends BadRequestError {
+   override get kind(): "invalid_argument" {
+      return "invalid_argument";
+   }
+}
 
 /**
  * A dashboard write was refused because the text does not compile; the message
@@ -545,7 +511,11 @@ export class InvalidArgumentError extends BadRequestError {}
  * a Malloy mistake apart from an API misuse without parsing message text.
  * Still a 400.
  */
-export class CompileRefusedError extends BadRequestError {}
+export class CompileRefusedError extends BadRequestError {
+   override get kind(): CompileRefusedKind {
+      return "compile_refused";
+   }
+}
 
 /**
  * A model path the write path refuses: unsafe as written, the root
@@ -553,13 +523,36 @@ export class CompileRefusedError extends BadRequestError {}
  * package. A subclass so the write metric counts it as `invalid_path` wherever
  * it is raised; still a 400.
  */
-export class InvalidModelPathError extends BadRequestError {}
+export class InvalidModelPathError extends BadRequestError {
+   override get kind(): "invalid_model_path" {
+      return "invalid_model_path";
+   }
+}
+
+/**
+ * A query request that names neither query text nor a query to run (or a view
+ * without its source). A subclass so MCP advice can say how to name a view,
+ * which it used to try by matching a message no throw site produced. Still a 400.
+ */
+export class InvalidQueryRequestError extends BadRequestError {
+   override get kind(): "invalid_query_request" {
+      return "invalid_query_request";
+   }
+}
 
 /** A document's text carries a URL-producing render tag or markup in a label; counted apart from a restricted construct. */
-export class RenderTagRefusedError extends CompileRefusedError {}
+export class RenderTagRefusedError extends CompileRefusedError {
+   override get kind(): "render_tag_refused" {
+      return "render_tag_refused";
+   }
+}
 
 /** The restricted-construct gate could not parse the text, so it judged nothing: a refusal for a fragment, a plain compile problem for one tile of a document. */
 export class UnparseableTextError extends CompileRefusedError {
+   override get kind(): "unparseable_text" {
+      return "unparseable_text";
+   }
+
    constructor(
       message: string,
       /** The parser's own words, which the message alone does not carry. */
@@ -575,6 +568,10 @@ export class UnparseableTextError extends CompileRefusedError {
  * body, and a REST caller may be scoped to one environment by the router.
  */
 export class EnvironmentNotFoundError extends Error {
+   get kind(): "environment_not_found" {
+      return "environment_not_found";
+   }
+
    constructor(
       message: string,
       readonly lookup?: {
@@ -587,12 +584,20 @@ export class EnvironmentNotFoundError extends Error {
 }
 
 export class PackageNotFoundError extends Error {
+   get kind(): "package_not_found" {
+      return "package_not_found";
+   }
+
    constructor(message: string, options?: ErrorOptions) {
       super(message, options);
    }
 }
 
 export class ModelNotFoundError extends Error {
+   get kind(): "model_not_found" {
+      return "model_not_found";
+   }
+
    constructor(message: string) {
       super(message);
    }
@@ -605,6 +610,10 @@ export class ModelNotFoundError extends Error {
  * dashboard.
  */
 export class DashboardNotFoundError extends Error {
+   get kind(): "dashboard_not_found" {
+      return "dashboard_not_found";
+   }
+
    constructor(message: string) {
       super(message);
    }
@@ -616,6 +625,10 @@ export class DashboardNotFoundError extends Error {
  * carries.
  */
 export class SkillNotFoundError extends Error {
+   get kind(): "skill_not_found" {
+      return "skill_not_found";
+   }
+
    constructor(message: string) {
       super(message);
    }
@@ -623,6 +636,10 @@ export class SkillNotFoundError extends Error {
 
 /** No agent with that name is served for the package, whether undeclared or dropped by validation. */
 export class AgentNotFoundError extends Error {
+   get kind(): "agent_not_found" {
+      return "agent_not_found";
+   }
+
    constructor(message: string) {
       super(message);
    }
@@ -630,6 +647,10 @@ export class AgentNotFoundError extends Error {
 
 /** A request that names more than one thing where it must name one. 409. */
 export class ConflictError extends Error {
+   get kind(): "conflict" {
+      return "conflict";
+   }
+
    constructor(message: string) {
       super(message);
       this.name = "ConflictError";
@@ -637,6 +658,10 @@ export class ConflictError extends Error {
 }
 
 export class ConnectionNotFoundError extends Error {
+   get kind(): "connection_not_found" {
+      return "connection_not_found";
+   }
+
    constructor(message: string) {
       super(message);
    }
@@ -649,12 +674,20 @@ export class ConnectionNotFoundError extends Error {
  * error budget and pages on-call for a typo in someone's model.
  */
 export class TableNotFoundError extends Error {
+   get kind(): "table_not_found" {
+      return "table_not_found";
+   }
+
    constructor(message: string) {
       super(message);
    }
 }
 
 export class ConnectionError extends Error {
+   get kind(): ConnectionKind {
+      return "connection";
+   }
+
    /**
     * True when {@link message} was authored by this server and is safe to
     * return; false when it carries a driver message verbatim, which can name
@@ -676,7 +709,11 @@ export class ConnectionError extends Error {
  * where {@link isConnectionFailure} matched; the driver message is logged and
  * generalized because it can name an internal host and port.
  */
-export class ConnectionFailedError extends ConnectionError {}
+export class ConnectionFailedError extends ConnectionError {
+   override get kind(): "connection_failed" {
+      return "connection_failed";
+   }
+}
 
 /**
  * A model names a connection the environment does not have, usually one
@@ -685,6 +722,10 @@ export class ConnectionFailedError extends ConnectionError {}
  * typed into a connection route.
  */
 export class UnconfiguredConnectionError extends Error {
+   get kind(): "unconfigured_connection" {
+      return "unconfigured_connection";
+   }
+
    constructor(name: string, options?: { cause?: unknown }) {
       super(`No connection named "${name}" found in config`, options);
    }
@@ -697,6 +738,10 @@ export class UnconfiguredConnectionError extends Error {
  * the cause instead of the generic upstream text.
  */
 export class ConnectionPoolExhaustedError extends ConnectionError {
+   override get kind(): "connection_pool_exhausted" {
+      return "connection_pool_exhausted";
+   }
+
    constructor(message: string) {
       super(message, { callerSafe: true });
       this.name = "ConnectionPoolExhaustedError";
@@ -709,6 +754,10 @@ export class ConnectionPoolExhaustedError extends ConnectionError {
  * being addressed; see {@link StorageDestinationNotFoundError} for that case.
  */
 export class DestinationNotFoundError extends Error {
+   get kind(): "destination_not_found" {
+      return "destination_not_found";
+   }
+
    constructor(message: string) {
       super(message);
    }
@@ -716,6 +765,10 @@ export class DestinationNotFoundError extends Error {
 
 /** The storage destination a request's path addresses is not configured: 404. */
 export class StorageDestinationNotFoundError extends Error {
+   get kind(): "storage_destination_not_found" {
+      return "storage_destination_not_found";
+   }
+
    constructor(message: string) {
       super(message);
    }
@@ -727,6 +780,10 @@ export class StorageDestinationNotFoundError extends Error {
  * which names the metadata connection string.
  */
 export class StorageCatalogNotFoundError extends Error {
+   get kind(): "storage_catalog_not_found" {
+      return "storage_catalog_not_found";
+   }
+
    constructor(message: string) {
       super(message);
    }
@@ -738,6 +795,10 @@ export class StorageCatalogNotFoundError extends Error {
  * not the query and not a retry.
  */
 export class ConnectionAuthError extends Error {
+   get kind(): "connection_auth" {
+      return "connection_auth";
+   }
+
    constructor(message: string) {
       super(message);
    }
@@ -747,12 +808,20 @@ export class ConnectionAuthError extends Error {
 // attach (see ducklake_version.ts). 422, so it does not read as a credentials
 // problem.
 export class UnsupportedCatalogFormatError extends Error {
+   get kind(): "unsupported_catalog_format" {
+      return "unsupported_catalog_format";
+   }
+
    constructor(message: string) {
       super(message);
    }
 }
 
 export class ModelCompilationError extends Error {
+   get kind(): "model_compilation" {
+      return "model_compilation";
+   }
+
    // Any message-bearing object, so callers can add context and keep the 424.
    constructor(error: { message: string }) {
       super(error.message);
@@ -765,6 +834,10 @@ export class ModelCompilationError extends Error {
  * dependency the version needs is what failed, not the request.
  */
 export class VersionFilesMissingError extends Error {
+   get kind(): "version_files_missing" {
+      return "version_files_missing";
+   }
+
    constructor(message: string) {
       super(message);
       this.name = "VersionFilesMissingError";
@@ -778,6 +851,10 @@ export class VersionFilesMissingError extends Error {
  * author's typo as a 503 outage.
  */
 export class PackageManifestError extends Error {
+   get kind(): "package_manifest" {
+      return "package_manifest";
+   }
+
    constructor(message: string) {
       super(message);
       this.name = "PackageManifestError";
@@ -793,6 +870,10 @@ export class PackageManifestError extends Error {
  * `recordEligibilityRefused`.
  */
 export class MaterializationEligibilityError extends Error {
+   get kind(): "materialization_eligibility" {
+      return "materialization_eligibility";
+   }
+
    readonly reason?: EligibilityRefusalReason;
 
    constructor(error: { message: string; reason?: EligibilityRefusalReason }) {
@@ -810,6 +891,10 @@ export class MaterializationEligibilityError extends Error {
  * ({@link MaterializationEligibilityError}) falls back.
  */
 export class ChainedUpstreamMissingError extends Error {
+   get kind(): "chained_upstream_missing" {
+      return "chained_upstream_missing";
+   }
+
    readonly missing: readonly string[];
 
    constructor(missing: readonly string[], detail: string) {
@@ -826,6 +911,10 @@ export class ChainedUpstreamMissingError extends Error {
  * `strictUpstreams` it is refused like a missing upstream.
  */
 export class ChainedShapeNotCarriedError extends Error {
+   get kind(): "chained_shape_not_carried" {
+      return "chained_shape_not_carried";
+   }
+
    constructor(detail: string) {
       super(detail);
       this.name = "ChainedShapeNotCarriedError";
@@ -838,6 +927,10 @@ export class ChainedShapeNotCarriedError extends Error {
  * default, this must not degrade to serving nothing while reporting healthy.
  */
 export class PublisherConfigError extends Error {
+   get kind(): "publisher_config" {
+      return "publisher_config";
+   }
+
    constructor(configName: string, cause: unknown) {
       super(
          `Could not read ${configName}: ${
@@ -855,6 +948,10 @@ export class PublisherConfigError extends Error {
  * composes and which tells the operator what to change.
  */
 export class ServerConfigurationError extends Error {
+   get kind(): "server_configuration" {
+      return "server_configuration";
+   }
+
    constructor(message: string) {
       super(message);
       this.name = "ServerConfigurationError";
@@ -862,6 +959,10 @@ export class ServerConfigurationError extends Error {
 }
 
 export class FrozenConfigError extends Error {
+   get kind(): "frozen_config" {
+      return "frozen_config";
+   }
+
    constructor(
       message = `Publisher config can't be updated when ${PUBLISHER_CONFIG_NAME} has { "frozenConfig": true }`,
    ) {
@@ -875,9 +976,27 @@ export class FrozenConfigError extends Error {
  * is not this; that is a 200 with empty rows.
  */
 export class AccessDeniedError extends Error {
-   constructor(message: string) {
+   get kind(): "access_denied" {
+      return "access_denied";
+   }
+
+   /**
+    * The source a gate refused, when the refusal names one: what MCP advice
+    * reads to say which source needs givens, instead of parsing the message.
+    */
+   readonly source?: string;
+
+   constructor(message: string, options?: { source?: string }) {
       super(message);
       this.name = "AccessDeniedError";
+      if (options?.source !== undefined) this.source = options.source;
+   }
+
+   /** The gate refusal for `source`. The message names the source and never the gate's logic. */
+   static forSource(source: string): AccessDeniedError {
+      return new AccessDeniedError(`Access denied for source "${source}".`, {
+         source,
+      });
    }
 }
 
@@ -887,6 +1006,10 @@ export class AccessDeniedError extends Error {
  * classification still applies.
  */
 export class QueryCompileError extends MalloyError {
+   get kind(): "query_compile" {
+      return "query_compile";
+   }
+
    constructor(message: string, problems: LogMessage[]) {
       super(message, problems);
       this.name = "QueryCompileError";
@@ -914,6 +1037,10 @@ function toQueryTextProblem(problem: LogMessage) {
  * {@link OffSurfaceError}, which says why.
  */
 export class NotQueryableError extends Error {
+   get kind(): NotQueryableKind {
+      return "not_queryable";
+   }
+
    constructor(message: string) {
       super(message);
       this.name = "NotQueryableError";
@@ -927,6 +1054,10 @@ export class NotQueryableError extends Error {
  * not access control and there is nothing to hide. Still a 404.
  */
 export class OffSurfaceError extends NotQueryableError {
+   override get kind(): "off_surface" {
+      return "off_surface";
+   }
+
    constructor(message: string) {
       super(message);
       this.name = "OffSurfaceError";
@@ -934,22 +1065,59 @@ export class OffSurfaceError extends NotQueryableError {
 }
 
 export class MaterializationNotFoundError extends Error {
+   get kind(): "materialization_not_found" {
+      return "materialization_not_found";
+   }
+
    constructor(message: string) {
       super(message);
    }
 }
 
 export class MaterializationConflictError extends Error {
+   get kind(): "materialization_conflict" {
+      return "materialization_conflict";
+   }
+
    constructor(message: string) {
       super(message);
    }
 }
 
-/** A write whose `expectedHash` no longer matches the file: someone else saved first. */
+/**
+ * A write that found the file other than the caller expected: someone else
+ * saved first (`expectedHash` no longer matches), or a create-only write
+ * found a file already at the path (`reason` FILE_EXISTS, so a caller
+ * choosing a name can tell it to try the next).
+ */
 export class WriteConflictError extends Error {
-   constructor(message: string) {
+   get kind(): "write_conflict" {
+      return "write_conflict";
+   }
+
+   constructor(
+      message: string,
+      readonly reason?: "FILE_EXISTS",
+   ) {
       super(message);
       this.name = "WriteConflictError";
+   }
+}
+
+/**
+ * A write to a package installed from a `location`, which a reload would
+ * discard: a reload fetches the package again from there and replaces its
+ * files. 409, `reason` PACKAGE_INSTALLED_FROM_LOCATION. Interim, until package
+ * storage keeps server-side writes apart from the fetched copy (#1560).
+ */
+export class InstalledFromLocationError extends Error {
+   get kind(): "installed_from_location" {
+      return "installed_from_location";
+   }
+
+   constructor(message: string) {
+      super(message);
+      this.name = "InstalledFromLocationError";
    }
 }
 
@@ -959,6 +1127,10 @@ export class WriteConflictError extends Error {
  * and is logged, never put in the message, since it can carry a path.
  */
 export class WriteRolledBackError extends Error {
+   get kind(): "write_rolled_back" {
+      return "write_rolled_back";
+   }
+
    constructor(message: string, options?: ErrorOptions) {
       super(message, options);
       this.name = "WriteRolledBackError";
@@ -970,14 +1142,42 @@ export class WriteRolledBackError extends Error {
  * serve the new text or none. 500, because only an operator can settle it.
  */
 export class WriteRollbackFailedError extends Error {
+   get kind(): "write_rollback_failed" {
+      return "write_rollback_failed";
+   }
+
    constructor(message: string, options?: ErrorOptions) {
       super(message, options);
       this.name = "WriteRollbackFailedError";
    }
 }
 
+/**
+ * An environment change that was applied, but whose connection rows could not
+ * all be saved: those connections serve now and are wrong after a restart.
+ * 500, the server's storage failing. The message is server-composed and names
+ * only the connections; each underlying failure was logged where it happened.
+ */
+export class ConnectionSaveError extends Error {
+   get kind(): "connection_save" {
+      return "connection_save";
+   }
+
+   constructor(
+      message: string,
+      readonly connectionNames: readonly string[],
+   ) {
+      super(message);
+      this.name = "ConnectionSaveError";
+   }
+}
+
 /** A refusal from a write's post-reload check, worded for the caller. */
 export class WriteVerifyError extends Error {
+   get kind(): "write_verify" {
+      return "write_verify";
+   }
+
    constructor(message: string, options?: ErrorOptions) {
       super(message, options);
       this.name = "WriteVerifyError";
@@ -985,6 +1185,10 @@ export class WriteVerifyError extends Error {
 }
 
 export class InvalidStateTransitionError extends Error {
+   get kind(): "invalid_state_transition" {
+      return "invalid_state_transition";
+   }
+
    constructor(message: string) {
       super(message);
    }
@@ -992,6 +1196,10 @@ export class InvalidStateTransitionError extends Error {
 
 /** Temporary refusal (e.g. to stay under `PUBLISHER_MAX_MEMORY_BYTES`): 503, retry with back-off. */
 export class ServiceUnavailableError extends Error {
+   get kind(): ServiceUnavailableKind {
+      return "service_unavailable";
+   }
+
    constructor(message: string, options?: ErrorOptions) {
       super(message, options);
    }
@@ -1001,13 +1209,32 @@ export class ServiceUnavailableError extends Error {
  * The memory governor refused to admit a new compiled copy of a package: a
  * 503 the caller answers by placing the package elsewhere, not a fault.
  */
-export class PackageAdmissionRefusedError extends ServiceUnavailableError {}
+export class PackageAdmissionRefusedError extends ServiceUnavailableError {
+   override get kind(): PackageAdmissionKind {
+      return "package_admission_refused";
+   }
+}
+
+/**
+ * A dry-run publish refused because the server is already running as many as
+ * it allows (`MAX_CONCURRENT_DRY_RUNS`): a 503 like an admission
+ * refusal, which a caller answers by retrying or asking another server.
+ */
+export class DryRunCapacityError extends PackageAdmissionRefusedError {
+   override get kind(): "dry_run_capacity" {
+      return "dry_run_capacity";
+   }
+}
 
 /**
  * A response would exceed a server-side size cap (e.g.
  * `PUBLISHER_MAX_QUERY_ROWS`): 413, refine the query or raise the cap, not retry.
  */
 export class PayloadTooLargeError extends Error {
+   get kind(): PayloadTooLargeKind {
+      return "payload_too_large";
+   }
+
    constructor(message: string) {
       super(message);
       this.name = "PayloadTooLargeError";
@@ -1019,6 +1246,10 @@ export class PayloadTooLargeError extends Error {
  * callers are not told to raise a cap: no cap makes it serialize.
  */
 export class ResponseUnserializableError extends PayloadTooLargeError {
+   override get kind(): "response_unserializable" {
+      return "response_unserializable";
+   }
+
    constructor(message: string) {
       super(message);
       // Explicit, so a bundler that mangles class names cannot make it log as its parent.
@@ -1031,7 +1262,603 @@ export class ResponseUnserializableError extends PayloadTooLargeError {
  * clients can tell "this query is too expensive" from a retryable 503.
  */
 export class QueryTimeoutError extends Error {
+   get kind(): "query_timeout" {
+      return "query_timeout";
+   }
+
    constructor(message: string) {
       super(message);
    }
+}
+
+// ---------------------------------------------------------------------------
+// The error table: one row per error kind, read by both transports.
+//
+// internalErrorToHttpError (REST) and classifyToolError (MCP, in
+// mcp/handler_utils.ts) both answer from ERROR_TABLE, keyed by errorKind(). A
+// kind is the error's MOST DERIVED class, so a subclass answers from its own
+// row whatever its parent's row says: there is no if-chain whose order decides
+// which `instanceof` wins (InvalidArgumentError over BadRequestError,
+// OffSurfaceError over NotQueryableError, ConnectionFailedError over
+// ConnectionError, ResponseUnserializableError over PayloadTooLargeError). The
+// one check that is not a kind, a refused filesystem access on the `cause`
+// chain, is REST-only and runs before the table (see internalErrorToHttpError).
+//
+// Adding a class: give it a `kind` getter returning a new literal, add it to
+// ErrorByKind and ERROR_CLASSES, and give it a row; the typecheck fails until
+// all three exist. A class that does not override its parent's `kind` answers
+// from its parent's row, and errors_mapping.snapshot.spec.ts fails until it
+// gets its own.
+// ---------------------------------------------------------------------------
+
+type CompileRefusedKind =
+   | "compile_refused"
+   | "render_tag_refused"
+   | "unparseable_text";
+type BadRequestKind =
+   | "bad_request"
+   | "invalid_argument"
+   | "invalid_model_path"
+   | "invalid_query_request"
+   | CompileRefusedKind;
+type ConnectionKind =
+   | "connection"
+   | "connection_failed"
+   | "connection_pool_exhausted";
+type NotQueryableKind = "not_queryable" | "off_surface";
+type PackageAdmissionKind = "package_admission_refused" | "dry_run_capacity";
+type ServiceUnavailableKind = "service_unavailable" | PackageAdmissionKind;
+type PayloadTooLargeKind = "payload_too_large" | "response_unserializable";
+
+/** Each kind's error type: a class of this module, or a foreign error the mappers recognize. */
+interface ErrorByKind {
+   package_version: PackageVersionError;
+   build_plan_unavailable: BuildPlanUnavailableError;
+   not_implemented: NotImplementedError;
+   bad_request: BadRequestError;
+   invalid_argument: InvalidArgumentError;
+   compile_refused: CompileRefusedError;
+   invalid_model_path: InvalidModelPathError;
+   invalid_query_request: InvalidQueryRequestError;
+   render_tag_refused: RenderTagRefusedError;
+   unparseable_text: UnparseableTextError;
+   environment_not_found: EnvironmentNotFoundError;
+   package_not_found: PackageNotFoundError;
+   model_not_found: ModelNotFoundError;
+   dashboard_not_found: DashboardNotFoundError;
+   skill_not_found: SkillNotFoundError;
+   agent_not_found: AgentNotFoundError;
+   conflict: ConflictError;
+   connection_not_found: ConnectionNotFoundError;
+   table_not_found: TableNotFoundError;
+   connection: ConnectionError;
+   connection_failed: ConnectionFailedError;
+   unconfigured_connection: UnconfiguredConnectionError;
+   connection_pool_exhausted: ConnectionPoolExhaustedError;
+   destination_not_found: DestinationNotFoundError;
+   storage_destination_not_found: StorageDestinationNotFoundError;
+   storage_catalog_not_found: StorageCatalogNotFoundError;
+   connection_auth: ConnectionAuthError;
+   unsupported_catalog_format: UnsupportedCatalogFormatError;
+   model_compilation: ModelCompilationError;
+   version_files_missing: VersionFilesMissingError;
+   package_manifest: PackageManifestError;
+   materialization_eligibility: MaterializationEligibilityError;
+   chained_upstream_missing: ChainedUpstreamMissingError;
+   chained_shape_not_carried: ChainedShapeNotCarriedError;
+   publisher_config: PublisherConfigError;
+   server_configuration: ServerConfigurationError;
+   frozen_config: FrozenConfigError;
+   access_denied: AccessDeniedError;
+   query_compile: QueryCompileError;
+   not_queryable: NotQueryableError;
+   off_surface: OffSurfaceError;
+   materialization_not_found: MaterializationNotFoundError;
+   materialization_conflict: MaterializationConflictError;
+   write_conflict: WriteConflictError;
+   installed_from_location: InstalledFromLocationError;
+   write_rolled_back: WriteRolledBackError;
+   write_rollback_failed: WriteRollbackFailedError;
+   connection_save: ConnectionSaveError;
+   write_verify: WriteVerifyError;
+   invalid_state_transition: InvalidStateTransitionError;
+   service_unavailable: ServiceUnavailableError;
+   package_admission_refused: PackageAdmissionRefusedError;
+   dry_run_capacity: DryRunCapacityError;
+   payload_too_large: PayloadTooLargeError;
+   response_unserializable: ResponseUnserializableError;
+   query_timeout: QueryTimeoutError;
+   // Foreign errors: no class of ours, so recognized by what they are.
+   /** A MalloyError from @malloydata/malloy that is not our QueryCompileError. */
+   malloy: MalloyError;
+   /** A request body body-parser refused (an http-errors error with `expose`). */
+   body_parser: Error;
+   /** Anything else, including a thrown non-Error. */
+   unknown: unknown;
+}
+
+/** A stable name for what an error is, shared by every transport that answers it. */
+export type ErrorKind = keyof ErrorByKind;
+type ForeignKind = "malloy" | "body_parser" | "unknown";
+type ClassKind = Exclude<ErrorKind, ForeignKind>;
+
+/**
+ * The class each class kind belongs to. An error's `kind` is trusted only when
+ * the error is an instance of this class, so a foreign error that happens to
+ * carry a `kind` string is not mistaken for one of ours. The conditional type
+ * fails the typecheck for a class whose `kind` cannot return its key.
+ */
+const ERROR_CLASSES: {
+   [K in ClassKind]: K extends ErrorByKind[K]["kind"]
+      ? abstract new (...args: never[]) => ErrorByKind[K]
+      : never;
+} = {
+   package_version: PackageVersionError,
+   build_plan_unavailable: BuildPlanUnavailableError,
+   not_implemented: NotImplementedError,
+   bad_request: BadRequestError,
+   invalid_argument: InvalidArgumentError,
+   compile_refused: CompileRefusedError,
+   invalid_model_path: InvalidModelPathError,
+   invalid_query_request: InvalidQueryRequestError,
+   render_tag_refused: RenderTagRefusedError,
+   unparseable_text: UnparseableTextError,
+   environment_not_found: EnvironmentNotFoundError,
+   package_not_found: PackageNotFoundError,
+   model_not_found: ModelNotFoundError,
+   dashboard_not_found: DashboardNotFoundError,
+   skill_not_found: SkillNotFoundError,
+   agent_not_found: AgentNotFoundError,
+   conflict: ConflictError,
+   connection_not_found: ConnectionNotFoundError,
+   table_not_found: TableNotFoundError,
+   connection: ConnectionError,
+   connection_failed: ConnectionFailedError,
+   unconfigured_connection: UnconfiguredConnectionError,
+   connection_pool_exhausted: ConnectionPoolExhaustedError,
+   destination_not_found: DestinationNotFoundError,
+   storage_destination_not_found: StorageDestinationNotFoundError,
+   storage_catalog_not_found: StorageCatalogNotFoundError,
+   connection_auth: ConnectionAuthError,
+   unsupported_catalog_format: UnsupportedCatalogFormatError,
+   model_compilation: ModelCompilationError,
+   version_files_missing: VersionFilesMissingError,
+   package_manifest: PackageManifestError,
+   materialization_eligibility: MaterializationEligibilityError,
+   chained_upstream_missing: ChainedUpstreamMissingError,
+   chained_shape_not_carried: ChainedShapeNotCarriedError,
+   publisher_config: PublisherConfigError,
+   server_configuration: ServerConfigurationError,
+   frozen_config: FrozenConfigError,
+   access_denied: AccessDeniedError,
+   query_compile: QueryCompileError,
+   not_queryable: NotQueryableError,
+   off_surface: OffSurfaceError,
+   materialization_not_found: MaterializationNotFoundError,
+   materialization_conflict: MaterializationConflictError,
+   write_conflict: WriteConflictError,
+   installed_from_location: InstalledFromLocationError,
+   write_rolled_back: WriteRolledBackError,
+   write_rollback_failed: WriteRollbackFailedError,
+   connection_save: ConnectionSaveError,
+   write_verify: WriteVerifyError,
+   invalid_state_transition: InvalidStateTransitionError,
+   service_unavailable: ServiceUnavailableError,
+   package_admission_refused: PackageAdmissionRefusedError,
+   dry_run_capacity: DryRunCapacityError,
+   payload_too_large: PayloadTooLargeError,
+   response_unserializable: ResponseUnserializableError,
+   query_timeout: QueryTimeoutError,
+};
+
+/** Every class kind's class, for a spec that checks each declares its own `kind`. */
+export const ERROR_CLASSES_FOR_TESTS: Readonly<
+   Record<ClassKind, abstract new (...args: never[]) => Error>
+> = ERROR_CLASSES;
+
+/** What `error` is, for the error table. */
+export function errorKind(error: unknown): ErrorKind {
+   if (error instanceof Error) {
+      const kind = (error as { kind?: unknown }).kind;
+      if (
+         typeof kind === "string" &&
+         Object.hasOwn(ERROR_CLASSES, kind) &&
+         error instanceof ERROR_CLASSES[kind as ClassKind]
+      ) {
+         return kind as ClassKind;
+      }
+      if (error instanceof MalloyError) return "malloy";
+      if (bodyParserClientStatus(error) !== undefined) return "body_parser";
+   }
+   return "unknown";
+}
+
+/** A line {@link internalErrorToHttpError} logs, where the body stops carrying the detail. */
+interface LogLine {
+   summary: string;
+   level: "warn" | "error";
+}
+
+/** Where an MCP tool failed, for advice that names it. */
+export interface McpSite {
+   /** The operation that failed, e.g. `executeQuery`. */
+   operation: string;
+   /** The resource it failed on, e.g. `env/package`. */
+   identifier: string;
+}
+
+/**
+ * The agent-facing answer to an error over MCP.
+ *
+ * - `fixed`: this message (the error's own when absent) and these suggestions;
+ *   `log` names the summary logged, as `<log> during <operation>`, when the
+ *   error's text is withheld from the agent.
+ * - `not_found`: the generic "Resource not found" for the site's identifier.
+ * - `environment_not_found`: the environments that do exist, when the error
+ *   carries them; otherwise `not_found`.
+ * - `malloy`: the Malloy advice, refined by what the error says it is
+ *   (mcp/error_messages.ts getMalloyErrorDetails).
+ * - `internal`: reported as an unexpected internal failure.
+ */
+export type McpAdvice<E> =
+   | {
+        advice: "fixed";
+        message?: (error: E, site: McpSite) => string;
+        suggestions: readonly string[];
+        log?: string;
+     }
+   | { advice: "not_found" }
+   | { advice: "environment_not_found" }
+   | { advice: "malloy" }
+   | { advice: "internal" };
+
+/**
+ * Which part of an MCP setup request (environment, package, model) a setup
+ * failure names, for mapQuerySetupError. `resource` is the whole
+ * `env/package/model`. Absent: the failure is reported as an internal setup
+ * fault rather than classified.
+ */
+export type McpSetupScope = "environment" | "package" | "model" | "resource";
+
+/** One row of the error table. */
+export interface ErrorMapping<E> {
+   /** The HTTP status, or how the error decides it. */
+   status: number | ((error: E) => number);
+   /** The HTTP body's message; the error's own when absent. */
+   message?: string | ((error: E) => string);
+   /** The HTTP body's `reason`, for a caller that branches on it. */
+   reason?: ErrorReason | ((error: E) => ErrorReason | undefined);
+   /** Logged server-side by the HTTP mapping (unless the caller passed `log: false`). */
+   log?: LogLine | ((error: E) => LogLine | undefined);
+   /** The HTTP body also carries the compile problems. */
+   problems?: (error: E) => HttpErrorAnswer["json"]["problems"];
+   mcp: McpAdvice<E>;
+   mcpSetup?: McpSetupScope;
+}
+
+const UNHANDLED_LOG: LogLine = {
+   summary: "Unhandled internal error",
+   level: "error",
+};
+
+/** A failure this module has no specific answer for: a generalized 500, reported as internal over MCP. */
+const UNHANDLED = {
+   status: 500,
+   message: GENERIC_INTERNAL_MESSAGE,
+   log: UNHANDLED_LOG,
+   mcp: { advice: "internal" },
+} as const satisfies ErrorMapping<unknown>;
+
+const NOT_TRANSIENT_CHANGE_QUERY =
+   "This is not transient. The same query will fail the same way, so change the query rather than retrying it.";
+
+/**
+ * Remediation for a ServiceUnavailableError. It covers both the memory governor
+ * and the concurrency slots, so the wording names both.
+ */
+export const BACK_PRESSURE_SUGGESTIONS: readonly string[] = [
+   "Retry once the publisher is below its configured memory or concurrency limit.",
+   "If this persists, raise the limit or scale up the pod.",
+];
+
+const BACK_PRESSURE = {
+   status: 503,
+   mcp: { advice: "fixed", suggestions: BACK_PRESSURE_SUGGESTIONS },
+   mcpSetup: "resource",
+} as const satisfies ErrorMapping<ServiceUnavailableError>;
+
+const TOO_LARGE = {
+   status: 413,
+   mcp: {
+      advice: "fixed",
+      // The message already says to refine the query; this adds that it is
+      // not transient, which is why it is a 413 and not the retryable 503.
+      suggestions: [
+         NOT_TRANSIENT_CHANGE_QUERY,
+         "If it is already minimal, raise the configured cap named in the message.",
+      ],
+   },
+} as const satisfies ErrorMapping<PayloadTooLargeError>;
+
+/** A request the caller must change: 400, with Malloy advice over MCP. */
+const BAD_REQUEST = {
+   status: 400,
+   mcp: { advice: "malloy" },
+} as const satisfies ErrorMapping<BadRequestError>;
+
+const NOT_FOUND = {
+   status: 404,
+   mcp: { advice: "not_found" },
+} as const satisfies ErrorMapping<Error>;
+
+/** A server-authored message is returned; a driver's is logged and generalized. */
+const CONNECTION = {
+   status: 502,
+   // It can name an internal host, echo SQL, or act as a failure-mode oracle.
+   // This also hides a statement the warehouse rejected (for every dialect but
+   // Postgres, see statementRejection), because ConnectionError does not
+   // distinguish a rejected statement from a transport failure.
+   message: (error: ConnectionError) =>
+      error.callerSafe ? error.message : GENERIC_UPSTREAM_MESSAGE,
+   log: (error: ConnectionError): LogLine | undefined =>
+      error.callerSafe
+         ? undefined
+         : { summary: "Upstream connection error", level: "warn" },
+   mcp: { advice: "internal" },
+} as const satisfies ErrorMapping<ConnectionError>;
+
+/**
+ * The table. Typed as a mapped type over every kind, so a kind with no row,
+ * or a row for a kind that does not exist, fails the typecheck.
+ */
+export const ERROR_TABLE: { [K in ErrorKind]: ErrorMapping<ErrorByKind[K]> } = {
+   package_version: {
+      status: (error) => error.status,
+      reason: (error) => error.reason,
+      mcp: {
+         // An unknown, archived or malformed version, or no `latest` yet.
+         // Not transient and not the model's fault; the message says which.
+         advice: "fixed",
+         suggestions: [
+            "This is not transient: retrying fails the same way until the package's versions change.",
+            "The MCP tools serve the package's latest version. A package whose versions have no latest yet must have one made latest (PUT .../packages/{package}/latest) before these tools can read it.",
+         ],
+      },
+      // A package with versions and no `latest` yet: its own message.
+      mcpSetup: "package",
+   },
+   bad_request: BAD_REQUEST,
+   // A malformed argument that is not about Malloy, so it must not get the
+   // Malloy advice. BadRequestError keeps it: that class also wraps genuine
+   // query-time compile failures, which do want the Malloy advice.
+   invalid_argument: {
+      status: 400,
+      mcp: {
+         advice: "fixed",
+         suggestions: [
+            "This is not transient. The same arguments will fail the same way, so change them rather than retrying.",
+            "The message above names what was wrong. If it names an expected format, use that format exactly.",
+         ],
+      },
+   },
+   compile_refused: BAD_REQUEST,
+   invalid_model_path: BAD_REQUEST,
+   invalid_query_request: BAD_REQUEST,
+   render_tag_refused: BAD_REQUEST,
+   unparseable_text: BAD_REQUEST,
+   server_configuration: {
+      status: 500,
+      log: { summary: "Server configuration error", level: "warn" },
+      mcp: { advice: "internal" },
+   },
+   frozen_config: { status: 403, mcp: { advice: "internal" } },
+   access_denied: {
+      status: 403,
+      mcp: { advice: "malloy" },
+      // The #(authorize) gate fires at query time, not setup, but a denial
+      // must never surface as an opaque internal error.
+      mcpSetup: "resource",
+   },
+   environment_not_found: {
+      status: 404,
+      mcp: { advice: "environment_not_found" },
+      mcpSetup: "environment",
+   },
+   package_not_found: { ...NOT_FOUND, mcpSetup: "package" },
+   model_not_found: { ...NOT_FOUND, mcpSetup: "model" },
+   dashboard_not_found: { status: 404, mcp: { advice: "internal" } },
+   skill_not_found: { status: 404, mcp: { advice: "internal" } },
+   agent_not_found: { status: 404, mcp: { advice: "internal" } },
+   conflict: { status: 409, mcp: { advice: "internal" } },
+   // A query-boundary denial is a deliberate 404; `not_found` also drops the
+   // source name this class is careful not to confirm.
+   not_queryable: NOT_FOUND,
+   off_surface: {
+      status: 404,
+      mcp: {
+         // Not `not_found`, which would drop this message and tell the agent
+         // to check its spelling.
+         advice: "fixed",
+         suggestions: [
+            "This is curation, not a typo: the name is real and the package does not publish it. Retrying with a different spelling will not help.",
+            "To query what IS published, call get_context for this package and use the model_path it returns, verbatim.",
+         ],
+      },
+      mcpSetup: "model",
+   },
+   query_compile: {
+      status: 400,
+      problems: (error) => error.problems.map(toQueryTextProblem),
+      mcp: { advice: "malloy" },
+   },
+   malloy: { status: 400, mcp: { advice: "malloy" } },
+   table_not_found: {
+      status: 404,
+      reason: "TABLE_NOT_FOUND",
+      mcp: { advice: "internal" },
+   },
+   build_plan_unavailable: {
+      status: 409,
+      reason: "BUILD_PLAN_UNAVAILABLE",
+      mcp: { advice: "internal" },
+   },
+   // Otherwise reported as internal, and an agent retries it forever.
+   connection_not_found: NOT_FOUND,
+   storage_destination_not_found: {
+      status: 404,
+      mcp: { advice: "internal" },
+   },
+   storage_catalog_not_found: { status: 404, mcp: { advice: "internal" } },
+   destination_not_found: { status: 422, mcp: { advice: "internal" } },
+   connection_auth: {
+      // The driver's text can name the user, the account or the host, so it
+      // is logged and the answer says only what to fix. warn: a
+      // misconfigured connection is the customer's to fix, not our fault.
+      status: 424,
+      message: GENERIC_AUTH_MESSAGE,
+      reason: "CONNECTION_AUTH_FAILED",
+      log: { summary: "Connection credentials rejected", level: "warn" },
+      mcp: {
+         advice: "fixed",
+         message: (_error, { identifier }) =>
+            `The database rejected the connection's credentials for ${identifier}. The query never ran.`,
+         suggestions: [
+            "The query and the model are fine. Do not rewrite them, and do not retry: it fails the same way until the credentials are fixed.",
+            "Report that the connection's user, password, key or token needs updating.",
+         ],
+         log: "Connection credentials rejected",
+      },
+   },
+   connection_failed: {
+      // ConnectionError's 502 and logging, plus the reason that says the
+      // database is down. The driver's text can name an internal host.
+      status: 502,
+      message: GENERIC_UNREACHABLE_MESSAGE,
+      reason: "CONNECTION_FAILED",
+      log: { summary: "Database unreachable", level: "warn" },
+      mcp: {
+         advice: "fixed",
+         message: (_error, { identifier }) =>
+            `The database connection for ${identifier} is down: the database could not be reached, so the query never ran.`,
+         suggestions: [
+            "The query and the model are fine. Do not rewrite them.",
+            "Retry once. If it fails again, report that the database connection is down rather than changing the query.",
+         ],
+         log: "Database unreachable",
+      },
+   },
+   unconfigured_connection: {
+      status: 424,
+      reason: "CONNECTION_NOT_FOUND",
+      mcp: {
+         advice: "fixed",
+         message: (error, { identifier }) =>
+            `${error.message}. The model for ${identifier} uses a connection this environment does not have, so the query never ran.`,
+         suggestions: [
+            "The query is fine. Do not rewrite it, and do not retry: it fails the same way until the connection exists.",
+            "Report that the environment is missing this connection; it was likely deleted or renamed.",
+         ],
+      },
+   },
+   unsupported_catalog_format: { status: 422, mcp: { advice: "internal" } },
+   materialization_eligibility: {
+      status: 422,
+      mcp: { advice: "internal" },
+   },
+   model_compilation: {
+      status: 424,
+      mcp: { advice: "malloy" },
+      mcpSetup: "resource",
+   },
+   version_files_missing: { status: 424, mcp: { advice: "internal" } },
+   package_manifest: {
+      status: 424,
+      mcp: {
+         // An unusable publisher.json: neither "retry" (internal) nor
+         // "check your .malloy files" (Malloy) applies.
+         advice: "fixed",
+         suggestions: [
+            "This is not transient. The package's publisher.json is invalid, so retrying fails the same way until the file is fixed.",
+            "Fix the field the message names in publisher.json, then call reload_package.",
+         ],
+      },
+      mcpSetup: "package",
+   },
+   connection: CONNECTION,
+   connection_pool_exhausted: {
+      ...CONNECTION,
+      mcp: {
+         advice: "fixed",
+         suggestions: [
+            "Retry shortly; this clears as other queries on the connection finish.",
+            "If it persists, run fewer queries at once on this connection, or ask the operator to raise PUBLISHER_POSTGRES_POOL_MAX.",
+         ],
+      },
+   },
+   materialization_not_found: { status: 404, mcp: { advice: "internal" } },
+   materialization_conflict: { status: 409, mcp: { advice: "internal" } },
+   invalid_state_transition: { status: 409, mcp: { advice: "internal" } },
+   write_conflict: {
+      status: 409,
+      reason: (error) => error.reason,
+      mcp: { advice: "internal" },
+   },
+   installed_from_location: {
+      status: 409,
+      reason: "PACKAGE_INSTALLED_FROM_LOCATION",
+      mcp: {
+         // Not transient, and not the model's fault: the message names where
+         // the change belongs.
+         advice: "fixed",
+         suggestions: [
+            "This is not transient: retrying fails the same way while the package is installed from a location.",
+            "Make the change in the package's source at that location and reload the package, or publish it as a version.",
+         ],
+      },
+   },
+   write_rollback_failed: { status: 500, mcp: { advice: "internal" } },
+   // Answered with its message, which names only connections; each failure
+   // was logged where it happened, so it is not logged again here.
+   connection_save: { status: 500, mcp: { advice: "internal" } },
+   // Logged once, where the rollback happened, with the cause.
+   write_rolled_back: { status: 500, mcp: { advice: "internal" } },
+   service_unavailable: BACK_PRESSURE,
+   package_admission_refused: BACK_PRESSURE,
+   dry_run_capacity: BACK_PRESSURE,
+   payload_too_large: TOO_LARGE,
+   response_unserializable: {
+      ...TOO_LARGE,
+      mcp: {
+         // Not TOO_LARGE's "raise the cap", which cannot help a response
+         // that will not serialize at any cap.
+         advice: "fixed",
+         suggestions: [
+            NOT_TRANSIENT_CHANGE_QUERY,
+            "Raising the byte cap will not help, because the response cannot be serialized at any cap. Shrink it instead: project fewer columns, add a LIMIT, or filter out the wide values.",
+         ],
+      },
+   },
+   query_timeout: {
+      status: 504,
+      mcp: TOO_LARGE.mcp,
+   },
+   // A feature the server does not have (e.g. `versionId`) is not an
+   // internal failure; the OpenAPI spec documents 501 on those routes.
+   not_implemented: { status: 501, mcp: { advice: "internal" } },
+   body_parser: {
+      status: (error) => bodyParserClientStatus(error)!,
+      mcp: { advice: "internal" },
+   },
+   // No specific answer: a generalized 500, its detail only logged.
+   chained_upstream_missing: UNHANDLED,
+   chained_shape_not_carried: UNHANDLED,
+   publisher_config: UNHANDLED,
+   write_verify: UNHANDLED,
+   unknown: UNHANDLED,
+};
+
+/** The table row `error` answers from. */
+export function errorMapping(error: unknown): ErrorMapping<Error> {
+   // The row is typed for its kind; errorKind guarantees `error` is of it.
+   return ERROR_TABLE[errorKind(error)] as ErrorMapping<Error>;
 }

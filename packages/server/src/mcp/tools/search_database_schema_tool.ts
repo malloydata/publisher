@@ -3,19 +3,21 @@
 
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod/v3";
-import { ConnectionController } from "../../controller/connection.controller";
-import { EnvironmentStore } from "../../service/environment_store";
+import type { ConnectionController } from "../../controller/connection.controller";
+import type { EnvironmentCatalog } from "../../service/environment_ports";
 import { schemaEmbeddingEnabled } from "../../config";
-import { getEmbeddingProvider } from "../../service/embedding_provider";
-import { buildMalloyUri, classifyToolError } from "../handler_utils";
+import { getEmbeddingProvider } from "../../retrieval/llm/embedding_provider";
+import { buildMalloyUri } from "../handler_utils";
+import { registerGuardedTool } from "../register_tool";
 import { jsonResource, jsonToolError } from "../tool_response";
 import { logger } from "../../logger";
 import {
-   RankingMode,
-   SchemaTableEntity,
    capColumns,
-   rankTables,
-} from "./schema_index";
+   type RankingMode,
+   type SchemaTableEntity,
+} from "../../retrieval/index/schema_index";
+import type { RetrievalService } from "../../retrieval/service";
+import { parseEnvironmentName } from "../../service/identity";
 
 /** Tables returned when the caller does not ask for a specific number. */
 const DEFAULT_LIMIT = 20;
@@ -307,18 +309,34 @@ Then paste that table's malloySource verbatim, e.g. source: \`orders\` is \`ware
  */
 export function registerSearchDatabaseSchemaTool(
    mcpServer: McpServer,
-   environmentStore: EnvironmentStore,
+   environmentStore: EnvironmentCatalog,
+   connectionController: ConnectionController,
+   retrieval: RetrievalService,
 ): void {
-   const deps: TierDeps = {
-      environmentStore,
-      connectionController: new ConnectionController(environmentStore),
-   };
+   const deps: TierDeps = { environmentStore, connectionController, retrieval };
 
-   mcpServer.tool(
-      "search_database_schema",
-      SEARCH_DATABASE_SCHEMA_DESCRIPTION,
-      searchDatabaseSchemaShape,
-      async (params: SearchDatabaseSchemaParams) => {
+   registerGuardedTool(mcpServer, {
+      name: "search_database_schema",
+      description: SEARCH_DATABASE_SCHEMA_DESCRIPTION,
+      inputSchema: searchDatabaseSchemaShape,
+      op: "searchDatabaseSchema",
+      failed: "search failed",
+      uri: ({ environmentName, packageName }) =>
+         buildMalloyUri(
+            { environment: environmentName, package: packageName },
+            "search-database-schema",
+         ),
+      identifier: ({ environmentName, connectionName, schemaName }) =>
+         [environmentName, connectionName, schemaName]
+            .filter(Boolean)
+            .join("/"),
+      logFields: ({ environmentName, connectionName, schemaName }) => ({
+         environmentName,
+         connectionName,
+         schemaName,
+      }),
+      errorPayload: { tables: [] },
+      run: async (params: SearchDatabaseSchemaParams, uri) => {
          const {
             environmentName,
             connectionName,
@@ -329,13 +347,6 @@ export function registerSearchDatabaseSchemaTool(
             limit,
             offset,
          } = params;
-         const uri = buildMalloyUri(
-            {
-               environment: environmentName,
-               package: packageName,
-            },
-            "search-database-schema",
-         );
 
          logger.debug("[MCP Tool searchDatabaseSchema] Searching schema", {
             environmentName,
@@ -348,57 +359,42 @@ export function registerSearchDatabaseSchemaTool(
             offset,
          });
 
-         try {
-            const tier = resolveTier(params);
-            const warnings = ignoredArgsWarning(params, tier.tier);
-            switch (tier.tier) {
-               case "environments":
-                  return await listEnvironmentsTier(deps, uri, warnings);
-               case "connections":
-                  return await listConnectionsTier(deps, uri, tier, warnings);
-               case "schemas":
-                  return await listSchemasTier(
-                     deps,
-                     uri,
-                     tier,
-                     packageName,
-                     warnings,
-                  );
-               case "table":
-                  return await describeTableTier(
-                     deps,
-                     uri,
-                     tier,
-                     packageName,
-                     warnings,
-                  );
-               case "tables":
-                  return await listTablesTier(
-                     deps,
-                     uri,
-                     tier,
-                     params,
-                     warnings,
-                  );
-            }
-         } catch (error) {
-            const identifier = [environmentName, connectionName, schemaName]
-               .filter(Boolean)
-               .join("/");
-            return jsonToolError(
-               uri,
-               classifyToolError("searchDatabaseSchema", identifier, error),
-               { tables: [] },
-            );
+         const tier = resolveTier(params);
+         const warnings = ignoredArgsWarning(params, tier.tier);
+         switch (tier.tier) {
+            case "environments":
+               return await listEnvironmentsTier(deps, uri, warnings);
+            case "connections":
+               return await listConnectionsTier(deps, uri, tier, warnings);
+            case "schemas":
+               return await listSchemasTier(
+                  deps,
+                  uri,
+                  tier,
+                  packageName,
+                  warnings,
+               );
+            case "table":
+               return await describeTableTier(
+                  deps,
+                  uri,
+                  tier,
+                  packageName,
+                  warnings,
+               );
+            case "tables":
+               return await listTablesTier(deps, uri, tier, params, warnings);
          }
       },
-   );
+   });
 }
 
 /** What the tiers that reach a store or a warehouse need. */
 interface TierDeps {
-   environmentStore: EnvironmentStore;
+   environmentStore: EnvironmentCatalog;
    connectionController: ConnectionController;
+   /** Ranks a schema's tables, through the process's schema caches. */
+   retrieval: RetrievalService;
 }
 
 /**
@@ -538,11 +534,14 @@ function withWarnings(warnings: string[]): { warnings?: string[] } {
  * pull 100k rows, and the memory governor otherwise cannot see this traffic.
  */
 async function assertCanAdmit(
-   environmentStore: EnvironmentStore,
+   environmentStore: EnvironmentCatalog,
    environmentName: string,
 ): Promise<void> {
    (
-      await environmentStore.getEnvironment(environmentName, false)
+      await environmentStore.getEnvironment(
+         parseEnvironmentName(environmentName),
+         false,
+      )
    ).assertCanAdmitQuery();
 }
 
@@ -595,7 +594,7 @@ async function listEnvironmentsTier(
          let connections: ResponseConnection[] = [];
          try {
             const environment = await environmentStore.getEnvironment(
-               name,
+               parseEnvironmentName(name),
                false,
             );
             connections = await listConnectionsFor(environment);
@@ -625,7 +624,7 @@ async function listConnectionsTier(
    warnings: string[],
 ) {
    const environment = await environmentStore.getEnvironment(
-      environmentName,
+      parseEnvironmentName(environmentName),
       false,
    );
    const connections = await listConnectionsFor(environment);
@@ -737,7 +736,7 @@ async function describeTableTier(
 
 /** Tier 4: a schema's tables, listed or ranked. */
 async function listTablesTier(
-   { environmentStore, connectionController }: TierDeps,
+   { environmentStore, connectionController, retrieval }: TierDeps,
    uri: string,
    {
       environmentName,
@@ -778,7 +777,7 @@ async function listTablesTier(
 
    if (searchQuery !== undefined) {
       const provider = resolveProvider();
-      const ranked = await rankTables({
+      const ranked = await retrieval.rankSchemaTables({
          tables: entities,
          query: searchQuery,
          limit: max,

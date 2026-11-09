@@ -181,8 +181,10 @@ async function writeNewReport(
             path = candidate;
             break;
          } catch (error) {
-            // A create-only write refused as a conflict means the listing was stale; the next name is free to try.
-            if (!isConflict(error)) throw error;
+            // A file already at the path means the listing was stale, and the
+            // next name is free to try. Any other refusal (a package that takes
+            // no write in place) fails every name alike, so it is thrown as is.
+            if (!isFileExists(error)) throw error;
          }
       }
       if (path === undefined) throw noFreeName(document.title, options.path);
@@ -228,8 +230,40 @@ async function writeNewReport(
    return found;
 }
 
-const isConflict = (error: unknown) =>
-   (error as { response?: { status?: number } })?.response?.status === 409;
+/**
+ * What a server from before `reason` FILE_EXISTS said when a create found a
+ * file at its path: "`<path>` already exists in the package. Send the …" in
+ * the first release that had the write, then "`<path>` already exists in the
+ * package, so nothing was written. …". It answers other 409s on the same
+ * route with no `reason` too (a package loading or unloading, a
+ * materialization conflict), and those are not a taken name.
+ */
+const OLD_SERVER_FILE_EXISTS = /^`[^`]+` already exists in the package\b/;
+
+/**
+ * Whether a create-only write was refused because a file is already at the
+ * path: 409 with `reason` FILE_EXISTS, or, from a server that predates the
+ * reason, a reasonless 409 whose message is that server's for a file at the
+ * path (OLD_SERVER_FILE_EXISTS). Any other 409, with another reason
+ * (PACKAGE_IS_VERSIONED, PACKAGE_INSTALLED_FROM_LOCATION) or none, is not:
+ * it would refuse every name alike, so it is shown at once.
+ */
+function isFileExists(error: unknown): boolean {
+   const response = (
+      error as {
+         response?: {
+            status?: number;
+            data?: { reason?: unknown; message?: unknown };
+         };
+      }
+   )?.response;
+   if (response?.status !== 409) return false;
+   const reason = response.data?.reason;
+   if (reason === "FILE_EXISTS") return true;
+   if (reason !== undefined && reason !== null) return false;
+   const message = response.data?.message;
+   return typeof message === "string" && OLD_SERVER_FILE_EXISTS.test(message);
+}
 
 const noFreeName = (title: string, path?: string) =>
    new Error(

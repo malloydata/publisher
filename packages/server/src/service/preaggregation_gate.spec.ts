@@ -24,6 +24,8 @@ import * as path from "path";
 import { BadRequestError, internalErrorToHttpError } from "../errors";
 import { Environment } from "./environment";
 import type { Package } from "./package";
+import { writePackageFiles } from "../test_helpers/temp_package";
+import { parsePackageName } from "./identity";
 
 let rootDir: string;
 let envPath: string;
@@ -56,15 +58,15 @@ async function loadPackage(
    file = "model.malloy",
 ): Promise<Package> {
    const dir = path.join(envPath, "pkg");
-   await fs.mkdir(dir, { recursive: true });
-   await fs.writeFile(
-      path.join(dir, "publisher.json"),
-      JSON.stringify({ name: "pkg", description: "fixture" }),
+   writePackageFiles(
+      dir,
+      {},
+      { manifest: { name: "pkg", description: "fixture" } },
    );
    await fs.writeFile(path.join(dir, file), text);
    const env = await Environment.create("testEnv", envPath, []);
    await env.addPackage("pkg");
-   return env.getPackage("pkg", false);
+   return env.getPackage(parsePackageName("pkg"), false);
 }
 
 describe("a valid declaration does not disturb the load", () => {

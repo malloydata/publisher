@@ -12,6 +12,7 @@ import {
    ConnectionLookup,
    type FilePointer,
    packageCompilationService,
+   UNCURATED_QUERY_ROUTE,
    type Workspace,
    writeWorkspace,
 } from "./test_support";
@@ -114,6 +115,7 @@ describe("extractPackageEntities", () => {
       const fromDefinition = await extractPackageEntities({
          packageRoot: ws!.dir,
          modelFiles: [rebuilt],
+         queryRoute: UNCURATED_QUERY_ROUTE,
          connections: lookup,
       });
 
@@ -347,5 +349,43 @@ source: served is base extend {
       expect(byPath.get("good.malloy")!.compileStatus).toBe("SUCCESS");
       expect(byPath.get("bad.malloy")!.compileStatus).toBe("ERROR");
       expect(byPath.get("bad.malloy")!.errorMessage).toContain("nope");
+   }, 60_000);
+
+   test("asking a curated package's query route never writes the package directory it is handed", async () => {
+      const { files, lookup } = await workspace({
+         "index.malloy": 'import "orders.malloy"\nexport { orders }\n',
+         "orders.malloy": "source: orders is duckdb.table('orders.csv')",
+         "bad.malloy":
+            "source: bad is duckdb.table('orders.csv') extend { dimension: x is nope }",
+         "publisher.json": JSON.stringify({ name: "shared", explores: [] }),
+      });
+      const snapshot = () =>
+         fs
+            .readdirSync(ws!.dir, { recursive: true })
+            .map(String)
+            .sort()
+            .map((rel) => {
+               const abs = path.join(ws!.dir, rel);
+               const stat = fs.statSync(abs);
+               // The modification time too: a file rewritten and restored to
+               // the same text was still written.
+               return stat.isFile()
+                  ? `${rel}@${stat.mtimeMs}:${fs.readFileSync(abs, "utf-8")}`
+                  : rel;
+            });
+      const before = snapshot();
+      const extraction = await packageCompilationService.extractPackage(
+         {
+            modelFiles: files.filter((f) => f.relativePath.endsWith(".malloy")),
+            manifest: { explores: ["index.malloy"] },
+         },
+         lookup,
+      );
+      // The route was a real curated one: the surface's source is queryable.
+      const index = extraction.results.find(
+         (r) => r.modelFilePath === "index.malloy",
+      );
+      expect(index?.compileStatus).toBe("SUCCESS");
+      expect(snapshot()).toEqual(before);
    }, 60_000);
 });

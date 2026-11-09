@@ -2,23 +2,24 @@
 // SPDX-License-Identifier: MIT
 
 import { afterAll, beforeEach, describe, expect, it } from "bun:test";
-import { sanitizeLunrQuery as sanitize } from "./retrieval_shared";
-import { entityId } from "./get_context_response";
+import { sanitizeLunrQuery as sanitize } from "../../retrieval/shared";
+import { entityId } from "../../retrieval/search/response";
 import { registerGetContextTool } from "./get_context_tool";
 import { registerListPackagesTool } from "./list_packages_tool";
-import { docOnlyText, docText } from "./package_entities";
-import { setRetrievalConfig } from "../../retrieval_config";
+import { docOnlyText, docText } from "../../retrieval/model/package_entities";
+import { setRetrievalConfig } from "../../retrieval/config";
 import type { EnvironmentStore } from "../../service/environment_store";
 import { EnvironmentNotFoundError, PackageNotFoundError } from "../../errors";
 import {
    _clearEmbeddingProviderForTests,
    _setEmbeddingProviderForTests,
-} from "../../service/embedding_provider";
+} from "../../retrieval/llm/embedding_provider";
+import { testRetrieval } from "../../test_helpers/test_retrieval";
 
 // Pin the baseline: every test in this file runs with no embedding provider,
 // regardless of ambient EMBEDDING_* env vars in the developer's shell.
 // Value search is off here: the dimensional_value tests in this file pin what a
-// server with it turned off answers. The on-mode is get_context_values.spec.ts.
+// server with it turned off answers. The on-mode is retrieval/search/values.spec.ts.
 beforeEach(() => {
    _setEmbeddingProviderForTests(null);
    setRetrievalConfig({ dimensionValues: { enabled: false } });
@@ -55,6 +56,21 @@ describe("get_context docText", () => {
       expect(docText()).toBe("");
       expect(docText([])).toBe("");
    });
+
+   it("uses the #(dbmeta) description when there is no #(doc)", () => {
+      expect(
+         docText([{ value: '#(dbmeta) description="Customer identifier."\n' }]),
+      ).toBe("Customer identifier.");
+   });
+
+   it("prefers #(doc) over the #(dbmeta) description", () => {
+      expect(
+         docText([
+            '#(dbmeta) description="From the database."\n',
+            "#(doc) Written in the model.",
+         ]),
+      ).toBe("Written in the model.");
+   });
 });
 
 describe("get_context docOnlyText (embedding-input safety)", () => {
@@ -75,6 +91,63 @@ describe("get_context docOnlyText (embedding-input safety)", () => {
             "#(malloy) drillable",
          ]),
       ).toBe("");
+   });
+
+   it("keeps only the #(dbmeta) description when mixed with predicate annotations", () => {
+      expect(
+         docOnlyText([
+            "#(access_filter) \"$TENANT = 'acme'\"",
+            '#(dbmeta) description="Orders."\n',
+         ]),
+      ).toBe("Orders.");
+   });
+
+   it("reads quotes and line breaks back from the description", () => {
+      expect(
+         docOnlyText([
+            '#(dbmeta) description="Uses \\"active\\" status.\\nSecond line."\n',
+         ]),
+      ).toBe('Uses "active" status. Second line.');
+   });
+
+   it("ignores a #(dbmeta) annotation that does not parse", () => {
+      expect(docOnlyText(['#(dbmeta) description="unterminated\n'])).toBe("");
+   });
+
+   it("ignores a #(dbmeta) annotation without a description", () => {
+      expect(docOnlyText(["#(dbmeta) other=1\n"])).toBe("");
+   });
+
+   it("reads a description that mentions #(doc) as a description", () => {
+      expect(
+         docOnlyText([
+            '#(dbmeta) description="Net revenue. Document fields with #(doc) per the style guide."\n',
+         ]),
+      ).toBe("Net revenue. Document fields with #(doc) per the style guide.");
+   });
+
+   it("never adds a description that mentions #(doc) to an authored #(doc)", () => {
+      expect(
+         docOnlyText([
+            "#(doc) Authored.\n",
+            '#(dbmeta) description="See #(doc) here."\n',
+         ]),
+      ).toBe("Authored.");
+   });
+
+   it('prefers a #" doc string over the #(dbmeta) description', () => {
+      expect(
+         docOnlyText([
+            '#(dbmeta) description="From the database."\n',
+            '#" Net of refunds.\n',
+         ]),
+      ).toBe("Net of refunds.");
+   });
+
+   it('prefers #(doc) over a #" doc string', () => {
+      expect(docOnlyText(['#" Doc string.\n', "#(doc) Authored.\n"])).toBe(
+         "Authored.",
+      );
    });
 
    it("keeps only the #(doc) line when mixed with predicate annotations", () => {
@@ -100,7 +173,7 @@ describe("get_context sanitize", () => {
    });
 });
 
-// Capture the tool handler that registerGetContextTool passes to McpServer.tool,
+// Capture the tool handler that registerGetContextTool passes to McpServer.registerTool,
 // so each discovery tier can be exercised against a mocked EnvironmentStore.
 type Content = Array<{
    type?: string;
@@ -124,11 +197,15 @@ function captureNamed(
 ): Handler {
    const handlers = new Map<string, Handler>();
    const fakeServer = {
-      tool: (name: string, _desc: string, _shape: unknown, h: Handler) => {
+      registerTool: (name: string, _config: unknown, h: Handler) => {
          handlers.set(name, h);
       },
    };
-   registerGetContextTool(fakeServer as never, store as EnvironmentStore);
+   registerGetContextTool(
+      fakeServer as never,
+      store as EnvironmentStore,
+      testRetrieval(store as EnvironmentStore),
+   );
    const handler = handlers.get(wanted);
    if (!handler) throw new Error(`${wanted} was not registered`);
    return handler;
@@ -2950,7 +3027,7 @@ describe("list_packages", () => {
    function listHandler(store: Partial<EnvironmentStore>): Handler {
       const handlers = new Map<string, Handler>();
       const fakeServer = {
-         tool: (name: string, _d: string, _s: unknown, h: Handler) => {
+         registerTool: (name: string, _config: unknown, h: Handler) => {
             handlers.set(name, h);
          },
       };

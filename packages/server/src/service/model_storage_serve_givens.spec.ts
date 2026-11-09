@@ -10,6 +10,7 @@
 // while the table underneath does not. A test that only checked routing would
 // pass just as well against a shape that served the whole table to everyone,
 // which is the failure this exists to catch.
+import { unrecordedAudit } from "./access_record";
 import { DuckDBConnection } from "@malloydata/db-duckdb";
 import {
    FixedConnectionMap,
@@ -19,10 +20,11 @@ import {
    Runtime,
 } from "@malloydata/malloy";
 import { afterEach, describe, expect, it } from "bun:test";
-import type { ServeBinding } from "./materialization_serve_transform";
+import type { ServeBinding } from "./materialization/serve/materialization_serve_transform";
 import { malloyGivenToApi } from "./given";
 import { Model } from "./model";
 import { installSettings } from "../test_helpers/settings_env";
+import { QueryPrivileges } from "./model_query_request";
 
 /** Puts back the settings the current test installed. */
 let restoreSettings: (() => void) | undefined;
@@ -94,27 +96,20 @@ async function buildModel(): Promise<Model> {
    const compiled = await mm.getModel();
    // eslint-disable-next-line @typescript-eslint/no-explicit-any
    const modelDef = (compiled as any)._modelDef;
-   const model = new Model(
-      "pkg",
-      "m.malloy",
-      {},
-      "model",
+   const model = new Model({
+      packageName: "pkg",
+      modelPath: "m.malloy",
+      dataStyles: {},
+      modelType: "model",
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      mm as any,
+      modelMaterializer: mm as any,
       modelDef,
-      undefined,
-      undefined,
-      undefined,
-      undefined,
-      undefined,
-      undefined,
       // The given surface, as a package load derives it. Not incidental setup:
       // it is what the serve shape declares, so a Model built without it cannot
       // route a given-scoped source at all.
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      Array.from(compiled.givens.values()).map(malloyGivenToApi as any) as any,
-      modelDefToModelInfo(modelDef),
-   );
+      givens: Array.from(compiled.givens.values()).map(malloyGivenToApi),
+      modelInfo: modelDefToModelInfo(modelDef),
+   });
    const serveConfig = new MalloyConfig({ connections: {} });
    serveConfig.wrapConnections(() => new FixedConnectionMap(connMap, "duckdb"));
    model.setServeDestinationConfig(() => serveConfig);
@@ -126,13 +121,14 @@ async function sumFor(
    model: Model,
    givens?: Record<string, number>,
 ): Promise<number> {
-   const res = await model.getQueryResults(
-      undefined,
-      undefined,
-      "run: scoped -> { aggregate: t is amount.sum() }",
-      {},
-      true,
-      givens,
+   const res = await model.runQuery(
+      unrecordedAudit(),
+      {
+         query: "run: scoped -> { aggregate: t is amount.sum() }",
+         filterParams: {},
+         givens,
+      },
+      QueryPrivileges.of({ bypassFilters: true }),
    );
    const rows = res.compactResult as unknown as { t: number | null }[];
    return Number(rows[0].t ?? 0);

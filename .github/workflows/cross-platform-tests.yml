@@ -266,15 +266,10 @@ jobs:
         run: bun run --cwd packages/create-malloy-package test:e2e
         shell: bash
 
-      # Split into three bun-test invocations (three processes). The unit specs
-      # under src/ use `mock.module(...)` to stub out `StorageManager` and
-      # other modules; Bun does not scope those mocks to a single file: they
-      # persist in the process-wide module cache and poison any later spec
-      # that imports the real module. Running integration specs (which import
-      # src/server.ts and expect the real StorageManager) in a separate
-      # process avoids the carry-over. The component specs (tests/component:
-      # real DuckDB, compiler and worker pool, but no listeners or fixed
-      # ports) get a process of their own for the same reason.
+      # Split into three bun-test invocations (three processes), one per layer:
+      # unit specs under src/, component specs (tests/component: real DuckDB,
+      # compiler and worker pool, but no fixed ports), and integration specs
+      # (tests/integration: real servers and sockets, run serially).
       #
       # The three processes run at the same time. They share no state: the
       # integration servers own packages/server's publisher.db and
@@ -293,12 +288,18 @@ jobs:
       #
       # The integration suite runs once. It needs no network: packages come from
       # the repo and its fixtures, and DuckDB extensions are baked above.
+      #
+      # On Linux the unit suite runs with coverage (`test:coverage`, configured
+      # in packages/server/bunfig.toml), uploaded below. It is reported, not
+      # enforced: no threshold can fail the job.
       - name: Run unit, component and integration tests
         env:
           USERPROFILE: ${{ runner.os == 'Windows' && env.WINDOWS_USERPROFILE || '' }}
         run: |
+          unit_script=test:unit
+          if [ "$RUNNER_OS" = "Linux" ]; then unit_script=test:coverage; fi
           unit_log="$RUNNER_TEMP/server-unit-tests.log"
-          bun run --cwd packages/server test:unit --serial > "$unit_log" 2>&1 &
+          bun run --cwd packages/server "$unit_script" --serial > "$unit_log" 2>&1 &
           unit_pid=$!
           component_log="$RUNNER_TEMP/server-component-tests.log"
           bun run --cwd packages/server test:component > "$component_log" 2>&1 &
@@ -328,3 +329,14 @@ jobs:
           echo "unit tests exit $unit_status, component tests exit $component_status, integration tests exit $integration_status"
           [ "$unit_status" -eq 0 ] && [ "$component_status" -eq 0 ] && [ "$integration_status" -eq 0 ]
         shell: bash
+
+      # The text summary is at the end of the unit log above; this is the lcov
+      # for tools that read it. Uploaded on a failure too, since the run still
+      # measured what it executed.
+      - name: Upload server unit coverage (Linux only)
+        if: runner.os == 'Linux' && !cancelled()
+        uses: actions/upload-artifact@v4
+        with:
+          name: server-unit-coverage
+          path: packages/server/coverage/lcov.info
+          if-no-files-found: warn

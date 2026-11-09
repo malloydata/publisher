@@ -1,33 +1,61 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
-import { components } from "../api";
+import type {
+   BuildManifestResult,
+   IncrementalStrategy,
+   MaterializationStatus,
+} from "../service/materialization/types";
+
+// The materialization domain types moved to service/materialization/types.ts;
+// re-exported here so the store and its repositories keep compiling unchanged.
+export type {
+   BuildInstruction,
+   BuildManifest,
+   BuildManifestEntry,
+   BuildManifestResult,
+   BuildPlan,
+   FreshnessAwareManifestEntry,
+   FreshnessManifest,
+   IncrementalStrategy,
+   LedgerEntry,
+   ManifestEntry,
+   ManifestReference,
+   MaterializationStatus,
+   Realization,
+   RefusedSource,
+   SourceFailure,
+} from "../service/materialization/types";
+export { isLegacyFailedEntry } from "../service/materialization/types";
 
 export interface ResourceRepository {
    // Environments
-   listEnvironments(): Promise<Environment[]>;
-   getEnvironmentById(id: string): Promise<Environment | null>;
-   getEnvironmentByName(name: string): Promise<Environment | null>;
+   listEnvironments(): Promise<EnvironmentRecord[]>;
+   getEnvironmentById(id: string): Promise<EnvironmentRecord | null>;
+   getEnvironmentByName(name: string): Promise<EnvironmentRecord | null>;
    createEnvironment(
-      environment: Omit<Environment, "id" | "createdAt" | "updatedAt">,
-   ): Promise<Environment>;
+      environment: Omit<EnvironmentRecord, "id" | "createdAt" | "updatedAt">,
+   ): Promise<EnvironmentRecord>;
    updateEnvironment(
       id: string,
-      updates: Partial<Environment>,
-   ): Promise<Environment>;
+      updates: Partial<EnvironmentRecord>,
+   ): Promise<EnvironmentRecord>;
    deleteEnvironment(id: string): Promise<void>;
 
    // Packages
-   listPackages(environmentId: string): Promise<Package[]>;
-   getPackageById(id: string): Promise<Package | null>;
+   listPackages(environmentId: string): Promise<PackageRecord[]>;
+   getPackageById(id: string): Promise<PackageRecord | null>;
    getPackageByName(
       environmentId: string,
       name: string,
-   ): Promise<Package | null>;
+   ): Promise<PackageRecord | null>;
    createPackage(
-      pkg: Omit<Package, "id" | "createdAt" | "updatedAt">,
-   ): Promise<Package>;
-   updatePackage(id: string, updates: Partial<Package>): Promise<Package>;
+      pkg: Omit<PackageRecord, "id" | "createdAt" | "updatedAt">,
+   ): Promise<PackageRecord>;
+   updatePackage(
+      id: string,
+      updates: Partial<PackageRecord>,
+   ): Promise<PackageRecord>;
    /** Deletes the package's row and everything keyed by it, versions included. */
    deletePackage(id: string): Promise<void>;
    /**
@@ -109,19 +137,19 @@ export interface ResourceRepository {
    ): Promise<boolean>;
 
    // Connections
-   listConnections(environmentId: string): Promise<Connection[]>;
-   getConnectionById(id: string): Promise<Connection | null>;
+   listConnections(environmentId: string): Promise<ConnectionRecord[]>;
+   getConnectionById(id: string): Promise<ConnectionRecord | null>;
    getConnectionByName(
       environmentId: string,
       name: string,
-   ): Promise<Connection | null>;
+   ): Promise<ConnectionRecord | null>;
    createConnection(
-      connection: Omit<Connection, "id" | "createdAt" | "updatedAt">,
-   ): Promise<Connection>;
+      connection: Omit<ConnectionRecord, "id" | "createdAt" | "updatedAt">,
+   ): Promise<ConnectionRecord>;
    updateConnection(
       id: string,
-      updates: Partial<Connection>,
-   ): Promise<Connection>;
+      updates: Partial<ConnectionRecord>,
+   ): Promise<ConnectionRecord>;
    deleteConnection(id: string): Promise<void>;
 
    // Storage destinations
@@ -191,7 +219,7 @@ export interface ResourceRepository {
    ): Promise<void>;
 }
 
-export interface Environment {
+export interface EnvironmentRecord {
    id: string;
    name: string;
    path: string;
@@ -201,7 +229,7 @@ export interface Environment {
    metadata?: Record<string, unknown>;
 }
 
-export interface Package {
+export interface PackageRecord {
    id: string;
    environmentId: string;
    name: string;
@@ -272,7 +300,7 @@ export type NewVersion = Pick<
  */
 export type PromoteRule = (currentLatest: string | null) => boolean;
 
-export interface Connection {
+export interface ConnectionRecord {
    id: string;
    environmentId: string;
    name: string;
@@ -284,7 +312,7 @@ export interface Connection {
 
 /**
  * A warehouse materialization builds write to and materialized queries are
- * served from. Stored apart from {@link Connection} because it is not one: it is
+ * served from. Stored apart from {@link ConnectionRecord} because it is not one: it is
  * never resolvable by name from a model, and its name lives in its own namespace
  * (so a row here and a connection row may share a name and mean two different
  * warehouses). `type` is a plain string rather than a union because the set of
@@ -300,24 +328,6 @@ export interface StorageDestination {
    createdAt: Date;
    updatedAt: Date;
 }
-
-// Wire types for the build protocol, kept in sync with the OpenAPI spec via
-// the generated `api.ts`.
-export type MaterializationStatus =
-   components["schemas"]["MaterializationStatus"];
-export type BuildPlan = components["schemas"]["BuildPlan"];
-export type BuildManifestResult = components["schemas"]["BuildManifest"];
-export type ManifestEntry = components["schemas"]["ManifestEntry"];
-export type BuildInstruction = components["schemas"]["BuildInstruction"];
-export type ManifestReference = components["schemas"]["ManifestReference"];
-export type Realization = components["schemas"]["Realization"];
-/**
- * One incremental source's `covered_through` boundary as it travels on the
- * wire: reported on `ManifestEntry.ledger`, and returned verbatim in
- * `BuildInstructions.ledger` by a caller that owns the ledger. The store-row
- * counterpart is {@link IncrementalLedgerEntry}.
- */
-export type LedgerEntry = components["schemas"]["LedgerEntry"];
 
 export interface Materialization {
    id: string;
@@ -421,46 +431,6 @@ export interface LedgerTableIdentity {
    physicalTableName: string;
 }
 
-/** How a delta advances the serving table. */
-export type IncrementalStrategy = "merge" | "range_replace";
-
-/**
- * One source that failed to build, reported beside `entries` rather than inside
- * one.
- *
- * A failure carries the identifying fields it was instructed with, including the
- * `physicalTableName` it was HEADED for, so a table name here is not evidence a
- * table exists. Keeping these out of `entries` is what lets a consumer that
- * resolves an entry to a real table -- serve bindings, reuse decisions, seeds for
- * a downstream build -- do so without a per-entry check.
- */
-export type SourceFailure = components["schemas"]["SourceFailure"];
-
-/**
- * One persist source a run did not attempt because the eligibility gate refused
- * it. The same shape the build plan reports under `refusedSources`; auto-run
- * records its refusals in the run's `metadata.refusedSources`, keyed by sourceID
- * because a refused source may have no content address to key it by.
- */
-export type RefusedSource = components["schemas"]["RefusedSource"];
-
-/**
- * Whether a manifest entry records a FAILED source, in the deprecated shape.
- *
- * Manifests at rest (in `publisher.db` and bound manifest files) may hold a
- * failed source INTO `entries`, and this build still mirrors failures there.
- * Its `physicalTableName` names a table the build never created; with stable
- * auto-run names (`selfAssignTableName`) that is the PREVIOUS generation's real
- * table, which would be served as though fresh.
- *
- * Applied at the READ boundaries a persisted manifest enters through:
- * `splitManifestEntries` and `getMostRecentManifestEntries`. Delete this with
- * `ManifestEntry.error`.
- */
-export function isLegacyFailedEntry(entry: { error?: string | null }): boolean {
-   return Boolean(entry?.error);
-}
-
 export interface MaterializationUpdate {
    status?: MaterializationStatus;
    manifest?: BuildManifestResult | null;
@@ -469,49 +439,3 @@ export interface MaterializationUpdate {
    error?: string | null;
    metadata?: Record<string, unknown> | null;
 }
-
-/**
- * Malloy-facing build manifest: maps a sourceEntityId to the physical table backing
- * that persist source. This is the shape the Malloy runtime consumes when
- * (re)loading models so persist references resolve to materialized tables.
- * Distinct from {@link BuildManifestResult} (the wire build output, which also
- * carries caller bookkeeping like materializedTableId and rowCount).
- */
-export interface BuildManifestEntry {
-   tableName: string;
-}
-
-export interface BuildManifest {
-   entries: Record<string, BuildManifestEntry>;
-   strict?: boolean;
-}
-
-/**
- * A wire manifest entry carrying the control-plane freshness fields alongside
- * the physical `tableName`. This is what the publisher retains at bind so the
- * serve path can re-evaluate `age vs window` per query (see
- * {@link ../service/freshness}). A `{ tableName }`-only value is structurally
- * assignable here (the freshness fields are optional), so callers that only
- * know a table name — e.g. the post-build auto-load — bind un-gated entries.
- *
- *  - `dataAsOf`   the artifact's data-as-of instant (snapshot start); the age
- *                 anchor. `age = now - dataAsOf`. Absent ⇒ never stale.
- *  - `freshnessWindowSeconds`  the version's effective window. Absent ⇒ un-gated.
- *  - `freshnessFallback`       per-version read-time policy when stale.
- */
-export interface FreshnessAwareManifestEntry {
-   tableName: string;
-   /**
-    * The connection the physical table lives on, carried from the wire
-    * manifest so the bind step can quote `tableName` for that connection's
-    * dialect (see Package.quoteBoundTableNames). Absent on entries whose
-    * producer didn't record it; those bind verbatim.
-    */
-   connectionName?: string;
-   dataAsOf?: string;
-   freshnessWindowSeconds?: number;
-   freshnessFallback?: "live" | "stale_ok" | "fail";
-}
-
-/** Full (unfiltered) manifest map keyed by sourceEntityId. */
-export type FreshnessManifest = Record<string, FreshnessAwareManifestEntry>;

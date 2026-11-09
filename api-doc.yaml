@@ -298,7 +298,15 @@ paths:
             $ref: "#/components/schemas/IdentifierPattern"
         - name: reload
           in: query
+          deprecated: true
           description: |
+            **Deprecated.** Re-reads the environment's block of `publisher.config.json` and reloads
+            the environment from it. Nothing first-party calls it, and the v1 API has no environment
+            reload. A response to `reload=true` carries `Deprecation: true`, and each use is counted in
+            `publisher_deprecated_usage_total{feature="environment_reload"}`; it is removed once that
+            reads zero (#1540). Under `frozenConfig` it is refused with 403, like any change to an
+            environment. To pick up a package's changed files, reload the package.
+
             Load / reload the environment before returning result.
 
             Only the two spellings OpenAPI serializes a boolean as are accepted:
@@ -1482,6 +1490,27 @@ paths:
         container for models, notebooks, embedded databases, and other resources. The package
         will be initialized with the provided metadata and can immediately accept content.
 
+        ## Dry run
+
+        With `?dryRun=true` the request needs a `location`. The tree there is downloaded and
+        loaded, and the publish checks run, exactly as a publish would run them, and then it is
+        discarded: nothing is installed, served or listed, the package already served under the
+        name (if any) is untouched, no version is recorded, and the load's connections are
+        closed. The answer is what a publish would answer for the tree itself: the same 400 or
+        424 refusal, or 200 with the package as it would load, its `warnings` included, plus the
+        `location` it was loaded from. With package versioning on, the tree's `publisher.json`
+        must declare a valid version, as a versioned publish requires (400
+        `MANIFEST_VERSION_MISSING` or `MANIFEST_VERSION_INVALID`), and the 200 names it as
+        `versionId`. Version lifecycle checks (a version that already exists, `latest`) are not
+        part of it, and the 200 carries no `latestVersion` or `status`, which describe the
+        package being served. A frozen configuration refuses a dry run as it refuses a publish,
+        since the server still downloads and loads the caller's content; so does memory
+        backpressure (503).
+        A server runs at most 2 dry runs at once and refuses more with 503. With package
+        versioning on, a `description` that is not a string or a
+        `manifestLocation` that names no manifest is the 400 a versioned
+        publish answers.
+
         ## Versioned publish
 
         Package versioning is a server setting, `PUBLISHER_PACKAGE_VERSIONING` (`off` by
@@ -1532,6 +1561,14 @@ paths:
           required: true
           schema:
             $ref: "#/components/schemas/IdentifierPattern"
+        - name: dryRun
+          in: query
+          required: false
+          description: >-
+            Load and check the package at `location` as a publish would, and install
+            nothing. See "Dry run" above.
+          schema:
+            type: boolean
       requestBody:
         required: true
         content:
@@ -1664,6 +1701,23 @@ paths:
         At EITHER home, omitting it preserves the package's tags and so does sending
         null — a client that serializes unset fields as null must not untag a package
         by accident. Send an empty object to clear.
+
+        A package fetched from a `location` keeps none of these on reload: a reload fetches
+        it again and replaces its files, `publisher.json` included, keeping only its
+        `location` and manifest binding. So when the package will be fetched from a
+        location once this request is applied (the `location` it sends, or else the one it
+        was installed from), a change to `description`, `explores`, `queryableSources`,
+        `scope`, `queryMetadata` or `materialization` is refused with 409 (`reason`
+        `PACKAGE_INSTALLED_FROM_LOCATION`). A change is judged by the value the request
+        would leave in force: clearing a set field is a change, a null is omitted, and a
+        value equal to the current one (`explores` normalized as stored) is not. A request
+        that names a new `location` is judged against the tree fetched from it, and a
+        refusal leaves the previous install serving. When the package it replaces was
+        itself installed from a location, a field sent with that package's value is the
+        package sent back, not a change: it is left out and the new tree's value serves,
+        so a whole package read back with only its `location` changed is accepted.
+        Make the change in the package's
+        source and reload it, or publish it as a version.
       parameters:
         - name: environmentName
           in: path
@@ -2213,8 +2267,9 @@ paths:
         with `includeHiddenFilesAndSources=true`. When the file on disk no
         longer hashes to it, the write is refused with 409 and nothing is
         merged: the caller re-opens and reapplies its change. Omit it to CREATE
-        the file: a file that already exists is then refused with 409 too, so
-        an unconditional overwrite is not something a caller can ask for by
+        the file: a file that already exists is then refused with 409 too,
+        `reason` `FILE_EXISTS`, so a caller choosing a name can try the next,
+        and an unconditional overwrite is not something a caller can ask for by
         leaving a field out. A path over an existing file the package does not
         read as a report answers 400 instead, with or without a hash, because
         that check comes before the hash. The check, the write,
@@ -2238,6 +2293,11 @@ paths:
         `versionId` names: change the file in the package's source and publish
         a new version. A `versionId` on a package with no versions answers 404
         (`reason` `VERSION_NOT_FOUND`).
+
+        A package installed from a `location` is fetched again from there on
+        reload, which replaces its files, so it refuses this write with 409
+        (`reason` `PACKAGE_INSTALLED_FROM_LOCATION`): add the report to the
+        package's source and reload it, or publish it as a version.
       parameters:
         - name: environmentName
           in: path
@@ -2287,8 +2347,10 @@ paths:
           $ref: "#/components/responses/NotFound"
         "409":
           description:
-            The file changed since the caller opened it, or already exists and
-            no `expectedHash` was sent
+            The file changed since the caller opened it; or it already exists
+            and no `expectedHash` was sent (`reason` `FILE_EXISTS`); or the
+            package cannot take the write in place (`reason`
+            `PACKAGE_IS_VERSIONED` or `PACKAGE_INSTALLED_FROM_LOCATION`)
           content:
             application/json:
               schema:
@@ -2414,6 +2476,14 @@ paths:
         its deprecated `kind=` (`dashboard` is grid, `notebook` is linear), else
         grid when the tag lists `tiles` or carries a `dashboard { … }` grid tag,
         else linear. Where a file lives never decides it.
+
+        At scope "file" or "package", `files` overlays package files for this
+        compile only: the model in the URL and everything it imports read the
+        overlaid text where one is given, and an overlaid file new to the
+        package is compiled with the rest at "package". A problem's `model`
+        names the package file it belongs to, overlaid or not, and its `at`
+        gives the position in that file's text, so an author's tool can show
+        each file's errors in place without saving any of them.
       parameters:
         - name: environmentName
           in: path
@@ -2457,6 +2527,8 @@ paths:
           $ref: "#/components/responses/NotFound"
         "410":
           $ref: "#/components/responses/Gone"
+        "413":
+          $ref: "#/components/responses/PayloadTooLarge"
         "424":
           $ref: "#/components/responses/PackageManifestError"
         "500":
@@ -4198,6 +4270,11 @@ components:
             content. Bump the `version` in publisher.json and publish again.
           * PACKAGE_IS_VERSIONED: the package has published versions, which are
             immutable, so it cannot be changed in place.
+          * PACKAGE_INSTALLED_FROM_LOCATION: the package is fetched again from
+            the location it was installed from on reload, which would discard
+            the change. Make it in the package's source and reload.
+          * FILE_EXISTS: a create-only report write found a file at the path.
+            Choose another path.
           * VERSION_IS_LATEST: the version is the package's `latest` and cannot
             be archived, or deleted while other versions remain. Move `latest` first.
           * VERSION_IS_LAST_ACTIVE: the version is the package's last one in
@@ -4288,6 +4365,9 @@ components:
         two only. The rejection counter is exported as
         publisher_query_cap_exceeded_total{cap_type, source}, where cap_type is
         rows, bytes, or unserializable.
+        A compile request is also refused with 413 when its `files` overlay
+        holds more than 500 files or 8 MiB of text;
+        the message names the bound.
       content:
         application/json:
           schema:
@@ -5658,7 +5738,17 @@ components:
                   `warn`; see docs/classification.md).
                   `classification-malformed`: a `#(classification)` annotation
                   that names no single class (one per field, `subject` the
-                  source; `warn`). `entities-…` (`entities-not-a-dimension`,
+                  source; `warn`).
+                  `classification-downgrade`: a field that declares a lower
+                  class than the fields its expression reads, which Publisher
+                  cannot tell from a real de-identification, so a review has
+                  to (one per field, `subject` the source; `warn`; a plain
+                  copy under `#(carries)` refuses the load instead).
+                  `join-bypass`: an author join from a published source to one
+                  with a stricter gate, which the join does not carry (one per
+                  join, or one for a walk cut short at the join bound; always
+                  a `warn`, never a load refusal; see docs/authorize.md).
+                  `entities-…` (`entities-not-a-dimension`,
                   `entities-parameterized-source`,
                   `entities-multiple-required-filters`,
                   `entities-sharing-not-allowed-on-dimension`,
@@ -6202,14 +6292,14 @@ components:
         starts every package's index again, but vectors already stored for
         unchanged content are reused, so a restart over an unchanged package
         embeds nothing new.
-        Every count is scoped to the embedding model currently configured, so
-        rows left behind by an earlier model are never counted. Read `status`
-        for readiness and the counts for progress: they answer different
-        questions, and only `status` tracks what the search path will do. The
-        first read after a package loads builds the package's entity index and
-        its content fingerprint, which is work a metadata read would not
-        otherwise do. After that a read is two row counts and never waits on a
-        sync, so polling is cheap.
+        The counts are the search index's own: the vectors it holds in
+        `catalog_embeddings` under the embedding model currently configured,
+        so rows left behind by an earlier model are never counted. Every count
+        is 0 until the index build reaches its vectors step, and 0 again while
+        `status` is `error`. Read `status` for readiness and the counts for
+        progress: they answer different questions, and only `status` tracks
+        what the search path will do. A read is answered from memory and never
+        waits on a build, so polling is cheap.
       properties:
         status:
           type: string
@@ -6336,38 +6426,35 @@ components:
         embeddedRows:
           type: integer
           description: >-
-            Cached vectors for this package under the current embedding model.
-            With the default `retrieval.representation` of `single` an entity
-            contributes one row, so this equals `totalEntities` once indexed.
-            With `facets` an entity contributes one row for its name plus one
-            per chunk of its documentation, so this exceeds `totalEntities` on
-            a documented model and is not a count of entities. A keyphrase row
-            is an extra on top of those and is not counted here or in
-            `totalRows`. Scoped by model only, not by
-            vector length, so it counts what is cached rather than what a
-            search could read today: after a change to `EMBEDDING_DIMENSIONS`
-            that no question has probed yet, rows of the old length are still
-            counted here until the next search discards them. `status` is
-            already `indexing` in that window.
+            Vectors the index holds for this package under the current
+            embedding model, reused or newly embedded; it rises batch by batch
+            while `indexing`. With the default `retrieval.representation` of
+            `single` an entity contributes one row, so this equals
+            `totalEntities` once indexed. With `facets` an entity contributes
+            one row for its name plus one per chunk of its documentation, so
+            this exceeds `totalEntities` on a documented model and is not a
+            count of entities. A vector stored under another embedding model or
+            `EMBEDDING_DIMENSIONS` is embedded again rather than counted.
         totalRows:
           type: integer
           description: >-
-            Rows the package wants cached: the denominator for `embeddedRows`.
-            `embeddedRows` of `totalRows` is the progress of a first index.
+            Rows the index wants for this package: the denominator for
+            `embeddedRows`. `embeddedRows` of `totalRows` is the progress of a
+            build.
         totalEntities:
           type: integer
-          description: Entities the package currently exposes to retrieval.
+          description: >-
+            Entities the package exposes to retrieval, each of which wants at
+            least one row.
         embeddedEntities:
           type: integer
           description: >-
-            Of `totalEntities`, how many have at least one usable vector.
-            Reported because a row count cannot show a model edit that removes
-            two entities and adds two others: the row total is unchanged while
-            the new entities have no vector at all. Coverage by identity, so
-            equality does NOT imply `ready`: an edit that rewrote every doc
-            without renaming anything leaves each entity holding its stale
-            name vector. Read `status` for readiness and this pair for how
-            much of the package is covered.
+            Of `totalEntities`, how many have at least one vector. Reported
+            because a row count cannot show a model edit that removes two
+            entities and adds two others: the row total is unchanged while the
+            new entities have no vector at all. Coverage by identity, so
+            equality does NOT imply `ready`. Read `status` for readiness and
+            this pair for how much of the package is covered.
         lastSyncedAt:
           type: string
           format: date-time
@@ -7837,6 +7924,21 @@ components:
           items:
             type: string
 
+    OverlayFile:
+      type: object
+      description: One file of a request's `files` overlay.
+      required: [path, content]
+      properties:
+        path:
+          type: string
+          description: >-
+            The file's path relative to the package root, `/`-separated, ending
+            in `.malloy` or `.malloynb`.
+          example: orders/orders.malloy
+        content:
+          type: string
+          description: The file's whole text.
+
     QueryRequest:
       type: object
       description: Request body for executing a Malloy query
@@ -9028,6 +9130,12 @@ components:
         queryTimeoutMilliseconds:
           type: string
           description: Query timeout in milliseconds
+        dbmeta:
+          type: boolean
+          default: false
+          description: >-
+            Copy table and column descriptions from BigQuery onto the schema
+            as `#(dbmeta)` annotations.
 
     SnowflakeConnection:
       type: object
@@ -9332,6 +9440,12 @@ components:
               * PACKAGE_IS_VERSIONED (409): the package has published versions,
                 so it cannot be changed in place (a write, or a publish with
                 package versioning off).
+              * PACKAGE_INSTALLED_FROM_LOCATION (409): the package is fetched
+                again from a `location` on reload, which would discard a report
+                write or a package update's change to its settings.
+              * FILE_EXISTS (409): a report write with no `expectedHash` (a
+                create) found a file already at the path; another path may be
+                free. A stale `expectedHash` answers 409 with no `reason`.
               * VERSION_IS_LATEST (409): the package's `latest` version cannot be
                 archived, or deleted while other versions remain.
               * VERSION_IS_LAST_ACTIVE (409): the package's last version in
@@ -9350,7 +9464,8 @@ components:
             Known values: TABLE_NOT_FOUND, CONNECTION_FAILED,
             CONNECTION_AUTH_FAILED, CONNECTION_NOT_FOUND,
             MANIFEST_VERSION_MISSING, MANIFEST_VERSION_INVALID,
-            VERSION_CONFLICT, PACKAGE_IS_VERSIONED, VERSION_IS_LATEST,
+            VERSION_CONFLICT, PACKAGE_IS_VERSIONED,
+            PACKAGE_INSTALLED_FROM_LOCATION, FILE_EXISTS, VERSION_IS_LATEST,
             VERSION_IS_LAST_ACTIVE, VERSION_BUILDING, VERSION_ID_INVALID,
             VERSION_NOT_LATEST, VERSION_NOT_FOUND, VERSION_ARCHIVED.
         problems:
@@ -9519,6 +9634,28 @@ components:
             and the source contains a runnable query).
         givens:
           $ref: "#/components/schemas/GivenValues"
+        files:
+          type: array
+          description: >-
+            Package files read instead of, or beside, the package's own for this
+            compile only, at scope "file" or "package" (a 400 at "append", which
+            checks text against the package as published): an entry whose path names a package file replaces it,
+            and one naming a new file adds it, so an import of it resolves.
+            Nothing is written, cached or served to another request. At "file",
+            an entry for the model in the URL may stand in for `source`; giving
+            both is a 400. Overlay
+            files are author content, read exactly as the package's own files:
+            they are not restricted like ad-hoc text, and their `#(authorize)`
+            and `#(access_filter)` annotations gate as written, so a host must
+            offer `files` only to callers who may edit the package. An empty
+            list is no overlay. Only
+            `.malloy` and `.malloynb` files can be overlaid; data files and
+            `publisher.json` are read from the package as published. A path that
+            is absolute, has a "." or ".." segment or a backslash, names another
+            kind of file, or appears twice is a 400; more than
+            500 files or 8 MiB of text is a 413.
+          items:
+            $ref: "#/components/schemas/OverlayFile"
 
     ModelSourceWriteRequest:
       type: object

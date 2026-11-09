@@ -28,21 +28,11 @@ import { AUTHORIZE_ROUTE } from "./authorize_routes";
 
 type ApiSource = components["schemas"]["Source"];
 
-/** A Malloy string literal's content: the quotes off, no escape handling needed for a lock literal. */
-function unquote(literal: string): string {
-   const t = literal.trim();
-   if (t.length >= 2 && (t[0] === "'" || t[0] === '"') && t.at(-1) === t[0]) {
-      return t.slice(1, -1);
-   }
-   return t;
-}
-
 /** Whether one secure-given lock term admits the caller's value. */
 function termAdmits(literal: string, value: GivenValue | undefined): boolean {
    if (value === undefined || value === null) return false;
-   const want = unquote(literal);
-   if (Array.isArray(value)) return value.some((v) => String(v) === want);
-   return String(value) === want;
+   if (Array.isArray(value)) return value.some((v) => String(v) === literal);
+   return String(value) === literal;
 }
 
 /**

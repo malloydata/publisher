@@ -153,16 +153,13 @@ export function recordEntitiesFindings(reasons: readonly string[]): void {
  * What the extraction leaves out of a load's entities rather than failing it:
  * a model file whose extraction threw (it reports an error instead), an
  * `#(index)` dimension whose fingerprint query did not compile (it reports no
- * fingerprint), or a model whose part of the query surface could not be read.
+ * fingerprint).
  */
-export type EntitiesDegradation =
-   | "file_extract_failed"
-   | "fingerprint_failed"
-   | "surface_read_failed";
+export type EntitiesDegradation = "file_extract_failed" | "fingerprint_failed";
 
 const entitiesDegraded = lazyCounter(
    "publisher_package_entities_degraded_total",
-   "Parts of a load's entities the extraction left out instead of failing the load. Label: kind (file_extract_failed, fingerprint_failed, surface_read_failed).",
+   "Parts of a load's entities the extraction left out instead of failing the load. Label: kind (file_extract_failed, fingerprint_failed).",
 );
 
 export function recordEntitiesDegraded(kind: EntitiesDegradation): void {
@@ -172,4 +169,63 @@ export function recordEntitiesDegraded(kind: EntitiesDegradation): void {
 /** Test-only: drop cached instruments so a fresh `MeterProvider` captures emissions. */
 export function resetPackageLoadMetricsForTesting(): void {
    resetInstrumentsForTesting();
+}
+
+/**
+ * How a dry-run publish ended: `loaded`, the package would publish; `refused`,
+ * the publish would answer 4xx; `backpressure`, memory pressure refused to load
+ * it (503), which says nothing about the package; `at_capacity`, the server was
+ * already running as many dry runs as it runs at once (503); `failed`, any other
+ * server-side failure.
+ */
+export type PackageDryRunOutcome =
+   | "loaded"
+   | "refused"
+   | "backpressure"
+   | "at_capacity"
+   | "failed";
+
+const dryRunDuration = lazyHistogram(
+   "publisher_package_dry_run_duration",
+   "One `POST …/packages?dryRun=true`: download, load and publish checks, with nothing installed. Label: outcome (loaded = the package would publish; refused = the publish would answer 4xx; backpressure = memory pressure refused the load; at_capacity = as many dry runs as the server runs at once already running; failed = any other server-side failure).",
+   { buckets: LOAD_DURATION_BUCKETS_MS },
+);
+
+/** Record one dry-run publish by how it ended. */
+export function recordPackageDryRun(
+   outcome: PackageDryRunOutcome,
+   durationMs: number,
+): void {
+   dryRunDuration().record(durationMs, { outcome });
+}
+
+const operationDuration = {
+   reload: lazyHistogram(
+      "publisher_package_reload_duration_ms",
+      "One in-place package reload: recompiling a package from the files on disk. Label: outcome ('success'|'failure'; a failed reload leaves the previous model serving).",
+      { buckets: LOAD_DURATION_BUCKETS_MS },
+   ),
+   install: lazyHistogram(
+      "publisher_package_install_duration_ms",
+      "One package install: download, load and swap, for an unversioned publish or the reinstall a reload does for a package with a location. Label: outcome ('success'|'failure').",
+      { buckets: LOAD_DURATION_BUCKETS_MS },
+   ),
+};
+
+/** Run a package reload or install, recording how long it took and whether it threw. */
+export async function measurePackageOperation<T>(
+   operation: keyof typeof operationDuration,
+   run: () => Promise<T>,
+): Promise<T> {
+   const started = performance.now();
+   let outcome: "success" | "failure" = "failure";
+   try {
+      const result = await run();
+      outcome = "success";
+      return result;
+   } finally {
+      operationDuration[operation]().record(performance.now() - started, {
+         outcome,
+      });
+   }
 }

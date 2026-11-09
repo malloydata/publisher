@@ -4,14 +4,15 @@
 import { describe, expect, it } from "bun:test";
 import sinon from "sinon";
 import { BadRequestError } from "../errors";
-import type { EnvironmentStore } from "../service/environment_store";
 import { CompileController } from "./compile.controller";
+import { fakeOf } from "../test_helpers/store_fakes";
+import type { PackageLookup } from "../service/environment_ports";
 
 const controllerWith = (compiled: object = { problems: [] }) => {
    const compileSource = sinon.stub().resolves(compiled);
-   const store = {
+   const store = fakeOf<PackageLookup>({
       getEnvironment: async () => ({ compileSource }),
-   } as unknown as EnvironmentStore;
+   });
    return { controller: new CompileController(store), compileSource };
 };
 
@@ -63,7 +64,7 @@ describe("CompileController.compile", () => {
          { G: 1 },
          "file",
       );
-      expect(compileSource.firstCall.args.slice(3)).toEqual([
+      expect(compileSource.firstCall.args.slice(3, 6)).toEqual([
          true,
          { G: 1 },
          "file",

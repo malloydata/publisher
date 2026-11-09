@@ -25,6 +25,15 @@ describe("typedConnectionConfig", () => {
       });
    });
 
+   it("sends BigQuery dbmeta as a boolean", () => {
+      expect(
+         typedConnectionConfig("bigquery", {
+            defaultProjectId: "data-project",
+            dbmeta: "true",
+         }),
+      ).toEqual({ defaultProjectId: "data-project", dbmeta: true });
+   });
+
    it("leaves out a blank optional name rather than storing an empty one", () => {
       // The edit form submits "" for an untouched optional field; stored, the
       // connector would read a defined instanceName and drop the port.

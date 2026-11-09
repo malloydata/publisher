@@ -16,6 +16,7 @@
  * honest B shapes); a misbound filter admits all three (n=3).
  */
 
+import { unrecordedAudit } from "../../src/service/access_record";
 import { DuckDBConnection } from "@malloydata/db-duckdb";
 import {
    FixedConnectionMap,
@@ -41,6 +42,8 @@ import {
    isSameDeclaration,
 } from "../../src/service/filter_binding_guard";
 import type { Package } from "../../src/service/package";
+import { writePackageFiles } from "../../src/test_helpers/temp_package";
+import { QueryPrivileges } from "../../src/service/model_query_request";
 
 /** The guard logs its reason under one of these: the inherited-filter walk, or a grafted gate's proof. */
 const DENY_MESSAGES = [
@@ -184,11 +187,7 @@ async function withPackage<T>(
    await fs.mkdir(envPath, { recursive: true });
    const env = await Environment.create("probeEnv", envPath, []);
    const pkg = await env.installPackage("pkg", async (staging) => {
-      await fs.mkdir(staging, { recursive: true });
-      await fs.writeFile(
-         path.join(staging, "publisher.json"),
-         JSON.stringify({ name: "pkg" }),
-      );
+      writePackageFiles(staging, {});
       for (const [name, text] of Object.entries(files)) {
          await fs.writeFile(
             path.join(staging, name),
@@ -217,16 +216,16 @@ async function serve(
          files,
          async ({ env, pkg }) => {
             const ran = await withDenialSpy(async () => {
-               const r = await pkg
-                  .getModel("index.malloy")!
-                  .getQueryResults(
-                     undefined,
-                     namedQuery,
-                     namedQuery ? undefined : query,
-                     {},
-                     true,
+               const r = await pkg.getModel("index.malloy")!.runQuery(
+                  unrecordedAudit(),
+                  {
+                     queryName: namedQuery,
+                     query: namedQuery ? undefined : query,
+                     filterParams: {},
                      givens,
-                  );
+                  },
+                  QueryPrivileges.of({ bypassFilters: true }),
+               );
                return {
                   kind: "SERVED",
                   detail: firstValue(
@@ -287,7 +286,7 @@ async function serveCell(id: string, notebook: string): Promise<Outcome> {
             withDenialSpy(async () => {
                const r = await pkg
                   .getModel("nb.malloynb")!
-                  .executeNotebookCell(1, {}, false, {});
+                  .executeNotebookCell(unrecordedAudit(), 1, {}, false, {});
                return { kind: "SERVED", detail: firstCellValue(r.result!) };
             }),
       );
@@ -1076,20 +1075,16 @@ ${BASE}`,
       const id = "I5-caller-where-before-dim-bypass";
       const outcome = await withPackage({ "index.malloy": BASE }, ({ pkg }) =>
          withDenialSpy(async () => {
-            const r = await pkg
-               .getModel("index.malloy")!
-               .getQueryResults(
-                  undefined,
-                  undefined,
-                  CALLER_Z,
-                  {},
-                  undefined,
-                  {},
-                  undefined,
-                  undefined,
-                  "full",
-                  true,
-               );
+            const r = await pkg.getModel("index.malloy")!.runQuery(
+               unrecordedAudit(),
+               {
+                  query: CALLER_Z,
+                  filterParams: {},
+                  givens: {},
+                  responseShape: "full",
+               },
+               QueryPrivileges.of({ bypassAuthorize: true }),
+            );
             return {
                kind: "SERVED",
                detail: firstValue(

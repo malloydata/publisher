@@ -38,7 +38,10 @@
 import type { DuckDBConnection } from "@malloydata/db-duckdb";
 import type { FixedConnectionMap } from "@malloydata/malloy";
 import { beforeAll, describe, expect, it } from "bun:test";
-import { compilerBuildId, computeSourceEntityId } from "./build_plan";
+import {
+   compilerBuildId,
+   computeSourceEntityId,
+} from "./materialization/plan/build_plan";
 import {
    duckdbTestConnections,
    loadTestRuntime,
