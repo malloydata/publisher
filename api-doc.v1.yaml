@@ -3848,11 +3848,6 @@ components:
           type: integer
           minimum: 1
           description: The LLM tokens one run may spend.
-        jobMinutes:
-          type: integer
-          minimum: 1
-          description: The compute minutes one run's jobs may use, as the platform that runs it counts them (summed across jobs,
-            so it can exceed `wallClockMinutes` when jobs run in parallel); not elapsed time.
 
     AgentList:
       type: object
@@ -4417,10 +4412,10 @@ components:
             saving, at true file coordinates. "package" runs the same worker compiler and file selection as reload over
             every .malloy file, without swapping the result into the served package; with a source, importers compile
             against the replacement. It also reports the render-tag findings (code "render-tag") and the report, given
-            and drill findings (code "dashboard-lint") a reload would put on the package's warnings, at their own
-            severity and with no position. The package's other warnings (storage, persist, materialization, explores,
-            surface and discovery warnings, among others) are not reported. Package diagnostics can name files hidden
-            from discovery. No rows or SQL are returned, and caller-provided source remains subject to authorize gates.
+            and drill findings (code "report-lint") a reload would put on the package's warnings, at their own severity
+            and with no position. The package's other warnings (storage, persist, materialization, explores, surface and
+            discovery warnings, among others) are not reported. Package diagnostics can name files hidden from
+            discovery. No rows or SQL are returned, and caller-provided source remains subject to authorize gates.
             `include: ["sql"]` is not available at `package`.
 
             "append" text is checked against the model's EXPOSED surface, so it may not declare its own data roots:
@@ -6975,8 +6970,8 @@ components:
           type: string
           description: "A stable kebab-case name of the check that made the problem (for example `field-not-found`,
             `report-layout-unknown`, or `render-tag` on every render-tag finding; a report finding whose check names
-            none carries `dashboard-lint`). Absent when the check names none. The set is open: treat a code you do not
-            know as a problem like any other."
+            none carries `report-lint`). Absent when the check names none. The set is open: treat a code you do not know
+            as a problem like any other."
         modelPath:
           type: string
           description: The version-relative path of the file the problem is in. A problem in text a compile check appended (scope
