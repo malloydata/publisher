@@ -3374,6 +3374,8 @@ components:
       schema:
         type: string
       description: The resource's `ETag` as last read (`"<revision>"`). The write is refused with 412 when it no longer matches.
+
+
   headers:
     ETag:
       description: "A strong validator, quoted: the resource's revision on a mutable resource (send it back as `If-Match` on a
@@ -3402,6 +3404,8 @@ components:
       description: The URL of the created resource.
       schema:
         type: string
+
+
   responses:
     BadRequest:
       description: The request is malformed, or the Malloy text does not compile (`reason` `INVALID_REQUEST`, `COMPILE_ERROR`,
@@ -3558,6 +3562,8 @@ components:
           $ref: "#/components/headers/RequestId"
         ETag:
           $ref: "#/components/headers/ETag"
+
+
   schemas:
     Agent:
       type: object
