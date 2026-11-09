@@ -88,13 +88,13 @@ info:
     back: a report's `contentHash`, the precondition of the report write. A schema no request can carry is `readOnly` as
     a whole.
 
-    - `required` describes a read: what every read of the object carries. A write body names a view the composer derives
-    from the resource: named for the method that sends it: `XCreate` for a `POST` create and `XReplace` for the `PUT`
-    report write (the writable fields, `required` naming only what the write must send) and `XPatch` for a merge-patch
-    (no `required`; a nested object is a patch too, a list's items are whole). A write-only field is never in
-    `required`; its description says "Required on create." when a create needs it. `null` appears only in the `XPatch`
-    views, on a writable optional field a `PATCH` can clear (`[T, "null"]`), never one set on create; the resource
-    itself, and so every read, is never `null`.
+    - A write body is the resource itself, one schema for reading and writing it. `required` describes a read: what
+    every read of the object carries. In a request, a `readOnly` field is ignored and never required (OpenAPI 3.0's
+    rule, adopted here because 3.1 dropped it), a field with a `default` is never `required` and a request may leave it
+    out, and a write-only field is never in `required`: a field a create needs says "Required on create." in its
+    description. A `PATCH` body is a JSON merge-patch of the resource: any subset of its writable fields, `null`
+    clearing an optional one; no schema spells `null`, since a read never returns it. Generated clients get request and
+    response types from the one schema (openapi-typescript's `--read-write-markers --default-non-nullable false`).
 
     - Every `POST` that creates or starts something (an environment, a connection, a package, a version, a run), and the
     report write, accepts an `Idempotency-Key` header: a retry with the same key and body within 24 hours answers with
@@ -165,8 +165,8 @@ info:
     load warning or a render log message, is a `Problem`, located by `modelPath` and a 0-based `range`.
 
     - A dry run (`?dryRun=true`) runs every check and stores nothing, and answers 200 with no `Location`, ignoring
-    `Idempotency-Key`: a connection's answers its test result, a publish's the version it would make (`VersionPreview`,
-    a `Version` with no `resource`, `revision` or timestamps).
+    `Idempotency-Key`: a connection's answers its test result, a publish's the `Version` it would make, with no
+    `resource`, `revision` or timestamps.
 
     - Booleans are JSON `true`/`false` in bodies and `true`/`false` in query strings; anything else is 400
     `INVALID_REQUEST`.
@@ -298,7 +298,7 @@ paths:
         content:
           application/json:
             schema:
-              $ref: "#/components/schemas/EnvironmentCreate"
+              $ref: "#/components/schemas/Environment"
       responses:
         "201":
           description: Created.
@@ -392,7 +392,7 @@ paths:
         content:
           application/merge-patch+json:
             schema:
-              $ref: "#/components/schemas/EnvironmentPatch"
+              $ref: "#/components/schemas/Environment"
       responses:
         "200":
           description: Updated.
@@ -524,7 +524,7 @@ paths:
         content:
           application/json:
             schema:
-              $ref: "#/components/schemas/ConnectionCreate"
+              $ref: "#/components/schemas/Connection"
       responses:
         "200":
           description: Dry run; nothing stored.
@@ -634,7 +634,7 @@ paths:
         content:
           application/merge-patch+json:
             schema:
-              $ref: "#/components/schemas/ConnectionPatch"
+              $ref: "#/components/schemas/Connection"
       responses:
         "200":
           description: Updated, with its `ETag`; with `dryRun`, the test result, with no `ETag`, since nothing was stored.
@@ -768,7 +768,7 @@ paths:
         content:
           application/json:
             schema:
-              $ref: "#/components/schemas/PackageCreate"
+              $ref: "#/components/schemas/Package"
       responses:
         "201":
           description: Created.
@@ -865,7 +865,7 @@ paths:
         content:
           application/merge-patch+json:
             schema:
-              $ref: "#/components/schemas/PackagePatch"
+              $ref: "#/components/schemas/Package"
       responses:
         "200":
           description: Updated.
@@ -1002,15 +1002,15 @@ paths:
         is how a package installed from a git branch or an object-store prefix picks up a change; when the fetched tree
         matches the current version (by git commit sha, object etag or md5, or the tree's hash) nothing is made and it
         answers 200 with that version. Whether `latestVersionId` moves to it is `ServerStatus.versionPromotion`. The
-        body is a `VersionCreate`, `Version`'s writable fields: `source` to publish from a new location, which moves the
+        body is a `Version`, `Version`'s writable fields: `source` to publish from a new location, which moves the
         package's recorded `source` to it (the one way to move it), `manifestLocation` to bind on publish, and `pinned`.
         A publish that moves the package's `source` or `latestVersionId` advances the package's `revision`. A live
         package answers 409 `PACKAGE_IS_LIVE` (use `:reload`). A declared version that differs from a stored one only by
         letter case or leading zeros answers 409 `VERSION_CONFLICT`; with versioning on, a `publisher.json` with no
         `version` answers 400 `PACKAGE_VERSION_MISSING`, and one that is not a semantic version 400
         `PACKAGE_VERSION_INVALID`. With `dryRun`, every publish check runs and nothing is stored; the answer is always
-        200, with no `Location`: a `VersionPreview`, the version the publish would make, or the current `Version` when
-        it would make nothing."
+        200, with no `Location`: the `Version` the publish would make, with no `resource`, `revision` or timestamps
+        since nothing is stored, or the current `Version` when it would make nothing."
       parameters:
         - $ref: "#/components/parameters/idempotencyKey"
         - $ref: "#/components/parameters/dryRun"
@@ -1032,21 +1032,21 @@ paths:
         content:
           application/json:
             schema:
-              $ref: "#/components/schemas/VersionCreate"
+              $ref: "#/components/schemas/Version"
       responses:
         "200":
           description: "Nothing new (the fetched content is the current version's): that `Version`. Every dry run also answers
-            200: a `VersionPreview` of the version the publish would make, or the current `Version` when it would make
-            nothing."
+            200: the `Version` the publish would make, without `resource`, `revision` or timestamps, or the current
+            `Version` when it would make nothing."
           content:
             application/json:
               schema:
-                oneOf:
-                  - $ref: "#/components/schemas/Version"
-                  - $ref: "#/components/schemas/VersionPreview"
+                $ref: "#/components/schemas/Version"
           headers:
             X-Request-Id:
               $ref: "#/components/headers/RequestId"
+            ETag:
+              $ref: "#/components/headers/ETag"
         "201":
           description: Published.
           headers:
@@ -1266,7 +1266,7 @@ paths:
         content:
           application/merge-patch+json:
             schema:
-              $ref: "#/components/schemas/VersionPatch"
+              $ref: "#/components/schemas/Version"
       responses:
         "200":
           description: Updated.
@@ -1849,15 +1849,15 @@ paths:
         anything under `public/`, a file that is not a report, and a report whose `readOnly` is set answer 409
         `FILE_NOT_WRITABLE`. The text is compiled first (400 `COMPILE_ERROR` with `problems`). On a stored version the
         write makes version `<parent>+edit.N` and moves `latestVersionId` to it unless `ServerStatus.versionPromotion`
-        is `explicit`; on a live package it writes through to the author's directory. The body is a `ReportReplace`:
-        `content`, the file's text, with `contentHash` as read. Without `contentHash` it creates the file (201; 409
-        `FILE_EXISTS` if one is there); with it, it replaces the file (200; 409 `CONTENT_CHANGED`, with the current hash
-        in `details`, when the file no longer hashes to it). Either way it answers with the report as it now reads in
-        the version the write made, which its `resource` and the `Location` header name. A write whose `content` equals
-        the file's current text answers 200 with the current report and makes no version, so a retried write that
-        already succeeded is a no-op; it also accepts `Idempotency-Key`. Only the package's latest version (named
-        directly, as `latest`, or `live`) can be written: any other answers 409 `VERSION_NOT_LATEST`, so a write never
-        forks an older version or moves `latestVersionId` back."
+        is `explicit`; on a live package it writes through to the author's directory. The body is a `Report`: `content`,
+        the file's text, and `contentHash` as read; the rest is read-only and ignored. Without `contentHash` it creates
+        the file (201; 409 `FILE_EXISTS` if one is there); with it, it replaces the file (200; 409 `CONTENT_CHANGED`,
+        with the current hash in `details`, when the file no longer hashes to it). Either way it answers with the report
+        as it now reads in the version the write made, which its `resource` and the `Location` header name. A write
+        whose `content` equals the file's current text answers 200 with the current report and makes no version, so a
+        retried write that already succeeded is a no-op; it also accepts `Idempotency-Key`. Only the package's latest
+        version (named directly, as `latest`, or `live`) can be written: any other answers 409 `VERSION_NOT_LATEST`, so
+        a write never forks an older version or moves `latestVersionId` back."
       parameters:
         - $ref: "#/components/parameters/idempotencyKey"
         - $ref: "#/components/parameters/requestId"
@@ -1866,7 +1866,7 @@ paths:
         content:
           application/json:
             schema:
-              $ref: "#/components/schemas/ReportReplace"
+              $ref: "#/components/schemas/Report"
       responses:
         "200":
           description: Replaced, or unchanged when `content` equals the current text (no version made).
@@ -2689,7 +2689,7 @@ paths:
         content:
           application/json:
             schema:
-              $ref: "#/components/schemas/RunCreate"
+              $ref: "#/components/schemas/Run"
       responses:
         "201":
           description: Started.
@@ -2793,7 +2793,7 @@ paths:
         content:
           application/merge-patch+json:
             schema:
-              $ref: "#/components/schemas/RunPatch"
+              $ref: "#/components/schemas/Run"
       responses:
         "200":
           description: The run after the transition took.
@@ -3751,6 +3751,7 @@ components:
             $ref: "#/components/schemas/AgentSchedule"
         budget:
           $ref: "#/components/schemas/AgentBudget"
+          readOnly: true
         warnings:
           type: array
           description: What resolving the agent found wrong but survivable, for example a skill it names that the version lacks.
@@ -3849,6 +3850,7 @@ components:
             $ref: "#/components/schemas/AgentSchedule"
         budget:
           $ref: "#/components/schemas/AgentBudget"
+          readOnly: true
         llmModel:
           type: string
           description: The LLM the agent asks for; `inherit` when `publisher.json` sets none.
@@ -3975,63 +3977,6 @@ components:
           description: Copy table and column descriptions from BigQuery onto the schema as `#(dbmeta)` annotations.
         queryTimeoutMs:
           type: integer
-          description: Query timeout in milliseconds.
-      additionalProperties: false
-
-    BigqueryConnectionPatch:
-      type: object
-      description: "A JSON merge-patch of `BigqueryConnection`: any of its writable fields, `null` clearing an optional one
-        and a list replacing. Generated from `BigqueryConnection`."
-      properties:
-        defaultProjectId:
-          type:
-            - string
-            - "null"
-          description: Default BigQuery project ID for queries
-        billingProjectId:
-          type:
-            - string
-            - "null"
-          description: BigQuery project ID for billing purposes
-        location:
-          type:
-            - string
-            - "null"
-          description: BigQuery dataset location/region
-        serviceAccountKeyJson:
-          type:
-            - string
-            - "null"
-          description: JSON string containing Google Cloud service account credentials
-          writeOnly: true
-        impersonateServiceAccount:
-          type:
-            - string
-            - "null"
-          description: Email of a Google Cloud service account this connection impersonates for every BigQuery call, via
-            short-lived tokens from the IAM Service Account Credentials API. The publisher's own credential (ADC) must
-            hold roles/iam.serviceAccountTokenCreator on the target service account, and iamcredentials.googleapis.com
-            must be enabled in the calling project. Mutually exclusive with serviceAccountKeyJson; set billingProjectId
-            explicitly, since project auto-detection resolves through the impersonated credential. Not supported on
-            DuckDB attachedDatabases entries or federated builds from a BigQuery source through DuckDB, which require a
-            service account key.
-        maximumBytesBilled:
-          type:
-            - string
-            - "null"
-          pattern: ^[0-9]+$
-          description: The most bytes a query may bill, as a decimal string (BigQuery's int64 form); a query over it fails instead
-            of running.
-        dbmeta:
-          type:
-            - boolean
-            - "null"
-          default: false
-          description: Copy table and column descriptions from BigQuery onto the schema as `#(dbmeta)` annotations.
-        queryTimeoutMs:
-          type:
-            - integer
-            - "null"
           description: Query timeout in milliseconds.
       additionalProperties: false
 
@@ -4447,6 +4392,7 @@ components:
         - name
         - createdAt
         - updatedAt
+        - revision
       properties:
         resource:
           $ref: "#/components/schemas/ResourcePath"
@@ -4544,6 +4490,7 @@ components:
           $ref: "#/components/schemas/PublisherConnection"
         revision:
           $ref: "#/components/schemas/Revision"
+          readOnly: true
         createdAt:
           type: string
           format: date-time
@@ -4559,88 +4506,6 @@ components:
           readOnly: true
           description: The version that answered, on a read under a version; absent at environment scope.
 
-    ConnectionCreate:
-      type: object
-      description: "`Connection` as a create sends it: its writable fields. Generated from `Connection`."
-      required:
-        - name
-      properties:
-        name:
-          x-immutable: true
-          description: Set on create; a write that changes it answers 400 `INVALID_REQUEST`.
-          $ref: "#/components/schemas/IdentifierPattern"
-        type:
-          type: string
-          description: The dialect. Required on create; an environment push may name a stored connection without it to keep it as
-            stored.
-          enum:
-            - postgres
-            - bigquery
-            - snowflake
-            - trino
-            - databricks
-            - mysql
-            - sqlserver
-            - duckdb
-            - motherduck
-            - ducklake
-            - publisher
-        fingerprint:
-          type: string
-          description: Opaque, stable fingerprint of the data the connection reaches, excluding credentials, so it survives a
-            credential rotation; part of every content-addressed build id. It must change with anything that changes
-            which data the connection reaches, the impersonated identity included. Derived locally when omitted; absent
-            on a read unless a caller set it.
-        configStamp:
-          type: string
-          maxLength: 255
-          description: "An opaque stamp the caller sets with each configuration it pushes, credentials included, and changes
-            whenever any part of that configuration changes (a rotated password among them). The server stores it and
-            returns it on every read and on `/status` exactly as sent, and never interprets it, compares it or folds it
-            into a build id, so changing it alone rebuilds nothing. An orchestrator compares what a server echoes with
-            what it last pushed to find a server still holding an old configuration, whose credentials a read never
-            shows. The one exception to merge-patch: an update that leaves it out clears the stored stamp rather than
-            keeping it, because that update replaced the configuration the stamp described."
-        queryMetadata:
-          $ref: "#/components/schemas/QueryMetadata"
-          description: "Default per-query metadata for every statement this connection issues: the least specific layer,
-            overridden per property by a package, model-file or source declaration or a per-request value. For
-            properties true of the whole connection (which deployment, which team owns it). Not a secret: it round-trips
-            like any plain field."
-        queryMetadataEnforced:
-          $ref: "#/components/schemas/QueryMetadata"
-          description: "Per-query metadata this deployment owns: applied to every statement the connection issues, not overridable
-            by a package, model-file, source or per-request declaration, and the last given up when a bag has to shrink.
-            For the properties a host bills or audits by, where writing a connection is an operator's job and publishing
-            a package is not, so a tenant cannot relabel a connection's traffic. That split lives in the gateway in
-            front; Publisher does not authenticate it. The server's own context (`class`, `environment`, `query_id`, …)
-            still wins over it. Same contract and 20-property budget as `queryMetadata`; a write that violates the
-            contract answers 400."
-        proxy:
-          $ref: "#/components/schemas/ConnectionProxy"
-        postgres:
-          $ref: "#/components/schemas/PostgresConnection"
-        bigquery:
-          $ref: "#/components/schemas/BigqueryConnection"
-        snowflake:
-          $ref: "#/components/schemas/SnowflakeConnection"
-        trino:
-          $ref: "#/components/schemas/TrinoConnection"
-        databricks:
-          $ref: "#/components/schemas/DatabricksConnection"
-        mysql:
-          $ref: "#/components/schemas/MysqlConnection"
-        sqlserver:
-          $ref: "#/components/schemas/SqlserverConnection"
-        duckdb:
-          $ref: "#/components/schemas/DuckdbConnection"
-        motherduck:
-          $ref: "#/components/schemas/MotherduckConnection"
-        ducklake:
-          $ref: "#/components/schemas/DucklakeConnection"
-        publisher:
-          $ref: "#/components/schemas/PublisherConnection"
-
     ConnectionList:
       type: object
       required:
@@ -4653,119 +4518,6 @@ components:
         nextCursor:
           $ref: "#/components/schemas/Cursor"
       readOnly: true
-
-    ConnectionPatch:
-      type: object
-      description: "A JSON merge-patch of `Connection`: any of its writable fields, `null` clearing an optional one and a list
-        replacing. Generated from `Connection`."
-      properties:
-        name:
-          x-immutable: true
-          description: Set on create; a write that changes it answers 400 `INVALID_REQUEST`.
-          $ref: "#/components/schemas/IdentifierPattern"
-        type:
-          type: string
-          description: The dialect. Required on create; an environment push may name a stored connection without it to keep it as
-            stored.
-          enum:
-            - postgres
-            - bigquery
-            - snowflake
-            - trino
-            - databricks
-            - mysql
-            - sqlserver
-            - duckdb
-            - motherduck
-            - ducklake
-            - publisher
-        fingerprint:
-          type:
-            - string
-            - "null"
-          description: Opaque, stable fingerprint of the data the connection reaches, excluding credentials, so it survives a
-            credential rotation; part of every content-addressed build id. It must change with anything that changes
-            which data the connection reaches, the impersonated identity included. Derived locally when omitted; absent
-            on a read unless a caller set it.
-        configStamp:
-          type:
-            - string
-            - "null"
-          maxLength: 255
-          description: "An opaque stamp the caller sets with each configuration it pushes, credentials included, and changes
-            whenever any part of that configuration changes (a rotated password among them). The server stores it and
-            returns it on every read and on `/status` exactly as sent, and never interprets it, compares it or folds it
-            into a build id, so changing it alone rebuilds nothing. An orchestrator compares what a server echoes with
-            what it last pushed to find a server still holding an old configuration, whose credentials a read never
-            shows. The one exception to merge-patch: an update that leaves it out clears the stored stamp rather than
-            keeping it, because that update replaced the configuration the stamp described."
-        queryMetadata:
-          description: "Default per-query metadata for every statement this connection issues: the least specific layer,
-            overridden per property by a package, model-file or source declaration or a per-request value. For
-            properties true of the whole connection (which deployment, which team owns it). Not a secret: it round-trips
-            like any plain field."
-          anyOf:
-            - $ref: "#/components/schemas/QueryMetadata"
-            - type: "null"
-        queryMetadataEnforced:
-          description: "Per-query metadata this deployment owns: applied to every statement the connection issues, not overridable
-            by a package, model-file, source or per-request declaration, and the last given up when a bag has to shrink.
-            For the properties a host bills or audits by, where writing a connection is an operator's job and publishing
-            a package is not, so a tenant cannot relabel a connection's traffic. That split lives in the gateway in
-            front; Publisher does not authenticate it. The server's own context (`class`, `environment`, `query_id`, …)
-            still wins over it. Same contract and 20-property budget as `queryMetadata`; a write that violates the
-            contract answers 400."
-          anyOf:
-            - $ref: "#/components/schemas/QueryMetadata"
-            - type: "null"
-        proxy:
-          anyOf:
-            - $ref: "#/components/schemas/ConnectionProxyPatch"
-            - type: "null"
-        postgres:
-          anyOf:
-            - $ref: "#/components/schemas/PostgresConnectionPatch"
-            - type: "null"
-        bigquery:
-          anyOf:
-            - $ref: "#/components/schemas/BigqueryConnectionPatch"
-            - type: "null"
-        snowflake:
-          anyOf:
-            - $ref: "#/components/schemas/SnowflakeConnectionPatch"
-            - type: "null"
-        trino:
-          anyOf:
-            - $ref: "#/components/schemas/TrinoConnectionPatch"
-            - type: "null"
-        databricks:
-          anyOf:
-            - $ref: "#/components/schemas/DatabricksConnectionPatch"
-            - type: "null"
-        mysql:
-          anyOf:
-            - $ref: "#/components/schemas/MysqlConnectionPatch"
-            - type: "null"
-        sqlserver:
-          anyOf:
-            - $ref: "#/components/schemas/SqlserverConnectionPatch"
-            - type: "null"
-        duckdb:
-          anyOf:
-            - $ref: "#/components/schemas/DuckdbConnectionPatch"
-            - type: "null"
-        motherduck:
-          anyOf:
-            - $ref: "#/components/schemas/MotherduckConnectionPatch"
-            - type: "null"
-        ducklake:
-          anyOf:
-            - $ref: "#/components/schemas/DucklakeConnectionPatch"
-            - type: "null"
-        publisher:
-          anyOf:
-            - $ref: "#/components/schemas/PublisherConnectionPatch"
-            - type: "null"
 
     ConnectionProxy:
       type: object
@@ -4784,21 +4536,6 @@ components:
           description: Proxy mechanism. Currently only SSH local port-forwarding.
         ssh:
           $ref: "#/components/schemas/SshProxy"
-
-    ConnectionProxyPatch:
-      type: object
-      description: "A JSON merge-patch of `ConnectionProxy`: any of its writable fields, `null` clearing an optional one and a
-        list replacing. Generated from `ConnectionProxy`."
-      properties:
-        type:
-          type: string
-          enum:
-            - ssh
-          description: Proxy mechanism. Currently only SSH local port-forwarding.
-        ssh:
-          anyOf:
-            - $ref: "#/components/schemas/SshProxyPatch"
-            - type: "null"
 
     ConnectionTestResult:
       type: object
@@ -4912,57 +4649,6 @@ components:
           description: Default schema to use for queries
         setupSql:
           type: string
-          description: SQL statements to run when the connection is established. Withheld from responses like a credential; an
-            update that omits it keeps the stored script, and `null` removes it.
-          writeOnly: true
-      additionalProperties: false
-
-    DatabricksConnectionPatch:
-      type: object
-      description: "A JSON merge-patch of `DatabricksConnection`: any of its writable fields, `null` clearing an optional one
-        and a list replacing. Generated from `DatabricksConnection`."
-      properties:
-        host:
-          type:
-            - string
-            - "null"
-          description: Databricks workspace host (e.g. dbc-xxxxxxxx-xxxx.cloud.databricks.com)
-        path:
-          type:
-            - string
-            - "null"
-          description: SQL warehouse HTTP path (e.g. /sql/1.0/warehouses/<warehouse-id>)
-        token:
-          type:
-            - string
-            - "null"
-          description: Personal access token for authentication
-          writeOnly: true
-        oauthClientId:
-          type:
-            - string
-            - "null"
-          description: OAuth M2M client ID (service principal)
-        oauthClientSecret:
-          type:
-            - string
-            - "null"
-          description: OAuth M2M client secret (service principal)
-          writeOnly: true
-        defaultCatalog:
-          type:
-            - string
-            - "null"
-          description: Default Unity Catalog to use for queries
-        defaultSchema:
-          type:
-            - string
-            - "null"
-          description: Default schema to use for queries
-        setupSql:
-          type:
-            - string
-            - "null"
           description: SQL statements to run when the connection is established. Withheld from responses like a credential; an
             update that omits it keeps the stored script, and `null` removes it.
           writeOnly: true
@@ -5145,30 +4831,6 @@ components:
           writeOnly: true
       additionalProperties: false
 
-    DuckdbConnectionPatch:
-      type: object
-      description: "A JSON merge-patch of `DuckdbConnection`: any of its writable fields, `null` clearing an optional one and
-        a list replacing. Generated from `DuckdbConnection`."
-      properties:
-        attachedDatabases:
-          type:
-            - array
-            - "null"
-          items:
-            $ref: "#/components/schemas/AttachedDatabase"
-        setupSql:
-          type:
-            - string
-            - "null"
-          description: >
-            Optional initialization SQL script executed against the DuckDB session upon connection (e.g. ATTACH commands
-            for external lakehouses). Multiple statements must be separated by a semicolon and newline (;\n). Use
-            absolute paths: a relative path resolves against the server's working directory. Withheld from responses
-            like a credential; an update that omits it keeps the stored script, and `null` removes it, as merge-patch
-            clears any field. Refused unless the deployment sets PUBLISHER_ALLOW_DUCKDB_SETUP_SQL=true.
-          writeOnly: true
-      additionalProperties: false
-
     DucklakeCatalog:
       type: object
       required:
@@ -5180,42 +4842,6 @@ components:
           description: The Postgres database holding the catalog's metadata.
         metadataSchema:
           type: string
-          description: >-
-            Optional schema in the catalog database holding this DuckLake's metadata (`ducklake_*`) tables, passed to
-            ATTACH as METADATA_SCHEMA. Absent means DuckLake's default — the catalog connection's default schema,
-            typically `public` — which is the pre-existing behavior. Set it to run several independent DuckLake catalogs
-            against ONE catalog database: each keeps its metadata in its own schema, so a catalog reads only the tables
-            recorded in the schema it names. DuckLake creates the schema on a read-write attach if it does not exist; a
-            read-only attach cannot, and fails until it does. Separating metadata does not separate data — give each
-            catalog its own `storage.dataPath` prefix as well, since data-path-based maintenance (e.g.
-            `ducklake_delete_orphaned_files`) treats a co-tenant catalog's files under a shared prefix as orphaned.
-
-            This is an ORGANIZATIONAL boundary, not an access-control one. The separation is which schema a
-            configuration names, so any config whose catalog role can reach a sibling schema could name it and read that
-            catalog's metadata — and therefore its data-file paths. Where catalogs must be isolated from one another
-            rather than merely kept tidy, grant each its own role with `USAGE` limited to its own schema; a
-            database-per-catalog remains the strongest separation.
-
-            Setting this on a catalog whose metadata already lives elsewhere does not move it: a read-write attach with
-            a configured `storage.dataPath` CREATES a new empty catalog in the named schema (and materializes into it),
-            while any other attach fails because there is nothing there yet. Must be a plain identifier
-            (`[A-Za-z_][A-Za-z0-9_]*`) — the value reaches both a quoted string literal in the ATTACH and an identifier
-            position in the catalog-format preflight, so it is validated at config load rather than escaped for two
-            different contexts.
-      additionalProperties: false
-
-    DucklakeCatalogPatch:
-      type: object
-      description: "A JSON merge-patch of `DucklakeCatalog`: any of its writable fields, `null` clearing an optional one and a
-        list replacing. Generated from `DucklakeCatalog`."
-      properties:
-        postgres:
-          $ref: "#/components/schemas/PostgresConnectionPatch"
-          description: The Postgres database holding the catalog's metadata.
-        metadataSchema:
-          type:
-            - string
-            - "null"
           description: >-
             Optional schema in the catalog database holding this DuckLake's metadata (`ducklake_*`) tables, passed to
             ATTACH as METADATA_SCHEMA. Absent means DuckLake's default — the catalog connection's default schema,
@@ -5268,41 +4894,6 @@ components:
             single `SELECT` (anything else answers 400)."
       required:
         - catalog
-      additionalProperties: false
-
-    DucklakeConnectionPatch:
-      type: object
-      description: "A JSON merge-patch of `DucklakeConnection`: any of its writable fields, `null` clearing an optional one
-        and a list replacing. Generated from `DucklakeConnection`."
-      properties:
-        storage:
-          description: Where the catalog's data files live, and how to reach them.
-          anyOf:
-            - $ref: "#/components/schemas/DucklakeStoragePatch"
-            - type: "null"
-        catalog:
-          $ref: "#/components/schemas/DucklakeCatalogPatch"
-        readOnly:
-          type:
-            - boolean
-            - "null"
-          default: true
-          description: >
-            Whether the serve-path attach is read-only. Absent or true keeps the pre-existing read-only attach, which
-            every DuckLake connection a person registers should keep. False attaches the connection read-write, and then
-            everything that runs on it runs read-write: every query, `.sql()` source, `sql_*` expression and the
-            connection's SQL endpoints can create, drop and overwrite tables, write files with the storage credential
-            (`COPY … TO`) and change the catalog's settings. Set it only where something else decides who may run SQL on
-            the connection. A storage destination's build sessions attach read-write regardless; this field governs only
-            the connection.
-        managed:
-          type:
-            - boolean
-            - "null"
-          default: false
-          description: "Serve this DuckLake connection as a catalog of its own tables, as an orchestrator that provisions catalogs
-            does: the session's search path is set to the catalog, each statement is metered, and raw SQL runs only as a
-            single `SELECT` (anything else answers 400)."
       additionalProperties: false
 
     DucklakeDestination:
@@ -5358,41 +4949,6 @@ components:
           description: Google Cloud Storage settings, when `type` is `gcs`.
       additionalProperties: false
 
-    DucklakeStoragePatch:
-      type: object
-      description: "A JSON merge-patch of `DucklakeStorage`: any of its writable fields, `null` clearing an optional one and a
-        list replacing. Generated from `DucklakeStorage`."
-      properties:
-        type:
-          type: string
-          enum:
-            - s3
-            - gcs
-          description: "The object store: `s3` (AWS S3 or an S3-compatible store) or `gcs` (Google Cloud Storage)."
-        dataPath:
-          type:
-            - string
-            - "null"
-          description: "The catalog's data path, DuckLake's `DATA_PATH`: a URL of the storage location (for example
-            `s3://my-bucket/path` or `gs://my-bucket/path`). Given, it is the path every attach uses, and the first
-            read-write attach of a catalog that does not exist yet creates it there. Omitted, the catalog must already
-            exist, every attach uses the data path the catalog recorded at its creation, and no attach ever creates a
-            catalog: the shape for a catalog created elsewhere, through the admin API (admin-api-doc.v1.yaml) or by
-            another tool. Either way the storage secret is scoped to the data path, the given one or the recorded one: a
-            read of any other object through this connection is unsigned, and on S3 the host's AWS_* environment never
-            signs it either. A catalog with neither is not attached."
-        s3:
-          description: AWS S3 settings, when `type` is `s3`.
-          anyOf:
-            - $ref: "#/components/schemas/S3ConnectionPatch"
-            - type: "null"
-        gcs:
-          description: Google Cloud Storage settings, when `type` is `gcs`.
-          anyOf:
-            - $ref: "#/components/schemas/GcsConnectionPatch"
-            - type: "null"
-      additionalProperties: false
-
     EmbeddedError:
       type: object
       description: "An error carried inside a successful response, about one part of it: `message` for a person, and on uses
@@ -5440,8 +4996,10 @@ components:
           description: The field's `#(doc)` text, when it has any.
         join:
           $ref: "#/components/schemas/EntityJoin"
+          readOnly: true
         indexFingerprint:
           $ref: "#/components/schemas/IndexFingerprint"
+          readOnly: true
         sourceName:
           type: string
           description: The runnable source to query the field from. For a join field it is the source declaring the join; when
@@ -5560,6 +5118,7 @@ components:
         - name
         - createdAt
         - updatedAt
+        - revision
       properties:
         resource:
           $ref: "#/components/schemas/ResourcePath"
@@ -5591,6 +5150,7 @@ components:
           description: The environment's revision. It advances on any change to the environment's own fields, its connections or
             its destinations, whichever route made it, so `If-None-Match` never answers 304 over a changed connection
             and an `If-Match` push fails with 412 after a concurrent connection edit.
+          readOnly: true
         createdAt:
           type: string
           format: date-time
@@ -5600,35 +5160,6 @@ components:
           format: date-time
           readOnly: true
           description: When the environment, one of its connections or one of its destinations last changed.
-
-    EnvironmentCreate:
-      type: object
-      description: "`Environment` as a create sends it: its writable fields. Generated from `Environment`."
-      required:
-        - name
-      properties:
-        name:
-          x-immutable: true
-          description: Set on create; a write that changes it answers 400 `INVALID_REQUEST`.
-          $ref: "#/components/schemas/IdentifierPattern"
-        readme:
-          type: string
-          description: Markdown shown on the environment's page.
-        connections:
-          type: array
-          description: On a read, the environment's connections with credentials withheld. On `PATCH`, the whole list, which
-            replaces what is stored; a connection named with no config is kept as stored. Absent means untouched.
-          items:
-            $ref: "#/components/schemas/ConnectionCreate"
-        destinations:
-          type: array
-          description: "Where materialization builds write: the `#@ persist storage=<name>` targets. Read and written as
-            `connections` is, credentials withheld on a read. A destination is not a connection: no model can name it,
-            no connection route reaches it, and its name is independent of the connections', so a connection and a
-            destination may share a name and mean two configurations of one catalog (for example a read-only reader and
-            a writer)."
-          items:
-            $ref: "#/components/schemas/Destination"
 
     EnvironmentList:
       type: object
@@ -5643,40 +5174,6 @@ components:
           $ref: "#/components/schemas/Cursor"
       readOnly: true
 
-    EnvironmentPatch:
-      type: object
-      description: "A JSON merge-patch of `Environment`: any of its writable fields, `null` clearing an optional one and a
-        list replacing. Generated from `Environment`."
-      properties:
-        name:
-          x-immutable: true
-          description: Set on create; a write that changes it answers 400 `INVALID_REQUEST`.
-          $ref: "#/components/schemas/IdentifierPattern"
-        readme:
-          type:
-            - string
-            - "null"
-          description: Markdown shown on the environment's page.
-        connections:
-          type:
-            - array
-            - "null"
-          description: On a read, the environment's connections with credentials withheld. On `PATCH`, the whole list, which
-            replaces what is stored; a connection named with no config is kept as stored. Absent means untouched.
-          items:
-            $ref: "#/components/schemas/ConnectionCreate"
-        destinations:
-          type:
-            - array
-            - "null"
-          description: "Where materialization builds write: the `#@ persist storage=<name>` targets. Read and written as
-            `connections` is, credentials withheld on a read. A destination is not a connection: no model can name it,
-            no connection route reaches it, and its name is independent of the connections', so a connection and a
-            destination may share a name and mean two configurations of one catalog (for example a read-only reader and
-            a writer)."
-          items:
-            $ref: "#/components/schemas/Destination"
-
     EnvironmentStatus:
       type: object
       required:
@@ -5687,6 +5184,7 @@ components:
         resource:
           $ref: "#/components/schemas/ResourcePath"
           description: The environment's path (`environments/{environmentName}`), which `GET` reads as an `Environment`.
+          readOnly: true
         name:
           type: string
         connections:
@@ -5831,22 +5329,6 @@ components:
           writeOnly: true
       required:
         - keyId
-      additionalProperties: false
-
-    GcsConnectionPatch:
-      type: object
-      description: "A JSON merge-patch of `GcsConnection`: any of its writable fields, `null` clearing an optional one and a
-        list replacing. Generated from `GcsConnection`."
-      properties:
-        keyId:
-          type: string
-          description: GCS HMAC access key ID
-        secret:
-          type:
-            - string
-            - "null"
-          description: GCS HMAC secret key. Required on create.
-          writeOnly: true
       additionalProperties: false
 
     Given:
@@ -6109,8 +5591,7 @@ components:
               type: integer
             scannedBytes:
               type: integer
-              description: Warehouse bytes the build scanned
-              as the backend reported them. Absent when not reported.: null
+              description: Warehouse bytes the build scanned, as the backend reported them. Absent when not reported.
             upstreamReuse:
               type: string
               enum:
@@ -6133,6 +5614,7 @@ components:
             freshness:
               $ref: "#/components/schemas/Freshness"
               description: The freshness objective the entry was built under, resolved as on `PersistSourcePlan.freshness`.
+              readOnly: true
             incremental:
               $ref: "#/components/schemas/IncrementalBoundary"
             refreshed:
@@ -6160,6 +5642,7 @@ components:
           $ref: "#/components/schemas/Freshness"
           description: The freshness objective `publisher.json` declares in `materialization.freshness`; absent when none is
             declared.
+          readOnly: true
         scope:
           type: string
           enum:
@@ -6365,24 +5848,6 @@ components:
           description: MotherDuck database name
       additionalProperties: false
 
-    MotherduckConnectionPatch:
-      type: object
-      description: "A JSON merge-patch of `MotherduckConnection`: any of its writable fields, `null` clearing an optional one
-        and a list replacing. Generated from `MotherduckConnection`."
-      properties:
-        accessToken:
-          type:
-            - string
-            - "null"
-          description: MotherDuck access token
-          writeOnly: true
-        database:
-          type:
-            - string
-            - "null"
-          description: MotherDuck database name
-      additionalProperties: false
-
     MysqlConnection:
       type: object
       description: MySQL database connection configuration
@@ -6401,39 +5866,6 @@ components:
           description: MySQL username for authentication
         password:
           type: string
-          description: MySQL password for authentication
-          writeOnly: true
-      additionalProperties: false
-
-    MysqlConnectionPatch:
-      type: object
-      description: "A JSON merge-patch of `MysqlConnection`: any of its writable fields, `null` clearing an optional one and a
-        list replacing. Generated from `MysqlConnection`."
-      properties:
-        host:
-          type:
-            - string
-            - "null"
-          description: MySQL server hostname or IP address
-        port:
-          type:
-            - integer
-            - "null"
-          description: MySQL server port number
-        database:
-          type:
-            - string
-            - "null"
-          description: Name of the MySQL database
-        user:
-          type:
-            - string
-            - "null"
-          description: MySQL username for authentication
-        password:
-          type:
-            - string
-            - "null"
           description: MySQL password for authentication
           writeOnly: true
       additionalProperties: false
@@ -6464,6 +5896,7 @@ components:
         - source
         - createdAt
         - updatedAt
+        - revision
       properties:
         resource:
           $ref: "#/components/schemas/ResourcePath"
@@ -6491,6 +5924,7 @@ components:
             version exists yet.
         revision:
           $ref: "#/components/schemas/Revision"
+          readOnly: true
         createdAt:
           type: string
           format: date-time
@@ -6499,35 +5933,6 @@ components:
           type: string
           format: date-time
           readOnly: true
-
-    PackageCreate:
-      type: object
-      description: "`Package` as a create sends it: its writable fields. Generated from `Package`."
-      required:
-        - name
-        - source
-      properties:
-        name:
-          x-immutable: true
-          description: Set on create; a write that changes it answers 400 `INVALID_REQUEST`.
-          $ref: "#/components/schemas/IdentifierPattern"
-        description:
-          type: string
-          description: On a read, the description set with `PATCH`, or, while none is set, the latest version's `publisher.json`
-            description, which the server resolves so a reader needs no fallback of its own. `PATCH` sets it; `null`
-            clears the one set, and reads show the latest version's again.
-        source:
-          $ref: "#/components/schemas/PackageSource"
-          x-immutable: true
-          description: Where the package's versions are fetched from. Set on create; a `PATCH` that changes it answers 400
-            `INVALID_REQUEST`. A publish with a body `source` publishes from it and records it here, the one way to move
-            it.
-        latestVersionId:
-          $ref: "#/components/schemas/VersionId"
-          description: The version served when a request names `latest`. Who moves it is `ServerStatus.versionPromotion`; under
-            `explicit` it is absent until one is set. Moved with `PATCH` under `If-Match`; moving it back to a parent
-            version is the undo of a server-made version. A create that sends it answers 400 `INVALID_REQUEST`, since no
-            version exists yet.
 
     PackageList:
       type: object
@@ -6541,37 +5946,6 @@ components:
         nextCursor:
           $ref: "#/components/schemas/Cursor"
       readOnly: true
-
-    PackagePatch:
-      type: object
-      description: "A JSON merge-patch of `Package`: any of its writable fields, `null` clearing an optional one and a list
-        replacing. Generated from `Package`."
-      properties:
-        name:
-          x-immutable: true
-          description: Set on create; a write that changes it answers 400 `INVALID_REQUEST`.
-          $ref: "#/components/schemas/IdentifierPattern"
-        description:
-          type:
-            - string
-            - "null"
-          description: On a read, the description set with `PATCH`, or, while none is set, the latest version's `publisher.json`
-            description, which the server resolves so a reader needs no fallback of its own. `PATCH` sets it; `null`
-            clears the one set, and reads show the latest version's again.
-        source:
-          $ref: "#/components/schemas/PackageSource"
-          x-immutable: true
-          description: Where the package's versions are fetched from. Set on create; a `PATCH` that changes it answers 400
-            `INVALID_REQUEST`. A publish with a body `source` publishes from it and records it here, the one way to move
-            it.
-        latestVersionId:
-          description: The version served when a request names `latest`. Who moves it is `ServerStatus.versionPromotion`; under
-            `explicit` it is absent until one is set. Moved with `PATCH` under `If-Match`; moving it back to a parent
-            version is the undo of a server-made version. A create that sends it answers 400 `INVALID_REQUEST`, since no
-            version exists yet.
-          anyOf:
-            - $ref: "#/components/schemas/VersionId"
-            - type: "null"
 
     PackageSource:
       type: object
@@ -6598,6 +5972,7 @@ components:
         resource:
           $ref: "#/components/schemas/ResourcePath"
           description: The package record's path (`…/packages/{packageName}`), which `GET` reads as a `Package`.
+          readOnly: true
         name:
           type: string
         latestVersionId:
@@ -6634,6 +6009,7 @@ components:
           $ref: "#/components/schemas/PreaggregatePlan"
           description: What the synthesized rollup covers, its base source, grain and measures. Present only when `kind` is
             `preaggregate`.
+          readOnly: true
         refresh:
           type: string
           enum:
@@ -6644,6 +6020,7 @@ components:
           $ref: "#/components/schemas/Freshness"
           description: The source's effective freshness objective after most-specific-wins resolution (source, then model file,
             then package). Absent when unset at every level; the orchestrator then applies its default.
+          readOnly: true
         columns:
           type: array
           description: Output schema of the source.
@@ -6750,79 +6127,6 @@ components:
           description: PostgreSQL username for authentication
         statementTimeoutMs:
           type: integer
-          minimum: 1
-          maximum: 2147483647
-          description: Maximum run time of each statement on the database, in milliseconds. The database cancels a statement that
-            exceeds it. When omitted, the database's own statement_timeout applies. Not applied to a DuckLake catalog
-            connection.
-      additionalProperties: false
-
-    PostgresConnectionPatch:
-      type: object
-      description: "A JSON merge-patch of `PostgresConnection`: any of its writable fields, `null` clearing an optional one
-        and a list replacing. Generated from `PostgresConnection`."
-      properties:
-        host:
-          type:
-            - string
-            - "null"
-          description: PostgreSQL server hostname or IP address
-        port:
-          type:
-            - integer
-            - "null"
-          description: PostgreSQL server port number
-        password:
-          type:
-            - string
-            - "null"
-          description: PostgreSQL password for authentication
-          writeOnly: true
-        connectionString:
-          type:
-            - string
-            - "null"
-          description: Complete PostgreSQL connection string (alternative to individual parameters)
-          writeOnly: true
-        sslmode:
-          type:
-            - string
-            - "null"
-          enum:
-            - disable
-            - no-verify
-            - verify-ca
-            - verify-full
-            - null
-          description: TLS mode for the connection, in node-postgres's vocabulary (`no-verify` is libpq's `require`). On a
-            connection reached through a `proxy` (SSH bastion), the driver connects to a local tunnel endpoint, so the
-            cert hostname can't be checked from the tunnel address alone; use `verify-full` to check it against the real
-            host. `verify-ca` validates the server cert chain against the trusted CA bundle (e.g. the baked Amazon RDS
-            roots) without the hostname, `verify-full` validates the chain AND the hostname against the real host
-            (verified via SNI through the tunnel; requires the target's CA to be trusted by Node's bundled CA roots or
-            NODE_EXTRA_CA_CERTS), `no-verify` encrypts without verifying, and `disable` uses no TLS. A `storage=` build
-            of a proxied source applies the same mode through its own tunnel, `verify-full` included. Note `verify-full`
-            trusts a broader CA set than `verify-ca` here — ambient roots plus NODE_EXTRA_CA_CERTS, rather than the
-            pinned NODE_EXTRA_CA_CERTS bundle that `verify-ca` uses — so it is intentionally not a strict superset; it
-            adds the hostname check without narrowing CA trust. The server defaults it to `no-verify` when a proxy is
-            set (so a force-SSL target isn't rejected for plaintext) — a server-applied default, not a schema default.
-            On a direct connection the same modes apply against the configured host; when omitted, the deployment
-            PGSSLMODE applies. Ignored when connectionString is set, which carries its own sslmode. Applies to a
-            DuckLake catalog connection as well.
-        database:
-          type:
-            - string
-            - "null"
-          description: Name of the PostgreSQL database
-        user:
-          type:
-            - string
-            - "null"
-          description: PostgreSQL username for authentication
-        statementTimeoutMs:
-          type:
-            - integer
-            - "null"
           minimum: 1
           maximum: 2147483647
           description: Maximum run time of each statement on the database, in milliseconds. The database cancels a statement that
@@ -7004,24 +6308,6 @@ components:
             v0's routes and response shapes, so a v1 connection URL does not work here yet.
       required:
         - connectionUrl
-      additionalProperties: false
-
-    PublisherConnectionPatch:
-      type: object
-      description: "A JSON merge-patch of `PublisherConnection`: any of its writable fields, `null` clearing an optional one
-        and a list replacing. Generated from `PublisherConnection`."
-      properties:
-        accessToken:
-          type:
-            - string
-            - "null"
-          description: Bearer token for the remote server (user-scoped, short-lived)
-          writeOnly: true
-        connectionUrl:
-          type: string
-          description: The URL of a connection on another Publisher's v0 API, for example
-            `https://org.data.example.com/api/v0/environments/<env>/connections/<name>`. The server reads it through
-            v0's routes and response shapes, so a v1 connection URL does not work here yet.
       additionalProperties: false
 
     Query:
@@ -7282,6 +6568,7 @@ components:
           $ref: "#/components/schemas/VersionStatus"
           description: The version's status after the reload; for a live package, the receipt that the edit is served
             (`contentHash`, `loadId`).
+          readOnly: true
       readOnly: true
 
     Report:
@@ -7308,25 +6595,6 @@ components:
         nextCursor:
           $ref: "#/components/schemas/Cursor"
       readOnly: true
-
-    ReportReplace:
-      type: object
-      description: "`Report` as a replace sends it: its writable fields. Generated from `Report`."
-      required:
-        - content
-      properties:
-        contentHash:
-          type: string
-          description: "SHA-256 (hex) of the file's text, `content`. The server sets it on every read; a write sends it back as
-            read, and is refused with 409 `CONTENT_CHANGED` when the file no longer hashes to it, so a write over a
-            newer text is refused rather than lost. A write without it creates the file. The one field the server sets
-            that a client also sends, as Google's `etag` field is, and the report's revision: a report has no
-            `revision`, and the report write takes no `If-Match`. It is separate from the HTTP `ETag`, which covers the
-            compiled report."
-        content:
-          type: string
-          description: The report file's whole text. On a read, present only with `?include=content`; on a write, the text to
-            write, and the one field a write sets.
 
     ReportSummary:
       type: object
@@ -7514,6 +6782,7 @@ components:
       properties:
         currentRevision:
           $ref: "#/components/schemas/Revision"
+          readOnly: true
       readOnly: true
 
     Run:
@@ -7523,12 +6792,11 @@ components:
         - resource
         - runId
         - versionId
-        - status
-        - trigger
         - mode
         - scope
         - createdAt
         - updatedAt
+        - revision
       properties:
         resource:
           $ref: "#/components/schemas/ResourcePath"
@@ -7619,55 +6887,6 @@ components:
           format: date-time
           readOnly: true
 
-    RunCreate:
-      type: object
-      description: "`Run` as a create sends it: its writable fields. Generated from `Run`."
-      required:
-        - versionId
-      properties:
-        versionId:
-          $ref: "#/components/schemas/VersionRef"
-          x-immutable: true
-          description: The version the run builds. Set on create, where `latest` and `live` are accepted; every read returns the
-            resolved id. Never changed.
-        status:
-          type: string
-          enum:
-            - pending
-            - running
-            - committed
-            - failed
-            - cancelled
-          default: pending
-          description: "`committed` is the only success: the manifest is visible and the bindings moved. Ignored on create; a
-            `PATCH` may set only `cancelled`."
-        trigger:
-          type: string
-          enum:
-            - on_demand
-            - scheduler
-            - publish
-          default: on_demand
-          x-immutable: true
-          description: "What started the run: an explicit request, the caller's scheduler, or a package publish. Set on create and
-            never changed; the run's record and the `trigger` query-metadata property of every statement it issues carry
-            this one value."
-        callerRunId:
-          type: string
-          x-immutable: true
-          description: The caller's own id for this run, set on create and never changed, attached as the `run_id` query-metadata
-            property so every statement of one build groups together in the warehouse's query history.
-        options:
-          $ref: "#/components/schemas/RunOptions"
-          x-immutable: true
-          description: How to run the build. Set on create; never changed.
-        buildInstructions:
-          $ref: "#/components/schemas/BuildInstructions"
-          writeOnly: true
-          x-immutable: true
-          description: "An orchestrator's orders: which tables to build, under which names. Accepted on create and never returned;
-            the run's manifest records what was built. A run created with them is `mode: orchestrated`."
-
     RunList:
       type: object
       required:
@@ -7744,54 +6963,6 @@ components:
           description: Sources whose build failed; each is in `RunManifest.failures`.
       readOnly: true
 
-    RunPatch:
-      type: object
-      description: "A JSON merge-patch of `Run`: any of its writable fields, `null` clearing an optional one and a list
-        replacing. Generated from `Run`."
-      properties:
-        versionId:
-          $ref: "#/components/schemas/VersionRef"
-          x-immutable: true
-          description: The version the run builds. Set on create, where `latest` and `live` are accepted; every read returns the
-            resolved id. Never changed.
-        status:
-          type: string
-          enum:
-            - pending
-            - running
-            - committed
-            - failed
-            - cancelled
-          default: pending
-          description: "`committed` is the only success: the manifest is visible and the bindings moved. Ignored on create; a
-            `PATCH` may set only `cancelled`."
-        trigger:
-          type: string
-          enum:
-            - on_demand
-            - scheduler
-            - publish
-          default: on_demand
-          x-immutable: true
-          description: "What started the run: an explicit request, the caller's scheduler, or a package publish. Set on create and
-            never changed; the run's record and the `trigger` query-metadata property of every statement it issues carry
-            this one value."
-        callerRunId:
-          type: string
-          x-immutable: true
-          description: The caller's own id for this run, set on create and never changed, attached as the `run_id` query-metadata
-            property so every statement of one build groups together in the warehouse's query history.
-        options:
-          $ref: "#/components/schemas/RunOptions"
-          x-immutable: true
-          description: How to run the build. Set on create; never changed.
-        buildInstructions:
-          $ref: "#/components/schemas/BuildInstructions"
-          writeOnly: true
-          x-immutable: true
-          description: "An orchestrator's orders: which tables to build, under which names. Accepted on create and never returned;
-            the run's manifest records what was built. A run created with them is `mode: orchestrated`."
-
     S3Connection:
       type: object
       description: AWS S3 connection configuration for DuckDB
@@ -7831,65 +7002,6 @@ components:
             credential_chain`, whose requests carry the host's credentials. No userinfo, query, fragment or whitespace."
         sessionToken:
           type: string
-          description: AWS session token for temporary credentials (optional)
-          writeOnly: true
-      additionalProperties: false
-
-    S3ConnectionPatch:
-      type: object
-      description: "A JSON merge-patch of `S3Connection`: any of its writable fields, `null` clearing an optional one and a
-        list replacing. Generated from `S3Connection`."
-      properties:
-        provider:
-          type:
-            - string
-            - "null"
-          enum:
-            - config
-            - credential_chain
-            - null
-          description: How credentials are obtained; defaults to `config` when omitted. `config` uses the accessKeyId and
-            secretAccessKey on this object, which are then required. `credential_chain` resolves them from the host
-            instead — an instance profile, a web-identity token, or the environment — so no key is stored, and supplying
-            one is rejected. Chain resolution happens when the connection is attached, so a host that cannot supply
-            credentials fails there rather than on first object access.
-        chain:
-          type:
-            - string
-            - "null"
-          description: "Ordered list of credential providers to try, semicolon-separated, for `provider: credential_chain`
-            (DuckDB's CHAIN). Recognized providers are env, config, sts, instance, sso, process, and web_identity. Omit
-            to use Publisher's default order, which covers the environment, a web-identity token, and an instance
-            profile. Rejected under `provider: config`, where the key pair beside it is what grants access."
-        accessKeyId:
-          type:
-            - string
-            - "null"
-          description: "AWS access key ID (required for `provider: config`)"
-        secretAccessKey:
-          type:
-            - string
-            - "null"
-          description: "AWS secret access key (required for `provider: config`)"
-          writeOnly: true
-        region:
-          type:
-            - string
-            - "null"
-          default: us-east-1
-          description: "AWS region (for example `us-east-1`). A bucket in another region must set it: leaving it out reaches
-            `us-east-1` and fails as a missing bucket rather than as a misconfiguration."
-        endpoint:
-          type:
-            - string
-            - "null"
-          description: "Custom S3-compatible endpoint (optional, for MinIO, etc.): `host[:port]`, `https://host[:port]`, or
-            `http://host[:port]`, which is the one form that turns TLS off and is refused with `provider:
-            credential_chain`, whose requests carry the host's credentials. No userinfo, query, fragment or whitespace."
-        sessionToken:
-          type:
-            - string
-            - "null"
           description: AWS session token for temporary credentials (optional)
           writeOnly: true
       additionalProperties: false
@@ -8068,6 +7180,7 @@ components:
         resource:
           $ref: "#/components/schemas/ResourcePath"
           description: The skill's path. Absent on `Agent.skills`, whose skills have no read of their own.
+          readOnly: true
         name:
           type: string
           description: The skill's name.
@@ -8213,68 +7326,6 @@ components:
           description: Query response timeout in milliseconds
       additionalProperties: false
 
-    SnowflakeConnectionPatch:
-      type: object
-      description: "A JSON merge-patch of `SnowflakeConnection`: any of its writable fields, `null` clearing an optional one
-        and a list replacing. Generated from `SnowflakeConnection`."
-      properties:
-        account:
-          type:
-            - string
-            - "null"
-          description: Snowflake account identifier
-        username:
-          type:
-            - string
-            - "null"
-          description: Snowflake username for authentication
-        password:
-          type:
-            - string
-            - "null"
-          description: Snowflake password for authentication
-          writeOnly: true
-        privateKey:
-          type:
-            - string
-            - "null"
-          description: Snowflake private key for authentication
-          writeOnly: true
-        privateKeyPass:
-          type:
-            - string
-            - "null"
-          description: Passphrase for the Snowflake private key
-          writeOnly: true
-        warehouse:
-          type:
-            - string
-            - "null"
-          description: Snowflake warehouse name
-        database:
-          type:
-            - string
-            - "null"
-          description: Snowflake database name. Omitted or null connects with no current database, so names must be fully
-            qualified as DATABASE.SCHEMA.TABLE and schema discovery spans the account.
-        schema:
-          type:
-            - string
-            - "null"
-          description: Snowflake schema name. Sets the session default schema and forms part of the connection's identity, so it
-            determines what a materialization build runs as. It does not restrict which schemas are discoverable.
-        role:
-          type:
-            - string
-            - "null"
-          description: Snowflake role name
-        queryTimeoutMs:
-          type:
-            - integer
-            - "null"
-          description: Query response timeout in milliseconds
-      additionalProperties: false
-
     Source:
       type: object
       description: A Malloy source defined in a model
@@ -8336,6 +7387,7 @@ components:
             query surface.
         servedSource:
           $ref: "#/components/schemas/EntitySourceAddress"
+          readOnly: true
         gates:
           type: array
           description: "The source's effective access gates, `#(authorize)` and `#(access_filter)` alike, told apart by each
@@ -8346,6 +7398,7 @@ components:
           $ref: "#/components/schemas/EntityTable"
           description: The warehouse table the source reads, the same for every field of the source. Absent when the source is not
             a table (a query or a SQL source).
+          readOnly: true
 
     SourceFailure:
       description: "One source that failed to materialize, and why. Kept beside the entries because a failed source names no
@@ -8488,6 +7541,7 @@ components:
           description: "The query metadata that applies to SQL: the row limit fields, `elapsedMs`, and `scannedBytes` and
             `queryCorrelationId` where reported. `versionId` is present on `run-sql-in-version` and absent at
             environment scope, which names no version. `servedFrom` and `renderLogs` never apply and are absent."
+          readOnly: true
       readOnly: true
 
     SqlserverConnection:
@@ -8534,65 +7588,6 @@ components:
           description: A named instance, located through the SQL Browser service (UDP 1434); `port` is then not used.
       additionalProperties: false
 
-    SqlserverConnectionPatch:
-      type: object
-      description: "A JSON merge-patch of `SqlserverConnection`: any of its writable fields, `null` clearing an optional one
-        and a list replacing. Generated from `SqlserverConnection`."
-      properties:
-        server:
-          type:
-            - string
-            - "null"
-          description: SQL Server host name or IP address
-        port:
-          type:
-            - integer
-            - "null"
-          default: 1433
-          description: TCP port. Not used when `instanceName` is set.
-        database:
-          type:
-            - string
-            - "null"
-          description: Name of the database to open
-        user:
-          type:
-            - string
-            - "null"
-          description: SQL Server login name
-        password:
-          type:
-            - string
-            - "null"
-          description: SQL Server login password
-          writeOnly: true
-        encrypt:
-          type:
-            - boolean
-            - "null"
-          description: Encrypt the connection with TLS. On when omitted, as the driver defaults it; a server that requires
-            encryption refuses a connection with it off.
-        trustServerCertificate:
-          type:
-            - boolean
-            - "null"
-          description: Accept a server certificate the client cannot verify, such as a self-signed one on a local or test server.
-            Off when omitted. Leave it off for any server you do not control; a certificate the client cannot verify
-            then fails the connection rather than being trusted.
-        hostNameInCertificate:
-          type:
-            - string
-            - "null"
-          description: The host name the server's certificate is issued to, when it is not `server` (a server reached by IP
-            address, or through a tunnel). Checked against the certificate when `encrypt` is on and
-            `trustServerCertificate` is off.
-        instanceName:
-          type:
-            - string
-            - "null"
-          description: A named instance, located through the SQL Browser service (UDP 1434); `port` is then not used.
-      additionalProperties: false
-
     SshProxy:
       type: object
       description: SSH bastion / jump-host config for reaching a database inside a private network via an SSH local
@@ -8622,51 +7617,6 @@ components:
           writeOnly: true
         hostKey:
           type: string
-          description: |
-            Optional pinned bastion host public key(s), as one or more OpenSSH
-            known_hosts lines (or bare base64 blobs), verified on every connect.
-            List multiple lines to pin a load-balanced/HA bastion that presents a
-            different key per backend — any listed key is accepted; a mismatch
-            fails the connection closed. Plain and hashed (`|1|…`) lines both work
-            — only the key blob is compared, never the hostname. When omitted, the
-            tunnel connects without host-key verification (the self-service
-            default); the SSH transport is still encrypted.
-      additionalProperties: false
-
-    SshProxyPatch:
-      type: object
-      description: "A JSON merge-patch of `SshProxy`: any of its writable fields, `null` clearing an optional one and a list
-        replacing. Generated from `SshProxy`."
-      properties:
-        host:
-          type: string
-          description: Bastion hostname or IP address (the SSH jump host)
-        port:
-          type:
-            - integer
-            - "null"
-          default: 22
-          description: Bastion SSH port (defaults to 22)
-        username:
-          type: string
-          description: SSH username on the bastion
-        privateKey:
-          type:
-            - string
-            - "null"
-          description: PEM-encoded SSH private key used to authenticate to the bastion. The customer authorizes the matching
-            public key in the bastion's authorized_keys; public-key auth only. Required on create.
-          writeOnly: true
-        privateKeyPass:
-          type:
-            - string
-            - "null"
-          description: Passphrase for the encrypted private key, if any.
-          writeOnly: true
-        hostKey:
-          type:
-            - string
-            - "null"
           description: |
             Optional pinned bastion host public key(s), as one or more OpenSSH
             known_hosts lines (or bare base64 blobs), verified on every connect.
@@ -8804,50 +7754,6 @@ components:
           writeOnly: true
       additionalProperties: false
 
-    TrinoConnectionPatch:
-      type: object
-      description: "A JSON merge-patch of `TrinoConnection`: any of its writable fields, `null` clearing an optional one and a
-        list replacing. Generated from `TrinoConnection`."
-      properties:
-        server:
-          type:
-            - string
-            - "null"
-          description: The coordinator's URL (`http://` or `https://`).
-        port:
-          type:
-            - integer
-            - "null"
-          description: The coordinator's port. Used only when `server` carries none.
-        catalog:
-          type:
-            - string
-            - "null"
-          description: Trino catalog name
-        schema:
-          type:
-            - string
-            - "null"
-          description: Trino schema name
-        user:
-          type:
-            - string
-            - "null"
-          description: Trino username for authentication
-        password:
-          type:
-            - string
-            - "null"
-          description: Trino password for authentication
-          writeOnly: true
-        peakaKey:
-          type:
-            - string
-            - "null"
-          description: Peaka API key for authentication with Peaka-hosted Trino clusters
-          writeOnly: true
-      additionalProperties: false
-
     UpstreamTable:
       description: An already-materialized upstream a run may read but does not rebuild, by its table address.
       allOf:
@@ -8871,6 +7777,7 @@ components:
         - origin
         - createdAt
         - updatedAt
+        - revision
       properties:
         resource:
           $ref: "#/components/schemas/ResourcePath"
@@ -8933,6 +7840,7 @@ components:
           description: The git commit the version was published from. Absent for a source that is not git.
         revision:
           $ref: "#/components/schemas/Revision"
+          readOnly: true
         createdAt:
           type: string
           format: date-time
@@ -8948,29 +7856,6 @@ components:
           format: date-time
           readOnly: true
           description: When the version was archived. Absent while it is not archived.
-
-    VersionCreate:
-      type: object
-      description: "`Version` as a create sends it: its writable fields. Generated from `Version`."
-      properties:
-        source:
-          $ref: "#/components/schemas/PackageSource"
-          x-immutable: true
-          description: Where the version was fetched from. Set on publish and never changed. Absent on the publish means the
-            package's recorded source; sent, it becomes the package's recorded `source`.
-        archived:
-          type: boolean
-          default: false
-          description: 'Out of service: its content reads answer 410, while its record, its status and `PATCH` (`{"archived":
-            false}` restores it) stay available. Refused while it is `latest`, the last active version, or building.'
-        pinned:
-          type: boolean
-          default: false
-          description: Exempt from server-made-version retention. Set with `PATCH`.
-        manifestLocation:
-          type: string
-          description: An externally computed manifest bound to this version, or `null` to serve from the warehouse. Set with
-            `PATCH`. The file is a JSON array of `ManifestEntry` without its read-only fields.
 
     VersionId:
       type: string
@@ -8991,102 +7876,6 @@ components:
         nextCursor:
           $ref: "#/components/schemas/Cursor"
       readOnly: true
-
-    VersionPatch:
-      type: object
-      description: "A JSON merge-patch of `Version`: any of its writable fields, `null` clearing an optional one and a list
-        replacing. Generated from `Version`."
-      properties:
-        source:
-          $ref: "#/components/schemas/PackageSource"
-          x-immutable: true
-          description: Where the version was fetched from. Set on publish and never changed. Absent on the publish means the
-            package's recorded source; sent, it becomes the package's recorded `source`.
-        archived:
-          type:
-            - boolean
-            - "null"
-          default: false
-          description: 'Out of service: its content reads answer 410, while its record, its status and `PATCH` (`{"archived":
-            false}` restores it) stay available. Refused while it is `latest`, the last active version, or building.'
-        pinned:
-          type:
-            - boolean
-            - "null"
-          default: false
-          description: Exempt from server-made-version retention. Set with `PATCH`.
-        manifestLocation:
-          type:
-            - string
-            - "null"
-          description: An externally computed manifest bound to this version, or `null` to serve from the warehouse. Set with
-            `PATCH`. The file is a JSON array of `ManifestEntry` without its read-only fields.
-
-    VersionPreview:
-      type: object
-      readOnly: true
-      description: The `Version` a publish dry run would make. Nothing is stored, so it has no `resource`, `revision`,
-        `createdAt` or `updatedAt`. Generated from `Version`.
-      required:
-        - versionId
-        - origin
-      properties:
-        versionId:
-          readOnly: true
-          $ref: "#/components/schemas/VersionId"
-        origin:
-          type: string
-          enum:
-            - publish
-            - republish
-            - edit
-            - migration
-          readOnly: true
-          description: "`publish`: the author's. `republish`: a publish whose declared version already existed with other content,
-            named `<parent>+republish.N`. `edit`: a report write. `migration`: imported from a pre-v1 store."
-        parentVersionId:
-          $ref: "#/components/schemas/VersionId"
-          readOnly: true
-          description: The version a server-made version was made from; undo is pointing `latestVersionId` back at it.
-        source:
-          $ref: "#/components/schemas/PackageSource"
-          x-immutable: true
-          description: Where the version was fetched from. Set on publish and never changed. Absent on the publish means the
-            package's recorded source; sent, it becomes the package's recorded `source`.
-        queryMetadata:
-          $ref: "#/components/schemas/QueryMetadata"
-          readOnly: true
-          description: The per-query metadata the version's `publisher.json` declares at its root.
-        description:
-          type: string
-          readOnly: true
-          description: The version's `publisher.json` description.
-        materialization:
-          readOnly: true
-          $ref: "#/components/schemas/MaterializationConfig"
-        archived:
-          type: boolean
-          default: false
-          description: 'Out of service: its content reads answer 410, while its record, its status and `PATCH` (`{"archived":
-            false}` restores it) stay available. Refused while it is `latest`, the last active version, or building.'
-        pinned:
-          type: boolean
-          default: false
-          description: Exempt from server-made-version retention. Set with `PATCH`.
-        manifestLocation:
-          type: string
-          description: An externally computed manifest bound to this version, or `null` to serve from the warehouse. Set with
-            `PATCH`. The file is a JSON array of `ManifestEntry` without its read-only fields.
-        warnings:
-          type: array
-          readOnly: true
-          description: Non-fatal findings from the load, as the package's `publisher.json`, models and reports produced them.
-          items:
-            $ref: "#/components/schemas/Problem"
-        gitCommitSha:
-          type: string
-          readOnly: true
-          description: The git commit the version was published from. Absent for a source that is not git.
 
     VersionRef:
       type: string
@@ -9109,6 +7898,7 @@ components:
         resource:
           $ref: "#/components/schemas/ResourcePath"
           description: The path of this version's own status read, `…/versions/{versionId}/status`.
+          readOnly: true
         versionId:
           $ref: "#/components/schemas/VersionId"
         status:
