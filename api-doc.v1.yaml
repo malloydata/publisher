@@ -916,19 +916,21 @@ paths:
       operationId: reload-package
       tags:
         - packages
-      summary: Fetch the source again and publish a version if it changed
-      description: A live package recompiles in place. Otherwise the source fingerprint is compared first; when it matches,
-        nothing is made (`unchanged`); when it differs, the new tree is published as `<parent>+reload.N` and
-        `latestVersionId` moves per the promotion rule. Also the guaranteed schema refresh for the compiled-model store.
+      summary: Recompile a live package from its files and wait for the result
+      description: "A live package only (watch mode, a draft): recompiles the author's files in place, settling any recompile
+        the watcher already started, and answers when it is done, with the compile errors if it failed. This is the
+        handshake an edit loop needs and watch mode alone does not give: watch mode recompiles in the background and
+        skips a save that does not compile without saying so. A package that is not live answers 409
+        `PACKAGE_NOT_LIVE`: an immutable version has nothing to reload. To pick up a changed source, re-fetch it
+        (`POST …/versions`); to make a version resident, `PATCH …/versions/{versionId}` with `{\"loaded\": true}`; to
+        recompile against current warehouse schemas, `POST …/versions/{versionId}/refresh-schema`."
       responses:
         "200":
-          description: What the reload did.
+          description: What the reload did (`outcome` is `recompiled`).
           content:
             application/json:
               schema:
                 $ref: "#/components/schemas/ReloadResult"
-        "202":
-          description: Accepted; the reload runs in the background.
         "400":
           $ref: "#/components/responses/BadRequest"
         "401":
@@ -1028,6 +1030,84 @@ paths:
           $ref: "#/components/responses/Internal"
         "503":
           $ref: "#/components/responses/Unavailable"
+    post:
+      operationId: refetch-package-source
+      tags:
+        - versions
+      summary: Re-fetch the package's recorded source and publish a version if it changed
+      description: Fetches `source.location` again (a git branch, an object store prefix, a directory). When the source
+        fingerprint (git commit sha, object etag or md5, or the imported tree hash) matches the current version's,
+        nothing is made (`unchanged`). When it differs, the new tree is published with the overlay re-applied, named by
+        its `publisher.json` version when that is new and `<parent>+reload.N` otherwise, and `latestVersionId` moves per
+        the promotion rule. This is v0's `?reload=true` on a package installed from a location. A live package answers
+        409 `PACKAGE_IS_LIVE` (reload it instead).
+      responses:
+        "200":
+          description: Nothing changed (`outcome` is `unchanged`).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ReloadResult"
+        "201":
+          description: A version was published (`outcome` is `published`).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ReloadResult"
+        "202":
+          description: Accepted; the fetch and publish run in the background.
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "500":
+          $ref: "#/components/responses/Internal"
+        "503":
+          $ref: "#/components/responses/Unavailable"
+
+
+
+  /environments/{environmentName}/packages/{packageName}/versions/{versionId}/refresh-schema:
+    parameters:
+      - $ref: "#/components/parameters/environmentName"
+      - $ref: "#/components/parameters/packageName"
+      - $ref: "#/components/parameters/versionId"
+    post:
+      operationId: refresh-version-schema
+      tags:
+        - versions
+      summary: Recompile a version against the warehouse's current schemas
+      description: A compiled version bakes in the schema of every table it reads. This recompiles the version's unchanged
+        files with the schema cache bypassed and replaces its compiled-model store entry, loading the version if it is
+        not resident. No version is made, because the content did not change. 409 `PACKAGE_IS_LIVE` on a live package
+        (reload it instead) and `VERSION_BUILDING` while a run holds the version.
+      responses:
+        "200":
+          description: The version, recompiled.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Version"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "500":
+          $ref: "#/components/responses/Internal"
+        "503":
+          $ref: "#/components/responses/Unavailable"
 
 
   /environments/{environmentName}/packages/{packageName}/versions/{versionId}:
@@ -1074,7 +1154,8 @@ paths:
       tags:
         - versions
       summary: Change a version's lifecycle state
-      description: "JSON merge-patch over `archived`, `loaded`, `pinned` and `manifestLocation`, each independent. `archived:
+      description: "JSON merge-patch over `archived`, `loaded`, `pinned` and `manifestLocation`, each independent.
+        `loaded: true` loads the version if it is not resident, without reading it and without changing its content. `archived:
         true` is refused with 409 on a live package's `live` (`PACKAGE_IS_LIVE`), and while the version is `latest`
         (`VERSION_IS_LATEST`), the last active version (`VERSION_IS_LAST_ACTIVE`) or building (`VERSION_BUILDING`).
         `loaded: false` drains and unloads; 409 while a run holds the version. `manifestLocation` binds an external
@@ -4266,6 +4347,7 @@ components:
         - VERSION_BUILDING
         - VERSION_NOT_LATEST
         - PACKAGE_IS_LIVE
+        - PACKAGE_NOT_LIVE
         - FILE_EXISTS
         - FILE_NOT_WRITABLE
         - RUN_ACTIVE
@@ -5674,7 +5756,7 @@ components:
             this source would 422 with.
     ReloadResult:
       type: object
-      description: What a reload did.
+      description: What a reload of a live package, or a re-fetch of a package's source, did.
       required:
         - outcome
       properties:
@@ -5684,8 +5766,9 @@ components:
             - unchanged
             - published
             - recompiled
-          description: "`unchanged`: the source fingerprint matched and nothing was made. `published`: the source changed and
-            `version` is the version it made. `recompiled`: a live package was recompiled in place."
+          description: "`recompiled`: a live package was recompiled in place (`POST …/reload`). `unchanged`: a re-fetch found
+            the source fingerprint unchanged and made nothing. `published`: a re-fetch found the source changed and
+            `version` is the version it made (`POST …/versions`)."
         package:
           $ref: "#/components/schemas/Package"
         version:
@@ -6900,8 +6983,8 @@ components:
           description: Exempt from server-made-version retention. Set with `PATCH`.
         loaded:
           type: boolean
-          description: 'Whether this server holds it in memory. `PATCH {"loaded": false}` unloads; a read loads. 409 while a run
-            holds it.'
+          description: 'Whether this server holds it in memory. `PATCH {"loaded": true}` loads it, `PATCH {"loaded": false}`
+            unloads it, and a read loads it too. 409 while a run holds it.'
         manifestLocation:
           type:
             - string
