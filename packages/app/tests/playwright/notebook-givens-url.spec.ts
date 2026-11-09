@@ -11,7 +11,7 @@ import {
 import { PACKAGES } from "./helpers/fixtures";
 import {
    exampleFixture,
-   registerPackageEnv,
+   publishPackageEnv,
    type PackageEnv,
 } from "./helpers/packageEnv";
 
@@ -36,7 +36,7 @@ import "orders.malloy"
 
 let pe: PackageEnv;
 /** The report's route in the copy registered in `beforeAll`. */
-const notebookPath = () => `/${pe.env}/${pe.pkg}/test_givens_url_notebook`;
+const notebookPath = () => `/${pe.path}/test_givens_url_notebook`;
 
 /**
  * A count that has stopped moving, rather than the first count seen.
@@ -93,7 +93,7 @@ async function setMinAmount(page: Page, value: string) {
 test.describe("notebook givens are URL-addressable", () => {
    // eslint-disable-next-line no-empty-pattern
    test.beforeAll(async ({}, testInfo) => {
-      pe = await registerPackageEnv(
+      pe = await publishPackageEnv(
          testInfo.project.use.baseURL ?? "http://localhost:4000",
          "nbgivensurl",
          exampleFixture(PACKAGES.governed),

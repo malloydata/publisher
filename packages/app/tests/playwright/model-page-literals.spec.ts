@@ -5,7 +5,7 @@ import { expect, Page, test } from "@playwright/test";
 import { PACKAGES } from "./helpers/fixtures";
 import {
    exampleFixture,
-   registerPackageEnv,
+   publishPackageEnv,
    type PackageEnv,
 } from "./helpers/packageEnv";
 import { requireModelViewer } from "./helpers/publisherStatus";
@@ -53,7 +53,7 @@ query: all_names is items -> {
 let pe: PackageEnv;
 
 async function openFixtureModel(page: Page): Promise<void> {
-   await page.goto(`/${pe.env}/${pe.pkg}/${FIXTURE_MODEL}`);
+   await page.goto(`/${pe.path}/${FIXTURE_MODEL}`);
    await expect(
       page.getByRole("heading", { name: "items", level: 1 }),
    ).toBeVisible();
@@ -65,7 +65,7 @@ test.describe("model-page-literals", () => {
       const baseURL = testInfo.project.use.baseURL ?? "http://localhost:4000";
       // First, so a server that skips the spec gets no environment registered.
       await requireModelViewer(baseURL);
-      pe = await registerPackageEnv(
+      pe = await publishPackageEnv(
          baseURL,
          "literals",
          exampleFixture(PACKAGES.storefront),

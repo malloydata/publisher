@@ -7,10 +7,9 @@
 
 import { expect, test } from "@playwright/test";
 import { PACKAGES } from "./helpers/fixtures";
-import { gotoHome, openEnvironment, openPackage } from "./helpers/navigation";
 import {
    exampleFixture,
-   registerPackageEnv,
+   publishPackageEnv,
    type PackageEnv,
 } from "./helpers/packageEnv";
 
@@ -55,14 +54,14 @@ test.describe("package-notebooks", () => {
    // eslint-disable-next-line no-empty-pattern
    test.beforeAll(async ({}, testInfo) => {
       const baseURL = testInfo.project.use.baseURL ?? "http://localhost:4000";
-      storefront = await registerPackageEnv(
+      storefront = await publishPackageEnv(
          baseURL,
          "pkgnb",
          exampleFixture(PACKAGES.storefront),
          PACKAGES.storefront,
          { [FIXTURE_NOTEBOOK]: NOTEBOOK_SOURCE },
       );
-      governed = await registerPackageEnv(
+      governed = await publishPackageEnv(
          baseURL,
          "pkgnbgov",
          exampleFixture(PACKAGES.governed),
@@ -77,9 +76,7 @@ test.describe("package-notebooks", () => {
    });
 
    test("Reports section lists .malloynb files", async ({ page }) => {
-      await gotoHome(page);
-      await openEnvironment(page, storefront.env);
-      await openPackage(page, storefront.env, storefront.pkg);
+      await page.goto(`/${storefront.path}`);
 
       // The section label is the only user-visible string the Pages/Console
       // rename changes, and no other test reads it, so a relabel that misses a
@@ -101,23 +98,17 @@ test.describe("package-notebooks", () => {
    test("opening a notebook routes into the notebook view", async ({
       page,
    }) => {
-      await gotoHome(page);
-      await openEnvironment(page, storefront.env);
-      await openPackage(page, storefront.env, storefront.pkg);
+      await page.goto(`/${storefront.path}`);
 
       await page.getByText(FIXTURE_NOTEBOOK, { exact: true }).click();
 
       // The notebook opens on its own route; assert we navigated off the package route.
-      await expect(page).not.toHaveURL(
-         new RegExp(`/${storefront.env}/${storefront.pkg}/?$`),
-      );
+      await expect(page).not.toHaveURL(new RegExp(`/${storefront.path}/?$`));
       await expect(page).toHaveURL(/test_package_notebook\.malloynb/);
    });
 
    test("the notebook view renders authored content", async ({ page }) => {
-      await gotoHome(page);
-      await openEnvironment(page, storefront.env);
-      await openPackage(page, storefront.env, storefront.pkg);
+      await page.goto(`/${storefront.path}`);
       await page.getByText(FIXTURE_NOTEBOOK, { exact: true }).click();
       // The fixture's own H1: its presence confirms the Notebook mounted and
       // ran the cells.
@@ -129,9 +120,7 @@ test.describe("package-notebooks", () => {
    test("clicking a notebook row keeps the package segment in the URL", async ({
       page,
    }) => {
-      await gotoHome(page);
-      await openEnvironment(page, governed.env);
-      await openPackage(page, governed.env, governed.pkg);
+      await page.goto(`/${governed.path}`);
 
       // The fixture's name shares nothing with its package, so a dropped
       // package segment lands on /<env>/<file> and 404s. The storefront
@@ -139,7 +128,7 @@ test.describe("package-notebooks", () => {
       await page.getByText(GOVERNED_NOTEBOOK, { exact: true }).click();
 
       await expect(page).toHaveURL(
-         new RegExp(`/${governed.env}/${governed.pkg}/${GOVERNED_NOTEBOOK}$`),
+         new RegExp(`/${governed.path}/${GOVERNED_NOTEBOOK}$`),
       );
       await expect(page.getByText(/does not exist/i)).toHaveCount(0);
    });
@@ -147,9 +136,7 @@ test.describe("package-notebooks", () => {
    test("a table cell is as tall as its table, not as tall as the cell cap", async ({
       page,
    }) => {
-      await page.goto(
-         `/${storefront.env}/${storefront.pkg}/test_package_notebook.malloynb`,
-      );
+      await page.goto(`/${storefront.path}/test_package_notebook.malloynb`);
 
       // Every notebook table, measured against the box the cell gives it: a
       // cell must end up as tall as its table, not as tall as the 700px cap.

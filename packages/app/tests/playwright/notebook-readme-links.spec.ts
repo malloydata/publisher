@@ -3,10 +3,9 @@
 
 import { expect, test } from "@playwright/test";
 import { PACKAGES } from "./helpers/fixtures";
-import { gotoHome, openEnvironment, openPackage } from "./helpers/navigation";
 import {
    exampleFixture,
-   registerPackageEnv,
+   publishPackageEnv,
    type PackageEnv,
 } from "./helpers/packageEnv";
 
@@ -54,7 +53,7 @@ let pe: PackageEnv;
 test.describe("notebook-readme-links", () => {
    // eslint-disable-next-line no-empty-pattern
    test.beforeAll(async ({}, testInfo) => {
-      pe = await registerPackageEnv(
+      pe = await publishPackageEnv(
          testInfo.project.use.baseURL ?? "http://localhost:4000",
          "nbreadme",
          exampleFixture(PACKAGES.storefront),
@@ -70,9 +69,7 @@ test.describe("notebook-readme-links", () => {
    test("clicking a README link opens the notebook inside its package", async ({
       page,
    }) => {
-      await gotoHome(page);
-      await openEnvironment(page, pe.env);
-      await openPackage(page, pe.env, pe.pkg);
+      await page.goto(`/${pe.path}`);
 
       // The fixture README.malloy renders a table of contents linking to
       // another notebook. Clicking it must stay within the storefront package.
@@ -80,9 +77,7 @@ test.describe("notebook-readme-links", () => {
       await expect(link).toBeVisible({ timeout: 60_000 });
       await link.click();
 
-      await expect(page).toHaveURL(
-         new RegExp(`/${pe.env}/${pe.pkg}/linked_tour$`),
-      );
+      await expect(page).toHaveURL(new RegExp(`/${pe.path}/linked_tour$`));
       // The target notebook renders its authored H1, proving it loaded rather
       // than the "does not exist" error the dropped-package route gave.
       await expect(

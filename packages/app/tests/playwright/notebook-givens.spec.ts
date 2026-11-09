@@ -9,10 +9,9 @@ import {
    filterButton,
    openFilter,
 } from "./helpers/filters";
-import { gotoHome, openEnvironment, openPackage } from "./helpers/navigation";
 import {
    exampleFixture,
-   registerPackageEnv,
+   publishPackageEnv,
    type PackageEnv,
 } from "./helpers/packageEnv";
 
@@ -65,7 +64,7 @@ let pe: PackageEnv;
 test.describe("notebook-givens", () => {
    // eslint-disable-next-line no-empty-pattern
    test.beforeAll(async ({}, testInfo) => {
-      pe = await registerPackageEnv(
+      pe = await publishPackageEnv(
          testInfo.project.use.baseURL ?? "http://localhost:4000",
          "nbgivens",
          exampleFixture(PACKAGES.storefront),
@@ -79,9 +78,7 @@ test.describe("notebook-givens", () => {
    });
 
    async function openGivensNotebook(page: import("@playwright/test").Page) {
-      await gotoHome(page);
-      await openEnvironment(page, pe.env);
-      await openPackage(page, pe.env, pe.pkg);
+      await page.goto(`/${pe.path}`);
       await page.getByText(FIXTURE_NOTEBOOK, { exact: true }).click();
       await expect(page).toHaveURL(/\/test_givens_notebook$/);
    }
@@ -92,7 +89,7 @@ test.describe("notebook-givens", () => {
       // Sanity-check the wire shape before driving the UI: if this fails,
       // the test fixture is wrong or the introspection regressed, not the
       // SDK widgets.
-      const url = `${baseURL}/api/v0/environments/${pe.env}/packages/${pe.pkg}/reports/${FIXTURE_NOTEBOOK}`;
+      const url = `${baseURL}/api/v0/environments/${pe.env}/packages/${pe.pkg}/reports/${FIXTURE_NOTEBOOK}?versionId=${pe.versionId}`;
       const res = await fetch(url);
       expect(res.ok).toBe(true);
       // The report's control row: the givens its tiles read.
