@@ -168,9 +168,9 @@ info:
     localhost; see `docs/security-posture.md`. No operation here answers `401`: a gateway may answer `401` or `403` on
     its own before a request reaches Publisher, in its own body shape. Each operation declares only the codes its shape
     can produce: `404` when it names a resource, `409` on writes and on `:reload`, `:load` and `:unload`, `412` when it
-    takes `If-Match`, `413` when it takes a body, `403` on a resource write under `resources.readOnly` and on an
-    `#(authorize)` gate, `410` when the version it names is archived, and `424`, `502` and `504` when it loads a version
-    or reaches a warehouse.
+    takes `If-Match`, `413` when it takes a body or its result can exceed a cap (`RESULT_TOO_LARGE`), `403` on a
+    resource write under `resources.readOnly` and on an `#(authorize)` gate, `410` when the version it names is
+    archived, and `424`, `502` and `504` when it loads a version or reaches a warehouse.
 servers:
   - url: /api/v1
     description: This server
@@ -7025,12 +7025,12 @@ components:
     PublisherConnection:
       type: object
       description: >
-        Malloy Publisher proxy connection. Proxies SQL to a remote Publisher dataplane instead of connecting to a
-        warehouse directly. The remote dataplane owns authentication, access control, and read-only enforcement.
+        Malloy Publisher proxy connection. Proxies SQL to a remote Publisher server instead of connecting to a warehouse
+        directly. The remote server owns authentication, access control, and read-only enforcement.
       properties:
         accessToken:
           type: string
-          description: Bearer token for the remote dataplane (user-scoped, short-lived)
+          description: Bearer token for the remote server (user-scoped, short-lived)
           writeOnly: true
         connectionUrl:
           type: string
@@ -7050,7 +7050,7 @@ components:
           type:
             - string
             - "null"
-          description: Bearer token for the remote dataplane (user-scoped, short-lived)
+          description: Bearer token for the remote server (user-scoped, short-lived)
           writeOnly: true
         connectionUrl:
           type: string

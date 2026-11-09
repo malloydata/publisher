@@ -30,120 +30,202 @@ shape, with additive fields only, on v0.
 
 ```
 Environment                     a namespace for packages and connections; the unit of tenancy
-├── Connection                  a warehouse handle the models read
+├── Connection                  a warehouse handle the models read; its settings in a block named by its `type`
 │   ├── schemas / tables        what the connection can read
 │   └── :run-sql                ad-hoc SQL: run, or describe a statement's columns
+├── destinations                where materialization builds write; a field of the environment, not a connection
 └── Package                     a record with pointers (source, description, latestVersionId); holds no content
-    ├── status                  how this server holds the package's versions
-    ├── runs                    attempts to build persisted sources, each with a manifest
+    ├── runs                    attempts to build a slot's persisted sources, each with a manifest
     └── Version                 an immutable snapshot of the package's content; `latest` is a reserved segment
-        ├── models              compiled sources, views and givens; query; compile
+        ├── models              compiled sources, views and givens; :query; :compile
         ├── reports             a `.malloy` file with an `## artifact` tag (grid or linear); the report write
         ├── data-apps, public/  HTML data apps and the static files they load
         ├── data-files          embedded CSV, Parquet, JSON and Excel files
         ├── agents, skills      what the package declares for agents
         ├── entities, classification, index
-        ├── build-plan, status; :reload
+        ├── build-plan, status  the persist build plan; this server's serving state, with its bindings
+        ├── :load, :unload, :reload
         └── connections         the version's own `duckdb` sandbox over its data files
 ```
 
-Every content read is of exactly one version, named in the path. A publish, a report write and a re-fetch of the
-source that finds it changed each make a version; nothing edits one in place, and undo is pointing `latestVersionId` back at the
-parent.
+Every content read is of exactly one version, named in the path. A live (watched) package has one pseudo-version,
+`live`, which names content and has no record. A publish (a re-fetch of the recorded source that finds it changed is
+one) and a report write each make a version; nothing edits one in place, and undo is pointing `latestVersionId` back at
+the version's `parentVersionId`. A slot is what one run at a time may build: the package under `scope: package`, one
+version under `scope: version`.
 
 ## The grammar
 
-- **Names.** Paths are kebab-case; parameters and fields are camelCase. `{path}` is a file inside a version; `{xName}` a
-  named resource. `versionId` is the one spelling of a version, everywhere.
-- **Reads never change state.** `POST …/versions/{v}:reload` recompiles a version from its files against current
-  warehouse schemas and waits: a live package's edit loop, or a published version's schema refresh. Publishing a
-  version is `POST …/versions`; loading one on this server is `POST …/versions/{v}:load`, and `:unload` drops it. Memory
-  state is not on the version's record: it is `VersionStatus.status`.
-- **Which reads load.** `/status`, a version's `status`, the versions list, the version record, `:unload` and `…/index` never load a
-  version that is not in memory. Every other content read loads it on demand (a hydrate when the compiled-model store has
-  it); read `VersionStatus.status` first to know what a read will cost.
-- **State changes are fields.** `PATCH …/versions/{versionId}` with `archived`, `pinned` or
-  `manifestLocation`; `PATCH …/packages/{packageName}` with `latestVersionId`; `PATCH …/runs/{runId}` with
-  `status: "cancelled"`. What is not a field of a record is an action, `POST` with a `:verb` suffix on the resource it acts on (`:load`, `:unload`, `:reload`, `:query`, `:compile`, `:run-sql`), so an action can never collide with a child's name; an unsaved connection is tested with `?dryRun=true` on create or update.
-- **One mutation shape.** `PATCH` is JSON merge-patch: present fields are set, `null` unsets, absent fields are untouched,
-  lists replace, so an orchestrator pushes an environment's desired state as a `PATCH` of its `connections`. `PUT` is
-  used only by the report write, which replaces a file.
-  `POST` on a collection answers 201 with the resource and a `Location`; `DELETE` answers 204.
-  A create or a write takes its own resource, with only its writable fields set; an action (`:query`, `:compile`, `:run-sql`, `:reload`) takes an `…Request` body, since it creates no resource.
-- **Field behavior.** What only the server sets is `readOnly` (`resource`, `revision`, timestamps, a run's every field but those set on create and `status`), and a write that sends it back as read ignores it, so a client can `PATCH` a resource it just read. A `name`, a package's `source`, and a run's `versionId`, `trigger`, `callerRunId`, `options` and `buildInstructions` are set on create and never change by `PATCH`; a write that changes a name or `source` answers 400. `null` appears only in the generated `XPatch` write views; a read never returns it.
-- **Idempotent creates.** Every `POST` that creates or starts something (an environment, a connection, a package, a version, a run), and the report write, accepts an `Idempotency-Key` header: a retry with the same key and body within 24 hours answers with the first response and does nothing again, and the same key with a different body answers 409 `IDEMPOTENCY_KEY_REUSED`.
-- **Guarded deletes.** A delete that would delete other resources with it (an environment's packages and connections, a package's versions) requires `?force=true`, and answers 409 `RESOURCE_NOT_EMPTY` without it.
-- **Timestamps.** Every timestamp is an RFC 3339 `date-time` in UTC, read-only, and absent until it has a value, never `null`. An event's time ends in `At` (`createdAt`, `startedAt`, `failedAt`); the moment some data reflects ends in `AsOf` (`dataAsOf`, `schemaAsOf`). Every stored resource, one with a `revision`, carries `createdAt` and `updatedAt`. Durations are integers whose name carries the unit (`elapsedMs`, `windowSeconds`).
-- **Resource paths.** Every object a `GET` can read carries `resource`, its canonical path relative to the API's base: no leading slash, and the resolved version id in place of `latest` (`environments/acme/packages/sales/versions/1.4.0/models/orders.malloy`). A list item carries it when its item has a `GET` of its own. Relative, so it stays right behind a gateway that serves the API under another prefix; a link and a stable key, never parsed.
-- **Names.** A resource read two ways is `X` from its own `GET` and `XSummary` in its list, and its list is `XList` (`Model` and `ModelSummary`, `Report` and `ReportSummary`, `Table` and `TableSummary`).
-- **Field names.** camelCase; a reference is `xName` or `xPath`; a file's path is `path` and its text `content`; a hash is `…Hash`; a duration's unit ends its name; no `is` prefix on a boolean. A connection's own settings keep their warehouse's words. Every embedded error is an object with a `message`.
-- **Conditional reads.** Every read but `/status` answers with an `ETag` and takes `If-None-Match`, answering 304 with no body when nothing changed. `Cache-Control` is `private, max-age=31536000, immutable` only on raw file reads under a concrete version id (`…/public/{path}`), whose bytes never change; every other read is `private, no-cache`, because a compiled model under a concrete version can still change with `:reload`, and a read through `latest` or `live` can resolve differently next time.
-- **Back-pressure.** Every operation but `/status` may answer 429 `RATE_LIMITED`; 429 and 503 carry `Retry-After` in seconds. `/status` is never rate-limited, because it is the orchestrator's heartbeat.
-- **Request ids.** The server takes the caller's `X-Request-Id`, else the trace id of a W3C `traceparent`, else makes one; every response carries it as `X-Request-Id`, and every error body repeats it as `requestId`.
-- **Enum values.** Lowercase snake_case, except a `reason`, which is always a code from a closed list in UPPER_SNAKE (an error's, an index's, a refused source's; free text is a `message`), values that name a response field (`include: ["malloyResult"]`), and values that echo another vocabulary (a setting's value, Postgres's `sslmode`).
-- **Concurrency.** Every mutable resource carries a `revision`, returned as `ETag` on reads. Send it back as `If-Match` on
-  a write; 412 `REVISION_MISMATCH` when the resource has moved on. The report write's precondition is the report's `sourceHash`, sent back as read.
-- **Lists.** Every list is `{items, nextCursor}`, paged with `limit` (default 100, at most 1000) and `after`. `/status` is
-  the one unpaged snapshot, narrowable with `?environmentName=`.
-- **Typed responses.** A query answers `{rows, schema, metadata}`, plus `malloyResult` when asked for with
-  `include: ["malloyResult"]`. Nothing is a JSON string inside JSON.
-- **Errors.** Every error is `{status, reason, message, details?}`, `reason` from one closed enum. Branch on `status` and
-  `reason`, never on `message`. 400 is your request or your Malloy (`COMPILE_ERROR` carries `details.problems`); 424 is
-  your connection (`CONNECTION_AUTH_FAILED`, `CONNECTION_NOT_FOUND`); 502 is the database (`CONNECTION_FAILED`).
-- **Booleans** are JSON `true`/`false` in bodies and `true`/`false` in query strings; anything else is 400.
+These are the rules the spec's `info` states, in the same words where they can be.
+
+- **Path names.** Paths are kebab-case; parameters and fields are camelCase. `{xName}` is a named resource,
+  `{versionId}` and `{runId}` are ids, and `{path}` is a file's version-relative path (relative to the version's root,
+  `/`-separated; every path in a body is version-relative too). `{path}` spans segments: send its `/` literally, never
+  as `%2F`, and a `:verb` follows its last segment. A path has no empty, `.` or `..` segment, no leading `/`, and no
+  `\`, `:` or control character.
+- **Reads never change state.** `POST …/versions/{versionId}:reload` recompiles a version from its files against the
+  warehouse's current schemas and makes no version: on a live package it is the edit loop, on any other version a schema
+  refresh. Publishing a version, from the recorded source or a new one, is `POST …/versions`; loading and unloading a
+  version on this server are `:load` and `:unload`, which change no record. Memory state is `VersionStatus.status`,
+  never a field of `Version`.
+- **Which reads load.** `/status`, a version's `status`, the versions list, the version record, `:unload` and
+  `…/index` never load a version that is not loaded. Every other content read loads it on demand (a hydrate when the
+  compiled-model store has it); read `VersionStatus.status` first to know what a read will cost.
+- **State changes are fields.** `PATCH …/versions/{versionId}` with `archived`, `pinned` or `manifestLocation`;
+  `PATCH …/packages/{packageName}` with `latestVersionId`; `PATCH …/runs/{runId}` with `status: "cancelled"`. What is
+  not a field of a record is an action, `POST` with a `:verb` suffix on the resource it acts on (`:load`, `:unload`,
+  `:reload`, `:query`, `:compile`, `:run-sql`), so an action can never collide with a child's name. An unsaved
+  connection is tested with `?dryRun=true` on create or update.
+- **One mutation shape.** `PATCH` is JSON merge-patch: present fields are set, `null` unsets, absent fields are
+  untouched, lists replace. An orchestrator pushes an environment's desired state as a `PATCH` whose `connections` list
+  replaces the stored one. `PUT` is used only by the report write, which replaces a file. `POST` on a collection answers
+  201 with the resource and a `Location`; `DELETE` answers 204. A create or a write takes its own resource's writable
+  fields; an action (`:query`, `:compile`, `:run-sql`, `:reload`) takes an `…Request` body, since it creates no resource.
+- **Concurrency.** Every mutable resource but a report carries a `revision`, returned as `ETag` on reads. Every `PATCH`
+  and `DELETE` accepts `If-Match` and answers 412 `REVISION_MISMATCH` (with `details.currentRevision`) when the resource
+  has moved on. A report is revisioned by its `contentHash`, which is the report write's precondition in place of
+  `If-Match`.
+- **Field behavior.** What only the server sets is `readOnly` (`resource`, `revision`, timestamps, and every run field
+  but `versionId`, `trigger`, `callerRunId`, `options`, `buildInstructions` and `status`), and a write that sends it
+  back as read ignores it, so a client can `PATCH` a resource it just read. A field set on create is writable on create
+  and never changes after (`x-immutable`): a `name` and a package's `source`, whose change by `PATCH` answers 400, and
+  a run's `versionId`, `trigger`, `callerRunId`, `options` and `buildInstructions`. A field with a `default` need not be
+  sent on create. A run's `status` is the one field a client changes later. One field is both set by the server and
+  sent back: a report's `contentHash`. A schema no request can carry is `readOnly` as a whole.
+- **Write views.** `required` describes a read: what every read of the object carries. A write body names a view
+  generated from the resource: `XInput` for a create or the report write (the writable fields, `required` naming only
+  what a create must send) and `XPatch` for a merge-patch (no `required`; a nested object is a patch too, a list's items
+  are whole). A write-only field, such as a credential, is never in `required`; its description says "Required on
+  create." when a create needs it. `null` appears only in the `XPatch` views, on a writable optional field a `PATCH` can
+  clear, never one set on create; a read never returns it.
+- **Idempotent creates.** Every `POST` that creates or starts something (an environment, a connection, a package, a
+  version, a run), and the report write, accepts an `Idempotency-Key` header: a retry with the same key and body within
+  24 hours answers with the first response and does nothing again, and the same key with a different body answers 409
+  `IDEMPOTENCY_KEY_REUSED`.
+- **Guarded deletes.** A delete that would delete other resources with it (an environment's packages and connections, a
+  package's versions) requires `?force=true`, and answers 409 `RESOURCE_NOT_EMPTY` without it.
+- **Field names.** camelCase. A reference is `xName` or `xPath`; a file's path is `path` and its text `content`, while
+  Malloy text that is not a file (a compile check's or a query's) is `source` or `query`. A hash is `…Hash` of what it
+  hashes (a file's `contentHash`); a count ends in `Count` and a size in `Bytes`; a boolean has no `is` prefix. One word,
+  one meaning: `origin` is provenance, `kind` is what a thing is (a persisted source's `persist` or `preaggregate`),
+  `live` is only the pseudo-version (serving from the source warehouse is `warehouse`), a version other than `live` is a
+  stored version, a source discovery shows is exposed, and `manifest` is only a run's manifest. A connection's own
+  settings keep their warehouse's words.
+- **Timestamps.** Every timestamp is an RFC 3339 `date-time` in UTC, read-only, and absent until it has a value, never
+  `null`. An event's time ends in `At` (`createdAt`, `startedAt`, `failedAt`); the moment some data reflects ends in
+  `AsOf` (`dataAsOf`, `schemaAsOf`). Every stored resource, one with a `revision`, carries `createdAt` and `updatedAt`.
+  Durations are integers whose name carries the unit (`elapsedMs`, `windowSeconds`).
+- **Resource paths.** Every resource a `GET` reads carries `resource`, its canonical path relative to the API's base: no
+  leading slash, and the resolved version id in place of `latest`
+  (`environments/acme/packages/sales/versions/1.4.0/models/orders.malloy`). The exceptions are `/status`, a snapshot of
+  the server, and list envelopes. A list item carries it when its item has a `GET` of its own, so a data app, whose page
+  is raw bytes, carries none. Relative, so it stays right behind a gateway that serves the API under another prefix; a
+  link and a stable key, never parsed.
+- **Schema names.** A resource read two ways is `X` from its own `GET` and `XSummary` in its list, and its list is
+  `XList` (`Model` and `ModelSummary`, `Report` and `ReportSummary`); nothing else is named `…Summary`.
+- **Conditional reads.** Every read but `/status` answers with an `ETag` and takes `If-None-Match`, answering 304 with no
+  body when nothing changed. `Cache-Control` is `private, max-age=31536000, immutable` only on raw file reads under a
+  concrete version id (`…/public/{path}`), whose bytes never change; `/status`, a snapshot, is `no-store`; every other
+  read is `private, no-cache`, because a compiled model under a concrete version can still change with `:reload`, and a
+  read through `latest` or `live` can resolve differently next time.
+- **Back-pressure.** Every operation but `/status` may answer 429 `RATE_LIMITED`; 429 and 503 carry `Retry-After` in
+  seconds. `/status` is never rate-limited and never answers 503, because it is the orchestrator's heartbeat: it reports
+  `initializing` and `draining` in its body.
+- **Request ids.** The server takes the caller's `X-Request-Id`, else the trace id of a W3C `traceparent`, else makes
+  one; every response carries it as `X-Request-Id`, and every error body repeats it as `requestId`.
+- **Enum values.** Lowercase snake_case, except a `reason`, which is always a code from a closed list in UPPER_SNAKE (an
+  error's, an index's, a refused source's; free text is a `message`), a warning's or problem's `code`, a stable
+  kebab-case name of the check that made the finding (`render-tag`, `report-layout-unknown`; the set is open), a value
+  that echoes a setting's own value (`versionPromotion: on-publish`), values that name a response field
+  (`include: ["malloyResult"]`), and values that echo another vocabulary (a setting's value, Postgres's `sslmode`).
+- **Lists.** Every list is `{items, nextCursor}`, paged with `limit` (default 100, at most 1000) and `after`, in a stable
+  order its operation states: by name or path ascending, except versions and runs, newest first, and a connection's
+  schemas and tables, in the warehouse's order. `/status` is the one unpaged snapshot, narrowable with
+  `?environmentName=`.
+- **Typed responses.** A query answers `{rows, metadata}`, and `metadata.versionId` names the version that answered.
+  Malloy's full result, with column types and render metadata, comes only with `include: ["malloyResult"]`, and the SQL
+  that ran only with `include: ["sql"]`. Nothing is a JSON string inside JSON.
+- **Errors.** Every error is `{status, reason, message, requestId, details?}`. Branch on `status` and `reason`, never on
+  `message`; treat a reason you do not know as the status's generic case. Each operation's error responses list the
+  reasons it answers, and `details` has one shape per reason a client acts on (`COMPILE_ERROR`: `problems`;
+  `REVISION_MISMATCH`: `currentRevision`; `INVALID_TRANSITION`: `currentStatus`; `TABLE_OWNED_ELSEWHERE`:
+  `ownerPackageName`; `INVALID_REQUEST`: `field`; `RESULT_TOO_LARGE`: `capType`). An error inside a successful
+  response is an `EmbeddedError` (`message`, and a `reason` from that use's own list); every diagnostic, a compile
+  problem, a load warning or a render log message, is a `Problem`, located by `modelPath` and a 0-based `range`.
+- **Dry runs.** `?dryRun=true` runs every check and stores nothing, and answers 200 with no `Location`, ignoring
+  `Idempotency-Key`: a connection's answers its test result (`ok: false` on any failure), a publish's the version it
+  would make (`VersionPreview`, a `Version` with no `resource`, `revision` or timestamps).
+- **Booleans** are JSON `true`/`false` in bodies and `true`/`false` in query strings; anything else is 400
+  `INVALID_REQUEST`.
+- **Status codes.** No operation answers 401; a gateway may answer 401 or 403 before a request reaches Publisher, in its
+  own body shape. Each operation declares only the codes its shape can produce: 404 when it names a resource; 409 on
+  writes and on `:reload`, `:load` and `:unload`; 412 when it takes `If-Match`; 413 when it takes a body
+  (`PAYLOAD_TOO_LARGE`), or for a query or SQL result over a cap (`RESULT_TOO_LARGE`); 403 on a resource write under
+  `resources.readOnly` (`READ_ONLY`) and on an `#(authorize)` gate (`FORBIDDEN`); 410 when the version it names is
+  archived; and 424, 502 and 504 when it loads a version or reaches a warehouse. 400 is your request or your Malloy; 424
+  is something the operation depends on (your connection: `CONNECTION_AUTH_FAILED`, `CONNECTION_NOT_FOUND`; or an
+  external manifest: `MANIFEST_UNAVAILABLE`), and retrying fails the same way; 502 is the database (`CONNECTION_FAILED`);
+  504 is the database not answering in time (`GATEWAY_TIMEOUT`).
 
 ## Key endpoints
 
-| Method & path                                                              | Does                                                                                                                                                                                      |
-| -------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `GET /status`                                                              | `operationalState`, `version`, `hostname`, `loadErrors` (with `stale` for a version serving a model older than its content), and every version this server holds with its `VersionStatus`. |
-| `GET /environments`, `POST /environments`                                  | List and create. `PATCH /environments/{env}` merges (its `connections` list replaces whole), `DELETE` removes it and everything in it.                                                                 |
-| `GET …/connections`                                                        | Connections. `POST` creates (`?dryRun=true` tests without storing, answering 200 with the test result); `PATCH` merges. Destinations, where builds write, are the environment's `destinations` list, not connections. |
-| `GET …/connections/{connectionName}/schemas`, `…/schemas/{s}/tables`, `POST …:run-sql`| Browse what a connection can read; run or describe SQL. The same routes exist under a version for its `duckdb` sandbox.                                                                     |
-| `GET …/packages`, `POST …/packages`                                        | List records; create a package from `source.location` and publish its first version (`?dryRun=true` checks without storing). Later versions are `POST …/versions`. |
-| `PATCH …/packages/{pkg}`                                                   | `description`, `latestVersionId` (a compare-and-swap under `If-Match`; moving it back is undo). `source` moves only with a publish from a new source. Scope and schedule come from a version's `publisher.json`.                     |
-| `GET …/versions/{v}/status`                                                | The `VersionStatus` of one version, with the fields `/status` leaves out (`loadId`, `contentHash`, `bindings`). Loads nothing. |
-| `GET …/versions`, `GET …/versions/{v}`, `PATCH`, `DELETE`                  | The package's versions, newest first; one version (`live` has none: 404); its lifecycle fields (`archived`, `pinned`, `manifestLocation`); delete for good.                                                                                           |
-| `POST …/versions`                                                          | Publish a new version: from a new `source`, which becomes the package's recorded one, or with no body from the recorded one. 201 with the version it made; 200 with the current version when nothing changed. A dry run always answers 200, with a `VersionPreview`. |
-| `POST …/versions/{v}:load`, `POST …/versions/{v}:unload`                   | Load the version on this server and wait, or drain and unload it; each answers the `VersionStatus`. Changes no record. |
-| `POST …/versions/{v}:reload`                                               | Recompile the version from its files against current warehouse schemas, and wait: a live package's edit loop, or a published version's schema refresh. Makes no version. |
-| `GET …/versions/{v}/models`, `GET …/models/{path}`                         | Model files; one model's sources, views and givens (`?include=content,modelInfo,sourceInfos` for the larger parts).                                                                   |
-| `POST …/versions/{v}/models/{path}:query`                                  | Run a query. See [request shapes](#query-request-shapes).                                                                                                                                 |
-| `POST …/versions/{v}/models/{path}:compile`                                | Compile-check Malloy text at `append`, `file` or `package` scope.                                                                                                                         |
-| `PUT …/versions/{v}/reports/{path}`                                        | The builder's save: write a report's text, which makes version `<parent>+edit.N` and moves `latestVersionId`. Create (201) without `contentHash`, replace (200) with the `contentHash` you read, sending a `Report` with its `content`. Identical `content` answers 200 and makes no version, so a retry is safe; takes `Idempotency-Key`; only the latest version can be written (409 `VERSION_NOT_LATEST`). Answers the `Report`. |
-| `GET …/versions/{v}/reports`, `…/reports/{path}`                           | Reports by `path` and `layout`; one report's manifest (its tiles and controls). Run a tile through `query`.                                                                          |
-| `GET …/versions/{v}/data-apps`, `…/public/{path}`                          | HTML data apps and the static files they load, served from the version they were published with.                                                                                        |
-| `GET …/versions/{v}/data-files`                                            | Embedded data files and their schemas.                                                                                                                                                    |
-| `GET …/versions/{v}/agents`, `…/agents/{agentName}`, `…/skills`, `…/skills/{skillName}` | What the version declares for agents, and the skills in force for it; a skill's `SKILL.md` text comes on both reads, its files' content with `?include=files`. Adopt an agent only when the user names it.                                                                        |
-| `GET …/versions/{v}/entities`, `…/classification`, `…/index`               | What each model declares for an indexer; the classification summary; the discovery index's state.                                                                                        |
-| `GET …/versions/{v}/build-plan`                              | The persist build plan (`state`: `ready`, `empty`, `unavailable`). What the version serves per source is `bindings` on the package's `status`.                                                                   |
-| `GET …/packages/{pkg}/runs`, `POST`, `GET …/runs/{id}`, `PATCH`, `DELETE`  | Materialization runs (`status`, `trigger`, `mode`, `scope`); start one (auto, or orchestrated with `buildInstructions`); cancel with `{"status": "cancelled"}`.                            |
-| `GET …/runs/{id}/manifest`                                                 | What a run produced: one entry per `sourceEntityId`, each naming its table (`tableId`, and `tableName` in the warehouse).                                                                                                           |
+Each row names its operations by `operationId`, which the generated clients use.
+
+| Method & path | Does |
+| --- | --- |
+| `GET /status` | `get-status`: `operationalState`, `serverVersion`, `hostname`, `bootId`, `readOnly`, `versionPromotion`, `loadErrors` (with `stale` for a version serving a model older than its content), and per environment its connections and destinations by `name`, `type`, `fingerprint` and `configStamp` (never their configuration) and every version this server holds with its `VersionStatus`. Loads nothing; `no-store`; never rate-limited. |
+| `GET /environments`, `POST /environments` | `list-environments`, `create-environment`. `PATCH /environments/{environmentName}` (`update-environment`) merges: its `connections` and `destinations` lists each replace whole, and an entry with a name and no configuration keeps the stored one, so a push need not resend withheld credentials. `DELETE` removes it and everything in it (`?force=true`). |
+| `GET …/connections`, `POST`, `GET …/connections/{connectionName}`, `PATCH`, `DELETE` | `list-connections`, `create-connection`, `get-connection`, `update-connection`, `delete-connection`. A connection's settings are a block named by its `type` (`"type": "postgres", "postgres": {…}`); a block refuses a field it does not define with 400 naming it. Credentials are write-only and listed in `withheldFields`. `?dryRun=true` on create or update tests without storing, answering 200 with a `ConnectionTestResult`. Destinations are the environment's `destinations` list, not connections. |
+| `GET …/connections/{connectionName}/schemas`, `…/schemas/{schemaName}/tables`, `…/tables/{tableName}`, `POST …/connections/{connectionName}:run-sql` | `list-schemas`, `list-tables`, `get-table`, `run-sql`. Browse what a connection can read; run or describe SQL. The same routes exist under a version for its `duckdb` sandbox (`…-in-version`). |
+| `GET …/packages`, `POST …/packages` | `list-packages`, `create-package`. List the records; create a record with its `source` (no `latestVersionId`: 400). Every version, the first included, is `POST …/versions`. |
+| `GET …/packages/{packageName}`, `PATCH`, `DELETE` | `get-package`, `update-package`, `delete-package`. `PATCH` sets `description` and `latestVersionId` (a compare-and-swap under `If-Match`; moving it back is undo). `source` moves only with a publish from a new source. Scope and schedule come from a version's `publisher.json` (`materialization`). |
+| `GET …/versions`, `GET …/versions/{versionId}`, `PATCH`, `DELETE` | `list-versions`, `get-version`, `update-version`, `delete-version`. The package's versions, newest first (`?archived=` narrows); one version (`live` has no record: 404); its lifecycle fields (`archived`, `pinned`, `manifestLocation`; 424 `MANIFEST_UNAVAILABLE` when the manifest cannot be bound); delete for good. |
+| `POST …/versions` | `publish-version`: fetch a source and publish the version its `publisher.json` declares, or `<parent>+republish.N` (`origin: republish`) when that version exists with other content. From a new `source`, which becomes the package's recorded one, or with no body from the recorded one. 201 with the version it made; 200 with the current version when nothing changed. `?dryRun=true` always answers 200, with a `VersionPreview`; `?profile=light` defers what a draft does not need (the build plan, report lint, the discovery index, data-file row counts) to its first read. |
+| `GET …/versions/{versionId}/status` | `get-version-status`: the `VersionStatus` of one version, with the fields `/status` leaves out (`loadId`, `contentHash`, `bindings`). Loads nothing. |
+| `POST …/versions/{versionId}:load`, `POST …/versions/{versionId}:unload` | `load-version`, `unload-version`: load the version on this server and wait, or drain and unload it (409 `VERSION_BUILDING` while a run builds it); each answers the `VersionStatus`. Changes no record. |
+| `POST …/versions/{versionId}:reload` | `reload-version`: recompile the version from its files against current warehouse schemas, and wait: a live package's edit loop, or a stored version's schema refresh. Makes no version. Answers a `ReloadResult` (`version`, absent on `live`, and `status`). |
+| `GET …/versions/{versionId}/models`, `GET …/models/{path}` | `list-models`, `get-model`: model files; one model's sources, views and givens (`?include=content,modelInfo,sourceInfos` for the larger parts). |
+| `POST …/versions/{versionId}/models/{path}:query` | `query-model`: run a query. See [request shapes](#query-request-shapes). |
+| `POST …/versions/{versionId}/models/{path}:compile` | `compile-model`: compile-check Malloy text at `append`, `file` or `package` scope. Answers `problems` and the `versionId` compiled against; the compile failed exactly when a problem has `severity` `error`. |
+| `GET …/versions/{versionId}/reports`, `…/reports/{path}` | `list-reports`, `get-report`: reports by `path` and `layout` (`?layout=` narrows); one report, with its tiles, givens and layout (`?include=content` for its text). Run a `query` tile's `query` through `…/models/{path}:query`, prefixed with `run:`; a `text` tile runs nothing. |
+| `PUT …/versions/{versionId}/reports/{path}` | `write-report`, the builder's save. The body is a `ReportInput`: `content`, and `contentHash` as read. Without `contentHash` it creates the file (201; 409 `FILE_EXISTS`); with it, it replaces the file (200; 409 `CONFLICT` when the file no longer hashes to it). On a stored version it makes version `<parent>+edit.N` and moves `latestVersionId` unless `versionPromotion` is `explicit`; on a live package it writes through to the author's directory. Identical `content` answers 200 and makes no version, so a retry is safe; takes `Idempotency-Key`. Only the latest version can be written (409 `VERSION_NOT_LATEST`); `index.malloy`, `public/`, a non-report and a `readOnly` report answer 409 `FILE_NOT_WRITABLE`. Answers the `Report`. |
+| `GET …/versions/{versionId}/data-apps`, `…/public/{path}` | `list-data-apps`, `get-public-file`: HTML data apps and the static files they load, served from the version they were published with. |
+| `GET …/versions/{versionId}/data-files` | `list-data-files`: embedded data files and their schemas (`rowCountStatus` is `deferred` after a `profile=light` publish, until the count this read starts finishes). |
+| `GET …/versions/{versionId}/agents`, `…/agents/{agentName}`, `…/skills`, `…/skills/{skillName}` | `list-agents`, `get-agent`, `list-skills`, `get-skill`: what the version declares for agents, and the skills in force for it (`origin`: `bundled`, `package` or `agent`); a skill's `SKILL.md` text comes on both reads, its files' content with `?include=files`. Adopt an agent only when the user names it. |
+| `GET …/versions/{versionId}/entities`, `…/classification`, `…/index` | `list-entities`, `get-classification`, `get-discovery-index`: what each model declares for an indexer; the classification summary; the discovery index's `status` (`lexical`, `deferred`, `indexing`, `ready`, `failed`) and the version it is for. |
+| `GET …/versions/{versionId}/build-plan` | `get-build-plan`: the persist build plan (`status`: `ready`, `empty`, `deferred`, `unavailable`). What the version serves per source is `bindings` on its `…/status`. |
+| `GET …/packages/{packageName}/runs`, `POST`, `GET …/runs/{runId}`, `PATCH`, `DELETE` | `list-runs`, `create-run`, `get-run`, `update-run`, `delete-run`: materialization runs (`status`, `trigger`, `mode`, `scope`; `?status=` narrows); start one for a `versionId` (auto, or orchestrated with `buildInstructions`; `trigger` and `callerRunId` set on create); cancel with `{"status": "cancelled"}`; delete with `?dropTables=true` to drop the tables only it references. |
+| `GET …/runs/{runId}/manifest` | `get-run-manifest`: what a run produced: one entry per `sourceEntityId`, each naming its table (`tableId`, and `tableName` in the warehouse, with its `connectionName` or `destinationName`), and the sources that failed. |
 
 Example — run a query against the bundled `storefront` package's latest version:
 
 ```bash
 curl -s -X POST \
-  http://localhost:4000/api/v1/environments/examples/packages/storefront/versions/latest/models/storefront.malloy/query \
+  http://localhost:4000/api/v1/environments/examples/packages/storefront/versions/latest/models/storefront.malloy:query \
   -H 'content-type: application/json' \
   -d '{"query":"run: order_items -> by_category"}' | jq .rows
 ```
 
 ### Query request shapes
 
-The body takes one of two shapes: `query` alone (ad-hoc Malloy, compiled in the model's context), or `queryName`
-without `query` (a view when `sourceName` is set, a model-level named query when it is not). Names are names, not
-Malloy code: send one name per field, bare, exactly as the model's `sources` listing returns it. Anything richer goes in
-`query`. `givens` ride on either shape to supply [runtime parameters](givens.md); and `rowLimit` caps the rows.
+The body, a `QueryRequest`, takes one of two shapes: `query` alone (ad-hoc Malloy, compiled in the model's context), or
+`queryName` without `query` (a view when `sourceName` is set, a model-level named query when it is not). Names are
+names, not Malloy code: send one name per field, bare, exactly as the model's `sources` listing returns it. Anything
+richer goes in `query`. `givens` ride on either shape to supply [runtime parameters](givens.md); and `rowLimit` caps the
+rows.
 
-The response is `{rows, schema, metadata}`: plain row objects, the column schema, and `metadata` with `rowLimit`,
-`rowLimitSource`, `rowLimitHit`, `elapsedMs`, `servedFrom`, `costBytes`, `queryCorrelationId` and `renderLogs`. Add
-`"include": ["malloyResult"]` for the full Malloy result the renderer consumes, or `["sql"]` for the SQL that ran.
+The response is a `QueryResult`, `{rows, metadata}`: plain row objects, and `metadata` with `versionId` (the version
+that answered, `latest` resolved), `rowLimit`, `rowLimitSource`, `rowLimitHit`, `elapsedMs`, `servedFrom`,
+`scannedBytes`, `queryCorrelationId` and `renderLogs`. Add `"include": ["malloyResult"]` for the full Malloy result,
+with column types, that the renderer consumes, or `["sql"]` for the SQL that ran.
 
 A query that fails says whose problem it is. Branch on `reason`:
 
-- **400** `COMPILE_ERROR` or `QUERY_REJECTED`: your Malloy, or the database rejected the statement; `details.problems`
-  carries the compiler's diagnostics. Fix what the message names.
+- **400** `COMPILE_ERROR`: your Malloy; `details.problems` carries the compiler's diagnostics. Fix what they name.
+- **400** `QUERY_REJECTED`: the database refused the statement. Fix what the message names.
+- **404** `TABLE_NOT_FOUND`: the database lacks a table the model reads.
+- **413** `RESULT_TOO_LARGE`: the result passed a cap (`details.capType`: `rows`, `bytes` or `unserializable`).
+  Narrow the query or lower `rowLimit`; resending it fails the same way.
 - **424** `CONNECTION_AUTH_FAILED` or `CONNECTION_NOT_FOUND`: the connection is misconfigured; the query never ran. Do
   not rewrite it or retry until the connection is fixed.
 - **502** `CONNECTION_FAILED`: the database could not be reached; the query never ran. Retry once, then report it.
@@ -159,15 +241,18 @@ The spec's nouns are the vocabulary, and the Console and the docs follow them:
 | destination      | where `#@ persist storage=` builds write; set on the environment, never named by a model                 |
 | package          | a record with pointers; its content is a version                                                        |
 | version          | an immutable snapshot of a package's content; `latest` is the package's pointer to one of them          |
+| stored version   | any version but `live`, the pseudo-version a live (watched) package serves                              |
 | model            | a `.malloy` file; compiled, it yields sources, views, named queries and givens                          |
 | report           | a `.malloy` file with an `## artifact` tag, `layout` grid or linear                                     |
 | data app         | an HTML page under `public/`                                                                            |
 | data file        | a CSV, Parquet, JSON or Excel file embedded in a version                                                |
 | agent, skill     | what a package declares for agents; the guides in force for it                                          |
 | run              | one attempt to build a slot's persisted sources; "materialization" is the feature's name                |
+| slot             | what one run at a time may build: the package under `scope: package`, one version under `scope: version` |
 | manifest entry   | what a run produced for one source; `tableId` names the physical table                                  |
 | binding          | what a version serves for one source right now                                                          |
-| table            | a physical table the server created or serves, with `state` and `generation`                            |
+| table            | a warehouse table, browsed under a connection; a built one is named by its manifest entry's `tableId`   |
+| warehouse        | the source's own database; a query `servedFrom` `warehouse` read no materialized table                   |
 | given            | a runtime parameter a model declares; reports render the ones their tiles read as filter controls       |
 | index            | the discovery index `get_context` ranks against                                                         |
 | stale            | a version serving a model older than its content because the newer content failed to compile           |
@@ -182,8 +267,9 @@ The running server hosts the interactive **Swagger UI** and the OpenAPI 3.1 spec
 | **http://localhost:4000/api-doc.yaml**    | The v1 OpenAPI spec (feed it to codegen or Postman).      |
 | **http://localhost:4000/api-doc.v0.yaml** | The deprecated v0 spec, for clients that have not moved.  |
 
-Without a running server, the same specs are at
-`https://raw.githubusercontent.com/malloydata/publisher/main/api-doc.v1.yaml` and `…/api-doc.yaml` (v0).
+Without a running server, the v1 spec is at
+`https://raw.githubusercontent.com/malloydata/publisher/main/api-doc.v1.yaml`. The v0 spec is `api-doc.yaml` in the
+repository until v1 ships and it is renamed `api-doc.v0.yaml`; the server serves it as `/api-doc.v0.yaml` either way.
 
 ## Generated clients
 
