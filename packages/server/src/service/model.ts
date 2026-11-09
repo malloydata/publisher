@@ -1366,11 +1366,17 @@ export class Model {
       }
    }
 
+   /** No boundary: `queryableSources: "all"`, or no `explores` declared, so
+    *  everything compiled stays queryable. */
+   private boundaryInert(): boolean {
+      const { mode, exploresDeclared } = this.queryBoundary;
+      return mode === "all" || !exploresDeclared;
+   }
+
    /** {@link assertFileOnSurface}'s test: no boundary, or this file is an entry point. */
    private fileOnSurface(): boolean {
-      const { mode, exploresDeclared, isQueryEntryPoint } = this.queryBoundary;
-      if (mode === "all" || !exploresDeclared) return true;
-      return isQueryEntryPoint || this.isNotebook();
+      if (this.boundaryInert()) return true;
+      return this.queryBoundary.isQueryEntryPoint || this.isNotebook();
    }
 
    /**
@@ -1385,9 +1391,10 @@ export class Model {
     * asking this.
     */
    public admitsSourceByName(name: string): boolean {
-      const { mode, exploresDeclared } = this.queryBoundary;
-      if (mode === "all" || !exploresDeclared) return true;
-      return this.fileOnSurface() && this.sourceAdmission(name) !== undefined;
+      return (
+         this.fileOnSurface() &&
+         (this.boundaryInert() || this.sourceAdmission(name) !== undefined)
+      );
    }
 
    /**
@@ -1636,9 +1643,8 @@ export class Model {
        *  notebook cells before this one. Never caller text. */
       derivationContext?: string,
    ): "cleared" | "deferred" {
-      const { mode, exploresDeclared } = this.queryBoundary;
       // No surface or "all": everything compiled stays queryable.
-      if (mode === "all" || !exploresDeclared) return "cleared";
+      if (this.boundaryInert()) return "cleared";
 
       // File-level: named by the request URL, so nothing to resolve or evade.
       this.assertFileOnSurface();
