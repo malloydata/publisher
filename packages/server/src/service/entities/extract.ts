@@ -26,7 +26,7 @@ import {
 } from "./dim_index_entity_id";
 import { errMessage } from "../../utils";
 import { splitSourcePath } from "./explore_walk";
-import type { ModelCompileResult } from "./internal_types";
+import type { ModelCompileResult, SourceAddress } from "./internal_types";
 import { FileURLReader } from "./field_helpers";
 import { withModelTextCache } from "./model_text";
 import {
@@ -34,7 +34,6 @@ import {
    RequiredFilterMissingDimensionError,
    RequiredFilterNonPublicDimensionError,
 } from "./source_extraction";
-import type { SourceAddress } from "./internal_types";
 import { serializeExploreToSourceInfo } from "./source_info_serializer";
 
 /** A `.malloy` file of the package: compiled, or the reason it did not. */
