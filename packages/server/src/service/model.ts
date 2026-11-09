@@ -493,6 +493,22 @@ export class Model {
       boundary: QueryBoundaryPolicy;
       bases: Map<string, Set<string>> | undefined;
    };
+   /**
+    * {@link ownCuratedSourceNames}, and {@link curatedBasesOf}'s answer for a
+    * name asked with no query or derivation context, per boundary object and
+    * discovery-curation setting: everything they read besides this model's
+    * fixed compiled state. The entities ask the route once per source, so
+    * rebuilding these per call made a listing quadratic in the source count.
+    * A package installs a new boundary object for every path whenever it
+    * re-decides its boundaries, and a reload builds new Model instances, so a
+    * stale entry is never read.
+    */
+   private curationMemo?: {
+      boundary: QueryBoundaryPolicy;
+      discoveryCuration: boolean;
+      ownCuratedSourceNames: ReadonlySet<string>;
+      curatedBasesOf: Map<string, ReadonlySet<string> | undefined>;
+   };
    /** Whether discovery accessors curate to the `export {}` closure: true
     *  only when the owning package declares `explores` in publisher.json. */
    private get discoveryCurationEnabled(): boolean {
@@ -513,6 +529,35 @@ export class Model {
    }
    /** {@link buildDerivationBaseMap} over `queryBoundary.derivationText`,
     *  computed once per boundary rather than per query. */
+   /** The {@link curationMemo} for the boundary and curation now in force. */
+   private get curation(): NonNullable<Model["curationMemo"]> {
+      const boundary = this.queryBoundary;
+      const discoveryCuration = this.discoveryCurationEnabled;
+      const memo = this.curationMemo;
+      if (
+         memo?.boundary === boundary &&
+         memo.discoveryCuration === discoveryCuration
+      )
+         return memo;
+      // A notebook or dashboard can see hidden sources through its imports, so
+      // nothing it sees is curated by being visible; only the package surface
+      // admits (and derivesFromCurated for its own declarations).
+      const ownCuratedSourceNames: ReadonlySet<string> =
+         this.isNotebook() || this.isGridReport()
+            ? new Set()
+            : new Set(
+                 (this.getSources() ?? [])
+                    .map((s) => s.name)
+                    .filter((n): n is string => n !== undefined),
+              );
+      this.curationMemo = {
+         boundary,
+         discoveryCuration,
+         ownCuratedSourceNames,
+         curatedBasesOf: new Map(),
+      };
+      return this.curationMemo;
+   }
    private get fileDerivationBases(): Map<string, Set<string>> | undefined {
       const boundary = this.queryBoundary;
       if (this.derivationBasesMemo?.boundary !== boundary) {
@@ -2012,16 +2057,9 @@ export class Model {
       return this.queryBoundary.layout === "grid";
    }
 
-   private ownCuratedSourceNames(): Set<string> {
-      // A notebook or dashboard can see hidden sources through its imports, so
-      // nothing it sees is curated by being visible; only the package surface
-      // admits (and derivesFromCurated for its own declarations).
-      if (this.isNotebook() || this.isGridReport()) return new Set();
-      return new Set(
-         (this.getSources() ?? [])
-            .map((s) => s.name)
-            .filter((n): n is string => n !== undefined),
-      );
+   /** The names this file curates by exporting them; see {@link curation}. */
+   private ownCuratedSourceNames(): ReadonlySet<string> {
+      return this.curation.ownCuratedSourceNames;
    }
 
    /**
@@ -2064,8 +2102,18 @@ export class Model {
       query?: string,
       derivationContext?: string,
    ): ReadonlySet<string> | undefined {
-      const own = this.ownCuratedSourceNames();
-      const packageCurated = this.queryBoundary.packageCuratedSources;
+      // With nothing but this file's own edges, the answer is a property of
+      // the boundary in force, so it is asked once per name.
+      if (!query && !derivationContext) {
+         const memo = this.curation.curatedBasesOf;
+         if (memo.has(name)) return memo.get(name);
+         const answer = this.walkCuratedBases(
+            name,
+            this.fileDerivationBases ?? new Map(),
+         );
+         memo.set(name, answer);
+         return answer;
+      }
       // A dashboard's own declarations are edges too, merged (never replacing)
       // so an extra edge only adds an obligation.
       const basesOf = query
@@ -2084,6 +2132,17 @@ export class Model {
          if (into) for (const base of bases) into.add(base);
          else basesOf.set(derived, new Set(bases));
       }
+      return this.walkCuratedBases(name, basesOf);
+   }
+
+   /** {@link curatedBasesOf}'s walk over the derivation edges `basesOf`, which
+    *  it only reads. */
+   private walkCuratedBases(
+      name: string,
+      basesOf: ReadonlyMap<string, ReadonlySet<string>>,
+   ): ReadonlySet<string> | undefined {
+      const own = this.ownCuratedSourceNames();
+      const packageCurated = this.queryBoundary.packageCuratedSources;
       // Only positive results are memoized: a name proven curated is proven
       // wherever it appears, while a failure may be the local verdict of the
       // in-progress cycle guard rather than a property of the name.

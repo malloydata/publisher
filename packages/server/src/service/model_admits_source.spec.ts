@@ -9,7 +9,7 @@
  * check a query naming that source meets.
  */
 
-import { afterAll, beforeAll, describe, expect, test } from "bun:test";
+import { afterAll, beforeAll, describe, expect, spyOn, test } from "bun:test";
 import * as fs from "fs";
 import * as os from "os";
 import * as path from "path";
@@ -287,5 +287,59 @@ describe.each([
             true,
          );
       }
+   });
+});
+
+describe("the route's curation is computed once per boundary, not per source", () => {
+   let loaded: Awaited<ReturnType<typeof loadPackage>>;
+
+   beforeAll(async () => {
+      loaded = await loadPackage({});
+   }, 60_000);
+
+   afterAll(async () => {
+      await loaded.close();
+   });
+
+   test("asking about every source lists this file's sources at most once", () => {
+      // The entities ask once per source; rebuilding the curated-name set per
+      // call made a listing quadratic in the source count.
+      const model = loaded.pkg.getModel("index.malloy")!;
+      const getSources = spyOn(model, "getSources");
+      const names = [
+         ...(model.getSources(true) ?? []).map((s) => s.name!),
+         ...Array.from({ length: 200 }, (_, i) => `absent_${i}`),
+      ];
+      getSources.mockClear();
+      for (const name of names) model.admitsSourceByName(name);
+      for (const name of names) model.curatedBasesOf(name);
+      expect(getSources.mock.calls.length).toBeLessThanOrEqual(1);
+      getSources.mockRestore();
+   });
+
+   test("a derivation chain is walked once per name, however often it is asked", () => {
+      const model = loaded.pkg.getModel("dashboards/chain.malloy")!;
+      const walk = spyOn(
+         model as unknown as { walkCuratedBases: () => unknown },
+         "walkCuratedBases",
+      );
+      const first = model.curatedBasesOf("chain_64");
+      for (let i = 0; i < 50; i++) {
+         expect(model.curatedBasesOf("chain_64")).toBe(first);
+         expect(model.admitsSourceByName("chain_64")).toBe(true);
+         expect(model.curatedBasesOf("chain_65")).toBeUndefined();
+      }
+      expect(walk.mock.calls.length).toBeLessThanOrEqual(2);
+      walk.mockRestore();
+   });
+
+   test("a query's own edges are never answered from the memo", () => {
+      const model = loaded.pkg.getModel("index.malloy")!;
+      expect(model.curatedBasesOf("mine")).toBeUndefined();
+      expect([
+         ...(model.curatedBasesOf("mine", "source: mine is orders extend {}") ??
+            []),
+      ]).toEqual(["orders"]);
+      expect(model.curatedBasesOf("mine")).toBeUndefined();
    });
 });
