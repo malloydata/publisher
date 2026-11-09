@@ -292,6 +292,29 @@ function packageLoadFailureStatus(error: unknown): PackageLoadStatus {
    return "error";
 }
 
+/**
+ * The fields `Package.getPackageMetadata` computes and overlays on what the
+ * package declares: what this server holds now (the load, its manifest
+ * binding, the sources it serves from storage), the build plan and agents,
+ * the secure givens, and the warnings. Never stored, so a caller that
+ * round-trips a response (a version load, a manifest rebind) cannot freeze
+ * them: the next read computes them again, and omits the inline ones while
+ * PUBLISHER_PACKAGE_INLINE_FIELDS is off.
+ */
+const COMPUTED_PACKAGE_FIELDS = [
+   "manifestBindingStatus",
+   "manifestEntryCount",
+   "boundManifestUri",
+   "servedRevision",
+   "sourceContentSha",
+   "storageServeBindings",
+   "buildPlan",
+   "agents",
+   "secureGivens",
+   "exploresWarnings",
+   "warnings",
+] as const satisfies readonly (keyof ApiPackage)[];
+
 /** Why a join-bypass finding is a warning and not a refusal (docs/authorize.md, "Gates are edge controls"). */
 const JOIN_BYPASS_NOTE =
    "Each gate governs only the source a query enters through, so exposing these rows to every " +
@@ -3481,16 +3504,15 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
    }
 
    /**
-    * `packageMetadata` without the fields computed from the installed models,
-    * so a caller that round-trips `getPackageMetadata()` (or a PATCH body)
-    * cannot store a snapshot that outlives the models it describes.
+    * `packageMetadata` without the fields computed from the loaded package
+    * (COMPUTED_PACKAGE_FIELDS), so a caller that round-trips
+    * `getPackageMetadata()` (or a PATCH body) cannot store a snapshot that
+    * outlives the load it describes.
     */
    private static storableMetadata(packageMetadata: ApiPackage): ApiPackage {
-      if (!("secureGivens" in packageMetadata)) {
-         return packageMetadata;
-      }
-      const { secureGivens: _computed, ...stored } = packageMetadata;
-      return stored;
+      const stored: Record<string, unknown> = { ...packageMetadata };
+      for (const key of COMPUTED_PACKAGE_FIELDS) delete stored[key];
+      return stored as ApiPackage;
    }
 
    public setPackageMetadata(packageMetadata: ApiPackage) {

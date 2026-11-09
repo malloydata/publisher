@@ -573,61 +573,107 @@ export class EnvironmentStore
 
    /**
     * Publish each configured package as the version its publisher.json
-    * declares (see addConfiguredEnvironment). One that cannot be published
-    * (no version, a refused check, a conflict) is recorded as that package's
-    * load error, as a configured package that does not mount is, and the
-    * others still load.
+    * declares (see addConfiguredEnvironment). The packages are mounted first,
+    * by the loop an unversioned environment mounts its packages with
+    * (loadEnvironmentIntoDisk), into a staging folder of their own: a location
+    * holding several packages is downloaded once, with labelled progress, and
+    * one that does not mount is recorded as that package's load error. Each
+    * mounted tree is then published from there. One that cannot be published
+    * (no version, a refused check, a conflict) is recorded as its load error
+    * too, and the others still load.
     */
    private async publishConfiguredPackages(
       environment: Environment,
       packages: ProcessedEnvironment["packages"],
    ): Promise<void> {
+      if (packages.length === 0) return;
       const environmentName = environment.getEnvironmentName();
       const versions = environment.getVersionService();
-      for (const configured of packages) {
+      const stagingRoot = safeJoinUnderRoot(
+         environment.getEnvironmentPath(),
+         `.publish_${crypto.randomBytes(8).toString("hex")}`,
+      );
+      try {
+         let mountErrors: ReadonlyMap<string, string>;
          try {
-            if (!versions) {
-               throw new Error(
-                  "package versions are not available in this environment",
-               );
-            }
-            // A relative or `~/` location is the config's, resolved against
-            // its folder as an unversioned load resolves it (resolveLocalPath).
-            // downloadPackageInto stages only an absolute local path, and the
-            // recorded source location has to name the same folder when a
-            // later boot restores the version from it.
-            const location = isLocalPath(configured.location)
-               ? this.resolveLocalPath(configured.location)
-               : configured.location;
-            await versions.publish(
-               configured.name,
-               (stagingPath) =>
-                  this.downloadPackageInto(
-                     environmentName,
-                     configured.name,
-                     location,
-                     stagingPath,
-                  ),
-               {
-                  sourceLocation: location,
-                  promotion: getVersionPromotionMode(),
-                  validate: (loaded) => formatPublishRejections(loaded),
-               },
-            );
+            ({ mountErrors } = await this.loadEnvironmentIntoDisk(
+               environmentName,
+               packages,
+               stagingRoot,
+            ));
          } catch (error) {
-            const message = redactPgSecrets(
-               error instanceof Error ? error.message : String(error),
+            // Nothing could be staged (the environment's folder refused the
+            // staging folder, say): each package is a load error, as a
+            // location that does not mount is, and the environment serves.
+            const failed = new Map<string, string>();
+            this.recordMountFailure(
+               error,
+               stagingRoot,
+               packages.map((p) => p.name),
+               failed,
             );
-            logger.error(
-               `Failed to publish configured package "${configured.name}" as a version; skipping it`,
-               {
-                  environmentName,
-                  packageName: configured.name,
-                  error: message,
-               },
-            );
-            environment.setPackageMountError(configured.name, message);
+            mountErrors = failed;
          }
+         for (const configured of packages) {
+            const mountError = mountErrors.get(configured.name);
+            if (mountError !== undefined) {
+               environment.setPackageMountError(configured.name, mountError);
+               continue;
+            }
+            try {
+               if (!versions) {
+                  throw new Error(
+                     "package versions are not available in this environment",
+                  );
+               }
+               // A relative or `~/` location is the config's, resolved against
+               // its folder as the mount resolved it (resolveLocalPath), so a
+               // later boot that restores the version from its recorded source
+               // location finds the same folder.
+               const sourceLocation = isLocalPath(configured.location)
+                  ? this.resolveLocalPath(configured.location)
+                  : configured.location;
+               const mounted = safeJoinUnderRoot(stagingRoot, configured.name);
+               await versions.publish(
+                  configured.name,
+                  (stagingPath) =>
+                     this.downloadPackageInto(
+                        environmentName,
+                        configured.name,
+                        mounted,
+                        stagingPath,
+                     ),
+                  {
+                     sourceLocation,
+                     promotion: getVersionPromotionMode(),
+                     validate: (loaded) => formatPublishRejections(loaded),
+                  },
+               );
+            } catch (error) {
+               const message = redactPgSecrets(
+                  error instanceof Error ? error.message : String(error),
+               );
+               logger.error(
+                  `Failed to publish configured package "${configured.name}" as a version; skipping it`,
+                  {
+                     environmentName,
+                     packageName: configured.name,
+                     error: message,
+                  },
+               );
+               environment.setPackageMountError(configured.name, message);
+            }
+         }
+      } finally {
+         await fs.promises
+            .rm(stagingRoot, { recursive: true, force: true })
+            .catch((error) =>
+               logger.warn("Could not remove a package staging folder", {
+                  environmentName,
+                  stagingRoot,
+                  error,
+               }),
+            );
       }
    }
 
@@ -2156,16 +2202,25 @@ export class EnvironmentStore
       }
    }
 
+   /**
+    * Mount an environment's packages, each at `<targetRoot>/<name>`:
+    * `targetRoot` is the environment's own folder when its packages are served
+    * from where they are mounted, or a staging folder they are published from
+    * (publishConfiguredPackages).
+    */
    private async loadEnvironmentIntoDisk(
       environmentName: string,
       packages: ApiEnvironment["packages"],
+      targetRoot?: string,
    ) {
       assertSafePackageName(environmentName);
-      const absoluteTargetPath = safeJoinUnderRoot(
-         this.serverRootPath,
-         PUBLISHER_DATA_DIR,
-         environmentName,
-      );
+      const absoluteTargetPath =
+         targetRoot ??
+         safeJoinUnderRoot(
+            this.serverRootPath,
+            PUBLISHER_DATA_DIR,
+            environmentName,
+         );
       const mountErrors = new Map<string, string>();
 
       await fs.promises.mkdir(absoluteTargetPath, { recursive: true });
