@@ -20,15 +20,7 @@ import {
    Runtime,
 } from "@malloydata/malloy";
 import { readFileSync } from "node:fs";
-import {
-   mkdir,
-   mkdtemp,
-   readFile,
-   rename,
-   rm,
-   stat,
-   writeFile,
-} from "node:fs/promises";
+import { cp, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { errMessage } from "../../utils";
@@ -183,13 +175,17 @@ async function compileModelFile(
 
 /**
  * The query route of the package at `packageRoot` under `manifest`: a real
- * {@link Package} loaded over the files there, with a `publisher.json` that
- * declares exactly this surface. Without a manifest, the package curates
- * nothing.
+ * {@link Package} loaded over a copy of the files there, with a
+ * `publisher.json` that declares exactly this surface. Without a manifest, the
+ * package curates nothing.
  *
- * A package with a model that does not compile does not load, so the files
- * in `uncompiled` are set aside while it loads. They would add nothing to the
- * surface anyway: a file that failed to compile exports nothing.
+ * The package is loaded from a fresh temp copy, removed afterwards, so the
+ * directory a spec hands in (often a shared checked-in fixture) is never
+ * written. A package with a model that does not compile does not load, so the
+ * files in `uncompiled` are left out of the copy. They would add nothing to
+ * the surface anyway: a file that failed to compile exports nothing. The
+ * route answers from the loaded models, never from disk, so it outlives the
+ * copy.
  */
 async function queryRouteFor(
    packageRoot: string,
@@ -198,25 +194,16 @@ async function queryRouteFor(
    uncompiled: readonly string[],
 ): Promise<EntitiesQueryRoute> {
    if (!manifest) return UNCURATED_QUERY_ROUTE;
-   const setAside = uncompiled.map((relativePath) => {
-      const absolutePath = path.join(packageRoot, relativePath);
-      return { absolutePath, aside: `${absolutePath}.uncompiled` };
-   });
-   const publisherJson = path.join(packageRoot, "publisher.json");
-   const previous = await stat(publisherJson).then(
-      () => readFile(publisherJson, "utf-8"),
-      () => undefined,
-   );
-   const moved: typeof setAside = [];
+   const copy = await mkdtemp(path.join(tmpdir(), "entities-route-"));
    try {
-      for (const file of setAside) {
-         await rename(file.absolutePath, file.aside);
-         moved.push(file);
+      await cp(packageRoot, copy, { recursive: true });
+      for (const relativePath of uncompiled) {
+         await rm(path.join(copy, relativePath), { force: true });
       }
       // An explicit `explores`, so a root index.malloy curates only when the
       // manifest says it does.
       await writeFile(
-         publisherJson,
+         path.join(copy, "publisher.json"),
          JSON.stringify({
             name: "entities-spec",
             explores: manifest.explores ?? [],
@@ -229,7 +216,7 @@ async function queryRouteFor(
       const pkg = await Package.create(
          "entities-spec",
          "entities-spec",
-         packageRoot,
+         copy,
          new Map([
             [
                "duckdb",
@@ -240,9 +227,7 @@ async function queryRouteFor(
       );
       return pkg.entitiesQueryRoute();
    } finally {
-      if (previous === undefined) await rm(publisherJson, { force: true });
-      else await writeFile(publisherJson, previous, "utf-8");
-      for (const file of moved) await rename(file.aside, file.absolutePath);
+      await rm(copy, { recursive: true, force: true });
    }
 }
 
