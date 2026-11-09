@@ -22,8 +22,8 @@ Both read and write the same resources, in the same vocabulary. Neither surface 
 behind your own gateway before exposing it beyond localhost ([security-posture.md](security-posture.md)).
 
 **The previous API, `/api/v0`, is deprecated as a whole.** It keeps working, takes bug fixes only, and every response
-carries a `Deprecation` header. Its retirement is announced in the release notes once every first-party client has
-moved. Its spec is served at `/api-doc.v0.yaml`. `GET /status` answers on both base paths: in the v1 shape here, and in v0's
+carries `Deprecation` and `Link` headers, and from release R a `Sunset` header with the date it is removed in Publisher
+1.0.0, 90 days after release R; the release notes announce that date once every first-party client has moved. Its spec is served at `/api-doc.v0.yaml`. `GET /status` answers on both base paths: in the v1 shape here, and in v0's
 shape, with additive fields only, on v0.
 
 ## The model
@@ -39,7 +39,7 @@ Environment                     a namespace for packages and connections; the un
     └── Version                 an immutable snapshot of the package's content; `latest` is a reserved segment
         ├── models              compiled sources, views and givens; :query; :compile
         ├── reports             a `.malloy` file with an `## artifact` tag (grid or linear); the report write
-        ├── data-apps, public/  HTML data apps and the static files they load
+        ├── data-apps           the catalog of HTML data apps; pages are served outside the API (`DataApp.url`)
         ├── data-files          embedded CSV, Parquet, JSON and Excel files
         ├── agents, skills      what the package declares for agents
         ├── entities, classification, index
@@ -60,17 +60,20 @@ These are the rules the spec's `info` states, in the same words where they can b
 
 - **Path names.** Paths are kebab-case; parameters and fields are camelCase. `{xName}` is a named resource,
   `{versionId}` and `{runId}` are ids, and `{path}` is a file's version-relative path (relative to the version's root,
-  `/`-separated; every path in a body is version-relative too). `{path}` spans segments: send its `/` literally, never
+  `/`-separated; every path in a body is version-relative too, but a data app's `path`, relative to `public/`, and a
+  skill file's, relative to its skill's directory). `{path}` spans segments: send its `/` literally, never
   as `%2F`, and a `:verb` follows its last segment. A path has no empty, `.` or `..` segment, no leading `/`, and no
   `\`, `:` or control character.
-- **Reads never change state.** `POST …/versions/{versionId}:reload` recompiles a version from its files against the
+- **Reads change no record.** A `GET` may load the version, or start work a `profile=light` publish deferred, which only
+  `VersionStatus` and the deferred part's own `status` show. `POST …/versions/{versionId}:reload` recompiles a version from its files against the
   warehouse's current schemas and makes no version: on a live package it is the edit loop, on any other version a schema
   refresh. Publishing a version, from the recorded source or a new one, is `POST …/versions`; loading and unloading a
   version on this server are `:load` and `:unload`, which change no record. Memory state is `VersionStatus.status`,
   never a field of `Version`.
 - **Which reads load.** `/status`, a version's `status`, the versions list, the version record, `:unload` and
   `…/index` never load a version that is not loaded. Every other content read loads it on demand (a hydrate when the
-  compiled-model store has it); read `VersionStatus.status` first to know what a read will cost.
+  compiled-model store has it), as each such operation's description says; read `VersionStatus.status` first to know
+  what a read will cost.
 - **State changes are fields.** `PATCH …/versions/{versionId}` with `archived`, `pinned` or `manifestLocation`;
   `PATCH …/packages/{packageName}` with `latestVersionId`; `PATCH …/runs/{runId}` with `status: "cancelled"`. What is
   not a field of a record is an action, `POST` with a `:verb` suffix on the resource it acts on (`:load`, `:unload`,
@@ -80,7 +83,8 @@ These are the rules the spec's `info` states, in the same words where they can b
   untouched, lists replace. An orchestrator pushes an environment's desired state as a `PATCH` whose `connections` list
   replaces the stored one. `PUT` is used only by the report write, which replaces a file. `POST` on a collection answers
   201 with the resource and a `Location`; `DELETE` answers 204. A create or a write takes its own resource's writable
-  fields; an action (`:query`, `:compile`, `:run-sql`, `:reload`) takes an `…Request` body, since it creates no resource.
+  fields; an action that takes input (`:query`, `:compile`, `:run-sql`) takes an `…Request` body, since it creates no
+  resource, and `:reload`, `:load` and `:unload` take none.
 - **Concurrency.** Every mutable resource but a report carries a `revision`, returned as `ETag` on reads. Every `PATCH`
   and `DELETE` accepts `If-Match` and answers 412 `REVISION_MISMATCH` (with `details.currentRevision`) when the resource
   has moved on. A report is revisioned by its `contentHash`, which is the report write's precondition in place of
@@ -88,10 +92,11 @@ These are the rules the spec's `info` states, in the same words where they can b
 - **Field behavior.** What only the server sets is `readOnly` (`resource`, `revision`, timestamps, and every run field
   but `versionId`, `trigger`, `callerRunId`, `options`, `buildInstructions` and `status`), and a write that sends it
   back as read ignores it, so a client can `PATCH` a resource it just read. A field set on create is writable on create
-  and never changes after (`x-immutable`): a `name` and a package's `source`, whose change by `PATCH` answers 400, and
-  a run's `versionId`, `trigger`, `callerRunId`, `options` and `buildInstructions`. A field with a `default` need not be
-  sent on create. A run's `status` is the one field a client changes later. One field is both set by the server and
-  sent back: a report's `contentHash`. A schema no request can carry is `readOnly` as a whole.
+  and never changes after (`x-immutable`): a `name`, a package's and a version's `source`, and a run's `versionId`,
+  `trigger`, `callerRunId`, `options` and `buildInstructions`. A write that sends an `x-immutable` field with a different
+  value answers 400 `INVALID_REQUEST` naming it; the same value is accepted, so a read can be sent back. A field with a
+  `default` need not be sent on create. A run's `status` is the one field a client changes later. One field is both set
+  by the server and sent back: a report's `contentHash`. An object schema no request can carry is `readOnly` as a whole.
 - **One schema per resource.** A write body is the resource itself, one schema for reading and writing it. `required`
   describes a read: what every read of the object carries. In a request, a `readOnly` field is ignored and never
   required (OpenAPI 3.0's rule, adopted here because 3.1 dropped it), a field with a `default` is never `required` and a request may leave it out, and a
@@ -103,15 +108,16 @@ These are the rules the spec's `info` states, in the same words where they can b
   version, a run), and the report write, accepts an `Idempotency-Key` header: a retry with the same key and body within
   24 hours answers with the first response and does nothing again, and the same key with a different body answers 409
   `IDEMPOTENCY_KEY_REUSED`.
-- **Guarded deletes.** A delete that would delete other resources with it (an environment's packages and connections, a
-  package's versions) requires `?force=true`, and answers 409 `RESOURCE_NOT_EMPTY` without it.
+- **Guarded deletes.** A delete that would delete other resources with it (an environment's packages, connections and
+  destinations, a package's versions) requires `?force=true`, and answers 409 `RESOURCE_NOT_EMPTY` without it.
 - **Field names.** camelCase. A reference is `xName` or `xPath`; a file's path is `path` and its text `content`, while
   Malloy text that is not a file (a compile check's or a query's) is `source` or `query`. A hash is `…Hash` of what it
   hashes (a file's `contentHash`); a count ends in `Count` and a size in `Bytes`; a boolean has no `is` prefix. One word,
   one meaning: `origin` is provenance, `kind` is what a thing is (a persisted source's `persist` or `preaggregate`),
   `live` is only the pseudo-version (serving from the source warehouse is `warehouse`), a version other than `live` is a
-  stored version, a source discovery shows is exposed, and `manifest` is only a run's manifest. A connection's own
-  settings keep their warehouse's words.
+  stored version, a source discovery shows is exposed, and `manifest` is a run's manifest, or an external file of the
+  same entries that `manifestLocation` names; a report's structure is its `layout`. A connection's own settings keep
+  their warehouse's words.
 - **Timestamps.** Every timestamp is an RFC 3339 `date-time` in UTC, read-only, and absent until it has a value, never
   `null`. An event's time ends in `At` (`createdAt`, `startedAt`, `failedAt`); the moment some data reflects ends in
   `AsOf` (`dataAsOf`, `schemaAsOf`). Every stored resource, one with a `revision`, carries `createdAt` and `updatedAt`.
@@ -119,8 +125,9 @@ These are the rules the spec's `info` states, in the same words where they can b
 - **Resource paths.** Every resource a `GET` reads carries `resource`, its canonical path relative to the API's base: no
   leading slash, and the resolved version id in place of `latest`
   (`environments/acme/packages/sales/versions/1.4.0/models/orders.malloy`). The exceptions are `/status`, a snapshot of
-  the server, and list envelopes. A list item carries it when its item has a `GET` of its own, so a data app, whose page
-  is raw bytes, carries none. Relative, so it stays right behind a gateway that serves the API under another prefix; a
+  the server, list envelopes, and an object embedded in another that has no read of its own (an agent's own skill). A
+  list item carries it when its item has a `GET` of its own, so a data app, whose page is served outside the API,
+  carries none. Relative, so it stays right behind a gateway that serves the API under another prefix; a
   link and a stable key, never parsed.
 - **Schema names.** A resource read two ways is `X` from its own `GET` and `XSummary` in its list, and its list is
   `XList` (`Model` and `ModelSummary`, `Report` and `ReportSummary`); nothing else is named `…Summary`.
@@ -148,7 +155,7 @@ These are the rules the spec's `info` states, in the same words where they can b
   `message`; treat a reason you do not know as the status's generic case. Each operation's error responses list the
   reasons it answers, and `details` has one shape per reason a client acts on (`COMPILE_ERROR`: `problems`;
   `REVISION_MISMATCH`: `currentRevision`; `INVALID_TRANSITION`: `currentStatus`; `TABLE_OWNED_ELSEWHERE`:
-  `ownerPackageName`; `INVALID_REQUEST`: `field`; `RESULT_TOO_LARGE`: `capType`; `CONTENT_CHANGED`: `currentContentHash`). An error inside a successful
+  `ownerPackageName` and `ownerVersionId`; `INVALID_REQUEST`: `field`; `RESULT_TOO_LARGE`: `capType`; `CONTENT_CHANGED`: `currentContentHash`). An error inside a successful
   response is an `EmbeddedError` (`message`, and a `reason` from that use's own list); every diagnostic, a compile
   problem, a load warning or a render log message, is a `Problem`, located by `modelPath` and a 0-based `range`.
 - **Dry runs.** `?dryRun=true` runs every check and stores nothing, and answers 200 with no `Location`, ignoring
@@ -160,8 +167,9 @@ These are the rules the spec's `info` states, in the same words where they can b
   own body shape. Each operation declares only the codes its shape can produce: 404 when it names a resource; 409 on
   writes and on `:reload`, `:load` and `:unload`; 412 when it takes `If-Match`; 413 when it takes a body
   (`PAYLOAD_TOO_LARGE`), or for a query or SQL result over a cap (`RESULT_TOO_LARGE`); 403 on a resource write under
-  `resources.readOnly` (`READ_ONLY`) and on an `#(authorize)` gate (`FORBIDDEN`); 410 when the version it names is
-  archived; and 424, 502 and 504 when it loads a version or reaches a warehouse. 400 is your request or your Malloy; 424
+  `resources.readOnly` (`READ_ONLY`) and on an `#(authorize)` gate (`FORBIDDEN`); 410 `VERSION_ARCHIVED` when it uses
+  an archived version's content (a content read, an action on it, the report write, a run, or `latestVersionId`'s
+  target), never on that version's record, its status, its `PATCH`, `DELETE` or `:unload`, or the index; and 424, 502 and 504 when it loads a version or reaches a warehouse. 400 is your request or your Malloy; 424
   is something the operation depends on (your connection: `CONNECTION_AUTH_FAILED`, `CONNECTION_NOT_FOUND`; or an
   external manifest: `MANIFEST_UNAVAILABLE`), and retrying fails the same way; 502 is the database (`CONNECTION_FAILED`);
   504 is the database not answering in time (`GATEWAY_TIMEOUT`).
@@ -175,9 +183,9 @@ Each row names its operations by `operationId`, which the generated clients use.
 | `GET /status` | `get-status`: `operationalState`, `serverVersion`, `hostname`, `bootId`, `readOnly`, `versionPromotion`, `loadErrors` (with `stale` for a version serving a model older than its content), and per environment its connections and destinations by `name`, `type`, `fingerprint` and `configStamp` (never their configuration) and every version this server holds with its `VersionStatus`. Loads nothing; `no-store`; never rate-limited. |
 | `GET /environments`, `POST /environments` | `list-environments`, `create-environment`. `PATCH /environments/{environmentName}` (`update-environment`) merges: its `connections` and `destinations` lists each replace whole, and an entry with a name and no configuration keeps the stored one, so a push need not resend withheld credentials. `DELETE` removes it and everything in it (`?force=true`). |
 | `GET …/connections`, `POST`, `GET …/connections/{connectionName}`, `PATCH`, `DELETE` | `list-connections`, `create-connection`, `get-connection`, `update-connection`, `delete-connection`. A connection's settings are a block named by its `type` (`"type": "postgres", "postgres": {…}`); a block refuses a field it does not define with 400 naming it. Credentials are write-only and listed in `withheldFields`. `?dryRun=true` on create or update tests without storing, answering 200 with a `ConnectionTestResult`. Destinations are the environment's `destinations` list, not connections. |
-| `GET …/connections/{connectionName}/schemas`, `…/schemas/{schemaName}/tables`, `…/tables/{tableName}`, `POST …/connections/{connectionName}:run-sql` | `list-schemas`, `list-tables`, `get-table`, `run-sql`. Browse what a connection can read; run or describe SQL. The same routes exist under a version for its `duckdb` sandbox (`…-in-version`). |
+| `GET …/connections/{connectionName}/schemas`, `…/schemas/{schemaName}/tables`, `…/tables/{tableName}`, `POST …/connections/{connectionName}:run-sql` | `list-schemas`, `list-tables`, `get-table`, `run-sql`. Browse what a connection can read; run or describe SQL. The same routes exist under a version for its `duckdb` sandbox (`…-in-version`), beside `list-connections-in-version` and `get-connection-in-version`, which list and read that sandbox. A missing schema or table is 404 `TABLE_NOT_FOUND`. |
 | `GET …/packages`, `POST …/packages` | `list-packages`, `create-package`. List the records; create a record with its `source` (no `latestVersionId`: 400). Every version, the first included, is `POST …/versions`. |
-| `GET …/packages/{packageName}`, `PATCH`, `DELETE` | `get-package`, `update-package`, `delete-package`. `PATCH` sets `description` and `latestVersionId` (a compare-and-swap under `If-Match`; moving it back is undo). `source` moves only with a publish from a new source. Scope and schedule come from a version's `publisher.json` (`materialization`). |
+| `GET …/packages/{packageName}`, `PATCH`, `DELETE` | `get-package`, `update-package`, `delete-package`. `PATCH` sets `description` and `latestVersionId` (send `If-Match` to make the move a compare-and-swap; moving it back is undo). `source` moves only with a publish from a new source. Scope and schedule come from a version's `publisher.json` (`materialization`). |
 | `GET …/versions`, `GET …/versions/{versionId}`, `PATCH`, `DELETE` | `list-versions`, `get-version`, `update-version`, `delete-version`. The package's versions, newest first (`?archived=` narrows); one version (`live` has no record: 404); its lifecycle fields (`archived`, `pinned`, `manifestLocation`; 424 `MANIFEST_UNAVAILABLE` when the manifest cannot be bound); delete for good. |
 | `POST …/versions` | `publish-version`: fetch a source and publish the version its `publisher.json` declares, or `<parent>+republish.N` (`origin: republish`) when that version exists with other content. From a new `source`, which becomes the package's recorded one, or with no body from the recorded one. 201 with the version it made; 200 with the current version when nothing changed. `?dryRun=true` always answers 200, with the `Version` it would make (no `resource`, `revision` or timestamps); `?profile=light` defers what a draft does not need (the build plan, report lint, the discovery index, data-file row counts) to its first read. |
 | `GET …/versions/{versionId}/status` | `get-version-status`: the `VersionStatus` of one version, with the fields `/status` leaves out (`loadId`, `contentHash`, `bindings`). Loads nothing. |
@@ -188,7 +196,7 @@ Each row names its operations by `operationId`, which the generated clients use.
 | `POST …/versions/{versionId}/models/{path}:compile` | `compile-model`: compile-check Malloy text at `append`, `file` or `package` scope. Answers `problems` and the `versionId` compiled against; the compile failed exactly when a problem has `severity` `error`. |
 | `GET …/versions/{versionId}/reports`, `…/reports/{path}` | `list-reports`, `get-report`: reports by `path` and `layout` (`?layout=` narrows); one report, with its tiles, givens and layout (`?include=content` for its text). Run a `query` tile's `query` through `…/models/{path}:query`, prefixed with `run:`; a `text` tile runs nothing. |
 | `PUT …/versions/{versionId}/reports/{path}` | `write-report`, the builder's save. The body is a `Report`: `content`, and `contentHash` as read; the rest is read-only and ignored. Without `contentHash` it creates the file (201; 409 `FILE_EXISTS`); with it, it replaces the file (200; 409 `CONTENT_CHANGED` when the file no longer hashes to it). On a stored version it makes version `<parent>+edit.N` and moves `latestVersionId` unless `versionPromotion` is `explicit`; on a live package it writes through to the author's directory. Identical `content` answers 200 and makes no version, so a retry is safe; takes `Idempotency-Key`. Only the latest version can be written (409 `VERSION_NOT_LATEST`); `index.malloy`, `public/`, a non-report and a `readOnly` report answer 409 `FILE_NOT_WRITABLE`. Answers the `Report`. |
-| `GET …/versions/{versionId}/data-apps` | `list-data-apps`: the catalog of HTML data apps, each with the `url` its page is served at. Pages and the files they load are served outside the API, at `/environments/{environmentName}/packages/{packageName}/versions/{versionId}/public/{path}` (immutable under a concrete version id), with v0's `/environments/{environmentName}/packages/{packageName}/{path}` as the latest version's short form. |
+| `GET …/versions/{versionId}/data-apps` | `list-data-apps`: the catalog of HTML data apps, each with the `url` its page is served at. Pages and the files they load are served outside the API, at `/environments/{environmentName}/packages/{packageName}/versions/{versionId}/public/{path}` (immutable under a stored version id; `private, no-cache` through `latest` or `live`, whose files change), with v0's `/environments/{environmentName}/packages/{packageName}/{path}` as the latest version's short form. |
 | `GET …/versions/{versionId}/data-files` | `list-data-files`: embedded data files and their schemas (`rowCountStatus` is `deferred` after a `profile=light` publish, until the count this read starts finishes). |
 | `GET …/versions/{versionId}/agents`, `…/agents/{agentName}`, `…/skills`, `…/skills/{skillName}` | `list-agents`, `get-agent`, `list-skills`, `get-skill`: what the version declares for agents, and the skills in force for it (`origin`: `bundled`, `package` or `agent`); a skill's `SKILL.md` text comes on both reads, its files' content with `?include=files`. Adopt an agent only when the user names it. |
 | `GET …/versions/{versionId}/entities`, `…/classification`, `…/index` | `list-entities`, `get-classification`, `get-discovery-index`: what each model declares for an indexer; the classification summary; the discovery index's `status` (`lexical`, `deferred`, `indexing`, `ready`, `failed`) and the version it is for. |
@@ -225,9 +233,12 @@ A query that fails says whose problem it is. Branch on `reason`:
 - **404** `TABLE_NOT_FOUND`: the database lacks a table the model reads.
 - **413** `RESULT_TOO_LARGE`: the result passed a cap (`details.capType`: `rows`, `bytes` or `unserializable`).
   Narrow the query or lower `rowLimit`; resending it fails the same way.
+- **403** `FORBIDDEN`: a gate refused this caller; supply the givens it reads (`Source.gates`).
+- **410** `VERSION_ARCHIVED`: the version is archived; query another, or restore it with `PATCH` `{"archived": false}`.
 - **424** `CONNECTION_AUTH_FAILED` or `CONNECTION_NOT_FOUND`: the connection is misconfigured; the query never ran. Do
   not rewrite it or retry until the connection is fixed.
 - **502** `CONNECTION_FAILED`: the database could not be reached; the query never ran. Retry once, then report it.
+- **504** `GATEWAY_TIMEOUT`: the database did not answer in time.
 
 ## Vocabulary
 
@@ -250,7 +261,7 @@ The spec's nouns are the vocabulary, and the Console and the docs follow them:
 | slot             | what one run at a time may build: the package under `scope: package`, one version under `scope: version` |
 | manifest entry   | what a run produced for one source; `tableId` names the physical table                                  |
 | binding          | what a version serves for one source right now                                                          |
-| table            | a warehouse table, browsed under a connection; a built one is named by its manifest entry's `tableId`   |
+| table            | a warehouse table, browsed under a connection; a built one is identified by its manifest entry's `tableId` and named by its `tableName` |
 | warehouse        | the source's own database; a query `servedFrom` `warehouse` read no materialized table                   |
 | given            | a runtime parameter a model declares; reports render the ones their tiles read as filter controls       |
 | index            | the discovery index `get_context` ranks against                                                         |
