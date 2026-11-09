@@ -80,6 +80,10 @@ info:
     - A delete that would delete other resources with it (an environment's packages and connections, a package's
     versions) requires `?force=true`, and answers 409 `RESOURCE_NOT_EMPTY` without it.
 
+    - Field names are camelCase. A reference is `xName` or `xPath`; a file's path is `path` and its text `content`,
+    while Malloy text that is not a file (a compile check's or a query's) is `source` or `query`. A hash is `…Hash`; a
+    boolean has no `is` prefix. A connection's own settings keep their warehouse's words.
+
     - Every timestamp is an RFC 3339 `date-time` in UTC, read-only, and absent until it has a value, never `null`. An
     event's time ends in `At` (`createdAt`, `startedAt`, `failedAt`); the moment some data reflects ends in `AsOf`
     (`dataAsOf`, `schemaAsOf`). Every stored resource, one with a `revision`, carries `createdAt` and `updatedAt`.
@@ -107,8 +111,9 @@ info:
 
     - Lowercase snake_case, except a `reason`, which is always a code from a closed list in UPPER_SNAKE (an error's, an
     index's, a refused source's; free text is a `message`), a warning's or problem's `code`, a stable kebab-case family
-    listed in `docs/packages.md`, values that name a response field (`include: ["malloyResult"]`), and values that echo
-    another vocabulary (a setting's value, Postgres's `sslmode`).
+    listed in `docs/packages.md`, a value that echoes a setting's own value (`versionPromotion: on-publish`), values
+    that name a response field (`include: ["malloyResult"]`), and values that echo another vocabulary (a setting's
+    value, Postgres's `sslmode`).
 
     - Every list is `{items, nextCursor}`, paged with `limit` and `after`. `/status` is the one unpaged snapshot.
 
@@ -951,8 +956,8 @@ paths:
         answers 200 with that version. `latestVersionId` moves per the promotion rule. The body is a `Version` with only
         its writable fields: `source` to publish from a new location (it becomes the package's recorded source),
         `manifestLocation` to bind on publish, and `pinned`. A live package answers 409 `PACKAGE_IS_LIVE` (use
-        `:reload`). With `dryRun`, every publish check runs, the answer is the version the publish would make, and
-        nothing is stored."
+        `:reload`). With `dryRun`, every publish check runs and nothing is stored; the answer is the version the publish
+        would make, with the status the real publish would give."
       parameters:
         - $ref: "#/components/parameters/idempotencyKey"
         - name: dryRun
@@ -980,7 +985,8 @@ paths:
               $ref: "#/components/schemas/Version"
       responses:
         "200":
-          description: Nothing new (the fetched content is the current version's), or a dry run.
+          description: Nothing new (the fetched content is the current version's). A dry run answers 200 when the publish would
+            make nothing, and 201 when it would make a version, without a `Location`.
           content:
             application/json:
               schema:
@@ -1021,6 +1027,8 @@ paths:
           $ref: "#/components/responses/RateLimited"
         "500":
           $ref: "#/components/responses/Internal"
+        "502":
+          $ref: "#/components/responses/DatabaseUnreachable"
         "503":
           $ref: "#/components/responses/Unavailable"
 
@@ -1072,6 +1080,8 @@ paths:
           $ref: "#/components/responses/RateLimited"
         "500":
           $ref: "#/components/responses/Internal"
+        "502":
+          $ref: "#/components/responses/DatabaseUnreachable"
         "503":
           $ref: "#/components/responses/Unavailable"
 
@@ -1114,8 +1124,6 @@ paths:
           $ref: "#/components/responses/NotFound"
         "409":
           $ref: "#/components/responses/Conflict"
-        "410":
-          $ref: "#/components/responses/Gone"
         "412":
           $ref: "#/components/responses/PreconditionFailed"
         "429":
@@ -1165,8 +1173,6 @@ paths:
           $ref: "#/components/responses/NotFound"
         "409":
           $ref: "#/components/responses/Conflict"
-        "410":
-          $ref: "#/components/responses/Gone"
         "412":
           $ref: "#/components/responses/PreconditionFailed"
         "429":
@@ -1219,8 +1225,6 @@ paths:
           $ref: "#/components/responses/NotFound"
         "409":
           $ref: "#/components/responses/Conflict"
-        "410":
-          $ref: "#/components/responses/Gone"
         "412":
           $ref: "#/components/responses/PreconditionFailed"
         "424":
@@ -1231,6 +1235,8 @@ paths:
           $ref: "#/components/responses/RateLimited"
         "500":
           $ref: "#/components/responses/Internal"
+        "502":
+          $ref: "#/components/responses/DatabaseUnreachable"
         "503":
           $ref: "#/components/responses/Unavailable"
     delete:
@@ -1316,10 +1322,14 @@ paths:
           $ref: "#/components/responses/Gone"
         "412":
           $ref: "#/components/responses/PreconditionFailed"
+        "424":
+          $ref: "#/components/responses/DependencyFailed"
         "429":
           $ref: "#/components/responses/RateLimited"
         "500":
           $ref: "#/components/responses/Internal"
+        "502":
+          $ref: "#/components/responses/DatabaseUnreachable"
         "503":
           $ref: "#/components/responses/Unavailable"
 
@@ -1396,6 +1406,8 @@ paths:
           $ref: "#/components/responses/RateLimited"
         "500":
           $ref: "#/components/responses/Internal"
+        "502":
+          $ref: "#/components/responses/DatabaseUnreachable"
         "503":
           $ref: "#/components/responses/Unavailable"
 
@@ -1470,6 +1482,8 @@ paths:
       tags:
         - models
       summary: Compile-check Malloy text against the model without running it
+      parameters:
+        - $ref: "#/components/parameters/includeHidden"
       requestBody:
         required: true
         content:
@@ -1508,6 +1522,8 @@ paths:
           $ref: "#/components/responses/RateLimited"
         "500":
           $ref: "#/components/responses/Internal"
+        "502":
+          $ref: "#/components/responses/DatabaseUnreachable"
         "503":
           $ref: "#/components/responses/Unavailable"
 
@@ -1563,10 +1579,14 @@ paths:
           $ref: "#/components/responses/Gone"
         "412":
           $ref: "#/components/responses/PreconditionFailed"
+        "424":
+          $ref: "#/components/responses/DependencyFailed"
         "429":
           $ref: "#/components/responses/RateLimited"
         "500":
           $ref: "#/components/responses/Internal"
+        "502":
+          $ref: "#/components/responses/DatabaseUnreachable"
         "503":
           $ref: "#/components/responses/Unavailable"
 
@@ -1582,6 +1602,19 @@ paths:
       tags:
         - reports
       summary: Read a report
+      parameters:
+        - name: include
+          in: query
+          style: form
+          explode: false
+          schema:
+            type: array
+            items:
+              type: string
+              enum:
+                - content
+          description: Larger parts to include. `content` includes the report file's text, which the report write takes.
+        - $ref: "#/components/parameters/ifNoneMatch"
       responses:
         "200":
           description: The report, with what a viewer needs to draw it.
@@ -1612,14 +1645,16 @@ paths:
           $ref: "#/components/responses/Gone"
         "412":
           $ref: "#/components/responses/PreconditionFailed"
+        "424":
+          $ref: "#/components/responses/DependencyFailed"
         "429":
           $ref: "#/components/responses/RateLimited"
         "500":
           $ref: "#/components/responses/Internal"
+        "502":
+          $ref: "#/components/responses/DatabaseUnreachable"
         "503":
           $ref: "#/components/responses/Unavailable"
-      parameters:
-        - $ref: "#/components/parameters/ifNoneMatch"
     put:
       operationId: write-report
       tags:
@@ -1675,10 +1710,14 @@ paths:
           $ref: "#/components/responses/Gone"
         "412":
           $ref: "#/components/responses/PreconditionFailed"
+        "424":
+          $ref: "#/components/responses/DependencyFailed"
         "429":
           $ref: "#/components/responses/RateLimited"
         "500":
           $ref: "#/components/responses/Internal"
+        "502":
+          $ref: "#/components/responses/DatabaseUnreachable"
         "503":
           $ref: "#/components/responses/Unavailable"
 
@@ -1727,10 +1766,14 @@ paths:
           $ref: "#/components/responses/Gone"
         "412":
           $ref: "#/components/responses/PreconditionFailed"
+        "424":
+          $ref: "#/components/responses/DependencyFailed"
         "429":
           $ref: "#/components/responses/RateLimited"
         "500":
           $ref: "#/components/responses/Internal"
+        "502":
+          $ref: "#/components/responses/DatabaseUnreachable"
         "503":
           $ref: "#/components/responses/Unavailable"
 
@@ -1779,10 +1822,14 @@ paths:
           $ref: "#/components/responses/Gone"
         "412":
           $ref: "#/components/responses/PreconditionFailed"
+        "424":
+          $ref: "#/components/responses/DependencyFailed"
         "429":
           $ref: "#/components/responses/RateLimited"
         "500":
           $ref: "#/components/responses/Internal"
+        "502":
+          $ref: "#/components/responses/DatabaseUnreachable"
         "503":
           $ref: "#/components/responses/Unavailable"
       parameters:
@@ -1833,10 +1880,14 @@ paths:
           $ref: "#/components/responses/Gone"
         "412":
           $ref: "#/components/responses/PreconditionFailed"
+        "424":
+          $ref: "#/components/responses/DependencyFailed"
         "429":
           $ref: "#/components/responses/RateLimited"
         "500":
           $ref: "#/components/responses/Internal"
+        "502":
+          $ref: "#/components/responses/DatabaseUnreachable"
         "503":
           $ref: "#/components/responses/Unavailable"
 
@@ -1885,10 +1936,14 @@ paths:
           $ref: "#/components/responses/Gone"
         "412":
           $ref: "#/components/responses/PreconditionFailed"
+        "424":
+          $ref: "#/components/responses/DependencyFailed"
         "429":
           $ref: "#/components/responses/RateLimited"
         "500":
           $ref: "#/components/responses/Internal"
+        "502":
+          $ref: "#/components/responses/DatabaseUnreachable"
         "503":
           $ref: "#/components/responses/Unavailable"
 
@@ -1947,10 +2002,14 @@ paths:
           $ref: "#/components/responses/Gone"
         "412":
           $ref: "#/components/responses/PreconditionFailed"
+        "424":
+          $ref: "#/components/responses/DependencyFailed"
         "429":
           $ref: "#/components/responses/RateLimited"
         "500":
           $ref: "#/components/responses/Internal"
+        "502":
+          $ref: "#/components/responses/DatabaseUnreachable"
         "503":
           $ref: "#/components/responses/Unavailable"
 
@@ -1973,7 +2032,7 @@ paths:
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/AgentSkillFile"
+                $ref: "#/components/schemas/SkillFile"
           headers:
             X-Request-Id:
               $ref: "#/components/headers/RequestId"
@@ -1997,10 +2056,14 @@ paths:
           $ref: "#/components/responses/Gone"
         "412":
           $ref: "#/components/responses/PreconditionFailed"
+        "424":
+          $ref: "#/components/responses/DependencyFailed"
         "429":
           $ref: "#/components/responses/RateLimited"
         "500":
           $ref: "#/components/responses/Internal"
+        "502":
+          $ref: "#/components/responses/DatabaseUnreachable"
         "503":
           $ref: "#/components/responses/Unavailable"
       parameters:
@@ -2052,10 +2115,14 @@ paths:
           $ref: "#/components/responses/Gone"
         "412":
           $ref: "#/components/responses/PreconditionFailed"
+        "424":
+          $ref: "#/components/responses/DependencyFailed"
         "429":
           $ref: "#/components/responses/RateLimited"
         "500":
           $ref: "#/components/responses/Internal"
+        "502":
+          $ref: "#/components/responses/DatabaseUnreachable"
         "503":
           $ref: "#/components/responses/Unavailable"
 
@@ -2101,10 +2168,71 @@ paths:
           $ref: "#/components/responses/Gone"
         "412":
           $ref: "#/components/responses/PreconditionFailed"
+        "424":
+          $ref: "#/components/responses/DependencyFailed"
         "429":
           $ref: "#/components/responses/RateLimited"
         "500":
           $ref: "#/components/responses/Internal"
+        "502":
+          $ref: "#/components/responses/DatabaseUnreachable"
+        "503":
+          $ref: "#/components/responses/Unavailable"
+      parameters:
+        - $ref: "#/components/parameters/ifNoneMatch"
+
+
+  /environments/{environmentName}/packages/{packageName}/versions/{versionId}/skills/{skillName}/{path}:
+    parameters:
+      - $ref: "#/components/parameters/environmentName"
+      - $ref: "#/components/parameters/packageName"
+      - $ref: "#/components/parameters/versionId"
+      - $ref: "#/components/parameters/skillName"
+      - $ref: "#/components/parameters/path"
+    get:
+      operationId: get-skill-file
+      tags:
+        - skills
+      summary: Read one of a skill's reference files
+      description: A file the skill loads on demand, as its `files` lists it; `path` is relative to the skill's directory.
+      responses:
+        "200":
+          description: The file.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SkillFile"
+          headers:
+            X-Request-Id:
+              $ref: "#/components/headers/RequestId"
+            ETag:
+              $ref: "#/components/headers/ETag"
+            Cache-Control:
+              $ref: "#/components/headers/CacheControl"
+        "304":
+          $ref: "#/components/responses/NotModified"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "410":
+          $ref: "#/components/responses/Gone"
+        "412":
+          $ref: "#/components/responses/PreconditionFailed"
+        "424":
+          $ref: "#/components/responses/DependencyFailed"
+        "429":
+          $ref: "#/components/responses/RateLimited"
+        "500":
+          $ref: "#/components/responses/Internal"
+        "502":
+          $ref: "#/components/responses/DatabaseUnreachable"
         "503":
           $ref: "#/components/responses/Unavailable"
       parameters:
@@ -2156,10 +2284,14 @@ paths:
           $ref: "#/components/responses/Gone"
         "412":
           $ref: "#/components/responses/PreconditionFailed"
+        "424":
+          $ref: "#/components/responses/DependencyFailed"
         "429":
           $ref: "#/components/responses/RateLimited"
         "500":
           $ref: "#/components/responses/Internal"
+        "502":
+          $ref: "#/components/responses/DatabaseUnreachable"
         "503":
           $ref: "#/components/responses/Unavailable"
 
@@ -2204,10 +2336,14 @@ paths:
           $ref: "#/components/responses/Gone"
         "412":
           $ref: "#/components/responses/PreconditionFailed"
+        "424":
+          $ref: "#/components/responses/DependencyFailed"
         "429":
           $ref: "#/components/responses/RateLimited"
         "500":
           $ref: "#/components/responses/Internal"
+        "502":
+          $ref: "#/components/responses/DatabaseUnreachable"
         "503":
           $ref: "#/components/responses/Unavailable"
       parameters:
@@ -2306,10 +2442,14 @@ paths:
           $ref: "#/components/responses/Gone"
         "412":
           $ref: "#/components/responses/PreconditionFailed"
+        "424":
+          $ref: "#/components/responses/DependencyFailed"
         "429":
           $ref: "#/components/responses/RateLimited"
         "500":
           $ref: "#/components/responses/Internal"
+        "502":
+          $ref: "#/components/responses/DatabaseUnreachable"
         "503":
           $ref: "#/components/responses/Unavailable"
       parameters:
@@ -2361,10 +2501,14 @@ paths:
           $ref: "#/components/responses/Gone"
         "412":
           $ref: "#/components/responses/PreconditionFailed"
+        "424":
+          $ref: "#/components/responses/DependencyFailed"
         "429":
           $ref: "#/components/responses/RateLimited"
         "500":
           $ref: "#/components/responses/Internal"
+        "502":
+          $ref: "#/components/responses/DatabaseUnreachable"
         "503":
           $ref: "#/components/responses/Unavailable"
 
@@ -2411,10 +2555,14 @@ paths:
           $ref: "#/components/responses/Gone"
         "412":
           $ref: "#/components/responses/PreconditionFailed"
+        "424":
+          $ref: "#/components/responses/DependencyFailed"
         "429":
           $ref: "#/components/responses/RateLimited"
         "500":
           $ref: "#/components/responses/Internal"
+        "502":
+          $ref: "#/components/responses/DatabaseUnreachable"
         "503":
           $ref: "#/components/responses/Unavailable"
       parameters:
@@ -2528,10 +2676,14 @@ paths:
           $ref: "#/components/responses/Gone"
         "412":
           $ref: "#/components/responses/PreconditionFailed"
+        "424":
+          $ref: "#/components/responses/DependencyFailed"
         "429":
           $ref: "#/components/responses/RateLimited"
         "500":
           $ref: "#/components/responses/Internal"
+        "502":
+          $ref: "#/components/responses/DatabaseUnreachable"
         "503":
           $ref: "#/components/responses/Unavailable"
 
@@ -3257,8 +3409,7 @@ components:
       in: path
       required: true
       schema:
-        $ref: "#/components/schemas/PathPattern"
-      description: A skill's name; `<skill>/<stem>` names one of its on-demand reference files.
+        $ref: "#/components/schemas/IdentifierPattern"
     path:
       name: path
       in: path
@@ -3328,9 +3479,9 @@ components:
         type: string
     CacheControl:
       description: "`private, max-age=31536000, immutable` on a raw file read under a concrete version id (`…/public/{path}`,
-        an agent's skill file), whose bytes can never change; `private, no-cache` on every other read, which a client
-        may store but must revalidate with `If-None-Match`. A read through `latest` or `live` is always `no-cache`.
-        Always `private`, because the gateway in front authenticates the caller."
+        a skill's or an agent's skill file), whose bytes can never change; `private, no-cache` on every other read,
+        which a client may store but must revalidate with `If-None-Match`. A read through `latest` or `live` is always
+        `no-cache`. Always `private`, because the gateway in front authenticates the caller."
       schema:
         type: string
     RetryAfter:
@@ -3528,7 +3679,7 @@ components:
           description: The agent's own skill files, sorted by `path`. Each carries `content` only with `?include=skills`;
             otherwise its `bytes`.
           items:
-            $ref: "#/components/schemas/AgentSkillFile"
+            $ref: "#/components/schemas/SkillFile"
         assets:
           type: array
           description: Every asset the agent's skills ship, listed without content and sorted by `path`. Absent when there are none.
@@ -3626,39 +3777,6 @@ components:
         taskContent:
           type: string
           description: The task file's Markdown. Only on the resolved agent, not the listing.
-    AgentSkillFile:
-      type: object
-      readOnly: true
-      description: One of an agent's skill files.
-      properties:
-        resource:
-          $ref: "#/components/schemas/ResourcePath"
-        name:
-          type: string
-          description: A `SKILL.md`'s name. Only when the agent is read without `?include=skills`.
-        description:
-          type: string
-          description: A `SKILL.md`'s description. Only when the agent is read without `?include=skills`.
-        bytes:
-          type: integer
-          description: Size of the file's text in UTF-8 bytes.
-        path:
-          type: string
-          description: Path relative to the agent's skills directory, for example `analyst-conventions/SKILL.md` or
-            `analyst-conventions/reference/glossary.md`.
-        content:
-          type: string
-          description: A `SKILL.md` is re-emitted with only a quoted `name` and `description` in its frontmatter; reference files
-            are served raw. Present only when the agent is read with `?include=skills`.
-        source:
-          $ref: "#/components/schemas/AgentSource"
-        versionId:
-          $ref: "#/components/schemas/VersionId"
-          readOnly: true
-          description: The version that answered, with `latest` resolved.
-      required:
-        - resource
-        - versionId
     AgentSource:
       type: object
       readOnly: true
@@ -4080,12 +4198,7 @@ components:
           type: string
           description: Human-readable problem description
         severity:
-          type: string
-          description: Severity level of the problem
-          enum:
-            - error
-            - warn
-            - debug
+          $ref: "#/components/schemas/Severity"
         code:
           type: string
           description: The problem's family, a stable kebab-case code from the list in `docs/packages.md` (for example
@@ -4201,7 +4314,6 @@ components:
       required:
         - resource
         - name
-        - type
         - createdAt
         - updatedAt
       properties:
@@ -4213,6 +4325,8 @@ components:
           $ref: "#/components/schemas/IdentifierPattern"
         type:
           type: string
+          description: The dialect. Required on create; an environment push may name a stored connection without it to keep it as
+            stored.
           enum:
             - postgres
             - bigquery
@@ -4956,10 +5070,10 @@ components:
           type: string
           enum:
             - live
-            - stale_ok
+            - serve_expired
             - fail
-          description: "Declared query-time behavior when the freshness window is missed: serve live, serve the stale table, or
-            fail the query."
+          description: "What a query does when the freshness window is missed: serve live, serve the table past its window
+            (`publisher.json` spells it `stale_ok`), or fail the query."
         windowSeconds:
           type: integer
           description: The maximum acceptable staleness of the package's materialized sources, in seconds. An orchestrator
@@ -5230,22 +5344,13 @@ components:
           type: string
           description: A stable identifier for the finding's family. The families are listed in docs/packages.md.
         severity:
-          type: string
-          enum:
-            - error
-            - warn
+          $ref: "#/components/schemas/Severity"
     LogMessage:
       type: object
       description: A log message from render tag validation
       properties:
         severity:
-          type: string
-          description: Severity level of the log message
-          enum:
-            - debug
-            - info
-            - warn
-            - error
+          $ref: "#/components/schemas/Severity"
         message:
           type: string
           description: Human-readable log message
@@ -5784,12 +5889,6 @@ components:
         port:
           type: integer
           description: PostgreSQL server port number
-        databaseName:
-          type: string
-          description: Name of the PostgreSQL database
-        userName:
-          type: string
-          description: PostgreSQL username for authentication
         password:
           type: string
           description: PostgreSQL password for authentication
@@ -5819,6 +5918,12 @@ components:
             server-applied default, not a schema default. On a direct connection the same modes apply against the
             configured host; when omitted, the deployment PGSSLMODE applies. Ignored when connectionString is set, which
             carries its own sslmode. Applies to a DuckLake catalog connection as well.
+        database:
+          type: string
+          description: Name of the PostgreSQL database
+        user:
+          type: string
+          description: PostgreSQL username for authentication
         statementTimeoutMs:
           type: integer
           minimum: 1
@@ -6189,6 +6294,11 @@ components:
       allOf:
         - $ref: "#/components/schemas/ReportSummary"
         - $ref: "#/components/schemas/CompiledDocument"
+        - type: object
+          properties:
+            content:
+              type: string
+              description: The report file's whole text. Present only with `?include=content`.
     ReportList:
       type: object
       required:
@@ -6472,7 +6582,7 @@ components:
             - scheduler
           description: "What started this run, attached as the `trigger` property: a package publish, an explicit request, or the
             caller's scheduler."
-        runId:
+        callerRunId:
           type: string
           description: The caller's id for this run, attached as the `run_id` property so every statement of one build groups
             together in the backend's query history.
@@ -6730,6 +6840,15 @@ components:
           type: array
           items:
             $ref: "#/components/schemas/EnvironmentStatus"
+    Severity:
+      type: string
+      enum:
+        - error
+        - warn
+        - info
+        - debug
+      description: How serious a problem, warning or log message is. `error` is a failure; `warn` is valid but worth
+        attention; `info` and `debug` are for people reading logs.
     Skill:
       type: object
       readOnly: true
@@ -6752,6 +6871,11 @@ components:
             - bundled
             - package
           description: Where this skill came from. See SkillSummary.origin.
+        files:
+          type: array
+          items:
+            type: string
+          description: The paths of the skill's on-demand reference files, each read at `…/skills/{skillName}/{path}`.
         versionId:
           $ref: "#/components/schemas/VersionId"
           readOnly: true
@@ -6759,6 +6883,39 @@ components:
       required:
         - resource
         - name
+        - versionId
+    SkillFile:
+      type: object
+      readOnly: true
+      description: "One file of a skill: a skill's own reference file, or one of an agent's skill files."
+      properties:
+        resource:
+          $ref: "#/components/schemas/ResourcePath"
+        name:
+          type: string
+          description: A `SKILL.md`'s name. Only when the agent is read without `?include=skills`.
+        description:
+          type: string
+          description: A `SKILL.md`'s description. Only when the agent is read without `?include=skills`.
+        bytes:
+          type: integer
+          description: Size of the file's text in UTF-8 bytes.
+        path:
+          type: string
+          description: Path relative to the agent's skills directory, for example `analyst-conventions/SKILL.md` or
+            `analyst-conventions/reference/glossary.md`.
+        content:
+          type: string
+          description: A `SKILL.md` is re-emitted with only a quoted `name` and `description` in its frontmatter; reference files
+            are served raw. Present only when the agent is read with `?include=skills`.
+        source:
+          $ref: "#/components/schemas/AgentSource"
+        versionId:
+          $ref: "#/components/schemas/VersionId"
+          readOnly: true
+          description: The version that answered, with `latest` resolved.
+      required:
+        - resource
         - versionId
     SkillList:
       type: object
@@ -6781,8 +6938,7 @@ components:
           $ref: "#/components/schemas/ResourcePath"
         name:
           type: string
-          description: The skill's name, and the identifier for fetching it. A name containing a slash (`<skill>/<stem>`) is one
-            skill's on-demand reference file rather than a skill in its own right.
+          description: The skill's name, the identifier for reading it.
         description:
           type: string
           description: One line saying when to read this skill. Empty when the package author omitted it, which is also reported
@@ -6952,14 +7108,14 @@ components:
           type: boolean
           description: Whether this server runs a query against the source directly. False for a source outside the package's
             query surface.
-        authorize:
-          type: array
-          description: "The source's effective access gates: file-level ones first, then its own, `authorize` before
-            `access_filter`."
-          items:
-            $ref: "#/components/schemas/EntityGate"
         servedSource:
           $ref: "#/components/schemas/EntitySourceAddress"
+        gates:
+          type: array
+          description: "The source's effective access gates, `#(authorize)` and `#(access_filter)` alike, told apart by each
+            gate's `route`: file-level ones first, then its own, `authorize` before `access_filter`."
+          items:
+            $ref: "#/components/schemas/EntityGate"
     SourceFailure:
       type: object
       description: One source that failed to materialize, and why. Kept beside the entries because a failed source names no
@@ -7278,11 +7434,8 @@ components:
         - resource
         - versionId
         - origin
-        - archived
-        - pinned
         - createdAt
         - updatedAt
-        - loaded
       properties:
         resource:
           $ref: "#/components/schemas/ResourcePath"
@@ -7331,10 +7484,12 @@ components:
           $ref: "#/components/schemas/PackageMaterializationConfig"
         archived:
           type: boolean
-          description: Out of service; reads that name it answer 410. Set with `PATCH`; refused while it is `latest`, the last
-            active version, or building.
+          default: false
+          description: 'Out of service: its content reads answer 410, while its record, its status and `PATCH` (`{"archived":
+            false}` restores it) stay available. Refused while it is `latest`, the last active version, or building.'
         pinned:
           type: boolean
+          default: false
           description: Exempt from server-made-version retention. Set with `PATCH`.
         loaded:
           type: boolean
@@ -7416,8 +7571,12 @@ components:
           enum:
             - loading
             - serving
+            - unloaded
+            - failed
           description: "`serving`: a compiled copy answers queries here now, even while a recompile runs. `loading`: the first
-            load is in progress and nothing answers yet."
+            load is in progress and nothing answers yet. `unloaded`: this server holds the version but has not loaded
+            it, or unloaded it; the next read loads it. `failed`: the last load failed and nothing answers; `/status`
+            names it under `loadErrors`."
         loadingStartedAt:
           type: string
           format: date-time
@@ -7465,10 +7624,10 @@ components:
               enum:
                 - unbound
                 - bound
-                - live_fallback
+                - bind_failed
               description: "`unbound`: no manifest, the version serves live. `bound`: the configured manifest was applied.
-                `live_fallback`: a manifest is configured but its fetch or bind failed, so what `location` names is
-                still what is served."
+                `bind_failed`: the configured manifest could not be fetched or bound, so the version keeps serving the
+                binding before, which `location` names."
             location:
               type: string
               description: The manifest actually bound, which after a failed rebind differs from the configured one.
