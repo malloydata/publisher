@@ -64,7 +64,8 @@ info:
     - `PATCH` is JSON merge-patch: present fields are set, `null` unsets, absent fields are untouched, lists replace. An
     orchestrator pushes an environment's desired state as a `PATCH` whose `connections` list replaces the stored one.
     `PUT` is used only by the report write, which replaces a file. `POST` on a collection answers 201 with the resource
-    and a `Location`; `DELETE` answers 204.
+    and a `Location`; `DELETE` answers 204. A create or a write takes its own resource, with only its writable fields
+    set; an action (`:query`, `:compile`, `:run-sql`, `:reload`) takes an `…Request` body, since it creates no resource.
 
     - Every mutable resource carries a `revision`, returned as `ETag` on reads; every write accepts `If-Match` and
     answers 412 when the resource has moved on.
@@ -2547,7 +2548,7 @@ paths:
         content:
           application/json:
             schema:
-              $ref: "#/components/schemas/RunCreateRequest"
+              $ref: "#/components/schemas/Run"
       responses:
         "201":
           description: Started.
@@ -6340,7 +6341,6 @@ components:
         - resource
         - runId
         - versionId
-        - status
         - trigger
         - mode
         - scope
@@ -6354,7 +6354,8 @@ components:
           readOnly: true
         versionId:
           $ref: "#/components/schemas/VersionId"
-          readOnly: true
+          x-immutable: true
+          description: The version the run builds. Set on create (`latest` resolves); never changed.
         slot:
           readOnly: true
           type: string
@@ -6367,8 +6368,8 @@ components:
             - committed
             - failed
             - cancelled
-          description: "`committed` is the only success: the manifest is visible and the bindings moved. A client may request only
-            `cancelled`."
+          description: "`committed` is the only success: the manifest is visible and the bindings moved. Ignored on create; a
+            `PATCH` may set only `cancelled`."
         trigger:
           readOnly: true
           type: string
@@ -6382,6 +6383,7 @@ components:
           enum:
             - auto
             - orchestrated
+          description: "Derived: `orchestrated` when the run was created with `buildInstructions`, `auto` otherwise."
         scope:
           readOnly: true
           type: string
@@ -6389,8 +6391,14 @@ components:
             - package
             - version
         options:
-          readOnly: true
           $ref: "#/components/schemas/RunOptions"
+          x-immutable: true
+          description: How to run the build. Set on create; never changed.
+        buildInstructions:
+          $ref: "#/components/schemas/BuildInstructions"
+          writeOnly: true
+          description: "An orchestrator's orders: which tables to build, under which names. Accepted on create and never returned;
+            the run's manifest records what was built. A run created with them is `mode: orchestrated`."
         startedAt:
           type: string
           format: date-time
@@ -6443,19 +6451,6 @@ components:
           type: string
           description: The caller's id for this run, attached as the `run_id` property so every statement of one build groups
             together in the backend's query history.
-    RunCreateRequest:
-      type: object
-      description: Start a run. Without `buildInstructions` the server builds every persist source of the version into tables
-        it names (an auto-run). With them, the caller names the tables and the server builds exactly those (an
-        orchestrated run).
-      properties:
-        versionId:
-          $ref: "#/components/schemas/VersionRef"
-          description: The version to build; `latest` when omitted.
-        buildInstructions:
-          $ref: "#/components/schemas/BuildInstructions"
-        options:
-          $ref: "#/components/schemas/RunOptions"
     RunList:
       type: object
       required:

@@ -68,6 +68,7 @@ parent.
   lists replace, so an orchestrator pushes an environment's desired state as a `PATCH` of its `connections`. `PUT` is
   used only by the report write, which replaces a file.
   `POST` on a collection answers 201 with the resource and a `Location`; `DELETE` answers 204.
+  A create or a write takes its own resource, with only its writable fields set; an action (`:query`, `:compile`, `:run-sql`, `:reload`) takes an `…Request` body, since it creates no resource.
 - **Field behavior.** What only the server sets is `readOnly` (`resource`, `revision`, timestamps, a run's every field but `status`), and a write that sends it back as read ignores it, so a client can `PATCH` a resource it just read. A `name` is set on create and never changes; a write that changes one answers 400.
 - **Idempotent creates.** Every `POST` that creates or starts something (an environment, a connection, a package, a version, a run) accepts an `Idempotency-Key` header: a retry with the same key and body within 24 hours answers with the first response and does nothing again, and the same key with a different body answers 409 `IDEMPOTENCY_KEY_REUSED`.
 - **Guarded deletes.** A delete that would delete other resources with it (an environment's packages and connections, a package's versions) requires `?force=true`, and answers 409 `RESOURCE_NOT_EMPTY` without it.
