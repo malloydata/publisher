@@ -80,6 +80,11 @@ info:
     - A delete that would delete other resources with it (an environment's packages and connections, a package's
     versions) requires `?force=true`, and answers 409 `RESOURCE_NOT_EMPTY` without it.
 
+    - Every timestamp is an RFC 3339 `date-time` in UTC, read-only, and absent until it has a value, never `null`. An
+    event's time ends in `At` (`createdAt`, `startedAt`, `failedAt`); the moment some data reflects ends in `AsOf`
+    (`dataAsOf`, `schemaAsOf`). Every stored resource, one with a `revision`, carries `createdAt` and `updatedAt`.
+    Durations are integers whose name carries the unit (`durationMs`, `freshnessWindowSeconds`).
+
     - Every list is `{items, nextCursor}`, paged with `limit` and `after`. `/status` is the one unpaged snapshot.
 
     - Query results are typed: `rows` always, and Malloy's full result, with column types and render metadata, only on
@@ -3119,6 +3124,7 @@ components:
         boundAt:
           type: string
           format: date-time
+          readOnly: true
     BuildGraph:
       type: object
       required:
@@ -3509,6 +3515,8 @@ components:
       required:
         - name
         - type
+        - createdAt
+        - updatedAt
       properties:
         resource:
           type: string
@@ -3765,6 +3773,7 @@ components:
         builtAt:
           type: string
           format: date-time
+          readOnly: true
         error:
           type: string
     DuckdbConnection:
@@ -4017,6 +4026,8 @@ components:
       description: A namespace for packages and connections; the unit of tenancy.
       required:
         - name
+        - createdAt
+        - updatedAt
       properties:
         resource:
           type: string
@@ -4336,6 +4347,7 @@ components:
         advancedAt:
           type: string
           format: date-time
+          readOnly: true
     IncrementalBoundaryInput:
       type: object
       description: An `IncrementalBoundary` a previous run reported, returned verbatim with the table it belongs to.
@@ -4518,6 +4530,7 @@ components:
         dataAsOf:
           type: string
           format: date-time
+          readOnly: true
         freshnessWindowSeconds:
           type: integer
           format: int64
@@ -4707,6 +4720,8 @@ components:
       required:
         - name
         - source
+        - createdAt
+        - updatedAt
       properties:
         resource:
           type: string
@@ -5572,6 +5587,7 @@ components:
         - mode
         - scope
         - createdAt
+        - updatedAt
       properties:
         resource:
           type: string
@@ -5619,21 +5635,15 @@ components:
           readOnly: true
           $ref: "#/components/schemas/RunOptions"
         startedAt:
-          type:
-            - string
-            - "null"
+          type: string
           format: date-time
           readOnly: true
         completedAt:
-          type:
-            - string
-            - "null"
+          type: string
           format: date-time
           readOnly: true
         durationMs:
-          type:
-            - integer
-            - "null"
+          type: integer
           readOnly: true
         error:
           type:
@@ -5708,6 +5718,7 @@ components:
         builtAt:
           type: string
           format: date-time
+          readOnly: true
         entries:
           type: array
           items:
@@ -5823,7 +5834,7 @@ components:
         - operationalState
         - version
         - hostname
-        - timestamp
+        - generatedAt
         - environments
       properties:
         operationalState:
@@ -5846,9 +5857,11 @@ components:
         bootId:
           type: string
           description: One UUID per process start.
-        timestamp:
+        generatedAt:
           type: string
           format: date-time
+          description: When the server took this snapshot.
+          readOnly: true
         readOnly:
           type: boolean
           description: Whether `resources.readOnly` is on, so every resource write on this API answers 403 `READ_ONLY`.
@@ -5871,6 +5884,7 @@ components:
                 lastRunAt:
                   type: string
                   format: date-time
+                  readOnly: true
                 collected:
                   type: object
                   additionalProperties:
@@ -5903,6 +5917,7 @@ components:
               failedAt:
                 type: string
                 format: date-time
+                readOnly: true
         environments:
           type: array
           items:
@@ -5934,9 +5949,10 @@ components:
             loading:
               type: boolean
               description: A load or recompile is in progress here. A first load reports `loading` without `serving`.
-            loadingSince:
+            loadingStartedAt:
               type: string
               format: date-time
+              readOnly: true
         loaded:
           type: boolean
           description: Whether this server holds the version in memory.
@@ -5946,6 +5962,7 @@ components:
           type: string
           format: date-time
           description: When a request last read this version here.
+          readOnly: true
         inFlightQueries:
           type: integer
           description: Queries running against this version right now.
@@ -5958,11 +5975,13 @@ components:
         compiledAt:
           type: string
           format: date-time
+          readOnly: true
         schemaAsOf:
           type: string
           format: date-time
           description: When the warehouse schema the served models carry was read. Equals `compiledAt` unless the compile was a
             refresh.
+          readOnly: true
         compiledModelBytes:
           type: integer
           format: int64
@@ -5993,9 +6012,10 @@ components:
           type: object
           description: Present when the version serves a model older than its content because the newer content failed to compile.
           properties:
-            since:
+            failedAt:
               type: string
               format: date-time
+              readOnly: true
             message:
               type: string
         servedRevision:
@@ -6512,6 +6532,7 @@ components:
         - archived
         - pinned
         - createdAt
+        - updatedAt
       properties:
         resource:
           type: string
@@ -6585,10 +6606,14 @@ components:
           type: string
           format: date-time
           readOnly: true
+        updatedAt:
+          type: string
+          format: date-time
+          readOnly: true
+          description: When the version's state (archived, pinned, loaded, its manifest binding) last changed; its content never
+            does.
         archivedAt:
-          type:
-            - string
-            - "null"
+          type: string
           format: date-time
           readOnly: true
     VersionId:
