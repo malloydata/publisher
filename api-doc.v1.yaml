@@ -56,19 +56,20 @@ info:
 
     - State changes are fields: `PATCH …/versions/{versionId}` with `archived`, `loaded`, `pinned` or
     `manifestLocation`; `PATCH …/packages/{packageName}` with `latestVersionId`; `PATCH …/runs/{runId}` with `status:
-    "cancelled"`. The one explicit action is `POST …/connections/{connectionName}/test`.
+    "cancelled"`. There are no action routes: an unsaved connection is tested with `?dryRun=true` on create or update.
 
-    - `PATCH` is JSON merge-patch: present fields are set, `null` unsets, absent fields are untouched, lists replace.
-    `PUT` replaces the whole resource where that is wanted (environments, for an orchestrator's push). `POST` on a
-    collection answers 201 with the resource and a `Location`; `DELETE` answers 204.
+    - `PATCH` is JSON merge-patch: present fields are set, `null` unsets, absent fields are untouched, lists replace. An
+    orchestrator pushes an environment's desired state as a `PATCH` whose `connections` list replaces the stored one.
+    `PUT` is used only by the report write, which replaces a file. `POST` on a collection answers 201 with the resource
+    and a `Location`; `DELETE` answers 204.
 
     - Every mutable resource carries a `revision`, returned as `ETag` on reads; every write accepts `If-Match` and
     answers 412 when the resource has moved on.
 
     - Every list is `{items, nextCursor}`, paged with `limit` and `after`. `/status` is the one unpaged snapshot.
 
-    - Query results are typed: `rows` always, `schema` always, Malloy's full result only on request. Nothing is a JSON
-    string inside JSON.
+    - Query results are typed: `rows` always, and Malloy's full result, with column types and render metadata, only on
+    request. Nothing is a JSON string inside JSON.
 
     - Every error is `{status, reason, message, details?}` with `reason` from one closed enum. Branch on `status` and
     `reason`, never on `message`.
@@ -246,64 +247,14 @@ paths:
           $ref: "#/components/responses/Internal"
         "503":
           $ref: "#/components/responses/Unavailable"
-    put:
-      operationId: replace-environment
-      tags:
-        - environments
-      summary: Replace an environment
-      description: Whole-object replacement, for an orchestrator that pushes its desired state. `connections` replaces the
-        stored list; an entry with a name and no config keeps the stored connection. Creates the environment when it
-        does not exist (201).
-      parameters:
-        - $ref: "#/components/parameters/ifMatch"
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              $ref: "#/components/schemas/Environment"
-      responses:
-        "200":
-          description: Replaced.
-          headers:
-            ETag:
-              $ref: "#/components/headers/ETag"
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/Environment"
-        "201":
-          description: Created.
-          headers:
-            ETag:
-              $ref: "#/components/headers/ETag"
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/Environment"
-        "400":
-          $ref: "#/components/responses/BadRequest"
-        "401":
-          $ref: "#/components/responses/Unauthorized"
-        "403":
-          $ref: "#/components/responses/Forbidden"
-        "404":
-          $ref: "#/components/responses/NotFound"
-        "409":
-          $ref: "#/components/responses/Conflict"
-        "412":
-          $ref: "#/components/responses/PreconditionFailed"
-        "500":
-          $ref: "#/components/responses/Internal"
-        "503":
-          $ref: "#/components/responses/Unavailable"
     patch:
       operationId: update-environment
       tags:
         - environments
       summary: Update an environment's fields
-      description: JSON merge-patch. `connections` is a list and so replaces when present; use the connection routes for one
-        connection.
+      description: JSON merge-patch. `connections` is a list and so replaces the stored list when present, which is how an
+        orchestrator pushes its desired state; an entry with a name and no configuration keeps that stored connection,
+        so a push need not resend credentials the server withholds. Use the connection routes to change one connection.
       parameters:
         - $ref: "#/components/parameters/ifMatch"
       requestBody:
@@ -574,128 +525,6 @@ paths:
           $ref: "#/components/responses/Unavailable"
 
 
-  /environments/{environmentName}/connections/{connectionName}/test:
-    parameters:
-      - $ref: "#/components/parameters/environmentName"
-      - $ref: "#/components/parameters/connectionName"
-    post:
-      operationId: test-connection
-      tags:
-        - connections
-      summary: Test a stored connection
-      description: The one explicit action in the API; a test is not a state. To test an unsaved configuration, create or
-        update with `?dryRun=true`.
-      responses:
-        "200":
-          description: The result, whether or not the connection reached its database.
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/ConnectionTestResult"
-        "400":
-          $ref: "#/components/responses/BadRequest"
-        "401":
-          $ref: "#/components/responses/Unauthorized"
-        "403":
-          $ref: "#/components/responses/Forbidden"
-        "404":
-          $ref: "#/components/responses/NotFound"
-        "409":
-          $ref: "#/components/responses/Conflict"
-        "412":
-          $ref: "#/components/responses/PreconditionFailed"
-        "500":
-          $ref: "#/components/responses/Internal"
-        "503":
-          $ref: "#/components/responses/Unavailable"
-
-
-  /environments/{environmentName}/connections/{connectionName}/tables:
-    parameters:
-      - $ref: "#/components/parameters/environmentName"
-      - $ref: "#/components/parameters/connectionName"
-    get:
-      operationId: list-connection-tables
-      tags:
-        - tables
-      summary: Tables the server created or serves in this connection
-      parameters:
-        - $ref: "#/components/parameters/limit"
-        - $ref: "#/components/parameters/after"
-        - name: state
-          in: query
-          schema:
-            type: string
-            enum:
-              - staging
-              - serving
-              - superseded
-              - reclaimable
-              - dropped
-        - name: ownerPackageName
-          in: query
-          schema:
-            $ref: "#/components/schemas/IdentifierPattern"
-      responses:
-        "200":
-          description: A page of physical tables.
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/PhysicalTableList"
-        "400":
-          $ref: "#/components/responses/BadRequest"
-        "401":
-          $ref: "#/components/responses/Unauthorized"
-        "403":
-          $ref: "#/components/responses/Forbidden"
-        "404":
-          $ref: "#/components/responses/NotFound"
-        "409":
-          $ref: "#/components/responses/Conflict"
-        "412":
-          $ref: "#/components/responses/PreconditionFailed"
-        "500":
-          $ref: "#/components/responses/Internal"
-        "503":
-          $ref: "#/components/responses/Unavailable"
-
-
-  /environments/{environmentName}/connections/{connectionName}/tables/{tableId}:
-    parameters:
-      - $ref: "#/components/parameters/environmentName"
-      - $ref: "#/components/parameters/connectionName"
-      - $ref: "#/components/parameters/tableId"
-    get:
-      operationId: get-connection-table
-      tags:
-        - tables
-      summary: One physical table
-      responses:
-        "200":
-          description: The table.
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/PhysicalTable"
-        "400":
-          $ref: "#/components/responses/BadRequest"
-        "401":
-          $ref: "#/components/responses/Unauthorized"
-        "403":
-          $ref: "#/components/responses/Forbidden"
-        "404":
-          $ref: "#/components/responses/NotFound"
-        "409":
-          $ref: "#/components/responses/Conflict"
-        "412":
-          $ref: "#/components/responses/PreconditionFailed"
-        "500":
-          $ref: "#/components/responses/Internal"
-        "503":
-          $ref: "#/components/responses/Unavailable"
-
-
   /environments/{environmentName}/packages:
     parameters:
       - $ref: "#/components/parameters/environmentName"
@@ -920,10 +749,10 @@ paths:
       description: "A live package only (watch mode, a draft): recompiles the author's files in place, settling any recompile
         the watcher already started, and answers when it is done, with the compile errors if it failed. This is the
         handshake an edit loop needs and watch mode alone does not give: watch mode recompiles in the background and
-        skips a save that does not compile without saying so. A package that is not live answers 409
-        `PACKAGE_NOT_LIVE`: an immutable version has nothing to reload. To pick up a changed source, re-fetch it
-        (`POST …/versions`); to make a version resident, `PATCH …/versions/{versionId}` with `{\"loaded\": true}`; to
-        recompile against current warehouse schemas, `POST …/versions/{versionId}/refresh-schema`."
+        skips a save that does not compile without saying so. A package that is not live answers 409 `PACKAGE_NOT_LIVE`:
+        an immutable version has nothing to reload. To pick up a changed source, re-fetch it (`POST …/versions`); to
+        make a version resident, `PATCH …/versions/{versionId}` with `{\"loaded\": true}`; to recompile against current
+        warehouse schemas, `POST …/versions/{versionId}/refresh-schema`."
       responses:
         "200":
           description: What the reload did (`outcome` is `recompiled`).
@@ -1009,7 +838,7 @@ paths:
           description: Only archived, or only active, versions.
       responses:
         "200":
-          description: A page of versions, newest `seq` first.
+          description: A page of versions, newest first.
           content:
             application/json:
               schema:
@@ -1066,11 +895,12 @@ paths:
           $ref: "#/components/responses/NotFound"
         "409":
           $ref: "#/components/responses/Conflict"
+        "412":
+          $ref: "#/components/responses/PreconditionFailed"
         "500":
           $ref: "#/components/responses/Internal"
         "503":
           $ref: "#/components/responses/Unavailable"
-
 
 
   /environments/{environmentName}/packages/{packageName}/versions/{versionId}/refresh-schema:
@@ -1104,6 +934,8 @@ paths:
           $ref: "#/components/responses/NotFound"
         "409":
           $ref: "#/components/responses/Conflict"
+        "412":
+          $ref: "#/components/responses/PreconditionFailed"
         "500":
           $ref: "#/components/responses/Internal"
         "503":
@@ -1154,8 +986,8 @@ paths:
       tags:
         - versions
       summary: Change a version's lifecycle state
-      description: "JSON merge-patch over `archived`, `loaded`, `pinned` and `manifestLocation`, each independent.
-        `loaded: true` loads the version if it is not resident, without reading it and without changing its content. `archived:
+      description: "JSON merge-patch over `archived`, `loaded`, `pinned` and `manifestLocation`, each independent. `loaded:
+        true` loads the version if it is not resident, without reading it and without changing its content. `archived:
         true` is refused with 409 on a live package's `live` (`PACKAGE_IS_LIVE`), and while the version is `latest`
         (`VERSION_IS_LATEST`), the last active version (`VERSION_IS_LAST_ACTIVE`) or building (`VERSION_BUILDING`).
         `loaded: false` drains and unloads; 409 while a run holds the version. `manifestLocation` binds an external
@@ -2051,46 +1883,6 @@ paths:
           $ref: "#/components/responses/Unavailable"
 
 
-  /environments/{environmentName}/packages/{packageName}/versions/{versionId}/bindings:
-    parameters:
-      - $ref: "#/components/parameters/environmentName"
-      - $ref: "#/components/parameters/packageName"
-      - $ref: "#/components/parameters/versionId"
-    get:
-      operationId: list-bindings
-      tags:
-        - materialization
-      summary: What the version serves per source
-      parameters:
-        - $ref: "#/components/parameters/limit"
-        - $ref: "#/components/parameters/after"
-      responses:
-        "200":
-          description: A page of bindings.
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/BindingList"
-        "400":
-          $ref: "#/components/responses/BadRequest"
-        "401":
-          $ref: "#/components/responses/Unauthorized"
-        "403":
-          $ref: "#/components/responses/Forbidden"
-        "404":
-          $ref: "#/components/responses/NotFound"
-        "409":
-          $ref: "#/components/responses/Conflict"
-        "410":
-          $ref: "#/components/responses/Gone"
-        "412":
-          $ref: "#/components/responses/PreconditionFailed"
-        "500":
-          $ref: "#/components/responses/Internal"
-        "503":
-          $ref: "#/components/responses/Unavailable"
-
-
   /environments/{environmentName}/packages/{packageName}/versions/{versionId}/connections:
     parameters:
       - $ref: "#/components/parameters/environmentName"
@@ -2224,9 +2016,9 @@ paths:
         - materialization
       summary: Start a materialization run
       description: "Loads the version first if this server does not hold it, so a run (a re-run of a failed version among
-        them) needs no separate load. 409 `RUN_ACTIVE` while another run holds the slot; 409 `TABLE_OWNED_ELSEWHERE` when an instruction names a
-        table another package or slot owns; 400 `VERSION_NOT_LATEST` for an auto-run of a non-latest version under
-        `scope: package`."
+        them) needs no separate load. 409 `RUN_ACTIVE` while another run holds the slot; 409 `TABLE_OWNED_ELSEWHERE`
+        when an instruction names a table another package or slot owns; 400 `VERSION_NOT_LATEST` for an auto-run of a
+        non-latest version under `scope: package`."
       requestBody:
         required: true
         content:
@@ -2817,12 +2609,6 @@ components:
       required: true
       schema:
         type: string
-    tableId:
-      name: tableId
-      in: path
-      required: true
-      schema:
-        type: string
     runId:
       name: runId
       in: path
@@ -3170,8 +2956,6 @@ components:
             - gcs
             - s3
             - azure
-        attributes:
-          $ref: "#/components/schemas/ConnectionAttributes"
         bigqueryConnection:
           $ref: "#/components/schemas/BigqueryConnection"
         snowflakeConnection:
@@ -3291,25 +3075,11 @@ components:
         boundAt:
           type: string
           format: date-time
-    BindingList:
-      type: object
-      required:
-        - items
-      properties:
-        items:
-          type: array
-          items:
-            $ref: "#/components/schemas/Binding"
-        nextCursor:
-          $ref: "#/components/schemas/Cursor"
     BuildGraph:
       type: object
       required:
-        - connectionName
         - nodes
       properties:
-        connectionName:
-          type: string
         nodes:
           type: array
           description: A single level holding every persist source of the graph, in build order. Each node's `dependsOn` names
@@ -3531,10 +3301,6 @@ components:
       properties:
         resource:
           type: string
-        environmentName:
-          type: string
-        packageName:
-          type: string
         versionId:
           $ref: "#/components/schemas/VersionId"
         path:
@@ -3702,9 +3468,6 @@ components:
         resource:
           type: string
           readOnly: true
-        environmentName:
-          type: string
-          readOnly: true
         name:
           $ref: "#/components/schemas/IdentifierPattern"
         type:
@@ -3758,8 +3521,6 @@ components:
           $ref: "#/components/schemas/QueryMetadata"
         queryMetadataEnforced:
           $ref: "#/components/schemas/QueryMetadata"
-        attributes:
-          $ref: "#/components/schemas/ConnectionAttributes"
         proxy:
           $ref: "#/components/schemas/ConnectionProxy"
         postgresConnection:
@@ -3794,22 +3555,6 @@ components:
           type: string
           format: date-time
           readOnly: true
-    ConnectionAttributes:
-      type: object
-      description: Connection capabilities and configuration attributes
-      properties:
-        dialectName:
-          type: string
-          description: SQL dialect name for the connection
-        isPool:
-          type: boolean
-          description: Whether the connection uses connection pooling
-        canPersist:
-          type: boolean
-          description: Whether the connection supports persistent storage operations
-        canStream:
-          type: boolean
-          description: Whether the connection supports streaming query results
     ConnectionList:
       type: object
       required:
@@ -3848,8 +3593,6 @@ components:
         message:
           type: string
           description: Why the test failed, redacted against the connection. Absent when `ok`.
-        attributes:
-          $ref: "#/components/schemas/ConnectionAttributes"
     Cursor:
       type: string
       description: Opaque position in a list. Send it back as `after` to continue; a list with no `nextCursor` is complete.
@@ -3862,10 +3605,6 @@ components:
         resource:
           type: string
           description: The page's URL under `…/versions/{versionId}/public/`.
-        environmentName:
-          type: string
-        packageName:
-          type: string
         versionId:
           $ref: "#/components/schemas/VersionId"
         path:
@@ -4241,9 +3980,8 @@ components:
           description: Markdown shown on the environment's page.
         connections:
           type: array
-          description: On a read, the environment's connections with credentials withheld. On `PUT`, the whole list, which
-            replaces what is stored; a connection named with no config is kept as stored. On `PATCH`, absent means
-            untouched.
+          description: On a read, the environment's connections with credentials withheld. On `PATCH`, the whole list, which
+            replaces what is stored; a connection named with no config is kept as stored. Absent means untouched.
           items:
             $ref: "#/components/schemas/Connection"
         revision:
@@ -4600,26 +4338,6 @@ components:
             type: string
           description: "The dimensions the index is partitioned by: the source's required filters, in declaration order, then its
             `#(access_filter)` term columns."
-    JoinedTerms:
-      type: object
-      required:
-        - alias
-        - source
-        - terms
-      description: A join to a given-scoped source, declared on a persisted source and read per caller through the joined
-        source's own artifact.
-      properties:
-        alias:
-          type: string
-          description: The join's alias as the author wrote it. Dotted for a join reached through another such join (`grant.team`).
-        source:
-          type: string
-          description: The joined source's name — itself a persisted source.
-        terms:
-          type: array
-          items:
-            $ref: "#/components/schemas/StrippedTerm"
-          description: The joined source's own stripped terms, which its binding re-applies with the caller's values.
     LoadWarning:
       type: object
       required:
@@ -4704,7 +4422,11 @@ components:
           default: persist
         tableId:
           type: string
-          description: The physical table, at `GET …/connections/{connectionName}/tables/{tableId}`.
+          description: The physical table's stable identity across the runs that write it; `tableName` is its name in the warehouse.
+        tableName:
+          type: string
+          description: "The table's name in the warehouse, schema-qualified where the connection has schemas: what a reader
+            outside Publisher queries, and what a manifest file bound with `manifestLocation` names."
         connectionName:
           type: string
           description: The connection the table lives in.
@@ -4776,10 +4498,6 @@ components:
         - path
       properties:
         resource:
-          type: string
-        environmentName:
-          type: string
-        packageName:
           type: string
         versionId:
           $ref: "#/components/schemas/VersionId"
@@ -4937,9 +4655,6 @@ components:
         resource:
           type: string
           readOnly: true
-        environmentName:
-          type: string
-          readOnly: true
         name:
           $ref: "#/components/schemas/IdentifierPattern"
         description:
@@ -5077,7 +4792,6 @@ components:
         - sourceID
         - connectionName
         - sourceEntityId
-        - sql
         - columns
       properties:
         name:
@@ -5128,55 +4842,6 @@ components:
             source's scope, its connection `fingerprint`, and its canonical compiled SQL — deliberately independent of
             package version, so it changes only when the source's data identity changes. Consumers treat it as an opaque
             token and use the supplied value verbatim.
-        sql:
-          type: string
-          description: The source's build SQL (with the build manifest applied for upstream rewrites).
-        partition:
-          type: array
-          items:
-            type: string
-          description: >-
-            The source's declared `#@ persist partition=` columns, resolved against its public projection and reported
-            in the author's order, which is the order the stored table's directories nest in. Absent or empty means the
-            table is written unpartitioned, which is the default and what every source built before this field existed
-            means.
-
-
-            A layout, not an access control. Every term the build strips from a source is re-applied when the artifact
-            is read whether or not its column is partitioned, so a list omitting the column a caller is scoped by costs
-            a full scan and never widens what that caller sees. Consumers should not infer isolation from it.
-
-
-            `partition=` requires `storage=`; declared without one it is a publish refusal rather than an ignored key,
-            so this is empty for every colocated source.
-        strippedTerms:
-          type: array
-          items:
-            $ref: "#/components/schemas/StrippedTerm"
-          description: >-
-            The source's extend-block `where:` conjuncts that reference a given — the terms Malloy leaves OUT of the
-            build and that must be re-applied, with the caller's own values, whenever the artifact is read. Absent or
-            empty means the artifact is the whole relation and needs no re-application.
-
-
-            Reported so a consumer that supplies its own serve bindings can tell that this artifact is under-filtered on
-            its own, and which givens a reader has to bind for it to be served correctly. The publisher's own serve path
-            re-derives these from the compiled model rather than from here.
-        joinedTerms:
-          type: array
-          items:
-            $ref: "#/components/schemas/JoinedTerms"
-          description: >-
-            The joins declared on this source whose TARGET is scoped by a given — one entry per such join, naming the
-            joined source and the terms its own artifact re-applies. Absent or empty means no field of this source reads
-            a caller-scoped join.
-
-
-            These terms are not stripped from THIS artifact: a join is not part of a persist source's build, so this
-            table holds the same rows with or without it. They are what makes a field reading through the join answer
-            per caller (a visibility dimension that null-checks a grant table, say), and they are applied only by the
-            joined source's own binding. So a reader serving this artifact must bind the joined source too; without it,
-            the join cannot be re-emitted and any query reading through the alias must be served live.
         refresh:
           type:
             - string
@@ -5203,22 +4868,6 @@ components:
             its own: it INHERITS its base's, so what is reported here is the base source's effective objective resolved
             by the rule above. A rollup and its base therefore go stale together, which is what makes "serve the base
             when the rollup is stale" a safe degradation rather than a change of answer.
-        queryMetadata:
-          oneOf:
-            - $ref: "#/components/schemas/QueryMetadata"
-            - type: "null"
-          description: "The source's EFFECTIVE per-query metadata after most-specific-wins resolution per property (`#@
-            queryMetadata.*` > model-file `## queryMetadata.*` > package `queryMetadata`; the deprecated
-            `materialization.` spellings of the last two are still read and lose to the canonical ones). Null = declared
-            at no level. The publisher attaches it — merged under its own context — to every statement it issues while
-            building this source AND to every query served from it, and reports it here so a caller can see how the
-            source's traffic will be tagged. Reported as DECLARED, not as attached: a property whose name the server
-            owns (`class`, `environment`, `package`, `model`, `source`, `trigger`, `run_id`, `query_id`, `version`)
-            appears here and is then dropped rather than attached. Copying this bag onto a request does NOT reproduce
-            that drop: the reservation covers a MODEL-SIDE declaration only, so a `source`, `trigger` or `run_id` sent
-            on a request layer ATTACHES, and the statement then reads, in the backend's own history, exactly like a
-            build of this source. Strip the server-owned names before reusing it. Observability only: excluded from
-            `sourceEntityId`, so editing it never re-addresses the source or orphans its table."
         columns:
           type: array
           description: Output schema of the source.
@@ -5268,81 +4917,6 @@ components:
             A synthesized rollup (`origin: preaggregate`) is declared by no model, so this is the model of its base —
             the file holding the `#@ preaggregate` annotations it was synthesized from, which is where an author would
             go to change it.
-    PhysicalTable:
-      type: object
-      description: A table the server created or serves in a connection, with its life cycle. The one place a table has a
-        name; everything else refers to it by `tableId`.
-      required:
-        - tableId
-        - connectionName
-        - baseName
-        - generation
-        - tableName
-        - ownership
-        - state
-      properties:
-        resource:
-          type: string
-        tableId:
-          type: string
-        environmentName:
-          type: string
-        connectionName:
-          type: string
-        schemaName:
-          type:
-            - string
-            - "null"
-        baseName:
-          type: string
-          description: The stable name the API, the Console and `#@ persist name=` speak.
-        generation:
-          type: integer
-          format: int64
-        tableName:
-          type: string
-          description: "The name in the warehouse: `<baseName>__g<generation>` for a server-owned table, verbatim for a
-            caller-owned one."
-        ownership:
-          type: string
-          enum:
-            - server
-            - caller
-          description: Caller-owned tables (built from `buildInstructions`) are never renamed or reclaimed by the server.
-        ownerPackageName:
-          type: string
-        ownerSlot:
-          type: string
-          description: "`<package>` or `<package>@<version>`: the slot that owns the table."
-        state:
-          type: string
-          enum:
-            - staging
-            - serving
-            - superseded
-            - reclaimable
-            - dropped
-        processScoped:
-          type: boolean
-          description: "True for a table in a version's in-memory DuckDB: it exists only while this server process does."
-        createdByRunId:
-          type: string
-        stateChangedAt:
-          type: string
-          format: date-time
-        incremental:
-          $ref: "#/components/schemas/IncrementalBoundary"
-    PhysicalTableList:
-      type: object
-      required:
-        - items
-      properties:
-        items:
-          type: array
-          items:
-            $ref: "#/components/schemas/PhysicalTable"
-        nextCursor:
-          $ref: "#/components/schemas/Cursor"
     PostgresConnection:
       type: object
       description: PostgreSQL database connection configuration
@@ -5595,7 +5169,6 @@ components:
       description: Rows always; the full Malloy result only when asked for.
       required:
         - rows
-        - schema
         - metadata
       properties:
         rows:
@@ -5604,10 +5177,6 @@ components:
           items:
             type: object
             additionalProperties: true
-        schema:
-          type: array
-          items:
-            $ref: "#/components/schemas/ResultColumn"
         metadata:
           $ref: "#/components/schemas/QueryResultMetadata"
         malloyResult:
@@ -5767,8 +5336,8 @@ components:
             - unchanged
             - published
             - recompiled
-          description: "`recompiled`: a live package was recompiled in place (`POST …/reload`). `unchanged`: a re-fetch found
-            the source fingerprint unchanged and made nothing. `published`: a re-fetch found the source changed and
+          description: "`recompiled`: a live package was recompiled in place (`POST …/reload`). `unchanged`: a re-fetch found the
+            source fingerprint unchanged and made nothing. `published`: a re-fetch found the source changed and
             `version` is the version it made (`POST …/versions`)."
         package:
           $ref: "#/components/schemas/Package"
@@ -5784,10 +5353,6 @@ components:
         - title
       properties:
         resource:
-          type: string
-        environmentName:
-          type: string
-        packageName:
           type: string
         versionId:
           $ref: "#/components/schemas/VersionId"
@@ -5928,22 +5493,6 @@ components:
           type: integer
           description: The grid column the tile's left edge sits in, counted from 1, from `col=N` on its entry in `tiles=[…]`. See
             `row`.
-    ResultColumn:
-      type: object
-      required:
-        - name
-        - type
-      properties:
-        name:
-          type: string
-        type:
-          type: string
-          description: The Malloy type (`string`, `number`, `date`, `timestamp`, `boolean`, `json`, `array`, `record`).
-        fields:
-          type: array
-          description: For a nested result, its columns.
-          items:
-            $ref: "#/components/schemas/ResultColumn"
     Revision:
       type: integer
       format: int64
@@ -5966,10 +5515,6 @@ components:
         resource:
           type: string
         runId:
-          type: string
-        environmentName:
-          type: string
-        packageName:
           type: string
         versionId:
           $ref: "#/components/schemas/VersionId"
@@ -6125,10 +5670,6 @@ components:
           type: array
           items:
             $ref: "#/components/schemas/RefusedSource"
-        failures:
-          type: array
-          items:
-            $ref: "#/components/schemas/SourceFailure"
     S3Connection:
       type: object
       description: AWS S3 connection configuration for DuckDB
@@ -6301,10 +5842,6 @@ components:
       properties:
         resource:
           type: string
-        environmentName:
-          type: string
-        packageName:
-          type: string
         versionId:
           $ref: "#/components/schemas/VersionId"
         status:
@@ -6391,8 +5928,7 @@ components:
           description: Per-package read only. SHA-256 over the model, skill and agent files being served; the reload receipt.
         bindings:
           type: array
-          description: Per-package read only. What this version serves per source, as `GET …/versions/{versionId}/bindings` lists
-            it.
+          description: Per-package read only. What this version serves per source.
           items:
             $ref: "#/components/schemas/Binding"
     Skill:
@@ -6802,24 +6338,6 @@ components:
             — only the key blob is compared, never the hostname. When omitted, the
             tunnel connects without host-key verification (the self-service
             default); the SSH transport is still encrypted.
-    StrippedTerm:
-      type: object
-      required:
-        - code
-        - givens
-      description: One `where:` conjunct a storage build leaves out of the artifact and the read puts back. Its `code` is the
-        author's verbatim expression, which is what a serve shape re-emits; `givens` are the names that expression
-        reads, which is what the shape must declare for it to compile.
-      properties:
-        code:
-          type: string
-          description: The author's verbatim filter expression, e.g. `org_id = $ORG_ID`.
-        givens:
-          type: array
-          items:
-            type: string
-          description: The given names this term reads, in first-seen order. A reader must bind these for the term to apply;
-            binding none applies each given's declared default, as a live query would.
     TableDescription:
       type: object
       description: Database table structure and metadata
@@ -6910,9 +6428,7 @@ components:
         `loaded`, `pinned`, `manifestLocation`) do, through `PATCH`.
       required:
         - versionId
-        - seq
         - origin
-        - contentHash
         - archived
         - pinned
         - createdAt
@@ -6920,19 +6436,8 @@ components:
         resource:
           type: string
           readOnly: true
-        environmentName:
-          type: string
-          readOnly: true
-        packageName:
-          type: string
-          readOnly: true
         versionId:
           $ref: "#/components/schemas/VersionId"
-        seq:
-          type: integer
-          format: int64
-          readOnly: true
-          description: Server-assigned order within the package. `latest` and retention follow it, not semver precedence.
         latest:
           type: boolean
           readOnly: true
@@ -6952,16 +6457,6 @@ components:
             - type: "null"
           readOnly: true
           description: The version a server-made version was made from; undo is pointing `latestVersionId` back at it.
-        contentHash:
-          type: string
-          readOnly: true
-          description: SHA-256 over the version's effective content tree.
-        sourceFingerprint:
-          type:
-            - string
-            - "null"
-          readOnly: true
-          description: What a reload compares before fetching (a git commit sha, an object etag, or the source tree hash).
         description:
           type: string
           readOnly: true
@@ -7002,27 +6497,10 @@ components:
             - string
             - "null"
           readOnly: true
-        gitRef:
-          type:
-            - string
-            - "null"
-          readOnly: true
         revision:
           $ref: "#/components/schemas/Revision"
         createdAt:
           type: string
-          format: date-time
-          readOnly: true
-        promotedAt:
-          type:
-            - string
-            - "null"
-          format: date-time
-          readOnly: true
-        demotedAt:
-          type:
-            - string
-            - "null"
           format: date-time
           readOnly: true
         archivedAt:
@@ -7035,8 +6513,8 @@ components:
       type: string
       pattern: ^(live|\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?)$
       description: "A resolved version: a semantic version, or `live` for a live (watched) package, which has no stored
-        versions. A `live` version is never listed by `GET …/versions`, has no `seq`, and refuses `PATCH` and `DELETE`
-        with 409 `PACKAGE_IS_LIVE`."
+        versions. A `live` version is never listed by `GET …/versions` and refuses `PATCH` and `DELETE` with 409
+        `PACKAGE_IS_LIVE`."
     VersionIdPattern:
       type: string
       pattern: ^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?(\+[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$
