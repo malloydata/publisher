@@ -50,7 +50,8 @@ info:
     resource.
 
     - `GET` never changes state, and an immutable version has nothing to reload: `:reload` recompiles a live package;
-    re-fetching a source is `POST …/versions`; loading a version is `PATCH {"loaded": true}`.
+    publishing a version, from the recorded source or a new one, is `POST …/versions`; loading a version is `PATCH
+    {"loaded": true}`.
 
     - `/status`, a package's `status`, the versions list, the version record and `…/index` never load a version that is
     not in memory; every other content read loads it on demand and says so.
@@ -73,7 +74,7 @@ info:
     and a write that sends it back as read ignores it, so a client can `PATCH` a resource it just read. A `name` is set
     on create and never changes; a write that changes one answers 400.
 
-    - Every `POST` that creates or starts something (an environment, a connection, a publish, a re-fetch, a run) accepts
+    - Every `POST` that creates or starts something (an environment, a connection, a package, a version, a run) accepts
     an `Idempotency-Key` header: a retry with the same key and body within 24 hours answers with the first response and
     does nothing again, and the same key with a different body answers 409 `IDEMPOTENCY_KEY_REUSED`.
 
@@ -701,10 +702,10 @@ paths:
       operationId: publish-package
       tags:
         - packages
-      summary: Publish a package version from its source
-      description: Fetches `source.location`, publishes the version its `publisher.json` declares, and creates the package if
-        it does not exist. The same content under an existing version id is a placement (200); different content is 409
-        `VERSION_CONFLICT`. With `dryRun`, every publish check runs and nothing is stored.
+      summary: Create a package and publish its first version
+      description: "Records the package with its `source`, fetches it, and publishes the version its `publisher.json`
+        declares. A package that already exists answers 409 `CONFLICT`: publish its later versions with `POST
+        …/packages/{packageName}/versions`. With `dryRun`, every publish check runs and nothing is stored."
       parameters:
         - $ref: "#/components/parameters/idempotencyKey"
         - name: dryRun
@@ -732,7 +733,7 @@ paths:
               $ref: "#/components/schemas/Package"
       responses:
         "200":
-          description: Placed (identical content already published), or a dry run.
+          description: A dry run.
           content:
             application/json:
               schema:
@@ -761,8 +762,6 @@ paths:
           $ref: "#/components/responses/NotFound"
         "409":
           $ref: "#/components/responses/Conflict"
-        "410":
-          $ref: "#/components/responses/Gone"
         "412":
           $ref: "#/components/responses/PreconditionFailed"
         "424":
@@ -916,12 +915,13 @@ paths:
         the watcher already started, and answers when it is done, with the compile errors if it failed. This is the
         handshake an edit loop needs and watch mode alone does not give: watch mode recompiles in the background and
         skips a save that does not compile without saying so. A package that is not live answers 409 `PACKAGE_NOT_LIVE`:
-        an immutable version has nothing to reload. To pick up a changed source, re-fetch it (`POST …/versions`); to
-        make a version resident, `PATCH …/versions/{versionId}` with `{\"loaded\": true}`; to recompile against current
-        warehouse schemas, `POST …/versions/{versionId}:refresh-schema`."
+        an immutable version has nothing to reload. To pick up a changed source, publish a version (`POST …/versions`,
+        with no body to fetch the recorded source); to make a version resident, `PATCH …/versions/{versionId}` with
+        `{\"loaded\": true}`; to recompile against current warehouse schemas, `POST
+        …/versions/{versionId}:refresh-schema`."
       responses:
         "200":
-          description: What the reload did (`outcome` is `recompiled`).
+          description: Recompiled; the version and how it is now served.
           content:
             application/json:
               schema:
@@ -1055,37 +1055,60 @@ paths:
         "503":
           $ref: "#/components/responses/Unavailable"
     post:
-      operationId: refetch-package-source
+      operationId: publish-version
       tags:
         - versions
+      summary: Publish a new version of the package
+      description: Fetches a source and publishes the version its `publisher.json` declares, or `<parent>+reload.N` when that
+        version already exists with other content, re-applying the overlay of report writes. With no body it fetches the
+        package's recorded `source` again, which is how a package installed from a git branch or an object-store prefix
+        picks up a change; when the fetched tree matches the current version (by git commit sha, object etag or md5, or
+        the tree's hash) nothing is made and it answers 200 with that version. `latestVersionId` moves per the promotion
+        rule. A live package answers 409 `PACKAGE_IS_LIVE` (use `:reload` instead). With `dryRun`, every publish check
+        runs and nothing is stored.
       parameters:
         - $ref: "#/components/parameters/idempotencyKey"
-      summary: Re-fetch the package's recorded source and publish a version if it changed
-      description: Fetches `source.location` again (a git branch, an object store prefix, a directory). When the source
-        fingerprint (git commit sha, object etag or md5, or the imported tree hash) matches the current version's,
-        nothing is made (`unchanged`). When it differs, the new tree is published with the overlay re-applied, named by
-        its `publisher.json` version when that is new and `<parent>+reload.N` otherwise, and `latestVersionId` moves per
-        the promotion rule. This is v0's `?reload=true` on a package installed from a location. A live package answers
-        409 `PACKAGE_IS_LIVE` (use `:reload` instead).
+        - name: dryRun
+          in: query
+          schema:
+            type: boolean
+            default: false
+        - name: profile
+          in: query
+          schema:
+            type: string
+            enum:
+              - full
+              - light
+            default: full
+          description: As on `POST …/packages`.
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/VersionPublishRequest"
       responses:
         "200":
-          description: Nothing changed (`outcome` is `unchanged`).
+          description: Nothing new (the fetched content is the current version's), or a dry run.
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/ReloadResult"
+                $ref: "#/components/schemas/Version"
           headers:
             X-Request-Id:
               $ref: "#/components/headers/RequestId"
         "201":
-          description: A version was published (`outcome` is `published`).
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/ReloadResult"
+          description: Published.
           headers:
             X-Request-Id:
               $ref: "#/components/headers/RequestId"
+            Location:
+              $ref: "#/components/headers/Location"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Version"
         "400":
           $ref: "#/components/responses/BadRequest"
         "401":
@@ -1098,6 +1121,8 @@ paths:
           $ref: "#/components/responses/Conflict"
         "412":
           $ref: "#/components/responses/PreconditionFailed"
+        "424":
+          $ref: "#/components/responses/ConnectionUnavailable"
         "429":
           $ref: "#/components/responses/RateLimited"
         "500":
@@ -6114,27 +6139,17 @@ components:
             this source would 422 with.
     ReloadResult:
       type: object
-      description: What a reload of a live package, or a re-fetch of a package's source, did.
+      description: What recompiling a live package from its files did (`POST …:reload`).
       required:
-        - outcome
+        - version
+        - servingState
       properties:
-        outcome:
-          type: string
-          enum:
-            - unchanged
-            - published
-            - recompiled
-          description: "`recompiled`: a live package was recompiled in place (`POST …:reload`). `unchanged`: a re-fetch found the
-            source fingerprint unchanged and made nothing. `published`: a re-fetch found the source changed and
-            `version` is the version it made (`POST …/versions`)."
-        package:
-          $ref: "#/components/schemas/Package"
         version:
           $ref: "#/components/schemas/Version"
+          description: The live package's pseudo-version, `live`.
         servingState:
           $ref: "#/components/schemas/ServingState"
-          description: How this server now serves the version the reload or re-fetch left in place, with its per-package fields;
-            the receipt that a live edit is being served.
+          description: How this server now serves it, with its per-package fields; the receipt that the edit is being served.
     Report:
       description: A `ReportSummary` plus what a viewer needs to draw it, which is the compiled document.
       allOf:
@@ -7391,6 +7406,18 @@ components:
             $ref: "#/components/schemas/Version"
         nextCursor:
           $ref: "#/components/schemas/Cursor"
+    VersionPublishRequest:
+      type: object
+      description: Where to fetch a new version from. Omit the body, or `source`, to fetch the package's recorded source again.
+      properties:
+        source:
+          $ref: "#/components/schemas/PackageSource"
+          description: A source to publish from instead of the recorded one; it becomes the package's recorded source.
+        manifestLocation:
+          type:
+            - string
+            - "null"
+          description: A manifest to bind the published version to, as `PATCH …/versions/{versionId}` with `manifestLocation` would.
     VersionRef:
       type: string
       pattern: ^(latest|live|\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?)$
