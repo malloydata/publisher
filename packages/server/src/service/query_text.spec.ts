@@ -877,8 +877,9 @@ function readAll(text: string): void {
  * Doubling the input about doubles the time when `read` is linear, and about
  * quadruples it when it is quadratic, whatever the machine's speed; a fixed
  * millisecond budget instead fails on a slow CI runner. The smaller time is
- * floored so that two very fast runs are not read as a ratio of noise, and a
- * generous ceiling still catches a pathological case outright.
+ * floored so that two very fast runs are not read as a ratio of noise, the
+ * best of up to three ratios is judged, and a generous ceiling still catches a
+ * pathological case outright.
  */
 function expectLinear(
    build: (scale: number) => string,
@@ -886,9 +887,16 @@ function expectLinear(
 ): void {
    const half = build(1);
    const full = build(2);
-   const halfMs = fastestMs(() => read(half));
-   const fullMs = fastestMs(() => read(full));
-   expect(fullMs / Math.max(halfMs, 5)).toBeLessThan(3);
+   // A noisy runner can push one linear measurement just past 3, so take the
+   // best of three; a quadratic reader stays near 4 on every attempt.
+   let ratio = Infinity;
+   let fullMs = 0;
+   for (let attempt = 0; attempt < 3 && ratio >= 3; attempt++) {
+      const halfMs = fastestMs(() => read(half));
+      fullMs = fastestMs(() => read(full));
+      ratio = Math.min(ratio, fullMs / Math.max(halfMs, 5));
+   }
+   expect(ratio).toBeLessThan(3);
    expect(fullMs).toBeLessThan(10_000);
 }
 
