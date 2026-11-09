@@ -493,6 +493,22 @@ export class Model {
       boundary: QueryBoundaryPolicy;
       bases: Map<string, Set<string>> | undefined;
    };
+   /**
+    * {@link ownCuratedSourceNames}, and {@link curatedBasesOf}'s answer for a
+    * name asked with no query or derivation context, per boundary object and
+    * discovery-curation setting: everything they read besides this model's
+    * fixed compiled state. The entities ask the route once per source, so
+    * rebuilding these per call made a listing quadratic in the source count.
+    * A package installs a new boundary object for every path whenever it
+    * re-decides its boundaries, and a reload builds new Model instances, so a
+    * stale entry is never read.
+    */
+   private curationMemo?: {
+      boundary: QueryBoundaryPolicy;
+      discoveryCuration: boolean;
+      ownCuratedSourceNames: ReadonlySet<string>;
+      curatedBasesOf: Map<string, ReadonlySet<string> | undefined>;
+   };
    /** Whether discovery accessors curate to the `export {}` closure: true
     *  only when the owning package declares `explores` in publisher.json. */
    private get discoveryCurationEnabled(): boolean {
@@ -513,6 +529,35 @@ export class Model {
    }
    /** {@link buildDerivationBaseMap} over `queryBoundary.derivationText`,
     *  computed once per boundary rather than per query. */
+   /** The {@link curationMemo} for the boundary and curation now in force. */
+   private get curation(): NonNullable<Model["curationMemo"]> {
+      const boundary = this.queryBoundary;
+      const discoveryCuration = this.discoveryCurationEnabled;
+      const memo = this.curationMemo;
+      if (
+         memo?.boundary === boundary &&
+         memo.discoveryCuration === discoveryCuration
+      )
+         return memo;
+      // A notebook or dashboard can see hidden sources through its imports, so
+      // nothing it sees is curated by being visible; only the package surface
+      // admits (and derivesFromCurated for its own declarations).
+      const ownCuratedSourceNames: ReadonlySet<string> =
+         this.isNotebook() || this.isGridReport()
+            ? new Set()
+            : new Set(
+                 (this.getSources() ?? [])
+                    .map((s) => s.name)
+                    .filter((n): n is string => n !== undefined),
+              );
+      this.curationMemo = {
+         boundary,
+         discoveryCuration,
+         ownCuratedSourceNames,
+         curatedBasesOf: new Map(),
+      };
+      return this.curationMemo;
+   }
    private get fileDerivationBases(): Map<string, Set<string>> | undefined {
       const boundary = this.queryBoundary;
       if (this.derivationBasesMemo?.boundary !== boundary) {
@@ -1357,15 +1402,57 @@ export class Model {
     * query is not shown either.
     */
    public assertFileOnSurface(): void {
-      const { mode, exploresDeclared, isQueryEntryPoint } = this.queryBoundary;
-      if (mode === "all" || !exploresDeclared) return;
-      if (!isQueryEntryPoint && !this.isNotebook()) {
+      if (!this.fileOnSurface()) {
          throw this.notQueryable(
             `No queryable model "${this.modelPath}".`,
             true,
             "model",
          );
       }
+   }
+
+   /** No boundary: `queryableSources: "all"`, or no `explores` declared, so
+    *  everything compiled stays queryable. */
+   private boundaryInert(): boolean {
+      const { mode, exploresDeclared } = this.queryBoundary;
+      return mode === "all" || !exploresDeclared;
+   }
+
+   /** {@link assertFileOnSurface}'s test: no boundary, or this file is an entry point. */
+   private fileOnSurface(): boolean {
+      if (this.boundaryInert()) return true;
+      return this.queryBoundary.isQueryEntryPoint || this.isNotebook();
+   }
+
+   /**
+    * Whether the query boundary admits a query that names `name` as its source
+    * in this file, by `sourceName` or as `run: name -> …`: the query route's
+    * queryability rule, before any gate (`#(authorize)`, `#(access_filter)`)
+    * is asked. True everywhere when the package has no boundary.
+    *
+    * The one rule: {@link assertQueryBoundaryEarly} admits a named source by
+    * {@link sourceAdmission} after {@link assertFileOnSurface}, as this does,
+    * and the entities behind `GET …/entities` report a source queryable by
+    * asking this.
+    */
+   public admitsSourceByName(name: string): boolean {
+      return (
+         this.fileOnSurface() &&
+         (this.boundaryInert() || this.sourceAdmission(name) !== undefined)
+      );
+   }
+
+   /**
+    * How the boundary admits a source named in a query to this file, which is
+    * on the surface: `curated` when it is on the surface itself (cleared),
+    * `report` when this served report builds it on the surface (deferred to
+    * the compiled check, which settles it the same way), undefined when it is
+    * refused.
+    */
+   private sourceAdmission(name: string): "curated" | "report" | undefined {
+      if (this.isCuratedSource(name)) return "curated";
+      if (this.isReportSourceOnSurface(name)) return "report";
+      return undefined;
    }
 
    /**
@@ -1601,9 +1688,8 @@ export class Model {
        *  notebook cells before this one. Never caller text. */
       derivationContext?: string,
    ): "cleared" | "deferred" {
-      const { mode, exploresDeclared } = this.queryBoundary;
       // No surface or "all": everything compiled stays queryable.
-      if (mode === "all" || !exploresDeclared) return "cleared";
+      if (this.boundaryInert()) return "cleared";
 
       // File-level: named by the request URL, so nothing to resolve or evade.
       this.assertFileOnSurface();
@@ -1616,10 +1702,11 @@ export class Model {
          // with an exported top-level query's name, and clearing skips the
          // compiled backstop.
          if (!sourceName && this.isCuratedQuery(queryName)) return "cleared";
-         if (sourceName && this.isCuratedSource(sourceName)) return "cleared";
-         if (sourceName && this.isReportSourceOnSurface(sourceName)) {
-            return "deferred";
-         }
+         const admission = sourceName
+            ? this.sourceAdmission(sourceName)
+            : undefined;
+         if (admission === "curated") return "cleared";
+         if (admission === "report") return "deferred";
          // A dashboard's own named query (a single-query dashboard, or a
          // control's `suggest { query= }`) is decided by the compiled check, by
          // the source it reads.
@@ -1649,8 +1736,9 @@ export class Model {
       // An explicitly-named source: admit iff curated, or a served report's
       // own source over the surface (settled again by the compiled check).
       if (sourceName) {
-         if (this.isCuratedSource(sourceName)) return "cleared";
-         if (this.isReportSourceOnSurface(sourceName)) return "deferred";
+         const admission = this.sourceAdmission(sourceName);
+         if (admission === "curated") return "cleared";
+         if (admission === "report") return "deferred";
          throw this.notQueryable(
             `No queryable source "${sourceName}".`,
             this.declaresSource(sourceName),
@@ -1969,16 +2057,9 @@ export class Model {
       return this.queryBoundary.layout === "grid";
    }
 
-   private ownCuratedSourceNames(): Set<string> {
-      // A notebook or dashboard can see hidden sources through its imports, so
-      // nothing it sees is curated by being visible; only the package surface
-      // admits (and derivesFromCurated for its own declarations).
-      if (this.isNotebook() || this.isGridReport()) return new Set();
-      return new Set(
-         (this.getSources() ?? [])
-            .map((s) => s.name)
-            .filter((n): n is string => n !== undefined),
-      );
+   /** The names this file curates by exporting them; see {@link curation}. */
+   private ownCuratedSourceNames(): ReadonlySet<string> {
+      return this.curation.ownCuratedSourceNames;
    }
 
    /**
@@ -2004,8 +2085,35 @@ export class Model {
       query?: string,
       derivationContext?: string,
    ): boolean {
-      const own = this.ownCuratedSourceNames();
-      const packageCurated = this.queryBoundary.packageCuratedSources;
+      return this.curatedBasesOf(name, query, derivationContext) !== undefined;
+   }
+
+   /**
+    * The curated names `name` is, or derives from: `{name}` when it is
+    * curated itself, else the union over every declared base, each of which
+    * must prove out ({@link derivesFromCurated} is "this is defined").
+    * Undefined when the walk proves nothing.
+    *
+    * Public, for the entities: a served report's own source is reported in
+    * the place of the served source it is built on, and this names it.
+    */
+   public curatedBasesOf(
+      name: string,
+      query?: string,
+      derivationContext?: string,
+   ): ReadonlySet<string> | undefined {
+      // With nothing but this file's own edges, the answer is a property of
+      // the boundary in force, so it is asked once per name.
+      if (!query && !derivationContext) {
+         const memo = this.curation.curatedBasesOf;
+         if (memo.has(name)) return memo.get(name);
+         const answer = this.walkCuratedBases(
+            name,
+            this.fileDerivationBases ?? new Map(),
+         );
+         memo.set(name, answer);
+         return answer;
+      }
       // A dashboard's own declarations are edges too, merged (never replacing)
       // so an extra edge only adds an obligation.
       const basesOf = query
@@ -2024,28 +2132,50 @@ export class Model {
          if (into) for (const base of bases) into.add(base);
          else basesOf.set(derived, new Set(bases));
       }
+      return this.walkCuratedBases(name, basesOf);
+   }
+
+   /** {@link curatedBasesOf}'s walk over the derivation edges `basesOf`, which
+    *  it only reads. */
+   private walkCuratedBases(
+      name: string,
+      basesOf: ReadonlyMap<string, ReadonlySet<string>>,
+   ): ReadonlySet<string> | undefined {
+      const own = this.ownCuratedSourceNames();
+      const packageCurated = this.queryBoundary.packageCuratedSources;
       // Only positive results are memoized: a name proven curated is proven
-      // wherever it appears, while a `false` may be the local verdict of the
+      // wherever it appears, while a failure may be the local verdict of the
       // in-progress cycle guard rather than a property of the name.
-      const proven = new Set<string>();
+      const proven = new Map<string, Set<string>>();
       const inProgress = new Set<string>();
-      const proves = (current: string): boolean => {
+      const proves = (current: string): Set<string> | undefined => {
          if (
             own.has(current) ||
             this.admittedByPackage(current, packageCurated)
          )
-            return true;
-         if (proven.has(current)) return true;
+            return new Set([current]);
+         const known = proven.get(current);
+         if (known) return known;
          // A back-edge or an over-long chain grounds nothing: deny.
-         if (inProgress.has(current)) return false;
-         if (inProgress.size >= REQUEST_CHAIN_MAX_NAMES) return false;
+         if (inProgress.has(current)) return undefined;
+         if (inProgress.size >= REQUEST_CHAIN_MAX_NAMES) return undefined;
          const bases = basesOf.get(current);
-         if (!bases || bases.size === 0) return false;
+         if (!bases || bases.size === 0) return undefined;
          inProgress.add(current);
-         const ok = Array.from(bases).every((base) => proves(base));
+         const roots = new Set<string>();
+         let ok = true;
+         for (const base of bases) {
+            const reached = proves(base);
+            if (!reached) {
+               ok = false;
+               break;
+            }
+            for (const root of reached) roots.add(root);
+         }
          inProgress.delete(current);
-         if (ok) proven.add(current);
-         return ok;
+         if (!ok) return undefined;
+         proven.set(current, roots);
+         return roots;
       };
       return proves(name);
    }

@@ -1,0 +1,1676 @@
+// Bun Snapshot v1, https://bun.sh/docs/test/snapshots
+
+exports[`the query-surface package's queryability and gates 1`] = `
+[
+  {
+    "modelPath": "dashboards/bare.malloy",
+    "sources": [
+      {
+        "name": "orders",
+        "queryable": false,
+      },
+      {
+        "name": "orders_staging",
+        "queryable": false,
+      },
+      {
+        "name": "bare_orders",
+        "queryable": false,
+      },
+    ],
+  },
+  {
+    "modelPath": "dashboards/chain.malloy",
+    "sources": [
+      {
+        "name": "orders",
+        "queryable": false,
+        "servedFrom": "index.malloy::orders",
+      },
+      {
+        "name": "orders_staging",
+        "queryable": false,
+      },
+      {
+        "name": "chain_1",
+        "queryable": false,
+        "servedFrom": "index.malloy::orders",
+      },
+      {
+        "name": "chain_2",
+        "queryable": false,
+        "servedFrom": "index.malloy::orders",
+      },
+      {
+        "name": "chain_3",
+        "queryable": false,
+        "servedFrom": "index.malloy::orders",
+      },
+      {
+        "name": "chain_4",
+        "queryable": false,
+        "servedFrom": "index.malloy::orders",
+      },
+      {
+        "name": "chain_5",
+        "queryable": false,
+        "servedFrom": "index.malloy::orders",
+      },
+      {
+        "name": "chain_6",
+        "queryable": false,
+        "servedFrom": "index.malloy::orders",
+      },
+      {
+        "name": "chain_7",
+        "queryable": false,
+        "servedFrom": "index.malloy::orders",
+      },
+      {
+        "name": "chain_8",
+        "queryable": false,
+        "servedFrom": "index.malloy::orders",
+      },
+      {
+        "name": "chain_9",
+        "queryable": false,
+        "servedFrom": "index.malloy::orders",
+      },
+      {
+        "name": "chain_10",
+        "queryable": false,
+        "servedFrom": "index.malloy::orders",
+      },
+      {
+        "name": "chain_11",
+        "queryable": false,
+        "servedFrom": "index.malloy::orders",
+      },
+      {
+        "name": "chain_12",
+        "queryable": false,
+        "servedFrom": "index.malloy::orders",
+      },
+      {
+        "name": "chain_13",
+        "queryable": false,
+        "servedFrom": "index.malloy::orders",
+      },
+      {
+        "name": "chain_14",
+        "queryable": false,
+        "servedFrom": "index.malloy::orders",
+      },
+      {
+        "name": "chain_15",
+        "queryable": false,
+        "servedFrom": "index.malloy::orders",
+      },
+      {
+        "name": "chain_16",
+        "queryable": false,
+        "servedFrom": "index.malloy::orders",
+      },
+      {
+        "name": "chain_17",
+        "queryable": false,
+        "servedFrom": "index.malloy::orders",
+      },
+      {
+        "name": "chain_18",
+        "queryable": false,
+        "servedFrom": "index.malloy::orders",
+      },
+      {
+        "name": "chain_19",
+        "queryable": false,
+        "servedFrom": "index.malloy::orders",
+      },
+      {
+        "name": "chain_20",
+        "queryable": false,
+        "servedFrom": "index.malloy::orders",
+      },
+      {
+        "name": "chain_21",
+        "queryable": false,
+        "servedFrom": "index.malloy::orders",
+      },
+      {
+        "name": "chain_22",
+        "queryable": false,
+        "servedFrom": "index.malloy::orders",
+      },
+      {
+        "name": "chain_23",
+        "queryable": false,
+        "servedFrom": "index.malloy::orders",
+      },
+      {
+        "name": "chain_24",
+        "queryable": false,
+        "servedFrom": "index.malloy::orders",
+      },
+      {
+        "name": "chain_25",
+        "queryable": false,
+        "servedFrom": "index.malloy::orders",
+      },
+      {
+        "name": "chain_26",
+        "queryable": false,
+        "servedFrom": "index.malloy::orders",
+      },
+      {
+        "name": "chain_27",
+        "queryable": false,
+        "servedFrom": "index.malloy::orders",
+      },
+      {
+        "name": "chain_28",
+        "queryable": false,
+        "servedFrom": "index.malloy::orders",
+      },
+      {
+        "name": "chain_29",
+        "queryable": false,
+        "servedFrom": "index.malloy::orders",
+      },
+      {
+        "name": "chain_30",
+        "queryable": false,
+        "servedFrom": "index.malloy::orders",
+      },
+      {
+        "name": "chain_31",
+        "queryable": false,
+        "servedFrom": "index.malloy::orders",
+      },
+      {
+        "name": "chain_32",
+        "queryable": false,
+        "servedFrom": "index.malloy::orders",
+      },
+      {
+        "name": "chain_33",
+        "queryable": false,
+        "servedFrom": "index.malloy::orders",
+      },
+      {
+        "name": "chain_34",
+        "queryable": false,
+        "servedFrom": "index.malloy::orders",
+      },
+      {
+        "name": "chain_35",
+        "queryable": false,
+        "servedFrom": "index.malloy::orders",
+      },
+      {
+        "name": "chain_36",
+        "queryable": false,
+        "servedFrom": "index.malloy::orders",
+      },
+      {
+        "name": "chain_37",
+        "queryable": false,
+        "servedFrom": "index.malloy::orders",
+      },
+      {
+        "name": "chain_38",
+        "queryable": false,
+        "servedFrom": "index.malloy::orders",
+      },
+      {
+        "name": "chain_39",
+        "queryable": false,
+        "servedFrom": "index.malloy::orders",
+      },
+      {
+        "name": "chain_40",
+        "queryable": false,
+        "servedFrom": "index.malloy::orders",
+      },
+      {
+        "name": "chain_41",
+        "queryable": false,
+        "servedFrom": "index.malloy::orders",
+      },
+      {
+        "name": "chain_42",
+        "queryable": false,
+        "servedFrom": "index.malloy::orders",
+      },
+      {
+        "name": "chain_43",
+        "queryable": false,
+        "servedFrom": "index.malloy::orders",
+      },
+      {
+        "name": "chain_44",
+        "queryable": false,
+        "servedFrom": "index.malloy::orders",
+      },
+      {
+        "name": "chain_45",
+        "queryable": false,
+        "servedFrom": "index.malloy::orders",
+      },
+      {
+        "name": "chain_46",
+        "queryable": false,
+        "servedFrom": "index.malloy::orders",
+      },
+      {
+        "name": "chain_47",
+        "queryable": false,
+        "servedFrom": "index.malloy::orders",
+      },
+      {
+        "name": "chain_48",
+        "queryable": false,
+        "servedFrom": "index.malloy::orders",
+      },
+      {
+        "name": "chain_49",
+        "queryable": false,
+        "servedFrom": "index.malloy::orders",
+      },
+      {
+        "name": "chain_50",
+        "queryable": false,
+        "servedFrom": "index.malloy::orders",
+      },
+      {
+        "name": "chain_51",
+        "queryable": false,
+        "servedFrom": "index.malloy::orders",
+      },
+      {
+        "name": "chain_52",
+        "queryable": false,
+        "servedFrom": "index.malloy::orders",
+      },
+      {
+        "name": "chain_53",
+        "queryable": false,
+        "servedFrom": "index.malloy::orders",
+      },
+      {
+        "name": "chain_54",
+        "queryable": false,
+        "servedFrom": "index.malloy::orders",
+      },
+      {
+        "name": "chain_55",
+        "queryable": false,
+        "servedFrom": "index.malloy::orders",
+      },
+      {
+        "name": "chain_56",
+        "queryable": false,
+        "servedFrom": "index.malloy::orders",
+      },
+      {
+        "name": "chain_57",
+        "queryable": false,
+        "servedFrom": "index.malloy::orders",
+      },
+      {
+        "name": "chain_58",
+        "queryable": false,
+        "servedFrom": "index.malloy::orders",
+      },
+      {
+        "name": "chain_59",
+        "queryable": false,
+        "servedFrom": "index.malloy::orders",
+      },
+      {
+        "name": "chain_60",
+        "queryable": false,
+        "servedFrom": "index.malloy::orders",
+      },
+      {
+        "name": "chain_61",
+        "queryable": false,
+        "servedFrom": "index.malloy::orders",
+      },
+      {
+        "name": "chain_62",
+        "queryable": false,
+        "servedFrom": "index.malloy::orders",
+      },
+      {
+        "name": "chain_63",
+        "queryable": false,
+        "servedFrom": "index.malloy::orders",
+      },
+      {
+        "name": "chain_64",
+        "queryable": false,
+        "servedFrom": "index.malloy::orders",
+      },
+      {
+        "name": "chain_65",
+        "queryable": false,
+      },
+    ],
+  },
+  {
+    "modelPath": "dashboards/detail.malloy",
+    "sources": [
+      {
+        "name": "open_orders",
+        "queryable": false,
+      },
+      {
+        "name": "staged",
+        "queryable": false,
+      },
+      {
+        "name": "scratch",
+        "queryable": false,
+      },
+      {
+        "name": "orders",
+        "queryable": false,
+      },
+      {
+        "name": "orders_staging",
+        "queryable": false,
+      },
+      {
+        "name": "detail_orders",
+        "queryable": false,
+      },
+    ],
+  },
+  {
+    "modelPath": "dashboards/malformed.malloy",
+    "sources": [
+      {
+        "name": "orders",
+        "queryable": false,
+      },
+      {
+        "name": "orders_staging",
+        "queryable": false,
+      },
+      {
+        "name": "malformed_orders",
+        "queryable": false,
+      },
+    ],
+  },
+  {
+    "modelPath": "dashboards/notes.malloy",
+    "sources": [
+      {
+        "name": "orders",
+        "queryable": false,
+      },
+      {
+        "name": "orders_staging",
+        "queryable": false,
+      },
+      {
+        "name": "noted_orders",
+        "queryable": false,
+      },
+    ],
+  },
+  {
+    "modelPath": "dashboards/overview.malloy",
+    "sources": [
+      {
+        "name": "orders",
+        "queryable": false,
+        "servedFrom": "index.malloy::orders",
+      },
+      {
+        "name": "orders_staging",
+        "queryable": false,
+      },
+      {
+        "name": "open_orders",
+        "queryable": false,
+        "servedFrom": "index.malloy::orders",
+      },
+      {
+        "name": "staged",
+        "queryable": false,
+      },
+      {
+        "name": "scratch",
+        "queryable": false,
+      },
+    ],
+  },
+  {
+    "modelPath": "dashboards/query_tag.malloy",
+    "sources": [
+      {
+        "name": "orders",
+        "queryable": false,
+      },
+      {
+        "name": "orders_staging",
+        "queryable": false,
+      },
+      {
+        "name": "query_tag_orders",
+        "queryable": false,
+      },
+    ],
+  },
+  {
+    "modelPath": "dashboards/shadow.malloy",
+    "sources": [
+      {
+        "name": "orders",
+        "queryable": false,
+      },
+    ],
+  },
+  {
+    "modelPath": "dashboards/shared.malloy",
+    "sources": [
+      {
+        "name": "orders",
+        "queryable": false,
+      },
+      {
+        "name": "orders_staging",
+        "queryable": false,
+      },
+      {
+        "name": "shared_orders",
+        "queryable": false,
+      },
+    ],
+  },
+  {
+    "modelPath": "index.malloy",
+    "sources": [
+      {
+        "name": "orders_staging",
+        "queryable": false,
+      },
+      {
+        "name": "orders",
+        "queryable": true,
+      },
+    ],
+  },
+  {
+    "modelPath": "notebooks/legacy.malloy",
+    "sources": [
+      {
+        "name": "orders",
+        "queryable": false,
+      },
+      {
+        "name": "orders_staging",
+        "queryable": false,
+      },
+      {
+        "name": "legacy_orders",
+        "queryable": false,
+      },
+    ],
+  },
+  {
+    "modelPath": "notebooks/review.malloy",
+    "sources": [
+      {
+        "name": "orders",
+        "queryable": false,
+        "servedFrom": "index.malloy::orders",
+      },
+      {
+        "name": "orders_staging",
+        "queryable": false,
+      },
+      {
+        "name": "reviewed_orders",
+        "queryable": false,
+        "servedFrom": "index.malloy::orders",
+      },
+    ],
+  },
+  {
+    "modelPath": "orders.malloy",
+    "sources": [
+      {
+        "name": "orders",
+        "queryable": false,
+      },
+      {
+        "name": "orders_staging",
+        "queryable": false,
+      },
+    ],
+  },
+  {
+    "modelPath": "public/page.malloy",
+    "sources": [
+      {
+        "name": "orders",
+        "queryable": false,
+      },
+      {
+        "name": "orders_staging",
+        "queryable": false,
+      },
+      {
+        "name": "page_orders",
+        "queryable": false,
+      },
+    ],
+  },
+  {
+    "modelPath": "reports/aliased.malloy",
+    "sources": [
+      {
+        "name": "o",
+        "queryable": false,
+        "servedFrom": "index.malloy::orders",
+      },
+      {
+        "name": "aliased_orders",
+        "queryable": false,
+      },
+    ],
+  },
+  {
+    "modelPath": "reports/empty.malloy",
+    "sources": [
+      {
+        "name": "orders",
+        "queryable": false,
+      },
+      {
+        "name": "orders_staging",
+        "queryable": false,
+      },
+      {
+        "name": "empty_orders",
+        "queryable": false,
+      },
+    ],
+  },
+  {
+    "modelPath": "reports/linear.malloy",
+    "sources": [
+      {
+        "name": "orders",
+        "queryable": false,
+        "servedFrom": "index.malloy::orders",
+      },
+      {
+        "name": "orders_staging",
+        "queryable": false,
+      },
+      {
+        "name": "linear_orders",
+        "queryable": false,
+        "servedFrom": "index.malloy::orders",
+      },
+    ],
+  },
+  {
+    "modelPath": "reports/named.malloy",
+    "sources": [
+      {
+        "name": "orders",
+        "queryable": false,
+        "servedFrom": "index.malloy::orders",
+      },
+      {
+        "name": "named_open",
+        "queryable": false,
+        "servedFrom": "index.malloy::orders",
+      },
+    ],
+  },
+  {
+    "modelPath": "reports/overview.malloy",
+    "sources": [
+      {
+        "name": "orders",
+        "queryable": false,
+        "servedFrom": "index.malloy::orders",
+      },
+      {
+        "name": "orders_staging",
+        "queryable": false,
+      },
+      {
+        "name": "dup_orders",
+        "queryable": false,
+        "servedFrom": "index.malloy::orders",
+      },
+    ],
+  },
+  {
+    "modelPath": "reports/tileless.malloy",
+    "sources": [
+      {
+        "name": "orders",
+        "queryable": false,
+      },
+      {
+        "name": "orders_staging",
+        "queryable": false,
+      },
+      {
+        "name": "tileless_orders",
+        "queryable": false,
+      },
+    ],
+  },
+  {
+    "modelPath": "top.malloy",
+    "sources": [
+      {
+        "name": "orders",
+        "queryable": false,
+        "servedFrom": "index.malloy::orders",
+      },
+      {
+        "name": "orders_staging",
+        "queryable": false,
+      },
+      {
+        "name": "top_orders",
+        "queryable": false,
+        "servedFrom": "index.malloy::orders",
+      },
+    ],
+  },
+]
+`;
+
+exports[`the query-surface-all package's queryability and gates 1`] = `
+[
+  {
+    "modelPath": "dashboards/bare.malloy",
+    "sources": [
+      {
+        "name": "orders",
+        "queryable": true,
+      },
+      {
+        "name": "orders_staging",
+        "queryable": true,
+      },
+      {
+        "name": "bare_orders",
+        "queryable": true,
+      },
+    ],
+  },
+  {
+    "modelPath": "dashboards/chain.malloy",
+    "sources": [
+      {
+        "name": "orders",
+        "queryable": true,
+      },
+      {
+        "name": "orders_staging",
+        "queryable": true,
+      },
+      {
+        "name": "chain_1",
+        "queryable": true,
+      },
+      {
+        "name": "chain_2",
+        "queryable": true,
+      },
+      {
+        "name": "chain_3",
+        "queryable": true,
+      },
+      {
+        "name": "chain_4",
+        "queryable": true,
+      },
+      {
+        "name": "chain_5",
+        "queryable": true,
+      },
+      {
+        "name": "chain_6",
+        "queryable": true,
+      },
+      {
+        "name": "chain_7",
+        "queryable": true,
+      },
+      {
+        "name": "chain_8",
+        "queryable": true,
+      },
+      {
+        "name": "chain_9",
+        "queryable": true,
+      },
+      {
+        "name": "chain_10",
+        "queryable": true,
+      },
+      {
+        "name": "chain_11",
+        "queryable": true,
+      },
+      {
+        "name": "chain_12",
+        "queryable": true,
+      },
+      {
+        "name": "chain_13",
+        "queryable": true,
+      },
+      {
+        "name": "chain_14",
+        "queryable": true,
+      },
+      {
+        "name": "chain_15",
+        "queryable": true,
+      },
+      {
+        "name": "chain_16",
+        "queryable": true,
+      },
+      {
+        "name": "chain_17",
+        "queryable": true,
+      },
+      {
+        "name": "chain_18",
+        "queryable": true,
+      },
+      {
+        "name": "chain_19",
+        "queryable": true,
+      },
+      {
+        "name": "chain_20",
+        "queryable": true,
+      },
+      {
+        "name": "chain_21",
+        "queryable": true,
+      },
+      {
+        "name": "chain_22",
+        "queryable": true,
+      },
+      {
+        "name": "chain_23",
+        "queryable": true,
+      },
+      {
+        "name": "chain_24",
+        "queryable": true,
+      },
+      {
+        "name": "chain_25",
+        "queryable": true,
+      },
+      {
+        "name": "chain_26",
+        "queryable": true,
+      },
+      {
+        "name": "chain_27",
+        "queryable": true,
+      },
+      {
+        "name": "chain_28",
+        "queryable": true,
+      },
+      {
+        "name": "chain_29",
+        "queryable": true,
+      },
+      {
+        "name": "chain_30",
+        "queryable": true,
+      },
+      {
+        "name": "chain_31",
+        "queryable": true,
+      },
+      {
+        "name": "chain_32",
+        "queryable": true,
+      },
+      {
+        "name": "chain_33",
+        "queryable": true,
+      },
+      {
+        "name": "chain_34",
+        "queryable": true,
+      },
+      {
+        "name": "chain_35",
+        "queryable": true,
+      },
+      {
+        "name": "chain_36",
+        "queryable": true,
+      },
+      {
+        "name": "chain_37",
+        "queryable": true,
+      },
+      {
+        "name": "chain_38",
+        "queryable": true,
+      },
+      {
+        "name": "chain_39",
+        "queryable": true,
+      },
+      {
+        "name": "chain_40",
+        "queryable": true,
+      },
+      {
+        "name": "chain_41",
+        "queryable": true,
+      },
+      {
+        "name": "chain_42",
+        "queryable": true,
+      },
+      {
+        "name": "chain_43",
+        "queryable": true,
+      },
+      {
+        "name": "chain_44",
+        "queryable": true,
+      },
+      {
+        "name": "chain_45",
+        "queryable": true,
+      },
+      {
+        "name": "chain_46",
+        "queryable": true,
+      },
+      {
+        "name": "chain_47",
+        "queryable": true,
+      },
+      {
+        "name": "chain_48",
+        "queryable": true,
+      },
+      {
+        "name": "chain_49",
+        "queryable": true,
+      },
+      {
+        "name": "chain_50",
+        "queryable": true,
+      },
+      {
+        "name": "chain_51",
+        "queryable": true,
+      },
+      {
+        "name": "chain_52",
+        "queryable": true,
+      },
+      {
+        "name": "chain_53",
+        "queryable": true,
+      },
+      {
+        "name": "chain_54",
+        "queryable": true,
+      },
+      {
+        "name": "chain_55",
+        "queryable": true,
+      },
+      {
+        "name": "chain_56",
+        "queryable": true,
+      },
+      {
+        "name": "chain_57",
+        "queryable": true,
+      },
+      {
+        "name": "chain_58",
+        "queryable": true,
+      },
+      {
+        "name": "chain_59",
+        "queryable": true,
+      },
+      {
+        "name": "chain_60",
+        "queryable": true,
+      },
+      {
+        "name": "chain_61",
+        "queryable": true,
+      },
+      {
+        "name": "chain_62",
+        "queryable": true,
+      },
+      {
+        "name": "chain_63",
+        "queryable": true,
+      },
+      {
+        "name": "chain_64",
+        "queryable": true,
+      },
+      {
+        "name": "chain_65",
+        "queryable": true,
+      },
+    ],
+  },
+  {
+    "modelPath": "dashboards/detail.malloy",
+    "sources": [
+      {
+        "name": "open_orders",
+        "queryable": true,
+      },
+      {
+        "name": "staged",
+        "queryable": true,
+      },
+      {
+        "name": "scratch",
+        "queryable": true,
+      },
+      {
+        "name": "orders",
+        "queryable": true,
+      },
+      {
+        "name": "orders_staging",
+        "queryable": true,
+      },
+      {
+        "name": "detail_orders",
+        "queryable": true,
+      },
+    ],
+  },
+  {
+    "modelPath": "dashboards/malformed.malloy",
+    "sources": [
+      {
+        "name": "orders",
+        "queryable": true,
+      },
+      {
+        "name": "orders_staging",
+        "queryable": true,
+      },
+      {
+        "name": "malformed_orders",
+        "queryable": true,
+      },
+    ],
+  },
+  {
+    "modelPath": "dashboards/notes.malloy",
+    "sources": [
+      {
+        "name": "orders",
+        "queryable": true,
+      },
+      {
+        "name": "orders_staging",
+        "queryable": true,
+      },
+      {
+        "name": "noted_orders",
+        "queryable": true,
+      },
+    ],
+  },
+  {
+    "modelPath": "dashboards/overview.malloy",
+    "sources": [
+      {
+        "name": "orders",
+        "queryable": true,
+      },
+      {
+        "name": "orders_staging",
+        "queryable": true,
+      },
+      {
+        "name": "open_orders",
+        "queryable": true,
+      },
+      {
+        "name": "staged",
+        "queryable": true,
+      },
+      {
+        "name": "scratch",
+        "queryable": true,
+      },
+    ],
+  },
+  {
+    "modelPath": "dashboards/query_tag.malloy",
+    "sources": [
+      {
+        "name": "orders",
+        "queryable": true,
+      },
+      {
+        "name": "orders_staging",
+        "queryable": true,
+      },
+      {
+        "name": "query_tag_orders",
+        "queryable": true,
+      },
+    ],
+  },
+  {
+    "modelPath": "dashboards/shadow.malloy",
+    "sources": [
+      {
+        "name": "orders",
+        "queryable": true,
+      },
+    ],
+  },
+  {
+    "modelPath": "dashboards/shared.malloy",
+    "sources": [
+      {
+        "name": "orders",
+        "queryable": true,
+      },
+      {
+        "name": "orders_staging",
+        "queryable": true,
+      },
+      {
+        "name": "shared_orders",
+        "queryable": true,
+      },
+    ],
+  },
+  {
+    "modelPath": "index.malloy",
+    "sources": [
+      {
+        "name": "orders",
+        "queryable": true,
+      },
+      {
+        "name": "orders_staging",
+        "queryable": true,
+      },
+    ],
+  },
+  {
+    "modelPath": "notebooks/legacy.malloy",
+    "sources": [
+      {
+        "name": "orders",
+        "queryable": true,
+      },
+      {
+        "name": "orders_staging",
+        "queryable": true,
+      },
+      {
+        "name": "legacy_orders",
+        "queryable": true,
+      },
+    ],
+  },
+  {
+    "modelPath": "notebooks/review.malloy",
+    "sources": [
+      {
+        "name": "orders",
+        "queryable": true,
+      },
+      {
+        "name": "orders_staging",
+        "queryable": true,
+      },
+      {
+        "name": "reviewed_orders",
+        "queryable": true,
+      },
+    ],
+  },
+  {
+    "modelPath": "orders.malloy",
+    "sources": [
+      {
+        "name": "orders",
+        "queryable": true,
+      },
+      {
+        "name": "orders_staging",
+        "queryable": true,
+      },
+    ],
+  },
+  {
+    "modelPath": "public/page.malloy",
+    "sources": [
+      {
+        "name": "orders",
+        "queryable": true,
+      },
+      {
+        "name": "orders_staging",
+        "queryable": true,
+      },
+      {
+        "name": "page_orders",
+        "queryable": true,
+      },
+    ],
+  },
+  {
+    "modelPath": "reports/aliased.malloy",
+    "sources": [
+      {
+        "name": "o",
+        "queryable": true,
+      },
+      {
+        "name": "aliased_orders",
+        "queryable": true,
+      },
+    ],
+  },
+  {
+    "modelPath": "reports/empty.malloy",
+    "sources": [
+      {
+        "name": "orders",
+        "queryable": true,
+      },
+      {
+        "name": "orders_staging",
+        "queryable": true,
+      },
+      {
+        "name": "empty_orders",
+        "queryable": true,
+      },
+    ],
+  },
+  {
+    "modelPath": "reports/linear.malloy",
+    "sources": [
+      {
+        "name": "orders",
+        "queryable": true,
+      },
+      {
+        "name": "orders_staging",
+        "queryable": true,
+      },
+      {
+        "name": "linear_orders",
+        "queryable": true,
+      },
+    ],
+  },
+  {
+    "modelPath": "reports/named.malloy",
+    "sources": [
+      {
+        "name": "orders",
+        "queryable": true,
+      },
+      {
+        "name": "named_open",
+        "queryable": true,
+      },
+    ],
+  },
+  {
+    "modelPath": "reports/overview.malloy",
+    "sources": [
+      {
+        "name": "orders",
+        "queryable": true,
+      },
+      {
+        "name": "orders_staging",
+        "queryable": true,
+      },
+      {
+        "name": "dup_orders",
+        "queryable": true,
+      },
+    ],
+  },
+  {
+    "modelPath": "reports/tileless.malloy",
+    "sources": [
+      {
+        "name": "orders",
+        "queryable": true,
+      },
+      {
+        "name": "orders_staging",
+        "queryable": true,
+      },
+      {
+        "name": "tileless_orders",
+        "queryable": true,
+      },
+    ],
+  },
+  {
+    "modelPath": "top.malloy",
+    "sources": [
+      {
+        "name": "orders",
+        "queryable": true,
+      },
+      {
+        "name": "orders_staging",
+        "queryable": true,
+      },
+      {
+        "name": "top_orders",
+        "queryable": true,
+      },
+    ],
+  },
+]
+`;
+
+exports[`the listed-dashboards package's queryability and gates 1`] = `
+[
+  {
+    "modelPath": "dashboards/commented.malloy",
+    "sources": [
+      {
+        "name": "orders_staging",
+        "queryable": false,
+      },
+      {
+        "name": "orders",
+        "queryable": true,
+      },
+      {
+        "name": "commented",
+        "queryable": true,
+      },
+    ],
+  },
+  {
+    "modelPath": "dashboards/derived.malloy",
+    "sources": [
+      {
+        "name": "orders",
+        "queryable": false,
+        "servedFrom": "index.malloy::orders",
+      },
+      {
+        "name": "orders_staging",
+        "queryable": false,
+      },
+      {
+        "name": "open_orders",
+        "queryable": false,
+        "servedFrom": "index.malloy::orders",
+      },
+    ],
+  },
+  {
+    "modelPath": "dashboards/old.malloy",
+    "sources": [
+      {
+        "name": "orders_staging",
+        "queryable": false,
+      },
+      {
+        "name": "orders",
+        "queryable": true,
+      },
+      {
+        "name": "listed",
+        "queryable": true,
+      },
+    ],
+  },
+  {
+    "modelPath": "dashboards/overview.malloy",
+    "sources": [
+      {
+        "name": "orders",
+        "queryable": false,
+        "servedFrom": "index.malloy::orders",
+      },
+      {
+        "name": "orders_staging",
+        "queryable": false,
+      },
+      {
+        "name": "staging",
+        "queryable": false,
+      },
+    ],
+  },
+  {
+    "modelPath": "dashboards/single.malloy",
+    "sources": [
+      {
+        "name": "orders_staging",
+        "queryable": false,
+      },
+      {
+        "name": "orders",
+        "queryable": true,
+      },
+      {
+        "name": "single",
+        "queryable": true,
+      },
+    ],
+  },
+  {
+    "modelPath": "dashboards/titled.malloy",
+    "sources": [
+      {
+        "name": "orders",
+        "queryable": false,
+        "servedFrom": "index.malloy::orders",
+      },
+      {
+        "name": "orders_staging",
+        "queryable": false,
+      },
+      {
+        "name": "titled",
+        "queryable": false,
+      },
+    ],
+  },
+  {
+    "modelPath": "index.malloy",
+    "sources": [
+      {
+        "name": "orders_staging",
+        "queryable": false,
+      },
+      {
+        "name": "orders",
+        "queryable": true,
+      },
+    ],
+  },
+  {
+    "modelPath": "orders.malloy",
+    "sources": [
+      {
+        "name": "orders",
+        "queryable": false,
+      },
+      {
+        "name": "orders_staging",
+        "queryable": false,
+      },
+    ],
+  },
+]
+`;
+
+exports[`the reroot package's queryability and gates 1`] = `
+[
+  {
+    "modelPath": "analytics.malloy",
+    "sources": [
+      {
+        "name": "order_items",
+        "queryable": false,
+      },
+      {
+        "name": "analytics",
+        "queryable": true,
+      },
+    ],
+  },
+  {
+    "modelPath": "inventory_items.malloy",
+    "sources": [
+      {
+        "name": "inventory_items",
+        "queryable": false,
+      },
+    ],
+  },
+  {
+    "modelPath": "order_hub.malloy",
+    "sources": [
+      {
+        "name": "inventory_items",
+        "queryable": false,
+      },
+      {
+        "name": "order_items",
+        "queryable": false,
+      },
+    ],
+  },
+]
+`;
+
+exports[`the gates package's queryability and gates 1`] = `
+[
+  {
+    "modelPath": "gates.malloy",
+    "sources": [
+      {
+        "authorize": [
+          {
+            "expression": "region = $REGION",
+            "givenNames": [
+              "REGION",
+            ],
+            "route": "access_filter",
+            "terms": [
+              {
+                "fieldPath": "region",
+                "given": "REGION",
+                "op": "=",
+              },
+            ],
+          },
+        ],
+        "name": "scalar_gate",
+        "queryable": true,
+      },
+      {
+        "authorize": [
+          {
+            "expression": "rep_id in $IDS",
+            "givenNames": [
+              "IDS",
+            ],
+            "route": "access_filter",
+            "terms": [
+              {
+                "fieldPath": "rep_id",
+                "given": "IDS",
+                "op": "in",
+              },
+            ],
+          },
+        ],
+        "name": "list_gate",
+        "queryable": true,
+      },
+      {
+        "authorize": [
+          {
+            "expression": "reps.rep_name = $NAME",
+            "givenNames": [
+              "NAME",
+            ],
+            "route": "access_filter",
+            "terms": [
+              {
+                "fieldPath": "reps.rep_name",
+                "given": "NAME",
+                "op": "=",
+              },
+            ],
+          },
+        ],
+        "name": "join_gate",
+        "queryable": true,
+      },
+      {
+        "joinOnly": true,
+        "name": "join_gate.reps",
+        "queryable": true,
+      },
+      {
+        "authorize": [
+          {
+            "expression": "\`region\` = $REGION",
+            "givenNames": [
+              "REGION",
+            ],
+            "route": "access_filter",
+            "terms": [
+              {
+                "fieldPath": "region",
+                "given": "REGION",
+                "op": "=",
+              },
+            ],
+          },
+        ],
+        "name": "backtick_gate",
+        "queryable": true,
+      },
+      {
+        "authorize": [
+          {
+            "expression": "reps.\`cost.center\` = $CENTER",
+            "givenNames": [
+              "CENTER",
+            ],
+            "route": "access_filter",
+          },
+        ],
+        "name": "dotted_segment_gate",
+        "queryable": true,
+      },
+      {
+        "joinOnly": true,
+        "name": "dotted_segment_gate.reps",
+        "queryable": true,
+      },
+      {
+        "authorize": [
+          {
+            "expression": "region = $REGION and tenant_id = $TENANT",
+            "givenNames": [
+              "REGION",
+              "TENANT",
+            ],
+            "route": "access_filter",
+            "terms": [
+              {
+                "fieldPath": "region",
+                "given": "REGION",
+                "op": "=",
+              },
+              {
+                "fieldPath": "tenant_id",
+                "given": "TENANT",
+                "op": "=",
+              },
+            ],
+          },
+        ],
+        "name": "two_terms",
+        "queryable": true,
+      },
+      {
+        "authorize": [
+          {
+            "expression": "tenant_id = $TENANT",
+            "givenNames": [
+              "TENANT",
+            ],
+            "route": "access_filter",
+            "terms": [
+              {
+                "fieldPath": "tenant_id",
+                "given": "TENANT",
+                "op": "=",
+              },
+            ],
+          },
+        ],
+        "name": "derived_gate",
+        "queryable": true,
+      },
+      {
+        "authorize": [
+          {
+            "expression": "'admin' = $ROLE",
+            "givenNames": [
+              "ROLE",
+            ],
+            "route": "authorize",
+          },
+        ],
+        "name": "literal_lead_gate",
+        "queryable": true,
+      },
+      {
+        "authorize": [
+          {
+            "expression": "\`owner's region\` = $REGION",
+            "givenNames": [
+              "REGION",
+            ],
+            "route": "access_filter",
+            "terms": [
+              {
+                "fieldPath": "owner's region",
+                "given": "REGION",
+                "op": "=",
+              },
+            ],
+          },
+        ],
+        "name": "apostrophe_gate",
+        "queryable": true,
+      },
+    ],
+  },
+]
+`;

@@ -193,6 +193,47 @@ describe("parseAuthorizeGrammarBody — accepted bodies", () => {
          AF,
          [row("region", ["region"], "REGION", "=")],
       ],
+      // whitespace around the operands and operator is not part of a term
+      [
+         "  region   =   $REGION  ",
+         SCALAR,
+         AF,
+         [row("region", ["region"], "REGION", "=")],
+      ],
+      // `and` joins case-insensitively
+      [
+         "REGION_ID = $REGION AND org_id in $GROUPS",
+         new Map([...SCALAR, ...LIST]),
+         AF,
+         [
+            row("REGION_ID", ["REGION_ID"], "REGION", "="),
+            row("org_id", ["org_id"], "GROUPS", "in"),
+         ],
+      ],
+      // a backticked column is unquoted in its segments, kept in the text
+      [
+         "`region` = $REGION",
+         SCALAR,
+         AF,
+         [row("`region`", ["region"], "REGION", "=")],
+      ],
+      // a reserved word, backticked, is a column
+      ["`and` = $REGION", SCALAR, AF, [row("`and`", ["and"], "REGION", "=")]],
+      // every scalar given type takes `=`
+      [
+         "a = $A and b = $B and c = $C",
+         new Map([
+            ["A", "string"],
+            ["B", "number"],
+            ["C", "date"],
+         ]),
+         AF,
+         [
+            row("a", ["a"], "A", "="),
+            row("b", ["b"], "B", "="),
+            row("c", ["c"], "C", "="),
+         ],
+      ],
    ] as Array<[string, Givens, string, unknown[]]>)(
       "%s",
       (body, givens, route, expected) => {
@@ -247,6 +288,34 @@ describe("parseAuthorizeGrammarBody — refused bodies", () => {
          "source_level_term_in_access_filter",
       ],
       ["'finance' in $GROUPS", LIST, AF, "source_level_term_in_access_filter"],
+      ["'admin' = $ROLE", ROLE, AF, "source_level_term_in_access_filter"],
+      ["$ROLE = 'admin'", ROLE, AF, "source_level_term_in_access_filter"],
+      // tokens inside a literal are not syntax on this route either
+      [
+         "'rock or roll' in $GROUPS",
+         LIST,
+         AF,
+         "source_level_term_in_access_filter",
+      ],
+      [
+         "'research and development' in $GROUPS",
+         LIST,
+         AF,
+         "source_level_term_in_access_filter",
+      ],
+      ["TRUE", NONE, AF, "sentinel_in_access_filter"],
+      ["region <= $REGION", SCALAR, AF, "comparison_operator"],
+      // a conjunct that is not a term, or a dangling `and`
+      ["region = $REGION and bogus", SCALAR, AF, "malformed_body"],
+      ["region = $REGION and", SCALAR, AF, "malformed_body"],
+      [
+         "region = $REGION and 'x' in $GROUPS and bad",
+         new Map([...SCALAR, ...LIST]),
+         AF,
+         "malformed_body",
+      ],
+      // the right side must be a given, not a parenthesized expression
+      ["region = (a and b)", SCALAR, AF, "missing_given_reference"],
    ] as Array<[string, Givens, string, AuthorizeGrammarRejectionCause]>)(
       "%p on %s",
       (body, givens, route, cause) => {

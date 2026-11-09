@@ -45,7 +45,7 @@ import { writeWorkspace, type Workspace } from "./test_support";
 import { packageCompilationService } from "./test_support";
 import { ConnectionLookup } from "./test_support";
 import { packageManagementService } from "./test_support";
-import type { PackageManifest } from "./query_surface";
+import type { PackageManifest } from "./test_support";
 
 const LEAF = `
 source: inventory_items is duckdb.table('inventory.csv') extend {
