@@ -68,8 +68,9 @@ The fields the server reads:
 Unknown top-level keys are ignored and preserved. Inside `retrieval` they are not: an unknown key fails the
 package load with a message naming the valid ones. `version` is read when the package is published
 from a location (`POST …/packages` with a `location`): it numbers the immutable version that publish
-creates, and a publish without one is refused. A package loaded from `publisher.config.json` ignores
-it. See [package-versions.md](package-versions.md). (One more field, `manifestLocation`, exists for orchestrated
+creates, and a publish without one is refused. A package in `publisher.config.json` is published
+the same way, unless its environment is watched (`--watch-env`), which mounts it in place and
+ignores it. See [package-versions.md](package-versions.md). (One more field, `manifestLocation`, exists for orchestrated
 control-plane deployments; a locally authored package never needs it. It is deprecated and goes
 away with the package `PATCH` that writes it: bind a version's build manifest with
 `PUT …/versions/{v}/manifest` instead. See [#1540](https://github.com/malloydata/publisher/issues/1540).)

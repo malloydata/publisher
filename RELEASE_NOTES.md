@@ -22,6 +22,19 @@ Give the heading a title — `## [Unreleased] — what changed`, with an em dash
 Two consequences worth knowing. A section merged to `main` ships in the **next** release, whenever that is, so do not write one for work that has not landed. And a heading already stamped with a version is history: a follow-up that changes that behaviour opens a **new** `[Unreleased]` section referencing the shipped version by number, rather than editing the old one.
 
 
+## [Unreleased] — Package versioning is on by default
+
+`PUBLISHER_PACKAGE_VERSIONING` now defaults to `on`: a package published from a location is an immutable [version](docs/package-versions.md), numbered by the `version` in its `publisher.json`. Before, it was off unless set.
+
+**What changes on upgrade.**
+
+- `POST …/packages` with a `location` publishes the version the tree's `publisher.json` declares. A tree with no `version` answers 400 `MANIFEST_VERSION_MISSING`, one that is not a semantic version 400 `MANIFEST_VERSION_INVALID`, and other content under a version already published 409 `VERSION_CONFLICT`: bump the version to publish a change.
+- A package in `publisher.config.json` is published the same way when its environment is first loaded (a first boot, or `--init`), unless the environment is watched (`--watch-env`). One whose `publisher.json` declares no version fails to load, with its error in `/status` `loadErrors`, and the others still load.
+- A published version is immutable: `?reload=true` and `reload_package` answer it unchanged, and a model or report write answers 409 `PACKAGE_IS_VERSIONED`. Edit and reload in a watched environment, which mounts your source in place, as before.
+- `GET /api/v0/status` reports `packageVersioning: "on"`.
+
+**To keep the old behavior for now**, start the server with `PUBLISHER_PACKAGE_VERSIONING=off`. It is a transition setting: a later release removes it, and versioning off with it ([#1381](https://github.com/malloydata/publisher/issues/1381)). Give your packages' `publisher.json` a semantic `version`, and bump it for every release.
+
 ## [Unreleased] — Server fixes: correct statuses for model reads, client cancellation over MCP, fail-closed depth bounds, and quieter, better-labelled logs and metrics
 
 A pass over the server that changes no route or tool, and no response shape except `/entities` reporting a gate it used to misread (below), but does change some answers, log lines and metrics. Read it if you alert on any of them.

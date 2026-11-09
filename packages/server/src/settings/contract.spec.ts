@@ -330,7 +330,7 @@ export const CONTRACT: Record<string, Case[]> = {
       },
    ],
    packageVersioning: [
-      { name: "unset", expect: value(false) },
+      { name: "unset", expect: value(true) },
       {
          name: "PUBLISHER_PACKAGE_VERSIONING on",
          env: { PUBLISHER_PACKAGE_VERSIONING: "on" },
@@ -349,7 +349,7 @@ export const CONTRACT: Record<string, Case[]> = {
       {
          name: "blank",
          env: { PUBLISHER_PACKAGE_VERSIONING: "" },
-         expect: value(false),
+         expect: value(true),
       },
       {
          name: "a boolean spelling is not one of its two values, and fails",
@@ -358,8 +358,8 @@ export const CONTRACT: Record<string, Case[]> = {
       },
       {
          name: "the file is not read today",
-         file: { packageVersioning: "on" },
-         expect: warned(false, "is not read from the file"),
+         file: { packageVersioning: "off" },
+         expect: warned(true, "is not read from the file"),
       },
    ],
    versionPromotion: [
