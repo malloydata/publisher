@@ -155,11 +155,13 @@ source: analytics is duckdb.table('analytics.csv') extend {
 
 // One gate shape per source: a scalar equality, a list membership, a dotted
 // join path, a backticked segment, a backticked segment holding a dot (which
-// a dotted field path cannot carry), two conjuncts, and an inherited filter
-// ANDed with the derivation's own.
+// a dotted field path cannot carry), two conjuncts, an inherited filter
+// ANDed with the derivation's own, a lock that starts with a string literal,
+// and a backticked segment holding an apostrophe. The last two are gates the
+// load accepts, so they read verbatim rather than as a lock.
 const GATES: Record<string, string> = {
    "orders.csv":
-      "order_id,region,rep_id,tenant_id,amount\n1,us,1,t1,5\n2,eu,2,t2,7\n",
+      "order_id,region,rep_id,tenant_id,amount,owner's region\n1,us,1,t1,5,us\n2,eu,2,t2,7,eu\n",
    "reps.csv": 'rep_id,rep_name,"cost.center"\n1,Ann,c1\n2,Bo,c2\n',
    "gates.malloy": `##! experimental.givens
 
@@ -168,6 +170,7 @@ given: IDS :: number[]
 given: NAME :: string is 'Ann'
 given: CENTER :: string is 'c1'
 given: TENANT :: string is 't1'
+given: ROLE :: string
 
 #(access_filter) region = $REGION
 source: scalar_gate is duckdb.table('orders.csv')
@@ -193,6 +196,12 @@ source: two_terms is duckdb.table('orders.csv')
 
 #(access_filter) tenant_id = $TENANT
 source: derived_gate is scalar_gate extend {}
+
+#(authorize) 'admin' = $ROLE
+source: literal_lead_gate is duckdb.table('orders.csv')
+
+#(access_filter) \`owner's region\` = $REGION
+source: apostrophe_gate is duckdb.table('orders.csv')
 `,
 };
 

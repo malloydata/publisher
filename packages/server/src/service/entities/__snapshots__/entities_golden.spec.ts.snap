@@ -1637,6 +1637,39 @@ exports[`the gates package's queryability and gates 1`] = `
         "name": "derived_gate",
         "queryable": true,
       },
+      {
+        "authorize": [
+          {
+            "expression": "'admin' = $ROLE",
+            "givenNames": [
+              "ROLE",
+            ],
+            "route": "authorize",
+          },
+        ],
+        "name": "literal_lead_gate",
+        "queryable": true,
+      },
+      {
+        "authorize": [
+          {
+            "expression": "\`owner's region\` = $REGION",
+            "givenNames": [
+              "REGION",
+            ],
+            "route": "access_filter",
+            "terms": [
+              {
+                "fieldPath": "owner's region",
+                "given": "REGION",
+                "op": "=",
+              },
+            ],
+          },
+        ],
+        "name": "apostrophe_gate",
+        "queryable": true,
+      },
     ],
   },
 ]
