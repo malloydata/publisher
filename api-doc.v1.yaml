@@ -49,14 +49,17 @@ info:
     - Paths are kebab-case; parameters and fields are camelCase. `{path}` is a file inside a version; `{name}` a named
     resource.
 
-    - `GET` never changes state. Reload is `POST …/reload`, which answers with what it did.
+    - `GET` never changes state, and an immutable version has nothing to reload: `:reload` recompiles a live package;
+    re-fetching a source is `POST …/versions`; loading a version is `PATCH {"loaded": true}`.
 
     - `/status`, a package's `status`, the versions list, the version record and `…/index` never load a version that is
     not in memory; every other content read loads it on demand and says so.
 
     - State changes are fields: `PATCH …/versions/{versionId}` with `archived`, `loaded`, `pinned` or
     `manifestLocation`; `PATCH …/packages/{packageName}` with `latestVersionId`; `PATCH …/runs/{runId}` with `status:
-    "cancelled"`. There are no action routes: an unsaved connection is tested with `?dryRun=true` on create or update.
+    "cancelled"`. Actions are `POST` with a `:verb` suffix on the resource they act on (`:reload`, `:refresh-schema`,
+    `:query`, `:compile`, `:run-sql`), so an action can never collide with a child's name; an unsaved connection is
+    tested with `?dryRun=true` on create or update.
 
     - `PATCH` is JSON merge-patch: present fields are set, `null` unsets, absent fields are untouched, lists replace. An
     orchestrator pushes an environment's desired state as a `PATCH` whose `connections` list replaces the stored one.
@@ -65,6 +68,17 @@ info:
 
     - Every mutable resource carries a `revision`, returned as `ETag` on reads; every write accepts `If-Match` and
     answers 412 when the resource has moved on.
+
+    - What only the server sets is `readOnly` (`resource`, `revision`, timestamps, a run's every field but `status`),
+    and a write that sends it back as read ignores it, so a client can `PATCH` a resource it just read. A `name` is set
+    on create and never changes; a write that changes one answers 400.
+
+    - Every `POST` that creates or starts something (an environment, a connection, a publish, a re-fetch, a run) accepts
+    an `Idempotency-Key` header: a retry with the same key and body within 24 hours answers with the first response and
+    does nothing again, and the same key with a different body answers 409 `IDEMPOTENCY_KEY_REUSED`.
+
+    - A delete that would delete other resources with it (an environment's packages and connections, a package's
+    versions) requires `?force=true`, and answers 409 `RESOURCE_NOT_EMPTY` without it.
 
     - Every list is `{items, nextCursor}`, paged with `limit` and `after`. `/status` is the one unpaged snapshot.
 
@@ -177,6 +191,8 @@ paths:
       tags:
         - environments
       summary: Create an environment
+      parameters:
+        - $ref: "#/components/parameters/idempotencyKey"
       requestBody:
         required: true
         content:
@@ -294,8 +310,11 @@ paths:
       tags:
         - environments
       summary: Delete an environment and everything in it
+      description: Deletes its packages, their versions and runs, and its connections. Requires `?force=true` when it holds
+        any of them.
       parameters:
         - $ref: "#/components/parameters/ifMatch"
+        - $ref: "#/components/parameters/force"
       responses:
         "204":
           description: Deleted.
@@ -366,6 +385,7 @@ paths:
         - connections
       summary: Create a connection
       parameters:
+        - $ref: "#/components/parameters/idempotencyKey"
         - name: dryRun
           in: query
           schema:
@@ -569,6 +589,7 @@ paths:
         it does not exist. The same content under an existing version id is a placement (200); different content is 409
         `VERSION_CONFLICT`. With `dryRun`, every publish check runs and nothing is stored.
       parameters:
+        - $ref: "#/components/parameters/idempotencyKey"
         - name: dryRun
           in: query
           schema:
@@ -714,8 +735,10 @@ paths:
       tags:
         - packages
       summary: Delete a package and all of its versions
+      description: Deletes its versions and runs with it, so it requires `?force=true` whenever the package has a version.
       parameters:
         - $ref: "#/components/parameters/ifMatch"
+        - $ref: "#/components/parameters/force"
       responses:
         "204":
           description: Deleted.
@@ -737,7 +760,7 @@ paths:
           $ref: "#/components/responses/Unavailable"
 
 
-  /environments/{environmentName}/packages/{packageName}/reload:
+  /environments/{environmentName}/packages/{packageName}:reload:
     parameters:
       - $ref: "#/components/parameters/environmentName"
       - $ref: "#/components/parameters/packageName"
@@ -752,7 +775,7 @@ paths:
         skips a save that does not compile without saying so. A package that is not live answers 409 `PACKAGE_NOT_LIVE`:
         an immutable version has nothing to reload. To pick up a changed source, re-fetch it (`POST …/versions`); to
         make a version resident, `PATCH …/versions/{versionId}` with `{\"loaded\": true}`; to recompile against current
-        warehouse schemas, `POST …/versions/{versionId}/refresh-schema`."
+        warehouse schemas, `POST …/versions/{versionId}:refresh-schema`."
       responses:
         "200":
           description: What the reload did (`outcome` is `recompiled`).
@@ -863,13 +886,15 @@ paths:
       operationId: refetch-package-source
       tags:
         - versions
+      parameters:
+        - $ref: "#/components/parameters/idempotencyKey"
       summary: Re-fetch the package's recorded source and publish a version if it changed
       description: Fetches `source.location` again (a git branch, an object store prefix, a directory). When the source
         fingerprint (git commit sha, object etag or md5, or the imported tree hash) matches the current version's,
         nothing is made (`unchanged`). When it differs, the new tree is published with the overlay re-applied, named by
         its `publisher.json` version when that is new and `<parent>+reload.N` otherwise, and `latestVersionId` moves per
         the promotion rule. This is v0's `?reload=true` on a package installed from a location. A live package answers
-        409 `PACKAGE_IS_LIVE` (reload it instead).
+        409 `PACKAGE_IS_LIVE` (use `:reload` instead).
       responses:
         "200":
           description: Nothing changed (`outcome` is `unchanged`).
@@ -883,8 +908,6 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/ReloadResult"
-        "202":
-          description: Accepted; the fetch and publish run in the background.
         "400":
           $ref: "#/components/responses/BadRequest"
         "401":
@@ -903,7 +926,7 @@ paths:
           $ref: "#/components/responses/Unavailable"
 
 
-  /environments/{environmentName}/packages/{packageName}/versions/{versionId}/refresh-schema:
+  /environments/{environmentName}/packages/{packageName}/versions/{versionId}:refresh-schema:
     parameters:
       - $ref: "#/components/parameters/environmentName"
       - $ref: "#/components/parameters/packageName"
@@ -1218,7 +1241,7 @@ paths:
           $ref: "#/components/responses/Unavailable"
 
 
-  /environments/{environmentName}/packages/{packageName}/versions/{versionId}/models/{path}/query:
+  /environments/{environmentName}/packages/{packageName}/versions/{versionId}/models/{path}:query:
     parameters:
       - $ref: "#/components/parameters/environmentName"
       - $ref: "#/components/parameters/packageName"
@@ -1272,7 +1295,7 @@ paths:
           $ref: "#/components/responses/GatewayTimeout"
 
 
-  /environments/{environmentName}/packages/{packageName}/versions/{versionId}/models/{path}/compile:
+  /environments/{environmentName}/packages/{packageName}/versions/{versionId}/models/{path}:compile:
     parameters:
       - $ref: "#/components/parameters/environmentName"
       - $ref: "#/components/parameters/packageName"
@@ -2015,6 +2038,8 @@ paths:
       tags:
         - materialization
       summary: Start a materialization run
+      parameters:
+        - $ref: "#/components/parameters/idempotencyKey"
       description: "Loads the version first if this server does not hold it, so a run (a re-run of a failed version among
         them) needs no separate load. 409 `RUN_ACTIVE` while another run holds the slot; 409 `TABLE_OWNED_ELSEWHERE`
         when an instruction names a table another package or slot owns; 400 `VERSION_NOT_LATEST` for an auto-run of a
@@ -2329,7 +2354,7 @@ paths:
           $ref: "#/components/responses/Unavailable"
 
 
-  /environments/{environmentName}/connections/{connectionName}/sql:
+  /environments/{environmentName}/connections/{connectionName}:run-sql:
     post:
       operationId: run-sql
       tags:
@@ -2517,7 +2542,7 @@ paths:
           $ref: "#/components/responses/Unavailable"
 
 
-  /environments/{environmentName}/packages/{packageName}/versions/{versionId}/connections/{connectionName}/sql:
+  /environments/{environmentName}/packages/{packageName}/versions/{versionId}/connections/{connectionName}:run-sql:
     post:
       operationId: run-sql-in-version
       tags:
@@ -2651,6 +2676,25 @@ components:
       schema:
         $ref: "#/components/schemas/Cursor"
       description: Continue after this cursor.
+    idempotencyKey:
+      name: Idempotency-Key
+      in: header
+      required: false
+      schema:
+        type: string
+        maxLength: 255
+      description: Makes a retried create or start safe. A request that repeats a key this server saw in the last 24 hours,
+        with the same body, answers with the first request's response and does nothing again; the same key with a
+        different body answers 409 `IDEMPOTENCY_KEY_REUSED`. Use a fresh UUID per logical request.
+    force:
+      name: force
+      in: query
+      required: false
+      schema:
+        type: boolean
+        default: false
+      description: Required to delete a resource that holds other resources, which are deleted with it. Without it such a
+        delete answers 409 `RESOURCE_NOT_EMPTY` and deletes nothing.
     ifMatch:
       name: If-Match
       in: header
@@ -2695,7 +2739,7 @@ components:
     Conflict:
       description: The write conflicts with the resource's state (`CONFLICT`, `VERSION_CONFLICT`, `VERSION_IS_LATEST`,
         `VERSION_IS_LAST_ACTIVE`, `VERSION_BUILDING`, `FILE_EXISTS`, `RUN_ACTIVE`, `TABLE_OWNED_ELSEWHERE`,
-        `INVALID_TRANSITION`).
+        `INVALID_TRANSITION`, `RESOURCE_NOT_EMPTY`, `IDEMPOTENCY_KEY_REUSED`).
       content:
         application/json:
           schema:
@@ -3301,6 +3345,7 @@ components:
       properties:
         resource:
           type: string
+          readOnly: true
         versionId:
           $ref: "#/components/schemas/VersionId"
         path:
@@ -3469,6 +3514,8 @@ components:
           type: string
           readOnly: true
         name:
+          x-immutable: true
+          description: Set on create; a write that changes it answers 400 `INVALID_REQUEST`.
           $ref: "#/components/schemas/IdentifierPattern"
         type:
           type: string
@@ -3603,6 +3650,7 @@ components:
         - title
       properties:
         resource:
+          readOnly: true
           type: string
           description: The page's URL under `…/versions/{versionId}/public/`.
         versionId:
@@ -3664,6 +3712,7 @@ components:
       properties:
         resource:
           type: string
+          readOnly: true
         path:
           type: string
         format:
@@ -3973,8 +4022,11 @@ components:
           type: string
           readOnly: true
         name:
+          x-immutable: true
+          description: Set on create; a write that changes it answers 400 `INVALID_REQUEST`.
           $ref: "#/components/schemas/IdentifierPattern"
-        description: "{ type: string }"
+        description:
+          type: string
         readme:
           type: string
           description: Markdown shown on the environment's page.
@@ -4013,6 +4065,7 @@ components:
       properties:
         resource:
           type: string
+          readOnly: true
         name:
           type: string
         connections:
@@ -4087,6 +4140,8 @@ components:
         - VERSION_NOT_LATEST
         - PACKAGE_IS_LIVE
         - PACKAGE_NOT_LIVE
+        - RESOURCE_NOT_EMPTY
+        - IDEMPOTENCY_KEY_REUSED
         - FILE_EXISTS
         - FILE_NOT_WRITABLE
         - RUN_ACTIVE
@@ -4499,6 +4554,7 @@ components:
       properties:
         resource:
           type: string
+          readOnly: true
         versionId:
           $ref: "#/components/schemas/VersionId"
         path:
@@ -4656,6 +4712,8 @@ components:
           type: string
           readOnly: true
         name:
+          x-immutable: true
+          description: Set on create; a write that changes it answers 400 `INVALID_REQUEST`.
           $ref: "#/components/schemas/IdentifierPattern"
         description:
           type:
@@ -4770,6 +4828,7 @@ components:
       properties:
         resource:
           type: string
+          readOnly: true
         name:
           type: string
         latestVersionId:
@@ -5336,7 +5395,7 @@ components:
             - unchanged
             - published
             - recompiled
-          description: "`recompiled`: a live package was recompiled in place (`POST …/reload`). `unchanged`: a re-fetch found the
+          description: "`recompiled`: a live package was recompiled in place (`POST …:reload`). `unchanged`: a re-fetch found the
             source fingerprint unchanged and made nothing. `published`: a re-fetch found the source changed and
             `version` is the version it made (`POST …/versions`)."
         package:
@@ -5354,6 +5413,7 @@ components:
       properties:
         resource:
           type: string
+          readOnly: true
         versionId:
           $ref: "#/components/schemas/VersionId"
         path:
@@ -5428,7 +5488,7 @@ components:
           type: string
           description: Absent on a text tile. The run expression exactly as written in `tiles=[…]`, for example "orders ->
             by_month". An EXPRESSION rather than a name, so it goes in the `query` field of a `POST
-            …/models/{path}/query` body, prefixed with `run:`.
+            …/models/{path}:query` body, prefixed with `run:`.
         restricted:
           type: boolean
           description: "Set on a tile of a compiled document (`CompileResult.document`) whose source the caller may not read. The
@@ -5494,6 +5554,7 @@ components:
           description: The grid column the tile's left edge sits in, counted from 1, from `col=N` on its entry in `tiles=[…]`. See
             `row`.
     Revision:
+      readOnly: true
       type: integer
       format: int64
       minimum: 1
@@ -5514,11 +5575,15 @@ components:
       properties:
         resource:
           type: string
+          readOnly: true
         runId:
           type: string
+          readOnly: true
         versionId:
           $ref: "#/components/schemas/VersionId"
+          readOnly: true
         slot:
+          readOnly: true
           type: string
           description: "`<package>` under `scope: package`, `<package>@<version>` under `scope: version`."
         status:
@@ -5532,51 +5597,63 @@ components:
           description: "`committed` is the only success: the manifest is visible and the bindings moved. A client may request only
             `cancelled`."
         trigger:
+          readOnly: true
           type: string
           enum:
             - on_demand
             - scheduler
             - orchestrated
         mode:
+          readOnly: true
           type: string
           enum:
             - auto
             - orchestrated
         scope:
+          readOnly: true
           type: string
           enum:
             - package
             - version
         options:
+          readOnly: true
           $ref: "#/components/schemas/RunOptions"
         startedAt:
           type:
             - string
             - "null"
           format: date-time
+          readOnly: true
         completedAt:
           type:
             - string
             - "null"
           format: date-time
+          readOnly: true
         durationMs:
           type:
             - integer
             - "null"
+          readOnly: true
         error:
           type:
             - string
             - "null"
+          readOnly: true
         summary:
+          readOnly: true
           $ref: "#/components/schemas/RunSummary"
         revision:
+          readOnly: true
           $ref: "#/components/schemas/Revision"
         createdAt:
           type: string
           format: date-time
+          readOnly: true
         updatedAt:
           type: string
           format: date-time
+          readOnly: true
     RunContext:
       type: object
       description: Caller-supplied context for one materialization run, folded into the per-query metadata of the statements
@@ -5842,6 +5919,7 @@ components:
       properties:
         resource:
           type: string
+          readOnly: true
         versionId:
           $ref: "#/components/schemas/VersionId"
         status:
@@ -6362,6 +6440,7 @@ components:
       properties:
         resource:
           type: string
+          readOnly: true
         schemaName:
           type: string
         name:
@@ -6382,6 +6461,7 @@ components:
       properties:
         resource:
           type: string
+          readOnly: true
         schemaName:
           type: string
         name:
@@ -6437,6 +6517,7 @@ components:
           type: string
           readOnly: true
         versionId:
+          readOnly: true
           $ref: "#/components/schemas/VersionId"
         latest:
           type: boolean
@@ -6469,6 +6550,7 @@ components:
           readOnly: true
           description: The version's materialization scope, from its `publisher.json`.
         materialization:
+          readOnly: true
           $ref: "#/components/schemas/PackageMaterializationConfig"
         archived:
           type: boolean

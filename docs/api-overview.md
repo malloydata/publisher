@@ -32,7 +32,7 @@ shape, with additive fields only, on v0.
 Environment                     a namespace for packages and connections; the unit of tenancy
 ├── Connection                  a warehouse handle with a role: source, destination, or both
 │   ├── schemas / tables        what the connection can read
-│   └── sql                     ad-hoc SQL: run, or describe a statement's columns
+│   └── :run-sql                ad-hoc SQL: run, or describe a statement's columns
 └── Package                     a record with pointers (source, description, latestVersionId); holds no content
     ├── status                  how this server holds the package's versions
     ├── runs                    attempts to build persisted sources, each with a manifest
@@ -43,7 +43,7 @@ Environment                     a namespace for packages and connections; the un
         ├── data-files          embedded CSV, Parquet, JSON and Excel files
         ├── agents, skills      what the package declares for agents
         ├── entities, classification, index
-        ├── build-plan, refresh-schema
+        ├── build-plan; :refresh-schema
         └── connections         the version's own `duckdb` sandbox over its data files
 ```
 
@@ -55,21 +55,23 @@ parent.
 
 - **Names.** Paths are kebab-case; parameters and fields are camelCase. `{path}` is a file inside a version; `{name}` a
   named resource. `versionId` is the one spelling of a version, everywhere.
-- **Reads never change state, and an immutable version has nothing to reload.** `POST …/packages/{pkg}/reload`
+- **Reads never change state, and an immutable version has nothing to reload.** `POST …/packages/{pkg}:reload`
   recompiles a live package and waits for the result. Re-fetching the source is `POST …/packages/{pkg}/versions`;
   loading a version is `PATCH …/versions/{v}` `{"loaded": true}`; recompiling against current warehouse schemas is
-  `POST …/versions/{v}/refresh-schema`.
+  `POST …/versions/{v}:refresh-schema`.
 - **Which reads load.** `/status`, a package's `status`, the versions list, the version record and `…/index` never load a
   version that is not in memory. Every other content read loads it on demand (a hydrate when the compiled-model store has
   it); read `ServingState.loaded` first to know what a read will cost.
 - **State changes are fields.** `PATCH …/versions/{versionId}` with `archived`, `loaded`, `pinned` or
   `manifestLocation`; `PATCH …/packages/{packageName}` with `latestVersionId`; `PATCH …/runs/{runId}` with
-  `status: "cancelled"`. There are no action routes: to test an unsaved connection, create or update it with
-  `?dryRun=true`.
+  `status: "cancelled"`. Actions are `POST` with a `:verb` suffix on the resource they act on (`:reload`, `:refresh-schema`, `:query`, `:compile`, `:run-sql`), so an action can never collide with a child's name; an unsaved connection is tested with `?dryRun=true` on create or update.
 - **One mutation shape.** `PATCH` is JSON merge-patch: present fields are set, `null` unsets, absent fields are untouched,
   lists replace, so an orchestrator pushes an environment's desired state as a `PATCH` of its `connections`. `PUT` is
   used only by the report write, which replaces a file.
   `POST` on a collection answers 201 with the resource and a `Location`; `DELETE` answers 204.
+- **Field behavior.** What only the server sets is `readOnly` (`resource`, `revision`, timestamps, a run's every field but `status`), and a write that sends it back as read ignores it, so a client can `PATCH` a resource it just read. A `name` is set on create and never changes; a write that changes one answers 400.
+- **Idempotent creates.** Every `POST` that creates or starts something (an environment, a connection, a publish, a re-fetch, a run) accepts an `Idempotency-Key` header: a retry with the same key and body within 24 hours answers with the first response and does nothing again, and the same key with a different body answers 409 `IDEMPOTENCY_KEY_REUSED`.
+- **Guarded deletes.** A delete that would delete other resources with it (an environment's packages and connections, a package's versions) requires `?force=true`, and answers 409 `RESOURCE_NOT_EMPTY` without it.
 - **Concurrency.** Every mutable resource carries a `revision`, returned as `ETag` on reads. Send it back as `If-Match` on
   a write; 412 `REVISION_MISMATCH` when the resource has moved on. The report write also takes `expectedHash`, the
   SHA-256 of the text you read.
@@ -89,17 +91,17 @@ parent.
 | `GET /status`                                                              | `operationalState`, `version`, `hostname`, `loadErrors` (with `stale` for a version serving a model older than its content), and every version this server holds with its `ServingState`. |
 | `GET /environments`, `POST /environments`                                  | List and create. `PATCH /environments/{env}` merges (its `connections` list replaces whole), `DELETE` removes it and everything in it.                                                                 |
 | `GET …/connections?role=destination`                                       | Connections by role. `POST` creates (`?dryRun=true` tests without storing); `PATCH` merges (`?dryRun=true` tests the change).                                                      |
-| `GET …/connections/{name}/schemas`, `…/schemas/{s}/tables`, `POST …/sql`  | Browse what a connection can read; run or describe SQL. The same routes exist under a version for its `duckdb` sandbox.                                                                     |
+| `GET …/connections/{name}/schemas`, `…/schemas/{s}/tables`, `POST …:run-sql`| Browse what a connection can read; run or describe SQL. The same routes exist under a version for its `duckdb` sandbox.                                                                     |
 | `GET …/packages`, `POST …/packages`                                        | List records; publish a version from `source.location` (`?dryRun=true` checks without storing). Publish answers the `Version`.                                                             |
 | `PATCH …/packages/{pkg}`                                                   | `description`, `latestVersionId` (a compare-and-swap under `If-Match`; moving it back is undo), `source`. Scope and schedule come from a version's `publisher.json`.                     |
-| `POST …/packages/{pkg}/reload`                                             | A live package only: recompile the author's files and wait; 409 `PACKAGE_NOT_LIVE` otherwise. |
+| `POST …/packages/{pkg}:reload`                                             | A live package only: recompile the author's files and wait; 409 `PACKAGE_NOT_LIVE` otherwise. |
 | `GET …/packages/{pkg}/status`                                              | The `ServingState` of one version (`?versionId=`, `latest` by default), with the per-package fields (`servedRevision`, `sourceContentSha`, `bindings`). Loads nothing.                   |
 | `GET …/versions`, `GET …/versions/{v}`, `PATCH`, `DELETE`                  | The package's versions, newest first; one version; its lifecycle fields (`loaded: true` loads it); delete for good.                                                                                           |
 | `POST …/versions`                                                          | Re-fetch the recorded source; publish `<parent>+reload.N` if it changed (201), else `unchanged` (200). |
-| `POST …/versions/{v}/refresh-schema`                                       | Recompile the version against the warehouse's current schemas; makes no version. |
+| `POST …/versions/{v}:refresh-schema`                                       | Recompile the version against the warehouse's current schemas; makes no version. |
 | `GET …/versions/{v}/models`, `GET …/models/{path}`                         | Model files; one model's sources, views and givens (`?include=sourceText,modelInfo,sourceInfos` for the larger parts).                                                                   |
-| `POST …/versions/{v}/models/{path}/query`                                  | Run a query. See [request shapes](#query-request-shapes).                                                                                                                                 |
-| `POST …/versions/{v}/models/{path}/compile`                                | Compile-check Malloy text at `append`, `file` or `package` scope.                                                                                                                         |
+| `POST …/versions/{v}/models/{path}:query`                                  | Run a query. See [request shapes](#query-request-shapes).                                                                                                                                 |
+| `POST …/versions/{v}/models/{path}:compile`                                | Compile-check Malloy text at `append`, `file` or `package` scope.                                                                                                                         |
 | `PUT …/versions/{v}/models/{path}`                                         | The builder's save: write a report file, which makes version `<parent>+edit.N` and moves `latestVersionId`. Create (201) without `expectedHash`, replace (200) with it.                  |
 | `GET …/versions/{v}/reports`, `…/reports/{path}`                           | Reports by `path` and `layout`; one report's manifest (its tiles and controls). Run a tile through `query`.                                                                          |
 | `GET …/versions/{v}/data-apps`, `…/public/{path}`                          | HTML data apps and the static files they load, served from the version they were published with.                                                                                        |
