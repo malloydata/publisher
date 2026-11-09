@@ -366,41 +366,6 @@ paths:
           $ref: "#/components/responses/Unavailable"
 
 
-  /environments/{environmentName}/reload:
-    parameters:
-      - $ref: "#/components/parameters/environmentName"
-    post:
-      operationId: reload-environment
-      tags:
-        - environments
-      summary: Reload every package in the environment
-      responses:
-        "200":
-          description: One result per package.
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/ReloadResult"
-        "202":
-          description: Accepted; the reload runs in the background.
-        "400":
-          $ref: "#/components/responses/BadRequest"
-        "401":
-          $ref: "#/components/responses/Unauthorized"
-        "403":
-          $ref: "#/components/responses/Forbidden"
-        "404":
-          $ref: "#/components/responses/NotFound"
-        "409":
-          $ref: "#/components/responses/Conflict"
-        "412":
-          $ref: "#/components/responses/PreconditionFailed"
-        "500":
-          $ref: "#/components/responses/Internal"
-        "503":
-          $ref: "#/components/responses/Unavailable"
-
-
   /environments/{environmentName}/connections:
     parameters:
       - $ref: "#/components/parameters/environmentName"
@@ -5725,11 +5690,6 @@ components:
           $ref: "#/components/schemas/Package"
         version:
           $ref: "#/components/schemas/Version"
-        versions:
-          type: array
-          description: On an environment reload, one result per package.
-          items:
-            $ref: "#/components/schemas/ReloadResult"
     Report:
       type: object
       description: A `.malloy` file carrying an `## artifact` tag, wherever it lives in the version.
