@@ -8,9 +8,8 @@ import {
    type LogMessage,
    type ModelDef,
 } from "@malloydata/malloy";
-import { ownModelNoteObjects, type AnnotationNote } from "./annotations";
+import { type AnnotationNote } from "./annotations";
 import { docCommentText } from "./motly";
-import { isReportEligiblePath, readReportTag } from "./report";
 
 /**
  * A `##` note or `##|` block that sets `artifact` as a top-level property,
@@ -961,28 +960,4 @@ export function cellsUnreadableProblem(
          },
       },
    };
-}
-
-/**
- * The compile problem for a linear report the reader would refuse, so a
- * compile check (an agent's, or the builder's save gate) fails on a report
- * that would not open. Undefined for anything that is not a linear report
- * (`report.ts`), wherever the file lives.
- */
-export function notebookReaderProblem(
-   modelPath: string,
-   text: string,
-   modelDef: ModelDef,
-   url: string,
-): LogMessage | undefined {
-   if (!isReportEligiblePath(modelPath)) return undefined;
-   const tag = readReportTag(
-      ownModelNoteObjects(modelDef).map((note) => note.text),
-   );
-   if (tag.status !== "report" || tag.layout !== "linear") return undefined;
-   const parse = parseNotebookText(text);
-   const error = isNotebookReaderError(parse)
-      ? parse
-      : readNotebookCells(parse, modelDef, text).error;
-   return error && cellsUnreadableProblem(error, url);
 }

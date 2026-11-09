@@ -16,6 +16,9 @@ import { unrecordedAudit } from "./access_record";
 import { Environment } from "./environment";
 import { Model } from "./model";
 import * as loadGates from "./package_load_gates";
+import { writePackageFiles } from "../test_helpers/temp_package";
+import { parsePackageName } from "./identity";
+import { QueryPrivileges } from "./model_query_request";
 
 const ROWS = `duckdb.sql("select * from (values (1,'org-a'),(2,'org-b')) as t(id, org)")`;
 
@@ -74,7 +77,9 @@ source: bridge is ${ROWS} extend {
    });
 
    const metadata = async () =>
-      (await env.getPackage("pkg", false)).getPackageMetadata();
+      (
+         await env.getPackage(parsePackageName("pkg"), false)
+      ).getPackageMetadata();
 
    it("refuses switching to queryableSources all over a hidden #(carries) leak, and keeps the old metadata", async () => {
       const before = await metadata();
@@ -99,7 +104,7 @@ source: bridge is ${ROWS} extend {
    });
 
    it("keeps the package's name when a PATCH that renames it is refused", async () => {
-      const pkg = await env.getPackage("pkg", false);
+      const pkg = await env.getPackage(parsePackageName("pkg"), false);
       await expect(
          env.updatePackage("pkg", { name: "renamed", queryableSources: "all" }),
       ).rejects.toBeInstanceOf(BadRequestError);
@@ -109,20 +114,20 @@ source: bridge is ${ROWS} extend {
    it("rolls a reinstall back when the new tree fails the gates under the body's listing, keeping the old tree and location", async () => {
       const before = await metadata();
       const newTree = path.join(rootDir, "next");
-      await fs.mkdir(newTree, { recursive: true });
-      await fs.writeFile(
-         path.join(newTree, "publisher.json"),
-         JSON.stringify({
-            name: "pkg",
-            description: "next",
-            explores: ["index.malloy"],
-         }),
+      writePackageFiles(
+         newTree,
+         {
+            "index.malloy": `source: open is ${ROWS}\n`,
+            "hidden.malloy": LEAK,
+         },
+         {
+            manifest: {
+               name: "pkg",
+               description: "next",
+               explores: ["index.malloy"],
+            },
+         },
       );
-      await fs.writeFile(
-         path.join(newTree, "index.malloy"),
-         `source: open is ${ROWS}\n`,
-      );
-      await fs.writeFile(path.join(newTree, "hidden.malloy"), LEAK);
       const download = (staging: string) =>
          fs.cp(newTree, staging, { recursive: true });
       let error: unknown;
@@ -151,20 +156,20 @@ source: bridge is ${ROWS} extend {
 
    it("installs the same tree under a listing that does not expose the bypass", async () => {
       const newTree = path.join(rootDir, "next");
-      await fs.mkdir(newTree, { recursive: true });
-      await fs.writeFile(
-         path.join(newTree, "publisher.json"),
-         JSON.stringify({
-            name: "pkg",
-            description: "next",
-            explores: ["index.malloy"],
-         }),
+      writePackageFiles(
+         newTree,
+         {
+            "index.malloy": `source: open is ${ROWS}\n`,
+            "hidden.malloy": LEAK,
+         },
+         {
+            manifest: {
+               name: "pkg",
+               description: "next",
+               explores: ["index.malloy"],
+            },
+         },
       );
-      await fs.writeFile(
-         path.join(newTree, "index.malloy"),
-         `source: open is ${ROWS}\n`,
-      );
-      await fs.writeFile(path.join(newTree, "hidden.malloy"), LEAK);
       await env.installPackage(
          "pkg",
          (staging) => fs.cp(newTree, staging, { recursive: true }),
@@ -176,20 +181,20 @@ source: bridge is ${ROWS} extend {
 
    it("accepts a PATCH over a hidden join bypass in a package that declares #(classification), reporting it as one warning", async () => {
       const dir = path.join(envPath, "gates");
-      await fs.mkdir(dir, { recursive: true });
-      await fs.writeFile(
-         path.join(dir, "publisher.json"),
-         JSON.stringify({
-            name: "gates",
-            description: "classified, with a bypass",
-            explores: ["index.malloy"],
-         }),
+      writePackageFiles(
+         dir,
+         {
+            "index.malloy": `source: open is ${ROWS} extend {\n   #(classification) "none"\n   dimension: key is id\n}\n`,
+            "hidden.malloy": BYPASS,
+         },
+         {
+            manifest: {
+               name: "gates",
+               description: "classified, with a bypass",
+               explores: ["index.malloy"],
+            },
+         },
       );
-      await fs.writeFile(
-         path.join(dir, "index.malloy"),
-         `source: open is ${ROWS} extend {\n   #(classification) "none"\n   dimension: key is id\n}\n`,
-      );
-      await fs.writeFile(path.join(dir, "hidden.malloy"), BYPASS);
       await env.addPackage("gates");
       const updated = await env.updatePackage("gates", {
          name: "gates",
@@ -197,7 +202,9 @@ source: bridge is ${ROWS} extend {
       });
       expect(updated.queryableSources).toBe("all");
       const warnings = (
-         await (await env.getPackage("gates", false)).getPackageMetadata()
+         await (
+            await env.getPackage(parsePackageName("gates"), false)
+         ).getPackageMetadata()
       ).warnings;
       expect(warnings?.filter((w) => w.code === "join-bypass")).toHaveLength(1);
    });
@@ -269,15 +276,15 @@ source: bridge is ${ROWS} extend {
 
       const OFF_SURFACE = 'No queryable model "hidden.malloy"';
       const queryHidden = async () =>
-         (await env.getPackage("pkg", false))
+         (await env.getPackage(parsePackageName("pkg"), false))
             .getModel("hidden.malloy")!
-            .getQueryResults(
+            .runQuery(
                unrecordedAudit(),
-               undefined,
-               undefined,
-               "run: leaky -> { aggregate: c is count() }",
-               {},
-               true,
+               {
+                  query: "run: leaky -> { aggregate: c is count() }",
+                  filterParams: {},
+               },
+               QueryPrivileges.of({ bypassFilters: true }),
             );
 
       const patchToAll = () =>

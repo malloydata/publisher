@@ -17,6 +17,7 @@ import os from "os";
 import path from "path";
 import { RestE2EEnv, startRestE2E } from "../../harness/rest_e2e";
 import { versioningOnForSuite } from "../../harness/versioning";
+import { writePackageFiles } from "../../../src/test_helpers/temp_package";
 
 const ENV_NAME = "package-versions-delete-env";
 const PKG = "deletable";
@@ -29,15 +30,14 @@ let written = 0;
 
 function writePackage(name: string, version: string, answer: number): string {
    const dir = path.join(root, `${name}-${++written}`);
-   fs.mkdirSync(dir, { recursive: true });
-   fs.writeFileSync(
-      path.join(dir, "publisher.json"),
-      JSON.stringify({ name, version }),
-   );
-   fs.writeFileSync(
-      path.join(dir, "model.malloy"),
-      `source: numbers is duckdb.sql("SELECT ${answer} AS answer") extend {\n` +
-         `  view: which_version is { select: answer }\n}\n`,
+   writePackageFiles(
+      dir,
+      {
+         "model.malloy":
+            `source: numbers is duckdb.sql("SELECT ${answer} AS answer") extend {\n` +
+            `  view: which_version is { select: answer }\n}\n`,
+      },
+      { manifest: { name, version } },
    );
    return dir;
 }

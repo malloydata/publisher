@@ -55,7 +55,7 @@ import {
    loadedRetrievalConfig,
    setRetrievalConfig,
    type RetrievalLlmConfig,
-} from "../retrieval_config";
+} from "../retrieval/config";
 import { callerHeaderName } from "../service/access_record";
 import { catalogAdminConfig } from "../service/catalog_admin";
 import { formatReadinessLine } from "../service/environment_store";

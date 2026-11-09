@@ -32,9 +32,7 @@ describe("runUnrecorded", () => {
                   .readFileSync(path.join(SRC, file), "utf8")
                   .includes("runUnrecorded("),
          );
-      expect(callers).toEqual([
-         path.join("mcp", "tools", "get_context_values.ts"),
-      ]);
+      expect(callers).toEqual([path.join("retrieval", "search", "values.ts")]);
    });
 });
 

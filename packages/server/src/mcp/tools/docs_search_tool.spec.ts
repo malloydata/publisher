@@ -3,7 +3,7 @@
 
 import { describe, expect, it } from "bun:test";
 import { searchDocsIndex } from "./docs_search_tool";
-import { sanitizeLunrQuery as sanitize } from "./retrieval_shared";
+import { sanitizeLunrQuery as sanitize } from "../../retrieval/shared";
 
 describe("docs_search sanitize", () => {
    it("strips lunr operator characters", () => {

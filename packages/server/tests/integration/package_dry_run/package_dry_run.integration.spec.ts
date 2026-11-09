@@ -18,7 +18,9 @@ import { MalloyConfig } from "@malloydata/malloy";
 import { logger } from "../../../src/logger";
 import { Package } from "../../../src/service/package";
 import { startRestE2E } from "../../harness/rest_e2e";
+import { bootMainServer } from "../../harness/main_server";
 import { installVariables } from "../../../src/test_helpers/settings_env";
+import { parseEnvironmentName } from "../../../src/service/identity";
 
 const ENV_NAME = "package-dry-run-env";
 const ROWS = `duckdb.sql("select * from (values (1, 'web'), (2, 'store')) as t(id, channel)")`;
@@ -260,9 +262,9 @@ describe("a dry-run publish", () => {
    }, 60_000);
 
    it("refuses a dry run past the server's concurrent dry runs with 503, and admits one once a slot frees", async () => {
-      const { environmentStore } = await import("../../../src/main_server");
+      const { environmentStore } = await bootMainServer();
       const environment = await environmentStore.getEnvironment(
-         ENV_NAME,
+         parseEnvironmentName(ENV_NAME),
          false,
       );
       const source = writePackage("held", {

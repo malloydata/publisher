@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 // Model-level routing contract for JOINS and VIEWS in the `storage=` serve path,
-// through the real Model.getQueryResults against a real in-memory DuckDB. This
+// through the real Model.runQuery against a real in-memory DuckDB. This
 // exercises the glue the transform-level tests can't: serveBindingsWithRefinements
 // reading a REAL compiled modelDef, mapping a join's `sourceID` to the joined
 // source name, and lifting join/view declarations verbatim from the on-disk
@@ -28,8 +28,9 @@ import { tmpdir } from "os";
 import { join } from "path";
 import { pathToFileURL } from "url";
 import { Model } from "./model";
-import type { ServeBinding } from "./materialization_serve_transform";
+import type { ServeBinding } from "./materialization/serve/materialization_serve_transform";
 import { installSettings } from "../test_helpers/settings_env";
+import { QueryPrivileges } from "./model_query_request";
 
 /** Puts back the settings the current test installed. */
 let restoreSettings: (() => void) | undefined;
@@ -113,23 +114,16 @@ async function buildModel(src: string = MODEL_SRC): Promise<Model> {
    // eslint-disable-next-line @typescript-eslint/no-explicit-any
    const modelDef = (compiled as any)._modelDef;
    const modelInfo = modelDefToModelInfo(modelDef);
-   const model = new Model(
-      "pkg",
-      "m.malloy",
-      {},
-      "model",
+   const model = new Model({
+      packageName: "pkg",
+      modelPath: "m.malloy",
+      dataStyles: {},
+      modelType: "model",
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      mm as any,
+      modelMaterializer: mm as any,
       modelDef,
-      undefined,
-      undefined,
-      undefined,
-      undefined,
-      undefined,
-      undefined,
-      undefined,
       modelInfo,
-   );
+   });
    // The serve shape compiles against the destination connections only, so hand
    // it a config carrying just this one — the same disjointness the Environment
    // enforces in production, expressed for a single-connection test.
@@ -141,13 +135,10 @@ async function buildModel(src: string = MODEL_SRC): Promise<Model> {
 
 /** Run a query and return the first result row. */
 async function runRow<T>(model: Model, query: string): Promise<T> {
-   const res = await model.getQueryResults(
+   const res = await model.runQuery(
       unrecordedAudit(),
-      undefined,
-      undefined,
-      query,
-      {},
-      true,
+      { query, filterParams: {} },
+      QueryPrivileges.of({ bypassFilters: true }),
    );
    return (res.compactResult as unknown as T[])[0];
 }
@@ -180,13 +171,10 @@ describe("storage= serve routing with joins and views (end-to-end)", () => {
       );
       model.setServeBindings([ORDERS_BINDING, REGIONS_BINDING]);
       const audit = unrecordedAudit();
-      await model.getQueryResults(
+      await model.runQuery(
          audit,
-         undefined,
-         undefined,
-         "run: orders -> { group_by: amt }",
-         {},
-         true,
+         { query: "run: orders -> { group_by: amt }", filterParams: {} },
+         QueryPrivileges.of({ bypassFilters: true }),
       );
       expect(audit.servedFrom).toBe("storage");
       expect(audit.summary?.fieldsRead).toEqual([
@@ -281,15 +269,10 @@ async function runGivens(
    model: Model,
    query: string,
 ): Promise<{ region_name?: string; t: number }> {
-   const res = await model.getQueryResults(
-      unrecordedAudit(),
-      undefined,
-      undefined,
+   const res = await model.runQuery(unrecordedAudit(), {
       query,
-      undefined,
-      undefined,
-      { REG: ["r1"] },
-   );
+      givens: { REG: ["r1"] },
+   });
    return (
       res.compactResult as unknown as { region_name?: string; t: number }[]
    )[0];

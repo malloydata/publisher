@@ -24,7 +24,7 @@
 
 import { describe, expect, it } from "bun:test";
 import { ModelCompilationError } from "../errors";
-import { assertPersistNamesQuoted } from "./persist_annotation_validation";
+import { assertPersistNamesQuoted } from "./materialization/plan/persist_annotation_validation";
 
 describe("assertPersistNamesQuoted identifier-injection hardening (F-3)", () => {
    // Each payload is a quoted persist name whose content breaks out of the

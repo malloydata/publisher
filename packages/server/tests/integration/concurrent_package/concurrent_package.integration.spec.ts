@@ -214,13 +214,14 @@ describe("Concurrent package operations (E2E)", () => {
       const postBody = await postRes.json().catch(() => null);
       expect(findForbiddenError(postBody)).toBeUndefined();
 
-      // PATCH either succeeds (ran after POST loaded the package) or 404s
-      // (ran before POST populated `this.packages`). It must NOT silently
-      // rewrite disk and then 404, and must never surface the forbidden
-      // error fragments.
+      // PATCH either is refused (ran after POST installed the package from a
+      // location, whose description a reload would discard: 409) or 404s (ran
+      // before POST populated `this.packages`). It must NOT silently rewrite
+      // disk and then 404, and must never surface the forbidden error
+      // fragments.
       const patchBody = await patchRes.json().catch(() => null);
       expect(findForbiddenError(patchBody)).toBeUndefined();
-      expect([200, 404]).toContain(patchRes.status);
+      expect([404, 409]).toContain(patchRes.status);
 
       // Whatever happened, the package must remain loadable.
       const getRes = await fetch(

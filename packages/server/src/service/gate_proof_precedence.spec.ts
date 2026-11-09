@@ -12,17 +12,20 @@
  * observable is which struct the prover looked at.
  */
 import { describe, expect, it } from "bun:test";
-import { Model } from "./model";
+import { QueryGovernor } from "./governance/query_governor";
 
-/** A `Model` shell carrying only what `assertGateLanded` touches. */
+/** A `QueryGovernor` shell carrying only what `assertGateLanded` touches. */
 function proverWithModelDef(modelDef: unknown): {
    assertGateLanded: (
       recompiled: unknown,
       grafts: ReadonlyArray<{ condition: { code: string } }>,
    ) => Promise<void>;
 } {
-   const shell = Object.create(Model.prototype) as Record<string, unknown>;
-   shell.modelDef = modelDef;
+   const shell = Object.create(QueryGovernor.prototype) as Record<
+      string,
+      unknown
+   >;
+   shell.host = { modelDef: () => modelDef };
    return shell as never;
 }
 

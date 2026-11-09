@@ -21,7 +21,6 @@ import {
    spyOn,
 } from "bun:test";
 import * as fs from "fs";
-import * as os from "os";
 import * as path from "path";
 import {
    PackageLoadPool,
@@ -32,17 +31,18 @@ import {
    CLASSIFICATION_COVERAGE,
    CLASSIFICATION_DOWNGRADE,
    CLASSIFICATION_MALFORMED,
-   classificationLeaks,
    isClassificationLine,
    readCarries,
    readClassification,
    readSourceClassifications,
 } from "./classification";
-import * as classificationModule from "./classification";
+import { classificationLeaks } from "./classification_report";
+import * as classificationReportModule from "./classification_report";
 import type { AnnotationsDef } from "./annotations";
 import { compileModelFiles } from "../test_helpers/get_context_join_fixture";
 import type { ModelDef } from "@malloydata/malloy";
 import { Package } from "./package";
+import { writeTempPackage } from "../test_helpers/temp_package";
 
 describe("readClassification", () => {
    it("reads one quoted class, or a quoted list, from a string or a {value} note", () => {
@@ -243,14 +243,14 @@ describe("classification warnings on package load", () => {
    });
 
    beforeEach(() => {
-      tempDir = fs.mkdtempSync(
-         path.join(os.tmpdir(), "publisher-classification-"),
-      );
+      tempDir = writeTempPackage(
+         {},
+         {
+            prefix: "publisher-classification-",
+            manifest: { name: "pkg", description: "classification" },
+         },
+      ).dir;
       duckdb = new DuckDBConnection("duckdb", ":memory:");
-      fs.writeFileSync(
-         path.join(tempDir, "publisher.json"),
-         JSON.stringify({ name: "pkg", description: "classification" }),
-      );
    });
 
    afterEach(async () => {
@@ -1579,7 +1579,7 @@ export { s0 }
       );
       const pkg = await Package.create("env", "pkg", tempDir, config);
       pkg.getPackageMetadata();
-      const walk = spyOn(classificationModule, "classificationWarnings");
+      const walk = spyOn(classificationReportModule, "classificationWarnings");
       try {
          pkg.getPackageMetadata();
          pkg.getPackageMetadata();

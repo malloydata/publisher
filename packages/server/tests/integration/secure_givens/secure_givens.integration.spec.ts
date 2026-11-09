@@ -18,6 +18,8 @@ import * as path from "path";
 import type { Package } from "../../../src/service/package";
 import { installVariables } from "../../../src/test_helpers/settings_env";
 import { startRestE2E } from "../../harness/rest_e2e";
+import { bootMainServer } from "../../harness/main_server";
+import { writePackageFiles } from "../../../src/test_helpers/temp_package";
 
 const ENV_NAME = "secure-givens-env";
 const FLAG = "PUBLISHER_PACKAGE_VERSIONING";
@@ -49,6 +51,10 @@ import "shared.malloy"
 
 source: orders is base extend { dimension: tagged is concat(role, $REGION) }
 `;
+import {
+   parseEnvironmentName,
+   parsePackageName,
+} from "../../../src/service/identity";
 
 /** A notebook whose cells declare a secure given no model declares. */
 const NOTEBOOK_ONLY = `>>>malloy
@@ -85,11 +91,7 @@ describe("secureGivens on the package responses", () => {
       manifest: Record<string, unknown> = {},
    ): string {
       const dir = path.join(tempDir, name);
-      fs.mkdirSync(dir, { recursive: true });
-      fs.writeFileSync(
-         path.join(dir, "publisher.json"),
-         JSON.stringify({ name, ...manifest }),
-      );
+      writePackageFiles(dir, {}, { manifest: { name, ...manifest } });
       for (const [file, text] of Object.entries(files)) {
          fs.mkdirSync(path.dirname(path.join(dir, file)), { recursive: true });
          fs.writeFileSync(path.join(dir, file), text);
@@ -116,12 +118,12 @@ describe("secureGivens on the package responses", () => {
    }
 
    async function getPackage(name: string): Promise<Package> {
-      const { environmentStore } = await import("../../../src/main_server");
+      const { environmentStore } = await bootMainServer();
       const environment = await environmentStore.getEnvironment(
-         ENV_NAME,
+         parseEnvironmentName(ENV_NAME),
          false,
       );
-      return environment.getPackage(name, false);
+      return environment.getPackage(parsePackageName(name), false);
    }
 
    async function get(
@@ -308,9 +310,10 @@ describe("secureGivens on the package responses", () => {
          {
             method: "PATCH",
             headers: { "content-type": "application/json" },
+            // Only the read-only field: a package installed from a location
+            // refuses a `description` change, which a reload would discard.
             body: JSON.stringify({
                name: "patched",
-               description: "edited",
                secureGivens: [
                   { name: "FORGED", type: "string", modelPaths: [] },
                ],
@@ -319,7 +322,6 @@ describe("secureGivens on the package responses", () => {
       );
       expect(res.status).toBe(200);
       const patched = (await res.json()) as Record<string, unknown>;
-      expect(patched.description).toBe("edited");
       expect(patched.secureGivens as SecureGiven[]).toEqual(ROLES_ONLY);
       expect((await get("patched")).secureGivens as SecureGiven[]).toEqual(
          ROLES_ONLY,

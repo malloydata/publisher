@@ -1082,12 +1082,16 @@ describe("an inheriting derivation's unexpressible gate scopes to that entry poi
       warnSpy.mockClear();
       await withAuthorizeModel(GATED_PARENT, async ({ error }) => {
          expect(error).toBeUndefined();
-         expect(
-            warnSpy.mock.calls.filter(
-               (c) =>
-                  String(c[0]) === "Row-level #(access_filter) gate warning",
-            ),
-         ).toEqual([]);
+         // Both row-level gate warnings model_load_checks can log: an
+         // unexpressible inherited gate, and a W1/W2 given-usage warning.
+         const gateWarnings = warnSpy.mock.calls
+            .map((c) => String(c[0]))
+            .filter(
+               (m) =>
+                  m.startsWith("Row-level #(access_filter) gate ") ||
+                  /^#\(\w+\) gate warning on /.test(m),
+            );
+         expect(gateWarnings).toEqual([]);
       });
    });
 });

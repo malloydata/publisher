@@ -235,18 +235,11 @@ describe("filter given values are checked on arrival", () => {
          "orders_filter_givens.malloy",
          getConnections(),
       );
-      return model.getQueryResults(
-         unrecordedAudit(),
-         undefined,
-         undefined,
-         "run: orders -> filtered",
-         undefined,
-         undefined,
+      return model.runQuery(unrecordedAudit(), {
+         query: "run: orders -> filtered",
          givens,
-         undefined,
-         undefined,
-         shape,
-      );
+         responseShape: shape,
+      });
    };
    const count = async (givens: Record<string, string>) =>
       (

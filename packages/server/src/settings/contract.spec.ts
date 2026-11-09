@@ -46,7 +46,7 @@ const fails = (name: string): Expected => ({ fails: name });
 /** Embedding settings are off without a key, so their rows set one. */
 const KEY = { EMBEDDING_API_KEY: "sk-test" };
 /**
- * A `retrieval` block retrieval_config.ts rejects (an unknown LLM provider),
+ * A `retrieval` block retrieval/config.ts rejects (an unknown LLM provider),
  * holding these embedding keys. The server runs retrieval on its defaults.
  */
 const REJECTED_RETRIEVAL = (embedding: Record<string, unknown>) => ({
@@ -2387,7 +2387,7 @@ describe("settings contract", () => {
    });
 
    it("has rows for every registered setting", () => {
-      // The retrieval block is parsed whole by retrieval_config.ts, whose own
+      // The retrieval block is parsed whole by retrieval/config.ts, whose own
       // spec covers it; its leaves the registry reads have rows here.
       const unpinned = REGISTRY.map((entry) => entry.key).filter(
          (key) => !(key in CONTRACT),

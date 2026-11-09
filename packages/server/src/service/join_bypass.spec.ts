@@ -19,7 +19,6 @@ import {
    it,
 } from "bun:test";
 import * as fs from "fs";
-import * as os from "os";
 import * as path from "path";
 import {
    PackageLoadPool,
@@ -27,6 +26,7 @@ import {
 } from "../package_load/package_load_pool";
 import { lockTermsOf, missingLockTerm } from "./join_bypass";
 import { Package } from "./package";
+import { writeTempPackage } from "../test_helpers/temp_package";
 
 const PEOPLE = `duckdb.sql("select * from (values (1,'org-a','999'),(2,'org-b','888')) as t(id, org, ssn)")`;
 const VISITS = `duckdb.sql("select * from (values (1,1,'org-a'),(2,2,'org-b')) as t(id, person_id, org)")`;
@@ -53,12 +53,14 @@ describe("join bypass warnings on package load", () => {
    });
 
    beforeEach(() => {
-      tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "publisher-joinbypass-"));
+      tempDir = writeTempPackage(
+         {},
+         {
+            prefix: "publisher-joinbypass-",
+            manifest: { name: "pkg", description: "join bypass" },
+         },
+      ).dir;
       duckdb = new DuckDBConnection("duckdb", ":memory:");
-      fs.writeFileSync(
-         path.join(tempDir, "publisher.json"),
-         JSON.stringify({ name: "pkg", description: "join bypass" }),
-      );
    });
 
    afterEach(async () => {

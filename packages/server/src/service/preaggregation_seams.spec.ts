@@ -24,6 +24,9 @@ import {
 import { AccessDeniedError } from "../errors";
 import { Environment } from "./environment";
 import type { Package } from "./package";
+import { writePackageFiles } from "../test_helpers/temp_package";
+import { governorOf } from "../test_helpers/governor";
+import { parsePackageName } from "./identity";
 
 let rootDir: string;
 let envPath: string;
@@ -69,17 +72,16 @@ async function loadPackageFiles(
    files: Record<string, string>,
 ): Promise<Package> {
    const dir = path.join(envPath, "pkg");
-   await fs.mkdir(dir, { recursive: true });
-   await fs.writeFile(
-      path.join(dir, "publisher.json"),
-      JSON.stringify({ name: "pkg", description: "fixture" }),
+   writePackageFiles(
+      dir,
+      {
+         ...files,
+      },
+      { manifest: { name: "pkg", description: "fixture" } },
    );
-   for (const [name, contents] of Object.entries(files)) {
-      await fs.writeFile(path.join(dir, name), contents);
-   }
    const env = await Environment.create("testEnv", envPath, []);
    await env.addPackage("pkg");
-   return env.getPackage("pkg", false);
+   return env.getPackage(parsePackageName("pkg"), false);
 }
 
 async function loadPackage(model = MODEL): Promise<Package> {
@@ -94,15 +96,10 @@ async function runGatedQuery(
 ) {
    const model = pkg.getModel("model.malloy");
    if (!model) throw new Error("model.malloy did not load");
-   const { compactResult } = await model.getQueryResults(
-      unrecordedAudit(),
-      undefined,
-      undefined,
+   const { compactResult } = await model.runQuery(unrecordedAudit(), {
       query,
-      undefined,
-      undefined,
-      givens as never,
-   );
+      givens: givens as never,
+   });
    return (compactResult as Record<string, unknown>[]).map((row) =>
       Object.fromEntries(
          Object.entries(row).map(([k, v]) => [
@@ -273,15 +270,10 @@ describe("the serve seam", () => {
    ) {
       const model = pkg.getModel("model.malloy");
       if (!model) throw new Error("model.malloy did not load");
-      const { compactResult } = await model.getQueryResults(
-         unrecordedAudit(),
-         undefined,
-         undefined,
+      const { compactResult } = await model.runQuery(unrecordedAudit(), {
          query,
-         undefined,
-         undefined,
-         givens as never,
-      );
+         givens: givens as never,
+      });
       // Numbers arrive as bigint from DuckDB sums; normalize so the assertions
       // read as the numbers an author would expect.
       return (compactResult as Record<string, unknown>[]).map((row) =>
@@ -464,15 +456,10 @@ source: orders is duckdb.sql("""
             ),
          );
          const model = pkg.getModel("model.malloy");
-         const { compactResult } = await model!.getQueryResults(
-            unrecordedAudit(),
-            undefined,
-            undefined,
-            "run: orders -> { group_by: category; aggregate: total; order_by: category }",
-            undefined,
-            undefined,
-            { MIN_AMOUNT: 15 },
-         );
+         const { compactResult } = await model!.runQuery(unrecordedAudit(), {
+            query: "run: orders -> { group_by: category; aggregate: total; order_by: category }",
+            givens: { MIN_AMOUNT: 15 },
+         });
          // 15 excludes the amount-10 row, so this also proves the given was
          // applied rather than dropped on the way through.
          expect(
@@ -964,7 +951,9 @@ source: ungated is duckdb.sql("""
          if (!model) throw new Error("model.malloy did not load");
          expect(
             (
-               model as unknown as { hasAnyAuthorizeNote(): boolean }
+               governorOf(model) as unknown as {
+                  hasAnyAuthorizeNote(): boolean;
+               }
             ).hasAnyAuthorizeNote(),
          ).toBe(true);
       },

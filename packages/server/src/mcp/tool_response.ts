@@ -32,7 +32,7 @@ type ResourceBlock = {
 
 type TextBlock = { [x: string]: unknown; type: "text"; text: string };
 
-export type ToolContent = ResourceBlock | TextBlock;
+type ToolContent = ResourceBlock | TextBlock;
 
 export interface ToolResult {
    [x: string]: unknown;

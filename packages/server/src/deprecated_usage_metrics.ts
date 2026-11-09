@@ -44,6 +44,7 @@ export type DeprecatedFeature =
    | "filter_params"
    | "bypass_filters"
    | "package_patch"
+   | "environment_reload"
    | `config:${string}`;
 
 const counter = lazyCounter(

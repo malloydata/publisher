@@ -25,19 +25,17 @@
  * placement and install run as in production.
  */
 
-import {
-   afterAll,
-   afterEach,
-   beforeAll,
-   describe,
-   expect,
-   it,
-   mock,
-} from "bun:test";
+import { afterAll, afterEach, beforeAll, describe, expect, it } from "bun:test";
 import fs from "fs";
 import path from "path";
 import { simpleGit, type SimpleGitOptions } from "simple-git";
+import { bootMainServer } from "../../harness/main_server";
+import { PackageSources } from "../../../src/service/package_sources";
 import { installVariables } from "../../../src/test_helpers/settings_env";
+import { startRestE2E } from "../../harness/rest_e2e";
+
+// The one main server this process boots (tests/harness/main_server.ts).
+const { environmentStore } = await bootMainServer();
 
 const FIXTURES = path.resolve(__dirname, "../../fixtures/publish-locations");
 const FIXTURE_FOLDERS = [
@@ -65,55 +63,50 @@ function copyFixture(folder: string, target: string): void {
    fs.cpSync(path.join(FIXTURES, folder), target, { recursive: true });
 }
 
-// The real clone, for any repository that is not a fixture.
-const realSimpleGit = simpleGit;
+// Swapped into the server's store in beforeAll; the real clone serves any
+// repository that is not a fixture.
 let clones = 0;
-mock.module("simple-git", () => ({
-   simpleGit: (options?: Partial<SimpleGitOptions>) => {
-      const real = realSimpleGit(options ?? {});
-      return {
-         clone: (
-            repoUrl: string,
-            dir: string,
-            cloneOptions: string[],
-            done: (err: Error | null) => void,
-         ) => {
-            if (!repoUrl.startsWith(GIT_FIXTURES)) {
-               return real.clone(repoUrl, dir, cloneOptions, (err) =>
-                  done(err ?? null),
-               );
-            }
-            clones++;
-            // `all` holds every fixture folder at its root; any other
-            // repository is one fixture.
-            const repo = repoUrl.slice(GIT_FIXTURES.length);
-            if (repo === "all") {
-               for (const folder of FIXTURE_FOLDERS) {
-                  copyFixture(folder, path.join(dir, folder));
-               }
-            } else {
-               copyFixture(repo, dir);
-            }
-            // Repository state, different on every clone, as a fresh clone's.
-            fs.mkdirSync(path.join(dir, ".git", "objects", "pack"), {
-               recursive: true,
-            });
-            fs.writeFileSync(
-               path.join(dir, ".git", "HEAD"),
-               "ref: refs/heads/main",
+const fakeSimpleGit = (options?: Partial<SimpleGitOptions>) => {
+   const real = simpleGit(options ?? {});
+   return {
+      clone: (
+         repoUrl: string,
+         dir: string,
+         cloneOptions: string[],
+         done: (err: Error | null) => void,
+      ) => {
+         if (!repoUrl.startsWith(GIT_FIXTURES)) {
+            return real.clone(repoUrl, dir, cloneOptions, (err) =>
+               done(err ?? null),
             );
-            fs.writeFileSync(
-               path.join(dir, ".git", "objects", "pack", `pack-${clones}.pack`),
-               `clone ${clones}`,
-            );
-            done(null);
-         },
-      };
-   },
-}));
-
-const { startRestE2E } = await import("../../harness/rest_e2e");
-const { environmentStore } = await import("../../../src/main_server");
+         }
+         clones++;
+         // `all` holds every fixture folder at its root; any other
+         // repository is one fixture.
+         const repo = repoUrl.slice(GIT_FIXTURES.length);
+         if (repo === "all") {
+            for (const folder of FIXTURE_FOLDERS) {
+               copyFixture(folder, path.join(dir, folder));
+            }
+         } else {
+            copyFixture(repo, dir);
+         }
+         // Repository state, different on every clone, as a fresh clone's.
+         fs.mkdirSync(path.join(dir, ".git", "objects", "pack"), {
+            recursive: true,
+         });
+         fs.writeFileSync(
+            path.join(dir, ".git", "HEAD"),
+            "ref: refs/heads/main",
+         );
+         fs.writeFileSync(
+            path.join(dir, ".git", "objects", "pack", `pack-${clones}.pack`),
+            `clone ${clones}`,
+         );
+         done(null);
+      },
+   };
+};
 
 /** The in-memory buckets' objects, by "bucket/key". */
 const objects = new Map<string, Buffer>();
@@ -196,7 +189,12 @@ const KINDS: LocationKind[] = [
 let env: Awaited<ReturnType<typeof startRestE2E>> | undefined;
 let baseUrl = "";
 let envPath = "";
-let savedClients: Record<string, unknown> = {};
+/** The store's private package sources, swapped for ones over the fakes. */
+type StoreSources = {
+   packageSources: PackageSources;
+   resolveLocalPath(location: string): string;
+};
+let savedSources: PackageSources | undefined;
 
 async function publish(
    name: string,
@@ -236,9 +234,16 @@ async function answerOf(name: string): Promise<number> {
 describe("publishing from each kind of location, over HTTP", () => {
    beforeAll(async () => {
       fillBuckets();
-      const store = environmentStore as unknown as Record<string, unknown>;
-      savedClients = { gcsClient: store.gcsClient, s3Client: store.s3Client };
-      Object.assign(store, { gcsClient: fakeGcs, s3Client: fakeS3 });
+      const store = environmentStore as unknown as StoreSources;
+      savedSources = store.packageSources;
+      store.packageSources = new PackageSources(
+         {
+            gcsClient: fakeGcs as never,
+            s3Client: fakeS3 as never,
+            simpleGit: fakeSimpleGit as never,
+         },
+         (location) => store.resolveLocalPath(location),
+      );
 
       env = await startRestE2E();
       baseUrl = env.baseUrl;
@@ -266,10 +271,10 @@ describe("publishing from each kind of location, over HTTP", () => {
       await fetch(`${baseUrl}/api/v0/environments/${ENV_NAME}`, {
          method: "DELETE",
       }).catch(() => undefined);
-      Object.assign(
-         environmentStore as unknown as Record<string, unknown>,
-         savedClients,
-      );
+      if (savedSources) {
+         (environmentStore as unknown as StoreSources).packageSources =
+            savedSources;
+      }
       await env?.stop();
    });
 

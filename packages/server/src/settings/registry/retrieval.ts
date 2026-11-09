@@ -5,7 +5,7 @@ import { DEFAULT_EMBEDDING_MIN_SIMILARITY } from "../../constants";
 import {
    EMBEDDING_PROVIDER_NAMES,
    PROVIDER_NAMES,
-} from "../../providers/types";
+} from "../../retrieval/llm/types";
 import {
    DEFAULT_LLM_CONCURRENCY,
    DEFAULT_LLM_MAX_CALLS_PER_REQUEST,
@@ -13,14 +13,14 @@ import {
    DEFAULT_LLM_TIMEOUT_MS,
    DIMENSION_VALUE_DEFAULTS,
    EGRESS_PRESETS,
-} from "../../retrieval_config";
+} from "../../retrieval/config";
 import { setting } from "../setting";
 import { boolean, integer, number, oneOf, string, structured } from "../types";
 
 /**
  * The configuration design's `retrieval` table: the block itself, and every
  * scalar leaf of it. config.ts assembles the block from the leaves' flags,
- * variables and file keys and retrieval_config.ts validates it as one object,
+ * variables and file keys and retrieval/config.ts validates it as one object,
  * since `provider` decides which other fields apply. So a leaf has no default
  * here where the block's validation supplies one (an `llm` block needs a
  * provider before its limits mean anything); its `defaultText` says what it is.

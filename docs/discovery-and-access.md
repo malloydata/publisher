@@ -148,7 +148,7 @@ would not already answer. See [authorize.md](authorize.md) for the lock and `#(s
 gate over _who is asking_. Those gates are enforced against the complete source set and are never
 weakened by curation: a hidden source keeps its gate.
 
-The boundary applies to the **query** surface (`getQueryResults` and the MCP query tool). It does
+The boundary applies to the **query** surface (`POST …/query` and the MCP `execute_query` tool). It does
 **not** gate plain `/compile` (or `compile_model`) text: compile is the authoring loop, so a curated package
 stays authorable. A document compiled at scope `append` (text carrying a model-level `## artifact` tag) is
 the exception, because it is served and run: each cell and tile is held to the surface, so a document that

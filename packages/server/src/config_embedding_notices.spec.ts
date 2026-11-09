@@ -3,7 +3,7 @@
 
 import { describe, expect, it } from "bun:test";
 import { embeddingStartupNotices } from "./config";
-import type { RetrievalEmbeddingConfig } from "./retrieval_config";
+import type { RetrievalEmbeddingConfig } from "./retrieval/config";
 import { Settings } from "./settings";
 import { withSettings } from "./test_helpers/settings_env";
 

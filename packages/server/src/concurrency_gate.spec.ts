@@ -5,7 +5,7 @@
  * Makes the compile / sqlSource admission claim behavioural instead of textual.
  *
  * `/query`, `/sqlQuery` and `/sqlTemporaryTable` pass through
- * `queryConcurrency()`, which caps concurrent work at
+ * `QuerySlots.middleware`, which caps concurrent work at
  * PUBLISHER_MAX_CONCURRENT_QUERIES so a flood cannot saturate the pod. `/compile`
  * and both `/sqlSource` routes reach the same controllers -- compile resolves
  * source schemas against the connection, sqlSource runs a live introspection --
@@ -24,7 +24,6 @@ import { join } from "path";
 import express from "express";
 import request from "supertest";
 
-import { resetActiveQueryCountForTesting } from "./query_concurrency";
 import { buildRouteApp, registeredRoutes } from "./test_helpers/route_app";
 import { installSettings } from "./test_helpers/settings_env";
 
@@ -45,11 +44,6 @@ function installCap(cap: string): void {
 afterEach(() => {
    restoreSettings?.();
    restoreSettings = undefined;
-   // The slot counter is module-global and this file runs in a process with 170
-   // other spec files. A case that leaked a slot would not fail here; it would
-   // make a later cap-of-1 case fail on its FIRST request rather than on the
-   // admission it is testing, which reads as the gate being broken.
-   resetActiveQueryCountForTesting();
 });
 
 /** A promise plus the handle that settles it, so a request can be held open. */
@@ -219,6 +213,6 @@ describe("the concurrency gate guards exactly the routes that do database work",
       expect(
          source,
          "compile_tool.ts acquires no query slot, so MCP compile bypasses the cap",
-      ).toContain('tryAcquireQuerySlot("mcp:compile")');
+      ).toContain('querySlots.tryAcquire("mcp:compile")');
    });
 });

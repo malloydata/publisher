@@ -52,8 +52,13 @@ import {
 } from "./connection";
 import { Environment } from "./environment";
 import { Model } from "./model";
-import { StorageServeShape } from "./model_serve_shape";
+import { StorageServeShape } from "./materialization/serve/model_serve_shape";
 import { Package } from "./package";
+import {
+   writeTempPackage,
+   writePackageFiles,
+} from "../test_helpers/temp_package";
+import { parsePackageName } from "./identity";
 
 type ApiConnection = components["schemas"]["Connection"];
 
@@ -117,11 +122,7 @@ describe("a storage destination is not in the namespace a tenant authors in", ()
 
    beforeEach(() => {
       envDir = fs.mkdtempSync(path.join(os.tmpdir(), "publisher-dest-env-"));
-      tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "publisher-dest-pkg-"));
-      fs.writeFileSync(
-         path.join(tempDir, "publisher.json"),
-         JSON.stringify({ name: "pkg" }),
-      );
+      tempDir = writeTempPackage({}, { prefix: "publisher-dest-pkg-" }).dir;
    });
 
    afterEach(() => {
@@ -279,14 +280,9 @@ describe("a storage destination is not in the namespace a tenant authors in", ()
       );
 
       await expect(
-         pkg
-            .getModel("plain.malloy")!
-            .getQueryResults(
-               unrecordedAudit(),
-               undefined,
-               undefined,
-               `run: ${DESTINATION_NAME}.sql('SELECT 1 AS x') -> { select: x }`,
-            ),
+         pkg.getModel("plain.malloy")!.runQuery(unrecordedAudit(), {
+            query: `run: ${DESTINATION_NAME}.sql('SELECT 1 AS x') -> { select: x }`,
+         }),
       ).rejects.toThrow();
    });
 
@@ -302,15 +298,9 @@ describe("a storage destination is not in the namespace a tenant authors in", ()
       // there at all.
       const environment = makeEnvironment();
       const packageDir = path.join(envDir, "pkg");
-      fs.mkdirSync(packageDir, { recursive: true });
-      fs.writeFileSync(
-         path.join(packageDir, "publisher.json"),
-         JSON.stringify({ name: "pkg" }),
-      );
-      fs.writeFileSync(
-         path.join(packageDir, "plain.malloy"),
-         `source: nums is duckdb.sql("SELECT 1 AS a")`,
-      );
+      writePackageFiles(packageDir, {
+         "plain.malloy": `source: nums is duckdb.sql("SELECT 1 AS a")`,
+      });
 
       // Observed at the Model's public seams, so nothing reaches a private: the
       // provider the load hands `setServeDestinationConfig`, and the
@@ -325,7 +315,7 @@ describe("a storage destination is not in the namespace a tenant authors in", ()
       try {
          // The real production wiring: the environment's own load path is what
          // attaches the serve config.
-         const pkg = await environment.getPackage("pkg");
+         const pkg = await environment.getPackage(parsePackageName("pkg"));
          const model = pkg.getModel("plain.malloy")!;
          model.setServeBindings([
             {
@@ -370,12 +360,9 @@ describe("a storage destination is not in the namespace a tenant authors in", ()
          restoreMode = installSettings({
             env: { ...BASE_ENV, PERSIST_STORAGE_MODE: "on" },
          }).restore;
-         const answered = await model.getQueryResults(
-            unrecordedAudit(),
-            undefined,
-            undefined,
-            "run: nums -> { select: a }",
-         );
+         const answered = await model.runQuery(unrecordedAudit(), {
+            query: "run: nums -> { select: a }",
+         });
          expect(answered.compactResult).toEqual([{ a: 1 }]);
          expect(shapes).toHaveBeenCalledTimes(1);
          await expect(shapes.mock.results[0].value).rejects.toThrow(

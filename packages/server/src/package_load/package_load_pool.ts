@@ -43,7 +43,7 @@ import type {
    PackageMaterializationConfig,
    PackageScope,
 } from "../service/package_manifest";
-import type { PackageRetrievalSettings } from "../service/package_retrieval";
+import type { PackageRetrievalSettings } from "../service/package_retrieval_settings";
 import type { DeprecatedManifestKey } from "../service/deprecated/manifest_keys";
 import type {
    ConnectionMetadataRequest,
@@ -63,6 +63,7 @@ import type {
    WorkerLogMessage,
    WorkerToMainMessage,
 } from "./protocol";
+import { checkLoadPackageResult } from "./protocol_decode";
 
 // ──────────────────────────────────────────────────────────────────────
 // Configuration
@@ -176,6 +177,8 @@ export interface LoadPackageJob {
    computeBuildPlan?: boolean;
    /** See {@link LoadPackageRequest.withPreaggregateCompanions}. */
    withPreaggregateCompanions?: boolean;
+   /** See {@link LoadPackageRequest.withEntities}. */
+   withEntities?: boolean;
 }
 
 /**
@@ -421,6 +424,7 @@ export class PackageLoadPool {
          collectProblems: qj.request.collectProblems,
          computeBuildPlan: qj.request.computeBuildPlan,
          withPreaggregateCompanions: qj.request.withPreaggregateCompanions,
+         withEntities: qj.request.withEntities,
          mainThreadWorkBudgetMs: this.mainThreadWorkBudgetMs,
       };
       pw.worker.postMessage(message);
@@ -598,7 +602,24 @@ export class PackageLoadPool {
       if (!ctx) return;
       this.jobs.delete(msg.requestId);
       pw.inFlight.delete(msg.requestId);
-      ctx.resolve(msg);
+      // The message is structured-clone data typed only by the union; check
+      // its protocol version and envelope before anything casts into it.
+      let checked: LoadPackageResult;
+      try {
+         checked = checkLoadPackageResult(msg);
+      } catch (error) {
+         logger.error(
+            `PackageLoadPool: worker #${pw.id} sent a result this server cannot read`,
+            {
+               requestId: msg.requestId,
+               error: error instanceof Error ? error.message : String(error),
+            },
+         );
+         ctx.reject(error as Error);
+         this.tryDispatch();
+         return;
+      }
+      ctx.resolve(checked);
       this.tryDispatch();
    }
 
