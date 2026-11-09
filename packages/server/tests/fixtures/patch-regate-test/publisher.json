@@ -1,5 +1,6 @@
 {
    "name": "patch-regate-test",
+   "version": "1.0.0",
    "description": "A package whose hidden source exposes a field beyond its #(carries).",
    "explores": ["index.malloy"]
 }

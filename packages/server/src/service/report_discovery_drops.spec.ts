@@ -16,6 +16,7 @@ import { logger } from "../logger";
 import type { components } from "../api";
 import * as reportManifest from "./report_manifest";
 import { Environment } from "./environment";
+import { installTestPackage } from "../test_helpers/install_test_package";
 import { Model } from "./model";
 import { Package } from "./package";
 import { getDashboard } from "./legacy_report_views";
@@ -73,7 +74,7 @@ describe("report discovery: what it does with a report it cannot read", () => {
    });
 
    const install = async (): Promise<Package> => {
-      await env.installPackage("drops", async (stagingPath) => {
+      await installTestPackage(env, "drops", async (stagingPath) => {
          await fs.mkdir(stagingPath, { recursive: true });
          for (const [name, text] of Object.entries(FILES))
             await fs.writeFile(path.join(stagingPath, name), text);

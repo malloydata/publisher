@@ -25,6 +25,7 @@ import {
 import type { NotebookCellSpan } from "./notebook";
 import type { ReportQueryTileSpec } from "./report_manifest";
 import { Environment, resetAdmissionTelemetryForTesting } from "./environment";
+import { installTestPackage } from "../test_helpers/install_test_package";
 import { writePackageFiles } from "../test_helpers/temp_package";
 
 const manifestOf = (result: { document?: CompiledDocument }) => {
@@ -79,7 +80,7 @@ describe("compile of a document (compileSource)", () => {
       files: Record<string, string>,
       manifest: Record<string, unknown> = {},
    ) {
-      await env.installPackage("pkg", async (stagingPath) =>
+      await installTestPackage(env, "pkg", async (stagingPath) =>
          writePackageFiles(stagingPath, files, {
             manifest: { name: "pkg", description: "doc", ...manifest },
          }),

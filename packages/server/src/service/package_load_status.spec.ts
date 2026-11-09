@@ -7,26 +7,23 @@ import * as os from "os";
 import * as path from "path";
 import sinon from "sinon";
 
-import { PackageNotFoundError, ServiceUnavailableError } from "../errors";
 import { Environment } from "./environment";
 import { Package } from "./package";
-import type { PackageMemoryGovernor } from "./package_memory_governor";
 import { writePackageFiles } from "../test_helpers/temp_package";
 import { parsePackageName } from "./identity";
 
 /**
  * `Package.status` and the listing rules behind it.
  *
- * A reinstall swaps a new compiled copy in beside the one still serving, so
- * for the whole compile the package is both serving and loading. The listing
- * used to answer that window by omitting the package, which an orchestrator
- * reading /status could only take as the package having left this server;
- * it would unload the replica and place the package elsewhere, and the
- * reinstall in flight here then failed for nothing. These tests pin the two
- * facts the API now reports separately, `serving` and `loading`, through each
- * path that loads a package, and the two install behaviours that ride on the
- * same change: admission control before the download, and the metadata that
- * comes with an install landing under the install's own lock hold.
+ * A reload compiles a new copy beside the one still serving, so for the whole
+ * compile the package is both serving and loading. The listing used to answer
+ * that window by omitting the package, which an orchestrator reading /status
+ * could only take as the package having left this server; it would unload the
+ * replica and place the package elsewhere. These tests pin the two facts the
+ * API now reports separately, `serving` and `loading`, through the paths that
+ * load a package in place, and that only the server, never package content,
+ * says where a package came from. (A published version's load is covered in
+ * environment_versions.spec.ts.)
  *
  * Run against a real `Environment` and a real `Package.create` over temp dirs,
  * the way package_reload_safety.spec.ts does. `Package.create` is stubbed only
@@ -38,6 +35,7 @@ describe("Package.status: serving and loading", () => {
    let envPath: string;
 
    const MODEL = `source: ones is duckdb.sql("SELECT 1 as x")\n`;
+   const BROKEN_MODEL = `source: broken is @@@ not valid malloy !!!\n`;
 
    function deferred(): { promise: Promise<void>; resolve: () => void } {
       let resolve!: () => void;
@@ -47,22 +45,14 @@ describe("Package.status: serving and loading", () => {
       return { promise, resolve };
    }
 
-   async function writePackageDir(
-      dir: string,
-      description = "fixture",
-   ): Promise<void> {
+   async function writePackageDir(dir: string, model = MODEL): Promise<void> {
       writePackageFiles(
          dir,
          {
-            "model.malloy": MODEL,
+            "model.malloy": model,
          },
-         { manifest: { name: "pkg", description } },
+         { manifest: { name: "pkg", description: "fixture" } },
       );
-   }
-
-   async function copyDir(src: string, dst: string): Promise<void> {
-      await fs.mkdir(dst, { recursive: true });
-      await fs.cp(src, dst, { recursive: true });
    }
 
    /** Hold every `Package.create` open until `release` is called. */
@@ -94,39 +84,6 @@ describe("Package.status: serving and loading", () => {
       await fs.rm(rootDir, { recursive: true, force: true }).catch(() => {});
    });
 
-   it("keeps a package listed, serving and loading, while it is reinstalled", async () => {
-      const env = await Environment.create("testEnv", envPath, []);
-      const fixture = path.join(rootDir, "fixture");
-      await writePackageDir(fixture);
-      await env.installPackage("pkg", (stagingPath) =>
-         copyDir(fixture, stagingPath),
-      );
-      const before = (await env.listPackages()).find((p) => p.name === "pkg");
-      expect(before?.status).toEqual({ serving: true, loading: false });
-
-      const compile = holdCompile();
-      const reinstall = env.installPackage("pkg", (stagingPath) =>
-         copyDir(fixture, stagingPath),
-      );
-      await compile.entered;
-
-      // The previous copy is still what answers queries, and the reinstall is
-      // compiling under the lock. Both facts are on the listing; the package
-      // was not dropped from it.
-      const during = (await env.listPackages()).find((p) => p.name === "pkg");
-      expect(during).toBeDefined();
-      expect(during?.status?.serving).toBe(true);
-      expect(during?.status?.loading).toBe(true);
-      expect(during?.status?.loadingSince).toBeString();
-      expect(env.describePackageStatus("pkg").loading).toBe(true);
-
-      compile.release();
-      await reinstall;
-
-      const after = (await env.listPackages()).find((p) => p.name === "pkg");
-      expect(after?.status).toEqual({ serving: true, loading: false });
-   });
-
    it("reports a reload in place as loading while the previous copy serves", async () => {
       const env = await Environment.create("testEnv", envPath, []);
       await writePackageDir(path.join(envPath, "pkg"));
@@ -138,6 +95,8 @@ describe("Package.status: serving and loading", () => {
 
       const during = (await env.listPackages()).find((p) => p.name === "pkg");
       expect(during?.status).toMatchObject({ serving: true, loading: true });
+      expect(during?.status?.loadingSince).toBeString();
+      expect(env.describePackageStatus("pkg").loading).toBe(true);
 
       compile.release();
       await reload;
@@ -149,16 +108,13 @@ describe("Package.status: serving and loading", () => {
 
    it("lists a first load as loading and not serving, on the status listing only", async () => {
       const env = await Environment.create("testEnv", envPath, []);
-      const fixture = path.join(rootDir, "fixture");
-      await writePackageDir(fixture);
+      await writePackageDir(path.join(envPath, "pkg"));
 
-      const download = deferred();
-      const install = env.installPackage("pkg", async (stagingPath) => {
-         await download.promise;
-         await copyDir(fixture, stagingPath);
-      });
-      // installPackage marks the load before it starts the download, so there
-      // is nothing to wait for here: the download is what is being held.
+      const compile = holdCompile();
+      const add = env.addPackage("pkg");
+      // addPackage marks the load before it compiles, so once the compile is
+      // entered the package is loading and nothing is resident.
+      await compile.entered;
 
       // Nothing compiled yet, so the default listing (what the discovery tools
       // and the database sync read) leaves it out...
@@ -187,8 +143,8 @@ describe("Package.status: serving and loading", () => {
          ),
       ).toContain("pkg");
 
-      download.resolve();
-      await install;
+      compile.release();
+      await add;
 
       for (const listing of [
          await env.listPackages(),
@@ -199,414 +155,38 @@ describe("Package.status: serving and loading", () => {
       }
    });
 
-   it("refuses an install under memory back-pressure before downloading", async () => {
+   it("clears the loading marker after a load fails", async () => {
+      // A marker left behind would report a load in flight forever, which an
+      // orchestrator reads as its own dispatched load still running.
       const env = await Environment.create("testEnv", envPath, []);
-      const fixture = path.join(rootDir, "fixture");
-      await writePackageDir(fixture);
-      await env.installPackage("pkg", (stagingPath) =>
-         copyDir(fixture, stagingPath),
-      );
+      const pkgDir = path.join(envPath, "pkg");
+      await writePackageDir(pkgDir, BROKEN_MODEL);
 
-      env.setMemoryGovernor({
-         isBackpressured: () => true,
-      } as unknown as PackageMemoryGovernor);
-      const downloader = sinon.stub().resolves(undefined);
-
-      await expect(
-         env.installPackage("pkg", downloader),
-      ).rejects.toBeInstanceOf(ServiceUnavailableError);
-      // Refused at the door: no download was started, and the copy that was
-      // serving is untouched and still listed as such.
-      expect(downloader.called).toBe(false);
-      const still = (await env.listPackages()).find((p) => p.name === "pkg");
-      expect(still?.status).toEqual({ serving: true, loading: false });
-   });
-
-   it("applies the metadata sent with an install under the same lock hold, ahead of a queued delete", async () => {
-      const env = await Environment.create("testEnv", envPath, []);
-      const fixture = path.join(rootDir, "fixture");
-      await writePackageDir(fixture);
-      await env.installPackage("pkg", (stagingPath) =>
-         copyDir(fixture, stagingPath),
-      );
-
-      const compile = holdCompile();
-      const reinstall = env.installPackage(
-         "pkg",
-         (stagingPath) => copyDir(fixture, stagingPath),
-         undefined,
-         { update: { name: "pkg", description: "installed together" } },
-      );
-      await compile.entered;
-      // A delete arrives while the swap is compiling. It queues on the package
-      // lock behind the install, and must not run between the swap and the
-      // metadata update: that gap is where the update used to find no package
-      // and answer 404 for an install that had completed.
-      const deletion = env.deletePackage("pkg");
-      compile.release();
-
-      const installed = await reinstall;
-      expect(installed.getPackageMetadata().description).toBe(
-         "installed together",
-      );
-      await deletion;
-      expect((await env.listPackages()).map((p) => p.name)).not.toContain(
-         "pkg",
-      );
-   });
-
-   it("binds and persists a manifestLocation sent with an install", async () => {
-      const env = await Environment.create("testEnv", envPath, []);
-      const fixture = path.join(rootDir, "fixture");
-      await writePackageDir(fixture);
-      const manifestFile = path.join(rootDir, "manifest.json");
-      await fs.writeFile(
-         manifestFile,
-         JSON.stringify({
-            builtAt: new Date().toISOString(),
-            strict: false,
-            entries: {},
-         }),
-      );
-
-      const installed = await env.installPackage(
-         "pkg",
-         (stagingPath) => copyDir(fixture, stagingPath),
-         undefined,
-         { update: { manifestLocation: manifestFile } },
-      );
-
-      expect(installed.getPackageMetadata().manifestLocation).toBe(
-         manifestFile,
-      );
-      // Written through to publisher.json, so an in-place reload binds it again
-      // without being told.
-      const onDisk = JSON.parse(
-         await fs.readFile(
-            path.join(envPath, "pkg", "publisher.json"),
-            "utf-8",
-         ),
-      );
-      expect(onDisk.manifestLocation).toBe(manifestFile);
-      expect(onDisk.description).toBe("fixture");
-   });
-
-   it("keeps description, resource and location through a PATCH that omits them", async () => {
-      const env = await Environment.create("testEnv", envPath, []);
-      const fixture = path.join(rootDir, "fixture");
-      await writePackageDir(fixture, "first");
-      await env.installPackage(
-         "pkg",
-         (stagingPath) => copyDir(fixture, stagingPath),
-         undefined,
-         {
-            update: {
-               resource: "/api/v0/environments/testEnv/packages/pkg",
-               location: "gs://bucket/pkg.zip",
-            },
-         },
-      );
-
-      // A metadata PATCH that names only the manifest: everything it omits
-      // must survive.
-      const after = await env.updatePackage("pkg", {
-         name: "pkg",
-         manifestLocation: null,
-      });
-
-      expect(after.description).toBe("first");
-      expect(after.resource).toBe("/api/v0/environments/testEnv/packages/pkg");
-      expect(after.location).toBe("gs://bucket/pkg.zip");
-      const onDisk = JSON.parse(
-         await fs.readFile(
-            path.join(envPath, "pkg", "publisher.json"),
-            "utf-8",
-         ),
-      );
-      expect(onDisk.description).toBe("first");
-   });
-
-   it("a metadata PATCH during a first install's download waits for the install and lands on it", async () => {
-      // The download runs before the install takes the package lock, so a
-      // PATCH in that window finds no resident copy and a free lock. It is
-      // meant for the copy being installed; answering 404 instead would read
-      // to an orchestrator as the package having gone, which is the very
-      // signal this status work exists to stop sending.
-      const env = await Environment.create("testEnv", envPath, []);
-      const fixture = path.join(rootDir, "fixture");
-      await writePackageDir(fixture);
-      const location = "gs://bucket/pkg___1.0.0.zip";
-
-      const download = deferred();
-      const install = env.installPackage(
-         "pkg",
-         async (stagingPath) => {
-            await download.promise;
-            await copyDir(fixture, stagingPath);
-         },
-         undefined,
-         { update: { location } },
-      );
-      expect(env.describePackageStatus("pkg").serving).toBe(false);
-
-      let patchSettled = false;
-      const patch = env
-         .updatePackage("pkg", { name: "pkg", description: "patched" })
-         .finally(() => {
-            patchSettled = true;
-         });
-      // Nothing to apply it to yet, so it is pending, not a 404.
-      await new Promise((resolve) => setTimeout(resolve, 20));
-      expect(patchSettled).toBe(false);
-
-      download.resolve();
-      await install;
-      const after = await patch;
-      expect(after.description).toBe("patched");
-      expect(after.location).toBe(location);
-      expect(env.describePackageStatus("pkg")).toEqual({
-         serving: true,
-         loading: false,
-      });
-   });
-
-   it("a metadata PATCH during a first install that then fails answers 404", async () => {
-      const env = await Environment.create("testEnv", envPath, []);
-      const download = deferred();
-      const install = env.installPackage("pkg", async () => {
-         await download.promise;
-         throw new Error("download failed");
-      });
-      const patchOutcome = env.updatePackage("pkg", { name: "pkg" }).then(
-         () => undefined,
-         (err: unknown) => err,
-      );
-      download.resolve();
-      await expect(install).rejects.toThrow("download failed");
-      expect(await patchOutcome).toBeInstanceOf(PackageNotFoundError);
-   });
-
-   it("a PATCH sending null for a field leaves it alone, in memory and on disk", async () => {
-      // A client that serializes unset fields as null must not blank them:
-      // null counts as not mentioned, the rule `scope` already follows, and
-      // publisher.json gets no `description: null` either.
-      const env = await Environment.create("testEnv", envPath, []);
-      const fixture = path.join(rootDir, "fixture");
-      await writePackageDir(fixture, "first");
-      await env.installPackage(
-         "pkg",
-         (stagingPath) => copyDir(fixture, stagingPath),
-         undefined,
-         {
-            update: {
-               resource: "/api/v0/environments/testEnv/packages/pkg",
-               location: "gs://bucket/pkg.zip",
-            },
-         },
-      );
-
-      const after = await env.updatePackage("pkg", {
-         name: "pkg",
-         description: null as unknown as string,
-         resource: null as unknown as string,
-         location: null as unknown as string,
-         manifestLocation: null,
-      });
-
-      expect(after.name).toBe("pkg");
-      expect(after.description).toBe("first");
-      expect(after.resource).toBe("/api/v0/environments/testEnv/packages/pkg");
-      expect(after.location).toBe("gs://bucket/pkg.zip");
-      const onDisk = JSON.parse(
-         await fs.readFile(
-            path.join(envPath, "pkg", "publisher.json"),
-            "utf-8",
-         ),
-      );
-      expect(onDisk.description).toBe("first");
-      const record = JSON.parse(
-         await fs.readFile(
-            path.join(envPath, ".install-records", "pkg.json"),
-            "utf-8",
-         ),
-      );
-      expect(record.location).toBe("gs://bucket/pkg.zip");
-
-      // An empty string is a value, and clears.
-      const cleared = await env.updatePackage("pkg", {
-         name: "pkg",
-         description: "",
-      });
-      expect(cleared.description).toBe("");
-   });
-
-   it("a same-location PATCH is never refused by the memory governor", async () => {
-      // The governor gates allocations of a new compiled copy. A metadata
-      // update allocates none, so back-pressure that refuses an install must
-      // let the orchestrator's rebind through, or a throttled replica could
-      // never pick up a new manifest.
-      const env = await Environment.create("testEnv", envPath, []);
-      const fixture = path.join(rootDir, "fixture");
-      await writePackageDir(fixture);
-      await env.installPackage("pkg", (stagingPath) =>
-         copyDir(fixture, stagingPath),
-      );
-      env.setMemoryGovernor({
-         isBackpressured: () => true,
-      } as unknown as PackageMemoryGovernor);
-
-      await expect(
-         env.installPackage("pkg", sinon.stub().resolves(undefined)),
-      ).rejects.toBeInstanceOf(ServiceUnavailableError);
-      const updated = await env.updatePackage("pkg", {
-         name: "pkg",
-         description: "rebound under back-pressure",
-      });
-      expect(updated.description).toBe("rebound under back-pressure");
-   });
-
-   it("clears the loading marker after an install is rolled back", async () => {
-      const env = await Environment.create("testEnv", envPath, []);
-      const fixture = path.join(rootDir, "fixture");
-      await writePackageDir(fixture);
-
-      // A first install whose validation rejects the tree: the swap is rolled
-      // back, nothing is resident, and nothing is loading.
-      await expect(
-         env.installPackage(
-            "pkg",
-            (stagingPath) => copyDir(fixture, stagingPath),
-            () => "rejected by validation",
-         ),
-      ).rejects.toThrow("rejected by validation");
+      // A first load that fails: nothing is resident, and nothing is loading.
+      await expect(env.addPackage("pkg")).rejects.toThrow();
       expect(env.describePackageStatus("pkg")).toEqual({
          serving: false,
          loading: false,
       });
-      expect(
-         (await env.listPackages({ includeLoading: true })).map((p) => p.name),
-      ).not.toContain("pkg");
 
-      // The same rollback over a serving copy leaves that copy serving.
-      await env.installPackage("pkg", (stagingPath) =>
-         copyDir(fixture, stagingPath),
-      );
+      // A reload that fails over a serving copy leaves that copy serving.
+      await writePackageDir(pkgDir);
+      await env.addPackage("pkg");
+      await fs.writeFile(path.join(pkgDir, "model.malloy"), BROKEN_MODEL);
       await expect(
-         env.installPackage(
-            "pkg",
-            (stagingPath) => copyDir(fixture, stagingPath),
-            () => "rejected by validation",
-         ),
-      ).rejects.toThrow("rejected by validation");
+         env.getPackage(parsePackageName("pkg"), true),
+      ).rejects.toThrow();
       expect(env.describePackageStatus("pkg")).toEqual({
          serving: true,
          loading: false,
       });
    });
 
-   it("a waiting PATCH is released when the last load in flight finishes, not the first", async () => {
-      // Loads of one package started independently share the loading entry.
-      // Released on the first to finish, a PATCH would find nothing resident
-      // and answer 404 while the other is still downloading.
-      const env = await Environment.create("testEnv", envPath, []);
-      const fixture = path.join(rootDir, "fixture");
-      await writePackageDir(fixture);
-      const location = "gs://bucket/pkg___1.0.0.zip";
-
-      const firstDownload = deferred();
-      const first = env.installPackage(
-         "pkg",
-         async () => {
-            await firstDownload.promise;
-            throw new Error("first download failed");
-         },
-         undefined,
-         { update: { location } },
-      );
-      const secondDownload = deferred();
-      const second = env.installPackage(
-         "pkg",
-         async (stagingPath) => {
-            await secondDownload.promise;
-            await copyDir(fixture, stagingPath);
-         },
-         undefined,
-         { update: { location } },
-      );
-
-      let patchSettled = false;
-      const patch = env
-         .updatePackage("pkg", { name: "pkg", description: "patched" })
-         .finally(() => {
-            patchSettled = true;
-         });
-
-      firstDownload.resolve();
-      await expect(first).rejects.toThrow("first download failed");
-      await new Promise((resolve) => setTimeout(resolve, 20));
-      expect(patchSettled).toBe(false);
-      expect(env.describePackageStatus("pkg").loading).toBe(true);
-
-      secondDownload.resolve();
-      await second;
-      const after = await patch;
-      expect(after.description).toBe("patched");
-   });
-
-   it("remembers where a package was installed from, across a reload", async () => {
-      // The reinstall decision compares a PATCH's `location` with the one the
-      // package was installed from. That value has to survive the install
-      // itself, an in-place reload, and (through publisher.json) a restart,
-      // or the first rebind after any of them is a full reinstall again.
-      const env = await Environment.create("testEnv", envPath, []);
-      const fixture = path.join(rootDir, "fixture");
-      await writePackageDir(fixture);
-      const location = "gs://bucket/pkg___1.0.0.zip";
-
-      const download = deferred();
-      const install = env.installPackage(
-         "pkg",
-         async (stagingPath) => {
-            await download.promise;
-            await copyDir(fixture, stagingPath);
-         },
-         undefined,
-         { update: { location } },
-      );
-      expect(env.describePackageStatus("pkg").loading).toBe(true);
-      download.resolve();
-      const installed = await install;
-      expect(env.describePackageStatus("pkg").loading).toBe(false);
-
-      expect(installed.getPackageMetadata().location).toBe(location);
-      // Recorded in the server's own file outside the package directory, not
-      // in the manifest: the manifest is the author's, and a reload fetches
-      // from this value.
-      const record = JSON.parse(
-         await fs.readFile(
-            path.join(envPath, ".install-records", "pkg.json"),
-            "utf-8",
-         ),
-      );
-      expect(record.location).toBe(location);
-      const manifest = JSON.parse(
-         await fs.readFile(
-            path.join(envPath, "pkg", "publisher.json"),
-            "utf-8",
-         ),
-      );
-      expect(manifest.location).toBeUndefined();
-
-      // An in-place reload rebuilds the metadata from disk.
-      const reloaded = await env.getPackage(parsePackageName("pkg"), true);
-      expect(reloaded.getPackageMetadata().location).toBe(location);
-   });
-
    it("ignores a location an author wrote into publisher.json", async () => {
-      // A reload re-fetches from the recorded location, mounting a local path
-      // in place. Read from the package's own manifest, that would let a
-      // package author name any path on the server; only the server's record
-      // counts.
+      // A package's location is where the server fetched it from, which only
+      // the server knows (a published version's comes from its registry row).
+      // Read from the package's own manifest, it would let a package author
+      // claim any path on the server.
       const env = await Environment.create("testEnv", envPath, []);
       const dir = path.join(envPath, "pkg");
       writePackageFiles(
@@ -619,187 +199,5 @@ describe("Package.status: serving and loading", () => {
 
       const added = await env.addPackage("pkg");
       expect(added?.getPackageMetadata().location).toBeUndefined();
-   });
-
-   it("ignores an install record shipped inside the package content", async () => {
-      // The record lives outside the package directory precisely so that
-      // content, downloaded or added from a directory, cannot plant one.
-      const env = await Environment.create("testEnv", envPath, []);
-      const fixture = path.join(rootDir, "fixture");
-      await writePackageDir(fixture);
-      await fs.writeFile(
-         path.join(fixture, ".publisher-install.json"),
-         JSON.stringify({ location: "/etc" }),
-      );
-      const location = "gs://bucket/pkg___1.0.0.zip";
-      const installed = await env.installPackage(
-         "pkg",
-         (stagingPath) => copyDir(fixture, stagingPath),
-         undefined,
-         { update: { location } },
-      );
-      expect(installed.getPackageMetadata().location).toBe(location);
-
-      await copyDir(fixture, path.join(envPath, "added"));
-      const added = await env.addPackage("added");
-      expect(added?.getPackageMetadata().location).toBeUndefined();
-   });
-
-   // DEPRECATED FEATURE COVERAGE — delete together with `explores` (see
-   // RELEASE_NOTES deprecations).
-   describe("deprecated: explores", () => {
-      it("records the location even when the tree's own explores name a missing model", async () => {
-         // An explores entry that does not resolve is a warning at load. The
-         // metadata an install applies afterwards does not touch explores, so it
-         // must not fail on that warning after the swap, which would leave the
-         // new tree serving with no record and no binding.
-         const env = await Environment.create("testEnv", envPath, []);
-         const fixture = path.join(rootDir, "fixture");
-         await writePackageDir(fixture);
-         await fs.writeFile(
-            path.join(fixture, "publisher.json"),
-            JSON.stringify({ name: "pkg", explores: ["missing.malloy"] }),
-         );
-         const location = "gs://bucket/pkg___1.0.0.zip";
-         const installed = await env.installPackage(
-            "pkg",
-            (stagingPath) => copyDir(fixture, stagingPath),
-            undefined,
-            { update: { location } },
-         );
-         expect(installed.getPackageMetadata().location).toBe(location);
-         const record = JSON.parse(
-            await fs.readFile(
-               path.join(envPath, ".install-records", "pkg.json"),
-               "utf-8",
-            ),
-         );
-         expect(record.location).toBe(location);
-      });
-   });
-
-   it("a metadata PATCH never changes where a package was installed from", async () => {
-      // Only an install records a location. A PATCH naming a different one is
-      // a reinstall, decided by the controller; if a PATCH could write the
-      // location directly, a failed reinstall would leave the old content
-      // claiming the new location and the package would never upgrade.
-      const env = await Environment.create("testEnv", envPath, []);
-      const fixture = path.join(rootDir, "fixture");
-      await writePackageDir(fixture);
-      const first = "gs://bucket/pkg___1.0.0.zip";
-      await env.installPackage(
-         "pkg",
-         (stagingPath) => copyDir(fixture, stagingPath),
-         undefined,
-         { update: { location: first } },
-      );
-
-      const after = await env.updatePackage("pkg", {
-         name: "pkg",
-         location: "gs://bucket/pkg___1.0.1.zip",
-         description: "patched",
-      });
-      expect(after.description).toBe("patched");
-      expect(after.location).toBe(first);
-      const record = JSON.parse(
-         await fs.readFile(
-            path.join(envPath, ".install-records", "pkg.json"),
-            "utf-8",
-         ),
-      );
-      expect(record.location).toBe(first);
-   });
-
-   it("a metadata PATCH during a reinstall waits for the swap and lands on the new copy", async () => {
-      // During a reinstall the previous copy is resident and the lock is free
-      // while the download runs. Applied then, the PATCH would land on the
-      // copy about to be replaced: lost at the swap, or kept by a rollback.
-      const env = await Environment.create("testEnv", envPath, []);
-      const fixture = path.join(rootDir, "fixture");
-      await writePackageDir(fixture, "first");
-      const second = path.join(rootDir, "fixture2");
-      await writePackageDir(second, "second");
-      await env.installPackage(
-         "pkg",
-         (stagingPath) => copyDir(fixture, stagingPath),
-         undefined,
-         { update: { location: "gs://bucket/pkg___1.0.0.zip" } },
-      );
-
-      const download = deferred();
-      const reinstall = env.installPackage(
-         "pkg",
-         async (stagingPath) => {
-            await download.promise;
-            await copyDir(second, stagingPath);
-         },
-         undefined,
-         { update: { location: "gs://bucket/pkg___1.0.1.zip" } },
-      );
-      let patchSettled = false;
-      const patch = env
-         .updatePackage("pkg", { name: "pkg", resource: "/r" })
-         .finally(() => {
-            patchSettled = true;
-         });
-      await new Promise((resolve) => setTimeout(resolve, 20));
-      expect(patchSettled).toBe(false);
-      expect(env.peekPackage("pkg")?.getPackageMetadata().description).toBe(
-         "first",
-      );
-
-      download.resolve();
-      await reinstall;
-      const after = await patch;
-      expect(after.description).toBe("second");
-      expect(after.resource).toBe("/r");
-      expect(after.location).toBe("gs://bucket/pkg___1.0.1.zip");
-   });
-
-   it("clearing a manifest that was never bound does not recompile the package", async () => {
-      // A null manifestLocation from a client that serializes unset fields
-      // has nothing to revert on a package serving live; recompiling every
-      // model to get back to where it already is costs a full load.
-      const env = await Environment.create("testEnv", envPath, []);
-      const fixture = path.join(rootDir, "fixture");
-      await writePackageDir(fixture);
-      await env.installPackage("pkg", (stagingPath) =>
-         copyDir(fixture, stagingPath),
-      );
-      const resident = env.peekPackage("pkg");
-      expect(resident).toBeDefined();
-      const reload = sinon.spy(resident!, "reloadAllModels");
-
-      await env.updatePackage("pkg", { name: "pkg", manifestLocation: null });
-      expect(reload.called).toBe(false);
-   });
-
-   it("applies a metadata PATCH that arrives during a first install once the install lands", async () => {
-      // The orchestrator's drift check can PATCH a package it sees loading
-      // but not yet serving. With the same location that PATCH is a metadata
-      // update, so it queues on the package lock behind the install and lands
-      // on the installed copy, rather than starting a second install.
-      const env = await Environment.create("testEnv", envPath, []);
-      const fixture = path.join(rootDir, "fixture");
-      await writePackageDir(fixture);
-
-      const compile = holdCompile();
-      const install = env.installPackage("pkg", (stagingPath) =>
-         copyDir(fixture, stagingPath),
-      );
-      await compile.entered;
-      const update = env.updatePackage("pkg", {
-         name: "pkg",
-         description: "from the drift check",
-      });
-      compile.release();
-
-      await install;
-      const after = await update;
-      expect(after.description).toBe("from the drift check");
-      expect(env.describePackageStatus("pkg")).toEqual({
-         serving: true,
-         loading: false,
-      });
    });
 });

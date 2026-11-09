@@ -19,6 +19,7 @@ import {
    type MetricsHarness,
 } from "../test_helpers/metrics_harness";
 import { Environment } from "./environment";
+import { installTestPackage } from "../test_helpers/install_test_package";
 import type { Package } from "./package";
 import { linesMentioning } from "../test_helpers/log_lines";
 import { parsePackageName } from "./identity";
@@ -100,7 +101,7 @@ describe("report discovery telemetry", () => {
    });
 
    const install = async (): Promise<Package> => {
-      await env.installPackage(PACKAGE, async (stagingPath) => {
+      await installTestPackage(env, PACKAGE, async (stagingPath) => {
          await fs.mkdir(stagingPath, { recursive: true });
          for (const [name, text] of Object.entries(FILES))
             await fs.writeFile(path.join(stagingPath, name), text);

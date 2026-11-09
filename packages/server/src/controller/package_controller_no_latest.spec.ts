@@ -23,9 +23,7 @@ import { testRetrieval } from "../test_helpers/test_retrieval";
 //
 //  - A request that names no version has nothing to be served (404
 //    VERSION_NOT_FOUND, "no latest version yet"); one that names a version is
-//    served it.
-//  - The deprecated PATCH of the package has no version to apply to (409
-//    PACKAGE_IS_VERSIONED), and changes nothing.
+//    served it, and a reload of it answers it unchanged.
 
 const ENV_NAME = "testEnv";
 const ENV_ID = "env-1";
@@ -193,50 +191,35 @@ describe("a versioned package with no latest yet", () => {
       expect(other.getPackageMetadata().versionId).toBe("2.0.0");
    });
 
+   it("answers a reload that names a version unchanged, recompiling nothing", async () => {
+      // A published version is immutable: the reload answers the copy already
+      // served, not a recompiled one.
+      const versionId = VersionRef.parse("1.0.0");
+      const served = await env.getPackage(parsePackageName(PKG), false, {
+         versionId,
+      });
+      const reloaded = await controller.reloadPackage(
+         ENV_NAME,
+         PKG,
+         "rest",
+         versionId,
+      );
+      expect(reloaded.mode).toBe("unchanged");
+      expect(reloaded.metadata).toMatchObject({
+         versionId: "1.0.0",
+         latestVersion: null,
+      });
+      expect(
+         await env.getPackage(parsePackageName(PKG), false, { versionId }),
+      ).toBe(served);
+   });
+
    it("serves a request that names no version once a version is made latest", async () => {
       await env.getVersionService()!.setLatest(PKG, "1.0.0");
       const served = await controller.getPackage(ENV_NAME, PKG, false);
       expect(served).toMatchObject({
          versionId: "1.0.0",
          latestVersion: "1.0.0",
-      });
-   });
-
-   it("refuses the deprecated PATCH of the package with 409 PACKAGE_IS_VERSIONED, changing nothing", async () => {
-      const bodies = [
-         { manifestLocation: "gs://bucket/sales.manifest.json" },
-         { description: "Sales, renamed" },
-      ];
-      for (const body of bodies) {
-         const refused = await answered(
-            controller.updatePackage(ENV_NAME, PKG, body),
-         );
-         expect(refused).toMatchObject({
-            status: 409,
-            reason: "PACKAGE_IS_VERSIONED",
-         });
-         expect(refused.message).toMatch(
-            /Package sales has published versions, which are immutable: it has no latest version to apply this to\./,
-         );
-      }
-      for (const version of await repo.listVersions(ENV_ID, PKG)) {
-         expect(version.manifestPath).toBeNull();
-      }
-      expect((await repo.getPackageByName(ENV_ID, PKG))!.description).toBe(
-         null,
-      );
-      expect(await env.getVersionService()!.latestOf(PKG)).toBeNull();
-   });
-
-   it("applies the same PATCH once a version is made latest", async () => {
-      // So the 409 above is the missing latest, not the body.
-      await env.getVersionService()!.setLatest(PKG, "2.0.0");
-      const patched = await controller.updatePackage(ENV_NAME, PKG, {
-         description: "Sales, renamed",
-      });
-      expect(patched).toMatchObject({
-         versionId: "2.0.0",
-         description: "Sales, renamed",
       });
    });
 });

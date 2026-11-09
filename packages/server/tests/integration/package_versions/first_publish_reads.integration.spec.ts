@@ -5,7 +5,10 @@
 
 /**
  * Reads of an unversioned package during its first versioned publish, over
- * HTTP. That publish moves the package's files aside while it compiles the
+ * HTTP. A watched environment serves a package it could not link in place
+ * (one from an archive or a remote location) as a copy in its own folder,
+ * with no versions, and that package can still be published as a version.
+ * That first publish moves the copy's files aside while it compiles the
  * version, so a read served from the copy in memory would reach for files
  * that are not there: a query over a package-local `data.csv`, or a page
  * under `public/`. The compile is held open (the server runs in this process)
@@ -13,50 +16,28 @@
  * version once the publish commits, or from the copy put back when it fails.
  */
 
-import {
-   afterAll,
-   afterEach,
-   beforeAll,
-   describe,
-   expect,
-   it,
-   spyOn,
-} from "bun:test";
+import { afterAll, beforeAll, describe, expect, it, spyOn } from "bun:test";
 import fs from "fs";
 import os from "os";
 import path from "path";
+import { parseEnvironmentName } from "../../../src/service/identity";
 import { Package } from "../../../src/service/package";
+import { installTestPackage } from "../../../src/test_helpers/install_test_package";
+import { bootMainServer } from "../../harness/main_server";
 import { RestE2EEnv, startRestE2E } from "../../harness/rest_e2e";
-import { installVariables } from "../../../src/test_helpers/settings_env";
 
 const ENV_NAME = "versions-first-publish-reads-env";
-const FLAG = "PUBLISHER_PACKAGE_VERSIONING";
 
 let env: (RestE2EEnv & { stop(): Promise<void> }) | undefined;
 let baseUrl = "";
 let root = "";
-/** The variables this suite sets, installed over the process's own settings. */
-const variables: Record<string, string | undefined> = {};
-let restoreSettings: (() => void) | undefined;
-
-/** Give the in-process server `name` at `value`, or unset, as a restart with it would. */
-function setVariable(name: string, value: string | undefined): void {
-   variables[name] = value;
-   restoreSettings?.();
-   restoreSettings = installVariables(variables);
-}
-
-function versioning(on: boolean): void {
-   setVariable(FLAG, on ? "on" : "off");
-}
 
 /** A package whose query reads its own data.csv, and whose page says `n`. */
-function writePackage(
-   folder: string,
+function writeTree(
+   dir: string,
    manifest: Record<string, unknown>,
    n: number,
 ): string {
-   const dir = path.join(root, folder);
    fs.mkdirSync(path.join(dir, "public"), { recursive: true });
    fs.writeFileSync(path.join(dir, "publisher.json"), JSON.stringify(manifest));
    fs.writeFileSync(path.join(dir, "data.csv"), `answer\n${n}\n`);
@@ -70,6 +51,31 @@ function writePackage(
       `<!doctype html><title>page v${n}</title><body>page v${n}</body>`,
    );
    return dir;
+}
+
+/** A package tree under the suite's scratch folder, to publish from. */
+function writePackage(
+   folder: string,
+   manifest: Record<string, unknown>,
+   n: number,
+): string {
+   return writeTree(path.join(root, folder), manifest, n);
+}
+
+/**
+ * Serve `name` as a copy in the environment's own folder, with no versions,
+ * answering `n`: what a watched environment leaves for a package it copies.
+ */
+async function installCopy(name: string, n: number): Promise<void> {
+   const { environmentStore } = await bootMainServer();
+   const loaded = await installTestPackage(
+      await environmentStore.getEnvironment(parseEnvironmentName(ENV_NAME)),
+      name,
+      async (dir) => {
+         writeTree(dir, { name }, n);
+      },
+   );
+   expect(loaded.getVersionId()).toBeUndefined();
 }
 
 const pkgApi = (name: string) =>
@@ -131,7 +137,6 @@ function holdNextCompile(fail = false) {
 
 describe("reads of an unversioned package during its first versioned publish", () => {
    beforeAll(async () => {
-      versioning(false);
       root = fs.realpathSync(
          fs.mkdtempSync(
             path.join(os.tmpdir(), "versions-first-publish-reads-"),
@@ -139,6 +144,8 @@ describe("reads of an unversioned package during its first versioned publish", (
       );
       env = await startRestE2E();
       baseUrl = env.baseUrl;
+      const { environmentStore } = await bootMainServer();
+      environmentStore.markInPlace(ENV_NAME);
       const created = await fetch(`${baseUrl}/api/v0/environments`, {
          method: "POST",
          headers: { "content-type": "application/json" },
@@ -151,26 +158,20 @@ describe("reads of an unversioned package during its first versioned publish", (
       expect(created.status).toBeLessThan(300);
    }, 180_000);
 
-   afterEach(() => versioning(false));
-
    afterAll(async () => {
       await fetch(`${baseUrl}/api/v0/environments/${ENV_NAME}`, {
          method: "DELETE",
       }).catch(() => undefined);
       await env?.stop();
       fs.rmSync(root, { recursive: true, force: true });
-      restoreSettings?.();
    });
 
    it("a query and a page read inside the hold both answer, from the version", async () => {
       const name = "held";
-      expect(
-         (await publish(name, writePackage("held-0", { name }, 0))).status,
-      ).toBe(200);
+      await installCopy(name, 0);
       expect(await query(name)).toEqual([200, 0]);
       expect(await page(name)).toEqual([200, "page v0"]);
 
-      versioning(true);
       const held = holdNextCompile();
       try {
          const publishing = publish(
@@ -195,12 +196,9 @@ describe("reads of an unversioned package during its first versioned publish", (
 
    it("a query and a page read inside the hold of a publish that fails answer from the copy put back", async () => {
       const name = "failing";
-      expect(
-         (await publish(name, writePackage("failing-0", { name }, 0))).status,
-      ).toBe(200);
+      await installCopy(name, 0);
       expect(await query(name)).toEqual([200, 0]);
 
-      versioning(true);
       const held = holdNextCompile(true);
       try {
          const publishing = publish(

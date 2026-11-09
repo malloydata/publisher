@@ -293,7 +293,7 @@ describe("a dry-run publish", () => {
                await downloaded;
                fs.cpSync(source, stagingPath, { recursive: true });
             },
-            { readVersion: false, describe: (pkg) => pkg.getPackageName() },
+            { describe: (pkg) => pkg.getPackageName() },
          ),
       );
       const refused = await post("other", source, true);
@@ -306,8 +306,8 @@ describe("a dry-run publish", () => {
       expect((await post("other", source, true)).status).toBe(200);
    }, 60_000);
 
-   describe("of a versioned publish", () => {
-      it("refuses a tree whose publisher.json declares no version, as a versioned publish does", async () => {
+   describe("and the version a tree declares", () => {
+      it("refuses a tree whose publisher.json declares no version, as a publish does", async () => {
          const location = writePackage("unversioned", {
             "orders.malloy": `source: orders is ${ROWS}\n`,
          });

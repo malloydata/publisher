@@ -8,6 +8,8 @@
  * `latest` when it names none. Two versions of one package are published, each answering with its
  * own number from its model, its dashboard title, its notebook text and its
  * data-app page, so what a route returns proves which version's files it read.
+ * Beside it, a package with no versions (mounted in place, as a watched
+ * environment's packages are) answers 0.
  */
 
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
@@ -15,6 +17,7 @@ import fs from "fs";
 import os from "os";
 import path from "path";
 import vm from "vm";
+import { bootMainServer } from "../../harness/main_server";
 import { RestE2EEnv, startRestE2E } from "../../harness/rest_e2e";
 
 const ENV_NAME = "package-versions-routes-env";
@@ -131,6 +134,11 @@ describe("package-scoped routes of a versioned package", () => {
          { name: PLAIN },
          0,
       );
+      // The environment is watched, so the package that comes with it is
+      // mounted in place and has no versions; the versioned package is
+      // published into it after.
+      const { environmentStore } = await bootMainServer();
+      environmentStore.markInPlace(ENV_NAME);
       const created = await fetch(`${baseUrl}/api/v0/environments`, {
          method: "POST",
          headers: { "content-type": "application/json" },

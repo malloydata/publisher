@@ -6,7 +6,6 @@ import {
    getPersistStorageMode,
    getVersionPromotionMode,
    isPackageInlineFieldsEnabled,
-   isVersioningEnabled,
 } from "./config";
 import { Settings } from "./settings";
 import { withSettings } from "./test_helpers/settings_env";
@@ -100,34 +99,6 @@ describe("PERSIST_STORAGE_MODE", () => {
       withSettings({ env: { PERSIST_STORAGE_MODE: "read-only" } }, () =>
          expect(() => getPersistStorageMode()).toThrow(
             'persist.storageMode from PERSIST_STORAGE_MODE: expected one of "off", "write-only" or "on", got "read-only"',
-         ),
-      );
-   });
-});
-
-// The transition flag: on unless set to off, so a server that sets nothing
-// publishes versions.
-describe("PUBLISHER_PACKAGE_VERSIONING", () => {
-   it("is on when unset or blank", () => {
-      withSettings({}, () => expect(isVersioningEnabled()).toBe(true));
-      withSettings({ env: { PUBLISHER_PACKAGE_VERSIONING: " " } }, () =>
-         expect(isVersioningEnabled()).toBe(true),
-      );
-   });
-
-   it("is on only for on, ignoring case and surrounding space", () => {
-      withSettings({ env: { PUBLISHER_PACKAGE_VERSIONING: " On " } }, () =>
-         expect(isVersioningEnabled()).toBe(true),
-      );
-      withSettings({ env: { PUBLISHER_PACKAGE_VERSIONING: "off" } }, () =>
-         expect(isVersioningEnabled()).toBe(false),
-      );
-   });
-
-   it("refuses a value outside on and off, naming the setting", () => {
-      withSettings({ env: { PUBLISHER_PACKAGE_VERSIONING: "true" } }, () =>
-         expect(() => isVersioningEnabled()).toThrow(
-            'packageVersioning from PUBLISHER_PACKAGE_VERSIONING: expected one of "off" or "on", got "true"',
          ),
       );
    });

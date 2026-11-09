@@ -106,10 +106,7 @@ describe("a versioned package's sub-resources", () => {
    }, 60_000);
 
    it("with inline fields off, GET /status lists one slim entry per version", async () => {
-      // Installed over the process's variables, which do not hold the suite's
-      // versioning, so this keeps it on beside inline fields off.
       restoreInline = installVariables({
-         PUBLISHER_PACKAGE_VERSIONING: "on",
          PUBLISHER_PACKAGE_INLINE_FIELDS: "off",
       });
       const entries = await r.statusEntries("shop");

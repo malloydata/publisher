@@ -9,54 +9,33 @@
  * packages), and a Git repository or a top-level folder of one. The packages
  * are the fixtures in tests/fixtures/publish-locations.
  *
- * For each kind, the same two rules:
- * - with package versioning on, a tree with a version: published (200); the
- *   same content again, in any form, is placement (200, nothing written);
- *   other content under that version is 409 VERSION_CONFLICT, and the first
- *   content keeps serving;
- * - with it off, a tree with no version: 200 every time, each
- *   publish replacing the package in place, as every publish from a location
- *   did before versions.
+ * For each kind, the same rule: a tree with a version is published (200); the
+ * same content again, in any form, is placement (200, nothing written); other
+ * content under that version is 409 VERSION_CONFLICT, and the first content
+ * keeps serving.
  *
  * Nothing leaves the process. The server's GCS and S3 clients are swapped
  * for in-memory buckets holding the fixtures, and the clone of a
  * `https://github.com/publisher-fixtures/...` URL copies a fixture; every
  * other URL still reaches the real clone. The real downloaders, unzip, hash,
- * placement and install run as in production.
+ * placement and load run as in production.
  */
 
-import { afterAll, afterEach, beforeAll, describe, expect, it } from "bun:test";
+import { afterAll, beforeAll, describe, expect, it } from "bun:test";
 import fs from "fs";
 import path from "path";
 import { simpleGit, type SimpleGitOptions } from "simple-git";
 import { bootMainServer } from "../../harness/main_server";
 import { PackageSources } from "../../../src/service/package_sources";
-import { installVariables } from "../../../src/test_helpers/settings_env";
 import { startRestE2E } from "../../harness/rest_e2e";
 
 // The one main server this process boots (tests/harness/main_server.ts).
 const { environmentStore } = await bootMainServer();
 
 const FIXTURES = path.resolve(__dirname, "../../fixtures/publish-locations");
-const FIXTURE_FOLDERS = [
-   "sales-1.0.0",
-   "sales-1.0.0-changed",
-   "sales-unversioned",
-   "sales-unversioned-changed",
-];
+const FIXTURE_FOLDERS = ["sales-1.0.0", "sales-1.0.0-changed"];
 const GIT_FIXTURES = "https://github.com/publisher-fixtures/";
 const ENV_NAME = "publish-locations-env";
-const FLAG = "PUBLISHER_PACKAGE_VERSIONING";
-/** The variables this suite sets, installed over the process's own settings. */
-const variables: Record<string, string | undefined> = {};
-let restoreSettings: (() => void) | undefined;
-
-/** Give the in-process server `name` at `value`, or unset, as a restart with it would. */
-function setVariable(name: string, value: string | undefined): void {
-   variables[name] = value;
-   restoreSettings?.();
-   restoreSettings = installVariables(variables);
-}
 
 /** Copy a fixture folder's files into `target`. */
 function copyFixture(folder: string, target: string): void {
@@ -262,12 +241,7 @@ describe("publishing from each kind of location, over HTTP", () => {
       );
    }, 180_000);
 
-   afterEach(() => {
-      setVariable(FLAG, "off");
-   });
-
    afterAll(async () => {
-      restoreSettings?.();
       await fetch(`${baseUrl}/api/v0/environments/${ENV_NAME}`, {
          method: "DELETE",
       }).catch(() => undefined);
@@ -280,8 +254,7 @@ describe("publishing from each kind of location, over HTTP", () => {
 
    for (const kind of KINDS) {
       describe(kind.slug, () => {
-         it("versioning on, a version: published, the same content again is 200, other content under it is 409", async () => {
-            setVariable(FLAG, "on");
+         it("a version: published, the same content again is 200, other content under it is 409", async () => {
             const name = `${kind.slug}-versioned`;
             const first = await publish(name, kind.location("sales-1.0.0"));
             expect([first.status, first.json.versionId]).toEqual([
@@ -314,40 +287,11 @@ describe("publishing from each kind of location, over HTTP", () => {
             ]);
             expect(await answerOf(name)).toBe(1);
          });
-
-         it("versioning off, no version: 200 every time, each publish replacing the package in place", async () => {
-            setVariable(FLAG, "off");
-            const name = `${kind.slug}-unversioned`;
-            const first = await publish(
-               name,
-               kind.location("sales-unversioned"),
-            );
-            expect(first.status).toBe(200);
-            expect(first.json.versionId).toBeUndefined();
-            expect(await answerOf(name)).toBe(3);
-            expect(
-               fs.existsSync(path.join(envPath, name, "model.malloy")),
-            ).toBe(true);
-
-            const again = await publish(
-               name,
-               kind.location("sales-unversioned"),
-            );
-            expect(again.status).toBe(200);
-            expect(await answerOf(name)).toBe(3);
-
-            const changed = await publish(
-               name,
-               kind.location("sales-unversioned-changed"),
-            );
-            expect(changed.status).toBe(200);
-            expect(await answerOf(name)).toBe(4);
-         });
       });
    }
 
    it("cloned once per publish from a Git location", () => {
-      // Two Git kinds, two tests each, three publishes per test.
-      expect(clones).toBe(12);
+      // Two Git kinds, one test each, three publishes per test.
+      expect(clones).toBe(6);
    });
 });

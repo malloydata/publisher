@@ -71,9 +71,12 @@ describe("relative package locations anchor at the config directory", () => {
          JSON.stringify({ name: "decoy-from-server-root" }),
       );
 
-      const store = startedStore(
-         new EnvironmentStore(serverRootPath, { storageManager }),
-      );
+      // Watched, so the package is mounted where it is served and the check
+      // below can read it there. A published version's tree is mounted from
+      // its location by the same loop, into a staging folder.
+      const store = new EnvironmentStore(serverRootPath, { storageManager });
+      store.markInPlace("probe");
+      startedStore(store);
       await store.addEnvironment({
          name: "probe",
          packages: [{ name: "sales", location: "./sales" }],

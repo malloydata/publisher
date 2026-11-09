@@ -27,8 +27,7 @@ published, because a PR run proves nothing about the ref a dispatch actually tar
 not repeat is the server suites and the Linux-only e2e suite.
 
 `app-playwright.yml` runs the browser suite on every PR, whatever its base (a PR stacked on another
-PR's branch included), against a server with package versioning on (playwright.config.ts starts it
-with `PUBLISHER_PACKAGE_VERSIONING=on`). The model viewer's specs get a pass of their own, against a server started
+PR's branch included). The model viewer's specs get a pass of their own, against a server started
 with `PUBLISHER_MODEL_PAGE=viewer` (`EXPECT_MODEL_PAGE=viewer`),
 because the suite's server shows the default model page, the Explorer. `python-sdk.yml` is `workflow_call`-only (plus a
 manual dispatch): it builds and verifies the Python client, for `build.yml` on every PR and for

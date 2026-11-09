@@ -136,7 +136,7 @@ function judgeLoadGates(
    }
    // An invalid incremental `#@ persist` declaration fails the load, like a
    // compile error. Publish cannot be the only strict point: a package loaded
-   // from control-plane storage never passes through POST/PATCH /packages, and
+   // from control-plane storage never passes through POST /packages, and
    // a warning would leave the author with a source that silently rebuilds in
    // full. BadRequestError gives a 400 (a control plane defaults to 424); the
    // message carries every rejection so one republish fixes them all.

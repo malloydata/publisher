@@ -3,36 +3,23 @@
 
 /**
  * A package's `secureGivens` rides the responses a host reads after a load:
- * the publish (POST), a get, a reload, and a versioned publish. Over HTTP
- * against the real Express app and the real worker-pool load, because the
- * contract is that the load's own compile answers it, on the response body.
- * It follows the models it describes through a reload in place and a
- * reinstall, is absent while any file fails to compile, and a PATCH body
- * cannot set it.
+ * the publish (POST), a get, and a reload. Over HTTP against the real Express
+ * app and the real worker-pool load, because the contract is that the load's
+ * own compile answers it, on the response body. It follows the models it
+ * describes through a recompile in place and a new version, and is absent
+ * while any file fails to compile.
  */
 
-import { afterAll, afterEach, beforeAll, describe, expect, it } from "bun:test";
+import { afterAll, beforeAll, describe, expect, it } from "bun:test";
 import * as fs from "fs";
 import * as os from "os";
 import * as path from "path";
 import type { Package } from "../../../src/service/package";
-import { installVariables } from "../../../src/test_helpers/settings_env";
 import { startRestE2E } from "../../harness/rest_e2e";
 import { bootMainServer } from "../../harness/main_server";
 import { writePackageFiles } from "../../../src/test_helpers/temp_package";
 
 const ENV_NAME = "secure-givens-env";
-const FLAG = "PUBLISHER_PACKAGE_VERSIONING";
-/** The variables this suite sets, installed over the process's own settings. */
-const variables: Record<string, string | undefined> = {};
-let restoreSettings: (() => void) | undefined;
-
-/** Give the in-process server `name` at `value`, or unset, as a restart with it would. */
-function setVariable(name: string, value: string | undefined): void {
-   variables[name] = value;
-   restoreSettings?.();
-   restoreSettings = installVariables(variables);
-}
 
 const ROWS = `duckdb.sql("select * from (values (1, 'a'), (2, 'b')) as t(id, role)")`;
 
@@ -159,15 +146,7 @@ describe("secureGivens on the package responses", () => {
       expect(created.status).toBeLessThan(300);
    }, 180_000);
 
-   afterEach(() => {
-      // Back to the process's own settings (versioning on).
-      restoreSettings?.();
-      restoreSettings = undefined;
-      delete variables[FLAG];
-   });
-
    afterAll(async () => {
-      restoreSettings?.();
       await fetch(`${baseUrl}/api/v0/environments/${ENV_NAME}`, {
          method: "DELETE",
       }).catch(() => undefined);
@@ -212,6 +191,7 @@ describe("secureGivens on the package responses", () => {
       });
       const created = await publish("secure", location);
       expect(created.status).toBe(200);
+      expect(created.json.versionId).toBe("1.0.0");
       expect(created.json.secureGivens as SecureGiven[]).toEqual(EXPECTED);
 
       expect((await get("secure")).secureGivens as SecureGiven[]).toEqual(
@@ -230,19 +210,7 @@ describe("secureGivens on the package responses", () => {
       expect((await get("plain")).secureGivens).toEqual([]);
    }, 120_000);
 
-   it("a versioned publish carries it too", async () => {
-      const location = writePackage("versioned", SECURE_FILES, {
-         version: "1.0.0",
-      });
-      const created = await publish("versioned", location);
-      expect(created.status).toBeLessThan(300);
-      expect(created.json.versionId).toBe("1.0.0");
-      expect(created.json.secureGivens as SecureGiven[]).toEqual(EXPECTED);
-      expect((await get("versioned")).secureGivens as SecureGiven[]).toEqual(
-         EXPECTED,
-      );
-   }, 120_000);
-   it("follows the models through a reload in place and a new version", async () => {
+   it("follows the models through a recompile in place and a new version", async () => {
       const location = writePackage("editable", {
          "shared.malloy": SHARED,
          "orders.malloy": ORDERS,
@@ -307,38 +275,6 @@ describe("secureGivens on the package responses", () => {
       fs.writeFileSync(orders, ORDERS);
       await pkg.reloadAllModels({});
       expect((await get("partial")).secureGivens as SecureGiven[]).toEqual(
-         ROLES_ONLY,
-      );
-   }, 120_000);
-
-   it("a PATCH body cannot set it", async () => {
-      // The package PATCH edits only a package installed in place, which a
-      // publish is only with versioning off.
-      setVariable(FLAG, "off");
-      const location = writePackage("patched", {
-         "shared.malloy": SHARED,
-         "orders.malloy": ORDERS,
-      });
-      expect((await publish("patched", location)).status).toBe(200);
-      const res = await fetch(
-         `${baseUrl}/api/v0/environments/${ENV_NAME}/packages/patched`,
-         {
-            method: "PATCH",
-            headers: { "content-type": "application/json" },
-            // Only the read-only field: a package installed from a location
-            // refuses a `description` change, which a reload would discard.
-            body: JSON.stringify({
-               name: "patched",
-               secureGivens: [
-                  { name: "FORGED", type: "string", modelPaths: [] },
-               ],
-            }),
-         },
-      );
-      expect(res.status).toBe(200);
-      const patched = (await res.json()) as Record<string, unknown>;
-      expect(patched.secureGivens as SecureGiven[]).toEqual(ROLES_ONLY);
-      expect((await get("patched")).secureGivens as SecureGiven[]).toEqual(
          ROLES_ONLY,
       );
    }, 120_000);

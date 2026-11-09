@@ -45,13 +45,11 @@ describe("createMainApp", () => {
          "<anonymous>", // frame-ancestors
          "route /health",
          "<anonymous>", // rate limit
-         "<anonymous>", // legacy package name (URL)
          "route /sdk",
          "route /environments",
          "corsMiddleware",
          "overlayBody",
          "jsonParser",
-         "<anonymous>", // legacy package name (body)
          "drainingGuard",
          "<api routes>",
          "unhandledErrorMiddleware",

@@ -13,13 +13,14 @@ import { startedStore } from "../test_helpers/started_store";
 import { testRetrieval } from "../test_helpers/test_retrieval";
 
 /**
- * Where an UNVERSIONED package restores its serve bindings from the worker's
+ * Where a published package restores its serve bindings from the worker's
  * own materialization records when it (re)loads — the behaviour `main` had
- * before package versions, which the versions work must not widen:
+ * before package versions, which versions must not widen:
  *
  *  - an environment created at runtime (over the API — how a control plane
- *    creates one) does not: a reinstall with no `manifestLocation` serves live
- *    until a build binds it, so a run the host never sanctioned is not served;
+ *    creates one) does not: a package published again with no
+ *    `manifestLocation` serves live until a build binds it, so a run the host
+ *    never sanctioned is not served;
  *  - an environment reloaded from the database at startup does, so serving
  *    survives a restart.
  */
@@ -52,7 +53,7 @@ afterEach(async () => {
    fs.rmSync(root, { recursive: true, force: true });
 });
 
-/** Start a store as a boot does, with no variables set, so versioning is off. */
+/** Start a store as a boot does, with no variables set. */
 async function openStore(): Promise<EnvironmentStore> {
    restoreSettings?.();
    restoreSettings = installSettings({
@@ -129,26 +130,26 @@ async function commitLocalRun(current: EnvironmentStore) {
    });
 }
 
-describe("restoring an unversioned package's bindings from the local store", () => {
-   it("an environment created at runtime serves a reinstalled package live, as main does", async () => {
+describe("restoring a package's bindings from the local store", () => {
+   it("an environment created at runtime serves a package published again live, as main does", async () => {
       const current = await openStore();
       await current.addEnvironment({ name: ENV, connections: [] } as never);
       const packages = new PackageController(current, testRetrieval(current));
-      const install = () =>
+      const publish = () =>
          packages.addPackage(ENV, {
             name: PKG,
             location: source,
             manifestLocation: null,
          } as never);
 
-      const first = await install();
+      const first = await publish();
       expect(first.getPackageMetadata().manifestBindingStatus).toBe("unbound");
 
       await commitLocalRun(current);
 
-      // The host installs the same package again, still with no manifest:
+      // The host publishes the same version again, still with no manifest:
       // nothing it sanctioned names that run, so nothing is bound to it.
-      const again = await install();
+      const again = await publish();
       const metadata = again.getPackageMetadata();
       expect(metadata.manifestBindingStatus).toBe("unbound");
       expect(metadata.manifestEntryCount ?? 0).toBe(0);

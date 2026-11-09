@@ -121,7 +121,6 @@ class Server {
             PUBLISHER_HOST: "127.0.0.1",
             PUBLISHER_PORT: String(port),
             MCP_PORT: String(mcpPort),
-            PUBLISHER_PACKAGE_VERSIONING: "on",
             PUBLISHER_VERSION_PROMOTION: "on-publish",
             PUBLISHER_NO_MCP_CONFIG: "1",
          },
@@ -285,8 +284,8 @@ describe("published versions across a restart", () => {
       serverRoot = fs.mkdtempSync(path.join(os.tmpdir(), "versions-restart-"));
       srcRoot = fs.mkdtempSync(path.join(os.tmpdir(), "versions-restart-src-"));
       // A configured environment needs a package to load at all, so it gets
-      // one, published as a version at boot as any configured package is with
-      // versioning on; everything under test is published at runtime.
+      // one, published as a version at boot as any configured package is;
+      // everything under test is published at runtime.
       const anchor = fs.mkdtempSync(path.join(srcRoot, "anchor-"));
       fs.writeFileSync(
          path.join(anchor, "publisher.json"),

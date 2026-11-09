@@ -25,32 +25,24 @@ import MaterializationDetailDialog, {
    type BuildPlanState,
 } from "./MaterializationDetailDialog";
 import MaterializationRunsList from "./MaterializationRunsList";
-import ScopeButton from "./ScopeButton";
-import SetScheduleDialog from "./SetScheduleDialog";
 import { isActiveStatus } from "./utils";
 
 const MATERIALIZATION_POLL_MS = 3000;
 
 interface MaterializationsProps {
    resourceUri: string;
-   /**
-    * The package has published versions, or whether it has is not known yet.
-    * A version's scope and schedule come from its own publisher.json, which
-    * never changes, so the scope and schedule controls are not offered; a new
-    * build still is.
-    */
-   versioned?: boolean;
 }
 
 /**
  * The package's materializations, as a section of its page: what has been
- * built, and the three controls that change it — scope, schedule, and a new
- * build. The runs are the package's own history, so they sit beside its
- * dashboards and models rather than one click away on a page of their own.
+ * built, and a new build. A package's scope and schedule come from its
+ * publisher.json, which a published version never changes, so the section
+ * shows them and offers no control to change them. The runs are the
+ * package's own history, so they sit beside its dashboards and models rather
+ * than one click away on a page of their own.
  */
 export default function Materializations({
    resourceUri,
-   versioned = false,
 }: MaterializationsProps) {
    const { apiClients, mutable } = useServer();
    const queryClient = useQueryClient();
@@ -209,60 +201,6 @@ export default function Materializations({
 
    const currentPackage = packageQuery.data?.data;
 
-   // Edit the package's materialization.schedule (persisted to publisher.json).
-   // A schedule is legal only on a version-scoped package, so enabling one also
-   // sets scope: version; clearing (null) leaves scope untouched — scope is an
-   // explicit control (updateScope below), so clearing a schedule no longer
-   // strands scope: version with no way back. The running scheduler re-arms from
-   // the new cron on its next tick — no reload needed.
-   const updateSchedule = useMutationWithApiError({
-      mutationFn: reporting("schedule", "update", (schedule: string | null) =>
-         apiClients.packages.updatePackage(environmentName, packageName, {
-            name: packageName,
-            // updatePackage overwrites description from the body — carry the
-            // current value through so a schedule edit doesn't drop it.
-            description: currentPackage?.description,
-            ...(schedule ? { scope: PackageScopeEnum.Version } : {}),
-            materialization: { schedule },
-         }),
-      ),
-      onSuccess(_data, schedule) {
-         setNotificationMessage(
-            schedule ? "Schedule updated" : "Schedule cleared",
-         );
-         queryClient.invalidateQueries({
-            queryKey: ["package", environmentName, packageName],
-         });
-      },
-      onError(error) {
-         setNotificationMessage(error.message);
-      },
-   });
-
-   // Set the persist scope explicitly (package | version). Independent of the
-   // schedule so the version flip a schedule requires can be undone after the
-   // schedule is cleared. The server rejects scope: package while a schedule is
-   // still set (publish-gate Rule 2), so the UI only offers this when no
-   // schedule is active.
-   const updateScope = useMutationWithApiError({
-      mutationFn: reporting("scope", "update", (scope: PackageScopeEnum) =>
-         apiClients.packages.updatePackage(environmentName, packageName, {
-            name: packageName,
-            description: currentPackage?.description,
-            scope,
-         }),
-      ),
-      onSuccess() {
-         setNotificationMessage("Scope updated");
-         queryClient.invalidateQueries({
-            queryKey: ["package", environmentName, packageName],
-         });
-      },
-      onError(error) {
-         setNotificationMessage(error.message);
-      },
-   });
-
    const materializations = (listQuery.data?.data ?? []) as Materialization[];
    const selected =
       materializations.find((row) => row.id === selectedId) ?? null;
@@ -320,33 +258,6 @@ export default function Materializations({
             action={
                mutable && (
                   <Stack direction="row" spacing={1} alignItems="center">
-                     {!orchestrated && !versioned && (
-                        <ScopeButton
-                           scope={scope}
-                           // A schedule requires version scope, so the server
-                           // refuses `package` while one is set; clearing the
-                           // schedule is the way back.
-                           disabled={Boolean(schedule)}
-                           disabledReason="A schedule requires version scope. Clear the schedule to change it."
-                           isSubmitting={updateScope.isPending}
-                           onChange={(next) =>
-                              updateScope.mutateAsync(
-                                 next === "version"
-                                    ? PackageScopeEnum.Version
-                                    : PackageScopeEnum.Package,
-                              )
-                           }
-                        />
-                     )}
-                     {!orchestrated && !versioned && (
-                        <SetScheduleDialog
-                           currentSchedule={schedule}
-                           isSubmitting={updateSchedule.isPending}
-                           disabled={hasFreshness}
-                           disabledReason="This package declares a freshness policy; a schedule and freshness are mutually exclusive."
-                           onSubmit={(next) => updateSchedule.mutateAsync(next)}
-                        />
-                     )}
                      <CreateMaterializationDialog
                         onSubmit={(opts) =>
                            createMaterialization.mutateAsync(opts)

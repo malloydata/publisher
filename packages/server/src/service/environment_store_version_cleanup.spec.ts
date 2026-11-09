@@ -50,11 +50,11 @@ afterEach(async () => {
    fs.rmSync(root, { recursive: true, force: true });
 });
 
-/** Start a store as a boot does, with versioning on and no other variables. */
+/** Start a store as a boot does, with no variables set. */
 async function openStore(): Promise<EnvironmentStore> {
    restoreSettings?.();
    restoreSettings = installSettings({
-      env: { PUBLISHER_PACKAGE_VERSIONING: "on" },
+      env: {},
       cwd: path.join(root, "server"),
    }).restore;
    store = startedStore(new EnvironmentStore(path.join(root, "server")));

@@ -17,21 +17,21 @@
  * get, stop and delete, and the model query with the version in its URL.
  *
  * Two packages are probed: one with two published versions (`latest` is the
- * higher, 2.0.0), and one published with versioning off, so it has none. Each
- * package tree answers its own number from its model, report titles, notebook,
- * skills and agent, so an answer proves which tree served it. A route's
- * answer with "" is compared to its answer with nothing, status and body.
+ * higher, 2.0.0), and one with none, mounted in place as a watched
+ * environment's packages are. Each package tree answers its own number from
+ * its model, report titles, notebook, skills and agent, so an answer proves
+ * which tree served it. A route's answer with "" is compared to its answer
+ * with nothing, status and body.
  */
 
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
 import fs from "fs";
 import os from "os";
 import path from "path";
+import { bootMainServer } from "../../harness/main_server";
 import { RestE2EEnv, startRestE2E } from "../../harness/rest_e2e";
-import { installVariables } from "../../../src/test_helpers/settings_env";
 
 const ENV_NAME = "empty-version-id-env";
-const FLAG = "PUBLISHER_PACKAGE_VERSIONING";
 const VERSIONED = "versioned";
 const PLAIN = "plain";
 const TERMINAL = ["MANIFEST_FILE_READY", "FAILED", "CANCELLED"];
@@ -40,20 +40,6 @@ const JSON_HEADERS = { "content-type": "application/json" };
 let env: (RestE2EEnv & { stop(): Promise<void> }) | undefined;
 let baseUrl = "";
 let root = "";
-/** The variables this suite sets, installed over the process's own settings. */
-const variables: Record<string, string | undefined> = {};
-let restoreSettings: (() => void) | undefined;
-
-/** Give the in-process server `name` at `value`, or unset, as a restart with it would. */
-function setVariable(name: string, value: string | undefined): void {
-   variables[name] = value;
-   restoreSettings?.();
-   restoreSettings = installVariables(variables);
-}
-
-function setFlag(value: string | undefined): void {
-   setVariable(FLAG, value);
-}
 
 /**
  * One package tree whose every surface names `answer`, with a persisted
@@ -314,7 +300,6 @@ function builtSources(run: Run): unknown[] {
 interface Kind {
    title: string;
    pkg: string;
-   flag: string | undefined;
    /** The number the tree that "" (and nothing) should reach answers. */
    n: number;
    /** The version a run of that tree records in its metadata, if any. */
@@ -325,14 +310,12 @@ const KINDS: Kind[] = [
    {
       title: "a versioned package (latest is 2.0.0 of 1.0.0 and 2.0.0)",
       pkg: VERSIONED,
-      flag: "on",
       n: 2,
       runVersion: { versionId: "2.0.0", scope: "package" },
    },
    {
-      title: "a package with no versions, versioning off",
+      title: "a package with no versions, mounted in place",
       pkg: PLAIN,
-      flag: undefined,
       n: 0,
       runVersion: {},
    },
@@ -345,30 +328,36 @@ describe("an empty versionId answers as no versionId", () => {
       );
       env = await startRestE2E();
       baseUrl = env.baseUrl;
+      // The environment is watched, so the package that comes with it is
+      // mounted in place from its source and has no versions. A package
+      // published into it later is still a version.
+      const { environmentStore } = await bootMainServer();
+      environmentStore.markInPlace(ENV_NAME);
       const created = await fetch(`${baseUrl}/api/v0/environments`, {
          method: "POST",
          headers: JSON_HEADERS,
          body: JSON.stringify({
             name: ENV_NAME,
-            packages: [],
+            packages: [
+               {
+                  name: PLAIN,
+                  location: writePackage(
+                     path.join(root, "plain"),
+                     { name: PLAIN },
+                     0,
+                  ),
+               },
+            ],
             connections: [],
          }),
       });
       expect(created.status).toBeLessThan(300);
+      const plain = (await (await fetch(pkgApi(PLAIN))).json()) as {
+         versionId?: unknown;
+      };
+      expect(plain.versionId).toBeUndefined();
 
-      // Off: installed in place, with no versions.
-      setFlag("off");
-      const plain = await publish(
-         PLAIN,
-         writePackage(path.join(root, "plain"), { name: PLAIN }, 0),
-      );
-      expect(plain.status).toBe(200);
-      expect(((await plain.json()) as { versionId?: unknown }).versionId).toBe(
-         undefined,
-      );
-
-      // On: two published versions, the later one latest.
-      setFlag("on");
+      // Two published versions, the later one latest.
       for (const [version, answer] of [
          ["1.0.0", 1],
          ["2.0.0", 2],
@@ -386,7 +375,6 @@ describe("an empty versionId answers as no versionId", () => {
             version,
          );
       }
-      setFlag("off");
    }, 180_000);
 
    afterAll(async () => {
@@ -395,7 +383,6 @@ describe("an empty versionId answers as no versionId", () => {
       }).catch(() => undefined);
       await env?.stop();
       fs.rmSync(root, { recursive: true, force: true });
-      restoreSettings?.();
    });
 
    for (const kind of KINDS) {
@@ -404,14 +391,11 @@ describe("an empty versionId answers as no versionId", () => {
          let built: Run;
 
          beforeAll(async () => {
-            setFlag(kind.flag);
             const created = await createRun(kind.pkg, {});
             expect(created.status).toBe(201);
             built = await settle(kind.pkg, created.run.id);
             expect(built.status).toBe("MANIFEST_FILE_READY");
          }, 180_000);
-
-         afterAll(() => setFlag("off"));
 
          it("answers each report, dashboard, notebook cell, skill, agent and connection-table read the same with versionId= as with none", async () => {
             await expectEmptyReadsAsNone(kind.pkg, kind.n);
@@ -559,36 +543,28 @@ describe("an empty versionId answers as no versionId", () => {
          );
 
       it("refuses a write to a versioned package the same with ?versionId= as with none, and writes nothing", async () => {
-         setFlag("on");
-         try {
-            const source = report("Written");
-            const none = await put(VERSIONED, "none.malloy", "", { source });
-            expect(none.status).toBe(409);
-            expect((none.body as { reason?: string }).reason).toBe(
-               "PACKAGE_IS_VERSIONED",
-            );
-            expect(
-               await put(VERSIONED, "empty.malloy", "?versionId=", { source }),
-            ).toEqual(none);
+         const source = report("Written");
+         const none = await put(VERSIONED, "none.malloy", "", { source });
+         expect(none.status).toBe(409);
+         expect((none.body as { reason?: string }).reason).toBe(
+            "PACKAGE_IS_VERSIONED",
+         );
+         expect(
+            await put(VERSIONED, "empty.malloy", "?versionId=", { source }),
+         ).toEqual(none);
 
-            const paths = (
-               (await (
-                  await fetch(`${pkgApi(VERSIONED)}/reports?versionId=`)
-               ).json()) as { path: string }[]
-            ).map((r) => r.path);
-            expect(paths).toEqual([
-               "dashboards/overview.malloy",
-               "notes.malloynb",
-            ]);
-         } finally {
-            setFlag("off");
-         }
+         const paths = (
+            (await (
+               await fetch(`${pkgApi(VERSIONED)}/reports?versionId=`)
+            ).json()) as { path: string }[]
+         ).map((r) => r.path);
+         expect(paths).toEqual([
+            "dashboards/overview.malloy",
+            "notes.malloynb",
+         ]);
       });
 
-      it("answers a report write to a package with no versions the same with ?versionId= as with none", async () => {
-         // PLAIN is published from a location, so both writes are refused (409):
-         // a reload fetches it again and would discard the report. What this
-         // pins is that an empty versionId reads exactly as none.
+      it("creates, then replaces, a report in a package with no versions the same with ?versionId= as with none", async () => {
          const results: Record<string, unknown> = {};
          for (const [label, stem, q] of [
             ["none", "written_with_none", ""],
@@ -616,8 +592,9 @@ describe("an empty versionId answers as no versionId", () => {
          }
          expect(results.empty).toEqual(results.none);
          expect(results.none).toMatchObject({
-            created: { status: 409 },
-            replaced: { status: 409 },
+            created: { status: 201, body: { created: true } },
+            replaced: { status: 200, body: { created: false } },
+            served: { status: 200, body: { title: "Second" } },
          });
       });
    });

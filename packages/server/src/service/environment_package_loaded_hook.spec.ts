@@ -9,12 +9,13 @@ import { Environment } from "./environment";
 import type { Package } from "./package";
 import { parsePackageName } from "./identity";
 
-// The package-loaded hook fires at the three places a package enters the
-// environment's map: a lazy load from disk (what boot does for each package),
-// addPackage, and installPackage (publish, update and reload-by-reinstall).
-// A plain reload through getPackage(name, true) is the same site as the lazy
-// load. Each firing is one load, so a caller that only enqueues work gets
-// exactly one entry per load.
+// The package-loaded hook fires where an in-place package enters the
+// environment's map: a lazy load from disk (what a watched environment does
+// for each package at boot) and addPackage. A plain reload through
+// getPackage(name, true) is the same site as the lazy load. A published
+// version fires it when it loads as `latest` (environment_versions.spec.ts).
+// Each firing is one load, so a caller that only enqueues work gets exactly
+// one entry per load.
 
 const MODEL = 'source: s is duckdb.sql("select 1 as n")\n';
 
@@ -66,18 +67,6 @@ describe("Environment package-loaded hook", () => {
       const added = await env.addPackage("added");
       expect(added).toBeDefined();
       expect(loaded).toEqual([added as Package]);
-   });
-
-   it("fires once for installPackage", async () => {
-      const installed = await env.installPackage(
-         "installed",
-         async (stagingPath) => {
-            await writePackage(stagingPath, "installed");
-         },
-      );
-      expect(loaded.length).toBe(1);
-      expect(loaded[0].getPackageName()).toBe("installed");
-      expect(installed).toBeDefined();
    });
 
    it("does not fail the load when the hook throws", async () => {

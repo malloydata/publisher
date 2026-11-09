@@ -8,6 +8,7 @@ import os from "os";
 import path from "path";
 import { logger } from "../logger";
 import { Environment } from "./environment";
+import { installTestPackage } from "../test_helpers/install_test_package";
 
 // The compile scopes exist to close the gap between /compile and an LSP: the
 // historical append-only behavior could validate NEW definitions but not an
@@ -39,7 +40,7 @@ describe("compile scopes (compileSource)", () => {
       const envPath = path.join(rootDir, "env");
       await fs.mkdir(envPath, { recursive: true });
       env = await Environment.create("testEnv", envPath, []);
-      await env.installPackage("pkg", async (stagingPath) =>
+      await installTestPackage(env, "pkg", async (stagingPath) =>
          writePackageFiles(stagingPath, {
             "base.malloy": BASE_MODEL,
             "tracks.malloy": TRACKS_MODEL,

@@ -329,39 +329,6 @@ export const CONTRACT: Record<string, Case[]> = {
          expect: value("x-publisher-caller"),
       },
    ],
-   packageVersioning: [
-      { name: "unset", expect: value(true) },
-      {
-         name: "PUBLISHER_PACKAGE_VERSIONING on",
-         env: { PUBLISHER_PACKAGE_VERSIONING: "on" },
-         expect: value(true),
-      },
-      {
-         name: "off",
-         env: { PUBLISHER_PACKAGE_VERSIONING: "off" },
-         expect: value(false),
-      },
-      {
-         name: "any case, with surrounding space",
-         env: { PUBLISHER_PACKAGE_VERSIONING: " On " },
-         expect: value(true),
-      },
-      {
-         name: "blank",
-         env: { PUBLISHER_PACKAGE_VERSIONING: "" },
-         expect: value(true),
-      },
-      {
-         name: "a boolean spelling is not one of its two values, and fails",
-         env: { PUBLISHER_PACKAGE_VERSIONING: "true" },
-         expect: fails("PUBLISHER_PACKAGE_VERSIONING"),
-      },
-      {
-         name: "the file is not read today",
-         file: { packageVersioning: "off" },
-         expect: warned(true, "is not read from the file"),
-      },
-   ],
    versionPromotion: [
       { name: "unset", expect: value("on-publish") },
       {

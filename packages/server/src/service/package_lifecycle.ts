@@ -32,7 +32,7 @@ export interface StaleCompileError {
  *
  * - `configured`: registered from config or the database, not loaded here yet.
  *   It is listed, and the first listing or request loads it.
- * - `loading`: a load, reload or reinstall holds the package lock and is
+ * - `loading`: a load or reload holds the package lock and is
  *   building a copy. A reload keeps the previous copy resident meanwhile.
  * - `serving`: a load committed (or a version loaded); the package answers.
  * - `unloading`: a delete or unload is retiring the resident copy.
@@ -90,7 +90,7 @@ interface PackageEntry {
 export type PackageLifecycleEvent =
    /** Boot (config or database) registers a package it will load lazily. */
    | { type: "configure" }
-   /** A load, reload or reinstall starts building a copy. */
+   /** A load or reload starts building a copy. */
    | { type: "beginLoad" }
    /** The built copy was committed: it serves, and every problem clears. */
    | { type: "loaded" }
@@ -98,8 +98,6 @@ export type PackageLifecycleEvent =
    | { type: "reloadFailed"; stale: StaleCompileError }
    /** A version of the package loaded. Its problems are the caller's to clear. */
    | { type: "versionServing" }
-   /** A failed reinstall put the previous copy back: it keeps serving. */
-   | { type: "restored" }
    /** A delete or unload begins retiring the resident copy. */
    | { type: "beginUnload" }
    /** No copy is registered any more. Recorded problems are kept. */
@@ -135,9 +133,6 @@ const LEGAL_FROM: Record<EventType, readonly (PackagePhaseKind | "absent")[]> =
       loaded: ["loading"],
       reloadFailed: ["loading"],
       versionServing: ["absent", "failed", "configured", "serving"],
-      // A reinstall that fails before its load started restores from
-      // `serving` itself.
-      restored: ["loading", "serving"],
       // A no-op unless the package is registered as serving.
       beginUnload: ALL_PHASES,
       unregister: ALL_PHASES,
@@ -320,7 +315,6 @@ export class PackageLifecycle {
             next.problems.stale = this.record(next.problems.stale, event.stale);
             break;
          case "versionServing":
-         case "restored":
             this.register(next, "serving");
             break;
          case "beginUnload":
@@ -417,7 +411,7 @@ const STATUS_OF: Record<RegisteredPhaseKind, PackageStatus> = {
 };
 
 /**
- * Packages with a load, reinstall or recompile in progress, with when the
+ * Packages with a load or recompile in progress, with when the
  * first began; what `Package.status.loading` reports. Synchronization, not
  * lifecycle state: a reload runs while the previous copy keeps serving, and a
  * version publish is tracked here without a `loading` phase. Reference-counted

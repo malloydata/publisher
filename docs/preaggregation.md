@@ -70,7 +70,7 @@ Rollups are grouped by grain rather than by measure, so ten measures sharing a g
 
 ## What can be pre-aggregated
 
-Publisher refuses a declaration it could not build, as a `400` from publish and `PATCH` and as a load failure on an already-published package (reported in `ServerStatus.loadErrors`). The rules are worth knowing before you write the annotation, because the alternative to refusing is worse: a rollup that silently does nothing returns correct numbers, so the only signal is the bill.
+Publisher refuses a declaration it could not build, as a `400` from publish and as a load failure on an already-published package (reported in `ServerStatus.loadErrors`). The rules are worth knowing before you write the annotation, because the alternative to refusing is worse: a rollup that silently does nothing returns correct numbers, so the only signal is the bill.
 
 ### Only measures
 

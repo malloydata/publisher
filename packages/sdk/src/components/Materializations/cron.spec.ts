@@ -5,11 +5,9 @@ import { describe, expect, it } from "bun:test";
 import { describeCron, formatNextRun } from "./cron";
 
 /**
- * `describeCron` is the only thing standing between a typed cron and a
- * schedule that publishes and then never fires. It drives four things at once
- * in `SetScheduleDialog` — the error state, the helper text, whether Save is
- * enabled, and the section's summary line — and its whole job is to agree with
- * the server's `CronEvaluator` about what counts as a cron. Agreeing is not
+ * `describeCron` reads a package's schedule for the Materializations
+ * section's summary line, and its whole job is to agree with the server's
+ * `CronEvaluator` about what counts as a cron. Agreeing is not
  * something a screenshot can show, which is why it is asserted here.
  */
 describe("describeCron: what it accepts", () => {

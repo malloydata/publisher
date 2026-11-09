@@ -152,16 +152,6 @@ export type PublisherConfig = {
 };
 
 /**
- * `PUBLISHER_PACKAGE_VERSIONING`: `on` (the default) or `off`. A TRANSITION
- * flag, read from the environment only, and checked in one place: the publish
- * from a location. Off, that publish installs the package in place as before
- * versions; on, it publishes the version its publisher.json declares and
- * refuses a tree that declares none. The flag and the off branch go together,
- * once every deployment runs with it on.
- */
-export type PackageVersioningMode = "off" | "on";
-
-/**
  * `PUBLISHER_MODEL_PAGE`: which page the Console shows for a model, `explorer`
  * (the default) or `viewer`. Read from the environment only, and reported on
  * `/status` as `modelPage`, where the Console reads it; the Console keeps both
@@ -1158,13 +1148,6 @@ export type PackageInlineFieldsMode = "off" | "on";
  */
 export const isPackageInlineFieldsEnabled = (): boolean =>
    settings.get("packageInlineFields") === "on";
-
-/**
- * Whether a publish from a location publishes versions
- * (`PUBLISHER_PACKAGE_VERSIONING`, on unless set to `off`).
- */
-export const isVersioningEnabled = (): boolean =>
-   settings.get("packageVersioning") === "on";
 
 /**
  * The Console's model page, {@link ModelPageMode}: `PUBLISHER_MODEL_PAGE`, or

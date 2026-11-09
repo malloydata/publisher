@@ -853,7 +853,7 @@ export class VersionService<P = unknown> {
    }
 
    /**
-    * The package's own description, set by a create or PATCH request; null
+    * The package's own description, set by a publish request; null
     * when none was. A version's publisher.json description is that version's.
     */
    async packageDescriptionOf(packageName: string): Promise<string | null> {

@@ -107,6 +107,20 @@ describe("Materialization REST API: single-call (E2E)", () => {
       pollUntil(id, (s) => TERMINAL_STATUSES.includes(s), timeoutMs);
 
    /**
+    * Revert the served version to live, dropping any in-memory binding. A
+    * published version answers a reload unchanged, so its binding is cleared
+    * through the version manifest route instead (the fixture is 1.0.0).
+    */
+   async function revertToLive(): Promise<void> {
+      const res = await fetch(url("/versions/1.0.0/manifest"), {
+         method: "PUT",
+         headers: { "Content-Type": "application/json" },
+         body: JSON.stringify({ manifestLocation: null }),
+      });
+      expect(res.status).toBe(200);
+   }
+
+   /**
     * Drive a materialization to a terminal state and delete its record so it
     * doesn't hold the per-package active slot for later tests.
     */
@@ -309,7 +323,7 @@ describe("Materialization REST API: single-call (E2E)", () => {
          "routes served + compiled queries to the materialized table after auto-load",
          async () => {
             // Reset to live: a prior group may have left an in-memory binding.
-            await fetch(`${baseUrl}${API}?reload=true`);
+            await revertToLive();
 
             // Baseline: with nothing materialized, both paths recompute from the
             // base CSV.
@@ -346,14 +360,15 @@ describe("Materialization REST API: single-call (E2E)", () => {
             expect(routedExecuted).toContain('"order_summary"');
             expect(routedCompiled).toContain('"order_summary"');
 
-            // Cleanup: drop the table + record, then reload back to live so the
+            // Cleanup: drop the table + record, then revert to live so the
             // dangling binding doesn't leak into later groups.
             const deleteRes = await fetch(
                url(`/materializations/${id}?dropTables=true`),
                { method: "DELETE" },
             );
             expect(deleteRes.status).toBe(204);
-            await fetch(`${baseUrl}${API}?reload=true`);
+            await revertToLive();
+            expect(await executedSql()).toContain("data/orders.csv");
          },
          { timeout: 120_000 },
       );

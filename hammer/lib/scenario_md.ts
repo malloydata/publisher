@@ -33,7 +33,7 @@
 //   ## Warns [<pkg>]                     [body: `cites: <substring>`]  -> package warning
 //   ## Republish [refused] [<pkg>]       [body: `cites: <substring>`]  -> POST /packages (the
 //                                        author-in-the-loop publish gate); `refused` asserts a 4xx
-//   ## Bind [<pkg>] [(empty|clear|bad|from=<publisher>)]  -> orchestrator manifestLocation PATCH
+//   ## Bind [<pkg>] [(empty|clear|bad|from=<publisher>)]  -> orchestrator manifest bind (PUT …/versions/{latest}/manifest)
 //   ## Query <label> [(again|refused)]   + ```malloy (or reuse last) + Expect: GFM table
 //                                        [body: `givens: NAME=v; OTHER=v` to supply runtime
 //                                        givens; `columns: exact` to assert the Expect table's
@@ -442,7 +442,7 @@ const SECTION_SPEC: Record<string, { attrs?: string[]; keys?: string[] }> = {
 
 /**
  * Step kinds that legitimately assert NOTHING — they exist for their side effect
- * (write a model, seed rows, boot a publisher, run operator DDL, PATCH a manifest).
+ * (write a model, seed rows, boot a publisher, run operator DDL, bind a manifest).
  * Every other kind must contribute at least one check, or the step ran and verified
  * nothing: a `## Connection` with neither an `Expect:` table nor `(rows=N)` executes
  * its SQL and passes silently, which reads in the report exactly like a real check.
@@ -2892,7 +2892,7 @@ export async function parseScenarioFile(dir: string): Promise<Scenario> {
                   `${step.pkg}-authored`,
                   entries,
                );
-               await rest.patchPackage(step.pkg, { manifestLocation: uri });
+               await rest.bindManifest(step.pkg, uri);
                break;
             }
             case "bind": {
@@ -2900,15 +2900,15 @@ export async function parseScenarioFile(dir: string): Promise<Scenario> {
                if (step.variant === "clear") {
                   // manifestLocation:null → drop the orchestrator binding; the publisher
                   // reverts to its own local-store rebind (from the latest build).
-                  await rest.patchPackage(step.pkg, { manifestLocation: null });
+                  await rest.bindManifest(step.pkg, null);
                } else if (step.variant === "bad") {
                   // Bind an unreachable manifestLocation (a file:// URI that does
                   // not exist). The publisher must fetch-fail and fall back to
                   // serving live rather than erroring the package — the degraded
                   // path in bindManifest ("serving live" on fetch failure).
-                  await rest.patchPackage(step.pkg, {
-                     manifestLocation: `file:///hammer/nonexistent/${step.pkg}-missing.json`,
-                  });
+                  await rest.bindManifest(
+                     `file:///hammer/nonexistent/${step.pkg}-missing.json`,
+                  );
                } else {
                   // `from=<publisher>` sources the manifest from ANOTHER publisher's
                   // build — the cluster pattern: one worker builds the table, the
@@ -2936,7 +2936,7 @@ export async function parseScenarioFile(dir: string): Promise<Scenario> {
                      `${step.pkg}-${activeName}-${step.variant}`,
                      entries,
                   );
-                  await rest.patchPackage(step.pkg, { manifestLocation: uri });
+                  await rest.bindManifest(step.pkg, uri);
                }
                break;
             }

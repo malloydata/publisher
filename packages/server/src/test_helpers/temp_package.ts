@@ -78,7 +78,7 @@ export interface TempPackageOptions {
 
 /**
  * Write `files` (relative path → contents) plus a publisher.json into `dir`,
- * creating it if needed: an `installPackage` staging directory, say.
+ * creating it if needed: the tree an `installTestPackage` writer fills, say.
  */
 export function writePackageFiles(
    dir: string,

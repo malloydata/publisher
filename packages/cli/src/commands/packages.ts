@@ -52,20 +52,6 @@ export async function createPackage(
   logSuccess(`Created package: ${packageName}`);
 }
 
-export async function updatePackage(
-  client: PublisherClient,
-  environmentName: string,
-  packageName: string,
-  options: { location?: string; description?: string },
-): Promise<void> {
-  const updates: any = { name: packageName };
-  if (options.location) updates.location = options.location;
-  if (options.description) updates.description = options.description;
-
-  await client.updatePackage(environmentName, packageName, updates);
-  logSuccess(`Updated package: ${packageName}`);
-}
-
 export async function deletePackage(
   client: PublisherClient,
   environmentName: string,

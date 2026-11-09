@@ -5,6 +5,7 @@
 
 import { afterEach, describe, expect, it, setDefaultTimeout } from "bun:test";
 import fs from "fs";
+import path from "path";
 import {
    getFreePort,
    pollUntil,
@@ -155,25 +156,8 @@ describe("settings in a running server", () => {
    async function versionStatus(server: SpawnedServer) {
       return (await (
          await fetch(`${server.baseUrl}/api/v0/status`)
-      ).json()) as { packageVersioning?: string; versionPromotion?: string };
+      ).json()) as { versionPromotion?: string };
    }
-
-   describe("packageVersioning", () => {
-      it("is reported on /status, in any case", async () => {
-         const server = await boot({
-            env: { PUBLISHER_PACKAGE_VERSIONING: "On" },
-         });
-         expect((await versionStatus(server)).packageVersioning).toBe("on");
-      });
-
-      it("refuses to start on a value other than on or off", async () => {
-         expect(
-            await refused({ env: { PUBLISHER_PACKAGE_VERSIONING: "true" } }),
-         ).toContain(
-            'packageVersioning from PUBLISHER_PACKAGE_VERSIONING: expected one of "off" or "on", got "true"',
-         );
-      });
-   });
 
    describe("versionPromotion", () => {
       it("is reported on /status from the file, and the variable wins over it", async () => {
@@ -253,6 +237,12 @@ describe("settings in a running server", () => {
       ): Promise<string> {
          const pkg = writeSourcePackage("callers");
          cleanups.push(pkg.cleanup);
+         // A configured package is published as the version its
+         // publisher.json declares, so it needs one to load.
+         fs.writeFileSync(
+            path.join(pkg.dir, "publisher.json"),
+            JSON.stringify({ name: "callers", version: "1.0.0" }),
+         );
          const server = await boot({
             config: singlePackageConfig("e", {
                name: "callers",

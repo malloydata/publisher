@@ -103,10 +103,6 @@ export interface EnvironmentAdmin extends EnvironmentCatalog {
 
 /** Package publish and delete, for the package routes. */
 export interface PackageAdmin extends PackageLookup, ConfigFreezeReader {
-   addPackageToDatabase(
-      environmentName: string,
-      packageName: string,
-   ): Promise<void>;
    deletePackageFromDatabase(
       environmentName: string,
       packageName: string,

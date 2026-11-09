@@ -16,15 +16,17 @@ import {
 
 /**
  * End-to-end coverage for watch mode's source-edit live reload, plus the
- * copy-mode gate it depends on.
+ * published-version gate it depends on.
  *
  * Watch mode only recompiles source edits when the server is started with
  * `--watch-env` (i.e. `PUBLISHER_WATCH=<env>`): that flag mounts local-dir
- * packages as in-place symlinks instead of copies, so an edit to the source
- * directory is visible to the chokidar watcher, which recompiles just that
- * package via `Environment.getPackage(name, reload=true)`. Without the flag
- * packages stay copies and source edits do not propagate, even if a watcher is
- * started over REST: production keeps the decoupled copy semantics.
+ * packages as in-place symlinks, so an edit to the source directory is visible
+ * to the chokidar watcher, which recompiles just that package via
+ * `Environment.getPackage(name, reload=true)`. Without the flag each package is
+ * published as the immutable version its publisher.json declares, a copy under
+ * `publisher_data/<env>/<pkg>/<version>/`, and source edits do not propagate,
+ * even if a watcher is started over REST: production keeps the source and the
+ * served package decoupled.
  *
  * That mount decision is made in the `EnvironmentStore` constructor, before any
  * package loads, and `POST /watch-mode/start` resolves the env from the on-disk
@@ -37,12 +39,18 @@ import {
 
 const ENV_NAME = "watch-it-env";
 const PKG_NAME = "watch-it-pkg";
+/** The version writeSourcePackage's publisher.json declares. */
+const PKG_VERSION = "1.0.0";
 
 interface TestServer {
    baseUrl: string;
    /** The admin listener, where watch mode is one resource. */
    adminUrl: string;
-   /** publisher_data/<env>/<pkg>: a symlink under watch mode, a real dir otherwise. */
+   /**
+    * The served package tree: publisher_data/<env>/<pkg>, a symlink to the
+    * source, under watch mode; otherwise the published version's folder,
+    * publisher_data/<env>/<pkg>/<version>.
+    */
    mountedPkgPath: string;
    /** Writable source package dir the tests mutate to simulate source edits. */
    srcDir: string;
@@ -93,6 +101,7 @@ async function startServer(opts: { watch: boolean }): Promise<TestServer> {
          "publisher_data",
          ENV_NAME,
          PKG_NAME,
+         ...(opts.watch ? [] : [PKG_VERSION]),
       ),
       srcDir: src.dir,
       stop,
@@ -342,7 +351,7 @@ describe("Watch-mode source-edit live reload via --watch-env (E2E)", () => {
    });
 });
 
-describe("Watch-mode copy semantics without --watch-env (E2E)", () => {
+describe("Watch-mode published-version semantics without --watch-env (E2E)", () => {
    let server: TestServer | null = null;
    let baseUrl = "";
 
@@ -356,19 +365,23 @@ describe("Watch-mode copy semantics without --watch-env (E2E)", () => {
       server = null;
    });
 
-   it("mounts a local-dir package as a copy (decoupled from the source)", () => {
-      // No --watch-env: the package is published into publisher_data as the
-      // version its publisher.json declares, so it is a real directory and
-      // does not resolve back to the source.
+   it("publishes a local-dir package as a version (decoupled from the source)", () => {
+      // No --watch-env: the package is published as its version, a copy in
+      // publisher_data/<env>/<pkg>/<version>, so it is a real directory holding
+      // the source's files and does not resolve back to the source.
       expect(fs.lstatSync(server!.mountedPkgPath).isSymbolicLink()).toBe(false);
       expect(fs.realpathSync(server!.mountedPkgPath)).not.toBe(
          fs.realpathSync(server!.srcDir),
       );
+      expect(
+         fs.existsSync(path.join(server!.mountedPkgPath, "first.malloy")),
+      ).toBe(true);
    });
 
    it("does not propagate a source edit even with a watcher started", async () => {
-      // Starting the watcher succeeds (the env is in the config), but it watches
-      // the copy, so editing the source never reaches what the server serves.
+      // Starting the watcher succeeds (the env is in the config), but it
+      // watches the published copy, so editing the source never reaches what
+      // the server serves.
       const start = await fetch(`${baseUrl}/api/v0/watch-mode/start`, {
          method: "POST",
          headers: { "Content-Type": "application/json" },
@@ -381,7 +394,8 @@ describe("Watch-mode copy semantics without --watch-env (E2E)", () => {
          'source: second_source is duckdb.sql("SELECT 2 as n")\n',
       );
 
-      // Copy mode never propagates, so this should time out without appearing.
+      // A published version never propagates, so this should time out without
+      // appearing.
       const appeared = await pollUntil(
          async () => (await modelsText(baseUrl)).includes("second.malloy"),
          6_000,

@@ -8,9 +8,8 @@
  * an absolute path or a file:// URL, as a deployment that keeps manifests on
  * a mounted volume (or a local stack's stand-in for a bucket) names them. The
  * manifest loader has always read those; the version routes take them too,
- * through the version manifest route, the deprecated PATCH and the publish.
- * A relative path is refused on all three: it would resolve against the
- * server's working directory.
+ * through the version manifest route and the publish. A relative path is
+ * refused on both: it would resolve against the server's working directory.
  *
  * The evidence is the served query: bound to a manifest that names a table,
  * the version's persisted source reads that table rather than computing from
@@ -185,20 +184,6 @@ describe("a version bound to a manifest on this server's disk", () => {
       await expectLive();
    });
 
-   it("binds an absolute path through the deprecated PATCH, which binds latest", async () => {
-      const file = writeManifest("by-patch.json", sourceEntityId);
-      const patched = await call("PATCH", `/${PKG}`, {
-         name: PKG,
-         manifestLocation: file,
-      });
-      expect(patched.status).toBe(200);
-      await expectBoundTo(file);
-      await call("PUT", `/${PKG}/versions/1.0.0/manifest`, {
-         manifestLocation: null,
-      });
-      await expectLive();
-   });
-
    it("binds an absolute path sent with a publish of the version it holds", async () => {
       const file = writeManifest("by-publish.json", sourceEntityId);
       const placed = await call("POST", "", {
@@ -214,14 +199,10 @@ describe("a version bound to a manifest on this server's disk", () => {
       await expectLive();
    });
 
-   it("refuses a relative path on all three, binding nothing", async () => {
+   it("refuses a relative path on both, binding nothing", async () => {
       const relative = "manifests/by-path.json";
       const answers = [
          await call("PUT", `/${PKG}/versions/1.0.0/manifest`, {
-            manifestLocation: relative,
-         }),
-         await call("PATCH", `/${PKG}`, {
-            name: PKG,
             manifestLocation: relative,
          }),
          await call("POST", "", {

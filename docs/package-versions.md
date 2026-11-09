@@ -5,30 +5,17 @@ SPDX-License-Identifier: MIT
 
 # Package versions
 
-A package published from a location is a series of immutable versions, each numbered by the `version` in its own `publisher.json`. Every published version keeps serving the content it was published with until it is deleted; a deleted version's id can be published again, with other content (see [Delete a version](#delete-a-version)). A request names the version it wants with `versionId`, and a request that names none is served from the package's `latest`. Publishing a version, moving `latest` back to roll back, and archiving a version nobody uses any more are all API calls. None of them edits a version's files.
+A package is a series of immutable versions, each numbered by the `version` in its own `publisher.json`. Every published version keeps serving the content it was published with until it is deleted; a deleted version's id can be published again, with other content (see [Delete a version](#delete-a-version)). A request names the version it wants with `versionId`, and a request that names none is served from the package's `latest`. Publishing a version, moving `latest` back to roll back, and archiving a version nobody uses any more are all API calls. None of them edits a version's files.
 
-A package registered from a directory without a location, or published while versioning was turned off, has no versions. It is the single mutable slot it has always been, and nothing on this page applies to it.
+Every package a server serves is a published version, with one exception: a watched environment (`--watch-env`) mounts its packages' source directories in place, with no versions, so edits reload live. That is the one place to author in place; nothing else on this page applies to it.
 
-A package in `publisher.config.json` is published from its location as the version its `publisher.json` declares, exactly as `POST …/packages` with that location publishes it. The config is read on the server's first start and on every `--init`, so that is when it is published; a later start restores what was published. A configured package whose `publisher.json` declares no version, or that a publish would refuse, fails to load (its error is in `/status`), and the others still load. Under `explicit` promotion a configured package's publish does not move `latest` either, so the server starts with no `latest` for it: a request that names no version answers 404 until `PUT …/latest`. A watched environment (`--watch-env`) loads its packages in place, with no versions, as does a server with versioning off.
+A package in `publisher.config.json`, and one an environment created over the API lists, is published from its location as the version its `publisher.json` declares, exactly as `POST …/packages` with that location publishes it. A location holding several packages (one GitHub repository, say) is downloaded once. The config is read on the server's first start and on every `--init`, so that is when it is published; a later start restores what was published. A configured package whose `publisher.json` declares no version, or that a publish would refuse, fails to load (its error is in `/status`), and the others still load. Under `explicit` promotion a configured package's publish does not move `latest` either, so the server starts with no `latest` for it: a request that names no version answers 404 until `PUT …/latest`.
 
-## Turn versioning off
-
-Versioning is on unless `PUBLISHER_PACKAGE_VERSIONING=off` is set in the server's environment. It is a transition flag, for a deployment not ready for versions yet: while it is off, a publish from a location works exactly as it did before versions.
-
-| `PUBLISHER_PACKAGE_VERSIONING` | A publish from a location                                                                                                                                                                                                                           |
-| ------------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `off`                          | Installed in place, replacing the previous publish and answering 200, whatever its `publisher.json` says. The server logs a warning that versions will be required. A package that already has versions refuses it with 409 `PACKAGE_IS_VERSIONED`. |
-| unset or `on` (the default)    | Published as the version its `publisher.json` declares, as this page describes. A tree with no `version` answers 400 `MANIFEST_VERSION_MISSING`, and one that is not a semantic version 400 `MANIFEST_VERSION_INVALID`.                             |
-
-Any other value fails startup. The flag decides only what a publish does: versions published while it was on keep serving, by `versionId` and as `latest`, after it is turned off, and every route on this page answers in both settings. `GET /api/v0/status` reports it as `packageVersioning`.
-
-**Going back to unversioned.** Turning the flag off does not make a package that has versions unversioned again. Its publishes from a location with the flag off, and a `PATCH …/packages/{pkg}` naming a new location, answer 409 `PACKAGE_IS_VERSIONED`, because an install in place would replace what its versions serve. The way back is to delete the package, which removes every version, and publish it again with the flag off. Between the two the package answers 404. Deleting it reclaims each version's own `scope: "version"` tables, as deleting that version does, and leaves `scope: "package"` tables (see [Disk growth](#disk-growth)).
-
-A future release removes the flag, and with it the way to turn versioning off ([#1381](https://github.com/malloydata/publisher/issues/1381)). Give your packages' `publisher.json` a semantic `version`, and bump it for every release.
+Versions are not optional. Releases before this one had a transition setting, `PUBLISHER_PACKAGE_VERSIONING`, that installed packages in place while it was off; it is gone, and the server ignores it if it is still set. Give every package's `publisher.json` a semantic `version`, and bump it for every release.
 
 ## Publish a version
 
-With versioning on, `POST /api/v0/environments/{env}/packages` with a `location` publishes the version the package's `publisher.json` declares. The request takes no version: the version is that field, the way `npm publish` reads `package.json`, so bumping it is the release.
+`POST /api/v0/environments/{env}/packages` with a `location` publishes the version the package's `publisher.json` declares; a request without a `location` is refused with 400. The request takes no version: the version is that field, the way `npm publish` reads `package.json`, so bumping it is the release.
 
 ```bash
 curl -s -X POST http://localhost:4000/api/v0/environments/examples/packages \
@@ -53,7 +40,7 @@ curl -s -X POST http://localhost:4000/api/v0/environments/examples/packages \
 
 A version is a semantic version: `1.2.0`, `1.2.0-rc.1` and `1.2.0+build.7` are all valid, and so is `01.2.0`, since numeric identifiers may carry leading zeros (strict SemVer 2.0 refuses them; this pattern matches what systems publishing to Publisher commonly validate with). On disk it lives at `publisher_data/<env>/<package>/<version>/`, with `+` written as `_`. The publish downloads into a staging folder, places the tree, compiles and checks it there, and records it in one database transaction; a failure removes what it placed.
 
-The first versioned publish of a package that had an unversioned tree (one installed while versioning was off, say) moves that tree aside, and puts it back if the publish fails. After that the package is versioned: a publish while versioning is off, a model or report write, and installing over it answer 409 `PACKAGE_IS_VERSIONED`, and `?reload=true` (or the MCP `reload_package` tool) returns the version unchanged.
+The first publish of a package that has an unversioned tree (one a release before this one installed in place, say) moves that tree aside, and puts it back if the publish fails. A versioned package is never changed in place: a model or report write answers 409 `PACKAGE_IS_VERSIONED`, and `?reload=true` (or the MCP `reload_package` tool) returns the version unchanged.
 
 ## Which version a request gets
 
@@ -74,7 +61,7 @@ A query takes `versionId` in its body; one in the URL's query string is read too
 
 The package resource says which version answered: `versionId` is the version described, and `latestVersion` is the package's `latest`. A package listing names every package once, as its `latest`, and refuses a `versionId` other than empty or `latest` with 400.
 
-`GET /api/v0/status` lists every version each package holds, loaded or not, each with its `versionId`, `archiveStatus` and whether it is loaded, so a reconcile never mistakes a version that is not in memory for one that is missing. A publish counts as a load from its download until it settles, so each of the package's entries reports `loading` meanwhile, and `GET /api/v0/status?includeLoading=true` lists a version new to the package as its own `loading` entry once its tree has named it. It also reports `packageVersioning` (`on` or `off`) and `versionPromotion`.
+`GET /api/v0/status` lists every version each package holds, loaded or not, each with its `versionId`, `archiveStatus` and whether it is loaded, so a reconcile never mistakes a version that is not in memory for one that is missing. A publish counts as a load from its download until it settles, so each of the package's entries reports `loading` meanwhile, and `GET /api/v0/status?includeLoading=true` lists a version new to the package as its own `loading` entry once its tree has named it. It also reports `versionPromotion`, and `packageVersioning`, which is always `on` (a server from before versions sends none).
 
 `GET …/packages/{pkg}/versions` lists the versions, highest first, each with its `latest` flag, `archiveStatus`, content hash, location, description, manifest binding and the times it was promoted to and demoted from `latest`. `GET …/versions/{version}` reads one.
 
@@ -85,25 +72,6 @@ A data app's page is opened at `…/packages/{pkg}/index.html?versionId=1.2.0`, 
 Only the URL pins a version. The page's own relative requests (`./app.js`, a stylesheet's `url()`) carry no query string, so they are served from `latest`. A page that must stay on one version end to end puts `?versionId=` on those URLs itself.
 
 A `versionId` on a static file pins only a version the package has; anything else serves `latest` rather than 404. A proxy that resolves versions itself may forward a page's query string unchanged, with a `versionId` of its own, and refusing it would break every page it serves. A pinned version that is archived answers 410.
-
-### A version named in the package name (transition)
-
-An orchestrator that predates versions names a version by a combined package name, `<package>___<version>`, and sends no `versionId`. With versioning on, such a request is read as `<package>` at `<version>`, so an orchestrator still running while it and its servers roll one after the other keeps working. The split is at the last `___`, and only when what follows is a semantic version; a request that also names a version must name the same one, or `latest`, or nothing. A data-app static file takes its version from the name whatever `versionId` a forwarded query string carries, since a proxy may pass a page's query string on unchanged.
-
-| Combined-name request                                | Read as                                                                                                                                              |
-| ---------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Any read, query, build or static file                | The same route for `<package>` at `<version>`.                                                                                                       |
-| `POST …/packages` with `name: <package>___<version>` | A publish of `<package>`; the version still comes from its publisher.json.                                                                           |
-| `DELETE …/packages/<package>___<version>`            | `DELETE …/packages/<package>/versions/<version>`: that version only.                                                                                 |
-| `PATCH …/packages/<package>___<version>`             | `PUT …/packages/<package>/versions/<version>/manifest`, with that route's rules: an absent `manifestLocation` is 400, and `null` clears the binding. |
-
-The legacy `/projects/{project}/packages/...` aliases read it the same way; their `DELETE` and `PATCH` reach the version routes under `/environments/{project}`. Each one logs a warning, once per name. With versioning off, a combined name is an ordinary package name, as before. This reading will be removed once callers name `versionId`.
-
-It is meant for `explicit` promotion, where no version is `latest`. A combined-name request inherits the version routes' refusals, so under `on-publish` promotion, where combined-name publishes of one package share it and its highest version is `latest`, a combined-name `DELETE` of that version is refused with 409 `VERSION_IS_LATEST` while an older one remains.
-
-A combined-name publish is listed in `/status` and the package listing in its plain shape, `{name: <package>, versionId: <version>}`. Turn versioning on only once the caller reads that shape too: a caller that matches packages on the combined name alone reads such a package as unknown.
-
-A server that already published combined names with versioning on holds them as packages literally named `<package>___<version>`, which these requests no longer reach. Publish them again.
 
 ## Latest
 
@@ -122,14 +90,7 @@ A server that already published combined names with versioning on holds them as 
 
 `PUT …/versions/{version}/manifest` with `{"manifestLocation": "gs://…/manifest.json"}` binds that one version's persist references to an externally computed build manifest, and `null` clears the binding so the version serves live. The location is what the manifest loader reads: a `gs://` or `s3://` URI, a `file://` URL, or an absolute path on a mounted volume. A relative path answers 400, since it would resolve against the server's working directory. The binding is recorded with the version and survives an unload or a restart. An archived version is refused before anything is written. The response is the version's package resource; the outcome is in `manifestBindingStatus` and `boundManifestUri` on the version's entry in `GET /api/v0/status` (an older server, and this one while `PUBLISHER_PACKAGE_INLINE_FIELDS` is `on`, also carries them on the response).
 
-### The deprecated PATCH, on a versioned package
-
-`PATCH …/packages/{pkg}` is deprecated, and kept working so that callers which predate versions do not break. Every response carries `Deprecation: true` and a `Link` here, every request is counted in `publisher_deprecated_usage_total` (`feature` `package_patch`), and the server logs a warning, once per package per run, naming the route that replaces it. A caller should move to `PUT …/versions/{version}/manifest` to rebind a version, and publish a new version to change content. On a versioned package it keeps working for the changes that are not content, for clients that rebind through it:
-
-- A `manifestLocation` URI binds the package's `latest` version, as `PUT …/versions/{latest}/manifest` would. A null or empty one is unset, like any other field sent back unset, so it leaves the binding as it is; to serve `latest` live, clear its binding with `PUT …/versions/{latest}/manifest`.
-- `description` sets the package's own description. It reads back on the package and in listings; with none set, a package reads as its `latest` version's description, and a description that only echoes what the package reads as now sets nothing. A package that was unversioned gives up the description its old tree had at its first versioned publish. Each version keeps its own.
-
-Clients send whole objects, so a body that echoes the package back is accepted: read-only fields are ignored, a field sent as null or left out is unset, and a field that carries what `latest` has now is not a change. An object is compared on the fields it names, so a client generated from an older spec is not refused for leaving one out. At the top level an empty list counts as unset, since generated clients send one for every list they were never given; an empty object, or an emptied field inside one, means empty and echoes only a field `latest` has nothing in. A field that would change `latest`'s content is refused with 409 `PACKAGE_IS_VERSIONED`: publish a new version instead.
+`PATCH …/packages/{pkg}` is gone: a version's content never changes, so publish a new version to change it, and rebind a version's manifest with `PUT …/versions/{version}/manifest`.
 
 ## Archive and unarchive
 

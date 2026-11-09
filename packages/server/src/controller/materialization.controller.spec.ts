@@ -466,8 +466,9 @@ describe("MaterializationController.createMaterialization validation", () => {
 describe("MaterializationController responses", () => {
    // The record keeps the version a run built; the wire Materialization has
    // no `version` field, so every route leaves it off and the version goes
-   // out in metadata.versionId. With versioning off the record's version is
-   // null, and the response must still match the schema.
+   // out in metadata.versionId. A package a watched environment mounts in
+   // place has no version, so its record's version is null, and the response
+   // must still match the schema.
    const run = (version: string | null) => ({
       id: "m1",
       environmentId: "env-1",

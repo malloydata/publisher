@@ -42,6 +42,7 @@ import {
    isSameDeclaration,
 } from "../../src/service/filter_binding_guard";
 import type { Package } from "../../src/service/package";
+import { installTestPackage } from "../../src/test_helpers/install_test_package";
 import { writePackageFiles } from "../../src/test_helpers/temp_package";
 import { QueryPrivileges } from "../../src/service/model_query_request";
 
@@ -186,11 +187,11 @@ async function withPackage<T>(
    const envPath = path.join(root, "env");
    await fs.mkdir(envPath, { recursive: true });
    const env = await Environment.create("probeEnv", envPath, []);
-   const pkg = await env.installPackage("pkg", async (staging) => {
-      writePackageFiles(staging, {});
+   const pkg = await installTestPackage(env, "pkg", async (packagePath) => {
+      writePackageFiles(packagePath, {});
       for (const [name, text] of Object.entries(files)) {
          await fs.writeFile(
-            path.join(staging, name),
+            path.join(packagePath, name),
             text.replaceAll("OUTSIDE/", `${pathToFileURL(outDir).href}/`),
          );
       }

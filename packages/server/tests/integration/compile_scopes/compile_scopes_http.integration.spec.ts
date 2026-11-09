@@ -40,7 +40,7 @@ describe("POST …/compile at package scope (E2E)", () => {
    beforeAll(async () => {
       const { dir, cleanup } = writeTempPackage(
          { "base.malloy": BASE, "tracks.malloy": TRACKS },
-         { name: "scopes" },
+         { manifest: { name: "scopes", version: "1.0.0" } },
       );
       removePackage = cleanup;
       env = await startPackageEnv("compile-scopes-http-env", { scopes: dir });

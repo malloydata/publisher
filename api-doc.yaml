@@ -1498,33 +1498,22 @@ paths:
         name (if any) is untouched, no version is recorded, and the load's connections are
         closed. The answer is what a publish would answer for the tree itself: the same 400 or
         424 refusal, or 200 with the package as it would load, its `warnings` included, plus the
-        `location` it was loaded from. With package versioning on, the tree's `publisher.json`
-        must declare a valid version, as a versioned publish requires (400
-        `MANIFEST_VERSION_MISSING` or `MANIFEST_VERSION_INVALID`), and the 200 names it as
-        `versionId`. Version lifecycle checks (a version that already exists, `latest`) are not
+        `location` it was loaded from. The tree's `publisher.json` must declare a valid version,
+        as a publish requires (400 `MANIFEST_VERSION_MISSING` or `MANIFEST_VERSION_INVALID`),
+        and the 200 names it as `versionId`. Version lifecycle checks (a version that already exists, `latest`) are not
         part of it, and the 200 carries no `latestVersion` or `status`, which describe the
         package being served. A frozen configuration refuses a dry run as it refuses a publish,
         since the server still downloads and loads the caller's content; so does memory
         backpressure (503).
-        A server runs at most 2 dry runs at once and refuses more with 503. With package
-        versioning on, a `description` that is not a string or a
-        `manifestLocation` that names no manifest is the 400 a versioned
+        A server runs at most 2 dry runs at once and refuses more with 503. A `description`
+        that is not a string or a `manifestLocation` that names no manifest is the 400 a
         publish answers.
 
         ## Versioned publish
 
-        Package versioning is a server setting, `PUBLISHER_PACKAGE_VERSIONING` (`on` by
-        default; `ServerStatus.packageVersioning` reports it), and a transition: a later release
-        removes the setting and always publishes versions.
-
-        With it off, a request that carries a `location` installs the package in place,
-        replacing the previous publish, as before versions, whatever its `publisher.json`
-        declares; the package has no versions, and the server logs a warning that names it. A
-        package that already has published versions refuses that with 409 (`reason`
-        `PACKAGE_IS_VERSIONED`).
-
-        With it on, a request that carries a `location` publishes an immutable version of the
-        package: the one its own `publisher.json` declares. The request takes no version
+        A request publishes the tree at its `location` as an immutable version of the package:
+        the one its own `publisher.json` declares. A request without a `location` is refused
+        with 400. The request takes no version
         parameter: the version is that field, the way `npm publish` reads `package.json`, so
         bumping it is the release action.
 
@@ -1539,8 +1528,8 @@ paths:
           `latest` only for a package that has none. Re-publishing an archived version is
           refused with 410 (`reason`
           `VERSION_ARCHIVED`): unarchive it instead.
-        - A version that does not pass the publish checks (the same ones an unversioned publish
-          applies) is refused with 400, and the versions already published keep serving.
+        - A version that does not pass the publish checks is refused with 400, and the versions
+          already published keep serving.
         - Under `versionPromotion: "on-publish"` (the default), the new version becomes the
           package's `latest` unless a higher version already is. Under `"explicit"`, publish
           never moves `latest`; `PUT .../packages/{packageName}/latest` does.
@@ -1548,12 +1537,6 @@ paths:
           hold immutable versions: publishing a version of it is refused with 400.
         - The request's `description`, when sent, is the package's description. Each version
           keeps the `description` from its own publisher.json.
-
-        A request without a `location` registers a directory already in the environment as a
-        single unversioned package, as packages loaded from `publisher.config.json` are with
-        versioning off. A
-        package that already has versions refuses that with 409 (`reason`
-        `PACKAGE_IS_VERSIONED`).
       parameters:
         - name: environmentName
           in: path
@@ -1660,102 +1643,6 @@ paths:
           $ref: "#/components/responses/InternalServerError"
         "503":
           $ref: "#/components/responses/ServiceUnavailable"
-    patch:
-      tags:
-        - packages
-      operationId: update-package
-      summary: Update package configuration
-      deprecated: true
-      description: |
-        DEPRECATED. In-place mutation of a package contradicts immutable versions, so this
-        operation will be removed. On a package that has published versions it changes only
-        what is not content: a `manifestLocation` URI is bound to the package's `latest` version
-        (as `PUT .../packages/{packageName}/versions/{version}/manifest` does for any version),
-        while a null or empty one leaves the binding as it is (clear it with that route), and
-        `description` is the package's. `name` and the `location` the version was published from
-        may be sent back unchanged. Any other change is refused with 409 (`reason`
-        `PACKAGE_IS_VERSIONED`), as is a package with no `latest` yet: publish a new version to
-        change content.
-
-        It keeps working, so that callers which predate versions do not break, and says it is
-        deprecated: every response carries `Deprecation: true` and a `Link` to the package
-        versions reference, every request is counted in `publisher_deprecated_usage_total`
-        (`feature` `package_patch`), and the server logs a warning, once per package per run,
-        naming the route that replaces it.
-
-        Updates the configuration and metadata of an existing package. This allows you to
-        modify package settings, update the description, change the location, or update other
-        package-level properties. The package must exist and be accessible.
-
-        A supplied `materialization` block REPLACES the one on disk, so re-send every
-        field of it you want to keep. Two exceptions are preserved when omitted:
-        `scope`, which is a top-level field and not expressible in the block at all,
-        and `queryMetadata`, which is orthogonal to the schedule and freshness policy
-        this call usually carries — a client setting a schedule has no reason to
-        re-send the package's tags, and dropping them silently untags every statement
-        the package issues.
-
-        `queryMetadata` has two homes: the top-level field, which is canonical, and
-        `materialization.queryMetadata`, which is DEPRECATED and still accepted. The
-        canonical field wins if a request sends both, and both are populated on read.
-        At EITHER home, omitting it preserves the package's tags and so does sending
-        null — a client that serializes unset fields as null must not untag a package
-        by accident. Send an empty object to clear.
-
-        A package fetched from a `location` keeps none of these on reload: a reload fetches
-        it again and replaces its files, `publisher.json` included, keeping only its
-        `location` and manifest binding. So when the package will be fetched from a
-        location once this request is applied (the `location` it sends, or else the one it
-        was installed from), a change to `description`, `explores`, `queryableSources`,
-        `scope`, `queryMetadata` or `materialization` is refused with 409 (`reason`
-        `PACKAGE_INSTALLED_FROM_LOCATION`). A change is judged by the value the request
-        would leave in force: clearing a set field is a change, a null is omitted, and a
-        value equal to the current one (`explores` normalized as stored) is not. A request
-        that names a new `location` is judged against the tree fetched from it, and a
-        refusal leaves the previous install serving. When the package it replaces was
-        itself installed from a location, a field sent with that package's value is the
-        package sent back, not a change: it is left out and the new tree's value serves,
-        so a whole package read back with only its `location` changed is accepted.
-        Make the change in the package's
-        source and reload it, or publish it as a version.
-      parameters:
-        - name: environmentName
-          in: path
-          description: Name of the environment
-          required: true
-          schema:
-            $ref: "#/components/schemas/IdentifierPattern"
-        - name: packageName
-          in: path
-          description: Name of the package
-          required: true
-          schema:
-            $ref: "#/components/schemas/IdentifierPattern"
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              $ref: "#/components/schemas/Package"
-      responses:
-        "200":
-          description: Returns the package updated
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/Package"
-        "400":
-          $ref: "#/components/responses/BadRequest"
-        "401":
-          $ref: "#/components/responses/Unauthorized"
-        "404":
-          $ref: "#/components/responses/NotFound"
-        "409":
-          $ref: "#/components/responses/Conflict"
-        "500":
-          $ref: "#/components/responses/InternalServerError"
-        "503":
-          $ref: "#/components/responses/ServiceUnavailable"
     delete:
       tags:
         - packages
@@ -1810,9 +1697,8 @@ paths:
       description: |
         Lists every version published to the package, highest version first, including archived
         ones (marked by `archiveStatus`). The entry marked `latest` is the version served when a
-        request names no `versionId`. An unversioned package (one registered from a directory,
-        or loaded from `publisher.config.json` or published with versioning off) has no versions
-        and returns an empty list.
+        request names no `versionId`. A package a watched environment mounts in place has no
+        versions and returns an empty list.
       parameters:
         - $ref: "#/components/parameters/environmentName"
         - $ref: "#/components/parameters/packageName"
@@ -1999,8 +1885,7 @@ paths:
         affected.
 
         This is serving state, not package content, which is why it is the one thing about a
-        published version that can change. It replaces the deprecated
-        `PATCH .../packages/{packageName}` for rebinding a manifest.
+        published version that can change.
       parameters:
         - $ref: "#/components/parameters/environmentName"
         - $ref: "#/components/parameters/packageName"
@@ -4688,13 +4573,11 @@ components:
           enum: ["off", "on"]
           readOnly: true
           description: >-
-            "on" when a publish from a location publishes an immutable
-            version (`PUBLISHER_PACKAGE_VERSIONING=on`, the default); "off" when
-            it installs the package in place, as before versions
-            (`PUBLISHER_PACKAGE_VERSIONING=off`). Reads and the versions
-            routes answer in both. Absent from a server that predates
-            versions, which reads as "off": how an orchestrator talking to
-            servers mid-rollout tells which ones publish native versions.
+            Always "on": a publish from a location publishes an immutable
+            version. "off" was a server that installed packages in place, as
+            before versions; absent, a server that predates versions, which
+            reads as "off". Kept so an orchestrator that reads it to pick a
+            protocol keeps working.
         versionPromotion:
           type: string
           enum: ["on-publish", "explicit"]
@@ -5037,7 +4920,7 @@ components:
       description: >-
         Server-computed, read-only: how this server holds the package right
         now. `serving` is whether a compiled copy answers queries here;
-        `loading` is whether a load, reinstall or recompile of the package
+        `loading` is whether a load or recompile of the package
         is in progress here. The two are independent. A first load reports
         `loading` without `serving`. A reload of a package that is already
         served reports both, because the previous copy keeps answering until
@@ -5065,7 +4948,7 @@ components:
         loading:
           type: boolean
           description: >-
-            A load, reinstall or recompile of the package is in progress
+            A load or recompile of the package is in progress
             here. While true, `manifestBindingStatus` describes the copy
             being replaced, not the one being built.
         loadingSince:
@@ -5464,22 +5347,18 @@ components:
             directory, and `~/` against the home directory. Anything else is
             read as a remote URI (github, s3, gcs, https), so a bare name like
             `sales` is not local and the package is skipped with
-            "Invalid package path" in the server's loadErrors. At boot a local
-            package is COPIED into publisher_data/ and the copy is served, so
+            "Invalid package path" in the server's loadErrors. At boot a
+            package is PUBLISHED from its location as the version its
+            publisher.json declares, and that immutable copy is served, so
             edits to the source directory are not read; starting the server
             with `--watch-env <env>` mounts local packages in place (symlink)
             and live-reloads them instead. The mount is chosen when the
             environment is first loaded from config, so adding `--watch-env`
             to a later boot needs `--init` to re-mount a package already
-            copied. On an update, a `location` equal to the one the package
-            was installed from is a metadata update and nothing is fetched; a
-            different one reinstalls the package from it, and an update that
-            arrives while an install is in progress waits for it and is decided
-            against the copy that install leaves resident. To fetch the same
-            location again, reload the package (`GET …?reload=true`). The
-            location a package was installed from is recorded by the server
-            when it installs it and read back from that record; a `location`
-            written into a package's own `publisher.json` is not.
+            published. To serve new content, publish a new version. The
+            location a version was published from is recorded by the server
+            and read back from that record; a `location` written into a
+            package's own `publisher.json` is not.
         scope:
           type: string
           enum:
@@ -9420,15 +9299,14 @@ components:
             The package-version values let a caller tell "forgot to bump the
             version" from "the model is broken", which share a status code:
 
-              * MANIFEST_VERSION_MISSING (400): with package versioning on, a
-                publish whose publisher.json has no `version`.
+              * MANIFEST_VERSION_MISSING (400): a publish whose publisher.json
+                has no `version`.
               * MANIFEST_VERSION_INVALID (400): such a publish whose `version`
                 is not a semantic version.
               * VERSION_CONFLICT (409): that version is already published with
                 different content.
               * PACKAGE_IS_VERSIONED (409): the package has published versions,
-                so it cannot be changed in place (a write, or a publish with
-                package versioning off).
+                so it cannot be changed in place (a write).
               * PACKAGE_INSTALLED_FROM_LOCATION (409): the package is fetched
                 again from a `location` on reload, which would discard a report
                 write or a package update's change to its settings.

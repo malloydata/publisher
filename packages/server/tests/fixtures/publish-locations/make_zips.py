@@ -24,8 +24,6 @@ ARCHIVES = [
     ("sales-1.0.0", "sales-1.0.0.zip", FIRST),
     ("sales-1.0.0", "sales-1.0.0-repacked.zip", REPACKED),
     ("sales-1.0.0-changed", "sales-1.0.0-changed.zip", FIRST),
-    ("sales-unversioned", "sales-unversioned.zip", FIRST),
-    ("sales-unversioned-changed", "sales-unversioned-changed.zip", FIRST),
 ]
 
 

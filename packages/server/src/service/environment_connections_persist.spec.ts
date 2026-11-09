@@ -358,7 +358,11 @@ describe("a connection row that fails to save", () => {
       fs.mkdirSync(dir, { recursive: true });
       fs.writeFileSync(
          path.join(dir, "publisher.json"),
-         JSON.stringify({ name: "sales", description: "Sales" }),
+         JSON.stringify({
+            name: "sales",
+            version: "1.0.0",
+            description: "Sales",
+         }),
       );
       fs.writeFileSync(
          path.join(dir, "sales.malloy"),

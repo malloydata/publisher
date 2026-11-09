@@ -348,7 +348,7 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
    /**
     * The classification walks over the `models` map and the listing metadata
     * they were computed for: `explores` and `queryableSources` are all
-    * `applyQueryBoundaryToModels` reads, so a PATCH that changes neither keeps it.
+    * `applyQueryBoundaryToModels` reads, so a metadata change to neither keeps it.
     */
    private classificationMemo: ClassificationMemo | undefined;
    /**
@@ -441,7 +441,7 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
    private packageSkillWarnings: string[] = [];
    /**
     * The manifest's raw `agents` value, held apart from `packageMetadata` so a
-    * metadata PATCH cannot replace it.
+    * metadata update cannot replace it.
     */
    private rawAgents: unknown;
    private packageAgents = new Map<string, PackageAgent>();
@@ -1471,7 +1471,7 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
    /**
     * The package's declared `queryMetadata`, the least specific layer. Falls
     * back to the deprecated `materialization.queryMetadata`, which an
-    * un-migrated PATCH can still set.
+    * un-migrated publisher.json can still declare.
     */
    public getDeclaredQueryMetadata(): QueryMetadata | null {
       return (
@@ -1849,7 +1849,7 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
          // and the build plan and agents (also at their own routes).
          Object.assign(metadata, this.getOperationalFields(), {
             buildPlan: this.buildPlan,
-            // Overlaid so a metadata PATCH body can neither set nor wipe it.
+            // Overlaid so package metadata can neither set nor wipe it.
             agents:
                this.rawAgents === undefined ? undefined : this.listAgents(),
          });
@@ -1964,6 +1964,15 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
    /** See {@link PackageMaterialization.markManifestBound}. */
    public markManifestBound(uri: string): void {
       this.materialization.markManifestBound(uri);
+   }
+
+   /**
+    * Record that no manifest is bound, so the package serves live: undoes a
+    * bind that left nothing to recompile (one with no entries, or one whose
+    * fetch failed), which a reload with no manifest never touches.
+    */
+   public markManifestUnbound(): void {
+      this.materialization.recordManifestBinding({});
    }
 
    /** See {@link PackageMaterialization.markManifestBindFailed}. */
@@ -2453,8 +2462,14 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
       this.noteSurfaceChangeFrom(previousSurface);
       this.packageMetadata.queryableSources =
          outcome.packageMetadata.queryableSources;
-      this.packageMetadata.manifestLocation =
-         outcome.packageMetadata.manifestLocation ?? null;
+      // A published version's binding lives on its registry row, which its
+      // loader set (Environment.loadVersionPackage, bindVersionManifest), and
+      // its publisher.json never holds it: a recompile keeps it. A package
+      // mounted in place reads it from publisher.json.
+      if (this.packageMetadata.versionId === undefined) {
+         this.packageMetadata.manifestLocation =
+            outcome.packageMetadata.manifestLocation ?? null;
+      }
       this.applyDiscoveryPolicyToModels();
       this.applySiblingModelResolverToModels();
       // Applies the query boundary too, against the refreshed explore set.
@@ -2907,7 +2922,7 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
    /** Whether the last lint ran the per-file text lint, which a re-lint keeps. */
    private lintIncludesText = false;
 
-   /** Re-run the report lint; also after a metadata PATCH, which can change the surface. */
+   /** Re-run the report lint; also after a metadata change, which can change the surface. */
    public async relintReports(
       options: { textLint?: boolean } = {},
    ): Promise<void> {
@@ -3506,7 +3521,7 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
    /**
     * `packageMetadata` without the fields computed from the loaded package
     * (COMPUTED_PACKAGE_FIELDS), so a caller that round-trips
-    * `getPackageMetadata()` (or a PATCH body) cannot store a snapshot that
+    * `getPackageMetadata()` cannot store a snapshot that
     * outlives the load it describes.
     */
    private static storableMetadata(packageMetadata: ApiPackage): ApiPackage {
