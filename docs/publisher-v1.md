@@ -1207,6 +1207,10 @@ Each with a recommendation. Numbering is continuous so the steps can cite one; t
 9. **Should the config file accept JSON with comments?** Every reader of the file is ours. Recommendation: yes, in step 5, when the file changes anyway.
 10. **Should the registry emit a JSON Schema for `publisher.config.json`?** For editor completion and CI validation of a deployment's file. Recommendation: yes, generated beside the configuration reference, since both come from the registry.
 
+### The API
+
+11. **Are data apps a collection of their own, or a view of `public/`?** `GET …/versions/{v}/data-apps` lists the version's data apps (`title`, `fit`, and `path` under `public/`), and `GET …/versions/{v}/public/{path}` serves every file under `public/`, data-app pages included. A data app has no `GET` of its own, so its `resource` points into `/public/`: the one list whose items live in another collection (decision A30 names it as the exception). The alternative folds the catalog into the file server (`GET …/public?kind=data-app`), at the cost of making a file server also a listing. Recommendation: keep both as they are. Noted by Kyle, 2026-11-08, to come back to.
+
 ## 8. Not in scope
 
 - Publisher's internal domain model and software architecture (the explicit domain model, one governance policy and the enforced dependency direction already on `main`, and the work that follows it). It continues in its own PRs; this document names it only where a surface depends on it.
