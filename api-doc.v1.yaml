@@ -100,9 +100,9 @@ info:
 
     - Every read but `/status` answers with an `ETag` and takes `If-None-Match`, answering 304 with no body when nothing
     changed. `Cache-Control` is `private, max-age=31536000, immutable` only on raw file reads under a concrete version
-    id (`…/public/{path}`, an agent's skill file), whose bytes never change; every other read is `private, no-cache`,
-    because a compiled model under a concrete version can still change with `:reload`, and a read through `latest` or
-    `live` can resolve differently next time.
+    id (`…/public/{path}`), whose bytes never change; every other read is `private, no-cache`, because a compiled model
+    under a concrete version can still change with `:reload`, and a read through `latest` or `live` can resolve
+    differently next time.
 
     - Every operation but `/status` may answer 429 `RATE_LIMITED`; 429 and 503 carry `Retry-After` in seconds. `/status`
     is never rate-limited, because it is the orchestrator's heartbeat.
@@ -1972,7 +1972,7 @@ paths:
               type: string
               enum:
                 - skills
-          description: Larger parts to include. `skills` includes the agent's skill files with their content.
+          description: Larger parts to include. `skills` includes each skill's `SKILL.md` text and its files' content.
         - $ref: "#/components/parameters/ifNoneMatch"
       responses:
         "200":
@@ -2014,62 +2014,6 @@ paths:
           $ref: "#/components/responses/DatabaseUnreachable"
         "503":
           $ref: "#/components/responses/Unavailable"
-
-
-  /environments/{environmentName}/packages/{packageName}/versions/{versionId}/agents/{agentName}/skills/{path}:
-    parameters:
-      - $ref: "#/components/parameters/environmentName"
-      - $ref: "#/components/parameters/packageName"
-      - $ref: "#/components/parameters/versionId"
-      - $ref: "#/components/parameters/agentName"
-      - $ref: "#/components/parameters/path"
-    get:
-      operationId: get-agent-skill-file
-      tags:
-        - agents
-      summary: Read one file of an agent's skills
-      responses:
-        "200":
-          description: The file.
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/SkillFile"
-          headers:
-            X-Request-Id:
-              $ref: "#/components/headers/RequestId"
-            ETag:
-              $ref: "#/components/headers/ETag"
-            Cache-Control:
-              $ref: "#/components/headers/CacheControl"
-        "304":
-          $ref: "#/components/responses/NotModified"
-        "400":
-          $ref: "#/components/responses/BadRequest"
-        "401":
-          $ref: "#/components/responses/Unauthorized"
-        "403":
-          $ref: "#/components/responses/Forbidden"
-        "404":
-          $ref: "#/components/responses/NotFound"
-        "409":
-          $ref: "#/components/responses/Conflict"
-        "410":
-          $ref: "#/components/responses/Gone"
-        "412":
-          $ref: "#/components/responses/PreconditionFailed"
-        "424":
-          $ref: "#/components/responses/DependencyFailed"
-        "429":
-          $ref: "#/components/responses/RateLimited"
-        "500":
-          $ref: "#/components/responses/Internal"
-        "502":
-          $ref: "#/components/responses/DatabaseUnreachable"
-        "503":
-          $ref: "#/components/responses/Unavailable"
-      parameters:
-        - $ref: "#/components/parameters/ifNoneMatch"
 
 
   /environments/{environmentName}/packages/{packageName}/versions/{versionId}/skills:
@@ -2140,6 +2084,19 @@ paths:
       tags:
         - skills
       summary: Read a skill
+      parameters:
+        - name: include
+          in: query
+          style: form
+          explode: false
+          schema:
+            type: array
+            items:
+              type: string
+              enum:
+                - files
+          description: Larger parts to include. `files` includes the content of each file the skill ships.
+        - $ref: "#/components/parameters/ifNoneMatch"
       responses:
         "200":
           description: The skill.
@@ -2180,65 +2137,6 @@ paths:
           $ref: "#/components/responses/DatabaseUnreachable"
         "503":
           $ref: "#/components/responses/Unavailable"
-      parameters:
-        - $ref: "#/components/parameters/ifNoneMatch"
-
-
-  /environments/{environmentName}/packages/{packageName}/versions/{versionId}/skills/{skillName}/{path}:
-    parameters:
-      - $ref: "#/components/parameters/environmentName"
-      - $ref: "#/components/parameters/packageName"
-      - $ref: "#/components/parameters/versionId"
-      - $ref: "#/components/parameters/skillName"
-      - $ref: "#/components/parameters/path"
-    get:
-      operationId: get-skill-file
-      tags:
-        - skills
-      summary: Read one of a skill's reference files
-      description: A file the skill loads on demand, as its `files` lists it; `path` is relative to the skill's directory.
-      responses:
-        "200":
-          description: The file.
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/SkillFile"
-          headers:
-            X-Request-Id:
-              $ref: "#/components/headers/RequestId"
-            ETag:
-              $ref: "#/components/headers/ETag"
-            Cache-Control:
-              $ref: "#/components/headers/CacheControl"
-        "304":
-          $ref: "#/components/responses/NotModified"
-        "400":
-          $ref: "#/components/responses/BadRequest"
-        "401":
-          $ref: "#/components/responses/Unauthorized"
-        "403":
-          $ref: "#/components/responses/Forbidden"
-        "404":
-          $ref: "#/components/responses/NotFound"
-        "409":
-          $ref: "#/components/responses/Conflict"
-        "410":
-          $ref: "#/components/responses/Gone"
-        "412":
-          $ref: "#/components/responses/PreconditionFailed"
-        "424":
-          $ref: "#/components/responses/DependencyFailed"
-        "429":
-          $ref: "#/components/responses/RateLimited"
-        "500":
-          $ref: "#/components/responses/Internal"
-        "502":
-          $ref: "#/components/responses/DatabaseUnreachable"
-        "503":
-          $ref: "#/components/responses/Unavailable"
-      parameters:
-        - $ref: "#/components/parameters/ifNoneMatch"
 
 
   /environments/{environmentName}/packages/{packageName}/versions/{versionId}/entities:
@@ -3480,10 +3378,10 @@ components:
       schema:
         type: string
     CacheControl:
-      description: "`private, max-age=31536000, immutable` on a raw file read under a concrete version id (`…/public/{path}`,
-        a skill's or an agent's skill file), whose bytes can never change; `private, no-cache` on every other read,
-        which a client may store but must revalidate with `If-None-Match`. A read through `latest` or `live` is always
-        `no-cache`. Always `private`, because the gateway in front authenticates the caller."
+      description: "`private, max-age=31536000, immutable` on a raw file read under a concrete version id (`…/public/{path}`),
+        whose bytes can never change; `private, no-cache` on every other read, which a client may store but must
+        revalidate with `If-None-Match`. A read through `latest` or `live` is always `no-cache`. Always `private`,
+        because the gateway in front authenticates the caller."
       schema:
         type: string
     RetryAfter:
@@ -3678,15 +3576,10 @@ components:
           description: The instructions file's Markdown, at most 16 KB.
         skills:
           type: array
-          description: The agent's own skill files, sorted by `path`. Each carries `content` only with `?include=skills`;
-            otherwise its `bytes`.
+          description: The agent's own skills, each a `Skill` with its `files` (reference files and assets). Their text and their
+            files' content come only with `?include=skills`.
           items:
-            $ref: "#/components/schemas/SkillFile"
-        assets:
-          type: array
-          description: Every asset the agent's skills ship, listed without content and sorted by `path`. Absent when there are none.
-          items:
-            $ref: "#/components/schemas/AgentAsset"
+            $ref: "#/components/schemas/Skill"
         schedules:
           type: array
           items:
@@ -3699,18 +3592,6 @@ components:
             type: string
         source:
           $ref: "#/components/schemas/AgentSource"
-        assetRoots:
-          type: object
-          description: For each skill that ships assets, the package-relative directory holding it. Absent when no skill does. Not
-            when the agent is read without `?include=skills`.
-          additionalProperties:
-            type: string
-        assetCounts:
-          type: object
-          description: "Only when the agent is read without `?include=skills`, and only when there are assets: how many assets
-            each skill ships."
-          additionalProperties:
-            type: integer
         versionId:
           $ref: "#/components/schemas/VersionId"
           readOnly: true
@@ -3719,21 +3600,6 @@ components:
         - resource
         - name
         - versionId
-    AgentAsset:
-      type: object
-      readOnly: true
-      description: A text file a skill ships under `<skill>/assets/` for an agent to copy into an app it builds, not to read.
-        Listed without its content; read one with `GET …/agents/{agentName}/skills/{path}`.
-      properties:
-        bytes:
-          type: integer
-          description: Size in UTF-8 bytes, under 1 MiB.
-        path:
-          type: string
-          description: "`<skill>/assets/...`, relative to the agent's skill roots."
-        hash:
-          type: string
-          description: SHA-256 of the file's bytes.
     AgentBudget:
       type: object
       readOnly: true
@@ -6855,7 +6721,7 @@ components:
           description: One line saying when to read this skill.
         content:
           type: string
-          description: The skill's full guidance, Markdown.
+          description: The skill's `SKILL.md` text.
         origin:
           type: string
           enum:
@@ -6865,8 +6731,9 @@ components:
         files:
           type: array
           items:
-            type: string
-          description: The paths of the skill's on-demand reference files, each read at `…/skills/{skillName}/{path}`.
+            $ref: "#/components/schemas/SkillFile"
+          description: The files the skill ships beside its `SKILL.md`, by path; each carries its `content` only when the skill is
+            read with its files.
         versionId:
           $ref: "#/components/schemas/VersionId"
           readOnly: true
@@ -6878,36 +6745,29 @@ components:
     SkillFile:
       type: object
       readOnly: true
-      description: "One file of a skill: a skill's own reference file, or one of an agent's skill files."
+      description: "One file a skill ships beside its `SKILL.md`: a reference file it loads on demand, or an asset an agent
+        copies into an app it builds."
       properties:
-        resource:
-          $ref: "#/components/schemas/ResourcePath"
-        name:
-          type: string
-          description: A `SKILL.md`'s name. Only when the agent is read without `?include=skills`.
-        description:
-          type: string
-          description: A `SKILL.md`'s description. Only when the agent is read without `?include=skills`.
         bytes:
           type: integer
           description: Size of the file's text in UTF-8 bytes.
         path:
           type: string
-          description: Path relative to the agent's skills directory, for example `analyst-conventions/SKILL.md` or
-            `analyst-conventions/reference/glossary.md`.
+          description: The file's path relative to the skill's directory (for example `reference/joins.md`, `assets/app.html`).
         content:
           type: string
-          description: A `SKILL.md` is re-emitted with only a quoted `name` and `description` in its frontmatter; reference files
-            are served raw. Present only when the agent is read with `?include=skills`.
-        source:
-          $ref: "#/components/schemas/AgentSource"
-        versionId:
-          $ref: "#/components/schemas/VersionId"
-          readOnly: true
-          description: The version that answered, with `latest` resolved.
+          description: The file's text. Present only when the skill is read with its files (`?include=files` on a skill,
+            `?include=skills` on an agent).
+        kind:
+          type: string
+          enum:
+            - reference
+            - asset
+          description: "`reference`: text the skill loads on demand. `asset`: a file to copy, not to read."
       required:
-        - resource
-        - versionId
+        - path
+        - kind
+        - bytes
     SkillList:
       type: object
       required:
