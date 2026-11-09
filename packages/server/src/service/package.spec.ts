@@ -748,6 +748,103 @@ describe("service/package", () => {
             expect(boundSources(pkg)).toEqual(["orders"]);
          });
       });
+
+      // A table path embeds its destination's schema as of the bind. A cutover
+      // changes that schema under the same destination name and the same
+      // manifest, so nothing but a re-render can move the path.
+      describe("rebindStorageServeBindingsIfMoved", () => {
+         const boundPaths = (pkg: Package) =>
+            (pkg.getPackageMetadata().storageServeBindings ?? []).map(
+               (b) => b.tablePath,
+            );
+
+         /** A package whose destination schema the test can change, as a push would. */
+         const withDestinationSchema = (
+            eligibility: {
+               eligible: string[];
+               refused: Record<string, string>;
+            },
+            initial: string,
+         ) => {
+            const pkg = packageWith(eligibility);
+            const destination = { schema: initial };
+            pkg.setServeDestinationSchema(() => destination.schema);
+            return { pkg, destination };
+         };
+
+         it("moves a bound source to its destination's new schema", () => {
+            const { pkg, destination } = withDestinationSchema(
+               { eligible: ["orders"], refused: {} },
+               "main",
+            );
+            pkg.bindStorageServeBindings({ a: entry("orders", "t_orders") });
+            expect(boundPaths(pkg)).toEqual(["lake.t_orders"]);
+
+            destination.schema = "materialized";
+
+            expect(pkg.rebindStorageServeBindingsIfMoved()).toEqual(["orders"]);
+            expect(boundPaths(pkg)).toEqual(["lake.materialized.t_orders"]);
+         });
+
+         it("rebinds nothing when every path is where it was", () => {
+            const { pkg } = withDestinationSchema(
+               { eligible: ["orders"], refused: {} },
+               "materialized",
+            );
+            pkg.bindStorageServeBindings({ a: entry("orders", "t_orders") });
+
+            expect(pkg.rebindStorageServeBindingsIfMoved()).toEqual([]);
+            expect(boundPaths(pkg)).toEqual(["lake.materialized.t_orders"]);
+         });
+
+         it("leaves a table named with its own schema where the author put it", () => {
+            // `#@ persist name="analytics.daily"`: the destination's schema never
+            // applies, so a schema change moves nothing.
+            const { pkg, destination } = withDestinationSchema(
+               { eligible: ["daily"], refused: {} },
+               "main",
+            );
+            pkg.bindStorageServeBindings({
+               a: entry("daily", "analytics.daily"),
+            });
+
+            destination.schema = "materialized";
+
+            expect(pkg.rebindStorageServeBindingsIfMoved()).toEqual([]);
+            expect(boundPaths(pkg)).toEqual(["lake.analytics.daily"]);
+         });
+
+         it("keeps a refused source refused through the rebind", () => {
+            const { pkg, destination } = withDestinationSchema(
+               {
+                  eligible: ["all_rollup"],
+                  refused: { scoped_rollup: "references a given" },
+               },
+               "main",
+            );
+            pkg.bindStorageServeBindings({
+               a: entry("all_rollup", "t_all"),
+               b: entry("scoped_rollup", "t_scoped"),
+            });
+
+            destination.schema = "materialized";
+
+            expect(pkg.rebindStorageServeBindingsIfMoved()).toEqual([
+               "all_rollup",
+            ]);
+            expect(boundSources(pkg)).toEqual(["all_rollup"]);
+            expect(boundPaths(pkg)).toEqual(["lake.materialized.t_all"]);
+         });
+
+         it("does nothing for a package with no storage bindings", () => {
+            const { pkg, destination } = withDestinationSchema(
+               { eligible: [], refused: {} },
+               "main",
+            );
+            destination.schema = "materialized";
+            expect(pkg.rebindStorageServeBindingsIfMoved()).toEqual([]);
+         });
+      });
    });
 
    // The colocated-tier analogue of the storage gate above — a positive

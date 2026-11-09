@@ -41,6 +41,7 @@ import { filterFreshManifest } from "./run/freshness";
 import {
    deriveServeBindings,
    groupAliasesByName,
+   type ServeBinding,
 } from "./serve/materialization_serve_transform";
 import type {
    BuildManifest,
@@ -115,7 +116,11 @@ export class PackageMaterialization {
    // `storage=` serve bindings, pushed onto each Model for the virtual-source
    // serve transform. A storage source serves cross-connection through these,
    // not through the same-connection manifest above.
-   private storageServeBindings: ReturnType<typeof deriveServeBindings> = [];
+   private storageServeBindings: ServeBinding[] = [];
+   // The entries those bindings were derived from. A binding's table path
+   // embeds its destination's schema as of the bind, so a destination change
+   // re-derives from these (see rebindStorageServeBindingsIfMoved).
+   private storageServeEntries: Record<string, ManifestEntry> | undefined;
    // Memoized freshness-filtered manifest, recomputed when an entry crosses its
    // window (`validUntil`) or a rebind clears it. Infinity: stable until rebind.
    private freshManifestCache:
@@ -455,12 +460,11 @@ export class PackageMaterialization {
     * live. (The colocated tier is keyed by content address already.)
     */
    bindStorageServeBindings(entries: Record<string, ManifestEntry>): void {
-      const derived = deriveServeBindings(
+      this.storageServeEntries = entries;
+      const derived = this.deriveStorageServeBindings(
          this.owner.versionId() === undefined
             ? entries
             : this.ownEntries(entries),
-         groupAliasesByName(Object.values(this.buildPlan?.sources ?? {})),
-         this.serveDestinationSchema,
       );
       const eligibility = this.sourceEligibility;
       // Keyed by NAME: a rollup passes only because `collectSourceEligibility`
@@ -491,6 +495,56 @@ export class PackageMaterialization {
       });
       this.storageServeBindings = allowed;
       this.pushStorageServeBindingsToModels();
+   }
+
+   /**
+    * Re-render the bound sources' table paths against the destinations as they
+    * are now, and rebind only when one of them moved.
+    *
+    * A table path embeds its destination's schema as of the bind, and a
+    * destination can change its schema under an unchanged name (a cutover
+    * moves `credible` from the legacy catalog's `main` to a managed database's
+    * `materialized`). The manifest is unchanged by that, so no manifest rebind
+    * fires; without this, every bound source keeps reading the path the
+    * destination left. A change that leaves every path where it was (a rotated
+    * password, an added destination) rebinds nothing.
+    *
+    * @returns the sources whose path moved; empty when nothing was rebound.
+    */
+   rebindStorageServeBindingsIfMoved(): string[] {
+      const entries = this.storageServeEntries;
+      if (!entries || this.storageServeBindings.length === 0) return [];
+      // Name and content address together: under a published version, two
+      // entries can share a source name and differ in address (ownEntries).
+      const keyOf = (binding: ServeBinding) =>
+         `${binding.sourceName}\u0000${binding.virtualHandle}`;
+      const rendered = new Map(
+         this.deriveStorageServeBindings(entries).map((binding) => [
+            keyOf(binding),
+            binding.tablePath,
+         ]),
+      );
+      const moved = this.storageServeBindings
+         .filter((binding) => {
+            const now = rendered.get(keyOf(binding));
+            return now !== undefined && now !== binding.tablePath;
+         })
+         .map((binding) => binding.sourceName);
+      if (moved.length === 0) return [];
+      // The full bind, so the eligibility and own-definition gates still apply.
+      this.bindStorageServeBindings(entries);
+      return moved;
+   }
+
+   /** Derive serve bindings, each table path rendered with its destination's current schema. */
+   private deriveStorageServeBindings(
+      entries: Record<string, ManifestEntry>,
+   ): ServeBinding[] {
+      return deriveServeBindings(
+         entries,
+         groupAliasesByName(Object.values(this.buildPlan?.sources ?? {})),
+         this.serveDestinationSchema,
+      );
    }
 
    /**

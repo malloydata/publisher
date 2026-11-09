@@ -1960,6 +1960,11 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
       this.materialization.bindStorageServeBindings(entries);
    }
 
+   /** See {@link PackageMaterialization.rebindStorageServeBindingsIfMoved}. */
+   public rebindStorageServeBindingsIfMoved(): string[] {
+      return this.materialization.rebindStorageServeBindingsIfMoved();
+   }
+
    /** See {@link PackageMaterialization.setServeDestinationSchema}. */
    public setServeDestinationSchema(
       resolver: (destinationName: string) => string | undefined,

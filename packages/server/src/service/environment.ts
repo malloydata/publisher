@@ -792,6 +792,7 @@ export class Environment {
             `environment ${this.environmentName} destinations`,
             () => previous.releaseConnections(),
          );
+         this.rebindMovedStorageServeBindings();
          // Memoized serve shapes hold the retired generation's connections but
          // are keyed on the binding set, which this does not change; left in
          // place, every routed query would quietly fall back to live.
@@ -799,16 +800,46 @@ export class Environment {
       }
    }
 
+   /**
+    * Rebind each loaded package whose bound table paths the new destinations
+    * moved (a destination's schema changed under its name). One that moved
+    * nothing keeps its bindings.
+    */
+   private rebindMovedStorageServeBindings(): void {
+      for (const _package of this.loadedPackagesAndVersions()) {
+         const moved = _package.rebindStorageServeBindingsIfMoved();
+         if (moved.length > 0) {
+            logger.info(
+               "Rebound storage serve bindings: a destination change moved their table paths",
+               {
+                  environmentName: this.environmentName,
+                  packageName: _package.getPackageName(),
+                  versionId: _package.getVersionId(),
+                  sources: moved,
+               },
+            );
+         }
+      }
+   }
+
    /** Drop every loaded model's memoized serve shape; the next query recompiles. */
    private invalidateServeShapes(): void {
-      for (const _package of this.packages.values()) {
+      for (const _package of this.loadedPackagesAndVersions()) {
          _package.invalidateServeShapes();
       }
-      // Loaded versions too: they compiled against the destinations that just
-      // changed.
-      for (const [, , version] of this.versionService?.cache.entries() ?? []) {
-         version.invalidateServeShapes();
-      }
+   }
+
+   /**
+    * Every package serving from this environment: the unversioned slots and the
+    * loaded versions, which compiled against the same destinations.
+    */
+   private loadedPackagesAndVersions(): Package[] {
+      return [
+         ...this.packages.values(),
+         ...(this.versionService?.cache.entries() ?? []).map(
+            ([, , version]) => version,
+         ),
+      ];
    }
 
    /**

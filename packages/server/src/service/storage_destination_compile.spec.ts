@@ -79,7 +79,10 @@ const NOT_IN_CONFIG = `No connection named "${DESTINATION_NAME}" found in config
 let unreachableCatalog: ClosingListener;
 
 /** A DuckLake destination whose catalog is not reachable. */
-function ducklakeDestination(name: string): ApiConnection {
+function ducklakeDestination(
+   name: string,
+   destinationSchema?: string,
+): ApiConnection {
    return {
       name,
       type: "ducklake",
@@ -94,6 +97,7 @@ function ducklakeDestination(name: string): ApiConnection {
             },
          },
          storage: { bucketUrl: "/tmp/no-such-bucket" },
+         ...(destinationSchema ? { destinationSchema } : {}),
       },
    };
 }
@@ -398,6 +402,74 @@ describe("a storage destination is not in the namespace a tenant authors in", ()
          configured.mockRestore();
          shapes.mockRestore();
          restoreMode?.();
+      }
+   });
+
+   it("moves a loaded package's bindings when a destination changes its schema, and only then", async () => {
+      // A cutover: the destination keeps its name and the manifest is
+      // unchanged, but the schema its tables live in moves. Each binding's path
+      // embeds the schema as of the bind, so without a re-render every bound
+      // source keeps reading the catalog the destination left until the
+      // package reloads.
+      const environment = makeEnvironment();
+      const packageDir = path.join(envDir, "pkg");
+      writePackageFiles(packageDir, {
+         "plain.malloy": `source: nums is duckdb.sql("SELECT 1 AS a")`,
+      });
+      const pushed = spyOn(Model.prototype, "setServeBindings");
+      try {
+         const pkg = await environment.getPackage(parsePackageName("pkg"));
+         const model = pkg.getModel("plain.malloy")!;
+         // Private by design (only a compiled build plan writes it); set
+         // directly so the bind is not refused by the eligibility gate.
+         (
+            pkg as unknown as {
+               sourceEligibility: {
+                  eligible: string[];
+                  refused: Record<string, string>;
+               };
+            }
+         ).sourceEligibility = { eligible: ["nums"], refused: {} };
+         pkg.bindStorageServeBindings({
+            a: {
+               sourceEntityId: "eid-nums",
+               sourceName: "nums",
+               physicalTableName: "mz_nums",
+               storageDestinationName: DESTINATION_NAME,
+               schema: [{ name: "a", type: "BIGINT" }],
+            },
+         });
+         const servedPaths = () => {
+            const call = pushed.mock.contexts.lastIndexOf(model);
+            return pushed.mock.calls[call][0].map((b) => b.tablePath);
+         };
+         const reportedPaths = () =>
+            (pkg.getPackageMetadata().storageServeBindings ?? []).map(
+               (b) => b.tablePath,
+            );
+         expect(servedPaths()).toEqual([`${DESTINATION_NAME}.mz_nums`]);
+
+         environment.setStorageDestinations([
+            ducklakeDestination(DESTINATION_NAME, "materialized"),
+            ducklakeDestination(SHARED_NAME),
+         ]);
+
+         // What the model serves from, and what /status reports, both moved.
+         const moved = `${DESTINATION_NAME}.materialized.mz_nums`;
+         expect(servedPaths()).toEqual([moved]);
+         expect(reportedPaths()).toEqual([moved]);
+
+         // A change that leaves every path in place pushes nothing to the model.
+         const pushesBefore = pushed.mock.calls.length;
+         environment.setStorageDestinations([
+            ducklakeDestination(DESTINATION_NAME, "materialized"),
+            ducklakeDestination(SHARED_NAME),
+            ducklakeDestination("added_later"),
+         ]);
+         expect(pushed.mock.calls.length).toBe(pushesBefore);
+         expect(reportedPaths()).toEqual([moved]);
+      } finally {
+         pushed.mockRestore();
       }
    });
 

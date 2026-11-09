@@ -251,7 +251,9 @@ it, so in a mixed-version deployment upgrade every server before any config leav
 destination puts every table a build writes in that schema (`materialized`, say) instead of `main`, and
 the serve binding reads it from there. People's own tables stay in `main`. A `#@ persist name=` that
 already names a schema keeps it. No build creates the schema: the catalog's owner does, and a build into a
-destination whose `destinationSchema` the catalog lacks is refused with a message naming both.
+destination whose `destinationSchema` the catalog lacks is refused with a message naming both. Changing a
+destination's `destinationSchema` on a running server moves the serve bindings of loaded packages to the
+new schema; no reload or restart is needed.
 
 **Serve the catalog to models.** Give the catalog a `connections` entry, with `managed: true`. Publisher
 then sets the session's search path to the catalog's `main` after the attach, so `sales.table('orders')`,
