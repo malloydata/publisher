@@ -14,14 +14,25 @@ import {
    type ProviderName,
 } from "./llm/types";
 
-/** What may leave the machine for an LLM. See {@link RetrievalConfig.egress}. */
-export type EgressPreset = "default" | "full";
-export const EGRESS_PRESETS: readonly EgressPreset[] = ["default", "full"];
+import {
+   DEFAULT_LLM_CONCURRENCY,
+   DEFAULT_LLM_MAX_CALLS_PER_REQUEST,
+   DEFAULT_LLM_MAX_CALLS_PER_SYNC,
+   DEFAULT_LLM_TIMEOUT_MS,
+   DIMENSION_VALUE_DEFAULTS,
+   EGRESS_PRESETS,
+   type EgressPreset,
+} from "./defaults";
 
-export const DEFAULT_LLM_TIMEOUT_MS = 30_000;
-export const DEFAULT_LLM_CONCURRENCY = 4;
-export const DEFAULT_LLM_MAX_CALLS_PER_SYNC = 300;
-export const DEFAULT_LLM_MAX_CALLS_PER_REQUEST = 20;
+export {
+   DEFAULT_LLM_CONCURRENCY,
+   DEFAULT_LLM_MAX_CALLS_PER_REQUEST,
+   DEFAULT_LLM_MAX_CALLS_PER_SYNC,
+   DEFAULT_LLM_TIMEOUT_MS,
+   DIMENSION_VALUE_DEFAULTS,
+   EGRESS_PRESETS,
+   type EgressPreset,
+};
 
 export type RetrievalLlmConfig = {
    provider: ProviderName;
@@ -97,9 +108,6 @@ export type DimensionValuesConfig = {
     */
    enabled?: boolean;
 };
-
-/** What each `retrieval.dimensionValues` key means when the operator leaves it out. */
-export const DIMENSION_VALUE_DEFAULTS = { enabled: true } as const;
 
 /**
  * Default for `retrieval.indexing.maxEntities`. A package past this is not

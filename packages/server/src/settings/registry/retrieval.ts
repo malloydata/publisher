@@ -5,7 +5,7 @@ import { DEFAULT_EMBEDDING_MIN_SIMILARITY } from "../../constants";
 import {
    EMBEDDING_PROVIDER_NAMES,
    PROVIDER_NAMES,
-} from "../../retrieval/llm/types";
+} from "../../retrieval/llm/provider_names";
 import {
    DEFAULT_LLM_CONCURRENCY,
    DEFAULT_LLM_MAX_CALLS_PER_REQUEST,
@@ -13,7 +13,7 @@ import {
    DEFAULT_LLM_TIMEOUT_MS,
    DIMENSION_VALUE_DEFAULTS,
    EGRESS_PRESETS,
-} from "../../retrieval/config";
+} from "../../retrieval/defaults";
 import { setting } from "../setting";
 import { boolean, integer, number, oneOf, string, structured } from "../types";
 

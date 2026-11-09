@@ -9,25 +9,13 @@
 
 import type { RetryPolicy } from "../../service/http_retry";
 
-/** Every provider name a config file may use. */
-export const PROVIDER_NAMES = [
-   "openai",
-   "openai-compatible",
-   "ollama",
-   "anthropic",
-   "google",
-   "vertex",
-] as const;
-export type ProviderName = (typeof PROVIDER_NAMES)[number];
+import type { ProviderName } from "./provider_names";
 
-/** Providers that can serve embeddings (Anthropic has no embeddings API). */
-export const EMBEDDING_PROVIDER_NAMES = [
-   "openai",
-   "openai-compatible",
-   "ollama",
-   "google",
-   "vertex",
-] as const;
+export {
+   EMBEDDING_PROVIDER_NAMES,
+   PROVIDER_NAMES,
+   type ProviderName,
+} from "./provider_names";
 
 export interface ChatUsage {
    inputTokens?: number;
