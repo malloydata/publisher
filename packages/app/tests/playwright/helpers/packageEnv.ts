@@ -6,7 +6,7 @@ import fs from "fs";
 import os from "os";
 import path from "path";
 import { fileURLToPath } from "url";
-import { tmpName } from "./fixtures";
+import { AUTHORING_ENVS } from "./authoringEnvs";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 
@@ -27,11 +27,34 @@ export interface PackageEnv {
    dispose: () => Promise<void>;
 }
 
+/** The authoring environments a spec holds now (see AUTHORING_ENVS). */
+const held = new Set<string>();
+
+/**
+ * Take a free authoring environment, removing whatever a run that did not
+ * finish left under its name.
+ */
+async function claimAuthoringEnv(baseURL: string): Promise<string> {
+   const env = AUTHORING_ENVS.find((name) => !held.has(name));
+   if (!env) {
+      throw new Error(
+         `Every authoring environment is held (${AUTHORING_ENVS.join(", ")}); dispose one first, or add a name to AUTHORING_ENVS.`,
+      );
+   }
+   held.add(env);
+   await fetch(`${baseURL}/api/v0/environments/${env}`, {
+      method: "DELETE",
+   }).catch(() => undefined);
+   return env;
+}
+
 /**
  * Registers a throwaway environment over a COPY of a package, because the
  * builders write into the package and a fixture in the repository is not the
- * place for that. The server then serves its own copy of that copy, so a file
- * is read back through the API rather than from disk. Skips the suite on a server that refuses writes.
+ * place for that. The environment is one the server watches (AUTHORING_ENVS),
+ * so it mounts the copy in place: every other package is a published version,
+ * which no write or reload changes. A file is read back through the API
+ * rather than from disk. Skips the suite on a server that refuses writes.
  */
 export async function registerPackageEnv(
    baseURL: string,
@@ -43,7 +66,7 @@ export async function registerPackageEnv(
    /** Paths removed from the copy first, to start a package with a section empty. */
    remove: string[] = [],
 ): Promise<PackageEnv> {
-   const env = tmpName(prefix);
+   const env = await claimAuthoringEnv(baseURL);
    const location = fs.mkdtempSync(
       path.join(os.tmpdir(), `publisher-${prefix}-`),
    );
@@ -73,6 +96,15 @@ export async function registerPackageEnv(
    );
    expect(res.ok, await res.text()).toBe(true);
    const pkgUrl = `${baseURL}/api/v0/environments/${env}/packages/${pkg}`;
+   // Mounted in place, the package has no versions. A version here means the
+   // server was not started watching the authoring environments.
+   const described = (await (await fetch(pkgUrl)).json()) as {
+      versionId?: string;
+   };
+   expect(
+      described.versionId,
+      `start the server with PUBLISHER_WATCH=${AUTHORING_ENVS.join(",")}`,
+   ).toBeUndefined();
    return {
       env,
       pkg,
@@ -89,6 +121,7 @@ export async function registerPackageEnv(
          await fetch(`${baseURL}/api/v0/environments/${env}`, {
             method: "DELETE",
          }).catch(() => undefined);
+         held.delete(env);
          fs.rmSync(location, { recursive: true, force: true });
       },
    };

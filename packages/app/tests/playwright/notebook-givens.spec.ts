@@ -2,10 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 import { expect, test } from "@playwright/test";
-import * as fs from "fs/promises";
-import * as path from "path";
-import { fileURLToPath } from "url";
-import { DEFAULT_ENV, PACKAGES } from "./helpers/fixtures";
+import { PACKAGES } from "./helpers/fixtures";
 import {
    closeFilter,
    expectFilterValue,
@@ -13,26 +10,22 @@ import {
    openFilter,
 } from "./helpers/filters";
 import { gotoHome, openEnvironment, openPackage } from "./helpers/navigation";
+import {
+   exampleFixture,
+   registerPackageEnv,
+   type PackageEnv,
+} from "./helpers/packageEnv";
 
 /**
  * End-to-end coverage for the Notebook "Filters" panel that surfaces
  * Malloy `given:` runtime parameters. The publisher's storefront
  * fixture set doesn't ship a model with `given:` declarations, so the
- * spec writes its own model and linear report into the `storefront` package directory
- * before the suite runs, triggers a package reload, and cleans up after.
- *
- * Run this against a normal server, not one started with `--watch-env examples`:
- * watch mode symlinks PKG_DIR to the tracked `examples/storefront` sources, so
- * the fixture writes below would land in version control.
+ * spec adds its own model and linear report to a throwaway copy of the
+ * `storefront` package.
  */
 
 const FIXTURE_MODEL = "test_givens.malloy";
 const FIXTURE_NOTEBOOK = "test_givens_notebook.malloy";
-
-const PKG_DIR = path.resolve(
-   path.dirname(fileURLToPath(import.meta.url)),
-   "../../../server/publisher_data/examples/storefront",
-);
 
 const MODEL_SOURCE = `##! experimental.givens
 
@@ -67,33 +60,28 @@ The givens the model declares, as filters.
 |##
 `;
 
-async function reloadPackage(baseURL: string): Promise<void> {
-   const url = `${baseURL}/api/v0/environments/${DEFAULT_ENV}/packages/${PACKAGES.storefront}?reload=true`;
-   const res = await fetch(url);
-   if (!res.ok) {
-      throw new Error(`Package reload failed: ${res.status} ${res.statusText}`);
-   }
-}
+let pe: PackageEnv;
 
 test.describe("notebook-givens", () => {
-   test.beforeAll(async ({ baseURL }) => {
-      await fs.writeFile(path.join(PKG_DIR, FIXTURE_MODEL), MODEL_SOURCE);
-      await fs.writeFile(path.join(PKG_DIR, FIXTURE_NOTEBOOK), NOTEBOOK_SOURCE);
-      await reloadPackage(baseURL!);
+   // eslint-disable-next-line no-empty-pattern
+   test.beforeAll(async ({}, testInfo) => {
+      pe = await registerPackageEnv(
+         testInfo.project.use.baseURL ?? "http://localhost:4000",
+         "nbgivens",
+         exampleFixture(PACKAGES.storefront),
+         PACKAGES.storefront,
+         { [FIXTURE_MODEL]: MODEL_SOURCE, [FIXTURE_NOTEBOOK]: NOTEBOOK_SOURCE },
+      );
    });
 
-   test.afterAll(async ({ baseURL }) => {
-      await fs.unlink(path.join(PKG_DIR, FIXTURE_MODEL)).catch(() => undefined);
-      await fs
-         .unlink(path.join(PKG_DIR, FIXTURE_NOTEBOOK))
-         .catch(() => undefined);
-      await reloadPackage(baseURL!).catch(() => undefined);
+   test.afterAll(async () => {
+      await pe?.dispose();
    });
 
    async function openGivensNotebook(page: import("@playwright/test").Page) {
       await gotoHome(page);
-      await openEnvironment(page, DEFAULT_ENV);
-      await openPackage(page, DEFAULT_ENV, PACKAGES.storefront);
+      await openEnvironment(page, pe.env);
+      await openPackage(page, pe.env, pe.pkg);
       await page.getByText(FIXTURE_NOTEBOOK, { exact: true }).click();
       await expect(page).toHaveURL(/\/test_givens_notebook$/);
    }
@@ -104,7 +92,7 @@ test.describe("notebook-givens", () => {
       // Sanity-check the wire shape before driving the UI: if this fails,
       // the test fixture is wrong or the introspection regressed, not the
       // SDK widgets.
-      const url = `${baseURL}/api/v0/environments/${DEFAULT_ENV}/packages/${PACKAGES.storefront}/reports/${FIXTURE_NOTEBOOK}`;
+      const url = `${baseURL}/api/v0/environments/${pe.env}/packages/${pe.pkg}/reports/${FIXTURE_NOTEBOOK}`;
       const res = await fetch(url);
       expect(res.ok).toBe(true);
       // The report's control row: the givens its tiles read.

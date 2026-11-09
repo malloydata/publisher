@@ -34,7 +34,7 @@ test.describe("model-viewer", () => {
 
       await expect(page).toHaveURL(
          new RegExp(
-            `/${DEFAULT_ENV}/${PACKAGES.storefront}/storefront\\.malloy$`,
+            `/${DEFAULT_ENV}/${PACKAGES.storefront}/latest/storefront\\.malloy$`,
          ),
       );
       await expect(page.getByRole("heading", { level: 1 })).toBeVisible();
