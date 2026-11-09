@@ -37,8 +37,8 @@ Environment                     a namespace for packages and connections; the un
     ├── status                  how this server holds the package's versions
     ├── runs                    attempts to build persisted sources, each with a manifest
     └── Version                 an immutable snapshot of the package's content; `latest` is a reserved segment
-        ├── models              compiled sources, views and givens; query; compile; the report write
-        ├── reports             a `.malloy` file with an `## artifact` tag (grid or linear)
+        ├── models              compiled sources, views and givens; query; compile
+        ├── reports             a `.malloy` file with an `## artifact` tag (grid or linear); the report write
         ├── data-apps, public/  HTML data apps and the static files they load
         ├── data-files          embedded CSV, Parquet, JSON and Excel files
         ├── agents, skills      what the package declares for agents
@@ -109,7 +109,7 @@ parent.
 | `GET …/versions/{v}/models`, `GET …/models/{path}`                         | Model files; one model's sources, views and givens (`?include=sourceText,modelInfo,sourceInfos` for the larger parts).                                                                   |
 | `POST …/versions/{v}/models/{path}:query`                                  | Run a query. See [request shapes](#query-request-shapes).                                                                                                                                 |
 | `POST …/versions/{v}/models/{path}:compile`                                | Compile-check Malloy text at `append`, `file` or `package` scope.                                                                                                                         |
-| `PUT …/versions/{v}/models/{path}`                                         | The builder's save: write a report file, which makes version `<parent>+edit.N` and moves `latestVersionId`. Create (201) without `expectedHash`, replace (200) with it.                  |
+| `PUT …/versions/{v}/reports/{path}`                                        | The builder's save: write a report's text, which makes version `<parent>+edit.N` and moves `latestVersionId`. Create (201) without `expectedHash`, replace (200) with the `sourceHash` you read. Answers the `Report`. |
 | `GET …/versions/{v}/reports`, `…/reports/{path}`                           | Reports by `path` and `layout`; one report's manifest (its tiles and controls). Run a tile through `query`.                                                                          |
 | `GET …/versions/{v}/data-apps`, `…/public/{path}`                          | HTML data apps and the static files they load, served from the version they were published with.                                                                                        |
 | `GET …/versions/{v}/data-files`                                            | Embedded data files and their schemas.                                                                                                                                                    |

@@ -142,7 +142,7 @@ tags:
     description: Immutable snapshots of a package's content and their lifecycle state. Every content read is under a
       version, `latest` included.
   - name: models
-    description: "Model files: compiled metadata, queries, compile checks, and the report write."
+    description: "Model files: compiled metadata, queries and compile checks."
   - name: reports
     description: "Documents: a `.malloy` file with an `## artifact` tag, grid or linear."
   - name: data-apps
@@ -1414,66 +1414,6 @@ paths:
           $ref: "#/components/responses/Internal"
         "503":
           $ref: "#/components/responses/Unavailable"
-    put:
-      operationId: write-model
-      tags:
-        - models
-      summary: Write a report file, making a new version
-      description: The builder's save. Only a report (a file carrying an `## artifact` tag) may be written; never a model, an
-        untagged file, the root `index.malloy` or anything under `public/`. The text is compiled first (400
-        `COMPILE_ERROR` with `problems`). On a published version the write makes version `<parent>+edit.N` and moves
-        `latestVersionId` to it; on a live package it writes through to the author's directory. Create without
-        `expectedHash` (201); replace with it (200). 409 `FILE_EXISTS` or `CONFLICT` when the file is not as the caller
-        read it.
-      parameters:
-        - $ref: "#/components/parameters/ifMatch"
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              $ref: "#/components/schemas/ModelWriteRequest"
-      responses:
-        "200":
-          description: Replaced.
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/ModelWriteResult"
-          headers:
-            X-Request-Id:
-              $ref: "#/components/headers/RequestId"
-        "201":
-          description: Created.
-          headers:
-            X-Request-Id:
-              $ref: "#/components/headers/RequestId"
-            Location:
-              $ref: "#/components/headers/Location"
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/ModelWriteResult"
-        "400":
-          $ref: "#/components/responses/BadRequest"
-        "401":
-          $ref: "#/components/responses/Unauthorized"
-        "403":
-          $ref: "#/components/responses/Forbidden"
-        "404":
-          $ref: "#/components/responses/NotFound"
-        "409":
-          $ref: "#/components/responses/Conflict"
-        "410":
-          $ref: "#/components/responses/Gone"
-        "412":
-          $ref: "#/components/responses/PreconditionFailed"
-        "429":
-          $ref: "#/components/responses/RateLimited"
-        "500":
-          $ref: "#/components/responses/Internal"
-        "503":
-          $ref: "#/components/responses/Unavailable"
 
 
   /environments/{environmentName}/packages/{packageName}/versions/{versionId}/models/{path}:query:
@@ -1657,10 +1597,10 @@ paths:
       operationId: get-report
       tags:
         - reports
-      summary: A report's manifest
+      summary: Read a report
       responses:
         "200":
-          description: The manifest.
+          description: The report, with what a viewer needs to draw it.
           content:
             application/json:
               schema:
@@ -1696,6 +1636,69 @@ paths:
           $ref: "#/components/responses/Unavailable"
       parameters:
         - $ref: "#/components/parameters/ifNoneMatch"
+    put:
+      operationId: write-report
+      tags:
+        - reports
+      summary: Write a report's text, making a new version
+      description: The report builder's save. The text must carry a model-level `## artifact` tag; the path may not be the
+        root `index.malloy`, anything under `public/`, or a report whose `readOnly` is set. The text is compiled first
+        (400 `COMPILE_ERROR` with `problems`). On a published version the write makes version `<parent>+edit.N` and
+        moves `latestVersionId` to it unless promotion is `explicit`; on a live package it writes through to the
+        author's directory. Without `expectedHash` it creates the file (201; 409 `FILE_EXISTS` if one is there); with
+        it, it replaces the file (200; 409 `CONFLICT` when the file no longer hashes to it). Either way it answers with
+        the report as it now reads in the version the write made, which its `resource` and the `Location` header name.
+      parameters:
+        - $ref: "#/components/parameters/ifMatch"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ReportWriteRequest"
+      responses:
+        "200":
+          description: Replaced.
+          headers:
+            X-Request-Id:
+              $ref: "#/components/headers/RequestId"
+            Location:
+              $ref: "#/components/headers/Location"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Report"
+        "201":
+          description: Created.
+          headers:
+            X-Request-Id:
+              $ref: "#/components/headers/RequestId"
+            Location:
+              $ref: "#/components/headers/Location"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Report"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "410":
+          $ref: "#/components/responses/Gone"
+        "412":
+          $ref: "#/components/responses/PreconditionFailed"
+        "429":
+          $ref: "#/components/responses/RateLimited"
+        "500":
+          $ref: "#/components/responses/Internal"
+        "503":
+          $ref: "#/components/responses/Unavailable"
 
 
   /environments/{environmentName}/packages/{packageName}/versions/{versionId}/data-apps:
@@ -5382,36 +5385,6 @@ components:
           description: True when the file carries an `## artifact` tag and is also listed under `reports`.
         error:
           type: string
-    ModelWriteRequest:
-      type: object
-      description: The whole text of a report file to write into a version, making a new version.
-      required:
-        - source
-      properties:
-        source:
-          type: string
-        expectedHash:
-          type: string
-          description: SHA-256 (hex) of the text the caller read. Refused with 409 when the file no longer hashes to it. Omit to
-            create; a create finds a file already there is 409 `FILE_EXISTS`.
-    ModelWriteResult:
-      type: object
-      required:
-        - path
-        - contentHash
-        - created
-        - version
-      properties:
-        path:
-          type: string
-        contentHash:
-          type: string
-          description: SHA-256 (hex) of the text as written; the next write's `expectedHash`.
-        created:
-          type: boolean
-        version:
-          $ref: "#/components/schemas/Version"
-          description: The version the write made, which is now `latest` unless promotion is `explicit`.
     MotherDuckConnection:
       type: object
       description: MotherDuck database connection configuration
@@ -6212,6 +6185,11 @@ components:
           default: false
           description: The report builder cannot write this file back, so it opens read-only (a report whose tiles it cannot
             splice). The report write refuses it the same way.
+        sourceHash:
+          type: string
+          readOnly: true
+          description: SHA-256 (hex) of the file's text. Send it back as `expectedHash` on the next write, so a write over a newer
+            text is refused rather than lost.
         error:
           type: string
     ReportTile:
@@ -6302,6 +6280,18 @@ components:
           type: integer
           description: The grid column the tile's left edge sits in, counted from 1, from `col=N` on its entry in `tiles=[…]`. See
             `row`.
+    ReportWriteRequest:
+      type: object
+      description: The whole text of a report file, written into a version by making a new version.
+      required:
+        - source
+      properties:
+        source:
+          type: string
+        expectedHash:
+          type: string
+          description: The `sourceHash` of the report as the caller last read it. The write is refused with 409 `CONFLICT` when
+            the file no longer hashes to it. Omit it to create a file that does not exist yet.
     ResourcePath:
       type: string
       readOnly: true
