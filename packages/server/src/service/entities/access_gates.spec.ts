@@ -9,6 +9,7 @@ import {
    parseGateAnnotation,
    resolveGates,
    type GateStructDef,
+   wireFieldPath,
 } from "./access_gates";
 
 describe("accessFilterTerms", () => {
@@ -48,6 +49,16 @@ describe("accessFilterTerms", () => {
          ),
          undefined,
       );
+   });
+
+   test("a segment holding a dot or a backtick cannot be a dotted field_path, so the terms are opaque", () => {
+      assert.strictEqual(
+         wireFieldPath(["account", "region"]),
+         "account.region",
+      );
+      assert.strictEqual(wireFieldPath(["account", "cost.center"]), undefined);
+      assert.strictEqual(wireFieldPath(["account", "cost`center"]), undefined);
+      assert.strictEqual(wireFieldPath(["`region`"]), undefined);
    });
 
    test("a body the grammar refuses is opaque, never a throw", () => {

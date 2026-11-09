@@ -220,15 +220,29 @@ export const resolveGates = (
 };
 
 /**
+ * A field path's unquoted segments as the dotted `/entities` `field_path`, or
+ * undefined when a segment cannot round-trip through it: a dot inside a
+ * segment (`` reps.`cost.center` ``) would read back as a separator, and a
+ * backtick would read back as quoting. The grammar's quoted identifier admits
+ * no backtick today; the guard keeps an index from ever being handed one.
+ */
+export const wireFieldPath = (
+   segments: readonly string[],
+): string | undefined =>
+   segments.some((s) => s.includes(".") || s.includes("`"))
+      ? undefined
+      : segments.join(".");
+
+/**
  * The row-level terms of an `#(access_filter)` body, in the `/entities` wire
  * shape (`field_path <op> $GIVEN`), or undefined when the body is opaque to an
  * index. The server's grammar (`parseAuthorizeGrammarBody` on the
  * access_filter route) reads the body; this only reshapes its answer:
  *  - a body the grammar refuses is opaque (the load refuses it too, so a
  *    served package never carries one);
- *  - a term whose segment holds a dot (`` reps.`cost.center` ``) is opaque,
- *    because a dotted `field_path` cannot carry it. Opaque is the safe side:
- *    the source's row filter stays withheld from the index.
+ *  - a term with a segment a dotted `field_path` cannot carry is opaque
+ *    ({@link wireFieldPath}). Opaque is the safe side: the source's row filter
+ *    stays withheld from the index.
  * Never throws.
  */
 export const accessFilterTerms = (
@@ -250,9 +264,10 @@ export const accessFilterTerms = (
    for (const term of parsed) {
       // The grammar admits only row-level terms on this route.
       if (term.scope !== "row_level") return undefined;
-      if (term.fieldPathSegments.some((s) => s.includes("."))) return undefined;
+      const fieldPath = wireFieldPath(term.fieldPathSegments);
+      if (fieldPath === undefined) return undefined;
       terms.push({
-         field_path: term.fieldPathSegments.join("."),
+         field_path: fieldPath,
          given: term.given,
          op: term.operator,
       });
