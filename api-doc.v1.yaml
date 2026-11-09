@@ -24,8 +24,8 @@ info:
 
     - An **environment** is a namespace for packages and connections.
 
-    - A **connection** is a warehouse handle with a `role`: a source the models read, a destination materialization
-    builds write to, or both.
+    - A **connection** is a warehouse handle the models read. A **destination** is where materialization builds write;
+    it is not a connection, models cannot name it, and it is set on the environment (`destinations`).
 
     - A **package** is a record with pointers: its source, its description, and `latestVersionId`. It holds no content.
 
@@ -133,8 +133,8 @@ tags:
   - name: environments
     description: Namespaces for packages and connections; the unit of tenancy.
   - name: connections
-    description: "Warehouse handles with a role: a source models read, a destination builds write to, or both. Schema
-      browsing and ad-hoc SQL hang under a connection."
+    description: Warehouse handles the models read. Schema browsing and ad-hoc SQL hang under a connection. Where builds
+      write is an environment's `destinations`, which are not connections.
   - name: tables
     description: Tables the server created or serves in a connection, with their life cycle.
   - name: packages
@@ -415,15 +415,6 @@ paths:
       parameters:
         - $ref: "#/components/parameters/limit"
         - $ref: "#/components/parameters/after"
-        - name: role
-          in: query
-          schema:
-            type: string
-            enum:
-              - source
-              - destination
-              - both
-          description: Only connections with this role (a destination is `destination` or `both`).
         - $ref: "#/components/parameters/ifNoneMatch"
       responses:
         "200":
@@ -3887,9 +3878,9 @@ components:
         tableName:
           type: string
           description: Logical, fully-qualified, unquoted table name to create; the server quotes each segment for the dialect.
-        connectionName:
+        destinationName:
           type: string
-          description: The destination connection to build into. Absent means the source's own connection (colocated).
+          description: The destination to build into. Absent means the source's own connection (colocated).
         realization:
           $ref: "#/components/schemas/Realization"
         reseed:
@@ -4206,10 +4197,10 @@ components:
           $ref: "#/components/schemas/CompiledDocument"
     Connection:
       type: object
-      description: "A warehouse handle: a source the models read, a destination materialized tables are written to, or both.
-        Credential fields are write-only: accepted on create and update, never returned, and named in `withheldFields`
-        so an editor can tell a set credential from an absent one. The dialect block matching `type` carries the
-        configuration."
+      description: "A warehouse handle the models read. Builds write to destinations, which are not connections
+        (`Environment.destinations`). Credential fields are write-only: accepted on create and update, never returned,
+        and named in `withheldFields` so an editor can tell a set credential from an absent one. The dialect block
+        matching `type` carries the configuration."
       required:
         - resource
         - name
@@ -4237,15 +4228,6 @@ components:
             - motherduck
             - ducklake
             - publisher
-        role:
-          type: string
-          enum:
-            - source
-            - destination
-            - both
-          default: source
-          description: "`source`: models may read it. `destination`: materialization builds may write to it (a `#@ persist
-            storage=` target) and it is never resolvable from a model. `both`: either."
         scope:
           type: string
           enum:
@@ -4454,6 +4436,32 @@ components:
             $ref: "#/components/schemas/DataFile"
         nextCursor:
           $ref: "#/components/schemas/Cursor"
+    Destination:
+      type: object
+      description: "Where `#@ persist storage=<name>` builds write and their tables are served from. Not a connection: models
+        cannot name it, the connection routes cannot reach it, and its name is independent of the connections'.
+        Credential fields are write-only and named in `withheldFields`, as on a connection."
+      required:
+        - name
+        - type
+      properties:
+        name:
+          x-immutable: true
+          description: The name `#@ persist storage=` uses. Set on create; a write that changes it answers 400 `INVALID_REQUEST`.
+          $ref: "#/components/schemas/IdentifierPattern"
+        type:
+          type: string
+          enum:
+            - ducklake
+          description: The kinds of warehouse a build can write to; today only DuckLake.
+        ducklakeConnection:
+          $ref: "#/components/schemas/DucklakeConnection"
+        withheldFields:
+          type: array
+          readOnly: true
+          items:
+            type: string
+          description: Dotted paths of stored fields this response does not return (its credentials).
     DiscoveryIndex:
       type: object
       description: The state of the version's semantic discovery index, which `get_context` ranks against.
@@ -4775,6 +4783,15 @@ components:
             replaces what is stored; a connection named with no config is kept as stored. Absent means untouched.
           items:
             $ref: "#/components/schemas/Connection"
+        destinations:
+          type: array
+          description: "Where materialization builds write: the `#@ persist storage=<name>` targets. Read and written as
+            `connections` is, credentials withheld on a read. A destination is not a connection: no model can name it,
+            no connection route reaches it, and its name is independent of the connections', so a connection and a
+            destination may share a name and mean two configurations of one catalog (for example a read-only reader and
+            a writer)."
+          items:
+            $ref: "#/components/schemas/Destination"
         revision:
           $ref: "#/components/schemas/Revision"
         createdAt:
@@ -4811,6 +4828,21 @@ components:
           description: The environment's connections as `GET …/connections` lists them, credentials withheld.
           items:
             $ref: "#/components/schemas/Connection"
+        destinations:
+          type: array
+          description: The environment's destinations, by name and type only; their configuration is never returned here.
+          items:
+            type: object
+            required:
+              - name
+              - type
+            properties:
+              name:
+                type: string
+              type:
+                type: string
+                enum:
+                  - ducklake
         packages:
           type: array
           items:
@@ -5085,7 +5117,6 @@ components:
       type: object
       description: An `IncrementalBoundary` a previous run reported, returned verbatim with the table it belongs to.
       required:
-        - connectionName
         - tableName
         - coveredThrough
         - coveredThroughType
@@ -5095,6 +5126,10 @@ components:
       properties:
         connectionName:
           type: string
+          description: The connection of a colocated table; exactly one of this and `destinationName`.
+        destinationName:
+          type: string
+          description: The destination of a storage table.
         tableName:
           type: string
         coveredThrough:
@@ -5233,7 +5268,10 @@ components:
             outside Publisher queries, and what a manifest file bound with `manifestLocation` names."
         connectionName:
           type: string
-          description: The connection the table lives in.
+          description: The connection a `colocated` table lives in. Absent for a `storage` table.
+        destinationName:
+          type: string
+          description: The destination a `storage` table lives in. Absent for a `colocated` table.
         tier:
           type: string
           enum:
@@ -5291,6 +5329,10 @@ components:
           type: string
         connectionName:
           type: string
+          description: The connection of a colocated table.
+        destinationName:
+          type: string
+          description: The destination of a storage table.
     Model:
       type: object
       description: "One model file compiled: its sources, named queries and givens. Larger parts are included on request with
@@ -7012,7 +7054,10 @@ components:
           description: The table this source was headed for. Not a table that exists.
         connectionName:
           type: string
-          description: The connection the table would have landed in.
+          description: The connection a colocated table would have landed in.
+        destinationName:
+          type: string
+          description: The destination a storage table would have landed in.
         refused:
           type: boolean
           description: True when the eligibility gate refused the source before any build ran, so retrying returns the same answer

@@ -30,7 +30,7 @@ shape, with additive fields only, on v0.
 
 ```
 Environment                     a namespace for packages and connections; the unit of tenancy
-├── Connection                  a warehouse handle with a role: source, destination, or both
+├── Connection                  a warehouse handle the models read
 │   ├── schemas / tables        what the connection can read
 │   └── :run-sql                ad-hoc SQL: run, or describe a statement's columns
 └── Package                     a record with pointers (source, description, latestVersionId); holds no content
@@ -98,7 +98,7 @@ parent.
 | -------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `GET /status`                                                              | `operationalState`, `version`, `hostname`, `loadErrors` (with `stale` for a version serving a model older than its content), and every version this server holds with its `ServingState`. |
 | `GET /environments`, `POST /environments`                                  | List and create. `PATCH /environments/{env}` merges (its `connections` list replaces whole), `DELETE` removes it and everything in it.                                                                 |
-| `GET …/connections?role=destination`                                       | Connections by role. `POST` creates (`?dryRun=true` tests without storing); `PATCH` merges (`?dryRun=true` tests the change).                                                      |
+| `GET …/connections`                                                        | Connections. `POST` creates (`?dryRun=true` tests without storing); `PATCH` merges. Destinations, where builds write, are the environment's `destinations` list, not connections. |
 | `GET …/connections/{connectionName}/schemas`, `…/schemas/{s}/tables`, `POST …:run-sql`| Browse what a connection can read; run or describe SQL. The same routes exist under a version for its `duckdb` sandbox.                                                                     |
 | `GET …/packages`, `POST …/packages`                                        | List records; create a package from `source.location` and publish its first version (`?dryRun=true` checks without storing). Later versions are `POST …/versions`. |
 | `PATCH …/packages/{pkg}`                                                   | `description`, `latestVersionId` (a compare-and-swap under `If-Match`; moving it back is undo), `source`. Scope and schedule come from a version's `publisher.json`.                     |
@@ -155,7 +155,8 @@ The spec's nouns are the vocabulary, and the Console and the docs follow them:
 | Noun             | Means                                                                                                   |
 | ---------------- | ------------------------------------------------------------------------------------------------------- |
 | environment      | a namespace for packages and connections                                                                |
-| connection       | a warehouse handle; its `role` says whether models read it, builds write to it, or both                 |
+| connection       | a warehouse handle the models read                                                                      |
+| destination      | where `#@ persist storage=` builds write; set on the environment, never named by a model                 |
 | package          | a record with pointers; its content is a version                                                        |
 | version          | an immutable snapshot of a package's content; `latest` is the package's pointer to one of them          |
 | model            | a `.malloy` file; compiled, it yields sources, views, named queries and givens                          |
