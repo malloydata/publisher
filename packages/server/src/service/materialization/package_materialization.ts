@@ -502,9 +502,9 @@ export class PackageMaterialization {
     * are now, and rebind only when one of them moved.
     *
     * A table path embeds its destination's schema as of the bind, and a
-    * destination can change its schema under an unchanged name (a cutover
-    * moves `credible` from the legacy catalog's `main` to a managed database's
-    * `materialized`). The manifest is unchanged by that, so no manifest rebind
+    * destination can change its schema under an unchanged name (moving from
+    * `<destination>.<table>` in `main` to `<destination>.materialized.<table>`
+    * in a new catalog). The manifest is unchanged by that, so no manifest rebind
     * fires; without this, every bound source keeps reading the path the
     * destination left. A change that leaves every path where it was (a rotated
     * password, an added destination) rebinds nothing.
