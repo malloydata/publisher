@@ -334,6 +334,32 @@ describe("publisher_deprecated_usage_total", () => {
       });
    });
 
+   describe("GET /environments/{env}?reload=true", () => {
+      it("marks a reload deprecated and counts it; a plain read is neither", async () => {
+         const seen: boolean[] = [];
+         const app = buildRouteApp({
+            environmentStore: {
+               getEnvironment: async (_name: unknown, reload?: boolean) => {
+                  seen.push(reload === true);
+                  return { serialize: () => ({ name: "env" }) } as never;
+               },
+            } as never,
+         });
+         const reload = await request(app).get(
+            "/api/v0/environments/env?reload=true",
+         );
+         expect(reload.status).toBe(200);
+         expect(reload.headers["deprecation"]).toBe("true");
+
+         const plain = await request(app).get("/api/v0/environments/env");
+         expect(plain.status).toBe(200);
+         expect(plain.headers["deprecation"]).toBeUndefined();
+
+         expect(seen).toEqual([true, false]);
+         expect(await used("environment_reload")).toBe(1);
+      });
+   });
+
    describe("the #(filter) request fields", () => {
       const res = () => ({ setHeader: () => undefined });
 

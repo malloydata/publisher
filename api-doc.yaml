@@ -298,7 +298,15 @@ paths:
             $ref: "#/components/schemas/IdentifierPattern"
         - name: reload
           in: query
+          deprecated: true
           description: |
+            **Deprecated.** Re-reads the environment's block of `publisher.config.json` and reloads
+            the environment from it. Nothing first-party calls it, and the v1 API has no environment
+            reload. A response to `reload=true` carries `Deprecation: true`, and each use is counted in
+            `publisher_deprecated_usage_total{feature="environment_reload"}`; it is removed once that
+            reads zero (#1540). Under `frozenConfig` it is refused with 403, like any change to an
+            environment. To pick up a package's changed files, reload the package.
+
             Load / reload the environment before returning result.
 
             Only the two spellings OpenAPI serializes a boolean as are accepted:

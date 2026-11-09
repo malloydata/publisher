@@ -52,6 +52,8 @@ A rebuild of a materialized table in the source's own warehouse no longer drops 
 
 **`/entities` reads every gate the server accepts.** A source gated by an expression that starts with a string literal, such as `#(authorize) "admin" = $ROLE`, used to be reported as locked (`false`) by `GET …/packages/{pkg}/entities`, because its reader took the leading quote for the legacy quoted-string form. It now reports the gate as written, telling the two forms apart the way the load does: only a payload that is one string literal is the legacy form.
 
+**Deprecated: `GET /environments/{env}?reload=true`.** It re-reads the environment's block of `publisher.config.json`; no first-party client calls it, and the v1 API has no environment reload. A response to it now carries `Deprecation: true`, and each use is counted in `publisher_deprecated_usage_total{feature="environment_reload"}`. It is removed once that count reads zero ([#1540](https://github.com/malloydata/publisher/issues/1540)). It still works, and under `frozenConfig` it is still refused like any change to an environment. To pick up a package's changed files, reload the package.
+
 ## [0.12.5] — `--help` and the configuration reference come from the settings registry, and startup logs the settings given
 
 Every setting is described once, in the settings registry 0.12.2 added, and three things are now generated from it:

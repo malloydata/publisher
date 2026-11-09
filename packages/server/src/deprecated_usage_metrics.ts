@@ -41,7 +41,8 @@ export type DeprecatedFeature =
    | "filter_annotation"
    | "filter_params"
    | "bypass_filters"
-   | "package_patch";
+   | "package_patch"
+   | "environment_reload";
 
 const counter = lazyCounter(
    "publisher_deprecated_usage_total",
