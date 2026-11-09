@@ -85,6 +85,12 @@ info:
     (`dataAsOf`, `schemaAsOf`). Every stored resource, one with a `revision`, carries `createdAt` and `updatedAt`.
     Durations are integers whose name carries the unit (`durationMs`, `freshnessWindowSeconds`).
 
+    - Every object a `GET` can read carries `resource`, its canonical path relative to the API's base: no leading slash,
+    and the resolved version id in place of `latest`
+    (`environments/acme/packages/sales/versions/1.4.0/models/orders.malloy`). A list item carries it when its item has a
+    `GET` of its own. Relative, so it stays right behind a gateway that serves the API under another prefix; a link and
+    a stable key, never parsed.
+
     - Every list is `{items, nextCursor}`, paged with `limit` and `after`. `/status` is the one unpaged snapshot.
 
     - Query results are typed: `rows` always, and Malloy's full result, with column types and render metadata, only on
@@ -2807,6 +2813,8 @@ components:
       description: An agent a package declares, resolved to its instructions, skill files and schedules. Adopt it only when
         the user asks for it by name.
       properties:
+        resource:
+          $ref: "#/components/schemas/ResourcePath"
         name:
           type: string
         description:
@@ -2851,6 +2859,8 @@ components:
             type: string
         source:
           $ref: "#/components/schemas/AgentSource"
+      required:
+        - resource
     AgentAsset:
       type: object
       readOnly: true
@@ -2939,12 +2949,16 @@ components:
       readOnly: true
       description: One agent skill file or asset, with the pin of the definition it belongs to.
       properties:
+        resource:
+          $ref: "#/components/schemas/ResourcePath"
         relative_filepath:
           type: string
         file_contents:
           type: string
         source:
           $ref: "#/components/schemas/AgentSource"
+      required:
+        - resource
     AgentSource:
       type: object
       readOnly: true
@@ -2973,6 +2987,8 @@ components:
       readOnly: true
       description: One agent a package declares, without its instructions or skills.
       properties:
+        resource:
+          $ref: "#/components/schemas/ResourcePath"
         name:
           type: string
           description: The agent's name (its key in the manifest's `agents` object).
@@ -2987,6 +3003,8 @@ components:
             $ref: "#/components/schemas/AgentSchedule"
         budget:
           $ref: "#/components/schemas/AgentBudget"
+      required:
+        - resource
     AttachedDatabase:
       type: object
       description: Attached DuckDB database
@@ -3239,8 +3257,11 @@ components:
       type: object
       description: The version's persist build plan, as the last load derived it. A read, never a command.
       required:
+        - resource
         - state
       properties:
+        resource:
+          $ref: "#/components/schemas/ResourcePath"
         state:
           type: string
           enum:
@@ -3259,6 +3280,7 @@ components:
       type: object
       readOnly: true
       required:
+        - resource
         - sources
       description: "Server-computed, read-only, as `GET …/packages/{packageName}/classification` returns it: for each
         published entry point, the classes its `#(carries)` declares and how many of its fields carry each class
@@ -3266,6 +3288,8 @@ components:
         curation hides; a source locked to every caller is left out. A field's own classes, and what they were inherited
         from, are on its `get_context` card. `sources` is empty when no published field carries a class."
       properties:
+        resource:
+          $ref: "#/components/schemas/ResourcePath"
         sources:
           type: array
           description: Sorted by model path, then name.
@@ -3343,6 +3367,7 @@ components:
       description: "One model file compiled: its sources, named queries and givens. Larger parts are included on request with
         `?include=`."
       required:
+        - resource
         - path
         - malloyVersion
         - sources
@@ -3350,8 +3375,7 @@ components:
         - givens
       properties:
         resource:
-          type: string
-          readOnly: true
+          $ref: "#/components/schemas/ResourcePath"
         versionId:
           $ref: "#/components/schemas/VersionId"
         path:
@@ -3513,14 +3537,14 @@ components:
         so an editor can tell a set credential from an absent one. The dialect block matching `type` carries the
         configuration."
       required:
+        - resource
         - name
         - type
         - createdAt
         - updatedAt
       properties:
         resource:
-          type: string
-          readOnly: true
+          $ref: "#/components/schemas/ResourcePath"
         name:
           x-immutable: true
           description: Set on create; a write that changes it answers 400 `INVALID_REQUEST`.
@@ -3654,13 +3678,12 @@ components:
     DataApp:
       type: object
       required:
+        - resource
         - path
         - title
       properties:
         resource:
-          readOnly: true
-          type: string
-          description: The page's URL under `…/versions/{versionId}/public/`.
+          $ref: "#/components/schemas/ResourcePath"
         versionId:
           $ref: "#/components/schemas/VersionId"
         path:
@@ -3718,9 +3741,6 @@ components:
       required:
         - path
       properties:
-        resource:
-          type: string
-          readOnly: true
         path:
           type: string
         format:
@@ -3754,8 +3774,11 @@ components:
       type: object
       description: The state of the version's semantic discovery index, which `get_context` ranks against.
       required:
+        - resource
         - status
       properties:
+        resource:
+          $ref: "#/components/schemas/ResourcePath"
         status:
           type: string
           enum:
@@ -4025,13 +4048,13 @@ components:
       type: object
       description: A namespace for packages and connections; the unit of tenancy.
       required:
+        - resource
         - name
         - createdAt
         - updatedAt
       properties:
         resource:
-          type: string
-          readOnly: true
+          $ref: "#/components/schemas/ResourcePath"
         name:
           x-immutable: true
           description: Set on create; a write that changes it answers 400 `INVALID_REQUEST`.
@@ -4075,8 +4098,7 @@ components:
         - packages
       properties:
         resource:
-          type: string
-          readOnly: true
+          $ref: "#/components/schemas/ResourcePath"
         name:
           type: string
         connections:
@@ -4563,11 +4585,11 @@ components:
     Model:
       type: object
       required:
+        - resource
         - path
       properties:
         resource:
-          type: string
-          readOnly: true
+          $ref: "#/components/schemas/ResourcePath"
         versionId:
           $ref: "#/components/schemas/VersionId"
         path:
@@ -4718,14 +4740,14 @@ components:
       description: "A package's identity and pointers. It holds no content: content is a Version. Its own fields
         (`description`, `latestVersionId`, `source`) are the only ones a client may change."
       required:
+        - resource
         - name
         - source
         - createdAt
         - updatedAt
       properties:
         resource:
-          type: string
-          readOnly: true
+          $ref: "#/components/schemas/ResourcePath"
         name:
           x-immutable: true
           description: Set on create; a write that changes it answers 400 `INVALID_REQUEST`.
@@ -4842,8 +4864,7 @@ components:
         - versions
       properties:
         resource:
-          type: string
-          readOnly: true
+          $ref: "#/components/schemas/ResourcePath"
         name:
           type: string
         latestVersionId:
@@ -5421,14 +5442,14 @@ components:
       type: object
       description: A `.malloy` file carrying an `## artifact` tag, wherever it lives in the version.
       required:
+        - resource
         - path
         - name
         - layout
         - title
       properties:
         resource:
-          type: string
-          readOnly: true
+          $ref: "#/components/schemas/ResourcePath"
         versionId:
           $ref: "#/components/schemas/VersionId"
         path:
@@ -5568,6 +5589,15 @@ components:
           type: integer
           description: The grid column the tile's left edge sits in, counted from 1, from `col=N` on its entry in `tiles=[…]`. See
             `row`.
+    ResourcePath:
+      type: string
+      readOnly: true
+      pattern: ^[^/\s][^\s]*$
+      description: The canonical path of the resource this object represents or describes, relative to the API's base path,
+        with no leading slash and with the resolved version id in place of `latest` (for example
+        `environments/acme/packages/sales/versions/1.4.0/models/orders.malloy`). A `GET` of the base path joined with it
+        reads the resource. It is relative so that it stays right behind a gateway that serves the API under another
+        prefix. Use it as a link and a stable key; never parse it.
     Revision:
       readOnly: true
       type: integer
@@ -5580,6 +5610,7 @@ components:
       type: object
       description: One attempt to build a slot's persisted sources.
       required:
+        - resource
         - runId
         - versionId
         - status
@@ -5590,8 +5621,7 @@ components:
         - updatedAt
       properties:
         resource:
-          type: string
-          readOnly: true
+          $ref: "#/components/schemas/ResourcePath"
         runId:
           type: string
           readOnly: true
@@ -5710,9 +5740,12 @@ components:
       type: object
       description: What a run produced, one entry per source. A document of the run, so it is not paged.
       required:
+        - resource
         - runId
         - entries
       properties:
+        resource:
+          $ref: "#/components/schemas/ResourcePath"
         runId:
           type: string
         builtAt:
@@ -5928,13 +5961,13 @@ components:
         /status`, and for one package at `GET …/packages/{packageName}/status`, where the per-package fields are also
         present. Reading it never loads the version."
       required:
+        - resource
         - versionId
         - status
         - loaded
       properties:
         resource:
-          type: string
-          readOnly: true
+          $ref: "#/components/schemas/ResourcePath"
         versionId:
           $ref: "#/components/schemas/VersionId"
         status:
@@ -6034,6 +6067,8 @@ components:
       readOnly: true
       description: An agent skill with its full Markdown body.
       properties:
+        resource:
+          $ref: "#/components/schemas/ResourcePath"
         name:
           type: string
           description: The skill's name.
@@ -6049,6 +6084,8 @@ components:
             - bundled
             - package
           description: Where this skill came from. See SkillSummary.origin.
+      required:
+        - resource
     SkillList:
       type: object
       required:
@@ -6066,6 +6103,8 @@ components:
       description: One agent skill in force for a package, without its body. This is what a caller reads to decide which skill
         to fetch.
       properties:
+        resource:
+          $ref: "#/components/schemas/ResourcePath"
         name:
           type: string
           description: The skill's name, and the identifier for fetching it. A name containing a slash (`<skill>/<stem>`) is one
@@ -6082,6 +6121,8 @@ components:
           description: "`bundled` = shipped with this server. `package` = shipped by the package under `skills/`, which includes a
             package skill whose name matches a bundled one and therefore REPLACES it for this package. Present so a
             caller can tell a replaced skill from the original, which is otherwise invisible."
+      required:
+        - resource
     SnowflakeConnection:
       type: object
       description: Snowflake database connection configuration
@@ -6455,12 +6496,12 @@ components:
       type: object
       description: A table with its columns.
       required:
+        - resource
         - name
         - columns
       properties:
         resource:
-          type: string
-          readOnly: true
+          $ref: "#/components/schemas/ResourcePath"
         schemaName:
           type: string
         name:
@@ -6477,11 +6518,11 @@ components:
       type: object
       description: A table as a schema listing names it.
       required:
+        - resource
         - name
       properties:
         resource:
-          type: string
-          readOnly: true
+          $ref: "#/components/schemas/ResourcePath"
         schemaName:
           type: string
         name:
@@ -6527,6 +6568,7 @@ components:
       description: An immutable snapshot of a package's content. Its content never changes; its lifecycle fields (`archived`,
         `loaded`, `pinned`, `manifestLocation`) do, through `PATCH`.
       required:
+        - resource
         - versionId
         - origin
         - archived
@@ -6535,8 +6577,7 @@ components:
         - updatedAt
       properties:
         resource:
-          type: string
-          readOnly: true
+          $ref: "#/components/schemas/ResourcePath"
         versionId:
           readOnly: true
           $ref: "#/components/schemas/VersionId"
