@@ -51,7 +51,7 @@ import {
    toSourceResults,
    type SourceCard,
 } from "./response";
-import { memberPathOf, sourceContextKey } from "../model/package_entities";
+import { fieldPathOf, sourceContextKey } from "../model/package_entities";
 import {
    type PackageIndex,
    type ResolvedRequest,
@@ -68,6 +68,11 @@ import type { FindTarget } from "./find";
 import type { FcjIndex } from "../index/index_build";
 import { keptValues, PATHS_SHOWN, type JudgeVerdict } from "./judge";
 import { parseRouteKey, routesFrom, throughFanout } from "./routes";
+
+/** A field path as the value lookup takes it: one name, or its segments. */
+function dimensionOf(path: string[]): string | string[] {
+   return path.length === 1 ? path[0] : path;
+}
 
 /** Distinct values the query-time lookup reads for a gated dimension. */
 const GATED_LOOKUP_LIMIT = 2_000;
@@ -673,7 +678,8 @@ async function valuesFor(
          packageName: request.packageName,
          modelPath: cardModelPath(owner, request),
          source: node.source,
-         dimension: memberPathOf(node.entities[0] ?? node) ?? node.name,
+         // One name stays a string, as it always was; a path is a list.
+         dimension: dimensionOf(fieldPathOf(node.entities[0] ?? node)),
          limit: GATED_LOOKUP_LIMIT,
          ...(request.givens ? { givens: request.givens } : {}),
          ...(request.filterParams

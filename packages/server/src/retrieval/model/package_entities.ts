@@ -455,22 +455,27 @@ export function memberSegment(name: string): string {
 }
 
 /**
- * The field reference a record member's name spells, one segment per
- * element, without quotes: `delivery.address.zip` is
- * `["delivery", "address", "zip"]`, and `` traffic_source.`source` `` is
- * `["traffic_source", "source"]`. Undefined for anything that is not a
- * member of a source's own record, whose name is one name even when it holds
- * a dot. Sound because collectRecordMembers only walks a record whose name,
- * and every member name under it, is a plain identifier, and backticks only
- * a reserved one.
+ * The field reference an entity's name spells, one segment per element,
+ * without quotes, for a caller that quotes each one: `customer.city`
+ * through the join `customer` is `["customer", "city"]`,
+ * `` traffic_source.`source` `` is `["traffic_source", "source"]`. The part
+ * past the join path is split only for a record member: any other field's
+ * name is one name even when it holds a dot. Splitting a member is sound
+ * because collectRecordMembers only walks a record whose name, and every
+ * member name under it, is a plain identifier, and backticks only a
+ * reserved one.
  */
-export function memberPathOf(e: {
+export function fieldPathOf(e: {
    name: string;
    recordPath?: string;
    joinPath?: string;
-}): string[] | undefined {
-   if (!e.recordPath || e.joinPath) return undefined;
-   return e.name.split(".").map((segment) => segment.replace(/`/g, ""));
+}): string[] {
+   const joins = e.joinPath ? e.joinPath.split(".") : [];
+   const rest = e.joinPath ? e.name.slice(e.joinPath.length + 1) : e.name;
+   const tail = e.recordPath
+      ? rest.split(".").map((segment) => segment.replace(/`/g, ""))
+      : [rest];
+   return [...joins, ...tail];
 }
 
 /**

@@ -40,7 +40,7 @@ import {
    getPackageIndex,
    MALLOY_RESERVED_WORDS,
    MAX_RECORD_MEMBERS_PER_SOURCE,
-   memberPathOf,
+   fieldPathOf,
 } from "./package_entities";
 
 // A DuckDB STRUCT compiles to the same Malloy record type as a BigQuery
@@ -270,7 +270,7 @@ describe("record members (#1526)", () => {
          ["`date`.`year`", "`date`"],
          ["traffic.city", "traffic"],
       ]);
-      expect(memberPathOf(entity("visits", "`date`.`year`")!)).toEqual([
+      expect(fieldPathOf(entity("visits", "`date`.`year`")!)).toEqual([
          "date",
          "year",
       ]);
@@ -297,16 +297,27 @@ describe("record members (#1526)", () => {
    });
 
    it("splits a member's name into the segments of its field reference", () => {
-      expect(
-         memberPathOf(entity("orders", "traffic_source.`source`")!),
-      ).toEqual(["traffic_source", "source"]);
-      expect(memberPathOf(entity("orders", "delivery.address.zip")!)).toEqual([
+      expect(fieldPathOf(entity("orders", "traffic_source.`source`")!)).toEqual(
+         ["traffic_source", "source"],
+      );
+      expect(fieldPathOf(entity("orders", "delivery.address.zip")!)).toEqual([
          "delivery",
          "address",
          "zip",
       ]);
       // Not a member: one name, even with a dot in it.
-      expect(memberPathOf({ name: "a.b" })).toBeUndefined();
+      expect(fieldPathOf({ name: "a.b" })).toEqual(["a.b"]);
+      expect(
+         fieldPathOf({
+            name: "hc.profile.tier",
+            joinPath: "hc",
+            recordPath: "profile",
+         }),
+      ).toEqual(["hc", "profile", "tier"]);
+      expect(fieldPathOf({ name: "hc.a.b", joinPath: "hc" })).toEqual([
+         "hc",
+         "a.b",
+      ]);
    });
 
    it("finds a member by its words", () => {
@@ -590,7 +601,7 @@ source: shipments is duckdb.sql("${ORDERS}") extend {
 // A gated source's values are read at query time with the caller's givens
 // (respond.ts), through the same path as any query.
 describe("reading a record member's values on a gated source", () => {
-   it("quotes each segment of the member's path, reserved word included", async () => {
+   it("quotes each segment of the field's path, reserved word and join included", async () => {
       const dir = fs.mkdtempSync(path.join(os.tmpdir(), "record-values-"));
       const duckdb = new DuckDBConnection("duckdb", ":memory:", dir);
       try {
@@ -599,7 +610,9 @@ describe("reading a record member's values on a gated source", () => {
             `##! experimental.givens
 given: role :: string
 #(authorize) 'analyst' = $role
-source: visits is duckdb.sql("""select {'source': 'google', 'city': 'Denver'} as traffic union all select {'source': 'bing', 'city': 'Boulder'}""")
+source: visits is duckdb.sql("""select 7 as cid, {'source': 'google', 'city': 'Denver'} as traffic union all select 8, {'source': 'bing', 'city': 'Boulder'}""") extend {
+  join_one: hc is duckdb.sql("""select 7 as id, {'tier': 'gold'} as profile union all select 8, {'tier': 'tin'}""") on cid = hc.id
+}
 `,
          );
          const model = await Model.create(
@@ -636,7 +649,7 @@ source: visits is duckdb.sql("""select {'source': 'google', 'city': 'Denver'} as
                packageName: "pkg",
                modelPath: "m.malloy",
                source: "visits",
-               dimension: memberPathOf(member)!,
+               dimension: fieldPathOf(member),
                limit: 10,
                timeoutMs: 10_000,
                givens: { role: "analyst" },
@@ -645,6 +658,9 @@ source: visits is duckdb.sql("""select {'source': 'google', 'city': 'Denver'} as
          };
          expect(await read("traffic.city")).toEqual(["Boulder", "Denver"]);
          expect(await read("traffic.`source`")).toEqual(["bing", "google"]);
+         // Through a join: the join's segment is quoted on its own too.
+         expect(await read("hc.profile.tier")).toEqual(["gold", "tin"]);
+         expect(await read("hc.id")).toEqual(["7", "8"]);
       } finally {
          await duckdb.close();
          fs.rmSync(dir, { recursive: true, force: true });
