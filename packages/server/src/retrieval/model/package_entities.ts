@@ -1077,9 +1077,14 @@ async function collectEntities(pkg: Package): Promise<CollectedModel> {
             // under the record's own name. Unless that record is hidden
             // (renamed, then `include { public: ship_to }`): then the alias
             // is the only spelling, and lists them.
+            // A nested record (`addr is delivery.address`) is listed under
+            // its top-level record's name when that record is visible.
+            const aliasOf = fieldProvenance?.aliasOf;
             const aliasOfVisible =
-               fieldProvenance?.aliasOf !== undefined &&
-               visible.has(fieldProvenance.aliasOf);
+               aliasOf !== undefined &&
+               (visible.has(aliasOf) ||
+                  (aliasOf.includes(".") &&
+                     visible.has(aliasOf.split(".")[0])));
             if (field.kind === "dimension" && !aliasOfVisible) {
                collectRecordMembers({
                   type: (field as { type?: FieldType }).type,
@@ -1423,6 +1428,13 @@ function collapseAliases(entities: Entity[]): Entity[] {
                keep.classificationInputs = donor.classificationInputs;
             }
          }
+      }
+      // A repeated record's member is `many`, and so is a dimension
+      // declared over it (`qty_each is lines.qty`): grouping by either
+      // gives a group per element.
+      if (!keep.relationship) {
+         const donor = members.find((e) => e !== keep && e.relationship);
+         if (donor?.relationship) keep.relationship = donor.relationship;
       }
       const folded = members.filter((e) => e !== keep);
       keep.aliases = folded.map((e) => e.name);

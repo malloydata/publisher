@@ -71,6 +71,8 @@ source: orders is duckdb.sql("""${SQL}""") extend {
   #(classification) "pci"
   dimension: billing_details is billing
   dimension: ship_to is delivery
+  dimension: qty_each is lines.qty
+  dimension: addr is delivery.address
 }
 `;
 
@@ -210,6 +212,24 @@ describe("record members (#1526)", () => {
       expect(declared?.doc).toBe("The city the order was delivered to.");
    });
 
+   it("keeps many on a dimension declared over a repeated record's member", () => {
+      expect(entity("orders", "lines.qty")).toBeUndefined();
+      expect(entity("orders", "qty_each")).toMatchObject({
+         aliases: ["lines.qty"],
+         relationship: "many",
+      });
+   });
+
+   it("lists a nested record's members once, not again under a dimension declared over it", () => {
+      expect(entity("orders", "addr")?.dataType).toBe("record");
+      expect(entity("orders", "delivery.address.zip")).toBeDefined();
+      expect(
+         fixture.pkgIndex.directEntities
+            .filter((e) => e.source === "orders" && e.name.startsWith("addr."))
+            .map((e) => e.name),
+      ).toEqual([]);
+   });
+
    it("lists a record's members once, under its own name, not again under an alias of the record", () => {
       expect(entity("orders", "ship_to")?.dataType).toBe("record");
       expect(
@@ -315,7 +335,9 @@ describe("record members (#1526)", () => {
                   e.dataType !== "record",
             )
             .map((e, i) => `m${i} is ${e.name}`);
-         expect(members).toContain("m0 is delivery.region");
+         expect(members.some((m) => m.endsWith(" is delivery.region"))).toBe(
+            true,
+         );
          expect(
             await run(
                `run: orders -> { group_by: ${members.join(", ")} } -> { aggregate: rows is count() }`,
