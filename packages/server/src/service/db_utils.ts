@@ -113,9 +113,11 @@ interface CachedMembers {
  * Record members by table, per Malloy connection. A listing reuses an entry
  * without reading the schema when the table's record columns still have the
  * same INFORMATION_SCHEMA types, since on DuckDB and Trino that type string
- * spells out every member: `STRUCT(city VARCHAR, ...)`. A type that names no
- * members (a Databricks `struct`) is read every time and never cached: an
- * unchanged `struct` says nothing about whether its members changed.
+ * spells out every member: `STRUCT(city VARCHAR, ...)`, and so does a
+ * Databricks `struct<city:string>` (its listing reads full_data_type). A
+ * type that names no members (a bare `struct`) is read every time and never
+ * cached: an unchanged `struct` says nothing about whether its members
+ * changed.
  */
 const memberCache = new WeakMap<Connection, Map<string, CachedMembers>>();
 
@@ -124,8 +126,8 @@ const memberCache = new WeakMap<Connection, Map<string, CachedMembers>>();
  * count of reads started (not the clock). A listing starts its reads with the
  * tables tried longest ago, never-tried ones first, so a schema too large for
  * one listing's time limit is covered over the next few, and a table whose
- * read always fails, or whose type always needs a read (a Databricks
- * `struct`), cannot keep the tables after it from being read.
+ * read always fails, or whose type always needs a read (a bare `struct`),
+ * cannot keep the tables after it from being read.
  */
 const lastTried = new WeakMap<Connection, Map<string, number>>();
 
@@ -156,7 +158,7 @@ function nextRefreshTimestamp(): number {
  * Whether Malloy will read a table's schema by this path. It refuses a path
  * that is not canonical SQL for the dialect (`memory.main.my-tbl`, which needs
  * quoting), on every read, so such a table's members are never listed, like a
- * Databricks ARRAY's, rather than marked unread on every listing.
+ * plain array's, rather than marked unread on every listing.
  */
 function isReadablePath(dialectName: string, resource: string): boolean {
    try {
@@ -221,8 +223,8 @@ async function withRecordMembers(
    const resolved = new Map<string, Map<string, ApiColumn[]>>();
    const toRead: ApiTable[] = [];
    // Whether the record types spell out their members (`STRUCT(city ...)`),
-   // so an unchanged type means unchanged members. A Databricks `struct`
-   // names none: its cached members may be stale, so they never stand in.
+   // so an unchanged type means unchanged members. A bare `struct` names
+   // none: its cached members may be stale, so they never stand in.
    const typesNameMembers = (t: ApiTable) =>
       recordColumnsOf(t).every((c) => /[(<]/.test(c.type ?? ""));
    for (const t of nested) {
@@ -1961,9 +1963,15 @@ async function listTablesForDatabricks(
             resourcePrefix = schemaName;
          }
 
+         // A STRUCT or ARRAY column reports its full_data_type
+         // (`struct<city:string>`, `array<struct<sku:string>>`): data_type
+         // says only STRUCT or ARRAY, which names no members, so a listing
+         // could neither find an array of structs nor tell a changed struct
+         // from an unchanged one (withRecordMembers). Every other column
+         // keeps its data_type.
          const result = await runIntrospectionSQL(
             malloyConnection,
-            `SELECT table_name, column_name, data_type FROM ${catalogPrefix}information_schema.columns WHERE table_schema = '${sqlLiteral(schemaOnly, connection.type)}' ${sqlInFilter("table_name", tableNames, connection.type)} ORDER BY table_name, ordinal_position`,
+            `SELECT table_name, column_name, CASE WHEN upper(data_type) IN ('STRUCT', 'ARRAY') THEN coalesce(full_data_type, data_type) ELSE data_type END AS data_type FROM ${catalogPrefix}information_schema.columns WHERE table_schema = '${sqlLiteral(schemaOnly, connection.type)}' ${sqlInFilter("table_name", tableNames, connection.type)} ORDER BY table_name, ordinal_position`,
          );
          const rows = standardizeRunSQLResult(result);
          return groupColumnRowsIntoTables(

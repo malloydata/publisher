@@ -326,6 +326,114 @@ describe("a DuckDB schema with STRUCT columns", () => {
    });
 });
 
+describe("a Databricks schema with struct columns", () => {
+   const conn: ApiConnection = {
+      name: "dbx",
+      type: "databricks",
+      databricksConnection: { defaultCatalog: "main" },
+   };
+   // What information_schema.columns answers once the listing asks for
+   // full_data_type on STRUCT and ARRAY columns. Databricks itself cannot run
+   // here, so the query's text is checked and its answer is faked.
+   function fakeDatabricks(placeType: string) {
+      const sql: string[] = [];
+      const rows = [
+         { table_name: "orders", column_name: "id", data_type: "INT" },
+         { table_name: "orders", column_name: "place", data_type: placeType },
+         {
+            table_name: "orders",
+            column_name: "lines",
+            data_type: "array<struct<sku:string>>",
+         },
+         {
+            table_name: "orders",
+            column_name: "tags",
+            data_type: "array<string>",
+         },
+      ];
+      const fields = [
+         { name: "id", type: "number" },
+         {
+            name: "place",
+            type: "record",
+            fields: [{ name: "city", type: "string" }],
+         },
+         {
+            name: "lines",
+            type: "array",
+            elementTypeDef: { type: "record_element" },
+            fields: [{ name: "sku", type: "string" }],
+         },
+         {
+            name: "tags",
+            type: "array",
+            elementTypeDef: { type: "string" },
+         },
+      ];
+      const connection = {
+         dialectName: "databricks",
+         runSQL: async (text: string) => {
+            sql.push(text);
+            return { rows };
+         },
+         fetchSchemaForTables: async (tables: Record<string, string>) => ({
+            schemas: Object.fromEntries(
+               Object.keys(tables).map((k) => [k, { fields }]),
+            ),
+            errors: {},
+         }),
+      };
+      return { connection, sql };
+   }
+
+   it("reads full_data_type, so an array of structs is expanded and an unchanged struct is not read again", async () => {
+      const { connection, sql } = fakeDatabricks("struct<city:string>");
+      const malloyConnection = connection as unknown as Parameters<
+         typeof listTablesForSchema
+      >[2];
+      const reads = spyOn(connection, "fetchSchemaForTables");
+      const [table] = await listTablesForSchema(
+         conn,
+         "sales",
+         malloyConnection,
+      );
+      expect(sql[0]).toContain(
+         "CASE WHEN upper(data_type) IN ('STRUCT', 'ARRAY') THEN coalesce(full_data_type, data_type) ELSE data_type END AS data_type",
+      );
+      expect(table.columns).toEqual([
+         { name: "id", type: "int" },
+         { name: "place", type: "struct<city:string>" },
+         { name: "place.city", type: "string" },
+         { name: "lines", type: "array<struct<sku:string>>" },
+         { name: "lines.sku", type: "string" },
+         { name: "tags", type: "array<string>" },
+      ]);
+      expect(reads).toHaveBeenCalledTimes(1);
+      // The struct's type spells its members, so an unchanged one is cached.
+      await listTablesForSchema(conn, "sales", malloyConnection);
+      expect(reads).toHaveBeenCalledTimes(1);
+   });
+
+   it("reads a bare struct on every listing and never serves it from the cache", async () => {
+      const { connection } = fakeDatabricks("struct");
+      const malloyConnection = connection as unknown as Parameters<
+         typeof listTablesForSchema
+      >[2];
+      const reads = spyOn(connection, "fetchSchemaForTables");
+      await listTablesForSchema(conn, "sales", malloyConnection);
+      await listTablesForSchema(conn, "sales", malloyConnection);
+      expect(reads).toHaveBeenCalledTimes(2);
+      // A failed read is not covered by the last good one: it is marked.
+      reads.mockRejectedValueOnce(new Error("warehouse unavailable"));
+      const [table] = await listTablesForSchema(
+         conn,
+         "sales",
+         malloyConnection,
+      );
+      expect(table.membersUnread).toBe(true);
+   });
+});
+
 describe("capColumns", () => {
    it("keeps a table's own columns before record members, in listed order", () => {
       const columns = [
