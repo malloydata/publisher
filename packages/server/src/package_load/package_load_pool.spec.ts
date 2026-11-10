@@ -270,6 +270,261 @@ describe("PackageLoadPool (real worker)", () => {
          await duckdb.close();
       }
    });
+
+   it("compiles each model over the load's shared imports, keeping its own problems and data styles (#1566)", async () => {
+      // index imports a then b; both import base. index, a and b are each
+      // compiled once with their imports from the load's cache.
+      writeManifest(tempDir);
+      const write = (rel: string, text: string) =>
+         fs.writeFileSync(path.join(tempDir, rel), text);
+      write("base_styles.json", '{"shared":{"renderer":"base"}}');
+      write("b_styles.json", '{"shared":{"renderer":"b"}}');
+      write(
+         "base.malloy",
+         `--! styles base_styles.json
+source: base is duckdb.sql("select 1 as a") extend {
+  dimension: nothing is null
+}`,
+      );
+      write("a.malloy", 'import "base.malloy"\nsource: a is base\n');
+      write(
+         "b.malloy",
+         '--! styles b_styles.json\nimport "base.malloy"\nsource: b is base\n',
+      );
+      write(
+         "index.malloy",
+         `import "a.malloy"
+import "b.malloy"
+source: top is a extend { dimension: also_nothing is null }`,
+      );
+
+      const { malloyConfig, duckdb } = await buildConfig();
+      try {
+         const outcome = await pool.loadPackage({
+            packagePath: tempDir,
+            packageName: "pkg",
+            environmentName: "env",
+            malloyConfig,
+            defaultConnectionName: "duckdb",
+            collectProblems: true,
+         });
+         const byPath = new Map(outcome.models.map((m) => [m.modelPath, m]));
+         expect([...byPath.keys()].sort()).toEqual([
+            "a.malloy",
+            "b.malloy",
+            "base.malloy",
+            "index.malloy",
+         ]);
+         for (const m of outcome.models) {
+            expect(m.compilationError).toBeUndefined();
+         }
+         // As a Runtime of the model's own read them: its file, then its
+         // imports in the order Malloy reads them, later ones winning.
+         expect(byPath.get("base.malloy")!.dataStyles).toEqual({
+            shared: { renderer: "base" },
+         });
+         expect(byPath.get("a.malloy")!.dataStyles).toEqual({
+            shared: { renderer: "base" },
+         });
+         expect(byPath.get("b.malloy")!.dataStyles).toEqual({
+            shared: { renderer: "base" },
+         });
+         // index reads a, b, then base.
+         expect(byPath.get("index.malloy")!.dataStyles).toEqual({
+            shared: { renderer: "base" },
+         });
+         const warningsAt = (modelPath: string) =>
+            (byPath.get(modelPath)!.problems ?? [])
+               .filter(
+                  (p) =>
+                     (p as { code?: string }).code ===
+                     "null-typed-field-definition",
+               )
+               .map((p) =>
+                  path.basename((p as { at?: { url?: string } }).at?.url ?? ""),
+               );
+         // Each file's warning is reported by its own model; an importer that
+         // took base from the cache reports only its own (the package compile
+         // dedupes them across models anyway).
+         expect(warningsAt("base.malloy")).toEqual(["base.malloy"]);
+         expect(warningsAt("index.malloy")).toEqual(["index.malloy"]);
+      } finally {
+         await duckdb.close();
+      }
+   });
+
+   it("serves a model the same whoever imports it (#1566)", async () => {
+      // Importing a persistable source makes the translator record each
+      // source's `#@ persist` flag on the imported model's registry entry. The
+      // import must not reach the imported model's own result.
+      const base = `source: facts is duckdb.sql("select 1 as a") -> { group_by: a }\n`;
+      const importer = `import "base.malloy"\nsource: top is facts extend { measure: n is count() }\n`;
+      const { malloyConfig, duckdb } = await buildConfig();
+      const baseModelDef = async (withImporter: boolean) => {
+         const dir = fs.mkdtempSync(path.join(os.tmpdir(), "publisher-alone-"));
+         try {
+            writeManifest(dir);
+            fs.writeFileSync(path.join(dir, "base.malloy"), base);
+            if (withImporter) {
+               fs.writeFileSync(path.join(dir, "importer.malloy"), importer);
+            }
+            const outcome = await pool.loadPackage({
+               packagePath: dir,
+               packageName: "pkg",
+               environmentName: "env",
+               malloyConfig,
+               defaultConnectionName: "duckdb",
+            });
+            for (const m of outcome.models) {
+               expect(m.compilationError).toBeUndefined();
+            }
+            const model = outcome.models.find(
+               (m) => m.modelPath === "base.malloy",
+            );
+            // Malloy names each compile's query sources with a fresh UUID.
+            return (
+               JSON.stringify(model?.modelDef)
+                  // The directory appears as a path and as a file URL.
+                  .replaceAll(path.basename(dir), "<pkg>")
+                  .replace(
+                     /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/g,
+                     "<uuid>",
+                  )
+            );
+         } finally {
+            fs.rmSync(dir, { recursive: true, force: true });
+         }
+      };
+      try {
+         expect(await baseModelDef(true)).toBe(await baseModelDef(false));
+      } finally {
+         await duckdb.close();
+      }
+   });
+
+   it("merges a model's data styles in the order Malloy reads its imports (#1566)", async () => {
+      // root imports b then c; b's subtree (d, then e) is read before c's (f),
+      // so f, read last, wins. A level-by-level order would read e last.
+      writeManifest(tempDir);
+      const write = (rel: string, text: string) =>
+         fs.writeFileSync(path.join(tempDir, rel), text);
+      const table = `duckdb.sql("select 1 as x")`;
+      write("e.json", '{"k":{"renderer":"line_chart"}}');
+      write("f.json", '{"k":{"renderer":"bar_chart"}}');
+      write(
+         "root.malloy",
+         'import "b.malloy"\nimport "c.malloy"\nsource: r is b\n',
+      );
+      write("b.malloy", 'import "d.malloy"\nsource: b is d\n');
+      write("d.malloy", 'import "e.malloy"\nsource: d is e\n');
+      write("e.malloy", `--! styles e.json\nsource: e is ${table}\n`);
+      write("c.malloy", 'import "f.malloy"\nsource: c is f\n');
+      write("f.malloy", `--! styles f.json\nsource: f is ${table}\n`);
+
+      const { malloyConfig, duckdb } = await buildConfig();
+      try {
+         const outcome = await pool.loadPackage({
+            packagePath: tempDir,
+            packageName: "pkg",
+            environmentName: "env",
+            malloyConfig,
+            defaultConnectionName: "duckdb",
+         });
+         const styles = (modelPath: string) =>
+            outcome.models.find((m) => m.modelPath === modelPath)?.dataStyles;
+         expect(styles("root.malloy")).toEqual({
+            k: { renderer: "bar_chart" },
+         });
+         expect(styles("b.malloy")).toEqual({ k: { renderer: "line_chart" } });
+         expect(styles("c.malloy")).toEqual({ k: { renderer: "bar_chart" } });
+      } finally {
+         await duckdb.close();
+      }
+   });
+
+   it("keeps an imported file's data styles when its path is not plain ASCII (#1566)", async () => {
+      // A file is read under its encoded URL; a modelDef's dependencies name
+      // it decoded. Both must find its styles.
+      writeManifest(tempDir);
+      fs.mkdirSync(path.join(tempDir, "my models"));
+      fs.writeFileSync(
+         path.join(tempDir, "my models", "styles.json"),
+         '{"k":{"renderer":"bar_chart"}}',
+      );
+      fs.writeFileSync(
+         path.join(tempDir, "my models", "bäse.malloy"),
+         `--! styles styles.json\nsource: base is duckdb.sql("select 1 as x")\n`,
+      );
+      for (const importer of ["root.malloy", "other.malloy"]) {
+         fs.writeFileSync(
+            path.join(tempDir, importer),
+            `import "my models/bäse.malloy"\nsource: s is base\n`,
+         );
+      }
+      const { malloyConfig, duckdb } = await buildConfig();
+      try {
+         const outcome = await pool.loadPackage({
+            packagePath: tempDir,
+            packageName: "pkg",
+            environmentName: "env",
+            malloyConfig,
+            defaultConnectionName: "duckdb",
+         });
+         expect(outcome.models.map((m) => m.modelPath).sort()).toEqual([
+            "my models/bäse.malloy",
+            "other.malloy",
+            "root.malloy",
+         ]);
+         for (const m of outcome.models) {
+            expect(m.compilationError).toBeUndefined();
+            expect(m.dataStyles).toEqual({ k: { renderer: "bar_chart" } });
+         }
+      } finally {
+         await duckdb.close();
+      }
+   });
+
+   it("fails the models of an import cycle, and only those, without holding the load (#1566)", async () => {
+      // a -> b -> c -> a. Malloy has no import-cycle check of its own (the
+      // translator overflows its stack), so each of these fails as it did
+      // before the job cache; nothing is cached from them, and the load ends.
+      writeManifest(tempDir);
+      const write = (rel: string, text: string) =>
+         fs.writeFileSync(path.join(tempDir, rel), text);
+      const src = (name: string) =>
+         `source: ${name} is duckdb.sql("select 1 as a")\n`;
+      write("a.malloy", `import "b.malloy"\n${src("a")}`);
+      write("b.malloy", `import "c.malloy"\n${src("b")}`);
+      write("c.malloy", `import "a.malloy"\n${src("c")}`);
+      write("into_cycle.malloy", `import "a.malloy"\n${src("into")}`);
+      write("free.malloy", src("free"));
+
+      const { malloyConfig, duckdb } = await buildConfig();
+      try {
+         const outcome = await pool.loadPackage({
+            packagePath: tempDir,
+            packageName: "pkg",
+            environmentName: "env",
+            malloyConfig,
+            defaultConnectionName: "duckdb",
+         });
+         const failed = outcome.models
+            .filter((m) => m.compilationError !== undefined)
+            .map((m) => m.modelPath)
+            .sort();
+         expect(failed).toEqual([
+            "a.malloy",
+            "b.malloy",
+            "c.malloy",
+            "into_cycle.malloy",
+         ]);
+         const free = outcome.models.find((m) => m.modelPath === "free.malloy");
+         expect(free?.compilationError).toBeUndefined();
+         expect(free?.modelDef).toBeDefined();
+      } finally {
+         await duckdb.close();
+      }
+   });
 });
 
 // ──────────────────────────────────────────────────────────────────────
@@ -422,6 +677,49 @@ describe("PackageLoadPool (work for the main thread)", () => {
    }
 
    const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
+
+   it("starts a model once its own imports have compiled, not after unrelated ones (#1566)", async () => {
+      // slow's table answers only once importer has asked for its own, and
+      // importer imports only base. Were importer to wait for every model
+      // compiled before it, slow included, the job would time out.
+      fs.writeFileSync(
+         path.join(tempDir, "base.malloy"),
+         `source: base is duckdb.sql("select 1 as a")\n`,
+      );
+      fs.writeFileSync(
+         path.join(tempDir, "slow.malloy"),
+         `source: slow is duckdb.table('held_slow_t')\n`,
+      );
+      fs.writeFileSync(
+         path.join(tempDir, "importer.malloy"),
+         `import "base.malloy"\nsource: mine is duckdb.table('held_mine_t')\n`,
+      );
+      let importerAsked!: () => void;
+      const importerAsks = new Promise<void>((r) => (importerAsked = r));
+      const { duckdb, load, tearDown } = await setUp(
+         (tables) => {
+            if (tables.includes("held_mine_t")) importerAsked();
+            return tables.includes("held_slow_t")
+               ? importerAsks
+               : Promise.resolve();
+         },
+         { jobTimeoutMs: 20000 },
+      );
+      try {
+         await duckdb.runSQL(
+            "create or replace table held_slow_t as select 1 as a",
+         );
+         await duckdb.runSQL(
+            "create or replace table held_mine_t as select 1 as b",
+         );
+         const outcome = await load(false);
+         for (const m of outcome.models) {
+            expect(m.compilationError).toBeUndefined();
+         }
+      } finally {
+         await tearDown();
+      }
+   });
 
    it("logs a job's entries on this thread as they are written, so a job that times out keeps them", async () => {
       // A malformed `#@ persist` tag is reported while the worker collects
