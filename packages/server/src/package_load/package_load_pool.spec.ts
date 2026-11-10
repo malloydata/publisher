@@ -688,24 +688,30 @@ describe("PackageLoadPool (work for the main thread)", () => {
       );
       fs.writeFileSync(
          path.join(tempDir, "slow.malloy"),
-         `source: slow is duckdb.table('slow_t')\n`,
+         `source: slow is duckdb.table('held_slow_t')\n`,
       );
       fs.writeFileSync(
          path.join(tempDir, "importer.malloy"),
-         `import "base.malloy"\nsource: mine is duckdb.table('mine_t')\n`,
+         `import "base.malloy"\nsource: mine is duckdb.table('held_mine_t')\n`,
       );
       let importerAsked!: () => void;
       const importerAsks = new Promise<void>((r) => (importerAsked = r));
       const { duckdb, load, tearDown } = await setUp(
          (tables) => {
-            if (tables.includes("mine_t")) importerAsked();
-            return tables.includes("slow_t") ? importerAsks : Promise.resolve();
+            if (tables.includes("held_mine_t")) importerAsked();
+            return tables.includes("held_slow_t")
+               ? importerAsks
+               : Promise.resolve();
          },
          { jobTimeoutMs: 20000 },
       );
       try {
-         await duckdb.runSQL("create table slow_t as select 1 as a");
-         await duckdb.runSQL("create table mine_t as select 1 as b");
+         await duckdb.runSQL(
+            "create or replace table held_slow_t as select 1 as a",
+         );
+         await duckdb.runSQL(
+            "create or replace table held_mine_t as select 1 as b",
+         );
          const outcome = await load(false);
          for (const m of outcome.models) {
             expect(m.compilationError).toBeUndefined();
