@@ -70,7 +70,7 @@ Measured against the three expectations, the findings group as follows (the tabl
 
 - **Consistency.** Three casings coexist in paths and parameters (`build-plan` beside `sqlSource` and `storageDestinations`; `filter_params` beside `versionId`), and again on MCP. Path parameters name a file four ways. GETs change state (`?reload=true`, the notebook cell runner). `PATCH` means four different things on four resources. Create answers 200 or 201 by route; connection writes return anonymous objects; `QueryResult.result` is a JSON string whose shape a flag toggles; only one list pages; nothing carries an `ETag`; `reason` is an open string documented centrally; the deprecated report routes set no `Deprecation` header.
 - **The domain model.** Package status lives in four places, including 14 inline `Package` fields behind a flag. `Package` echoes the version's fields under different names. Reports exist as three schema sets. Five things are "a database". A persisted table has three names across four lifecycle schemas, with `sourceEntityId` the only stable identity. The run exposes the store's row id as `environmentId` and a `metadata` blob the server queries by JSON path. Givens and filters, schedule, "manifest", "artifact", "index" and "stale" each mean two things. Skill, classification, embedding index and watch mode have no Console label.
-- **Surface against need.** Package `PATCH` is deprecated and #1552 removes it, yet it is the Console's and the CLI's only way to edit a package's description, schedule and scope. The notebooks route is the only runner for `.malloynb` cells. The Console composes N+1 reads for a source catalog, polls for build completion, re-parses JSON strings and detects server versions by 404. Credible's control plane tolerates extra response fields but breaks on enum additions, new required fields or type narrowing, parses the `resource` path positionally, gates one feature on a semver check, and proxies most reads to customers, so their shapes are customer-facing for Credible.
+- **Surface against need.** Package `PATCH` is deprecated and #1572 removes it, yet it is the Console's and the CLI's only way to edit a package's description, schedule and scope. The notebooks route is the only runner for `.malloynb` cells. The Console composes N+1 reads for a source catalog, polls for build completion, re-parses JSON strings and detects server versions by 404. Credible's control plane tolerates extra response fields but breaks on enum additions, new required fields or type narrowing, parses the `resource` path positionally, gates one feature on a semver check, and proxies most reads to customers, so their shapes are customer-facing for Credible.
 
 ### 2.2 The package
 
@@ -165,7 +165,7 @@ No schema version is recorded. DDL is `CREATE TABLE IF NOT EXISTS`, then a colum
 #### What is already moving
 
 - **Merged on 2026-11-08**, the architecture review's bug fixes: interrupted runs settled at open; colocated swap renames aside; connection rows pruned on environment PATCH; `frozenConfig` enforced from the first store; a never-loaded configured package can be deleted; the interim 409 on report writes and content PATCH for location-installed packages.
-- **#1552** (draft): every package is a published version. Removes the in-place install with its stage-and-swap and rollback, `.install-records`, `addPackageToDatabase`, package PATCH, the `<pkg>___<version>` split and `PUBLISHER_PACKAGE_VERSIONING`. Configured packages are staged and published as versions. Watch mode becomes the one in-place path and the only place a report write or a reload does anything; elsewhere a reload answers the version unchanged and a write answers 409 `PACKAGE_IS_VERSIONED`. B2 lifts that refusal.
+- **#1570 → #1571 → #1572** (open, stacked; they replace #1552, closed unmerged): every package is a published version, in three steps. #1570 runs every test suite with versioning on; #1571 makes `PUBLISHER_PACKAGE_VERSIONING` default to on; #1572 removes the setting and everything that existed only while versions were optional: the in-place install with its stage-and-swap and rollback, the install records, `addPackageToDatabase`, package PATCH (a manifest rebind moves to `PUT …/versions/{versionId}/manifest`) and the `<pkg>___<version>` split. Configured packages, and the packages a `POST /environments` body lists, are published as versions; a remote location is mounted once under the environment's `.staging` and each package published from there. Watch mode becomes the one in-place path and the only place a report write or a reload does anything; elsewhere a reload answers the version unchanged and a write answers 409 `PACKAGE_IS_VERSIONED`. B2 lifts that refusal.
 - **The configuration design** ([Appendix C](#appendix-c-the-configuration-registry-and-mapping)): one registry for the process's settings, one half of today's `publisher.config.json`. This design takes the other half (the `environments` block) out of the file; see [Settings and resources](#settings-and-resources).
 - **Credible's M0a numbers** (service #5514, 2,506 loads): mean load 3.4 s, of which schema fetch 55% and compile 19%; p95 19.9 s. A persisted compiled model skips both, because the schema is baked into the `ModelDef`. Credible's workers have no disk today, so nothing a worker persists survives a pod restart until the service work under [Deployments](#deployments).
 
@@ -563,7 +563,7 @@ Nothing was mutated, so `WriteRolledBackError` disappears. The write path's refu
 
 **Reload (`POST …/versions/{versionId}:reload`, `reload_package`).** Recompiles a version from its files against the warehouse's current schemas, with the schema cache bypassed, replaces its compiled-model store entry, and waits for the result. On a live package it first re-reads the author's files, settling any recompile the watcher already started, so the caller knows its next query sees its edit or gets the compile errors: the handshake watch mode alone lacks, since it recompiles in the background and skips a save that does not compile without saying so. On a published version the files cannot change, so a reload is a schema refresh (D2). No version is made either way.
 
-**Re-fetch (`POST …/packages/{packageName}/versions`).** Publish from the package's recorded `source_location`: if `source_fingerprint` (git commit sha, object etag or md5, or the imported tree hash) equals the current version's, answer 200 with the version unchanged (#1552's behaviour); otherwise import the new tree, compose the overlay, load, and commit `<parent>+refetch.N` (or the semver the new `publisher.json` declares, if it is new), answering 201. Under `explicit` promotion the new version does not become `latest`; the response says which version it made. This is v0's `?reload=true` on a package installed from a location.
+**Re-fetch (`POST …/packages/{packageName}/versions`).** Publish from the package's recorded `source_location`: if `source_fingerprint` (git commit sha, object etag or md5, or the imported tree hash) equals the current version's, answer 200 with the version unchanged (step 1's behaviour); otherwise import the new tree, compose the overlay, load, and commit `<parent>+refetch.N` (or the semver the new `publisher.json` declares, if it is new), answering 201. Under `explicit` promotion the new version does not become `latest`; the response says which version it made. This is v0's `?reload=true` on a package installed from a location.
 
 **Load (`POST …/versions/{versionId}:load`).** Makes a version resident without reading it, which is what Credible's control plane uses v0's `?reload=true` for today (`DataplaneMaterializationClient.reloadPackage`, for a version the reconciler unloaded); it then reads `build-plan`. Starting a run (`POST …/runs`) also loads the version if it is not resident, since a run is already a write; so the control plane's re-run of a failed version, which the reconciler unloaded, is one call. Reads still never load: on a single server a version loads on its first read and stays loaded until it is archived, its package is deleted, or a rebind it cannot take evicts it, so only an orchestrator placing versions on workers needs the explicit verbs.
 
@@ -722,7 +722,7 @@ One sequence, numbered 1 to 8, with three tracks beside it, one per surface that
 
 | Step | Work | Surface | Needs | Unblocks |
 |---|---|---|---|---|
-| **1** | #1552 merges: every package is a published version. | storage, package | | everything |
+| **1** | The versioning stack merges (#1570, #1571, #1572): every package is a published version. | storage, package | | everything |
 | **2** | Storage and load-time quick wins; the eight open durability bugs and the crash matrix; track C's H0, the silent `#(filter)` drop. | storage, package | 1 | |
 | **3** | The catalog becomes the system of record: migration runner, storage-owned records, `revision`, the version columns, v0 mappers; the Postgres backend beside the embedded DuckDB. | storage | 1 | 4, B1, B2 |
 | **4** | `/api/v1`, built over today's storage, served beside v0; the admin v1 spec; v0 frozen with `Deprecation` headers and counted; the migration guide. | API | 3 | 5, 6 |
@@ -742,9 +742,9 @@ One sequence, numbered 1 to 8, with three tracks beside it, one per surface that
 
 Every performance claim is measured on the k6 load harness already on `main` (`packages/server/k6-tests/perf/`, a `perf:smoke` run-to-completion job in CI, the baseline in `docs/performance.md`). Test tiers are the publisher's (`test:unit`, `test:component`, `test:integration`, the hammer scenarios); "standalone check" means the Docker image on an empty root with the example packages plus an upgrade of a root the previous release created; "Credible check" means the image on gcp dev with the pin bumped, read through the M0 dashboard and worker logs. Each step's hammer scenarios are written before its code, from its acceptance list.
 
-### Step 1: #1552 merges
+### Step 1: the versioning stack merges
 
-Every package is a version; in-place installs, PATCH, `.install-records`, the combined name and the flag are gone; watch mode is the one in-place path. Whether v0's package `PATCH` keeps answering for `description` and the `manifestLocation` rebind until step 8 is open question 2.
+#1552 was closed unmerged and replaced by three stacked PRs, which land in order: #1570 runs every test suite with versioning on, #1571 makes versioning the default, and #1572 removes the setting and the unversioned path. When #1572 merges, every package is a version; in-place installs, PATCH, `.install-records`, the combined name and the flag are gone; watch mode is the one in-place path. Whether v0's package `PATCH` keeps answering for `description` and the `manifestLocation` rebind until step 8 is open question 2.
 
 ### Step 2: quick wins on today's layout, and the open durability bugs
 
@@ -879,10 +879,10 @@ Acceptance: the v0 materialization contract tests and hammer scenarios pass unch
 
 - `ContentStore` (local), trees and blobs, `importDirectory`, `checkout`; 0007 imports every version directory (`content_hash` becomes `source_tree`) and removes the directories once every version's checkout is in place.
 - `versions.{source_tree, overlay_tree, effective_tree, source_fingerprint}` (the other version columns arrived in step 3).
-- Server-made versions for report writes and reloads become content-addressed (they were directory copies since step 3); the overlay; `latest` by CAS; v0's write keeps #1552's 409; the `WriteRolledBackError` path deleted.
+- Server-made versions for report writes and reloads become content-addressed (they were directory copies since step 3); the overlay; `latest` by CAS; v0's write keeps step 1's 409; the `WriteRolledBackError` path deleted.
 - Version retention and pins; the loaded-version LRU.
 - The server stops writing into any package tree except a live package's, through the author's directory.
-- v0 mappers for the package routes: v0's package and version reads (`PackageVersion` with `id`, `latest`, `archiveStatus`, `contentHash` from `source_tree`), the inline package fields while `PUBLISHER_PACKAGE_INLINE_FIELDS` is on, v0's reads of a version's files served from its checkout, and v0's `?reload=true`, which keeps #1552's behaviour. A server-made version (`+edit.N`, `+refetch.N`) is visible to v0 as an ordinary version. They exist only until step 8.
+- v0 mappers for the package routes: v0's package and version reads (`PackageVersion` with `id`, `latest`, `archiveStatus`, `contentHash` from `source_tree`), the inline package fields while `PUBLISHER_PACKAGE_INLINE_FIELDS` is on, v0's reads of a version's files served from its checkout, and v0's `?reload=true`, which keeps step 1's behaviour. A server-made version (`+edit.N`, `+refetch.N`) is visible to v0 as an ordinary version. They exist only until step 8.
 
 Acceptance: the v0 package and version contract tests pass unchanged over the content store; hammer scenarios: a report write on a published version makes `1.4.0+edit.1`, `latest` moves, undo is `PATCH …/packages/{packageName} {"latestVersionId": "1.4.0"}`; a re-fetch after an edit keeps the edit; an identical re-fetch makes nothing; two concurrent edits of one package yield one 201 and one 409; five publishes of a package with a 200 MB data file use about 200 MB of blobs (disk assertion); a version whose blobs were deleted by hand is re-fetched and verified; retention keeps `latest`, pinned and bound versions and nothing older than N edits; the crash matrix gains the edit-to-commit point.
 
@@ -1015,7 +1015,7 @@ The 1.0.0 release (step 8) is one release with one **BREAKING** section in `RELE
 Steps 4 and 6 add what is missing, so that every deprecated thing is counted before the clock starts:
 - [ ] `v0_route{operation}`: every v0 operation, including the 42 `/projects` aliases, the admin routes on the public API (`watch-mode/*`, `storageDestinations/*`), and the responses served with inline package fields on.
 - [ ] One label per deprecated manifest key and annotation in the inventory below that has none (`manifest_location`, `retrieval_ignored_keys`, `index_values`, `filters_model_annotation`, `query_artifact`, …).
-- [ ] `legacy_package_name`, for the combined-name reading, if it survives #1552.
+- [ ] `legacy_package_name`, for the combined-name reading; #1572 removes it.
 
 **Fix the `bypass_filters` count first.** The SDK sends `bypassFilters: true` on every range query (`useDimensionalFilterRangeData.ts:688`) and `filter_deprecation.ts` counts any `bypassFilters !== undefined`, so the label is inflated by our own client. step 6's move of the SDK to v1 removes the source; until then, read the label as an upper bound. Also check whether a proxy's generated client defaults `bypassFilters` to `false` and forwards it, which would count every routed query.
 
@@ -1038,7 +1038,7 @@ The counters are the evidence for the community's progress, not a gate: the 1.0.
 - [ ] `CompiledDocument.kind` and `DashboardManifest.kind` (replaced by `layout` in v0.9.8).
 - [ ] The schemas `Notebook`, `RawNotebook`, `Dashboard`, `DashboardManifest`, `DashboardTile`, `StorageServeBinding`, `PackageVersionManifest`, `PackageLatestVersion`, `Materialization` with its `environmentId` and `metadata`, and the other v0-only shapes.
 - [ ] `frozenConfig` as an alias of `resources.readOnly` (step 5), and the `environments` block of `publisher.config.json` if the configuration split has not already refused it.
-- [ ] Anything left of the `<pkg>___<version>` combined name and `PUBLISHER_PACKAGE_VERSIONING` after #1552.
+- [ ] Anything left of the `<pkg>___<version>` combined name and `PUBLISHER_PACKAGE_VERSIONING` after #1572.
 
 **Users' files:**
 - [ ] Every manifest key and annotation in [The package](#the-package) is refused at load, with its rewrite in the message.
@@ -1051,12 +1051,12 @@ Each key below gets, in step 6: a load warning with a stable `code` and the rewr
 
 | Key | Replace with | Today | step 6 work |
 |---|---|---|---|
-| Root `scope` | `materialization.scope` (v0.0.234) | Read from both homes; `mergePackageManifest` dual-writes both | Stop the dual write (it goes with package `PATCH`, #1552); warn on the root key |
+| Root `scope` | `materialization.scope` (v0.0.234) | Read from both homes; `mergePackageManifest` dual-writes both | Stop the dual write (it goes with package `PATCH`, #1572); warn on the root key |
 | `materialization.queryMetadata` | Root `queryMetadata` (v0.0.247) | Read from both homes; dual-written | Stop the dual write; warn on the envelope key |
 | `explores` | A root `index.malloy` (v0.7.0) | Warned, counted (`explores`) | Deprecated, removed at the 1.0.0 release like every other key; the migration guide shows the `index.malloy` that replaces each use |
 | `queryableSources: "declared"` | Delete the key (it is the default) (v0.8.1) | Warned, counted (`queryable_sources`) | None |
 | `queryableSources: "all"` | Curate with `index.malloy` and gate with `#(authorize)` | Supported, no warning | Deprecated with the rest of the key: add the warning and label (`queryable_sources` covers `"declared"` only today); removed at the 1.0.0 release |
-| `manifestLocation` | `PATCH …/versions/{versionId} {"manifestLocation": …}` in v1 | Written by package `PATCH`, read back at load (`package_load_worker.ts`) | Stops being written with `PATCH` (#1552); warn and count (`manifest_location`) when a package still carries it |
+| `manifestLocation` | `PATCH …/versions/{versionId} {"manifestLocation": …}` in v1 | Written by package `PATCH`, read back at load (`package_load_worker.ts`) | Stops being written with `PATCH` (#1572); warn and count (`manifest_location`) when a package still carries it |
 | Retired `retrieval` keys: `retrieval.engine`, `representation`, `keyphrases`, `refine`, `rerank`, `sourceMatch`, and `retrieval.prompts.keyphrase`, `refine`, `rerank`, `sourceMatch` | Delete them | Accepted, ignored, named in `warnings` (`ignoredRetrievalWarnings`); every other unknown `retrieval` key already fails the load | Count them (`retrieval_ignored_keys`); at removal they fail the load like any other unknown key and leave `docs/configuration.md` |
 
 #### Model annotations
@@ -1234,7 +1234,7 @@ Each with a recommendation. Numbering is continuous so the steps can cite one; t
 ### Calls for Kyle
 
 1. **The server-side `--apply` bootstrap.** It keeps the zero-flag `npx` quick start and single-container Docker working without a CLI beside the server, at the cost of the server carrying a driver for its own API. Recommendation: keep it, restricted to an empty catalog.
-2. **Package `PATCH` and #1552.** #1552 removes package `PATCH` now, but the plan removes nothing deprecated before the window, and the Console and CLI call `PATCH` until step 6. Recommendation: #1552 keeps v0's `PATCH …/packages/{pkg}` for what still works on a versioned package (the `description` and the `manifestLocation` rebind) until step 8, and removes the rest as planned.
+2. **Package `PATCH` and #1572.** #1572 removes package `PATCH` now, but the plan removes nothing deprecated before the window, and the Console and CLI call `PATCH` until step 6. Recommendation: #1572 keeps v0's `PATCH …/packages/{pkg}` for what still works on a versioned package (the `description` and the `manifestLocation` rebind) until step 8, and removes the rest as planned.
 
 ### The storage
 
@@ -1376,7 +1376,7 @@ The Python client (`packages/python-client`) is a stub: only `__init__.py` is ch
 
 | Deprecated | Still called by | Replacement |
 |---|---|---|
-| `PATCH …/packages/{pkg}` | CLI `update package` and the whole `schedule` subcommand (`commands/schedule.ts:68, 110`); Console description edit (`EditPackageDialog.tsx:42`) and schedule/scope edits (`Materializations.tsx:220, 249`) | none for "edit an installed package's description, schedule or scope"; #1552 removes the route and says these come from `publisher.json`, which removes the Console and CLI affordances with it |
+| `PATCH …/packages/{pkg}` | CLI `update package` and the whole `schedule` subcommand (`commands/schedule.ts:68, 110`); Console description edit (`EditPackageDialog.tsx:42`) and schedule/scope edits (`Materializations.tsx:220, 249`) | none for "edit an installed package's description, schedule or scope"; #1572 removes the route and says these come from `publisher.json`, which removes the Console and CLI affordances with it |
 | `GET …/notebooks*` | CLI `list/get notebook` (`commands/notebooks.ts:13, 37`); Console legacy `.malloynb` reader (`MalloynbCells.tsx:28, 57`); an eval-loop README | `reports` has no cell runner for `.malloynb`; the cells route is the only one (`:3503-3507`) |
 | `GET …/dashboards/{name}` | Console `legacy/Dashboard.tsx:126`, still a public SDK export (`components/index.ts:29`) | `reports/{path}`, but by path, not by unique basename |
 | `/projects/*` | `@malloydata/db-publisher@0.0.437` (generated against `/projects`, `dbp/package/src/client/api.ts:2022-5404`), but through the **router's** facade, not Publisher's; two eval scripts probe `/projects` for liveness | Publisher could drop its aliases once the router owns the facade and the scripts probe `/status` |
@@ -1841,13 +1841,13 @@ Every claim about today's storage, with the file and lines it rests on, under `p
 | #1560 phase 6 | B4 |
 | #1540 side track (H0 to H6) | track C |
 
-**The durability program** (ms2data/service PR 7237, closed in favour of #1560) landed as follows: its PR 0 (native versions) and PR 0b (the load harness) are on `main`, and #1552 is now the prerequisite (step 1); PR 1, the migration runner, is step 3; PR 2, the recovery contract, crash matrix and the eight bugs, is step 2 with the contract under [Lifecycle](#lifecycle); PR 3, the compiled-model store, is B3; PR 4, unload, telemetry, `hostname` and warm start, is step 5; PR 5, the `/projects` removal and the controller-to-storage audit, is step 8 and step 3; PR 3b, the cache load test, is B3's acceptance; S1 to S5 and D7 to D9 are under [Deployments](#deployments) and stay service work.
+**The durability program** (ms2data/service PR 7237, closed in favour of #1560) landed as follows: its PR 0 (native versions) and PR 0b (the load harness) are on `main`, and the versioning stack that replaced #1552 (#1570, #1571, #1572) is now the prerequisite (step 1); PR 1, the migration runner, is step 3; PR 2, the recovery contract, crash matrix and the eight bugs, is step 2 with the contract under [Lifecycle](#lifecycle); PR 3, the compiled-model store, is B3; PR 4, unload, telemetry, `hostname` and warm start, is step 5; PR 5, the `/projects` removal and the controller-to-storage audit, is step 8 and step 3; PR 3b, the cache load test, is B3's acceptance; S1 to S5 and D7 to D9 are under [Deployments](#deployments) and stay service work.
 
 
 ## Appendix F: hand-off checklist
 
-- [ ] Kyle decides open questions 1 and 2: the `--apply` bootstrap, and whether #1552 keeps v0's package `PATCH` for `description` and `manifestLocation` until step 8.
-- [ ] #1552 merges (step 1).
+- [ ] Kyle decides open questions 1 and 2: the `--apply` bootstrap, and whether #1572 keeps v0's package `PATCH` for `description` and `manifestLocation` until step 8.
+- [ ] #1570, #1571 and #1572 merge (step 1).
 - [ ] Step 2 ships as small PRs against `main`, H0 among them; the lint specs land with them so later steps cannot regress.
 - [ ] D1 (#1481, #1556) merges when ready; it waits on nothing here.
 - [ ] Step 3 opens with `storage/records/`, the migration runner and migration 0001 before any record moves, so every later PR is a migration.
