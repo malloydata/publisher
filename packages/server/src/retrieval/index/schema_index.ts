@@ -6,7 +6,7 @@ import type { EmbeddingModel } from "../llm/types";
 import lunr from "lunr";
 import { logger } from "../../logger";
 import {
-   EMBEDDING_BATCH_TIMEOUT_MS,
+   embeddingBatchTimeoutMs,
    EMBEDDING_QUERY_TIMEOUT_MS,
 } from "../llm/embedding_provider";
 // Shared with the package index so a query is humanized the same way
@@ -349,7 +349,7 @@ async function tryRankSemantically(args: {
          );
          const vectors = await provider.embedBatch(
             texts,
-            EMBEDDING_BATCH_TIMEOUT_MS,
+            embeddingBatchTimeoutMs(),
          );
          if (vectors.length !== tables.length) {
             throw new Error(

@@ -25,7 +25,7 @@
 import type { EmbeddingModel } from "../llm/types";
 import {
    DEFAULT_EMBEDDING_RETRY,
-   EMBEDDING_BATCH_TIMEOUT_MS,
+   embeddingBatchTimeoutMs,
    prepareEmbeddingInput,
 } from "../llm/embedding_provider";
 import type { DuckDBConnection } from "../../storage/duckdb/DuckDBConnection";
@@ -207,6 +207,7 @@ export async function syncVectors(args: {
    progress();
    let chars = 0;
    const batchSize = Math.max(1, Math.min(provider.maxBatch, 256));
+   const timeoutMs = embeddingBatchTimeoutMs();
    for (let i = 0; i < toEmbed.length; i += batchSize) {
       if (args.shouldStop?.()) break;
       const batch = toEmbed.slice(i, i + batchSize);
@@ -214,7 +215,7 @@ export async function syncVectors(args: {
       try {
          out = await provider.embedBatch(
             batch.map(([, r]) => prefix + r.input),
-            EMBEDDING_BATCH_TIMEOUT_MS,
+            timeoutMs,
             // The embedding retry ladder: a 500, a 429 or a timeout from the
             // vendor is retried with backoff, not a failed build.
             DEFAULT_EMBEDDING_RETRY,
@@ -223,8 +224,8 @@ export async function syncVectors(args: {
          throw new VectorSyncError(
             `The ${table === "value_embeddings" ? "value vectors" : "vectors"} step failed after embedding ${embedded} of ${toEmbed.length} new rows ` +
                `(${reused} reused): ${error instanceof Error ? error.message : String(error)}. ` +
-               `Each embedding request of up to ${batchSize} rows has a ${EMBEDDING_BATCH_TIMEOUT_MS} ms ` +
-               `deadline (EMBEDDING_BATCH_TIMEOUT_MS), and a timeout, a 429 or a 5xx is retried up to ` +
+               `Each embedding request of up to ${batchSize} rows has a ${timeoutMs} ms ` +
+               `deadline (retrieval.embedding.timeoutMs), and a timeout, a 429 or a 5xx is retried up to ` +
                `${DEFAULT_EMBEDDING_RETRY.maxAttempts} attempts. The rows already embedded are stored, ` +
                "so the next build embeds only the rest.",
             error,

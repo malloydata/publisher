@@ -322,28 +322,44 @@ describe("index build", () => {
    it("names the vectors step, its progress and the deadline when embedding fails", async () => {
       const stub = stubEmbeddingProvider();
       const failing = Object.create(stub) as typeof stub;
-      failing.embedBatch = async () => {
+      const deadlines: number[] = [];
+      failing.embedBatch = async (_texts, timeoutMs) => {
+         deadlines.push(timeoutMs);
          throw new Error("Embedding request failed: timed out after 30000ms");
       };
-      const err = await buildFcjIndex({
-         pkgIndex: fixture.pkgIndex,
-         db,
-         provider: failing,
-         environmentName: "env",
-         packageName: "fixture",
-         settings: DEFAULT_FCJ_SETTINGS,
-      }).then(
-         () => undefined,
-         (e: Error) => e,
-      );
+      const build = () =>
+         buildFcjIndex({
+            pkgIndex: fixture.pkgIndex,
+            db,
+            provider: failing,
+            environmentName: "env",
+            packageName: "fixture",
+            settings: DEFAULT_FCJ_SETTINGS,
+         }).then(
+            () => undefined,
+            (e: Error) => e,
+         );
+      const err = await build();
       expect(err).toBeInstanceOf(VectorSyncError);
       expect(err!.message).toBe(
          "The vectors step failed after embedding 0 of 51 new rows (0 reused): " +
             "Embedding request failed: timed out after 30000ms. Each embedding request of up to " +
-            "256 rows has a 30000 ms deadline (EMBEDDING_BATCH_TIMEOUT_MS), and a timeout, a 429 " +
+            "256 rows has a 30000 ms deadline (retrieval.embedding.timeoutMs), and a timeout, a 429 " +
             "or a 5xx is retried up to 5 attempts. The rows already embedded are stored, so the " +
             "next build embeds only the rest.",
       );
+
+      setRetrievalConfig({
+         embedding: { queryPrefix: "", documentPrefix: "", timeoutMs: 120_000 },
+      });
+      try {
+         expect((await build())!.message).toContain(
+            "has a 120000 ms deadline (retrieval.embedding.timeoutMs)",
+         );
+      } finally {
+         setRetrievalConfig(undefined);
+      }
+      expect(deadlines).toEqual([30_000, 120_000]);
    });
 
    describe("value vectors", () => {

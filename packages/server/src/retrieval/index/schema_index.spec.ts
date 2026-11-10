@@ -3,6 +3,7 @@
 
 import { beforeEach, describe, expect, it } from "bun:test";
 import { sanitizeLunrQuery as sanitizeQuery } from "../shared";
+import { setRetrievalConfig } from "../config";
 import type { EmbeddingProvider } from "../llm/embedding_provider";
 import { DEFAULT_EMBEDDING_MIN_SIMILARITY } from "../../config";
 import {
@@ -248,6 +249,37 @@ describe("rankTables", () => {
       });
       expect(result.ranking).toBe("semantic");
       expect(result.hits).toEqual([]);
+   });
+
+   it("embeds the tables under retrieval.embedding.timeoutMs, the query under its own deadline", async () => {
+      const deadlines: number[] = [];
+      const provider = fakeProvider({
+         embedBatch: async (texts: string[], timeoutMs: number) => {
+            deadlines.push(timeoutMs);
+            return texts.map((text) =>
+               MARKERS.map((m) => (text.toLowerCase().includes(m) ? 1 : 0)),
+            );
+         },
+      });
+      const rank = (cacheKey: string) =>
+         rankTables({
+            tables: ALL,
+            query: "orders",
+            limit: 10,
+            provider,
+            caches,
+            cacheKey,
+         });
+      await rank("default");
+      setRetrievalConfig({
+         embedding: { queryPrefix: "", documentPrefix: "", timeoutMs: 120_000 },
+      });
+      try {
+         await rank("configured");
+      } finally {
+         setRetrievalConfig(undefined);
+      }
+      expect(deadlines).toEqual([30_000, 5_000, 120_000, 5_000]);
    });
 
    it("reuses cached vectors: a second query embeds only the query", async () => {

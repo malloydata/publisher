@@ -9,6 +9,7 @@ import {
    withRetry,
 } from "../../service/http_retry";
 import { loadedRetrievalConfig } from "../config";
+import { EMBEDDING_BATCH_TIMEOUT_MS } from "./embedding_http";
 import { createEmbeddingModel } from "./registry";
 import type { EmbeddingModel } from "./types";
 
@@ -22,9 +23,20 @@ export {
 export { EmbeddingProvider, MAX_EMBED_BATCH_SIZE } from "./openai_embedding";
 
 /**
- * Timeout for the per-request query embedding. Shorter than the bulk timeout
- * because it is on every semantic `get_context` call's latency path; a slow
- * endpoint must degrade to lexical quickly.
+ * The deadline of one bulk (index-build) embedding request:
+ * `retrieval.embedding.timeoutMs`, else {@link EMBEDDING_BATCH_TIMEOUT_MS}.
+ */
+export function embeddingBatchTimeoutMs(): number {
+   return (
+      loadedRetrievalConfig()?.embedding?.timeoutMs ??
+      EMBEDDING_BATCH_TIMEOUT_MS
+   );
+}
+
+/**
+ * Timeout for the per-request query embedding. Shorter than the default bulk
+ * timeout because it is on every semantic `get_context` call's latency path;
+ * a slow endpoint must degrade to lexical quickly.
  */
 export const EMBEDDING_QUERY_TIMEOUT_MS = 5_000;
 

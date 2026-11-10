@@ -360,7 +360,8 @@ credentials, what may leave the machine and the spend ceilings are all in the op
       "model": "text-embedding-3-small",
       "dimensions": 512,
       "queryPrefix": "",
-      "documentPrefix": ""
+      "documentPrefix": "",
+      "timeoutMs": 30000
     },
     "egress": { "preset": "default" }
   }
@@ -379,6 +380,7 @@ credentials, what may leave the machine and the spend ceilings are all in the op
 | `embedding.provider`                                                | One of `openai`, `openai-compatible`, `ollama`, `google`, `vertex` (Anthropic has no embeddings API). Omitted: the `EMBEDDING_*` variables decide, as before.                                                                          |
 | `embedding.model`, `dimensions`, `baseUrl`, `projectId`, `location` | As for `llm`. `model` defaults to `text-embedding-3-small` for `openai` and is required for the other providers. `dimensions` is omitted from requests when unset.                                                                     |
 | `embedding.queryPrefix` / `documentPrefix`                          | Text put before a search query / before indexed text (default empty). `nomic-embed-text` wants `search_query: ` and `search_document: `. Changing `documentPrefix` re-embeds; changing `queryPrefix` does not.                         |
+| `embedding.timeoutMs`                                               | Per-attempt timeout of one index-build embedding request, for the package and connection-schema indexes (default `30000`). Raise it for a slow or shared embedding server. A search query's embedding keeps its 5 s limit.             |
 | `egress.preset`                                                     | `default`: entity names, doc text (an entity's `#(doc)` lines, else its `#"` doc strings, else the database's description of its table or column on a connection with `dbmeta` on) and schema context may be sent to the LLM. `full`: also the field's code and matched dimension values. Access predicates (`#(access_filter)`, `#(authorize)`) are never sent, and there is no setting for that. |
 | `dimensionValues.enabled`                                           | See "Dimension value search".                                                                                                                                                                                                          |
 
