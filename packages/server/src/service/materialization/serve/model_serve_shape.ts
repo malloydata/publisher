@@ -27,6 +27,7 @@ import {
    buildVirtualMap,
    documentFlagsForLifts,
    liftDerivedSources,
+   bindingServesModelSource,
    narrowSchemaToPublic,
    reachedPersistedSources,
    withholdUnreproducibleCallerScopedJoins,
@@ -105,9 +106,36 @@ export class StorageServeShape {
       this.serveShapeCache = undefined;
    }
 
-   /** Set (or clear) this model's `storage=` serve bindings. */
+   /**
+    * Set (or clear) this model's `storage=` serve bindings.
+    *
+    * The package pushes the same set to every model, keyed by source name, and
+    * names are not unique in a package. A binding whose sourceIDs do not include
+    * this model's own source of that name is for another model's source, so it is
+    * dropped here and that source serves live (malloydata/publisher#1001).
+    */
    public setServeBindings(bindings: ServeBinding[]): void {
-      this.serveBindings = bindings;
+      // Read only when some binding carries an identity to check.
+      const contents = bindings.some((binding) => binding.sourceIDs)
+         ? (this.host.modelDef()?.contents as
+              | Record<string, { sourceID?: unknown } | undefined>
+              | undefined)
+         : undefined;
+      const kept = bindings.filter((binding) =>
+         bindingServesModelSource(binding, contents),
+      );
+      if (kept.length < bindings.length) {
+         logger.info(
+            "Serving a source live: its storage table materializes a same-named source declared elsewhere",
+            {
+               modelPath: this.host.modelPath(),
+               sources: bindings
+                  .filter((binding) => !kept.includes(binding))
+                  .map((binding) => binding.sourceName),
+            },
+         );
+      }
+      this.serveBindings = kept;
       this.serveShapeCache = undefined;
    }
 

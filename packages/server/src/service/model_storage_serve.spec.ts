@@ -58,6 +58,10 @@ const BINDING: ServeBinding = {
 async function buildModel(opts?: {
    originalText?: string;
    storageSQL?: string;
+   /** Further files beside `m.malloy`, by name. */
+   files?: Record<string, string>;
+   /** The model to serve; `m.malloy` by default. */
+   entry?: string;
 }): Promise<Model> {
    const duckdb = new DuckDBConnection("duckdb", ":memory:");
    // DuckDB shares a process-global :memory: db by connection name, so a prior
@@ -70,13 +74,19 @@ async function buildModel(opts?: {
    const originalText =
       opts?.originalText ?? `source: X is duckdb.sql("SELECT 0 AS total")`;
    const urlReader = new InMemoryURLReader(
-      new Map([[`${ROOT}m.malloy`, originalText]]),
+      new Map([
+         [`${ROOT}m.malloy`, originalText],
+         ...Object.entries(opts?.files ?? {}).map(
+            ([name, text]) => [`${ROOT}${name}`, text] as [string, string],
+         ),
+      ]),
    );
+   const entry = opts?.entry ?? "m.malloy";
    const runtime = new Runtime({
       urlReader,
       connections: new FixedConnectionMap(connMap, "duckdb"),
    });
-   const mm = runtime.loadModel(new URL(`${ROOT}m.malloy`), {
+   const mm = runtime.loadModel(new URL(`${ROOT}${entry}`), {
       importBaseURL: new URL(ROOT),
    });
    const compiled = await mm.getModel();
@@ -85,7 +95,7 @@ async function buildModel(opts?: {
    const modelInfo = modelDefToModelInfo(modelDef);
    const model = new Model({
       packageName: "pkg",
-      modelPath: "m.malloy",
+      modelPath: entry,
       dataStyles: {},
       modelType: "model",
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -329,5 +339,73 @@ describe("storage= serve routing (end-to-end)", () => {
             QueryPrivileges.of({ bypassFilters: true }),
          ),
       ).rejects.toThrow();
+   });
+});
+
+// malloydata/publisher#1001: bindings are pushed to every model by name, and
+// names are not unique in a package. A binding carries the sourceIDs of the
+// sources it materializes, and a model keeps it only for its own source of
+// that name.
+describe("storage= serve bindings match on source identity", () => {
+   const OWN = `X@${ROOT}m.malloy`;
+
+   it("routes when the binding names the model's own source", async () => {
+      setStorageMode("on");
+      const model = await buildModel();
+      model.setServeBindings([{ ...BINDING, sourceIDs: [OWN] }]);
+      expect(await runTotal(model)).toBe(60);
+   });
+
+   it("serves live when the model's source of that name is another one", async () => {
+      setStorageMode("on");
+      const model = await buildModel();
+      model.setServeBindings([
+         { ...BINDING, sourceIDs: [`X@${ROOT}other.malloy`] },
+      ]);
+      expect(await runTotal(model)).toBe(0);
+   });
+
+   it("still routes a binding with no sourceIDs, by name, as before", async () => {
+      setStorageMode("on");
+      const model = await buildModel();
+      model.setServeBindings([BINDING]);
+      expect(await runTotal(model)).toBe(60);
+   });
+
+   it("routes the materialized source through a model that imports it", async () => {
+      setStorageMode("on");
+      const model = await buildModel({
+         files: { "importer.malloy": `import "m.malloy"` },
+         entry: "importer.malloy",
+      });
+      // An imported source keeps its declaring model's sourceID.
+      model.setServeBindings([{ ...BINDING, sourceIDs: [OWN] }]);
+      expect(await runTotal(model)).toBe(60);
+   });
+
+   it("serves a same-named source in another model live, even with overlapping columns", async () => {
+      setStorageMode("on");
+      // `other.malloy` declares its own X with a `total` column, so schema
+      // narrowing alone would serve it from m.malloy's table.
+      const model = await buildModel({
+         files: {
+            "other.malloy": `source: X is duckdb.sql("SELECT 0 AS total, 1 AS extra")`,
+         },
+         entry: "other.malloy",
+      });
+      model.setServeBindings([{ ...BINDING, sourceIDs: [OWN] }]);
+      expect(await runTotal(model)).toBe(0);
+   });
+
+   it("without sourceIDs, that same-named source is served from the wrong table (the defect)", async () => {
+      setStorageMode("on");
+      const model = await buildModel({
+         files: {
+            "other.malloy": `source: X is duckdb.sql("SELECT 0 AS total, 1 AS extra")`,
+         },
+         entry: "other.malloy",
+      });
+      model.setServeBindings([BINDING]);
+      expect(await runTotal(model)).toBe(60);
    });
 });

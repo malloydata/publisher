@@ -41,6 +41,7 @@ import { filterFreshManifest } from "./run/freshness";
 import {
    deriveServeBindings,
    groupAliasesByName,
+   planSourceIds,
 } from "./serve/materialization_serve_transform";
 import type {
    BuildManifest,
@@ -461,6 +462,7 @@ export class PackageMaterialization {
             : this.ownEntries(entries),
          groupAliasesByName(Object.values(this.buildPlan?.sources ?? {})),
          this.serveDestinationSchema,
+         planSourceIds(this.buildPlan?.sources ?? {}),
       );
       const eligibility = this.sourceEligibility;
       // Keyed by NAME: a rollup passes only because `collectSourceEligibility`
