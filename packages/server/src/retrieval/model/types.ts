@@ -95,8 +95,10 @@ export interface Entity {
    // "dbmeta" when the doc text is the database's description, not the
    // model's.
    docSource?: "dbmeta";
-   // Join cardinality, on `kind: "join"` entities only: whether traversing
-   // the join fans out.
+   // Whether aggregating through this entity fans out. On a `kind: "join"`
+   // entity, the join's cardinality; on a field reached through a join, the
+   // widest relationship on its path; on a member of a repeated record
+   // (`lines.sku`, `tags.each`), `many`, with or without a join.
    relationship?: Relationship;
    // On `kind: "join"` entities: the source the join leads to, when the
    // compiled model names one. Read by the source summary; never serialized.
@@ -110,10 +112,12 @@ export interface Entity {
    // The authored expression text. Absent on a physical column, so absence
    // means the field is raw. Serialized only with `include_code`.
    code?: string;
-   // When this field's whole definition references another field of the SAME
-   // source (`dimension: site is SITE`), that name; it makes alias collapsing
-   // exact. A reference through a join is deliberately not recorded: it is a
-   // different column, not another spelling.
+   // When this field's whole definition references another field (`dimension:
+   // site is SITE`, or a record member, `delivery_city is delivery.city`),
+   // that field's name, dotted for a path; it makes alias collapsing exact. A
+   // path through a join is recorded too, but never folds: collapseAliases
+   // folds only a source's own fields, and a joined field is a different
+   // column, not another spelling.
    aliasOf?: string;
    // Malloy type of a dimension or measure ("string", "number", "date", ...).
    dataType?: string;
@@ -132,6 +136,16 @@ export interface Entity {
    // ("orders", or "order_items.inventory_items"), which is also the dotted
    // prefix of `name`. Absent on a source's own fields. See collectJoinedFields.
    joinPath?: string;
+   // For a member of a record column (a BigQuery RECORD, a DuckDB STRUCT):
+   // the record's path, after `joinPath` when the record is on a joined
+   // source (`delivery`, `delivery.address`). A member of a source's own
+   // record is that source's own field, not one reached through a join, so
+   // it has no `joinPath`. See collectRecordMembers.
+   recordPath?: string;
+   // For a member reached through a join whose relationship the member
+   // widens (a repeated record's `items.sku` behind a join_one): the join
+   // path's own relationship, which `relationship` no longer shows.
+   joinRelationship?: Relationship;
 }
 
 /**
