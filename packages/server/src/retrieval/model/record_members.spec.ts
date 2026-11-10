@@ -27,6 +27,8 @@ import {
 import { find, KINDS_BY_FIND_TARGET, type FindTarget } from "../search/find";
 import { alsoLikelyFields } from "../search/also_likely";
 import { judgeOptions, renderJudgePrompt } from "../search/judge";
+import { respond } from "../search/respond";
+import { routeKey } from "../search/routes";
 import { connect } from "../search/connect";
 import { toUnit } from "../index/vectors";
 import { embedText } from "../../test_helpers/get_context_llm_harness";
@@ -883,6 +885,98 @@ source: orders is duckdb.sql("""select 7 as customer_id""") extend {
          expect(copy).toContain(
             "a route from orders through hc, join_one; items.sku is many, one value per array element:",
          );
+      } finally {
+         await f.close();
+      }
+   });
+});
+
+describe("a picked join reached through another join", () => {
+   it("keeps the path's relationship: a join is not widened by its own", async () => {
+      const settings = {
+         ...CLUSTER_SETTINGS,
+         connect: "list" as const,
+         listTopK: 5,
+         collapseCopies: true,
+      };
+      const f = await buildFcjIndexFixture(settings, {
+         "m.malloy": `
+source: addresses is duckdb.sql("""select 7 as customer_id, 'Denver' as city""")
+source: customers is duckdb.sql("""select 7 as id""") extend {
+  join_many: addrs is addresses on id = addrs.customer_id
+}
+source: orders is duckdb.sql("""select 7 as customer_id""") extend {
+  join_one: customer is customers on customer_id = customer.id
+}
+`,
+      });
+      try {
+         const targets: FindTarget[] = [
+            {
+               index: 0,
+               type: "join",
+               text: "addresses",
+               kinds: KINDS_BY_FIND_TARGET.join,
+            },
+         ];
+         const queries = new Map([[0, toUnit(embedText("addresses"))]]);
+         const found = find({
+            index: f.index,
+            targets,
+            queries,
+            perTarget: 30,
+            keyword: true,
+            values: false,
+            allow: () => true,
+         });
+         const connected = connect({
+            index: f.index,
+            found,
+            queries,
+            settings,
+            allow: () => true,
+         });
+         const key = routeKey({
+            from: "orders@m.malloy",
+            path: ["customer"],
+            node: "join:customers@m.malloy:addrs",
+         });
+         const out = await respond({
+            index: f.index,
+            request: {
+               pureSourceListing: false,
+               environmentName: "env",
+               packageName: "fixture",
+               kinds: new Set(),
+               searches: [],
+               valueSearches: [],
+               listingOnly: false,
+               includeCode: false,
+               unsupported: [],
+               limit: 20,
+               offset: 0,
+            },
+            pkgIndex: f.pkgIndex,
+            connected,
+            verdicts: [
+               {
+                  cluster: connected.clusters[0].home,
+                  picks: [{ target: 0, keys: [key] }],
+                  caveats: [],
+               },
+            ],
+            targets,
+            environmentStore: {} as never,
+            valueFetcher: valueFetcherFor(new RetrievalRegistry()),
+         });
+         const row = (
+            out.sources as Array<{
+               entities?: Array<Record<string, unknown>>;
+            }>
+         )
+            .flatMap((c) => c.entities ?? [])
+            .find((e) => e.name === "customer.addrs");
+         expect(row?.relationship).toBe("one");
       } finally {
          await f.close();
       }

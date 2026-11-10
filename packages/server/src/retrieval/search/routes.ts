@@ -151,8 +151,9 @@ export interface RouteOption extends Route {
 
 /**
  * The relationship of a field reached through a join: the join's, unless the
- * field itself fans out. A member of a repeated record (`items.sku`) counts
- * each element, so it is `many` even behind a join_one.
+ * field itself fans out. A member of a repeated record (`items.sku`) holds a
+ * value per element, so it is `many` even behind a join_one. For a dimension
+ * or measure only: a join's relationship is a hop of its own.
  */
 export function throughFanout(
    join: Relationship | undefined,

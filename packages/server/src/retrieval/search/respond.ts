@@ -41,6 +41,7 @@
  * cards (pages.ts).
  */
 
+import type { Relationship } from "@malloydata/malloy-interfaces";
 import type { AccessIdentity } from "../../service/access_record";
 import type { PackageLookup } from "../../service/environment_ports";
 import type { ValueFetcher } from "./values";
@@ -68,6 +69,17 @@ import type { FindTarget } from "./find";
 import type { FcjIndex } from "../index/index_build";
 import { keptValues, PATHS_SHOWN, type JudgeVerdict } from "./judge";
 import { parseRouteKey, routesFrom, throughFanout } from "./routes";
+
+/**
+ * What a picked node adds to its route's relationship: a dimension's or
+ * measure's own `many` (a repeated record's member). A join's relationship
+ * is its own hop, already on the path, so a join reports the path's.
+ */
+function fieldFanout(node: CatalogNode): Relationship | undefined {
+   return node.kind === "dimension" || node.kind === "measure"
+      ? node.relationship
+      : undefined;
+}
 
 /** A field path as the value lookup takes it: one name, or its segments. */
 function dimensionOf(path: string[]): string | string[] {
@@ -522,8 +534,8 @@ async function place(
          ...(node.doc ? { embedDoc: node.doc } : {}),
          ...(node.docSource ? { docSource: node.docSource } : {}),
          joinPath: path.join("."),
-         ...(throughFanout(entry.fanout, node.relationship)
-            ? { relationship: throughFanout(entry.fanout, node.relationship) }
+         ...(throughFanout(entry.fanout, fieldFanout(node))
+            ? { relationship: throughFanout(entry.fanout, fieldFanout(node)) }
             : {}),
          ...(node.dataType ? { dataType: node.dataType } : {}),
          ...(node.code ? { code: node.code } : {}),
@@ -569,8 +581,8 @@ function routeRow(
       ...(node.doc ? { embedDoc: node.doc } : {}),
       ...(node.docSource ? { docSource: node.docSource } : {}),
       joinPath,
-      ...(throughFanout(hop?.fanout, node.relationship)
-         ? { relationship: throughFanout(hop?.fanout, node.relationship) }
+      ...(throughFanout(hop?.fanout, fieldFanout(node))
+         ? { relationship: throughFanout(hop?.fanout, fieldFanout(node)) }
          : {}),
       ...(node.dataType ? { dataType: node.dataType } : {}),
       ...(node.code ? { code: node.code } : {}),
