@@ -187,7 +187,7 @@ const MAX_JOIN_PATH_DEPTH = 2;
 /**
  * What the compiled model knows about a field that SourceInfo does not: `code`
  * is the authored expression ("sale_price.sum()"); `aliasOf` is set only when
- * the whole definition references a sibling field of the same source.
+ * the whole definition is a reference to another field, by name or dotted path.
  */
 interface FieldProvenance {
    code?: string;
@@ -345,10 +345,18 @@ function readFieldProvenance(
       };
       const fieldName = activeName(field);
       if (!fieldName) continue;
+      // A dotted path is a referent too (`delivery_city is delivery.city`):
+      // collapseAliases folds only a source's own fields, so it can match a
+      // record member, never a field reached through a join.
+      // A member path is spelled as the index names members (memberSegment),
+      // so `src is traffic_source.\`source\`` finds its referent.
+      const path = field.e?.node === "field" ? (field.e.path ?? []) : [];
       const referent =
-         field.e?.node === "field" && field.e.path?.length === 1
-            ? field.e.path[0]
-            : undefined;
+         path.length === 0
+            ? undefined
+            : path.length === 1
+              ? path[0]
+              : path.map(memberSegment).join(".");
       // Malloy fills `code` for scalar expressions only, so a view arrives
       // with none; its text is sliced from the file at its `location`.
       // Turtles only: a physical column's location points at the source's
@@ -381,7 +389,205 @@ interface JoinSchemaField {
    annotations?: Array<string | { value: string }>;
    relationship?: Relationship;
    schema?: { fields?: JoinSchemaField[] };
-   type?: { kind?: string };
+   type?: FieldType;
+}
+
+/** A field's compiled type, as far as the record walk reads it. */
+export interface FieldType {
+   kind?: string;
+   /**
+    * A record's members. A member's annotations carry the database's
+    * `#(dbmeta)` description of that nested column, when the connection
+    * has `dbmeta` on; the model cannot annotate a member itself.
+    */
+   fields?: Array<{
+      name: string;
+      type?: FieldType;
+      annotations?: AnnotationLines;
+   }>;
+   /** An array's element. */
+   element_type?: FieldType;
+}
+
+/**
+ * How deep record members are indexed: `delivery.address.city` is depth 2.
+ * Nested records come from the warehouse's schema rather than from joins a
+ * modeler wrote, so they get their own cap, above MAX_JOIN_PATH_DEPTH.
+ */
+const MAX_RECORD_DEPTH = 4;
+
+/** Most record members indexed per source: a wide event table can hold hundreds. */
+export const MAX_RECORD_MEMBERS_PER_SOURCE = 300;
+
+/**
+ * A member name a dotted path can carry segment by segment: bare, or
+ * backticked when it is a reserved word (memberSegment). A STRUCT key can
+ * hold a dot or a space (`{'a.b': 1}`): joined raw, `delivery.a.b` would
+ * read as a nested record, so such a member is not indexed.
+ */
+const PLAIN_MEMBER_NAME = /^[A-Za-z_][A-Za-z0-9_]*$/;
+
+/**
+ * Malloy's reserved words: the keywords its lexer reads without a trailing
+ * colon, matched case-insensitively. A member so named (GA4's
+ * `traffic_source.source`) is a plain identifier but does not compile bare,
+ * only quoted: `` traffic_source.`source` ``. Malloy does not export its
+ * keyword list, so this is a copy of it; record_members.spec.ts checks it
+ * against the list Malloy generates from its grammar.
+ */
+export const MALLOY_RESERVED_WORDS: ReadonlySet<string> = new Set(
+   (
+      "all and as asc avg boolean by case cast compose count date day " +
+      "desc distinct else end exclude export extend false filter for from " +
+      "full has hour import in include inner internal is json left like " +
+      "max min minute month not now null number on or pick private public " +
+      "quarter right second source sql string sum table then this " +
+      "timestamp timestamptz to true virtual week when with year"
+   ).split(" "),
+);
+
+/**
+ * A plain name as a segment of a record member's path, backticked when it is
+ * reserved: the record's own column (`` `date`.month ``) as well as each
+ * member under it.
+ */
+export function memberSegment(name: string): string {
+   return MALLOY_RESERVED_WORDS.has(name.toLowerCase()) ? `\`${name}\`` : name;
+}
+
+/**
+ * The field reference an entity's name spells, one segment per element,
+ * without quotes, for a caller that quotes each one: `customer.city`
+ * through the join `customer` is `["customer", "city"]`,
+ * `` traffic_source.`source` `` is `["traffic_source", "source"]`. The part
+ * past the join path is split only for a record member: any other field's
+ * name is one name even when it holds a dot. Splitting a member is sound
+ * because collectRecordMembers only walks a record whose name, and every
+ * member name under it, is a plain identifier, and backticks only a
+ * reserved one.
+ */
+export function fieldPathOf(e: {
+   name: string;
+   recordPath?: string;
+   joinPath?: string;
+}): string[] {
+   const joins = e.joinPath ? e.joinPath.split(".") : [];
+   const rest = e.joinPath ? e.name.slice(e.joinPath.length + 1) : e.name;
+   const tail = e.recordPath
+      ? rest.split(".").map((segment) => segment.replace(/`/g, ""))
+      : [rest];
+   return [...joins, ...tail];
+}
+
+/**
+ * The members of a record dimension (a BigQuery RECORD, a DuckDB STRUCT) as
+ * entities of their own, under dotted names (`delivery.city`), so they can be
+ * found and grouped by. A member of a source's own record is that source's
+ * own field: it carries `recordPath`, never `joinPath`, so the engine does
+ * not describe it as reached through a join. A member of a record on a joined
+ * source keeps the join's `joinPath` beside its `recordPath`.
+ *
+ * A member of a repeated record (an array of records, `lines.sku`) has
+ * relationship `many`, because grouping by it gives a group per element
+ * value; a record inside a repeated record stays `many`. A member takes its
+ * record's classification when it has none of its own, and its doc from its own
+ * annotations (entityDocs), as any other field does. An array of scalars has
+ * one member, its element, named `each` (`tags.each`), also `many`. A member
+ * whose name is not a plain identifier (PLAIN_MEMBER_NAME) is not indexed,
+ * nor anything under it; one named by a reserved word is backticked
+ * (`` traffic_source.`source` ``). At most MAX_RECORD_MEMBERS_PER_SOURCE
+ * are indexed per source (`budget`), in schema order; a dropped member is
+ * still queryable by name, only not offered by search.
+ */
+export function collectRecordMembers(args: {
+   type: FieldType | undefined;
+   /** The member name's dotted prefix: `delivery`, or `customer.profile`. */
+   path: string;
+   /** The record's path within its source: `delivery`, or `profile`. */
+   recordPath: string;
+   /** The join the record is reached through, for a joined source's record. */
+   joinPath?: string;
+   sourceName: string;
+   modelPath: string;
+   /** The relationship of the path so far: `one` from a plain source. */
+   fanout: Relationship;
+   /** The join path's own relationship; `fanout` at depth 1 when absent. */
+   joinFanout?: Relationship;
+   depth: number;
+   nextId: () => string;
+   out: Entity[];
+   lineage?: Map<string, FieldClassification>;
+   /** The record's classes, which a member without its own inherits. */
+   parentClasses?: Pick<
+      Entity,
+      "classifications" | "classificationInferred" | "classificationInputs"
+   >;
+   budget: { left: number };
+}): void {
+   const { path, recordPath, depth } = args;
+   const joinFanout = args.joinFanout ?? args.fanout;
+   let type = args.type;
+   let fanout = args.fanout;
+   if (type?.kind === "array_type") {
+      type = type.element_type;
+      fanout = "many";
+      // An array of scalars has one member, its element, which Malloy names
+      // `each` (`tags.each`). Recursing on it as a record of one `each` field
+      // indexes it like any other member of a repeated record.
+      if (type && type.kind !== "record_type" && type.kind !== "array_type") {
+         type = { kind: "record_type", fields: [{ name: "each", type }] };
+      }
+   }
+   if (type?.kind !== "record_type" || depth > MAX_RECORD_DEPTH) return;
+   // A record whose own name holds a dot or a space (`a.b`): a member's
+   // dotted name under it would not compile, and memberPathOf could not
+   // split it back into segments.
+   if (depth === 1 && !PLAIN_MEMBER_NAME.test(recordPath.replace(/`/g, "")))
+      return;
+   for (const member of type.fields ?? []) {
+      if (!member.name || !PLAIN_MEMBER_NAME.test(member.name)) continue;
+      if (args.budget.left <= 0) return;
+      args.budget.left -= 1;
+      const segment = memberSegment(member.name);
+      const name = `${path}.${segment}`;
+      // Lineage is keyed by the unquoted path.
+      const own = classificationOf(
+         args.lineage,
+         `${path}.${member.name}`.replace(/`/g, ""),
+         undefined,
+      );
+      const classes = own.classifications ? own : (args.parentClasses ?? {});
+      args.out.push({
+         id: args.nextId(),
+         kind: "dimension",
+         name,
+         source: args.sourceName,
+         modelPath: args.modelPath,
+         ...entityDocs(member.annotations),
+         ...classes,
+         ...(args.joinPath ? { joinPath: args.joinPath } : {}),
+         recordPath,
+         // On a source's own record only `many` says anything: `one` is
+         // what every own field already is.
+         ...(args.joinPath || fanout === "many"
+            ? { relationship: fanout }
+            : {}),
+         ...(args.joinPath && fanout !== joinFanout
+            ? { joinRelationship: joinFanout }
+            : {}),
+         dataType: malloyType(member),
+      });
+      collectRecordMembers({
+         ...args,
+         type: member.type,
+         path: name,
+         recordPath: `${recordPath}.${segment}`,
+         fanout,
+         joinFanout,
+         depth: depth + 1,
+         parentClasses: classes,
+      });
+   }
 }
 
 /**
@@ -515,6 +721,28 @@ function buildJoinReaches(args: {
 }
 
 /**
+ * Whether the source a joined record lives on is listed, not deny-all, and
+ * holds the record as its own field. Then directEntitiesOf drops the joined
+ * copies of its members, which are indexed on that source and reached by
+ * route, so walking them here would only spend the shared member budget
+ * that a later inline-table join's record needs.
+ */
+function joinedMembersListed(
+   reaches: readonly JoinReach[] | undefined,
+   joinPath: string,
+   record: string,
+   listedFields: ReadonlyMap<string, ReadonlySet<string>>,
+   droppedSources: ReadonlySet<string>,
+): boolean {
+   const reach = reaches?.find((r) => r.path.join(".") === joinPath);
+   if (!reach) return false;
+   const key = sourceContextKey(reach.targetModelPath, reach.targetSource);
+   return (
+      !droppedSources.has(key) && (listedFields.get(key)?.has(record) ?? false)
+   );
+}
+
+/**
  * Index the fields reachable THROUGH a join, under their dotted Malloy path.
  *
  * The target source is indexed on its own, but the caller needs the PATH,
@@ -537,6 +765,13 @@ function collectJoinedFields(args: {
    out: Entity[];
    /** The entry source's lineage, keyed by dotted path; absent for a stand-in. */
    lineage?: Map<string, FieldClassification>;
+   /** Record members left to index for this source (collectRecordMembers). */
+   budget: { left: number };
+   /**
+    * Whether the source a join reaches lists this record itself, so its
+    * members are indexed there and reached by route (joinedMembersListed).
+    */
+   membersListedElsewhere?: (joinPath: string, record: string) => boolean;
 }): void {
    const {
       fields,
@@ -580,6 +815,30 @@ function collectJoinedFields(args: {
             ? { dataType: malloyType(field) }
             : {}),
       });
+      if (
+         field.kind === "dimension" &&
+         !args.membersListedElsewhere?.(joinPath, field.name)
+      ) {
+         collectRecordMembers({
+            type: field.type,
+            path: `${joinPath}.${memberSegment(field.name)}`,
+            recordPath: memberSegment(field.name),
+            joinPath,
+            sourceName,
+            modelPath,
+            fanout,
+            depth: 1,
+            nextId,
+            out,
+            ...(lineage ? { lineage } : {}),
+            parentClasses: classificationOf(
+               lineage,
+               `${joinPath}.${field.name}`,
+               field.annotations,
+            ),
+            budget: args.budget,
+         });
+      }
    }
 }
 
@@ -610,6 +869,26 @@ async function collectEntities(pkg: Package): Promise<CollectedModel> {
    // One reader for the whole walk: several sources share a model file.
    const sourceTextFor = makeSourceTextReader(pkg);
    let n = 0;
+   // Each listed source's top-level field names, package-wide, and every
+   // deny-all source, both before the walk: a join can name a source from a
+   // later file, and joinedMembersListed reads both.
+   const listedFields = new Map<string, Set<string>>();
+   for (const apiModel of models) {
+      const modelPath = apiModel.path;
+      const model = modelPath ? pkg.getModel(modelPath) : undefined;
+      if (!modelPath || !model) continue;
+      for (const apiSource of model.getSources?.() ?? []) {
+         if (apiSource.name && isUnconditionalDenyAuthorize(apiSource)) {
+            droppedSources.add(sourceContextKey(modelPath, apiSource.name));
+         }
+      }
+      for (const info of model.getSourceInfos() ?? []) {
+         listedFields.set(
+            sourceContextKey(modelPath, info.name),
+            new Set((info.schema?.fields ?? []).map((f) => f.name)),
+         );
+      }
+   }
    for (const apiModel of models) {
       const modelPath = apiModel.path;
       if (!modelPath) continue;
@@ -623,12 +902,6 @@ async function collectEntities(pkg: Package): Promise<CollectedModel> {
       // The compiled IR, for a field's expression. Absent for a spec stand-in
       // or a failed compile; fields then index without provenance.
       const modelDef = model.getModelDef?.();
-
-      for (const apiSource of apiSources) {
-         if (apiSource.name && isUnconditionalDenyAuthorize(apiSource)) {
-            droppedSources.add(sourceContextKey(modelPath, apiSource.name));
-         }
-      }
 
       for (const sourceInfo of sourceInfos) {
          const sourceName = sourceInfo.name;
@@ -646,6 +919,24 @@ async function collectEntities(pkg: Package): Promise<CollectedModel> {
             modelDef,
             sourceName,
             sourceTextFor,
+         );
+         // Record members this source may still index (collectRecordMembers).
+         // One budget for its own records and its joined sources' records:
+         // Malloy lists a source's own fields before its joins, so its own
+         // members are counted first and a joined record gets what is left.
+         // A joined record its own source lists spends none (see
+         // joinedMembersListed).
+         const memberBudget = { left: MAX_RECORD_MEMBERS_PER_SOURCE };
+         // The source's visible fields: a hidden one (`include { public: ... }`)
+         // is not in its schema, so nothing of it is indexed.
+         const visible = new Set(
+            (
+               (
+                  sourceInfo as {
+                     schema?: { fields?: Array<{ name?: string }> };
+                  }
+               ).schema?.fields ?? []
+            ).map((f) => f.name),
          );
          // What each reachable field is, declared or by lineage. Absent for a
          // stand-in with no compiled model; fields then report their own note.
@@ -760,6 +1051,15 @@ async function collectEntities(pkg: Package): Promise<CollectedModel> {
                   nextId: () => String(n++),
                   out: entities,
                   lineage,
+                  budget: memberBudget,
+                  membersListedElsewhere: (joinPath, record) =>
+                     joinedMembersListed(
+                        topology.get(governanceKey),
+                        joinPath,
+                        record,
+                        listedFields,
+                        droppedSources,
+                     ),
                });
                continue;
             }
@@ -795,6 +1095,39 @@ async function collectEntities(pkg: Package): Promise<CollectedModel> {
                   ? { aliasOf: fieldProvenance.aliasOf }
                   : {}),
             });
+            // A dimension defined as another (`addr is delivery`) is a
+            // second spelling of that record: its members are listed once,
+            // under the record's own name. Unless that record is hidden
+            // (renamed, then `include { public: ship_to }`): then the alias
+            // is the only spelling, and lists them.
+            // A nested record (`addr is delivery.address`) is listed under
+            // its top-level record's name when that record is visible.
+            const aliasOf = fieldProvenance?.aliasOf;
+            const aliasOfVisible =
+               aliasOf !== undefined &&
+               (visible.has(aliasOf) ||
+                  (aliasOf.includes(".") &&
+                     visible.has(aliasOf.split(".")[0].replace(/`/g, ""))));
+            if (field.kind === "dimension" && !aliasOfVisible) {
+               collectRecordMembers({
+                  type: (field as { type?: FieldType }).type,
+                  path: memberSegment(field.name),
+                  recordPath: memberSegment(field.name),
+                  sourceName,
+                  modelPath,
+                  fanout: "one",
+                  depth: 1,
+                  nextId: () => String(n++),
+                  out: entities,
+                  ...(lineage ? { lineage } : {}),
+                  parentClasses: classificationOf(
+                     lineage,
+                     field.name,
+                     field.annotations,
+                  ),
+                  budget: memberBudget,
+               });
+            }
          }
       }
 
@@ -889,7 +1222,7 @@ async function collectEntities(pkg: Package): Promise<CollectedModel> {
       if (kept.length > 0) topology.set(root, kept);
       else topology.delete(root);
    }
-   const collapsed = collapseAliases(deduped);
+   const collapsed = inheritRecordClasses(collapseAliases(deduped));
    const kept = new Set(collapsed);
    return {
       entities: collapsed,
@@ -973,6 +1306,51 @@ interface CollectedModel {
 function malloyType(field: { type?: { kind?: string } }): string | undefined {
    const kind = field.type?.kind;
    return kind ? kind.replace(/_type$/, "") : undefined;
+}
+
+/**
+ * Give each record member without a class of its own its record's class,
+ * after collapseAliases. The class belongs to the column, so it is read off
+ * the record's whole alias group: `#(classification) "pci" dimension:
+ * billing_details is billing` classifies `billing.card`, though the members
+ * are listed under the raw record's name.
+ */
+function inheritRecordClasses(entities: Entity[]): Entity[] {
+   // Backticks dropped: a record is listed as `date`, while its members'
+   // recordPath spells it `` `date` `` (memberSegment).
+   const cardKey = (e: Entity, name: string) =>
+      [
+         e.modelPath,
+         e.source ?? "",
+         e.joinPath ?? "",
+         name.replace(/`/g, ""),
+      ].join(KEY_SEPARATOR);
+   const classesOf = new Map<string, Entity>();
+   for (const e of entities) {
+      if (e.kind !== "dimension" || !e.classifications) continue;
+      for (const name of [e.name, ...(e.aliases ?? [])]) {
+         classesOf.set(cardKey(e, name), e);
+      }
+   }
+   if (classesOf.size === 0) return entities;
+   for (const e of entities) {
+      if (!e.recordPath || e.classifications) continue;
+      // The nearest classified record on the member's path.
+      const parts = e.recordPath.split(".");
+      for (let i = parts.length; i >= 1; i--) {
+         const record = parts.slice(0, i).join(".");
+         const name = e.joinPath ? `${e.joinPath}.${record}` : record;
+         const donor = classesOf.get(cardKey(e, name));
+         if (!donor) continue;
+         e.classifications = donor.classifications;
+         if (donor.classificationInferred) e.classificationInferred = true;
+         if (donor.classificationInputs) {
+            e.classificationInputs = donor.classificationInputs;
+         }
+         break;
+      }
+   }
+   return entities;
 }
 
 /**
@@ -1080,6 +1458,13 @@ function collapseAliases(entities: Entity[]): Entity[] {
                keep.classificationInputs = donor.classificationInputs;
             }
          }
+      }
+      // A repeated record's member is `many`, and so is a dimension
+      // declared over it (`qty_each is lines.qty`): grouping by either
+      // gives a group per element.
+      if (!keep.relationship) {
+         const donor = members.find((e) => e !== keep && e.relationship);
+         if (donor?.relationship) keep.relationship = donor.relationship;
       }
       const folded = members.filter((e) => e !== keep);
       keep.aliases = folded.map((e) => e.name);
