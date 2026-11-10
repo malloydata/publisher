@@ -390,8 +390,16 @@ interface JoinSchemaField {
 /** A field's compiled type, as far as the record walk reads it. */
 interface FieldType {
    kind?: string;
-   /** A record's members. */
-   fields?: Array<{ name: string; type?: FieldType }>;
+   /**
+    * A record's members. A member's annotations carry the database's
+    * `#(dbmeta)` description of that nested column, when the connection
+    * has `dbmeta` on; the model cannot annotate a member itself.
+    */
+   fields?: Array<{
+      name: string;
+      type?: FieldType;
+      annotations?: AnnotationLines;
+   }>;
    /** An array's element. */
    element_type?: FieldType;
 }
@@ -424,7 +432,8 @@ const PLAIN_MEMBER_NAME = /^[A-Za-z_][A-Za-z0-9_]*$/;
  * A member of a repeated record (an array of records, `lines.sku`) has
  * relationship `many`, because aggregating through it counts each element; a
  * record inside a repeated record stays `many`. A member takes its record's
- * classification when it has none of its own. An array of scalars has one
+ * classification when it has none of its own, and its doc from its own
+ * annotations (entityDocs), as any other field does. An array of scalars has one
  * member, its element, named `each` (`tags.each`), also `many`. A member whose name is not a plain identifier (PLAIN_MEMBER_NAME)
  * is not indexed, nor anything under it. At most MAX_RECORD_MEMBERS_PER_SOURCE
  * are indexed per source (`budget`), in schema order; a dropped member is
@@ -480,8 +489,7 @@ function collectRecordMembers(args: {
          name,
          source: args.sourceName,
          modelPath: args.modelPath,
-         doc: "",
-         embedDoc: "",
+         ...entityDocs(member.annotations),
          ...classes,
          ...(args.joinPath ? { joinPath: args.joinPath } : {}),
          recordPath,

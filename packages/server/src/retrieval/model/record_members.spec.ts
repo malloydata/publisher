@@ -11,7 +11,15 @@ import {
 } from "../../test_helpers/fcj_index_fixture";
 import { find, KINDS_BY_FIND_TARGET } from "../search/find";
 import { routeOptions, routesOf, throughFanout } from "../search/routes";
-import { MAX_RECORD_MEMBERS_PER_SOURCE } from "./package_entities";
+import {
+   compileJoinFixture,
+   storeServing,
+} from "../../test_helpers/get_context_join_fixture";
+import { projectEntity, toSourceResults } from "../search/response";
+import {
+   getPackageIndex,
+   MAX_RECORD_MEMBERS_PER_SOURCE,
+} from "./package_entities";
 
 // A DuckDB STRUCT compiles to the same Malloy record type as a BigQuery
 // RECORD, and a STRUCT[] to the same repeated record, so this stands in for
@@ -308,5 +316,102 @@ source: orders is duckdb.sql("""select 1 as k, {'city': 'Denver'} as delivery"""
       } finally {
          await joined.close();
       }
+   });
+});
+
+// BigQuery with `dbmeta` on annotates the fields nested in a RECORD with
+// their column descriptions, as it does top-level columns (#1492).
+describe("record members with database descriptions", () => {
+   const ORDERS = `select 1 as id, 7 as customer_id, {'city': 'Denver', 'address': {'zip': '80202'}} as delivery, [{'sku': 'a'}] as lines`;
+   const CUSTOMERS = `select 7 as id, {'tier': 'gold'} as profile`;
+   const DESCRIBED_MODEL = `
+source: customers is duckdb.sql("${CUSTOMERS}")
+
+source: orders is duckdb.sql("${ORDERS}") extend {
+  join_one: customer is customers on customer_id = customer.id
+  #(doc) The city the order was delivered to.
+  dimension: delivery_city is delivery.city
+}
+
+source: shipments is duckdb.sql("${ORDERS}") extend {
+  dimension: ship_city is delivery.city
+}
+`;
+
+   async function described() {
+      const { pkg } = await compileJoinFixture("m.malloy", {
+         modelText: DESCRIBED_MODEL,
+         dbmeta: {
+            [ORDERS]: {
+               columns: {
+                  "delivery.city": "City of delivery.",
+                  "delivery.address.zip": "Delivery postcode.",
+                  "lines.sku": "Stock keeping unit.",
+               },
+            },
+            [CUSTOMERS]: { columns: { "profile.tier": "Loyalty tier." } },
+         },
+      });
+      const index = await getPackageIndex(
+         new WeakMap(),
+         storeServing(pkg),
+         "env",
+         "pkg",
+      );
+      const get = (source: string, name: string) =>
+         [...index.byId.values()].find(
+            (e) => e.source === source && e.name === name,
+         );
+      return { index, get };
+   }
+
+   it("take a member's own description, nested and repeated records included", async () => {
+      const { get } = await described();
+      expect(get("orders", "delivery.address.zip")).toMatchObject({
+         doc: "Delivery postcode.",
+         embedDoc: "Delivery postcode.",
+         docSource: "dbmeta",
+      });
+      expect(get("orders", "lines.sku")).toMatchObject({
+         doc: "Stock keeping unit.",
+         docSource: "dbmeta",
+      });
+   });
+
+   it("document a member of a joined source", async () => {
+      const { get } = await described();
+      expect(get("customers", "profile.tier")).toMatchObject({
+         doc: "Loyalty tier.",
+         docSource: "dbmeta",
+      });
+   });
+
+   it("give way to the #(doc) of a dimension declared over the member", async () => {
+      const { get } = await described();
+      const city = get("orders", "delivery_city");
+      expect(city?.doc).toBe("The city the order was delivered to.");
+      expect(city?.docSource).toBeUndefined();
+      expect(city?.aliases).toContain("delivery.city");
+   });
+
+   it("document an undocumented dimension declared over the member", async () => {
+      const { get } = await described();
+      expect(get("shipments", "ship_city")).toMatchObject({
+         doc: "City of delivery.",
+         docSource: "dbmeta",
+      });
+   });
+
+   it("mark the member's description in the response", async () => {
+      const { index, get } = await described();
+      const rows = [get("orders", "delivery.address.zip")!].map((e) =>
+         projectEntity(e, "env", "pkg"),
+      );
+      const [card] = toSourceResults(rows, index.sourceContext, "env", "pkg");
+      expect(card?.entities?.[0]).toMatchObject({
+         name: "delivery.address.zip",
+         description: "Delivery postcode.",
+         description_source: "dbmeta",
+      });
    });
 });
