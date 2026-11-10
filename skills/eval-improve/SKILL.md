@@ -116,12 +116,14 @@ publishing.
 
 Know which copy of the file the server actually reads. Hosts commonly serve a
 copy of the package rather than your working tree, so editing the model repo
-and reloading recompiles the unchanged copy: the reload succeeds, nothing
-changes, and a verification probe quietly tests the old model. Confirm the
-edit reached what is served before you trust a probe, and keep the model repo
-the source of truth that gets committed. On open-source Publisher the served
-copy lives under `publisher_data/<env>/<pkg>/` unless the environment is
-watch-mounted; other hosts distinguish a draft from a published version.
+and reloading changes nothing: the reload succeeds, and a verification probe
+quietly tests the old model. Confirm the edit reached what is served before
+you trust a probe, and keep the model repo the source of truth that gets
+committed. On open-source Publisher, a package outside a watch-mounted
+environment is a published version, which is immutable: a reload answers it
+`mode: unchanged` and never reads your files. Serve the model in watch mode
+(`eval.py serve model --set <set> --watch-env <env> --reinit`, then
+`improve.py --watch-mode`). Other hosts distinguish a draft from a published version.
 
 ## Step 3: One smallest edit
 

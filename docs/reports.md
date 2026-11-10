@@ -950,16 +950,17 @@ old Console link `/<env>/<pkg>/dashboards/<name>` or `/notebooks/<name>` still o
 opens at its path, and otherwise a unique basename redirects to the report's path. All of these are removed
 in a later release; use `…/reports`.
 
-After editing a report file, `GET …/packages/<pkg>?reload=true` recompiles the package in place, and a
-reload that fails to compile leaves the previously compiled model serving. [AGENTS.md](../AGENTS.md) §6
-covers the edit loop and watch mode.
+After editing a report file in a watched environment (`--watch-env`), `GET …/packages/<pkg>?reload=true`
+recompiles the package in place, and a reload that fails to compile leaves the previously compiled model
+serving. Every other package is a published version, which is immutable: a reload returns it unchanged, so
+an edited report ships as a new version. [AGENTS.md](../AGENTS.md) §6 covers the edit loop and watch mode.
 
 <a id="the-write-path"></a>
 
 ### The write path
 
 `PUT …/models/{path}`, body `{"source": "…", "expectedHash": "<sha256 of the text you read>"}`, writes a
-report into the package and reloads it. One rule for both layouts:
+report into a package mounted in place (a watched environment) and reloads it. One rule for both layouts:
 
 - **Create** (omit `expectedHash`) at any `.malloy` path in the package that does not exist yet, outside
   `public/` and never at the root `index.malloy`. Missing directories are created inside the package. The
@@ -973,11 +974,12 @@ report into the package and reloads it. One rule for both layouts:
   restored if the reload does not take it or the file is not then a served report. A text that declares a
   real `#(authorize)` or `#(access_filter)` gate outside prose is refused with `400`: gates live in the model.
 - `403` under `frozenConfig`.
-- `409` with `reason` `PACKAGE_INSTALLED_FROM_LOCATION` for a package installed from a `location` (a publish
-  over the API that named one). A reload fetches such a package again and replaces its files, so a report
-  written into it would be lost. Add the report to the package's source and reload, or publish it as a version.
-  A package with published versions answers `409` with `reason` `PACKAGE_IS_VERSIONED`. Only `FILE_EXISTS`
-  means another path may be free.
+- `409` with `reason` `PACKAGE_IS_VERSIONED` for a package with published versions, which is every package
+  outside a watched environment: a version is immutable. Add the report to the package's source, bump
+  `version` in its `publisher.json`, and publish it again. With versioning off, a package installed from a
+  `location` (a publish over the API that named one) answers `409` with `reason`
+  `PACKAGE_INSTALLED_FROM_LOCATION` instead: a reload fetches it again and replaces its files, so a report
+  written into it would be lost. Only `FILE_EXISTS` means another path may be free.
 
 Two reports may share a basename in different directories; there is no name-collision `409`.
 

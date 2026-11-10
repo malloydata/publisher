@@ -5,7 +5,10 @@ import { beforeAll, describe, expect, it } from "bun:test";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { initializeMcpServer } from "./server";
-import { RELOAD_FAILURE_IS_SAFE } from "./tools/reload_package_tool";
+import {
+   RELOAD_FAILURE_IS_SAFE,
+   RELOAD_NEEDS_WATCH_MODE,
+} from "./tools/reload_package_tool";
 import packageJson from "../../package.json";
 import { mcpServicesFor } from "../test_helpers/mcp_services";
 
@@ -215,6 +218,9 @@ describe("MCP server over the MCP protocol (in-memory)", () => {
       // cannot drift, and they have drifted twice. Without this, deleting the
       // interpolation leaves the suite green and the drift comes back.
       expect(instructions).toContain(RELOAD_FAILURE_IS_SAFE);
+      // And which packages a reload reads: only a watched one, so an agent
+      // editing a published version is told up front that it needs a new one.
+      expect(instructions).toContain(RELOAD_NEEDS_WATCH_MODE);
       // The two working rules that keep an agent from trusting a stale or
       // silently empty model (see F1/F7 in the QA field notes): reload after
       // every edit, and never read an empty getContext as an empty package.

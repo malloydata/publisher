@@ -51,21 +51,22 @@ The package directory format itself (`publisher.json` fields, models, data files
 [packages.md](packages.md).
 
 Do not author packages under `publisher_data/`. That is storage Publisher manages for itself: it
-copies each configured package in (or symlinks it, under `--watch-env`), and `--init` deletes the
-whole tree.
+publishes each configured package into it as a version (or symlinks it, under `--watch-env`), and
+`--init` deletes the whole tree.
 
-The copy is the part that surprises people: **without `--watch-env`, a local package is served
-from its boot-time copy, so edits to your source directory are never read**, however many times
-you save or reload — a `?reload=true` still answers 200, recompiled from the copy. Local authoring
-means starting the server with `--watch-env <env>`, which mounts the environment's local packages
-in place and live-reloads them.
+The publish is the part that surprises people: **without `--watch-env`, a package is served as
+the immutable version its `publisher.json` declares, so edits to your source directory are never
+read**, however many times you save or reload — a `?reload=true` still answers 200, with the
+version unchanged. Local authoring means starting the server with `--watch-env <env>`, which
+mounts the environment's local packages in place and live-reloads them. To ship an edit from a
+server that is not watching, bump the `version` and publish the package again.
 
 Adding `--watch-env` to a _later_ boot is not enough on its own, and this is the one to watch for:
-the mount is decided when an environment is first loaded from config, so a package already copied
-into `publisher_data/` stays a copy, and the boot still logs `Watch mode active` over it. Pass
-`--watch-env <env> --init` once to re-mount (`--init` alone re-copies). After that, plain
-`--watch-env` boots keep watching. `publisher_data/<env>/<pkg>` shows which you got: a symlink is
-mounted, a real directory is a copy.
+the mount is decided when an environment is first loaded from config, so a package already
+published into `publisher_data/` stays a version, and the boot still logs `Watch mode active` over
+it. Pass `--watch-env <env> --init` once to re-mount (`--init` alone publishes again). After that,
+plain `--watch-env` boots keep watching. `publisher_data/<env>/<pkg>` shows which you got: a
+symlink is mounted, a folder of versions is published.
 
 A `location` can also be a `https://github.com/...`, `gs://`, or `s3://` URL, which Publisher
 downloads. Only local directories are eligible for `--watch-env`.

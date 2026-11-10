@@ -61,8 +61,8 @@ async function listVersions(
 /**
  * A package's published versions.
  *
- * A package with none — versioning off, a package loaded from configuration —
- * and a server that predates versions read as no versions, so the page draws
+ * A package with none — one in a watched environment, or any with versioning
+ * off — and a server that predates versions read as no versions, so the page draws
  * exactly as it did before versions existed. A listing that failed reads as
  * no versions too, but says so with `isError`: until it answers, nothing may
  * assume the package can be edited.

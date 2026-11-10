@@ -628,7 +628,7 @@ export class PackageController {
                   body,
                );
             }
-            // Versioning off, the transition default: installed in
+            // Versioning off (PUBLISHER_PACKAGE_VERSIONING=off): installed in
             // place, as every publish from a location was before versions,
             // whatever its publisher.json declares. Versions already published
             // are not replaced.

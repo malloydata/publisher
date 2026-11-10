@@ -458,6 +458,14 @@ def main(argv: list[str] | None = None) -> int:
                     "With --role, the role's mcp_port in eval.toml, as --port")
     ap.add_argument("--allow-proxy", action="store_true")
     ap.add_argument("--trace-retrieval", action="store_true")
+    ap.add_argument("--watch-env", metavar="ENV",
+                    help="serve ENV in watch mode (PUBLISHER_WATCH): its local "
+                         "packages are mounted in place, so an edit is read on "
+                         "reload, which eval-improve needs. Without it each "
+                         "package is a published version, which no edit "
+                         "reaches. The mount is decided when the environment "
+                         "is first loaded, so add --reinit to switch a server "
+                         "root that is already serving")
     ap.add_argument("--reinit", action="store_true",
                     help="drop the store and re-read publisher.config.json. "
                          "Needed after a config edit -- a new environment or a "
@@ -565,6 +573,8 @@ def main(argv: list[str] | None = None) -> int:
         env["PUBLISHER_ALLOW_PROXY_CONNECTIONS"] = "true"
     if a.trace_retrieval:
         env["PUBLISHER_MCP_TRACE"] = "retrieval"
+    if a.watch_env:
+        env["PUBLISHER_WATCH"] = a.watch_env
     seed, why = init_decision(root, a.reinit, changed)
     print(why)
     note = retrieval_note(env) if a.role != "truth" else None
