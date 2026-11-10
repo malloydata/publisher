@@ -22,6 +22,10 @@ Give the heading a title — `## [Unreleased] — what changed`, with an em dash
 Two consequences worth knowing. A section merged to `main` ships in the **next** release, whenever that is, so do not write one for work that has not landed. And a heading already stamped with a version is history: a follow-up that changes that behaviour opens a **new** `[Unreleased]` section referencing the shipped version by number, rather than editing the old one.
 
 
+## [Unreleased] — Compile a package to a bundle once, and load it many times without compiling
+
+`--compile-package <dir> --bundle-out <file>` loads a package exactly as a serving load would and writes the load worker's outcome to a file, the compiled bundle, instead of serving it. An install that names that file as `modelBundleLocation` (a gs:// or s3:// URI, a file:// URL or an absolute path) hydrates the models from it instead of compiling them, when the bundle's stamp names this server's compiler version, its worker protocol and the package's source tree. The install records the location in `publisher.json`, so a reload and a restart hydrate from it too. A bundle that is missing, unreadable or stale is never an error: the load compiles as before, and `modelBundle.status` on the serving state says which happened (`hit`, `absent`, `unreadable`, `stale_compiler`, `stale_source`, `compiled`), with `publisher_package_bundle_load_total{status}` counting the same. The server writes no bundle anywhere but the path `--bundle-out` names; where bundles live is the host's.
+
 ## [Unreleased] — Server fixes: correct statuses for model reads, client cancellation over MCP, fail-closed depth bounds, and quieter, better-labelled logs and metrics
 
 A pass over the server that changes no route or tool, and no response shape except `/entities` reporting a gate it used to misread (below), but does change some answers, log lines and metrics. Read it if you alert on any of them.

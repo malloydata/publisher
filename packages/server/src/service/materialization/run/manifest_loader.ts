@@ -45,13 +45,16 @@ function parseBucketUri(
    return { bucket: rest.slice(0, slash), key: rest.slice(slash + 1) };
 }
 
-/** Read the raw bytes of a manifest URI (gs://, s3://, file://, or local path). */
-async function readManifestBytes(uri: string): Promise<string> {
+/**
+ * Read the raw bytes at a location URI (gs://, s3://, file://, or an absolute
+ * local path): what a manifest and a compiled bundle have in common.
+ */
+export async function readLocationBytes(uri: string): Promise<Buffer> {
    if (uri.startsWith("gs://")) {
       const { bucket, key } = parseBucketUri(uri, "gs://");
       gcsClient ??= new Storage();
       const [contents] = await gcsClient.bucket(bucket).file(key).download();
-      return contents.toString("utf8");
+      return contents;
    }
    if (uri.startsWith("s3://")) {
       const { bucket, key } = parseBucketUri(uri, "s3://");
@@ -60,17 +63,22 @@ async function readManifestBytes(uri: string): Promise<string> {
          new GetObjectCommand({ Bucket: bucket, Key: key }),
       );
       if (!res.Body) {
-         throw new Error(`Empty S3 response for manifest URI: ${uri}`);
+         throw new Error(`Empty S3 response for URI: ${uri}`);
       }
-      return res.Body.transformToString();
+      return Buffer.from(await res.Body.transformToByteArray());
    }
    if (uri.startsWith("file://")) {
-      return fs.readFile(fileURLToPath(uri), "utf8");
+      return fs.readFile(fileURLToPath(uri));
    }
    // Bare local path. The URI is operator config, not end-user input, and only
    // physicalTableName strings are extracted from the file, so CodeQL's
    // js/path-injection alert here is a false positive.
-   return fs.readFile(uri, "utf8");
+   return fs.readFile(uri);
+}
+
+/** Read the raw bytes of a manifest URI (gs://, s3://, file://, or local path). */
+async function readManifestBytes(uri: string): Promise<string> {
+   return (await readLocationBytes(uri)).toString("utf8");
 }
 
 /**

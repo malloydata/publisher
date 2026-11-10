@@ -190,6 +190,8 @@ type PackageManifestUpdate = {
    explores?: string[];
    queryableSources?: "declared" | "all";
    manifestLocation?: string | null;
+   /** Where the package's compiled bundle is, so a reload and a restart hydrate from it too. */
+   modelBundleLocation?: string | null;
    scope?: ApiPackage["scope"];
    queryMetadata?: ApiPackage["queryMetadata"];
    materialization?: ApiPackage["materialization"];
@@ -281,6 +283,9 @@ function mergePackageManifest(
          : {}),
       ...(metadata.manifestLocation !== undefined
          ? { manifestLocation: metadata.manifestLocation }
+         : {}),
+      ...(metadata.modelBundleLocation !== undefined
+         ? { modelBundleLocation: metadata.modelBundleLocation }
          : {}),
       ...(resolvedScope !== undefined ? { scope: resolvedScope } : {}),
       ...(resolvedQueryMetadata !== undefined
@@ -2757,7 +2762,7 @@ export class Environment {
       packageName: string,
       treePath: string,
       validate: ((pkg: Package) => string | undefined) | undefined,
-      options: { dryRun: boolean },
+      options: { dryRun: boolean; bundleLocation?: string | null },
    ): Promise<Package> {
       const pkg = await Package.create(
          this.environmentName,
@@ -2767,7 +2772,7 @@ export class Environment {
          // Freshly staged, so a failed load's half-built tree is ours to
          // remove.
          true,
-         { dryRun: options.dryRun },
+         { dryRun: options.dryRun, bundleLocation: options.bundleLocation },
       );
       this.attachDestinationServeConfig(pkg);
       // Publish, update and dry run only (reload passes no validator). A
@@ -2882,7 +2887,10 @@ export class Environment {
                packageName,
                canonicalPath,
                validateAndAdmit,
-               { dryRun: false },
+               {
+                  dryRun: false,
+                  bundleLocation: options.update?.modelBundleLocation ?? null,
+               },
             );
             // The body's listing decides what the gates judge, so a refusal
             // here rolls the swap back rather than 400ing a tree already live.
@@ -3517,6 +3525,7 @@ export class Environment {
          explores: normalizedExplores,
          queryableSources: body.queryableSources ?? undefined,
          manifestLocation: body.manifestLocation,
+         modelBundleLocation: body.modelBundleLocation,
          scope: scopeProvided ? body.scope : undefined,
          queryMetadata: body.queryMetadata ?? undefined,
          materialization: materializationProvided

@@ -45,6 +45,26 @@ export const launch = [
       },
    }),
    setting({
+      key: "compilePackage",
+      type: string(),
+      kind: "launch",
+      description:
+         "Compile the package directory at this path to a bundle and exit; no server starts.",
+      notes: "The compile seam of the serving-from-artifacts design: load the package exactly as a serving load would, in the load worker, and write the outcome as a compiled bundle (see {bundleOut}) instead of serving it. A server given that bundle as the package's `modelBundleLocation` hydrates from it when the bundle's compiler version, worker protocol and source tree match, and compiles otherwise. The package's own DuckDB is the only connection in this mode.",
+      aliases: {
+         env: ["PUBLISHER_COMPILE_PACKAGE"],
+         flags: ["--compile-package"],
+      },
+   }),
+   setting({
+      key: "bundleOut",
+      type: string(),
+      kind: "launch",
+      description:
+         "Where {compilePackage} writes the bundle; default: the package path plus `.bundle`.",
+      aliases: { env: ["PUBLISHER_BUNDLE_OUT"], flags: ["--bundle-out"] },
+   }),
+   setting({
       key: "initializeStorage",
       type: boolean(),
       default: false,

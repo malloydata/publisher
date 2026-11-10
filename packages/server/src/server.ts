@@ -51,6 +51,12 @@ logger.info(settingsLine(loaded));
 // Checked before either server's module loads, so a contradiction fails startup
 // before anything binds or opens storage. Imported here, after the version check,
 // because config.ts brings the logger and the rest of the application with it.
+// Compile mode: write one package's compiled bundle and exit; no server.
+if (loaded.isSet("compilePackage")) {
+   await import("./compile_bundle");
+   process.exit(0);
+}
+
 const { getServerApiSettings } = await import("./config");
 const { assertServerApis } = await import("./server_apis");
 const apis = getServerApiSettings();
