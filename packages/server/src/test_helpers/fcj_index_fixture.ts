@@ -10,7 +10,7 @@
 import {
    DEFAULT_FCJ_SETTINGS,
    type FcjSettings,
-} from "../service/package_retrieval";
+} from "../service/package_retrieval_settings";
 
 /**
  * The engine's settings as most specs below were written against: clusters
@@ -24,10 +24,10 @@ export const CLUSTER_SETTINGS: FcjSettings = {
    listUnion: 0,
    readingsRule: false,
 };
-import { loadedRetrievalConfig, setRetrievalConfig } from "../retrieval_config";
+import { loadedRetrievalConfig, setRetrievalConfig } from "../retrieval/config";
 import { createCatalogTables } from "../storage/duckdb/schema";
-import { buildFcjIndex, type FcjIndex } from "../mcp/context/index_build";
-import type { IndexValueFetcher } from "../mcp/context/values_index";
+import { buildFcjIndex, type FcjIndex } from "../retrieval/index/index_build";
+import type { IndexValueFetcher } from "../retrieval/index/values_index";
 import { compileFcjFixture, openTempDb, type FcjFixture } from "./fcj_fixture";
 import { stubEmbeddingProvider } from "./get_context_llm_harness";
 

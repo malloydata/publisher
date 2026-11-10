@@ -298,7 +298,15 @@ paths:
             $ref: "#/components/schemas/IdentifierPattern"
         - name: reload
           in: query
+          deprecated: true
           description: |
+            **Deprecated.** Re-reads the environment's block of `publisher.config.json` and reloads
+            the environment from it. Nothing first-party calls it, and the v1 API has no environment
+            reload. A response to `reload=true` carries `Deprecation: true`, and each use is counted in
+            `publisher_deprecated_usage_total{feature="environment_reload"}`; it is removed once that
+            reads zero (#1540). Under `frozenConfig` it is refused with 403, like any change to an
+            environment. To pick up a package's changed files, reload the package.
+
             Load / reload the environment before returning result.
 
             Only the two spellings OpenAPI serializes a boolean as are accepted:
@@ -1693,6 +1701,23 @@ paths:
         At EITHER home, omitting it preserves the package's tags and so does sending
         null — a client that serializes unset fields as null must not untag a package
         by accident. Send an empty object to clear.
+
+        A package fetched from a `location` keeps none of these on reload: a reload fetches
+        it again and replaces its files, `publisher.json` included, keeping only its
+        `location` and manifest binding. So when the package will be fetched from a
+        location once this request is applied (the `location` it sends, or else the one it
+        was installed from), a change to `description`, `explores`, `queryableSources`,
+        `scope`, `queryMetadata` or `materialization` is refused with 409 (`reason`
+        `PACKAGE_INSTALLED_FROM_LOCATION`). A change is judged by the value the request
+        would leave in force: clearing a set field is a change, a null is omitted, and a
+        value equal to the current one (`explores` normalized as stored) is not. A request
+        that names a new `location` is judged against the tree fetched from it, and a
+        refusal leaves the previous install serving. When the package it replaces was
+        itself installed from a location, a field sent with that package's value is the
+        package sent back, not a change: it is left out and the new tree's value serves,
+        so a whole package read back with only its `location` changed is accepted.
+        Make the change in the package's
+        source and reload it, or publish it as a version.
       parameters:
         - name: environmentName
           in: path
@@ -2242,8 +2267,9 @@ paths:
         with `includeHiddenFilesAndSources=true`. When the file on disk no
         longer hashes to it, the write is refused with 409 and nothing is
         merged: the caller re-opens and reapplies its change. Omit it to CREATE
-        the file: a file that already exists is then refused with 409 too, so
-        an unconditional overwrite is not something a caller can ask for by
+        the file: a file that already exists is then refused with 409 too,
+        `reason` `FILE_EXISTS`, so a caller choosing a name can try the next,
+        and an unconditional overwrite is not something a caller can ask for by
         leaving a field out. A path over an existing file the package does not
         read as a report answers 400 instead, with or without a hash, because
         that check comes before the hash. The check, the write,
@@ -2267,6 +2293,11 @@ paths:
         `versionId` names: change the file in the package's source and publish
         a new version. A `versionId` on a package with no versions answers 404
         (`reason` `VERSION_NOT_FOUND`).
+
+        A package installed from a `location` is fetched again from there on
+        reload, which replaces its files, so it refuses this write with 409
+        (`reason` `PACKAGE_INSTALLED_FROM_LOCATION`): add the report to the
+        package's source and reload it, or publish it as a version.
       parameters:
         - name: environmentName
           in: path
@@ -2316,8 +2347,10 @@ paths:
           $ref: "#/components/responses/NotFound"
         "409":
           description:
-            The file changed since the caller opened it, or already exists and
-            no `expectedHash` was sent
+            The file changed since the caller opened it; or it already exists
+            and no `expectedHash` was sent (`reason` `FILE_EXISTS`); or the
+            package cannot take the write in place (`reason`
+            `PACKAGE_IS_VERSIONED` or `PACKAGE_INSTALLED_FROM_LOCATION`)
           content:
             application/json:
               schema:
@@ -4237,6 +4270,11 @@ components:
             content. Bump the `version` in publisher.json and publish again.
           * PACKAGE_IS_VERSIONED: the package has published versions, which are
             immutable, so it cannot be changed in place.
+          * PACKAGE_INSTALLED_FROM_LOCATION: the package is fetched again from
+            the location it was installed from on reload, which would discard
+            the change. Make it in the package's source and reload.
+          * FILE_EXISTS: a create-only report write found a file at the path.
+            Choose another path.
           * VERSION_IS_LATEST: the version is the package's `latest` and cannot
             be archived, or deleted while other versions remain. Move `latest` first.
           * VERSION_IS_LAST_ACTIVE: the version is the package's last one in
@@ -6254,14 +6292,14 @@ components:
         starts every package's index again, but vectors already stored for
         unchanged content are reused, so a restart over an unchanged package
         embeds nothing new.
-        Every count is scoped to the embedding model currently configured, so
-        rows left behind by an earlier model are never counted. Read `status`
-        for readiness and the counts for progress: they answer different
-        questions, and only `status` tracks what the search path will do. The
-        first read after a package loads builds the package's entity index and
-        its content fingerprint, which is work a metadata read would not
-        otherwise do. After that a read is two row counts and never waits on a
-        sync, so polling is cheap.
+        The counts are the search index's own: the vectors it holds in
+        `catalog_embeddings` under the embedding model currently configured,
+        so rows left behind by an earlier model are never counted. Every count
+        is 0 until the index build reaches its vectors step, and 0 again while
+        `status` is `error`. Read `status` for readiness and the counts for
+        progress: they answer different questions, and only `status` tracks
+        what the search path will do. A read is answered from memory and never
+        waits on a build, so polling is cheap.
       properties:
         status:
           type: string
@@ -6388,38 +6426,35 @@ components:
         embeddedRows:
           type: integer
           description: >-
-            Cached vectors for this package under the current embedding model.
-            With the default `retrieval.representation` of `single` an entity
-            contributes one row, so this equals `totalEntities` once indexed.
-            With `facets` an entity contributes one row for its name plus one
-            per chunk of its documentation, so this exceeds `totalEntities` on
-            a documented model and is not a count of entities. A keyphrase row
-            is an extra on top of those and is not counted here or in
-            `totalRows`. Scoped by model only, not by
-            vector length, so it counts what is cached rather than what a
-            search could read today: after a change to `EMBEDDING_DIMENSIONS`
-            that no question has probed yet, rows of the old length are still
-            counted here until the next search discards them. `status` is
-            already `indexing` in that window.
+            Vectors the index holds for this package under the current
+            embedding model, reused or newly embedded; it rises batch by batch
+            while `indexing`. With the default `retrieval.representation` of
+            `single` an entity contributes one row, so this equals
+            `totalEntities` once indexed. With `facets` an entity contributes
+            one row for its name plus one per chunk of its documentation, so
+            this exceeds `totalEntities` on a documented model and is not a
+            count of entities. A vector stored under another embedding model or
+            `EMBEDDING_DIMENSIONS` is embedded again rather than counted.
         totalRows:
           type: integer
           description: >-
-            Rows the package wants cached: the denominator for `embeddedRows`.
-            `embeddedRows` of `totalRows` is the progress of a first index.
+            Rows the index wants for this package: the denominator for
+            `embeddedRows`. `embeddedRows` of `totalRows` is the progress of a
+            build.
         totalEntities:
           type: integer
-          description: Entities the package currently exposes to retrieval.
+          description: >-
+            Entities the package exposes to retrieval, each of which wants at
+            least one row.
         embeddedEntities:
           type: integer
           description: >-
-            Of `totalEntities`, how many have at least one usable vector.
-            Reported because a row count cannot show a model edit that removes
-            two entities and adds two others: the row total is unchanged while
-            the new entities have no vector at all. Coverage by identity, so
-            equality does NOT imply `ready`: an edit that rewrote every doc
-            without renaming anything leaves each entity holding its stale
-            name vector. Read `status` for readiness and this pair for how
-            much of the package is covered.
+            Of `totalEntities`, how many have at least one vector. Reported
+            because a row count cannot show a model edit that removes two
+            entities and adds two others: the row total is unchanged while the
+            new entities have no vector at all. Coverage by identity, so
+            equality does NOT imply `ready`. Read `status` for readiness and
+            this pair for how much of the package is covered.
         lastSyncedAt:
           type: string
           format: date-time
@@ -9393,6 +9428,12 @@ components:
               * PACKAGE_IS_VERSIONED (409): the package has published versions,
                 so it cannot be changed in place (a write, or a publish with
                 package versioning off).
+              * PACKAGE_INSTALLED_FROM_LOCATION (409): the package is fetched
+                again from a `location` on reload, which would discard a report
+                write or a package update's change to its settings.
+              * FILE_EXISTS (409): a report write with no `expectedHash` (a
+                create) found a file already at the path; another path may be
+                free. A stale `expectedHash` answers 409 with no `reason`.
               * VERSION_IS_LATEST (409): the package's `latest` version cannot be
                 archived, or deleted while other versions remain.
               * VERSION_IS_LAST_ACTIVE (409): the package's last version in
@@ -9411,7 +9452,8 @@ components:
             Known values: TABLE_NOT_FOUND, CONNECTION_FAILED,
             CONNECTION_AUTH_FAILED, CONNECTION_NOT_FOUND,
             MANIFEST_VERSION_MISSING, MANIFEST_VERSION_INVALID,
-            VERSION_CONFLICT, PACKAGE_IS_VERSIONED, VERSION_IS_LATEST,
+            VERSION_CONFLICT, PACKAGE_IS_VERSIONED,
+            PACKAGE_INSTALLED_FROM_LOCATION, FILE_EXISTS, VERSION_IS_LATEST,
             VERSION_IS_LAST_ACTIVE, VERSION_BUILDING, VERSION_ID_INVALID,
             VERSION_NOT_LATEST, VERSION_NOT_FOUND, VERSION_ARCHIVED.
         problems:

@@ -12,14 +12,16 @@ import * as fs from "fs";
 import * as os from "os";
 import * as path from "path";
 import { DEFAULT_EMBEDDING_MIN_SIMILARITY } from "../config";
-import { ChatModelImpl, type RawChat } from "../providers/chat_model";
-import { _setChatModelForTests } from "../providers/active";
-import type { ChatModel, LlmSettings } from "../providers/types";
+import { ChatModelImpl, type RawChat } from "../retrieval/llm/chat_model";
+import type { ChatModel } from "../retrieval/llm/types";
 import {
    EmbeddingProvider,
    _setEmbeddingProviderForTests,
-} from "../service/embedding_provider";
-import type { EnvironmentStore } from "../service/environment_store";
+} from "../retrieval/llm/embedding_provider";
+import type { Environment } from "../service/environment";
+import type { EnvironmentCatalog } from "../service/environment_ports";
+import { RetrievalRegistry } from "../retrieval/registry";
+import { RetrievalService } from "../retrieval/service";
 import type { RetryPolicy } from "../service/http_retry";
 import { DuckDBConnection } from "../storage/duckdb/DuckDBConnection";
 import {
@@ -116,14 +118,6 @@ export function summaryReply(prompt: string): string {
    });
 }
 
-/** Install `chat` as the process-wide chat model, with settings overrides. */
-export function useChat(
-   chat: ChatModel | null,
-   settings: Partial<LlmSettings> = {},
-): void {
-   _setChatModelForTests(chat, settings);
-}
-
 // ---------------------------------------------------------------------------
 // A semantic get_context handler
 // ---------------------------------------------------------------------------
@@ -172,6 +166,12 @@ export type Handler = (
 
 export interface SemanticHarness {
    db: DuckDBConnection;
+   /**
+    * The retrieval state every handler of this harness shares: its index
+    * builds, held pages and chat model. A spec sets its seams (the chat
+    * model, the value fetcher, the deadline) here.
+    */
+   registry: RetrievalRegistry;
    /** Reset the index state and install the stub embedding provider. */
    reset(): void;
    close(): Promise<void>;
@@ -188,8 +188,10 @@ export async function semanticHarness(): Promise<SemanticHarness> {
    await db.initialize();
    await createCatalogTables(db);
    await createSourceSummariesTable(db);
+   const registry = new RetrievalRegistry();
    return {
       db,
+      registry,
       reset() {
          _setEmbeddingProviderForTests(stubEmbeddingProvider());
       },
@@ -200,20 +202,26 @@ export async function semanticHarness(): Promise<SemanticHarness> {
       },
       handlerFor(pkg, stale = new Map()) {
          let handler: Handler | undefined;
-         const store = {
-            getEnvironment: async () => ({
-               getPackage: async () => pkg,
-               getStaleCompileErrors: () => stale,
-            }),
-            storageManager: { getDuckDbConnection: () => db },
-         } as unknown as EnvironmentStore;
+         const environment = {
+            getPackage: async () => pkg,
+            getStaleCompileErrors: () => stale,
+         } as unknown as Environment;
+         const store: EnvironmentCatalog = {
+            getEnvironment: async () => environment,
+            listEnvironments: async () => [],
+         };
          registerGetContextTool(
             {
-               tool: (name: string, _d: string, _s: unknown, h: Handler) => {
+               registerTool: (name: string, _config: unknown, h: Handler) => {
                   if (name === "get_context") handler = h;
                },
             } as never,
             store,
+            new RetrievalService(
+               store,
+               { getDuckDbConnection: () => db },
+               registry,
+            ),
          );
          return handler as Handler;
       },

@@ -11,7 +11,7 @@ import {
    PUBLISHER_CONFIG_NAME,
 } from "./constants";
 import { logger } from "./logger";
-import { defaultOpenAiBaseUrl } from "./providers/openai_compatible";
+import { defaultOpenAiBaseUrl } from "./retrieval/llm/openai_compatible";
 import {
    referencedVariable,
    settings,
@@ -22,14 +22,15 @@ import type {
    EmbeddingSettings,
    LlmSettings,
    ProviderName,
-} from "./providers/types";
+} from "./retrieval/llm/types";
 import {
    DEFAULT_SEMANTIC_INDEX_MAX_ENTITIES,
+   loadedRetrievalConfig,
    parseRetrievalConfig,
    type RetrievalConfig,
    type RetrievalEmbeddingConfig,
    type RetrievalLlmConfig,
-} from "./retrieval_config";
+} from "./retrieval/config";
 
 // Re-exported: callers import these from here.
 export {
@@ -155,8 +156,8 @@ export type PublisherConfig = {
  * flag, read from the environment only, and checked in one place: the publish
  * from a location. Off, that publish installs the package in place as before
  * versions; on, it publishes the version its publisher.json declares and
- * refuses a tree that declares none. #1381 removes the flag and the off branch
- * together, once every deployment runs with it on.
+ * refuses a tree that declares none. The flag and the off branch go together,
+ * once every deployment runs with it on.
  */
 export type PackageVersioningMode = "off" | "on";
 
@@ -307,7 +308,7 @@ export const getDuckLakeTargetFileSizeBytes = (): string | undefined =>
  * manager, so this term fails as `failed to pin block`. The threshold bounds
  * rows buffered before a flush; the per-partition up-front cost is bounded by
  * the ordered, single-threaded insert (`orderByPartitionColumns` in
- * service/materialization_build_session.ts). Neither half suffices alone. See
+ * service/materialization/run/materialization_build_session.ts). Neither half suffices alone. See
  * docs/configuration.md.
  */
 export const DEFAULT_PARTITIONED_WRITE_FLUSH_THRESHOLD = 8192;
@@ -687,6 +688,18 @@ export function getLlmSettings(file?: RetrievalLlmConfig): LlmSettings | null {
       maxCallsPerSync: file.maxCallsPerSync,
       maxCallsPerRequest: file.maxCallsPerRequest,
    };
+}
+
+/**
+ * Whether the operator has an LLM configured: the publisher.config.json
+ * `retrieval.llm` block in force resolves to settings (see
+ * {@link getLlmSettings}). Reads settings only, so package loading can ask it
+ * without depending on the retrieval engine; retrieval's chat-model slot
+ * (retrieval/llm/chat_model_slot.ts, `settings()`) answers the same question,
+ * and a test may override it.
+ */
+export function operatorLlmConfigured(): boolean {
+   return getLlmSettings(loadedRetrievalConfig()?.llm) !== null;
 }
 
 /**

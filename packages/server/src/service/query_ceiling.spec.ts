@@ -10,13 +10,13 @@ import { describe, expect, it } from "bun:test";
 import { BadRequestError } from "../errors";
 import { withAuthorizeModel } from "../test_helpers/authorize_fixture";
 import { unrecordedAudit, type QueryAudit } from "./access_record";
+import { ceilingRefusal, modelDeclaresCarries } from "./classification";
 import {
    carriesCeilingLeaks,
-   ceilingRefusal,
-   modelDeclaresCarries,
    prepareCeilingQueries,
-} from "./classification";
+} from "./classification_report";
 import type { Model } from "./model";
+import { QueryPrivileges } from "./model_query_request";
 
 const MODEL = `##! experimental { access_modifiers composite_sources }
 source: people is duckdb.table("child") include { internal: * } extend {
@@ -96,18 +96,10 @@ async function run(
    audit: QueryAudit = unrecordedAudit(),
    bypassAuthorize = false,
 ) {
-   return model.getQueryResults(
+   return model.runQuery(
       audit,
-      undefined,
-      undefined,
-      query,
-      {},
-      true,
-      {},
-      undefined,
-      undefined,
-      "full",
-      bypassAuthorize,
+      { query, filterParams: {}, givens: {}, responseShape: "full" },
+      QueryPrivileges.of({ bypassFilters: true, bypassAuthorize }),
    );
 }
 

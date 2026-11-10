@@ -18,6 +18,8 @@ import {
 import type { EnvironmentStore } from "../../service/environment_store";
 import { Package } from "../../service/package";
 import { registerExecuteQueryTool } from "./execute_query_tool";
+import { QuerySlots } from "../../query_concurrency";
+import { QueryUseCase } from "../../usecases/query";
 
 const FIXTURE_DIR = path.resolve(
    __dirname,
@@ -56,11 +58,15 @@ describe("execute_query on a served notebook", () => {
             }) as never,
       };
       const fakeServer = {
-         tool: (_name: string, _desc: string, _shape: unknown, h: Handler) => {
+         registerTool: (_name: string, _config: unknown, h: Handler) => {
             handler = h;
          },
       };
-      registerExecuteQueryTool(fakeServer as never, store as EnvironmentStore);
+      registerExecuteQueryTool(
+         fakeServer as never,
+         store as EnvironmentStore,
+         new QueryUseCase(store as EnvironmentStore, new QuerySlots()),
+      );
    });
 
    afterAll(async () => {

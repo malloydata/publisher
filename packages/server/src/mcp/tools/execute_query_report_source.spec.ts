@@ -20,6 +20,8 @@ import {
 import type { EnvironmentStore } from "../../service/environment_store";
 import { Package } from "../../service/package";
 import { registerExecuteQueryTool } from "./execute_query_tool";
+import { QuerySlots } from "../../query_concurrency";
+import { QueryUseCase } from "../../usecases/query";
 
 const REPORT = "models/flights_editable.malloy";
 const ORDERS_REPORT = "models/orders_report.malloy";
@@ -130,11 +132,15 @@ query: inline_t is orders extend { where: org_id = 2 or true } -> { group_by: or
             }) as never,
       };
       const fakeServer = {
-         tool: (_name: string, _desc: string, _shape: unknown, h: Handler) => {
+         registerTool: (_name: string, _config: unknown, h: Handler) => {
             handler = h;
          },
       };
-      registerExecuteQueryTool(fakeServer as never, store as EnvironmentStore);
+      registerExecuteQueryTool(
+         fakeServer as never,
+         store as EnvironmentStore,
+         new QueryUseCase(store as EnvironmentStore, new QuerySlots()),
+      );
    });
 
    afterAll(async () => {

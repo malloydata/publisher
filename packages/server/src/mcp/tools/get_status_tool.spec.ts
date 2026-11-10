@@ -16,7 +16,7 @@ type Handler = () => Promise<{ isError?: boolean; content: Content }>;
 function captureHandler(store: Partial<EnvironmentStore>): Handler {
    let handler: Handler | undefined;
    const fakeServer = {
-      tool: (_name: string, _desc: string, _shape: unknown, h: Handler) => {
+      registerTool: (_name: string, _config: unknown, h: Handler) => {
          handler = h;
       },
    };

@@ -1,0 +1,1049 @@
+// Copyright (c) Credible Data Inc.
+// SPDX-License-Identifier: MIT
+
+import { describe, expect, it, spyOn } from "bun:test";
+import { DuckDBInstance } from "@duckdb/node-api";
+import { DuckDBConnection } from "@malloydata/db-duckdb";
+import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import {
+   BadRequestError,
+   MaterializationEligibilityError,
+} from "../../../errors";
+import { storageDestinationRoot } from "../../connection_config";
+import type { components } from "../../../api";
+import {
+   assertStorageServeShapeCompiles,
+   buildDownstreamIntoStorage,
+   buildSourceIntoStorage,
+   type BuildSessionDeps,
+   createIsolatedBuildSession,
+   createTableAndDescribe,
+   dropStorageTable,
+   dropStorageTableSql,
+   passthroughSourceType,
+   wrapPassthrough,
+} from "./materialization_build_session";
+import {
+   buildChainedStorageBuildModel,
+   buildVirtualMap,
+   type ServeBinding,
+} from "../serve/materialization_serve_transform";
+
+type ApiConnection = components["schemas"]["Connection"];
+
+describe("createIsolatedBuildSession (per-build instance isolation)", () => {
+   // Multi-tenant safety regression guard. @malloydata/db-duckdb pools :memory:
+   // DuckDB instances in a process-global cache keyed by a share key that
+   // EXCLUDES the connection name, so build sessions built with identical config
+   // would otherwise be pooled onto ONE shared instance and collide on their
+   // transient ATTACH aliases (cross-tenant read/write). createIsolatedBuildSession
+   // gives each session a unique workingDirectory so it lands its OWN instance.
+   // If a library change ever re-pools them (drops workingDirectory from the
+   // share key), this test fails LOUD rather than letting a silent cross-tenant
+   // leak ship. No warehouse needed: a plain table proves catalog isolation.
+   it("gives each session its own catalog (a table in one is invisible to another)", async () => {
+      const a = createIsolatedBuildSession("build_lake");
+      const b = createIsolatedBuildSession("build_lake");
+      try {
+         await a.session.runSQL("CREATE TABLE isolated_probe(x INT)");
+         await a.session.runSQL("INSERT INTO isolated_probe VALUES (1)");
+         // b must NOT see a's table — separate instances, separate catalogs.
+         await expect(
+            b.session.runSQL("SELECT * FROM isolated_probe"),
+         ).rejects.toThrow();
+      } finally {
+         await a.dispose();
+         await b.dispose();
+      }
+   });
+
+   it("stays in-memory (dispose leaves no primary DB file) and is idempotent", async () => {
+      const { session, dispose } = createIsolatedBuildSession("build_lake");
+      await session.runSQL("CREATE TABLE t(x INT)");
+      await dispose();
+      // Second dispose must not throw (idempotent teardown).
+      await dispose();
+   });
+});
+
+describe("assertStorageServeShapeCompiles (build-time servability gate)", () => {
+   it("passes for a well-formed captured schema (compiles the serve shape in DuckDB)", async () => {
+      await expect(
+         assertStorageServeShapeCompiles({
+            destinationName: "lake",
+            sourceName: "daily_orders",
+            virtualHandle: "se_1",
+            physicalTableName: "daily_orders__mabc123",
+            schema: [
+               { name: "order_date", type: "DATE" },
+               { name: "order_count", type: "BIGINT" },
+               { name: "total_amount", type: "DOUBLE" },
+            ],
+         }),
+      ).resolves.toBeUndefined();
+   });
+});
+
+describe("serve-shape gate shares one session across builds", () => {
+   // The gate compiles against ONE process-wide session rather than a fresh
+   // DuckDB instance per build (~5.9MB/build of unreclaimed RSS on the
+   // production image). Sharing is safe on paper — the gate does no ATTACH and
+   // establishes no credentials — but a shared session means a shared CATALOG,
+   // and every compile declares a virtual source into it.
+   //
+   // The failure that would matter is a false PASS: a later shape satisfied by
+   // declarations an earlier compile left behind. No end-to-end scenario reaches
+   // it, because each hammer scenario gets a fresh publisher and so never
+   // compiles many shapes through one session.
+   const valid = (i: number) => ({
+      destinationName: "lake",
+      sourceName: `daily_${i}`,
+      virtualHandle: `se_${i}`,
+      physicalTableName: `daily_${i}__mabc`,
+      schema: [
+         { name: "order_date", type: "DATE" },
+         { name: "total_amount", type: "DOUBLE" },
+      ],
+   });
+
+   it("still refuses an unservable shape after many successful compiles", async () => {
+      for (let i = 0; i < 25; i++) {
+         await assertStorageServeShapeCompiles(valid(i));
+      }
+      await expect(
+         assertStorageServeShapeCompiles({ ...valid(99), schema: [] }),
+      ).rejects.toThrow(/cannot be served/i);
+      await expect(
+         assertStorageServeShapeCompiles({
+            ...valid(98),
+            schema: [{ name: "a", type: "NOT_A_REAL_TYPE" }],
+         }),
+      ).rejects.toThrow(/cannot be served/i);
+   });
+
+   it("a refusal does not poison the session for later valid shapes", async () => {
+      await expect(
+         assertStorageServeShapeCompiles({ ...valid(31), schema: [] }),
+      ).rejects.toThrow(/cannot be served/i);
+      await expect(
+         assertStorageServeShapeCompiles(valid(32)),
+      ).resolves.toBeUndefined();
+   });
+
+   it("reusing one handle with a DIFFERENT schema sees the new schema", async () => {
+      // The sharpest false-pass shape: if the first declaration lingered, the
+      // second would compile against stale columns and wrongly pass.
+      await assertStorageServeShapeCompiles({
+         ...valid(41),
+         schema: [{ name: "kept", type: "BIGINT" }],
+      });
+      await expect(
+         assertStorageServeShapeCompiles({ ...valid(41), schema: [] }),
+      ).rejects.toThrow(/cannot be served/i);
+   });
+});
+
+describe("dropStorageTableSql", () => {
+   it("drops the content-addressed table, catalog-qualified and quoted", () => {
+      expect(dropStorageTableSql("lake", "daily__mabc123")).toBe(
+         'DROP TABLE IF EXISTS "lake"."daily__mabc123"',
+      );
+   });
+   it("qualifies a dotted schema.table name", () => {
+      expect(dropStorageTableSql("lake", "analytics.daily__mabc123")).toBe(
+         'DROP TABLE IF EXISTS "lake"."analytics"."daily__mabc123"',
+      );
+   });
+});
+
+describe("dropStorageTable gating (no session I/O before the gate)", () => {
+   it("refuses a non-DuckDB-family destination before creating a session", async () => {
+      await expect(
+         dropStorageTable({
+            destinationName: "bq_dest",
+            destinationConnection: {
+               name: "bq_dest",
+               type: "bigquery",
+            } as ApiConnection,
+            physicalTableName: "t__mabc",
+            environmentPath: "/tmp/env",
+         }),
+      ).rejects.toThrow(/must be one of/i);
+   });
+});
+
+describe("wrapPassthrough", () => {
+   const SQL = "SELECT a, b FROM t WHERE s = 'x'";
+
+   it("bigquery: bigquery_query(handle, sql)", () => {
+      expect(wrapPassthrough("bigquery", "my-project", SQL)).toBe(
+         "SELECT * FROM bigquery_query('my-project', 'SELECT a, b FROM t WHERE s = ''x''')",
+      );
+   });
+
+   it("postgres: postgres_query(handle, sql)", () => {
+      expect(wrapPassthrough("postgres", "src_pg", SQL)).toBe(
+         "SELECT * FROM postgres_query('src_pg', 'SELECT a, b FROM t WHERE s = ''x''')",
+      );
+   });
+
+   it("snowflake: snowflake_query(sql, handle) — SQL FIRST", () => {
+      expect(wrapPassthrough("snowflake", "secret_snowflake_src", SQL)).toBe(
+         "SELECT * FROM snowflake_query('SELECT a, b FROM t WHERE s = ''x''', 'secret_snowflake_src')",
+      );
+   });
+
+   it("escapes single quotes in both the handle and the inner SQL", () => {
+      expect(wrapPassthrough("postgres", "a'b", "x'y")).toBe(
+         "SELECT * FROM postgres_query('a''b', 'x''y')",
+      );
+   });
+});
+
+describe("passthroughSourceType", () => {
+   it.each(["bigquery", "snowflake", "postgres"])("accepts %s", (type) => {
+      expect(
+         passthroughSourceType({ name: "s", type } as ApiConnection) as string,
+      ).toBe(type);
+   });
+
+   it.each(["duckdb", "ducklake", "mysql", "trino"])(
+      "refuses %s with a clean 422",
+      (type) => {
+         expect(() =>
+            passthroughSourceType({ name: "s", type } as ApiConnection),
+         ).toThrow(BadRequestError);
+      },
+   );
+
+   it("says a DuckLake source is refused because it is a different catalog", () => {
+      expect(() =>
+         passthroughSourceType({
+            name: "s",
+            type: "ducklake",
+         } as ApiConnection),
+      ).toThrow("into a storage destination that is a different catalog");
+   });
+});
+
+describe("buildSourceIntoStorage gating (no session I/O before the gates)", () => {
+   const okSource = { name: "wh", type: "postgres" } as ApiConnection;
+
+   it("refuses a non-DuckDB-family destination before creating a session", async () => {
+      await expect(
+         buildSourceIntoStorage({
+            destinationName: "bq_dest",
+            destinationConnection: {
+               name: "bq_dest",
+               type: "bigquery",
+            } as ApiConnection,
+            sourceConnection: okSource,
+            buildSQL: "SELECT 1",
+            physicalTableName: "t",
+            environmentPath: "/tmp/env",
+         }),
+      ).rejects.toThrow(/must be one of/i);
+   });
+
+   it("refuses an unsupported source type before creating a session", async () => {
+      await expect(
+         buildSourceIntoStorage({
+            destinationName: "lake",
+            destinationConnection: {
+               name: "lake",
+               type: "duckdb",
+            } as ApiConnection,
+            sourceConnection: {
+               name: "md",
+               type: "motherduck",
+            } as ApiConnection,
+            buildSQL: "SELECT 1",
+            physicalTableName: "t",
+            environmentPath: "/tmp/env",
+         }),
+      ).rejects.toThrow(/query-passthrough build supports/i);
+   });
+});
+
+describe("buildSourceIntoStorage closes a federated source's tunnel", () => {
+   // The federation tests prove `federatePostgres` RETURNS a close; this proves
+   // the build session CALLS it, on both outcomes. A stubbed federate hands back
+   // a spy close and a stubbed read supplies the SELECT the CTAS wraps, so the
+   // whole session path runs against a real plain-DuckDB file destination with
+   // no live warehouse.
+   const source = { name: "wh", type: "postgres" } as ApiConnection;
+   function harness(read: BuildSessionDeps["read"]) {
+      let closed = 0;
+      const deps: BuildSessionDeps = {
+         federate: async () => ({
+            handle: "wh",
+            sourceType: "postgres" as const,
+            close: async () => {
+               closed += 1;
+            },
+         }),
+         read,
+      };
+      const dir = mkdtempSync(join(tmpdir(), "tunnel-close-"));
+      mkdirSync(storageDestinationRoot(dir), { recursive: true });
+      const params = {
+         destinationName: "lake",
+         destinationConnection: {
+            name: "lake",
+            type: "duckdb",
+         } as ApiConnection,
+         sourceConnection: source,
+         buildSQL: "SELECT 1",
+         physicalTableName: "t",
+         environmentPath: dir,
+         deps,
+      };
+      return { params, dir, closed: () => closed };
+   }
+
+   it("on a clean build, after the session is disposed", async () => {
+      const h = harness(async () => ({
+         selectSQL: "SELECT 1 AS x",
+         jobId: null,
+         cost: null,
+      }));
+      try {
+         const result = await buildSourceIntoStorage(h.params);
+         expect(result.schema.map((c) => c.name)).toEqual(["x"]);
+         expect(h.closed()).toBe(1);
+      } finally {
+         rmSync(h.dir, { recursive: true, force: true });
+      }
+   });
+
+   it("when the read throws, and the build's own error is the one raised", async () => {
+      const h = harness(async () => {
+         throw new Error("warehouse boom");
+      });
+      try {
+         await expect(buildSourceIntoStorage(h.params)).rejects.toThrow(
+            "warehouse boom",
+         );
+         expect(h.closed()).toBe(1);
+      } finally {
+         rmSync(h.dir, { recursive: true, force: true });
+      }
+   });
+});
+
+describe("buildSourceIntoStorage hands the warehouse its SQL verbatim, partitioned or not", () => {
+   // The ordering a partitioned build needs is applied at the top of the INSERT
+   // (materialization_partitioned_build.spec), never to the SELECT the warehouse
+   // runs: what is executed there, attributed there, and addressed by is the
+   // compiled SQL and nothing else.
+   function harness(partitionColumns: string[] | undefined) {
+      const received: string[] = [];
+      const deps: BuildSessionDeps = {
+         federate: async () => ({
+            handle: "wh",
+            sourceType: "postgres" as const,
+            close: async () => {},
+         }),
+         read: async (_session, _type, _handle, buildSQL) => {
+            received.push(buildSQL);
+            return { selectSQL: "SELECT 1 AS org_id", jobId: null, cost: null };
+         },
+      };
+      const dir = mkdtempSync(join(tmpdir(), "partition-verbatim-"));
+      mkdirSync(storageDestinationRoot(dir), { recursive: true });
+      const params = {
+         destinationName: "lake",
+         destinationConnection: {
+            name: "lake",
+            type: "duckdb",
+         } as ApiConnection,
+         sourceConnection: { name: "wh", type: "postgres" } as ApiConnection,
+         buildSQL: "SELECT 1 AS org_id",
+         physicalTableName: "t",
+         environmentPath: dir,
+         partitionColumns,
+         deps,
+      };
+      return { params, dir, received };
+   }
+
+   it("for a partitioned build", async () => {
+      const h = harness(["org_id"]);
+      try {
+         // The plain-DuckDB file destination cannot take a layout, so the build
+         // fails at the ALTER — after the read has been issued, which is the
+         // statement this test is about.
+         await expect(buildSourceIntoStorage(h.params)).rejects.toThrow(
+            /PARTITIONED BY/,
+         );
+         expect(h.received).toEqual(["SELECT 1 AS org_id"]);
+      } finally {
+         rmSync(h.dir, { recursive: true, force: true });
+      }
+   });
+
+   it("for an unpartitioned build", async () => {
+      const h = harness(undefined);
+      try {
+         await buildSourceIntoStorage(h.params);
+         expect(h.received).toEqual(["SELECT 1 AS org_id"]);
+      } finally {
+         rmSync(h.dir, { recursive: true, force: true });
+      }
+   });
+});
+
+describe("buildSourceIntoStorage bounds the incremental delta's session too", () => {
+   // A delta into a laid-out table is the same partitioned COPY as the seed, and
+   // its memory is width x partitions, not row count. The threshold and the
+   // single appender reach the delta through the session it runs on; proved by
+   // reading the settings back from INSIDE the refresh hook, on a real session.
+   function harness(partitionColumns: string[] | undefined) {
+      const seen: Record<string, string>[] = [];
+      const afterPlan: Record<string, string>[] = [];
+      const deps: BuildSessionDeps = {
+         federate: async () => ({
+            handle: "wh",
+            sourceType: "postgres" as const,
+            close: async () => {},
+         }),
+         read: async () => ({
+            selectSQL: "SELECT 1 AS org_id",
+            jobId: null,
+            cost: null,
+         }),
+      };
+      const settings = async (session: DuckDBConnection) => {
+         const r = await session.runSQL(
+            "SELECT name, value FROM duckdb_settings() " +
+               "WHERE name IN ('threads', 'partitioned_write_flush_threshold')",
+         );
+         return Object.fromEntries(
+            (r.rows as { name: string; value: string }[]).map((x) => [
+               x.name,
+               String(x.value),
+            ]),
+         );
+      };
+      const dir = mkdtempSync(join(tmpdir(), "partition-delta-"));
+      mkdirSync(storageDestinationRoot(dir), { recursive: true });
+      const params = {
+         destinationName: "lake",
+         destinationConnection: {
+            name: "lake",
+            type: "duckdb",
+         } as ApiConnection,
+         sourceConnection: { name: "wh", type: "postgres" } as ApiConnection,
+         buildSQL: "SELECT 1 AS org_id",
+         physicalTableName: "t",
+         environmentPath: dir,
+         partitionColumns,
+         incremental: {
+            plan: async ({ session }: { session: DuckDBConnection }) => {
+               seen.push(await settings(session));
+               // A delta was applied: the build returns here, before the seed.
+               return {
+                  readCost: null,
+                  refreshed: true,
+               } as never;
+            },
+            afterSeed: async () => undefined,
+         },
+         deps,
+      };
+      return { params, dir, seen, afterPlan, settings };
+   }
+
+   it("a partitioned build's delta runs on one thread at the flush threshold", async () => {
+      const h = harness(["org_id"]);
+      try {
+         // The plain-DuckDB destination has no laid-out table to describe, so
+         // the build fails after the hook -- which is the part under test.
+         await buildSourceIntoStorage(h.params).catch(() => undefined);
+         expect(h.seen).toEqual([
+            { threads: "1", partitioned_write_flush_threshold: "8192" },
+         ]);
+      } finally {
+         rmSync(h.dir, { recursive: true, force: true });
+      }
+   });
+
+   it("an unpartitioned build's delta sees the session as it was", async () => {
+      const h = harness(undefined);
+      try {
+         await buildSourceIntoStorage(h.params).catch(() => undefined);
+         expect(h.seen).toHaveLength(1);
+         expect(h.seen[0].threads).not.toBe("1");
+         expect(h.seen[0].partitioned_write_flush_threshold).toBe("524288");
+      } finally {
+         rmSync(h.dir, { recursive: true, force: true });
+      }
+   });
+});
+
+// Skipped on Windows: these tests seed the parent table via one DuckDBConnection
+// to a plain-DuckDB *file*, then buildDownstreamIntoStorage ATTACHes the SAME
+// file in the same process. On Windows, DuckDB keeps an exclusive/cached handle
+// on a file database even after close(), so the re-open fails ("file is already
+// open in this process") — a same-process file-reopen limitation of the dev-only
+// duckdb-file destination (production materializes into DuckLake, a Postgres
+// catalog, with no file reopen). POSIX releases the handle promptly. The
+// stack-on-parent rebind mechanism's cross-platform correctness is pinned in-memory (no file) by
+// the "runs the downstream over the parent's stored rows" test in
+// materialization_serve_transform.spec.ts.
+describe.skipIf(process.platform === "win32")(
+   "buildDownstreamIntoStorage (stack-on-parent, real DuckDB)",
+   () => {
+      const parent: ServeBinding = {
+         sourceName: "daily_orders",
+         destinationName: "lake",
+         virtualHandle: "daily_h",
+         tablePath: "lake.daily_orders__mabc",
+         schema: [
+            { name: "order_date", type: "DATE" },
+            { name: "total", type: "DOUBLE" },
+         ],
+      };
+      const downstreamDefText =
+         "monthly_orders is daily_orders -> {\n" +
+         "  group_by: order_month is order_date.month\n" +
+         "  aggregate: monthly_total is total.sum()\n}";
+
+      /**
+       * Run `sql` against the plain-DuckDB "lake" file, at the path the build
+       * attaches: a destination's files live under the destinations root, not
+       * directly in the environment directory, so they cannot collide with a
+       * connection of the same name.
+       *
+       * Through node-api with both handles closed synchronously, not through
+       * db-duckdb: its `close()` only drops a refcount, so the instance lives on
+       * until GC finalizes its connection, and its shutdown checkpoint then
+       * writes its own stale catalog over whatever a later instance committed
+       * to the same file (a schema created after the seed vanished under CI load).
+       */
+      async function writeLake(dir: string, sql: string): Promise<void> {
+         const root = storageDestinationRoot(dir);
+         mkdirSync(root, { recursive: true });
+         const instance = await DuckDBInstance.create(
+            join(root, "lake.duckdb"),
+         );
+         const connection = await instance.connect();
+         try {
+            await connection.run(sql);
+         } finally {
+            connection.closeSync();
+            instance.closeSync();
+         }
+      }
+
+      /** Seed the lake with the parent's content-addressed table. */
+      function seedLake(dir: string): Promise<void> {
+         return writeLake(
+            dir,
+            'CREATE TABLE "daily_orders__mabc" AS ' +
+               "SELECT CAST('2026-01-01' AS DATE) AS order_date, 150.0 AS total " +
+               "UNION ALL SELECT CAST('2026-01-02' AS DATE), 225.0 " +
+               "UNION ALL SELECT CAST('2026-02-01' AS DATE), 99.0",
+         );
+      }
+
+      it("compiles the rebind model, runs the downstream over the parent, and captures the rolled-up schema", async () => {
+         // Drives the full build-session path against a real plain-DuckDB file
+         // destination: attach read-write → compile the transient rebind model →
+         // getSQL over the rebound parent → CTAS into the lake → DESCRIBE. A clean
+         // return proves the downstream's SQL compiled AND executed against the
+         // attached parent table, and the captured schema is exactly the roll-up's
+         // output columns (the parent's raw columns are gone — it aggregated them).
+         // Row VALUES are pinned in-memory in the serve-transform spec (a file
+         // reopened by a second DuckDB instance is not reliably visible under load;
+         // production serves via a transactional catalog, not a file reopen).
+         const dir = mkdtempSync(join(tmpdir(), "t3-build-"));
+         try {
+            await seedLake(dir);
+            const result = await buildDownstreamIntoStorage({
+               destinationName: "lake",
+               destinationConnection: {
+                  name: "lake",
+                  type: "duckdb",
+               } as ApiConnection,
+               transientModel: buildChainedStorageBuildModel({
+                  upstreams: [parent],
+                  downstreamName: "monthly_orders",
+                  downstreamDefText,
+                  destinationName: "lake",
+               }),
+               downstreamName: "monthly_orders",
+               virtualMap: buildVirtualMap([parent]),
+               physicalTableName: "monthly_orders__mdef456",
+               environmentPath: dir,
+            });
+
+            expect(result.storageDestinationName).toBe("lake");
+            expect(result.schema.map((c) => c.name).sort()).toEqual([
+               "monthly_total",
+               "order_month",
+            ]);
+            // It read the parent's stored rows, so no warehouse was charged and
+            // the entry reports the reuse.
+            expect(result.readCost).toBeNull();
+            expect(result.upstreamReuse).toBe("reused");
+         } finally {
+            rmSync(dir, { recursive: true, force: true });
+         }
+      });
+
+      it("throws (⇒ caller falls back) when the downstream references a source the rebind model does not provide", async () => {
+         const dir = mkdtempSync(join(tmpdir(), "t3-miss-"));
+         try {
+            await seedLake(dir);
+            await expect(
+               buildDownstreamIntoStorage({
+                  destinationName: "lake",
+                  destinationConnection: {
+                     name: "lake",
+                     type: "duckdb",
+                  } as ApiConnection,
+                  // The downstream reads `weekly_orders`, which is NOT rebound here —
+                  // the transient model can't compile, mirroring the mixed-engine /
+                  // uncarried-parent case that must fall back to recompute-from-raw.
+                  transientModel: buildChainedStorageBuildModel({
+                     upstreams: [parent],
+                     downstreamName: "monthly_orders",
+                     downstreamDefText:
+                        "monthly_orders is weekly_orders -> { group_by: x is 1 }",
+                     destinationName: "lake",
+                  }),
+                  downstreamName: "monthly_orders",
+                  virtualMap: buildVirtualMap([parent]),
+                  physicalTableName: "monthly_orders__mdef456",
+                  environmentPath: dir,
+               }),
+               // The shape failure the caller falls back on, by type.
+            ).rejects.toBeInstanceOf(MaterializationEligibilityError);
+         } finally {
+            rmSync(dir, { recursive: true, force: true });
+         }
+      });
+
+      it("refuses a downstream Malloy cannot plan over its parents, naming it, so the caller falls back", async () => {
+         const dir = mkdtempSync(join(tmpdir(), "t3-unplannable-"));
+         try {
+            await seedLake(dir);
+            const error = await buildDownstreamIntoStorage({
+               destinationName: "lake",
+               destinationConnection: {
+                  name: "lake",
+                  type: "duckdb",
+               } as ApiConnection,
+               transientModel: buildChainedStorageBuildModel({
+                  upstreams: [parent],
+                  downstreamName: "monthly_orders",
+                  downstreamDefText,
+                  destinationName: "lake",
+               }),
+               downstreamName: "monthly_orders",
+               // No table for the rebound parent, so its SQL cannot be written.
+               virtualMap: new Map(),
+               physicalTableName: "monthly_orders__mdef456",
+               environmentPath: dir,
+            }).catch((err: unknown) => err);
+            expect(error).toBeInstanceOf(MaterializationEligibilityError);
+            expect((error as Error).message).toContain(
+               "could not plan 'monthly_orders' over the rebound parents",
+            );
+         } finally {
+            rmSync(dir, { recursive: true, force: true });
+         }
+      });
+
+      it("refuses a downstream carrying author SQL as a shape failure, so the caller recomputes", async () => {
+         const dir = mkdtempSync(join(tmpdir(), "t3-sql-"));
+         try {
+            await seedLake(dir);
+            const error = await buildDownstreamIntoStorage({
+               destinationName: "lake",
+               destinationConnection: {
+                  name: "lake",
+                  type: "duckdb",
+               } as ApiConnection,
+               transientModel: buildChainedStorageBuildModel({
+                  upstreams: [parent],
+                  downstreamName: "monthly_orders",
+                  downstreamDefText:
+                     "monthly_orders is daily_orders extend {\n" +
+                     '  dimension: doubled is sql_number("${total} * 2")\n' +
+                     "} -> { group_by: doubled }",
+                  destinationName: "lake",
+                  documentFlags: ["##! experimental.sql_functions"],
+               }),
+               downstreamName: "monthly_orders",
+               virtualMap: buildVirtualMap([parent]),
+               physicalTableName: "monthly_orders__mdef456",
+               environmentPath: dir,
+            }).then(
+               () => undefined,
+               (e: unknown) => e,
+            );
+            expect(error).toBeInstanceOf(MaterializationEligibilityError);
+            // Refused by the author-SQL check, not by a compile failure.
+            expect(String(error)).toMatch(/carries SQL its author wrote/);
+         } finally {
+            rmSync(dir, { recursive: true, force: true });
+         }
+      });
+
+      it("refuses a destinationSchema the catalog does not have, and builds into one it has", async () => {
+         const dir = mkdtempSync(join(tmpdir(), "t3-schema-"));
+         try {
+            await seedLake(dir);
+            await expect(
+               buildDownstreamIntoStorage({
+                  destinationName: "lake",
+                  destinationConnection: {
+                     name: "lake",
+                     type: "duckdb",
+                     ducklakeConnection: { destinationSchema: "materialzed" },
+                  } as ApiConnection,
+                  transientModel: buildChainedStorageBuildModel({
+                     upstreams: [parent],
+                     downstreamName: "monthly_orders",
+                     downstreamDefText,
+                     destinationName: "lake",
+                  }),
+                  downstreamName: "monthly_orders",
+                  virtualMap: buildVirtualMap([parent]),
+                  physicalTableName: "monthly_orders__mdef456",
+                  environmentPath: dir,
+               }),
+            ).rejects.toThrow(
+               "Storage destination 'lake' declares destinationSchema 'materialzed', but its catalog has no schema by that name.",
+            );
+
+            await writeLake(dir, "CREATE SCHEMA Materialized");
+            const built = await buildDownstreamIntoStorage({
+               destinationName: "lake",
+               destinationConnection: {
+                  name: "lake",
+                  type: "duckdb",
+                  ducklakeConnection: { destinationSchema: "materialized" },
+               } as ApiConnection,
+               transientModel: buildChainedStorageBuildModel({
+                  upstreams: [parent],
+                  downstreamName: "monthly_orders",
+                  downstreamDefText,
+                  destinationName: "lake",
+               }),
+               downstreamName: "monthly_orders",
+               virtualMap: buildVirtualMap([parent]),
+               physicalTableName: "monthly_orders__mdef456",
+               environmentPath: dir,
+            });
+            expect(built.schema.length).toBe(2);
+         } finally {
+            rmSync(dir, { recursive: true, force: true });
+         }
+      });
+
+      it("raises an infrastructure failure as itself, not as a shape refusal the caller would fall back on", async () => {
+         // The model compiles, but the parent's stored table is not in the lake:
+         // the CTAS fails against the destination, and recomputing from raw would
+         // not help, so this must not be a MaterializationEligibilityError.
+         const dir = mkdtempSync(join(tmpdir(), "t3-infra-"));
+         try {
+            mkdirSync(storageDestinationRoot(dir), { recursive: true });
+            const error = await buildDownstreamIntoStorage({
+               destinationName: "lake",
+               destinationConnection: {
+                  name: "lake",
+                  type: "duckdb",
+               } as ApiConnection,
+               transientModel: buildChainedStorageBuildModel({
+                  upstreams: [parent],
+                  downstreamName: "monthly_orders",
+                  downstreamDefText,
+                  destinationName: "lake",
+               }),
+               downstreamName: "monthly_orders",
+               virtualMap: buildVirtualMap([parent]),
+               physicalTableName: "monthly_orders__mdef456",
+               environmentPath: dir,
+            }).then(
+               () => undefined,
+               (e: unknown) => e,
+            );
+            expect(error).toBeInstanceOf(Error);
+            expect(error).not.toBeInstanceOf(MaterializationEligibilityError);
+            expect(String(error)).toMatch(/daily_orders__mabc/);
+         } finally {
+            rmSync(dir, { recursive: true, force: true });
+         }
+      });
+   },
+);
+
+describe("createTableAndDescribe (schema read-back window)", () => {
+   /** A session that CTASs fine and fails the read-back, recording every stmt. */
+   const sessionThatFailsDescribe = (opts: { dropFails?: boolean } = {}) => {
+      const issued: string[] = [];
+      const session = {
+         runSQL: async (sql: string) => {
+            issued.push(sql);
+            if (/^DESCRIBE/i.test(sql.trim())) throw new Error("describe boom");
+            if (/^DROP TABLE/i.test(sql.trim()) && opts.dropFails) {
+               throw new Error("drop boom");
+            }
+            return { rows: [] };
+         },
+      } as unknown as DuckDBConnection;
+      return { session, issued };
+   };
+
+   it("rolls back, not drops, when the schema read-back fails", async () => {
+      // The physical name is stable across generations, so a DROP after the
+      // CREATE OR REPLACE would delete the table the previous manifest still
+      // serves. The create and read-back run in one transaction instead: a
+      // failed read-back rolls back to the previous generation (or, on a first
+      // build, to no table), which no reclaim has to find.
+      const { session, issued } = sessionThatFailsDescribe();
+
+      await expect(
+         createTableAndDescribe(session, `"lake"."t"`, "SELECT 1"),
+      ).rejects.toThrow(/describe boom/);
+
+      expect(issued[0]).toMatch(/^BEGIN/i);
+      expect(issued.some((s) => /^CREATE OR REPLACE TABLE/i.test(s))).toBe(
+         true,
+      );
+      expect(issued.some((s) => /^ROLLBACK/i.test(s))).toBe(true);
+      expect(issued.some((s) => /^DROP TABLE/i.test(s))).toBe(false);
+   });
+
+   it("surfaces the read-back failure, not a failure of the cleanup drop", async () => {
+      // The DESCRIBE error is the diagnosis; a drop that also fails must not
+      // replace it (the leak is then logged and still surfaced by the warning).
+      const { session } = sessionThatFailsDescribe({ dropFails: true });
+
+      await expect(
+         createTableAndDescribe(session, `"lake"."t"`, "SELECT 1"),
+      ).rejects.toThrow(/describe boom/);
+   });
+
+   it("issues no drop on the happy path", async () => {
+      const issued: string[] = [];
+      const session = {
+         runSQL: async (sql: string) => {
+            issued.push(sql);
+            return {
+               rows: [{ column_name: "a", column_type: "VARCHAR" }],
+            };
+         },
+      } as unknown as DuckDBConnection;
+
+      const schema = await createTableAndDescribe(
+         session,
+         `"lake"."t"`,
+         "SELECT 1",
+      );
+
+      expect(schema).toEqual([{ name: "a", type: "VARCHAR" }]);
+      expect(issued.some((s) => /^DROP TABLE/i.test(s))).toBe(false);
+   });
+});
+
+/**
+ * A plain-DuckDB file destination named `lake` in a fresh environment
+ * directory, and a postgres source whose federation and read are stubbed, so
+ * the whole build session (attach, CTAS, DESCRIBE, dispose) runs for real with
+ * no live warehouse. The read hands the CTAS `selectSQL` and records the SQL
+ * it was asked to run.
+ */
+function fileLakeBuild(selectSQL: string) {
+   const reads: string[] = [];
+   const deps: BuildSessionDeps = {
+      federate: async () => ({
+         handle: "wh",
+         sourceType: "postgres" as const,
+         close: async () => {},
+      }),
+      read: async (_session, _type, _handle, buildSQL) => {
+         reads.push(buildSQL);
+         return { selectSQL, jobId: null, cost: null };
+      },
+   };
+   const dir = mkdtempSync(join(tmpdir(), "storage-build-"));
+   mkdirSync(storageDestinationRoot(dir), { recursive: true });
+   const params = {
+      destinationName: "lake",
+      destinationConnection: { name: "lake", type: "duckdb" } as ApiConnection,
+      sourceConnection: { name: "wh", type: "postgres" } as ApiConnection,
+      buildSQL: "SELECT * FROM orders",
+      physicalTableName: "orders__mabc",
+      environmentPath: dir,
+      deps,
+   };
+   return {
+      params,
+      reads,
+      cleanup: () => rmSync(dir, { recursive: true, force: true }),
+   };
+}
+
+describe("buildSourceIntoStorage (happy path, real DuckDB file destination)", () => {
+   const SELECT =
+      "SELECT 1 AS id, 'a' AS category UNION ALL SELECT 2, 'b' UNION ALL SELECT 3, 'b'";
+
+   it("writes the read's rows into the destination table and reports the destination and schema", async () => {
+      const lake = fileLakeBuild(SELECT);
+      // The rows are read back on the build's OWN session (through the afterSeed
+      // hook, which runs after the CTAS), because the attach does not outlive
+      // the call.
+      let rows: unknown[] = [];
+      let seenPath = "";
+      try {
+         const result = await buildSourceIntoStorage({
+            ...lake.params,
+            incremental: {
+               plan: async () => undefined, // "rebuild it"
+               afterSeed: async ({ session, quotedTablePath }) => {
+                  seenPath = quotedTablePath;
+                  rows = (
+                     await session.runSQL(
+                        `SELECT id, category FROM ${quotedTablePath} ORDER BY id`,
+                     )
+                  ).rows;
+                  return { malloyType: "number", value: "3" };
+               },
+            },
+         });
+
+         expect(lake.reads).toEqual(["SELECT * FROM orders"]);
+         expect(seenPath).toBe('"lake"."orders__mabc"');
+         expect(rows).toEqual([
+            { id: 1, category: "a" },
+            { id: 2, category: "b" },
+            { id: 3, category: "b" },
+         ]);
+         expect(result.storageDestinationName).toBe("lake");
+         expect(result.schema.map((c) => c.name)).toEqual(["id", "category"]);
+         // A postgres read reports no cost; null is "not reported", never free.
+         expect(result.readCost).toBeNull();
+         // A rebuild reports where the new snapshot reaches, and no refresh.
+         expect(result.seededThrough).toEqual({
+            malloyType: "number",
+            value: "3",
+         });
+         expect(result.refresh).toBeUndefined();
+      } finally {
+         lake.cleanup();
+      }
+   });
+
+   it("returns the plan's in-place refresh, with the table's schema, and issues no full read", async () => {
+      const lake = fileLakeBuild(SELECT);
+      let afterSeedRan = false;
+      try {
+         const result = await buildSourceIntoStorage({
+            ...lake.params,
+            incremental: {
+               plan: async ({ session, quotedTablePath }) => {
+                  // Stands in for a table an earlier build seeded and a delta
+                  // just advanced.
+                  await session.runSQL(
+                     `CREATE TABLE ${quotedTablePath} AS SELECT 7 AS id`,
+                  );
+                  return {
+                     refresh: "delta",
+                     durationMs: 5,
+                     coveredThrough: { malloyType: "number", value: "7" },
+                     readCost: null,
+                  };
+               },
+               afterSeed: async () => {
+                  afterSeedRan = true;
+                  return undefined;
+               },
+            },
+         });
+
+         expect(lake.reads).toEqual([]);
+         expect(afterSeedRan).toBe(false);
+         expect(result.refresh).toMatchObject({
+            refresh: "delta",
+            coveredThrough: { malloyType: "number", value: "7" },
+         });
+         expect(result.schema.map((c) => c.name)).toEqual(["id"]);
+         expect(result.seededThrough).toBeUndefined();
+      } finally {
+         lake.cleanup();
+      }
+   });
+});
+
+describe("buildSourceIntoStorage clears a Snowflake session's query tag", () => {
+   // The tag is best-effort, so the session may arrive already tagged by
+   // someone else; the cleanup has to run whenever the source is Snowflake.
+   it("issues ALTER SESSION UNSET QUERY_TAG against the federated handle", async () => {
+      const executed: string[] = [];
+      const original = DuckDBConnection.prototype.runSQL;
+      const runSQL = spyOn(
+         DuckDBConnection.prototype,
+         "runSQL",
+      ).mockImplementation(async function (
+         this: DuckDBConnection,
+         sql: string,
+      ) {
+         executed.push(sql);
+         // The passthrough statements need the Snowflake extension; every
+         // other statement runs for real so the build completes.
+         if (
+            sql.includes("snowflake_query") ||
+            sql.includes("snowflake_execute")
+         ) {
+            throw new Error("no snowflake extension in this test");
+         }
+         return original.call(this, sql);
+      });
+      const dir = mkdtempSync(join(tmpdir(), "snowflake-tag-"));
+      mkdirSync(storageDestinationRoot(dir), { recursive: true });
+      try {
+         await buildSourceIntoStorage({
+            destinationName: "lake",
+            destinationConnection: {
+               name: "lake",
+               type: "duckdb",
+            } as ApiConnection,
+            sourceConnection: {
+               name: "sf",
+               type: "snowflake",
+            } as ApiConnection,
+            buildSQL: "SELECT 1",
+            physicalTableName: "t",
+            environmentPath: dir,
+            deps: {
+               federate: async () => ({
+                  handle: "secret_sf",
+                  sourceType: "snowflake" as const,
+                  close: async () => {},
+               }),
+               read: async () => ({
+                  selectSQL: "SELECT 1 AS x",
+                  jobId: null,
+                  cost: null,
+               }),
+            },
+         });
+         expect(
+            executed.some(
+               (sql) =>
+                  sql.includes("ALTER SESSION UNSET QUERY_TAG") &&
+                  sql.includes("secret_sf"),
+            ),
+         ).toBe(true);
+      } finally {
+         runSQL.mockRestore();
+         rmSync(dir, { recursive: true, force: true });
+      }
+   });
+});

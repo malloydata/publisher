@@ -2,26 +2,42 @@
 // SPDX-License-Identifier: MIT
 
 /**
- * The real REST route table — `/api/v0` and the legacy `/projects` alias — on
- * a bare Express app, with controllers a test supplies. Any controller method
- * the test did not stub throws, so a route that reaches something unexpected
- * fails loudly instead of answering from a fake.
+ * The production main app (`createMainApp`): its middleware and both REST
+ * route tables, `/api/v0` and the legacy `/projects` alias, with controllers a
+ * test supplies and no Console. Any controller method the test did not stub
+ * throws, so a route that reaches something unexpected fails loudly instead
+ * of answering from a fake.
  */
 
-import express from "express";
-import {
-   legacyPackageNameBodyMiddleware,
-   legacyPackageNameMiddleware,
-} from "../legacy_package_name";
-import { queryConcurrencyMiddleware } from "../query_concurrency";
-import { registerApiRoutes, type ApiControllers } from "../routes/api";
-import { registerDataAppListRoute } from "../routes/data_apps";
-import { unhandledErrorMiddleware } from "../routes/json_route";
-import { registerLegacyRoutes } from "../server-old";
+import type express from "express";
+import { isQuerySlotMiddleware, QuerySlots } from "../query_concurrency";
+import type { AppServices } from "../app_services";
+import { createMainApp } from "../routes/main_app";
+import { VersionRef } from "../service/identity";
 
-export const API_PREFIX = "/api/v0";
+export { API_PREFIX } from "../routes/main_app";
 
-type Stubs = { [K in keyof ApiControllers]?: Partial<ApiControllers[K]> };
+/**
+ * A stubbed controller's arguments with each version the routes parsed (a
+ * {@link VersionRef}, alone or as an options bag's `versionId`) read back as
+ * the version it names: the string, or undefined for `latest`.
+ */
+export function namedVersions(args: unknown[]): unknown[] {
+   return args.map((arg) => {
+      if (arg instanceof VersionRef) return arg.requested();
+      if (
+         arg !== null &&
+         typeof arg === "object" &&
+         (arg as { versionId?: unknown }).versionId instanceof VersionRef
+      ) {
+         const bag = arg as { versionId: VersionRef };
+         return { ...bag, versionId: bag.versionId.requested() };
+      }
+      return arg;
+   });
+}
+
+type Stubs = { [K in keyof AppServices]?: Partial<AppServices[K]> };
 
 /** A controller whose every method, when called, names what the test forgot. */
 function unstubbed(name: string): object {
@@ -38,10 +54,12 @@ function unstubbed(name: string): object {
    );
 }
 
-function controllers(stubs: Stubs): ApiControllers {
-   const names: (keyof ApiControllers)[] = [
+function controllers(stubs: Stubs): AppServices {
+   const names: (keyof AppServices)[] = [
       "environmentStore",
       "themeStore",
+      "retrieval",
+      "queryUseCase",
       "themeController",
       "watchModeController",
       "connectionController",
@@ -55,29 +73,26 @@ function controllers(stubs: Stubs): ApiControllers {
       "materializationController",
       "storageDestinationController",
       "versionController",
+      "querySlots",
    ];
    return Object.fromEntries(
       names.map((name) => [name, stubs[name] ?? unstubbed(name)]),
-   ) as unknown as ApiControllers;
+   ) as unknown as AppServices;
 }
 
-/** Both route tables, mounted the way server.ts mounts them. */
+/** The main app as main_server.ts builds it, over the controllers given. */
 export function buildRouteApp(stubs: Stubs = {}): express.Express {
-   const app = express();
-   app.use(legacyPackageNameMiddleware());
-   app.use(express.json());
-   app.use(legacyPackageNameBodyMiddleware());
-   const c = controllers({
-      // The deprecated-route controller is constructed at registration and
-      // only stores this reference.
-      environmentStore: {},
-      ...stubs,
+   return createMainApp({
+      controllers: controllers({
+         // The deprecated-route controller is constructed at registration and
+         // only stores this reference.
+         environmentStore: {},
+         // A pool of its own unless the spec shares one to hold slots in.
+         querySlots: new QuerySlots(),
+         ...stubs,
+      }),
+      dataAppRuntimePath: "/nonexistent/publisher.js",
    });
-   registerDataAppListRoute(app, API_PREFIX, c.environmentStore);
-   registerApiRoutes(app, API_PREFIX, c);
-   registerLegacyRoutes(app, c);
-   app.use(unhandledErrorMiddleware);
-   return app;
 }
 
 export interface RegisteredRoute {
@@ -102,8 +117,8 @@ export function registeredRoutes(app: express.Express): RegisteredRoute[] {
          ? Object.keys(route.methods).map((method) => ({
               method: method.toUpperCase(),
               path: route.path,
-              gated: route.stack.some(
-                 (layer) => layer.handle === queryConcurrencyMiddleware,
+              gated: route.stack.some((layer) =>
+                 isQuerySlotMiddleware(layer.handle),
               ),
            }))
          : [],

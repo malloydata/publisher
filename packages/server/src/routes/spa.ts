@@ -7,7 +7,7 @@ import {
    recordConsoleAliasUse,
    isLegacyReportAlias,
 } from "../service/legacy_report_views";
-import type { EnvironmentStore } from "../service/environment_store";
+import type { LoadedEnvironmentsReader } from "../service/environment_ports";
 import { resolveSpaFallback, type LoadedRoutes } from "../spa_fallback";
 import { withRequestQuery } from "./data_apps";
 
@@ -20,7 +20,7 @@ export function registerSpaFallback(
    app: express.Express,
    apiPrefix: string,
    appRoot: string,
-   environmentStore: EnvironmentStore,
+   environmentStore: LoadedEnvironmentsReader,
 ): void {
    const SPA_INDEX = path.resolve(appRoot, "index.html");
    const escapeHtml = (value: string) =>

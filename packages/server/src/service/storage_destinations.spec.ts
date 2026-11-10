@@ -29,7 +29,8 @@ import {
    storageDestinationsEqual,
 } from "./connection_config";
 import { Environment } from "./environment";
-import type { EnvironmentStore } from "./environment_store";
+import { fakeOf } from "../test_helpers/store_fakes";
+import type { ConnectionAdmin } from "./environment_ports";
 
 type ApiConnection = components["schemas"]["Connection"];
 
@@ -1135,9 +1136,9 @@ describe("Environment: connections and storage destinations are disjoint", () =>
          [tenantPostgresConnection("warehouse")],
          [ducklakeDestination("managed", "org_a")],
       );
-      const store = {
+      const store = fakeOf<ConnectionAdmin>({
          getEnvironment: sinon.stub().resolves(environment),
-      } as unknown as EnvironmentStore;
+      });
       const controller = new ConnectionController(store);
 
       const listed = await controller.listConnections("test-env");

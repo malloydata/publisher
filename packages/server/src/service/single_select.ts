@@ -11,7 +11,7 @@ import { BadRequestError } from "../errors";
  * One SELECT can do neither, so it can be no worse than a model's query, whose
  * `sql()` sources the compiler already places inside a subquery. It is not a read
  * boundary: a SELECT still reads whatever the session's secrets, catalog role and
- * filesystem reach, so the storage secret's `SCOPE` (#1444) is what keeps it to
+ * filesystem reach, so the storage secret's `SCOPE` is what keeps it to
  * the catalog's prefix.
  *
  * Classified by DuckDB's own parser, the same engine the statement runs on:

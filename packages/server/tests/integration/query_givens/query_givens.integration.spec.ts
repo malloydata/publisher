@@ -10,7 +10,7 @@
  * explicit SQL-NULL override, and a numeric-string value is accepted for a
  * `number`-typed given (Malloy's own coercion). Malloy is the single validator:
  * an unknown name or bad value throws a `runtime-given-*` error that
- * model.ts maps to a 400 (see getQueryResults).
+ * model.ts maps to a 400 (see runQuery).
  */
 
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";

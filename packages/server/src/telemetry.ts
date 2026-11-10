@@ -22,11 +22,11 @@ import {
 export const METER_NAME = "publisher";
 
 /**
- * The shared publisher meter. Resolves lazily through the OTel global
- * provider (a `ProxyMeter`), so modules may call this at import time;
- * the real provider can be installed afterward (the production SDK in
- * `instrumentation.ts`, or the in-memory test harness) and instruments
- * still route to it.
+ * The publisher meter from the global MeterProvider registered right now.
+ * `@opentelemetry/api` has no proxy for metrics: called before a provider is
+ * registered, this returns a no-op meter, and every instrument created from it
+ * stays a no-op for good. Create instruments through {@link lazyCounter},
+ * {@link lazyHistogram} or {@link lazyInstrument} rather than at import time.
  */
 export function publisherMeter(): Meter {
    return metrics.getMeter(METER_NAME);
@@ -40,13 +40,12 @@ export const REQUEST_DURATION_BUCKETS_MS = [
 const instrumentResets: (() => void)[] = [];
 
 /**
- * An instrument created from the publisher meter on first use and then
- * memoized. Lazy because one created before the SDK installs its
- * MeterProvider binds to a no-op meter
- * (https://github.com/open-telemetry/opentelemetry-js/issues/3505); tests
- * swap providers and call {@link resetInstrumentsForTesting}.
+ * `create` run on first use and memoized, so an instrument declared at import
+ * time binds to whichever provider is registered when it is first recorded to,
+ * not to the no-op meter that preceded the SDK. Tests swap providers and call
+ * {@link resetInstrumentsForTesting}.
  */
-function lazyInstrument<T>(create: () => T): () => T {
+export function lazyInstrument<T>(create: () => T): () => T {
    let instrument: T | null = null;
    instrumentResets.push(() => (instrument = null));
    return () => (instrument ??= create());
@@ -90,8 +89,8 @@ const tracer = () => trace.getTracer(METER_NAME);
 /**
  * Run `fn` inside a span that is active for everything it awaits, so spans the
  * SDK's auto-instrumentation makes (HTTP, database drivers) nest under it. A
- * throw marks the span as an error and is rethrown. Without an exporter
- * configured the tracer is a no-op.
+ * throw marks the span as an error and is rethrown. Before a tracer provider is
+ * registered the tracer is a no-op.
  */
 export async function withSpan<T>(
    name: string,

@@ -38,8 +38,13 @@ import {
    getPackageLoadWorkerCount,
    handleWorkerLog,
 } from "./package_load_pool";
+import { PACKAGE_LOAD_PROTOCOL_VERSION } from "./protocol";
+import { PackageLoadProtocolError } from "./protocol_decode";
 import { failsFirstStartMarker } from "./test_fixtures/fails_first_start_marker";
+import { internalErrorToHttpError } from "../errors";
+import { loadOutcomeOrThrow } from "../service/package_load_gates";
 import { installSettings, withSettings } from "../test_helpers/settings_env";
+import { writeTempPackage } from "../test_helpers/temp_package";
 
 // ──────────────────────────────────────────────────────────────────────
 // getPackageLoadWorkerCount — env var parsing
@@ -275,11 +280,7 @@ describe("PackageLoadPool (real worker)", () => {
 describe("PackageLoadPool (main-thread work budget)", () => {
    let tempDir: string;
    beforeEach(() => {
-      tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "publisher-budget-"));
-      fs.writeFileSync(
-         path.join(tempDir, "publisher.json"),
-         JSON.stringify({ name: "pkg" }),
-      );
+      tempDir = writeTempPackage({}, { prefix: "publisher-budget-" }).dir;
       fs.writeFileSync(
          path.join(tempDir, "orders.malloy"),
          `##! experimental { persistence composite_sources }
@@ -326,6 +327,7 @@ source: by_category_table is orders -> by_category
             defaultConnectionName: "duckdb",
             computeBuildPlan: true,
             withPreaggregateCompanions: true,
+            withEntities: true,
          });
       } finally {
          await pool.shutdown();
@@ -342,6 +344,17 @@ source: by_category_table is orders -> by_category
          "sql",
       );
       expect(outcome.models[0].preaggregateCompanion?.modelDef).toBeDefined();
+      const entities = outcome.models[0].entities;
+      expect(entities?.status).toBe("planned");
+      if (entities?.status !== "planned") return;
+      expect(entities.relativePath).toBe(outcome.models[0].modelPath);
+      expect(entities.packageRoot).toBe(tempDir);
+      // No `explores`, so no boundary: nothing is taken provisionally.
+      expect(entities.provisional).toBe(false);
+      expect(entities.metadata.map((s) => s.sourceName)).toEqual([
+         "orders",
+         "by_category_table",
+      ]);
    });
 
    it("leaves the render-tag results, companion and plan to the main thread past the budget", async () => {
@@ -351,17 +364,15 @@ source: by_category_table is orders -> by_category
       expect(outcome.models[0].renderTagResults).toEqual([]);
       expect(outcome.models[0].preaggregateCompanion).toBeUndefined();
       expect(outcome.buildPlan).toBeUndefined();
+      // The main thread plans the entities itself.
+      expect(outcome.models[0].entities).toBeUndefined();
    });
 });
 
 describe("PackageLoadPool (work for the main thread)", () => {
    let tempDir: string;
    beforeEach(() => {
-      tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "publisher-prep-"));
-      fs.writeFileSync(
-         path.join(tempDir, "publisher.json"),
-         JSON.stringify({ name: "pkg" }),
-      );
+      tempDir = writeTempPackage({}, { prefix: "publisher-prep-" }).dir;
    });
    afterEach(() => {
       fs.rmSync(tempDir, { recursive: true, force: true });
@@ -822,5 +833,80 @@ describe("PackageLoadPool (shutdown)", () => {
             defaultConnectionName: "duckdb",
          }),
       ).rejects.toThrow("shutting down");
+   });
+});
+
+describe("PackageLoadPool (protocol checks)", () => {
+   let pool: PackageLoadPool;
+
+   beforeAll(() => {
+      pool = new PackageLoadPool(
+         1,
+         new URL("./test_fixtures/bad_result_worker.ts", import.meta.url),
+      );
+   });
+
+   afterAll(async () => {
+      await pool.shutdown();
+   });
+
+   async function load(packageName: string) {
+      const { MalloyConfig } = await import("@malloydata/malloy");
+      return pool.loadPackage({
+         packagePath: `/nowhere/${packageName}`,
+         packageName,
+         environmentName: "env",
+         malloyConfig: new MalloyConfig({ connections: {} }),
+         defaultConnectionName: "duckdb",
+      });
+   }
+
+   async function rejectionOf(job: Promise<unknown>): Promise<unknown> {
+      return job.then(
+         () => undefined,
+         (e: unknown) => e,
+      );
+   }
+
+   it("resolves a well-formed result on this protocol version unchanged", async () => {
+      const outcome = await load("good");
+      expect(outcome.packageMetadata.name).toBe("good");
+      expect(outcome.models.map((m) => m.modelPath)).toEqual(["m.malloy"]);
+   });
+
+   it("rejects a result from a worker on another protocol version", async () => {
+      const error = await rejectionOf(load("wrong-version"));
+      expect(error).toBeInstanceOf(PackageLoadProtocolError);
+      expect((error as Error).message).toContain(
+         `protocol version ${PACKAGE_LOAD_PROTOCOL_VERSION + 1}, this server ${PACKAGE_LOAD_PROTOCOL_VERSION}`,
+      );
+   });
+
+   it("rejects a result with no protocol version", async () => {
+      await expect(load("no-version")).rejects.toThrow(
+         /protocol version undefined/,
+      );
+   });
+
+   it("rejects a result carrying a malformed model, naming the field", async () => {
+      await expect(load("bad-model")).rejects.toThrow(
+         /serialized model "m\.malloy" has sources of kind string; expected array/,
+      );
+   });
+
+   it("keeps serving after a rejected result", async () => {
+      await rejectionOf(load("bad-model"));
+      const outcome = await load("good-again");
+      expect(outcome.packageMetadata.name).toBe("good-again");
+   });
+
+   it("surfaces as an internal 500, not a retryable 503, through loadOutcomeOrThrow", async () => {
+      const error = await rejectionOf(
+         loadOutcomeOrThrow(load("wrong-version")),
+      );
+      expect(error).toBeInstanceOf(PackageLoadProtocolError);
+      expect(
+         internalErrorToHttpError(error as Error, { log: false }).status,
+      ).toBe(500);
    });
 });

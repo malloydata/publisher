@@ -44,8 +44,13 @@ import {
 } from "./dim_index_discovery";
 import type { DimIndexFingerprintInputs } from "./dim_index_entity_id";
 import {
+   BoundaryDescents,
    composeSourceName,
+   guardDescent,
+   guardHolds,
+   type JoinDescent,
    type JoinDescentRule,
+   type QueryabilityGuard,
    splitSourcePath,
 } from "./explore_walk";
 import { sourceFilters } from "./filters";
@@ -161,15 +166,15 @@ export function parseJoinCode(
  */
 function descendsIntoJoin(
    joinMetadata: JoinSourceMetadata,
-   rootIsQueryable: boolean,
+   rootSourceName: string,
    topLevelExploreNames: ReadonlySet<string>,
-   nonQueryableSourceNames: ReadonlySet<string>,
-): boolean {
+   boundary: BoundaryDescents,
+): JoinDescent {
    const targetName = joinMetadata.original_source_name;
    const targetIsAtTopLevel =
       targetName != null && topLevelExploreNames.has(targetName);
 
-   //   - The third check (``targetIsNonQueryable`` under a queryable
+   //   - The third check (the target not queryable under a queryable
    //     root) re-roots dimensions of a source outside the package's
    //     declared query surface. Such a source is normally indexed via
    //     its own top-level walk, so we'd skip the join — but an indexer
@@ -182,14 +187,12 @@ function descendsIntoJoin(
    //     non-queryable head doesn't spawn entities that would only be
    //     dropped again — and so the bridge/deep-import fan-out doesn't
    //     re-walk every non-queryable subtree once per non-queryable head.
-   const targetIsNonQueryable =
-      targetName != null && nonQueryableSourceNames.has(targetName);
-
-   return (
-      joinMetadata.is_nested_index ||
-      !targetIsAtTopLevel ||
-      (targetIsNonQueryable && rootIsQueryable)
-   );
+   //     Which sources are queryable is the query route's to say, so this
+   //     descent is the boundary's to decide (`BoundaryDescents`): taken
+   //     provisionally and guarded, or left untaken when nothing can be
+   //     unqueryable.
+   if (joinMetadata.is_nested_index || !targetIsAtTopLevel) return true;
+   return boundary.descent(rootSourceName, targetName);
 }
 
 /**
@@ -201,7 +204,7 @@ export function joinDescent(
    relativePath: string,
    packageRoot: string,
    docString: string,
-   nonQueryableSourceNames: ReadonlySet<string>,
+   boundary: BoundaryDescents,
 ): JoinDescentRule {
    const sourceToModelPath = buildSourceToModelPathMap(
       explores,
@@ -216,10 +219,16 @@ export function joinDescent(
             join.name,
             sourceToModelPath,
          ),
-         !nonQueryableSourceNames.has(parentSourceName.split(".")[0]!),
+         parentSourceName.split(".")[0]!,
          topLevelExploreNames,
-         nonQueryableSourceNames,
+         boundary,
       );
+}
+
+/** An entity, and the guard on the descent that reached it, if any. */
+export interface GuardedEntity {
+   entity: Entity;
+   guard?: QueryabilityGuard;
 }
 
 /**
@@ -238,18 +247,18 @@ function getEntitiesFromExplore(
    parentPath: string | null,
    sourceToModelPath: Map<string, string>,
    dimIndexFingerprints: ReadonlyMap<string, DimIndexFingerprintInputs>,
-   topLevelExploreNames: ReadonlySet<string> = new Set(),
-   nonQueryableSourceNames: ReadonlySet<string> = new Set(),
-): Entity[] {
-   const entities: Entity[] = [];
+   topLevelExploreNames: ReadonlySet<string>,
+   boundary: BoundaryDescents,
+   guard: QueryabilityGuard | undefined,
+): GuardedEntity[] {
+   const entities: GuardedEntity[] = [];
 
    const sourceName = composeSourceName(parentPath, explore.name);
    // The runnable source at the head of this (possibly dotted) walk —
    // ``top`` for ``top.mid.deep``. Used below to decide whether re-rooting a
    // non-queryable join target is worthwhile (only when the head is itself a
    // queryable, declared source).
-   const rootSourceName = sourceName.split(".")[0];
-   const rootIsQueryable = !nonQueryableSourceNames.has(rootSourceName);
+   const rootSourceName = sourceName.split(".")[0]!;
 
    for (const field of explore.allFields) {
       // The access-modifier check must run BEFORE the join recursion
@@ -288,14 +297,13 @@ function getEntitiesFromExplore(
          //     If it's not at top level, the join is the only path —
          //     recurse so its fields land in the index under a dotted
          //     source path (``bridge_model.order_items.Created_at``).
-         if (
-            descendsIntoJoin(
-               joinMetadata,
-               rootIsQueryable,
-               topLevelExploreNames,
-               nonQueryableSourceNames,
-            )
-         ) {
+         const descent = descendsIntoJoin(
+            joinMetadata,
+            rootSourceName,
+            topLevelExploreNames,
+            boundary,
+         );
+         if (descent !== false) {
             const nestedEntities = getEntitiesFromExplore(
                field as unknown as MalloyExplore,
                docString,
@@ -304,7 +312,14 @@ function getEntitiesFromExplore(
                sourceToModelPath,
                dimIndexFingerprints,
                topLevelExploreNames,
-               nonQueryableSourceNames,
+               boundary,
+               descent === true
+                  ? guard
+                  : guardDescent(
+                       guard,
+                       rootSourceName,
+                       descent.unlessQueryable,
+                    ),
             );
             entities.push(...nestedEntities);
          }
@@ -352,7 +367,9 @@ function getEntitiesFromExplore(
             required_filter_dimensions: fingerprint.requiredFilterDimensions,
          };
       }
-      entities.push(codeEntity);
+      entities.push(
+         guard ? { entity: codeEntity, guard } : { entity: codeEntity },
+      );
    }
 
    return entities;
@@ -711,7 +728,7 @@ const extractGivensFromModel = (model: MalloyModel): ApiGiven[] =>
  * another file, but a same-file child is subject to this file's gate same as
  * any other source defined here.
  */
-function extractJoinAuthorizeMetadata(
+function planJoinAuthorizeMetadata(
    explore: MalloyExplore,
    docString: string,
    relativePath: string,
@@ -719,16 +736,16 @@ function extractJoinAuthorizeMetadata(
    parentAuthorize: Authorize[],
    sourceToModelPath: Map<string, string>,
    topLevelExploreNames: ReadonlySet<string>,
-   nonQueryableSourceNames: ReadonlySet<string>,
+   boundary: BoundaryDescents,
    modelGivens: ApiGiven[],
    modelAuthorize: GateExpr[],
-   seenSourceKeys: Set<string>,
+   alwaysSeenSourceKeys: Set<string>,
+   guarded: boolean,
    sourceDefsByName: ReadonlyMap<string, GateStructDef>,
-): SourceMetadata[] {
-   const metadataEntries: SourceMetadata[] = [];
+): JoinMetadataPlan[] {
+   const plan: JoinMetadataPlan[] = [];
    const sourceName = composeSourceName(parentPath, explore.name);
-   const rootSourceName = sourceName.split(".")[0];
-   const rootIsQueryable = !nonQueryableSourceNames.has(rootSourceName);
+   const rootSourceName = sourceName.split(".")[0]!;
 
    for (const field of explore.allFields ?? []) {
       // Some callers construct minimal field stubs (e.g. the FILTERS tests'
@@ -759,14 +776,13 @@ function extractJoinAuthorizeMetadata(
       // of whether `original_source_name` is null, so a direct-table join's
       // gate must still get a row under that key — it is NOT skipped.
       const targetName = joinMetadata.original_source_name;
-      const targetIsAtTopLevel =
-         targetName != null && topLevelExploreNames.has(targetName);
-      const targetIsNonQueryable =
-         targetName != null && nonQueryableSourceNames.has(targetName);
-      const shouldRecurse =
-         joinMetadata.is_nested_index ||
-         !targetIsAtTopLevel ||
-         (targetIsNonQueryable && rootIsQueryable);
+      // The entities walk's descent rule, so the two visit the same joins.
+      const descent = descendsIntoJoin(
+         joinMetadata,
+         rootSourceName,
+         topLevelExploreNames,
+         boundary,
+      );
 
       const joinedExplore = field as unknown as MalloyExplore;
       // A named join (`is_nested_index === false`, e.g. deep-import
@@ -803,25 +819,36 @@ function extractJoinAuthorizeMetadata(
          ? `${sourceName}.${field.name}`
          : (targetName ?? field.name);
 
-      for (const advisory of checkAuthorizeJoinBypass(
+      // Logged whenever this level is (resolveJoinMetadata).
+      const advisories = checkAuthorizeJoinBypass(
          parentAuthorize,
          childAuthorize,
          sourceName,
          childSourceName,
-      )) {
-         logger.warn(
+      ).map(
+         (advisory) =>
             `[acl-advisory] ${relativePath}: join '${advisory.parentSourceName}' -> '${advisory.childSourceName}': ${advisory.reason}`,
-         );
+      );
+      // A join with neither advisories nor a descent is left out.
+      const entry: JoinMetadataPlan = {};
+      if (advisories.length > 0) {
+         entry.advisories = advisories;
+         plan.push(entry);
       }
 
-      if (!shouldRecurse) continue;
+      if (descent === false) continue;
 
+      // A key already claimed on every path is skipped on every path, and so
+      // is its subtree. A key claimed under a guard is decided when the
+      // guards are (resolveJoinMetadata), so the subtree is planned.
       const dedupKey = `${keyModelPath}::${childSourceName}`;
-      if (seenSourceKeys.has(dedupKey)) continue;
-      seenSourceKeys.add(dedupKey);
+      if (alwaysSeenSourceKeys.has(dedupKey)) continue;
+      const childGuarded = guarded || descent !== true;
+      if (!childGuarded) alwaysSeenSourceKeys.add(dedupKey);
 
+      const rows: SourceMetadata[] = [];
       if (childAuthorize.length > 0) {
-         metadataEntries.push({
+         rows.push({
             modelFilePath: keyModelPath,
             sourceName: childSourceName,
             metadata: "",
@@ -834,7 +861,7 @@ function extractJoinAuthorizeMetadata(
       // above): a join-only source needs the same row so a lookup of its
       // givens by (model file, source) isn't left empty.
       if (modelGivens.length > 0) {
-         metadataEntries.push({
+         rows.push({
             modelFilePath: keyModelPath,
             sourceName: childSourceName,
             metadata: "",
@@ -843,8 +870,12 @@ function extractJoinAuthorizeMetadata(
          });
       }
 
-      metadataEntries.push(
-         ...extractJoinAuthorizeMetadata(
+      if (entry.advisories === undefined) plan.push(entry);
+      entry.descend = {
+         ...(descent !== true && { unlessQueryable: descent.unlessQueryable }),
+         dedupKey,
+         rows,
+         children: planJoinAuthorizeMetadata(
             joinedExplore,
             docString,
             relativePath,
@@ -852,18 +883,141 @@ function extractJoinAuthorizeMetadata(
             childAuthorize,
             sourceToModelPath,
             topLevelExploreNames,
-            nonQueryableSourceNames,
+            boundary,
             modelGivens,
             modelAuthorize,
-            seenSourceKeys,
+            alwaysSeenSourceKeys,
+            childGuarded,
             sourceDefsByName,
          ),
-      );
+      };
    }
 
+   return plan;
+}
+
+/**
+ * One public join of a source, as the join-aware metadata walk planned it:
+ * the advisories logged whenever its level is visited, and, when the walk
+ * descends into it, the rows it adds and the joins below it. A descent taken
+ * provisionally holds only while `unlessQueryable` is not queryable and the
+ * walk's root is. `dedupKey` is the `(model file, source)` key the rows are
+ * filed under, which only the first descent to reach it claims.
+ */
+export interface JoinMetadataPlan {
+   advisories?: string[];
+   descend?: {
+      unlessQueryable?: string;
+      dedupKey: string;
+      rows: SourceMetadata[];
+      children: JoinMetadataPlan[];
+   };
+}
+
+/**
+ * One top-level source's metadata as planned before its queryability is
+ * known: the rows before its NOT_QUERYABLE marker, the rows after it, and its
+ * join-aware rows. {@link resolveMetadataPlan} puts them in order.
+ */
+export interface ExploreMetadataPlan {
+   sourceName: string;
+   leading: SourceMetadata[];
+   trailing: SourceMetadata[];
+   joins: JoinMetadataPlan[];
+}
+
+/**
+ * A file's source metadata, given which of its sources are not queryable
+ * (`nonQueryableSourceNames`) and the served source each of those names, from
+ * the plan {@link planMetadataFromExplores} made without knowing them.
+ */
+function resolveMetadataPlan(
+   plan: readonly ExploreMetadataPlan[],
+   relativePath: string,
+   nonQueryableSourceNames: ReadonlySet<string>,
+   servedFromBySource: ReadonlyMap<
+      string,
+      NonNullable<SourceMetadata["servedFrom"]>
+   > = new Map(),
+): SourceMetadata[] {
+   const metadataEntries: SourceMetadata[] = [];
+   // See planMetadataFromExplores: every top-level key is claimed up front.
+   const seenSourceKeys = new Set(
+      plan.map((explore) => `${relativePath}::${explore.sourceName}`),
+   );
+   for (const explore of plan) {
+      metadataEntries.push(...explore.leading);
+      // Mark sources outside the package's declared query surface.
+      // `queryable` defaults true, so — like AGENT_HIDDEN — we only emit a
+      // marker for the non-queryable case; an indexer reads it to skip
+      // dimension indexing for these non-query-target sources. Keyed by
+      // (modelFilePath, sourceName) so the same source can be
+      // queryable under a declared model file and not under another.
+      // A report's import of a served source, or a source the report derives
+      // from one, also says which served source stands for it
+      // (extract.ts `advertisedQueryability`), so a search scoped to the
+      // report can return that source instead.
+      if (nonQueryableSourceNames.has(explore.sourceName)) {
+         const servedFrom = servedFromBySource.get(explore.sourceName);
+         metadataEntries.push({
+            modelFilePath: relativePath,
+            sourceName: explore.sourceName,
+            metadata: "",
+            metadataType: "NOT_QUERYABLE",
+            ...(servedFrom ? { servedFrom } : {}),
+         });
+      }
+      metadataEntries.push(...explore.trailing);
+      resolveJoinMetadata(
+         explore.joins,
+         nonQueryableSourceNames,
+         !nonQueryableSourceNames.has(explore.sourceName),
+         seenSourceKeys,
+         metadataEntries,
+      );
+   }
    return metadataEntries;
 }
 
+/** Walk a join plan as the walk would have, with the queryability known. */
+function resolveJoinMetadata(
+   plan: readonly JoinMetadataPlan[],
+   nonQueryableSourceNames: ReadonlySet<string>,
+   rootIsQueryable: boolean,
+   seenSourceKeys: Set<string>,
+   out: SourceMetadata[],
+): void {
+   for (const entry of plan) {
+      for (const advisory of entry.advisories ?? []) logger.warn(advisory);
+      const descend = entry.descend;
+      if (!descend) continue;
+      if (
+         descend.unlessQueryable !== undefined &&
+         !(
+            rootIsQueryable &&
+            nonQueryableSourceNames.has(descend.unlessQueryable)
+         )
+      ) {
+         continue;
+      }
+      if (seenSourceKeys.has(descend.dedupKey)) continue;
+      seenSourceKeys.add(descend.dedupKey);
+      out.push(...descend.rows);
+      resolveJoinMetadata(
+         descend.children,
+         nonQueryableSourceNames,
+         rootIsQueryable,
+         seenSourceKeys,
+         out,
+      );
+   }
+}
+
+/**
+ * The source metadata of a file whose unqueryable sources are
+ * `nonQueryableSourceNames`, each naming the served source in
+ * `servedFromBySource` where it has one.
+ */
 const extractMetadataFromExplores = (
    explores: MalloyExplore[],
    relativePath: string,
@@ -879,8 +1033,44 @@ const extractMetadataFromExplores = (
       NonNullable<SourceMetadata["servedFrom"]>
    > = new Map(),
    refuse: Refuse = throwRefusal,
-): SourceMetadata[] => {
-   const metadataEntries: SourceMetadata[] = [];
+): SourceMetadata[] =>
+   resolveMetadataPlan(
+      planMetadataFromExplores(
+         explores,
+         relativePath,
+         isModelFileAgentHidden,
+         modelFileUrl,
+         modelGivens,
+         modelAuthorize,
+         docString,
+         packageRoot,
+         refuse,
+         new BoundaryDescents(nonQueryableSourceNames.size > 0),
+      ),
+      relativePath,
+      nonQueryableSourceNames,
+      servedFromBySource,
+   );
+
+/**
+ * Plan a file's source metadata before which of its sources are queryable is
+ * known: every row but the NOT_QUERYABLE markers, with the descents that
+ * depend on queryability decided by `boundary`. {@link resolveMetadataPlan}
+ * finishes it once they are known.
+ */
+const planMetadataFromExplores = (
+   explores: MalloyExplore[],
+   relativePath: string,
+   isModelFileAgentHidden: boolean,
+   modelFileUrl: string | undefined,
+   modelGivens: ApiGiven[],
+   modelAuthorize: GateExpr[],
+   docString: string,
+   packageRoot: string,
+   refuse: Refuse,
+   boundary: BoundaryDescents,
+): ExploreMetadataPlan[] => {
+   const plan: ExploreMetadataPlan[] = [];
    const sourceToModelPath = buildSourceToModelPathMap(
       explores,
       relativePath,
@@ -912,6 +1102,7 @@ const extractMetadataFromExplores = (
    // this as its own pass (rather than registering per-explore as the loop
    // below reaches each one) makes the dedup independent of `explores`'
    // declaration order.
+   // Registered here for the plan, and again where it is resolved.
    for (const explore of explores) {
       seenJoinSourceKeys.add(`${relativePath}::${explore.name}`);
    }
@@ -922,6 +1113,8 @@ const extractMetadataFromExplores = (
       );
    }
    for (const explore of explores) {
+      const leading: SourceMetadata[] = [];
+      const trailing: SourceMetadata[] = [];
       const docsString = extractDocsFromExplore(explore);
       // Source-level #(agent-hidden) is detected only on annotations that
       // are directly attached to this explore. We deliberately do NOT use
@@ -955,7 +1148,7 @@ const extractMetadataFromExplores = (
          );
       }
       if (docsString) {
-         metadataEntries.push({
+         leading.push({
             modelFilePath: relativePath,
             sourceName: explore.name,
             metadata: docsString,
@@ -965,7 +1158,7 @@ const extractMetadataFromExplores = (
       }
 
       if (agentHidden) {
-         metadataEntries.push({
+         leading.push({
             modelFilePath: relativePath,
             sourceName: explore.name,
             metadata: "",
@@ -974,30 +1167,11 @@ const extractMetadataFromExplores = (
          });
       }
 
-      // Mark sources outside the package's declared query surface.
-      // `queryable` defaults true, so — like AGENT_HIDDEN — we only emit a
-      // marker for the non-queryable case; an indexer reads it to skip
-      // dimension indexing for these non-query-target sources. Keyed by
-      // (modelFilePath, sourceName) so the same source can be
-      // queryable under a declared model file and not under another.
-      // A report's import of a served source, or a source the report derives
-      // from one, also says which served source stands for it
-      // (query_surface.ts `servedFrom`), so a search scoped to the report can
-      // return that source instead.
-      if (nonQueryableSourceNames.has(explore.name)) {
-         const servedFrom = servedFromBySource.get(explore.name);
-         metadataEntries.push({
-            modelFilePath: relativePath,
-            sourceName: explore.name,
-            metadata: "",
-            metadataType: "NOT_QUERYABLE",
-            ...(servedFrom ? { servedFrom } : {}),
-         });
-      }
+      // The NOT_QUERYABLE marker goes here (resolveMetadataPlan).
 
       const filters = extractFiltersFromExplore(explore, relativePath, refuse);
       if (filters.length > 0) {
-         metadataEntries.push({
+         trailing.push({
             modelFilePath: relativePath,
             sourceName: explore.name,
             metadata: "",
@@ -1026,7 +1200,7 @@ const extractMetadataFromExplores = (
       // attribution via the IR (the query path reads `Source.givens`); the
       // Malloy SDK doesn't surface that on `Explore`.
       if (modelGivens.length > 0) {
-         metadataEntries.push({
+         trailing.push({
             modelFilePath: relativePath,
             sourceName: explore.name,
             metadata: "",
@@ -1065,7 +1239,7 @@ const extractMetadataFromExplores = (
          modelGivens,
       );
       if (authorize.length > 0) {
-         metadataEntries.push({
+         trailing.push({
             modelFilePath: relativePath,
             sourceName: explore.name,
             metadata: "",
@@ -1081,25 +1255,25 @@ const extractMetadataFromExplores = (
       // `getEntitiesFromExplore` does for entities. The row is reported for a
       // host to look up by the join-only source's key; it is not rolled up onto
       // the queryable parent an agent actually queries.
-      metadataEntries.push(
-         ...extractJoinAuthorizeMetadata(
-            explore,
-            docString,
-            relativePath,
-            null,
-            authorize,
-            sourceToModelPath,
-            topLevelExploreNames,
-            nonQueryableSourceNames,
-            modelGivens,
-            modelAuthorize,
-            seenJoinSourceKeys,
-            sourceDefsByName,
-         ),
+      const joins = planJoinAuthorizeMetadata(
+         explore,
+         docString,
+         relativePath,
+         null,
+         authorize,
+         sourceToModelPath,
+         topLevelExploreNames,
+         boundary,
+         modelGivens,
+         modelAuthorize,
+         seenJoinSourceKeys,
+         false,
+         sourceDefsByName,
       );
+      plan.push({ sourceName: explore.name, leading, trailing, joins });
    }
 
-   return metadataEntries;
+   return plan;
 };
 
 /**
@@ -1120,7 +1294,31 @@ const extractEntitiesFromExplores = (
       DimIndexFingerprintInputs
    > = new Map(),
    nonQueryableSourceNames: ReadonlySet<string> = new Set(),
-) => {
+): Entity[] =>
+   planEntitiesFromExplores(
+      explores,
+      relativePath,
+      packageRoot,
+      docString,
+      dimIndexFingerprints,
+      new BoundaryDescents(nonQueryableSourceNames.size > 0),
+   )
+      .filter(({ guard }) => guardHolds(guard, nonQueryableSourceNames))
+      .map(({ entity }) => entity);
+
+/**
+ * The entities of a file's explores before which of its sources are queryable
+ * is known: each with the guard on reaching it, the descents that depend on
+ * queryability decided by `boundary`.
+ */
+const planEntitiesFromExplores = (
+   explores: MalloyExplore[],
+   relativePath: string,
+   packageRoot: string,
+   docString: string,
+   dimIndexFingerprints: ReadonlyMap<string, DimIndexFingerprintInputs>,
+   boundary: BoundaryDescents,
+): GuardedEntity[] => {
    const sourceToModelPath = buildSourceToModelPathMap(
       explores,
       relativePath,
@@ -1134,7 +1332,7 @@ const extractEntitiesFromExplores = (
    // otherwise transitively-imported joined sources are missing from the
    // entities even though queries against them resolve cleanly.
    const topLevelExploreNames = new Set(explores.map((e) => e.name));
-   const entities: Entity[] = [];
+   const entities: GuardedEntity[] = [];
    for (const explore of explores) {
       const exploreEntities = getEntitiesFromExplore(
          explore,
@@ -1144,7 +1342,8 @@ const extractEntitiesFromExplores = (
          sourceToModelPath,
          dimIndexFingerprints,
          topLevelExploreNames,
-         nonQueryableSourceNames,
+         boundary,
+         undefined,
       );
       entities.push(...exploreEntities);
    }
@@ -1153,7 +1352,10 @@ const extractEntitiesFromExplores = (
 
 export const sourceExtraction = {
    extractMetadataFromExplores,
+   planMetadataFromExplores,
+   resolveMetadataPlan,
    extractEntitiesFromExplores,
+   planEntitiesFromExplores,
    extractGivensFromModel,
    joinDescent,
    extractAuthorizeFromModel,

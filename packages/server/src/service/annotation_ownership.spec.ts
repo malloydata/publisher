@@ -31,7 +31,6 @@ import {
 } from "@malloydata/malloy";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "bun:test";
 import * as fs from "fs";
-import * as os from "os";
 import * as path from "path";
 import {
    PackageLoadPool,
@@ -43,6 +42,7 @@ import {
    ownModelNotes,
 } from "./annotations";
 import { Package } from "./package";
+import { writeTempPackage } from "../test_helpers/temp_package";
 
 /**
  * A shared include carrying a model-level `##(filters)`. This is the tag behind
@@ -205,14 +205,13 @@ describe("notebook API response reports its own `##`, not its include's", () => 
    // `.malloynb` notebooks (see RELEASE_NOTES deprecations).
    describe("deprecated: .malloynb notebooks", () => {
       it("keeps a shared include's `##(filters)` out of the notebook response", async () => {
-         tempDir = fs.mkdtempSync(
-            path.join(os.tmpdir(), "publisher-own-notes-"),
-         );
-         fs.writeFileSync(
-            path.join(tempDir, "publisher.json"),
-            JSON.stringify({ name: "pkg", description: "test package" }),
-         );
-         fs.writeFileSync(path.join(tempDir, "shared.malloy"), SHARED_MALLOY);
+         tempDir = writeTempPackage(
+            { "shared.malloy": SHARED_MALLOY },
+            {
+               prefix: "publisher-own-notes-",
+               manifest: { name: "pkg", description: "test package" },
+            },
+         ).dir;
          fs.writeFileSync(
             path.join(tempDir, "report.malloynb"),
             `>>>malloy

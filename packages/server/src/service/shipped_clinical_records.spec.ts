@@ -30,6 +30,7 @@ import {
    NotQueryableError,
 } from "../errors";
 import { Package } from "./package";
+import { QueryPrivileges } from "./model_query_request";
 
 const EXAMPLE = path.resolve(
    import.meta.dir,
@@ -100,17 +101,15 @@ describe("examples/clinical-records, clean", () => {
    afterAll(async () => close());
 
    const run = (query: string, givens: Record<string, unknown>) =>
-      pkg
-         .getModel("index.malloy")!
-         .getQueryResults(
-            unrecordedAudit(),
-            undefined,
-            undefined,
+      pkg.getModel("index.malloy")!.runQuery(
+         unrecordedAudit(),
+         {
             query,
-            {},
-            true,
-            givens as Record<string, GivenValue>,
-         );
+            filterParams: {},
+            givens: givens as Record<string, GivenValue>,
+         },
+         QueryPrivileges.of({ bypassFilters: true }),
+      );
 
    it("loads with no warning", () => {
       expect(pkg.getPackageMetadata().warnings ?? []).toEqual([]);
@@ -235,17 +234,15 @@ describe("examples/clinical-records, the data app's queries", () => {
    afterAll(async () => close());
 
    const run = (query: string, givens: Record<string, unknown>) =>
-      pkg
-         .getModel("index.malloy")!
-         .getQueryResults(
-            unrecordedAudit(),
-            undefined,
-            undefined,
+      pkg.getModel("index.malloy")!.runQuery(
+         unrecordedAudit(),
+         {
             query,
-            {},
-            true,
-            givens as Record<string, GivenValue>,
-         );
+            filterParams: {},
+            givens: givens as Record<string, GivenValue>,
+         },
+         QueryPrivileges.of({ bypassFilters: true }),
+      );
 
    it("serves each persona's count and sample on the domain the policy admits it to, and refuses the rest", async () => {
       for (const persona of app.PERSONAS) {
@@ -366,17 +363,18 @@ describe("examples/clinical-records, seeded violations", () => {
          const { pkg, close } = await load(dir);
          try {
             expect(pkg.getPackageMetadata().warnings ?? []).toEqual([]);
-            const r = await pkg
-               .getModel("index.malloy")!
-               .getQueryResults(
-                  unrecordedAudit(),
-                  undefined,
-                  undefined,
-                  "run: research -> { aggregate: earliest is min(patient.birth_year) }",
-                  {},
-                  true,
-                  { ROLES: ["researcher"] } as Record<string, GivenValue>,
-               );
+            const r = await pkg.getModel("index.malloy")!.runQuery(
+               unrecordedAudit(),
+               {
+                  query: "run: research -> { aggregate: earliest is min(patient.birth_year) }",
+                  filterParams: {},
+                  givens: { ROLES: ["researcher"] } as Record<
+                     string,
+                     GivenValue
+                  >,
+               },
+               QueryPrivileges.of({ bypassFilters: true }),
+            );
             expect(Number(r.compactResult[0].earliest)).toBeLessThan(1930);
          } finally {
             await close();

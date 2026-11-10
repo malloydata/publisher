@@ -78,15 +78,10 @@ async function run(
 ): Promise<Outcome> {
    const model = await Model.create("pkg", PKG_DIR, file, connections());
    try {
-      const { compactResult } = await model.getQueryResults(
-         unrecordedAudit(),
-         undefined,
-         undefined,
+      const { compactResult } = await model.runQuery(unrecordedAudit(), {
          query,
-         undefined,
-         false,
          givens,
-      );
+      });
       return { rows: compactResult };
    } catch (error) {
       return { refused: (error as Error).constructor.name };

@@ -37,13 +37,13 @@ import {
    ServiceUnavailableError,
 } from "../../src/errors";
 import {
-   queryConcurrency,
-   resetActiveQueryCountForTesting,
+   QuerySlots,
    resetQueryConcurrencyTelemetryForTesting,
 } from "../../src/query_concurrency";
 import { accessIdentityOf } from "../../src/service/access_record";
-import type { EnvironmentStore } from "../../src/service/environment_store";
 import { installSettings } from "../../src/test_helpers/settings_env";
+import { fakeOf } from "../../src/test_helpers/store_fakes";
+import type { ConnectionAdmin } from "../../src/service/environment_ports";
 
 function buildApp(
    runSQL: sinon.SinonStub,
@@ -61,9 +61,9 @@ function buildApp(
       // Not a managed database, so the single-SELECT check does not apply.
       getApiConnection: () => ({ name: "warehouse", type: "postgres" }),
    };
-   const fakeStore = {
+   const fakeStore = fakeOf<ConnectionAdmin>({
       getEnvironment: sinon.stub().resolves(fakeEnv),
-   } as unknown as EnvironmentStore;
+   });
    const controller = new ConnectionController(fakeStore);
    // Bypass the connector lookup; the test only cares about the
    // guardrail chain on top of a stub.
@@ -83,7 +83,7 @@ function buildApp(
    // first, then a thin route handler that delegates to the controller.
    app.post(
       "/api/v0/environments/:env/connections/:conn/sqlQuery",
-      queryConcurrency(),
+      new QuerySlots().middleware,
       async (req, res) => {
          try {
             const result = await controller.getConnectionQueryData(
@@ -141,14 +141,12 @@ describe("OOM guardrails: end-to-end chain", () => {
    }
 
    beforeEach(() => {
-      resetActiveQueryCountForTesting();
       resetQueryConcurrencyTelemetryForTesting();
       installEnv();
    });
 
    afterEach(() => {
       sinon.restore();
-      resetActiveQueryCountForTesting();
       resetQueryConcurrencyTelemetryForTesting();
       restoreSettings?.();
       restoreSettings = undefined;

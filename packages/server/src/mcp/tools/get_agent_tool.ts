@@ -3,11 +3,11 @@
 
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod/v3";
-import { logger } from "../../logger";
-import { EnvironmentStore } from "../../service/environment_store";
-import { type ErrorDetails } from "../error_messages";
-import { buildMalloyUri, classifyToolError } from "../handler_utils";
-import { jsonResource, jsonToolError } from "../tool_response";
+import type { PackageLookup } from "../../service/environment_ports";
+import { buildMalloyUri } from "../handler_utils";
+import { registerGuardedTool } from "../register_tool";
+import { jsonResource } from "../tool_response";
+import { parseEnvironmentName, parsePackageName } from "../../service/identity";
 
 const GET_AGENT_DESCRIPTION = `List the agents a package declares, or fetch one agent's definition. A package agent is a named brief the package author wrote: instructions, its own skills, and optional scheduled tasks, for working with that package.
 
@@ -85,78 +85,72 @@ type GetAgentParams = z.infer<z.ZodObject<typeof getAgentShape>>;
  */
 export function registerGetAgentTool(
    mcpServer: McpServer,
-   environmentStore: EnvironmentStore,
+   environmentStore: PackageLookup,
 ): void {
-   mcpServer.tool(
-      "get_agent",
-      GET_AGENT_DESCRIPTION,
-      getAgentShape,
-      async (params: GetAgentParams) => {
-         const scope = params.scopes[0]!;
-         const uri = buildMalloyUri(
-            { environment: scope.environment, package: scope.package },
+   registerGuardedTool(mcpServer, {
+      name: "get_agent",
+      description: GET_AGENT_DESCRIPTION,
+      inputSchema: getAgentShape,
+      op: "getAgent",
+      failed: "lookup failed",
+      uri: ({ scopes: [scope] }) =>
+         buildMalloyUri(
+            { environment: scope!.environment, package: scope!.package },
             "getAgent",
+         ),
+      identifier: ({ scopes: [scope] }) =>
+         `${scope!.environment}/${scope!.package}`,
+      logFields: (params) => ({
+         agentName: params.agent_name,
+         environmentName: params.scopes[0]!.environment,
+         packageName: params.scopes[0]!.package,
+      }),
+      run: async (params: GetAgentParams, uri) => {
+         const scope = params.scopes[0]!;
+         const environment = await environmentStore.getEnvironment(
+            parseEnvironmentName(scope.environment),
+            false,
          );
-
-         try {
-            const environment = await environmentStore.getEnvironment(
-               scope.environment,
-               false,
-            );
-            const pkg = await environment.getPackage(scope.package, false);
-            const availableAgents = pkg.listAgents();
-            if (params.agent_name === undefined || params.agent_name === null) {
-               return jsonResource(uri, {
-                  agent: null,
-                  availableAgents,
-                  ...(params.skill_path && {
-                     message:
-                        "skill_path needs agent_name. Fix: name the agent from availableAgents whose skill file you want.",
-                  }),
-               });
-            }
-
-            if (!availableAgents.some((a) => a.name === params.agent_name)) {
-               return jsonResource(uri, {
-                  agent: null,
-                  availableAgents,
-                  message: `No agent named ${JSON.stringify(params.agent_name)} for package ${scope.environment}/${scope.package}. Fix: use a name from availableAgents exactly as spelled there. An agent that failed validation is not served; the package's warnings say why.`,
-               });
-            }
-            if (params.skill_path) {
-               const skillFile = pkg.getAgentSkillFile(
-                  params.agent_name,
-                  params.skill_path,
-               );
-               if (!skillFile) {
-                  return jsonResource(uri, {
-                     agent: null,
-                     availableAgents,
-                     message: `Agent ${JSON.stringify(params.agent_name)} has no skill file ${JSON.stringify(params.skill_path)}. Fix: use a relative_filepath exactly as the definition lists it (a skill file in the summary, an asset in the full view).`,
-                  });
-               }
-               // No `agent` key: a file read must not look like "no agent matched".
-               return jsonResource(uri, { skillFile, availableAgents });
-            }
-            const agent = pkg.getAgent(
-               params.agent_name,
-               params.skills ?? "full",
-            );
-            return jsonResource(uri, { agent, availableAgents });
-         } catch (error) {
-            logger.warn("[MCP Tool getAgent] lookup failed", {
-               agentName: params.agent_name,
-               environmentName: scope.environment,
-               packageName: scope.package,
-               error: error instanceof Error ? error.message : String(error),
+         const pkg = await environment.getPackage(
+            parsePackageName(scope.package),
+            false,
+         );
+         const availableAgents = pkg.listAgents();
+         if (params.agent_name === undefined || params.agent_name === null) {
+            return jsonResource(uri, {
+               agent: null,
+               availableAgents,
+               ...(params.skill_path && {
+                  message:
+                     "skill_path needs agent_name. Fix: name the agent from availableAgents whose skill file you want.",
+               }),
             });
-            const errorDetails: ErrorDetails = classifyToolError(
-               "getAgent",
-               `${scope.environment}/${scope.package}`,
-               error,
-            );
-            return jsonToolError(uri, errorDetails);
          }
+
+         if (!availableAgents.some((a) => a.name === params.agent_name)) {
+            return jsonResource(uri, {
+               agent: null,
+               availableAgents,
+               message: `No agent named ${JSON.stringify(params.agent_name)} for package ${scope.environment}/${scope.package}. Fix: use a name from availableAgents exactly as spelled there. An agent that failed validation is not served; the package's warnings say why.`,
+            });
+         }
+         if (params.skill_path) {
+            const skillFile = pkg.getAgentSkillFile(
+               params.agent_name,
+               params.skill_path,
+            );
+            if (!skillFile) {
+               return jsonResource(uri, {
+                  agent: null,
+                  availableAgents,
+                  message: `Agent ${JSON.stringify(params.agent_name)} has no skill file ${JSON.stringify(params.skill_path)}. Fix: use a relative_filepath exactly as the definition lists it (a skill file in the summary, an asset in the full view).`,
+               });
+            }
+            // No `agent` key: a file read must not look like "no agent matched".
+            return jsonResource(uri, { skillFile, availableAgents });
+         }
+         const agent = pkg.getAgent(params.agent_name, params.skills ?? "full");
+         return jsonResource(uri, { agent, availableAgents });
       },
-   );
+   });
 }

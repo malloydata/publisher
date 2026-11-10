@@ -2,7 +2,6 @@
 // SPDX-License-Identifier: MIT
 
 import { afterEach, describe, expect, it, spyOn } from "bun:test";
-import * as os from "os";
 import sinon from "sinon";
 
 import type { components } from "../api";
@@ -14,11 +13,14 @@ import {
    BuildPlanUnavailableError,
    internalErrorToHttpError,
    ServiceUnavailableError,
+   InstalledFromLocationError,
 } from "../errors";
 import { logger } from "../logger";
-import type { EnvironmentStore } from "../service/environment_store";
 import { installSettings } from "../test_helpers/settings_env";
 import { PackageController } from "./package.controller";
+import { fakeOf } from "../test_helpers/store_fakes";
+import type { PackageAdmin } from "../service/environment_ports";
+import { testRetrieval } from "../test_helpers/test_retrieval";
 
 let restoreSettings: (() => void) | undefined;
 
@@ -70,14 +72,16 @@ describe("deprecated: explores — PackageController.addPackage validation", () 
       };
       const getEnvironment = sinon.stub().resolves(environment);
       const addPackageToDatabase = sinon.stub().resolves(undefined);
-      const environmentStore = {
+      const environmentStore = fakeOf<PackageAdmin>({
          publisherConfigIsFrozen: false,
-         serverRootPath: os.tmpdir(),
          getEnvironment,
          addPackageToDatabase,
-      } as unknown as EnvironmentStore;
+      });
 
-      const controller = new PackageController(environmentStore);
+      const controller = new PackageController(
+         environmentStore,
+         testRetrieval(environmentStore),
+      );
 
       await expect(
          controller.addPackage("env", {
@@ -116,14 +120,16 @@ describe("deprecated: explores — PackageController.addPackage validation", () 
       };
       const getEnvironment = sinon.stub().resolves(environment);
       const addPackageToDatabase = sinon.stub().resolves(undefined);
-      const environmentStore = {
+      const environmentStore = fakeOf<PackageAdmin>({
          publisherConfigIsFrozen: false,
-         serverRootPath: os.tmpdir(),
          getEnvironment,
          addPackageToDatabase,
-      } as unknown as EnvironmentStore;
+      });
 
-      const controller = new PackageController(environmentStore);
+      const controller = new PackageController(
+         environmentStore,
+         testRetrieval(environmentStore),
+      );
 
       await expect(
          controller.addPackage("env", {
@@ -181,13 +187,16 @@ describe("deprecated: explores — PackageController.addPackage validation", () 
       };
       const getEnvironment = sinon.stub().resolves(environment);
       const addPackageToDatabase = sinon.stub().resolves(undefined);
-      const environmentStore = {
+      const environmentStore = fakeOf<PackageAdmin>({
          publisherConfigIsFrozen: false,
          getEnvironment,
          addPackageToDatabase,
-      } as unknown as EnvironmentStore;
+      });
 
-      const controller = new PackageController(environmentStore);
+      const controller = new PackageController(
+         environmentStore,
+         testRetrieval(environmentStore),
+      );
 
       await expect(
          controller.addPackage("env", {
@@ -218,14 +227,16 @@ describe("deprecated: explores — PackageController.addPackage validation", () 
          .stub()
          .resolves({ addPackage, getVersionService: () => null });
       const addPackageToDatabase = sinon.stub().resolves(undefined);
-      const environmentStore = {
+      const environmentStore = fakeOf<PackageAdmin>({
          publisherConfigIsFrozen: false,
-         serverRootPath: os.tmpdir(),
          getEnvironment,
          addPackageToDatabase,
-      } as unknown as EnvironmentStore;
+      });
 
-      const controller = new PackageController(environmentStore);
+      const controller = new PackageController(
+         environmentStore,
+         testRetrieval(environmentStore),
+      );
 
       await controller.addPackage("env", {
          name: "pkg",
@@ -266,14 +277,16 @@ describe("PackageController.addPackage persistence policy validation", () => {
       };
       const getEnvironment = sinon.stub().resolves(environment);
       const addPackageToDatabase = sinon.stub().resolves(undefined);
-      const environmentStore = {
+      const environmentStore = fakeOf<PackageAdmin>({
          publisherConfigIsFrozen: false,
-         serverRootPath: os.tmpdir(),
          getEnvironment,
          addPackageToDatabase,
-      } as unknown as EnvironmentStore;
+      });
 
-      const controller = new PackageController(environmentStore);
+      const controller = new PackageController(
+         environmentStore,
+         testRetrieval(environmentStore),
+      );
 
       await expect(
          controller.addPackage("env", { name: "pkg", description: "test" }),
@@ -300,14 +313,16 @@ describe("PackageController.addPackage persistence policy validation", () => {
       };
       const getEnvironment = sinon.stub().resolves(environment);
       const addPackageToDatabase = sinon.stub().resolves(undefined);
-      const environmentStore = {
+      const environmentStore = fakeOf<PackageAdmin>({
          publisherConfigIsFrozen: false,
-         serverRootPath: os.tmpdir(),
          getEnvironment,
          addPackageToDatabase,
-      } as unknown as EnvironmentStore;
+      });
 
-      const controller = new PackageController(environmentStore);
+      const controller = new PackageController(
+         environmentStore,
+         testRetrieval(environmentStore),
+      );
 
       await expect(
          controller.addPackage("env", {
@@ -347,13 +362,16 @@ describe("PackageController.addPackage persistence policy validation", () => {
       const environment = { getVersionService: () => null, installPackage };
       const getEnvironment = sinon.stub().resolves(environment);
       const addPackageToDatabase = sinon.stub().resolves(undefined);
-      const environmentStore = {
+      const environmentStore = fakeOf<PackageAdmin>({
          publisherConfigIsFrozen: false,
          getEnvironment,
          addPackageToDatabase,
-      } as unknown as EnvironmentStore;
+      });
 
-      const controller = new PackageController(environmentStore);
+      const controller = new PackageController(
+         environmentStore,
+         testRetrieval(environmentStore),
+      );
 
       await expect(
          controller.addPackage("env", {
@@ -397,14 +415,16 @@ describe("PackageController.addPackage incremental policy validation", () => {
          getVersionService: () => null,
       });
       const addPackageToDatabase = sinon.stub().resolves(undefined);
-      const environmentStore = {
+      const environmentStore = fakeOf<PackageAdmin>({
          publisherConfigIsFrozen: false,
-         serverRootPath: os.tmpdir(),
          getEnvironment,
          addPackageToDatabase,
-      } as unknown as EnvironmentStore;
+      });
 
-      const controller = new PackageController(environmentStore);
+      const controller = new PackageController(
+         environmentStore,
+         testRetrieval(environmentStore),
+      );
 
       const error = await controller
          .addPackage("env", { name: "pkg", description: "test" })
@@ -432,14 +452,16 @@ describe("PackageController.addPackage incremental policy validation", () => {
          .stub()
          .resolves({ addPackage, getVersionService: () => null });
       const addPackageToDatabase = sinon.stub().resolves(undefined);
-      const environmentStore = {
+      const environmentStore = fakeOf<PackageAdmin>({
          publisherConfigIsFrozen: false,
-         serverRootPath: os.tmpdir(),
          getEnvironment,
          addPackageToDatabase,
-      } as unknown as EnvironmentStore;
+      });
 
-      const controller = new PackageController(environmentStore);
+      const controller = new PackageController(
+         environmentStore,
+         testRetrieval(environmentStore),
+      );
       await controller.addPackage("env", { name: "pkg", description: "test" });
 
       expect(addPackageToDatabase.calledOnceWith("env", "pkg")).toBe(true);
@@ -491,14 +513,16 @@ describe("deprecated: explores — PackageController.updatePackage validation", 
       };
       const getEnvironment = sinon.stub().resolves(environment);
       const addPackageToDatabase = sinon.stub().resolves(undefined);
-      const environmentStore = {
+      const environmentStore = fakeOf<PackageAdmin>({
          publisherConfigIsFrozen: false,
-         serverRootPath: os.tmpdir(),
          getEnvironment,
          addPackageToDatabase,
-      } as unknown as EnvironmentStore;
+      });
 
-      const controller = new PackageController(environmentStore);
+      const controller = new PackageController(
+         environmentStore,
+         testRetrieval(environmentStore),
+      );
 
       await expect(
          controller.updatePackage("env", "pkg", {
@@ -546,10 +570,13 @@ describe("PackageController.getPackage embeddingIndex", () => {
          describePackageStatus: () => ({ serving: true, loading: false }),
       };
       const getEnvironment = sinon.stub().resolves(environment);
-      const environmentStore = {
+      const environmentStore = fakeOf<PackageAdmin>({
          getEnvironment,
-      } as unknown as EnvironmentStore;
-      const controller = new PackageController(environmentStore);
+      });
+      const controller = new PackageController(
+         environmentStore,
+         testRetrieval(environmentStore),
+      );
       sinon
          .stub(
             controller as unknown as {
@@ -616,14 +643,16 @@ describe("PackageController.updatePackage reinstall decision", () => {
          .stub()
          .resolves({ getVersionService: () => null, ...environment });
       const addPackageToDatabase = sinon.stub().resolves(undefined);
-      const environmentStore = {
+      const environmentStore = fakeOf<PackageAdmin>({
          publisherConfigIsFrozen: false,
-         serverRootPath: os.tmpdir(),
          getEnvironment,
          addPackageToDatabase,
-      } as unknown as EnvironmentStore;
+      });
       return {
-         controller: new PackageController(environmentStore),
+         controller: new PackageController(
+            environmentStore,
+            testRetrieval(environmentStore),
+         ),
          addPackageToDatabase,
       };
    }
@@ -664,7 +693,6 @@ describe("PackageController.updatePackage reinstall decision", () => {
       const body = {
          name: "pkg",
          location: "gs://bucket/pkg___1.0.1.zip",
-         description: "next",
       };
 
       await controller.updatePackage("env", "pkg", body);
@@ -673,7 +701,10 @@ describe("PackageController.updatePackage reinstall decision", () => {
       // The metadata rides with the install so both land under one lock hold;
       // a separate update call is exactly the second lock acquisition that a
       // queued delete could run between.
-      expect(installPackage.firstCall.args[3]).toEqual({ update: body });
+      expect(installPackage.firstCall.args[3]).toEqual({
+         update: body,
+         admit: expect.any(Function),
+      });
       expect(updatePackage.called).toBe(false);
    });
 
@@ -704,6 +735,419 @@ describe("PackageController.updatePackage reinstall decision", () => {
       expect(updatePackage.calledOnce).toBe(true);
    });
 
+   /** A package resident with `metadata`, as peekPackage returns it. */
+   const residentWith = (metadata: Record<string, unknown>) => ({
+      getPackageMetadata: () => ({
+         name: "pkg",
+         location: "gs://bucket/pkg___1.0.0.zip",
+         ...metadata,
+      }),
+   });
+
+   type ApiPackage = components["schemas"]["Package"];
+   type Admit = (
+      body: ApiPackage,
+      target: ApiPackage,
+      previous: ApiPackage | undefined,
+   ) => ApiPackage;
+   type Resident = { getPackageMetadata: () => Record<string, unknown> };
+
+   /**
+    * Send `body` to a package resident as `resident`. The environment's
+    * installPackage runs the install's validator, then its `admit`, against a
+    * fetched tree whose metadata is `fetched` and the resident it replaces,
+    * as the real install does inside its swap; its updatePackage runs `admit`
+    * against the resident, as the real one does under the lock. `applied()`
+    * is the body that was admitted.
+    */
+   async function patch(
+      body: Record<string, unknown>,
+      resident: Resident | null = servedPackage,
+      fetched: Record<string, unknown> = { name: "pkg" },
+   ) {
+      let admitted: ApiPackage | undefined;
+      const installPackage = sinon
+         .stub()
+         .callsFake(
+            async (
+               _name: string,
+               _download: unknown,
+               validate: (pkg: object) => string | undefined,
+               options: { update: ApiPackage; admit: Admit },
+            ) => {
+               validate({
+                  getPackageMetadata: () => fetched,
+                  formatInvalidExplores: () => "",
+                  formatInvalidPersistencePolicy: () => "",
+                  formatInvalidIncrementalPolicy: () => "",
+                  formatInvalidPreaggregatePolicy: () => "",
+                  formatPersistenceCollisionRejections: () => "",
+               });
+               admitted = options.admit(
+                  options.update,
+                  fetched as ApiPackage,
+                  resident?.getPackageMetadata() as ApiPackage | undefined,
+               );
+               return servedPackage;
+            },
+         );
+      const updatePackage = sinon
+         .stub()
+         .callsFake(
+            async (
+               _name: string,
+               update: ApiPackage,
+               options: { admit: Admit },
+            ) => {
+               admitted = options.admit(
+                  update,
+                  resident?.getPackageMetadata() as ApiPackage,
+                  undefined,
+               );
+               return { name: "pkg" };
+            },
+         );
+      const { controller, addPackageToDatabase } = controllerWith({
+         peekPackage: () => resident ?? undefined,
+         awaitPackageLoads: async () => {},
+         installPackage,
+         updatePackage,
+      });
+      const result = controller.updatePackage("env", "pkg", body as ApiPackage);
+      return {
+         result,
+         installPackage,
+         updatePackage,
+         addPackageToDatabase,
+         applied: () => admitted,
+      };
+   }
+
+   async function expectRefused(
+      body: Record<string, unknown>,
+      resident?: Resident | null,
+      fetched?: Record<string, unknown>,
+   ) {
+      const { result, addPackageToDatabase, applied } = await patch(
+         body,
+         resident,
+         fetched,
+      );
+      await expect(result).rejects.toBeInstanceOf(InstalledFromLocationError);
+      await expect(result).rejects.toThrow(/install.* from .*reload/);
+      expect(applied()).toBeUndefined();
+      expect(addPackageToDatabase.called).toBe(false);
+   }
+
+   it("refuses a PATCH that changes what a reload of a location-installed package would discard (409)", async () => {
+      // A reload fetches the package again from its location and replaces its
+      // files, keeping only the location and the manifest binding, so a change
+      // to anything else would silently disappear on the next reload.
+      for (const body of [
+         {
+            name: "pkg",
+            location: "gs://bucket/pkg___1.0.0.zip",
+            description: "renamed",
+         },
+         { name: "pkg", description: "renamed" },
+         { name: "pkg", queryableSources: "all" },
+         { name: "pkg", scope: "version" },
+         { name: "pkg", queryMetadata: { team: "x" } },
+         { name: "pkg", materialization: { schedule: "0 * * * *" } },
+      ]) {
+         const { result, installPackage } = await patch(body);
+         await expect(result).rejects.toBeInstanceOf(
+            InstalledFromLocationError,
+         );
+         expect(installPackage.called).toBe(false);
+         await expectRefused(body);
+      }
+   });
+
+   it("answers the refusal with 409 and reason PACKAGE_INSTALLED_FROM_LOCATION", async () => {
+      const { result } = await patch({ name: "pkg", description: "renamed" });
+      const error = await result.catch((e: Error) => e);
+      expect(internalErrorToHttpError(error as Error, { log: false })).toEqual({
+         status: 409,
+         json: {
+            code: 409,
+            message: expect.stringContaining("was installed from"),
+            reason: "PACKAGE_INSTALLED_FROM_LOCATION",
+         },
+      });
+   });
+
+   it("refuses a PATCH that clears a field a reload would restore", async () => {
+      // The PATCH applies an empty description, an empty listing and an empty
+      // queryMetadata bag, so each is a change a reload would undo.
+      const resident = residentWith({
+         description: "Sales",
+         explores: ["models/a.malloy"],
+         queryMetadata: { team: "x" },
+         materialization: { queryMetadata: { team: "x" } },
+      });
+      await expectRefused({ name: "pkg", description: "" }, resident);
+      await expectRefused({ name: "pkg", explores: [] }, resident);
+      await expectRefused({ name: "pkg", queryMetadata: {} }, resident);
+   });
+
+   it("accepts a PATCH whose empty or null fields the package already reads as", async () => {
+      // Null is omitted, and an empty value on a field that is already empty
+      // changes nothing: a generated client sends both for fields it was never
+      // given.
+      const { result, updatePackage } = await patch({
+         name: "pkg",
+         description: "",
+         explores: [],
+         queryableSources: null,
+         scope: null,
+         queryMetadata: null,
+         materialization: null,
+      });
+      await result;
+      expect(updatePackage.calledOnce).toBe(true);
+
+      const set = residentWith({
+         description: "Sales",
+         explores: ["models/a.malloy"],
+         scope: "version",
+      });
+      const nulls = await patch(
+         {
+            name: "pkg",
+            description: null,
+            explores: null,
+            scope: null,
+            materialization: null,
+         },
+         set,
+      );
+      await nulls.result;
+      expect(nulls.updatePackage.calledOnce).toBe(true);
+   });
+
+   it("compares explores as the PATCH applies them, normalized", async () => {
+      const resident = residentWith({ explores: ["models/a.malloy"] });
+      const { result, updatePackage } = await patch(
+         { name: "pkg", explores: ["./models/a.malloy"] },
+         resident,
+      );
+      await result;
+      expect(updatePackage.calledOnce).toBe(true);
+      await expectRefused(
+         { name: "pkg", explores: ["./models/b.malloy"] },
+         resident,
+      );
+   });
+
+   it("accepts a PATCH of a location-installed package that only echoes it back", async () => {
+      const { result, updatePackage } = await patch({
+         name: "pkg",
+         location: "gs://bucket/pkg___1.0.0.zip",
+         explores: [],
+         scope: "package",
+         queryableSources: "declared",
+      });
+      await result;
+      expect(updatePackage.calledOnce).toBe(true);
+
+      const full = {
+         description: "Sales",
+         explores: ["models/a.malloy"],
+         queryableSources: "all",
+         scope: "version",
+         queryMetadata: { team: "x" },
+         materialization: {
+            schedule: "0 * * * *",
+            queryMetadata: { team: "x" },
+         },
+      };
+      const echoed = await patch({ name: "pkg", ...full }, residentWith(full));
+      await echoed.result;
+      expect(echoed.updatePackage.calledOnce).toBe(true);
+   });
+
+   it("refuses a PATCH that reinstalls from a new location with a setting the fetched tree does not declare", async () => {
+      // The settings land in the new tree's publisher.json, and its next reload
+      // fetches that tree again: judged against it, not the old one.
+      await expectRefused({
+         name: "pkg",
+         location: "gs://bucket/pkg___1.0.1.zip",
+         description: "next",
+      });
+      // A value that is neither the replaced package's nor the new tree's.
+      await expectRefused(
+         {
+            name: "pkg",
+            location: "gs://bucket/pkg___1.0.1.zip",
+            description: "Sales, renamed",
+         },
+         residentWith({ description: "Sales" }),
+         { name: "pkg", description: "Sales 1.0.1" },
+      );
+   });
+
+   it("accepts a whole package sent back with only its location changed, and serves the new tree's settings", async () => {
+      // A client GETs the package, changes `location`, and PATCHes the whole
+      // object back: every other setting echoes the package it replaces. Those
+      // echoes are dropped, so the new source's own publisher.json stands and
+      // nothing it says is lost on the next reload.
+      const old = {
+         description: "Sales",
+         explores: ["models/a.malloy"],
+         queryableSources: "all",
+         scope: "version",
+         queryMetadata: { team: "x" },
+         materialization: {
+            schedule: "0 * * * *",
+            queryMetadata: { team: "x" },
+         },
+      };
+      const fetched = {
+         name: "pkg",
+         description: "Sales 1.0.1",
+         explores: ["models/b.malloy"],
+         materialization: { schedule: "0 0 * * *" },
+      };
+      const { result, installPackage, applied } = await patch(
+         {
+            name: "pkg",
+            location: "gs://bucket/pkg___1.0.1.zip",
+            manifestLocation: "gs://bucket/pkg___1.0.1.manifest.json",
+            ...old,
+         },
+         residentWith(old),
+         fetched,
+      );
+      await result;
+      expect(installPackage.calledOnce).toBe(true);
+      // Only what is not a setting a reload would lose is left to apply.
+      expect(applied()).toEqual({
+         name: "pkg",
+         location: "gs://bucket/pkg___1.0.1.zip",
+         manifestLocation: "gs://bucket/pkg___1.0.1.manifest.json",
+      });
+   });
+
+   it("on a reinstall, keeps a setting equal to the new tree's and refuses one equal to neither", async () => {
+      const resident = residentWith({ description: "Sales", scope: "package" });
+      const fetched = { name: "pkg", description: "Sales 1.0.1" };
+      const matches = await patch(
+         {
+            name: "pkg",
+            location: "gs://bucket/pkg___1.0.1.zip",
+            description: "Sales 1.0.1",
+            scope: "package",
+         },
+         resident,
+         fetched,
+      );
+      await matches.result;
+      expect(matches.installPackage.calledOnce).toBe(true);
+
+      // An echo of the old package alongside a genuinely new value: the echo
+      // is no reason to refuse, the new value is.
+      const { result } = await patch(
+         {
+            name: "pkg",
+            location: "gs://bucket/pkg___1.0.1.zip",
+            description: "Sales",
+            scope: "version",
+         },
+         resident,
+         fetched,
+      );
+      const error = await result.catch((e: Error) => e);
+      expect(error).toBeInstanceOf(InstalledFromLocationError);
+      expect((error as Error).message).toContain("change to scope.");
+      expect((error as Error).message).not.toContain("description");
+   });
+
+   it("judges an echo against the replaced package only when it came from a location", async () => {
+      // A package with no location owns its settings; a first install from a
+      // location that echoed them would otherwise drop them silently.
+      const local = {
+         getPackageMetadata: () => ({ name: "pkg", description: "Mine" }),
+      };
+      await expectRefused(
+         {
+            name: "pkg",
+            location: "gs://bucket/pkg___1.0.0.zip",
+            description: "Mine",
+         },
+         local,
+         { name: "pkg", description: "Theirs" },
+      );
+   });
+
+   it("refuses a PATCH that first installs a package from a location with settings", async () => {
+      // No location before, one after: the next reload fetches from it.
+      const local = { getPackageMetadata: () => ({ name: "pkg" }) };
+      await expectRefused(
+         {
+            name: "pkg",
+            location: "gs://bucket/pkg___1.0.0.zip",
+            explores: ["models/a.malloy"],
+         },
+         local,
+      );
+      await expectRefused(
+         {
+            name: "pkg",
+            location: "gs://bucket/pkg___1.0.0.zip",
+            description: "first",
+         },
+         null,
+      );
+   });
+
+   it("accepts a reinstall that carries only its location, or settings the fetched tree declares", async () => {
+      const bare = await patch({
+         name: "pkg",
+         location: "gs://bucket/pkg___1.0.1.zip",
+         manifestLocation: "gs://bucket/pkg___1.0.1.manifest.json",
+         description: "",
+         explores: [],
+         scope: "package",
+         versionId: "1.0.1",
+      });
+      await bare.result;
+      expect(bare.installPackage.calledOnce).toBe(true);
+
+      const declared = await patch(
+         {
+            name: "pkg",
+            location: "gs://bucket/pkg___1.0.1.zip",
+            description: "Sales 1.0.1",
+            explores: ["./models/a.malloy"],
+         },
+         servedPackage,
+         {
+            name: "pkg",
+            description: "Sales 1.0.1",
+            explores: ["models/a.malloy"],
+         },
+      );
+      await declared.result;
+      expect(declared.installPackage.calledOnce).toBe(true);
+   });
+
+   it("still applies metadata to a package that was not installed from a location", async () => {
+      const local = { getPackageMetadata: () => ({ name: "pkg" }) };
+      const updatePackage = sinon.stub().resolves({ name: "pkg" });
+      const { controller } = controllerWith({
+         peekPackage: () => local,
+         awaitPackageLoads: async () => {},
+         installPackage: sinon.stub(),
+         updatePackage,
+      });
+      await controller.updatePackage("env", "pkg", {
+         name: "pkg",
+         description: "renamed",
+      });
+      expect(updatePackage.calledOnce).toBe(true);
+   });
+
    it("a PATCH whose location is null is a metadata update", async () => {
       // A client that serializes unset fields as null names nothing to fetch.
       // Read as a location it would reach the downloader, which has no path to
@@ -720,7 +1164,7 @@ describe("PackageController.updatePackage reinstall decision", () => {
       await controller.updatePackage("env", "pkg", {
          name: "pkg",
          location: null as unknown as string,
-         description: "renamed",
+         manifestLocation: "gs://bucket/pkg___1.0.0.manifest.json",
       });
 
       expect(installPackage.called).toBe(false);
@@ -840,14 +1284,17 @@ describe("PackageController.reloadPackage", () => {
       };
       const getPackage = sinon.stub().resolves(cached);
       const installPackage = sinon.stub().resolves(reinstalled);
-      const environmentStore = {
+      const environmentStore = fakeOf<PackageAdmin>({
          getEnvironment: sinon.stub().resolves({
             getVersionService: () => null,
             getPackage,
             installPackage,
          }),
-      } as unknown as EnvironmentStore;
-      const controller = new PackageController(environmentStore);
+      });
+      const controller = new PackageController(
+         environmentStore,
+         testRetrieval(environmentStore),
+      );
       sinon
          .stub(
             controller as unknown as { downloadInto: () => Promise<void> },
@@ -884,15 +1331,17 @@ describe("PackageController.addPackage manifestLocation", () => {
    };
 
    function addPackageController(environment: object) {
-      const environmentStore = {
+      const environmentStore = fakeOf<PackageAdmin>({
          publisherConfigIsFrozen: false,
-         serverRootPath: os.tmpdir(),
          getEnvironment: sinon
             .stub()
             .resolves({ getVersionService: () => null, ...environment }),
          addPackageToDatabase: sinon.stub().resolves(undefined),
-      } as unknown as EnvironmentStore;
-      return new PackageController(environmentStore);
+      });
+      return new PackageController(
+         environmentStore,
+         testRetrieval(environmentStore),
+      );
    }
 
    it("hands the publish the body's location and manifestLocation", async () => {
@@ -958,12 +1407,15 @@ describe("PackageController.addPackage manifestLocation", () => {
          formatPersistenceCollisionRejections: () => "",
       });
       const environment = { getVersionService: () => null, installPackage };
-      const environmentStore = {
+      const environmentStore = fakeOf<PackageAdmin>({
          publisherConfigIsFrozen: false,
          getEnvironment: sinon.stub().resolves(environment),
          addPackageToDatabase: sinon.stub().resolves(undefined),
-      } as unknown as EnvironmentStore;
-      const controller = new PackageController(environmentStore);
+      });
+      const controller = new PackageController(
+         environmentStore,
+         testRetrieval(environmentStore),
+      );
 
       await controller.addPackage("env", {
          name: "pkg",
@@ -1113,9 +1565,8 @@ describe("PackageController.updatePackage on a versioned package", () => {
          setManifest: sinon.stub().resolves(loaded),
          setPackageDescription: sinon.stub().resolves(undefined),
       };
-      const environmentStore = {
+      const environmentStore = fakeOf<PackageAdmin>({
          publisherConfigIsFrozen: false,
-         serverRootPath: os.tmpdir(),
          getEnvironment: sinon.stub().resolves({
             getVersionService: () => versions,
             getPackage: sinon.stub().resolves(loaded),
@@ -1123,8 +1574,14 @@ describe("PackageController.updatePackage on a versioned package", () => {
                .stub()
                .resolves({ name: "pkg", versionId: "2.0.0" }),
          }),
-      } as unknown as EnvironmentStore;
-      return { controller: new PackageController(environmentStore), versions };
+      });
+      return {
+         controller: new PackageController(
+            environmentStore,
+            testRetrieval(environmentStore),
+         ),
+         versions,
+      };
    }
 
    it("rebinds latest to a manifest URI, and leaves the binding alone on a null or empty one", async () => {
@@ -1169,16 +1626,18 @@ describe("PackageController.addPackage with package versioning off or on", () =>
    });
 
    function controllerWith(versions: object, installPackage: sinon.SinonStub) {
-      const environmentStore = {
+      const environmentStore = fakeOf<PackageAdmin>({
          publisherConfigIsFrozen: false,
-         serverRootPath: os.tmpdir(),
          getEnvironment: sinon.stub().resolves({
             getVersionService: () => versions,
             installPackage,
          }),
          addPackageToDatabase: sinon.stub().resolves(undefined),
-      } as unknown as EnvironmentStore;
-      return new PackageController(environmentStore);
+      });
+      return new PackageController(
+         environmentStore,
+         testRetrieval(environmentStore),
+      );
    }
 
    // logger.warn may already be a spy another spec left in place (health.spec
@@ -1345,12 +1804,15 @@ describe("PackageController.getPackageBuildPlan", () => {
       getBuildPlan: () => unknown;
       isBuildPlanUnavailable: () => boolean;
    }): PackageController {
-      const environmentStore = {
+      const environmentStore = fakeOf<PackageAdmin>({
          getEnvironment: sinon.stub().resolves({
             getPackage: sinon.stub().resolves(pkg),
          }),
-      } as unknown as EnvironmentStore;
-      return new PackageController(environmentStore);
+      });
+      return new PackageController(
+         environmentStore,
+         testRetrieval(environmentStore),
+      );
    }
 
    it("is the load's plan", async () => {
@@ -1416,11 +1878,18 @@ describe("PackageController.dryRunPackage", () => {
          },
       };
       const getEnvironment = sinon.stub().resolves(environment);
-      const controller = new PackageController({
-         publisherConfigIsFrozen: frozen,
-         serverRootPath: os.tmpdir(),
-         getEnvironment,
-      } as unknown as EnvironmentStore);
+      const controller = new PackageController(
+         fakeOf<PackageAdmin>({
+            publisherConfigIsFrozen: frozen,
+            getEnvironment,
+         }),
+         testRetrieval(
+            fakeOf<PackageAdmin>({
+               publisherConfigIsFrozen: frozen,
+               getEnvironment,
+            }),
+         ),
+      );
       return { controller, seen, getEnvironment };
    }
 

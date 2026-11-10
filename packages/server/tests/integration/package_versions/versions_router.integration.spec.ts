@@ -16,6 +16,7 @@ import os from "os";
 import path from "path";
 import { RestE2EEnv, startRestE2E } from "../../harness/rest_e2e";
 import { versioningOnForSuite } from "../../harness/versioning";
+import { writePackageFiles } from "../../../src/test_helpers/temp_package";
 
 const ENV_NAME = "package-versions-router-env";
 const PKG = "lifecycle";
@@ -26,15 +27,14 @@ let root = "";
 
 function writePackage(version: string, answer: number): string {
    const dir = path.join(root, `v${answer}`);
-   fs.mkdirSync(dir, { recursive: true });
-   fs.writeFileSync(
-      path.join(dir, "publisher.json"),
-      JSON.stringify({ name: PKG, version, description: `release ${version}` }),
-   );
-   fs.writeFileSync(
-      path.join(dir, "model.malloy"),
-      `source: numbers is duckdb.sql("SELECT ${answer} AS answer") extend {\n` +
-         `  view: which_version is { select: answer }\n}\n`,
+   writePackageFiles(
+      dir,
+      {
+         "model.malloy":
+            `source: numbers is duckdb.sql("SELECT ${answer} AS answer") extend {\n` +
+            `  view: which_version is { select: answer }\n}\n`,
+      },
+      { manifest: { name: PKG, version, description: `release ${version}` } },
    );
    return dir;
 }
@@ -386,18 +386,14 @@ describe("versions routes", () => {
    it("PATCH accepts a generated Java client's rebind of a version that has explores", async () => {
       const name = "indexed";
       const dir = path.join(root, "indexed-1.0.0");
-      fs.mkdirSync(dir, { recursive: true });
-      fs.writeFileSync(
-         path.join(dir, "publisher.json"),
-         JSON.stringify({ name, version: "1.0.0" }),
-      );
-      fs.writeFileSync(
-         path.join(dir, "model.malloy"),
-         'source: numbers is duckdb.sql("SELECT 1 AS answer")\n',
-      );
-      fs.writeFileSync(
-         path.join(dir, "index.malloy"),
-         'import "model.malloy"\n',
+      writePackageFiles(
+         dir,
+         {
+            "model.malloy":
+               'source: numbers is duckdb.sql("SELECT 1 AS answer")\n',
+            "index.malloy": 'import "model.malloy"\n',
+         },
+         { manifest: { name, version: "1.0.0" } },
       );
       const published = await fetch(
          `${baseUrl}/api/v0/environments/${ENV_NAME}/packages`,
@@ -485,14 +481,13 @@ describe("versions routes", () => {
       const name = "described-by-latest";
       const publishVersion = async (version: string) => {
          const dir = path.join(root, `${name}-${version}`);
-         fs.mkdirSync(dir, { recursive: true });
-         fs.writeFileSync(
-            path.join(dir, "publisher.json"),
-            JSON.stringify({ name, version, description: `about ${version}` }),
-         );
-         fs.writeFileSync(
-            path.join(dir, "model.malloy"),
-            'source: numbers is duckdb.sql("SELECT 1 AS answer")\n',
+         writePackageFiles(
+            dir,
+            {
+               "model.malloy":
+                  'source: numbers is duckdb.sql("SELECT 1 AS answer")\n',
+            },
+            { manifest: { name, version, description: `about ${version}` } },
          );
          const res = await fetch(
             `${baseUrl}/api/v0/environments/${ENV_NAME}/packages`,
@@ -536,14 +531,13 @@ describe("versions routes", () => {
       ).json()) as { location?: string };
       expect(typeof environment.location).toBe("string");
       const lazy = path.join(environment.location!, "lazy");
-      fs.mkdirSync(lazy, { recursive: true });
-      fs.writeFileSync(
-         path.join(lazy, "publisher.json"),
-         JSON.stringify({ name: "lazy" }),
-      );
-      fs.writeFileSync(
-         path.join(lazy, "model.malloy"),
-         'source: numbers is duckdb.sql("SELECT 1 AS answer")\n',
+      writePackageFiles(
+         lazy,
+         {
+            "model.malloy":
+               'source: numbers is duckdb.sql("SELECT 1 AS answer")\n',
+         },
+         { manifest: { name: "lazy" } },
       );
       const runs = `${baseUrl}/api/v0/environments/${ENV_NAME}/packages/lazy/materializations`;
       const created = await fetch(runs, {
@@ -569,14 +563,12 @@ describe("versions routes", () => {
 
       // A first versioned publish over it that fails to compile.
       const broken = path.join(root, "lazy-broken");
-      fs.mkdirSync(broken, { recursive: true });
-      fs.writeFileSync(
-         path.join(broken, "publisher.json"),
-         JSON.stringify({ name: "lazy", version: "1.0.0" }),
-      );
-      fs.writeFileSync(
-         path.join(broken, "model.malloy"),
-         "source: broken is not malloy\n",
+      writePackageFiles(
+         broken,
+         {
+            "model.malloy": "source: broken is not malloy\n",
+         },
+         { manifest: { name: "lazy", version: "1.0.0" } },
       );
       const published = await fetch(
          `${baseUrl}/api/v0/environments/${ENV_NAME}/packages`,
@@ -599,14 +591,13 @@ describe("versions routes", () => {
       ).json()) as { location?: string };
       // Unversioned first, its row synced from its own publisher.json.
       const lazy = path.join(environment.location!, name);
-      fs.mkdirSync(lazy, { recursive: true });
-      fs.writeFileSync(
-         path.join(lazy, "publisher.json"),
-         JSON.stringify({ name, description: "the unversioned tree" }),
-      );
-      fs.writeFileSync(
-         path.join(lazy, "model.malloy"),
-         'source: numbers is duckdb.sql("SELECT 1 AS answer")\n',
+      writePackageFiles(
+         lazy,
+         {
+            "model.malloy":
+               'source: numbers is duckdb.sql("SELECT 1 AS answer")\n',
+         },
+         { manifest: { name, description: "the unversioned tree" } },
       );
       const api = `${baseUrl}/api/v0/environments/${ENV_NAME}/packages/${name}`;
       expect((await fetch(api)).status).toBe(200);
@@ -619,14 +610,13 @@ describe("versions routes", () => {
 
       const publishVersion = async (version: string) => {
          const dir = path.join(root, `${name}-${version}`);
-         fs.mkdirSync(dir, { recursive: true });
-         fs.writeFileSync(
-            path.join(dir, "publisher.json"),
-            JSON.stringify({ name, version, description: `about ${version}` }),
-         );
-         fs.writeFileSync(
-            path.join(dir, "model.malloy"),
-            'source: numbers is duckdb.sql("SELECT 1 AS answer")\n',
+         writePackageFiles(
+            dir,
+            {
+               "model.malloy":
+                  'source: numbers is duckdb.sql("SELECT 1 AS answer")\n',
+            },
+            { manifest: { name, version, description: `about ${version}` } },
          );
          const res = await fetch(
             `${baseUrl}/api/v0/environments/${ENV_NAME}/packages`,
@@ -748,14 +738,13 @@ describe("versions routes", () => {
    it("round-trips a version with build metadata through the path and resource", async () => {
       const name = "lifecycle-build";
       const dir = path.join(root, "build-meta");
-      fs.mkdirSync(dir, { recursive: true });
-      fs.writeFileSync(
-         path.join(dir, "publisher.json"),
-         JSON.stringify({ name, version: "1.0.0+b.1" }),
-      );
-      fs.writeFileSync(
-         path.join(dir, "model.malloy"),
-         'source: numbers is duckdb.sql("SELECT 1 AS answer")\n',
+      writePackageFiles(
+         dir,
+         {
+            "model.malloy":
+               'source: numbers is duckdb.sql("SELECT 1 AS answer")\n',
+         },
+         { manifest: { name, version: "1.0.0+b.1" } },
       );
       const published = await fetch(
          `${baseUrl}/api/v0/environments/${ENV_NAME}/packages`,

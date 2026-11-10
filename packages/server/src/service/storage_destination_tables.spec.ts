@@ -17,7 +17,7 @@ import {
    cleanupStorageFiles,
    dropStorageTable,
    listStorageTables,
-} from "./materialization_build_session";
+} from "./materialization/run/materialization_build_session";
 
 type ApiConnection = components["schemas"]["Connection"];
 

@@ -48,7 +48,7 @@ source: gated is duckdb.table('orgtable') extend {
 }
 `;
 
-/** `compactResult` rows from `getQueryResults`, as this file's count shape. */
+/** `compactResult` rows from `runQuery`, as this file's count shape. */
 function countRows(result: unknown): { c: number }[] {
    return (result as { compactResult?: unknown }).compactResult as {
       c: number;
@@ -324,28 +324,18 @@ query: tile is per_org -> { aggregate: c is count() }
       );
       try {
          // Seed data holds two orgs. A caller scoped to one sees ONE group.
-         const one = await model.getQueryResults(
-            unrecordedAudit(),
-            undefined,
-            "tile",
-            undefined,
-            undefined,
-            false,
-            { GROUPS: [1] },
-         );
+         const one = await model.runQuery(unrecordedAudit(), {
+            queryName: "tile",
+            givens: { GROUPS: [1] },
+         });
          expect(countRows(one)).toEqual([{ c: 1 }]);
 
          // Scoped to both, the same tile counts two -- so the number tracks
          // the caller rather than being uniformly filtered or uniformly not.
-         const both = await model.getQueryResults(
-            unrecordedAudit(),
-            undefined,
-            "tile",
-            undefined,
-            undefined,
-            false,
-            { GROUPS: [1, 2] },
-         );
+         const both = await model.runQuery(unrecordedAudit(), {
+            queryName: "tile",
+            givens: { GROUPS: [1, 2] },
+         });
          expect(countRows(both)).toEqual([{ c: 2 }]);
       } finally {
          await cleanup();
@@ -371,15 +361,10 @@ query: tile is gated -> { aggregate: c }
          "dash.malloy",
       );
       try {
-         const result = await model.getQueryResults(
-            unrecordedAudit(),
-            undefined,
-            "tile",
-            undefined,
-            undefined,
-            false,
-            { GROUPS: [2] },
-         );
+         const result = await model.runQuery(unrecordedAudit(), {
+            queryName: "tile",
+            givens: { GROUPS: [2] },
+         });
          expect(countRows(result)).toEqual([{ c: 2 }]);
       } finally {
          await cleanup();
@@ -408,15 +393,10 @@ query: plain_tile is plain -> { aggregate: c }
          "dash.malloy",
       );
       try {
-         const result = await model.getQueryResults(
-            unrecordedAudit(),
-            undefined,
-            "plain_tile",
-            undefined,
-            undefined,
-            false,
-            { GROUPS: [1] },
-         );
+         const result = await model.runQuery(unrecordedAudit(), {
+            queryName: "plain_tile",
+            givens: { GROUPS: [1] },
+         });
          // All 4 rows: the gate on the sibling source must not reach here.
          expect(countRows(result)).toEqual([{ c: 4 }]);
       } finally {

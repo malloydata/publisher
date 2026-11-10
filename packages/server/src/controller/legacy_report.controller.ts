@@ -15,7 +15,7 @@ import {
    recordRefusal,
    withAccessRecord,
 } from "../service/access_record";
-import { EnvironmentStore } from "../service/environment_store";
+import type { PackageLookup } from "../service/environment_ports";
 import type { FilterParams } from "../service/filter";
 import {
    getDashboard,
@@ -24,6 +24,12 @@ import {
    withLegacyNotebookKind,
 } from "../service/legacy_report_views";
 import type { NotebookCellRunResult } from "../service/model";
+import { loadedPackage } from "./loaded_package";
+import {
+   parseEnvironmentName,
+   parsePackageName,
+   VersionRef,
+} from "../service/identity";
 
 type ApiDashboard = components["schemas"]["Dashboard"];
 type ApiDashboardManifest = components["schemas"]["DashboardManifest"];
@@ -49,28 +55,29 @@ const cellAccessBase = (
  * deprecated use as it starts, so every route reaching it counts once.
  */
 export class LegacyReportController {
-   private environmentStore: EnvironmentStore;
+   private environmentStore: PackageLookup;
 
-   constructor(environmentStore: EnvironmentStore) {
+   constructor(environmentStore: PackageLookup) {
       this.environmentStore = environmentStore;
    }
 
-   private async packageOf(
+   private packageOf(
       environmentName: string,
       packageName: string,
-      versionId?: unknown,
+      versionId: VersionRef = VersionRef.LATEST,
    ) {
-      const environment = await this.environmentStore.getEnvironment(
+      return loadedPackage(
+         this.environmentStore,
          environmentName,
-         false,
+         packageName,
+         versionId,
       );
-      return environment.getPackage(packageName, false, { versionId });
    }
 
    public async listDashboards(
       environmentName: string,
       packageName: string,
-      versionId?: unknown,
+      versionId: VersionRef = VersionRef.LATEST,
    ): Promise<ApiDashboard[]> {
       recordDeprecatedUsage("dashboards_list");
       return listDashboards(
@@ -83,7 +90,7 @@ export class LegacyReportController {
       environmentName: string,
       packageName: string,
       dashboardName: string,
-      versionId?: unknown,
+      versionId: VersionRef = VersionRef.LATEST,
    ): Promise<ApiDashboardManifest> {
       recordDeprecatedUsage("dashboard_get");
       // Throws AmbiguousReportNameError (409) when two grid reports share it.
@@ -103,7 +110,7 @@ export class LegacyReportController {
    public async listNotebooks(
       environmentName: string,
       packageName: string,
-      versionId?: unknown,
+      versionId: VersionRef = VersionRef.LATEST,
    ): Promise<ApiNotebook[]> {
       recordDeprecatedUsage("notebooks_list");
       return listNotebooks(
@@ -116,7 +123,7 @@ export class LegacyReportController {
       environmentName: string,
       packageName: string,
       notebookPath: string,
-      versionId?: unknown,
+      versionId: VersionRef = VersionRef.LATEST,
    ): Promise<ApiRawNotebook> {
       recordDeprecatedUsage("notebook_get");
       const p = await this.packageOf(environmentName, packageName, versionId);
@@ -139,7 +146,7 @@ export class LegacyReportController {
       filterParams: FilterParams | undefined,
       bypassFilters: boolean | undefined,
       givens: Record<string, GivenValue> | undefined,
-      versionId: unknown,
+      versionId: VersionRef = VersionRef.LATEST,
       identity: AccessIdentity,
    ): Promise<NotebookCellRunResult> {
       recordDeprecatedUsage("notebook_cell");
@@ -184,16 +191,20 @@ export class LegacyReportController {
       filterParams?: FilterParams,
       bypassFilters?: boolean,
       givens?: Record<string, GivenValue>,
-      versionId?: unknown,
+      versionId: VersionRef = VersionRef.LATEST,
    ): Promise<NotebookCellRunResult> {
       const environment = await this.environmentStore.getEnvironment(
-         environmentName,
+         parseEnvironmentName(environmentName),
          false,
       );
       // Shed load before any disk / DB work: loaded packages bypass the
       // package-load admission gate.
       environment.assertCanAdmitQuery();
-      const p = await environment.getPackage(packageName, false, { versionId });
+      const p = await environment.getPackage(
+         parsePackageName(packageName),
+         false,
+         { versionId },
+      );
       const version = p.getVersionId();
       if (version) audit.version = version;
       const model = p.getModel(notebookPath);

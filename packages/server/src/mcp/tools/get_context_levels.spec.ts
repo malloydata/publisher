@@ -2,10 +2,12 @@
 // SPDX-License-Identifier: MIT
 
 import { describe, expect, it } from "bun:test";
-import type { EnvironmentStore } from "../../service/environment_store";
 import { resolveLevel } from "./get_context_levels";
-import { oneLineSummary } from "./package_entities";
+import { oneLineSummary } from "../../retrieval/model/package_entities";
 import { registerGetContextTool } from "./get_context_tool";
+import { fakeOf } from "../../test_helpers/store_fakes";
+import type { EnvironmentCatalog } from "../../service/environment_ports";
+import { testRetrieval } from "../../test_helpers/test_retrieval";
 
 type Pkg = { name: string; description?: string };
 type EnvSpec = {
@@ -46,8 +48,8 @@ const servedPackage = {
 function storeOf(
    envs: Record<string, EnvSpec>,
    { catalogThrows = false }: { catalogThrows?: boolean } = {},
-): EnvironmentStore {
-   return {
+): EnvironmentCatalog {
+   return fakeOf<EnvironmentCatalog>({
       listEnvironments: async () => {
          if (catalogThrows) throw new Error("the catalog was read");
          return Object.keys(envs).map((name) => ({ name })) as never;
@@ -85,7 +87,7 @@ function storeOf(
             }),
          } as never;
       },
-   } as unknown as EnvironmentStore;
+   });
 }
 
 type Handler = (p: Record<string, unknown>) => Promise<{
@@ -93,20 +95,24 @@ type Handler = (p: Record<string, unknown>) => Promise<{
    content: Array<{ resource?: { text: string } }>;
 }>;
 
-function handlerFor(store: EnvironmentStore): Handler {
+function handlerFor(store: EnvironmentCatalog): Handler {
    let handler: Handler | undefined;
    registerGetContextTool(
       {
-         tool: (name: string, _d: string, _s: unknown, h: Handler) => {
+         registerTool: (name: string, _config: unknown, h: Handler) => {
             if (name === "get_context") handler = h;
          },
       } as never,
       store,
+      testRetrieval(store),
    );
    return handler!;
 }
 
-async function call(store: EnvironmentStore, params: Record<string, unknown>) {
+async function call(
+   store: EnvironmentCatalog,
+   params: Record<string, unknown>,
+) {
    const out = await handlerFor(store)(params);
    return {
       isError: out.isError === true,

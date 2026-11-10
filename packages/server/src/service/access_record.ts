@@ -31,17 +31,13 @@
 import { trace } from "@opentelemetry/api";
 import type { GivenValue, ModelDef } from "@malloydata/malloy";
 import type { components } from "../api";
-import {
-   AccessDeniedError,
-   ConnectionAuthError,
-   ConnectionError,
-   internalErrorToHttpError,
-   ModelNotFoundError,
-} from "../errors";
+import { errorKind, internalErrorToHttpError, type ErrorKind } from "../errors";
 import { logger, traceIdOf } from "../logger";
 import { redactConnectionSecretShapes } from "../pg_helpers";
 import { settings } from "../settings";
+import { ACCESS_FILTER_ROUTE, AUTHORIZE_ROUTE } from "./authorize_routes";
 import { readQueryFieldReads } from "./classification";
+import { readPreparedQuery } from "./governance/ir/prepared_query";
 
 const MAX_RECORDED_ERROR_CHARS = 2000;
 
@@ -114,6 +110,44 @@ export interface QueryAccessSummary {
 const byCodepoint = (a: string, b: string) => (a < b ? -1 : a > b ? 1 : 0);
 
 /**
+ * The gates enforcement evaluated for one bound query, per route: the locks it
+ * decided (and admitted) and the row filters it grafted, read off the entry
+ * point's gate walk, not looked up by source name. A source the caller
+ * declares in the query (`mine is chart extend {}`) has no load-time entry, so
+ * only this says which lock admitted it. On the bypass path, the gates the
+ * walk found in force and skipped.
+ */
+export interface EnforcedGates {
+   authorize: string[];
+   accessFilter: string[];
+}
+
+/**
+ * {@link EnforcedGates} from the gate entries enforcement evaluated, in the
+ * order it evaluated them. A gate is evaluated once per check that reaches it
+ * (a request-declared entry point is decided by the walk and again by the
+ * laundering check, each building its own entry), so an entry is listed once
+ * per route and expression list, not per object.
+ */
+export function enforcedGatesOf(
+   entries: ReadonlyArray<{ route: string; exprs: readonly string[] }>,
+): EnforcedGates {
+   const seen = new Set<string>();
+   const unique = entries.filter((e) => {
+      const key = JSON.stringify([e.route, e.exprs]);
+      if (seen.has(key)) return false;
+      seen.add(key);
+      return true;
+   });
+   const of = (route: string) =>
+      unique.filter((e) => e.route === route).flatMap((e) => [...e.exprs]);
+   return {
+      authorize: of(AUTHORIZE_ROUTE),
+      accessFilter: of(ACCESS_FILTER_ROUTE),
+   };
+}
+
+/**
  * Build the summary for an admitted query. Resolves the fields the compiled
  * query's first stage references against the lineage of the struct it ran
  * against, so a reference through a join (`patient.ssn`) carries the class
@@ -123,6 +157,13 @@ const byCodepoint = (a: string, b: string) => (a < b ? -1 : a > b ? 1 : 0);
 export async function summarizeQueryAccess(args: {
    runnable: { getPreparedQuery(): Promise<unknown> };
    modelDef: ModelDef | undefined;
+   /**
+    * What enforcement evaluated for this query ({@link EnforcedGates}); the
+    * record's gates and decision come from it. Absent only when no bind
+    * recorded one, and then the load-time `apiSources` entry for `source`
+    * stands in, as before enforcement recorded its own.
+    */
+   enforced: EnforcedGates | undefined;
    apiSources: readonly ApiSource[] | undefined;
    /** The model's givens, for which are `#(secure)`. */
    modelGivens: readonly ApiGiven[] | undefined;
@@ -132,11 +173,13 @@ export async function summarizeQueryAccess(args: {
    grafts: ReadonlyArray<{ givenNames: readonly string[] }>;
    rowCount: number;
 }): Promise<QueryAccessSummary> {
-   const apiSource = args.source
-      ? args.apiSources?.find((s) => s.name === args.source)
-      : undefined;
-   const authorize = apiSource?.authorize ?? [];
-   const accessFilter = apiSource?.accessFilter ?? [];
+   const apiSource =
+      !args.enforced && args.source
+         ? args.apiSources?.find((s) => s.name === args.source)
+         : undefined;
+   const authorize = args.enforced?.authorize ?? apiSource?.authorize ?? [];
+   const accessFilter =
+      args.enforced?.accessFilter ?? apiSource?.accessFilter ?? [];
    const gateGivenNames = Array.from(
       new Set(args.grafts.flatMap((g) => Array.from(g.givenNames))),
    ).sort(byCodepoint);
@@ -151,14 +194,11 @@ export async function summarizeQueryAccess(args: {
    let fieldsRead: FieldRead[] = [];
    let fieldsReadComplete = false;
    try {
-      const prepared = (await args.runnable.getPreparedQuery()) as {
-         _query?: unknown;
-         _modelDef?: ModelDef;
-      };
+      const prepared = await readPreparedQuery(args.runnable);
       // The compiled model, which holds a source the caller declared in the query.
       const reads = readQueryFieldReads(
-         prepared._modelDef ?? args.modelDef,
-         prepared._query,
+         prepared.modelDef ?? args.modelDef,
+         prepared.query,
       );
       if (reads) {
          const { lineage, paths } = reads;
@@ -230,10 +270,11 @@ export type AccessOutcome =
    | "cancelled"
    | "error";
 
-/** The outcome a thrown error means, by its class; the status it maps to is the route's. */
+/** The outcome a thrown error means, by its kind; the status it maps to is the route's. */
 export function outcomeOf(error: unknown, status: number): AccessOutcome {
-   if (error instanceof AccessDeniedError) return "denied_lock";
-   if (error instanceof ModelNotFoundError || status === 404) {
+   const kind = errorKind(error);
+   if (kind === "access_denied") return "denied_lock";
+   if (kind === "model_not_found" || status === 404) {
       return "refused_surface";
    }
    if (status === 403) return "denied_lock";
@@ -340,15 +381,22 @@ export const runUnrecorded = <T>(
    run: (audit: QueryAudit) => Promise<T>,
 ): Promise<T> => run(mintAudit());
 
+/** The kinds whose recorded text is what the HTTP path answered (ConnectionError and its subclasses, and rejected credentials). */
+const ANSWERED_TEXT_KINDS: ReadonlySet<ErrorKind> = new Set<ErrorKind>([
+   "connection",
+   "connection_failed",
+   "connection_pool_exhausted",
+   "connection_auth",
+]);
+
 /** A connection error's text is what the HTTP path answers, since a driver quotes the statement back and given values are literals in it. */
 function recordedErrorText(error: unknown, answered: string): string {
-   const text =
-      error instanceof ConnectionError || error instanceof ConnectionAuthError
-         ? answered
-         : // Driver errors quote connection config back; the record is a log line.
-           redactConnectionSecretShapes(
-              String((error as Error)?.message ?? error),
-           );
+   const text = ANSWERED_TEXT_KINDS.has(errorKind(error))
+      ? answered
+      : // Driver errors quote connection config back; the record is a log line.
+        redactConnectionSecretShapes(
+           String((error as Error)?.message ?? error),
+        );
    return text.slice(0, MAX_RECORDED_ERROR_CHARS);
 }
 

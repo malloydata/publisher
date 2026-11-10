@@ -23,8 +23,6 @@ import {
    it,
 } from "bun:test";
 import * as fs from "fs";
-import * as os from "os";
-import * as path from "path";
 import { AccessDeniedError } from "../errors";
 import {
    PackageLoadPool,
@@ -32,6 +30,8 @@ import {
 } from "../package_load/package_load_pool";
 import { unrecordedAudit } from "./access_record";
 import { Package } from "./package";
+import { writeTempPackage } from "../test_helpers/temp_package";
+import { QueryPrivileges } from "./model_query_request";
 
 const ROWS = `duckdb.sql("select * from (values (1,'org-a'),(2,'org-b'),(3,'org-b')) as t(id, org)")`;
 
@@ -59,13 +59,14 @@ describe("a gate on a given that is not #(secure)", () => {
    });
 
    beforeEach(() => {
-      tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "publisher-plaingate-"));
+      tempDir = writeTempPackage(
+         { "m.malloy": MODEL },
+         {
+            prefix: "publisher-plaingate-",
+            manifest: { name: "pkg", description: "plain given gate" },
+         },
+      ).dir;
       duckdb = new DuckDBConnection("duckdb", ":memory:");
-      fs.writeFileSync(
-         path.join(tempDir, "publisher.json"),
-         JSON.stringify({ name: "pkg", description: "plain given gate" }),
-      );
-      fs.writeFileSync(path.join(tempDir, "m.malloy"), MODEL);
    });
 
    afterEach(async () => {
@@ -80,17 +81,15 @@ describe("a gate on a given that is not #(secure)", () => {
       );
       const pkg = await Package.create("env", "pkg", tempDir, config);
       const run = (givens: Record<string, unknown>) =>
-         pkg
-            .getModel("m.malloy")!
-            .getQueryResults(
-               unrecordedAudit(),
-               undefined,
-               undefined,
-               "run: chart -> { aggregate: n is count() }",
-               {},
-               true,
-               givens as Record<string, GivenValue>,
-            );
+         pkg.getModel("m.malloy")!.runQuery(
+            unrecordedAudit(),
+            {
+               query: "run: chart -> { aggregate: n is count() }",
+               filterParams: {},
+               givens: givens as Record<string, GivenValue>,
+            },
+            QueryPrivileges.of({ bypassFilters: true }),
+         );
       const admitted = await run({ ROLES: ["clinician"], ORGS: ["org-b"] });
       expect(admitted.compactResult).toEqual([{ n: 2 }]);
       await expect(

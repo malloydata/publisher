@@ -8,18 +8,17 @@ import { getMcpCorsOrigins } from "../config";
 import { registerHealthEndpoints } from "../health";
 import { logger } from "../logger";
 import { initializeMcpServer } from "../mcp/server";
-import type { EnvironmentStore } from "../service/environment_store";
+import type { McpServices } from "../app_services";
 
 export const MCP_ENDPOINT = "/mcp";
 
 /**
  * The MCP listener's app: health probes and one stateless streamable-HTTP
  * endpoint. Each POST gets its own transport and server, which is how the SDK
- * runs without sessions.
+ * runs without sessions. Each per-request server is built over the same
+ * shared services, so only the protocol objects are per request.
  */
-export function createMcpApp(
-   environmentStore: EnvironmentStore,
-): express.Express {
+export function createMcpApp(services: McpServices): express.Express {
    const mcpApp = express();
    registerHealthEndpoints(mcpApp);
 
@@ -54,7 +53,7 @@ export function createMcpApp(
                );
             };
 
-            const requestMcpServer = initializeMcpServer(environmentStore);
+            const requestMcpServer = initializeMcpServer(services);
             await requestMcpServer.connect(transport);
 
             res.on("close", () => {

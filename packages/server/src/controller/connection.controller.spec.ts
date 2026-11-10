@@ -26,12 +26,13 @@ import {
    UnconfiguredConnectionError,
 } from "../errors";
 import { logger } from "../logger";
-import type { EnvironmentStore } from "../service/environment_store";
 import {
    ConnectionController,
    lookupFailureDriverMessage,
 } from "./connection.controller";
 import { installSettings } from "../test_helpers/settings_env";
+import { fakeOf } from "../test_helpers/store_fakes";
+import type { ConnectionAdmin } from "../service/environment_ports";
 
 /**
  * The variables the current test has set; the settings are re-installed from
@@ -100,9 +101,9 @@ function buildController(
       assertCanAdmitQuery,
       getApiConnection: unmanagedConnection,
    };
-   const fakeStore = {
+   const fakeStore = fakeOf<ConnectionAdmin>({
       getEnvironment: sinon.stub().resolves(fakeEnv),
-   } as unknown as EnvironmentStore;
+   });
    const controller = new ConnectionController(fakeStore);
    // `getMalloyConnection` is private; cast through `unknown` so we
    // can swap it without exposing internals on the public surface.
@@ -560,12 +561,12 @@ describe("ConnectionController.getConnectionQueryData pool exhaustion", () => {
             throw error;
          },
       } as unknown as Connection;
-      const fakeStore = {
+      const fakeStore = fakeOf<ConnectionAdmin>({
          getEnvironment: sinon.stub().resolves({
             assertCanAdmitQuery: sinon.stub().returns(undefined),
             getApiConnection: unmanagedConnection,
          }),
-      } as unknown as EnvironmentStore;
+      });
       const controller = new ConnectionController(fakeStore);
       sinon
          .stub(
@@ -638,9 +639,9 @@ describe("ConnectionController.getConnectionQueryData streaming", () => {
          assertCanAdmitQuery: sinon.stub().returns(undefined),
          getApiConnection: unmanagedConnection,
       };
-      const fakeStore = {
+      const fakeStore = fakeOf<ConnectionAdmin>({
          getEnvironment: sinon.stub().resolves(fakeEnv),
-      } as unknown as EnvironmentStore;
+      });
       const controller = new ConnectionController(fakeStore);
       sinon
          .stub(
@@ -978,9 +979,9 @@ function buildTemporaryTableController(
       assertCanAdmitQuery,
       getApiConnection: unmanagedConnection,
    };
-   const fakeStore = {
+   const fakeStore = fakeOf<ConnectionAdmin>({
       getEnvironment: sinon.stub().resolves(fakeEnv),
-   } as unknown as EnvironmentStore;
+   });
    const controller = new ConnectionController(fakeStore);
    sinon
       .stub(
@@ -1110,7 +1111,7 @@ describe("ConnectionController.testConnectionConfiguration name validation", () 
    afterEach(() => sinon.restore());
 
    const controller = () =>
-      new ConnectionController({} as unknown as EnvironmentStore);
+      new ConnectionController(fakeOf<ConnectionAdmin>({}));
 
    it.each([
       ["duckdb", "../evil"],
@@ -1150,9 +1151,9 @@ describe("ConnectionController getTable not-found mapping", () => {
             .stub()
             .returns({ name: "warehouse", type: "postgres" }),
       };
-      const fakeStore = {
+      const fakeStore = fakeOf<ConnectionAdmin>({
          getEnvironment: sinon.stub().resolves(fakeEnv),
-      } as unknown as EnvironmentStore;
+      });
       const controller = new ConnectionController(fakeStore);
       sinon
          .stub(
@@ -1319,13 +1320,13 @@ describe("ConnectionController getConnectionSqlSource error mapping", () => {
       controller: ConnectionController;
    } {
       const fakeConnection = { fetchSelectSchema } as unknown as Connection;
-      const fakeStore = {
+      const fakeStore = fakeOf<ConnectionAdmin>({
          getEnvironment: sinon.stub().resolves({
             getApiConnection: sinon
                .stub()
                .returns({ name: "warehouse", type: "postgres" }),
          }),
-      } as unknown as EnvironmentStore;
+      });
       const controller = new ConnectionController(fakeStore);
       sinon
          .stub(
@@ -1490,12 +1491,12 @@ describe("ConnectionController.getConnectionQueryData statement rejection", () =
             );
          },
       } as unknown as StreamingConnection;
-      const fakeStore = {
+      const fakeStore = fakeOf<ConnectionAdmin>({
          getEnvironment: sinon.stub().resolves({
             assertCanAdmitQuery: sinon.stub().returns(undefined),
             getApiConnection: unmanagedConnection,
          }),
-      } as unknown as EnvironmentStore;
+      });
       const controller = new ConnectionController(fakeStore);
       sinon
          .stub(
@@ -1593,12 +1594,12 @@ describe("ConnectionController on a database that cannot be reached", () => {
    }
 
    function controllerOn(malloyConnection: Connection): ConnectionController {
-      const fakeStore = {
+      const fakeStore = fakeOf<ConnectionAdmin>({
          getEnvironment: sinon.stub().resolves({
             assertCanAdmitQuery: sinon.stub(),
             getApiConnection: unmanagedConnection,
          }),
-      } as unknown as EnvironmentStore;
+      });
       const controller = new ConnectionController(fakeStore);
       const internals = controller as unknown as {
          getMalloyConnection: (...args: unknown[]) => Promise<Connection>;
@@ -1714,14 +1715,14 @@ describe("ConnectionController per-package duckdb lookup", () => {
       envLookup: sinon.SinonStub;
    } {
       const envLookup = sinon.stub().rejects(new Error("env lookup reached"));
-      const fakeStore = {
+      const fakeStore = fakeOf<ConnectionAdmin>({
          getEnvironment: sinon.stub().resolves({
             listPackages: sinon
                .stub()
                .resolves(packageNames.map((name) => ({ name }))),
             getMalloyConnection: envLookup,
          }),
-      } as unknown as EnvironmentStore;
+      });
       return { controller: new ConnectionController(fakeStore), envLookup };
    }
 
@@ -1767,13 +1768,13 @@ describe("ConnectionController connection lookup failures", () => {
    afterEach(() => sinon.restore());
 
    function controllerWhoseLookupRejects(error: unknown): ConnectionController {
-      const fakeStore = {
+      const fakeStore = fakeOf<ConnectionAdmin>({
          getEnvironment: sinon.stub().resolves({
             assertCanAdmitQuery: sinon.stub(),
             getApiConnection: unmanagedConnection,
             getMalloyConnection: sinon.stub().rejects(error),
          }),
-      } as unknown as EnvironmentStore;
+      });
       return new ConnectionController(fakeStore);
    }
 
@@ -1877,9 +1878,9 @@ describe("ConnectionController getTable DuckLake paths", () => {
             .stub()
             .returns({ name: "lake", type: "ducklake" }),
       };
-      const fakeStore = {
+      const fakeStore = fakeOf<ConnectionAdmin>({
          getEnvironment: sinon.stub().resolves(fakeEnv),
-      } as unknown as EnvironmentStore;
+      });
       const controller = new ConnectionController(fakeStore);
       sinon
          .stub(
@@ -1921,12 +1922,12 @@ describe("raw SQL on a managed database", () => {
       const runSQL = sinon.stub().resolves({ rows: [{ n: 1 }], totalRows: 1 });
       const manifestTemporaryTable = sinon.stub().resolves("tmp_1");
       const fetchSelectSchema = sinon.stub().resolves({ fields: [] });
-      const fakeStore = {
+      const fakeStore = fakeOf<ConnectionAdmin>({
          getEnvironment: sinon.stub().resolves({
             assertCanAdmitQuery: sinon.stub(),
             getApiConnection: unmanagedConnection,
          }),
-      } as unknown as EnvironmentStore;
+      });
       const controller = new ConnectionController(fakeStore);
       const internals = controller as unknown as {
          getMalloyConnection: (...args: unknown[]) => Promise<Connection>;

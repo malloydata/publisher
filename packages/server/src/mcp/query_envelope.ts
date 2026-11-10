@@ -22,7 +22,7 @@ const rowLimitHits = lazyCounter(
  * (silent, hence `_limit_hit`), the hard maxRows/maxBytes ceiling (a loud 413),
  * and the payload cap below (truncation plus a warning).
  */
-export interface QueryEnvelope {
+interface QueryEnvelope {
    rows: unknown;
    /**
     * What each column is, read from the schema: type, numeric subtype, date
@@ -86,7 +86,7 @@ export const MAX_RESULT_CHARS = 90_000;
  * first copy would change what `b` clones. Any line holding `:=` counts, even
  * inside a string, which only dedupes less.
  */
-export function dedupeAnnotations(
+function dedupeAnnotations(
    annotations: Malloy.Annotation[],
 ): Malloy.Annotation[] {
    let seen = new Set<string>();

@@ -8,7 +8,7 @@ import "./instrumentation";
 import { markReady, registerSignalHandlers } from "./health";
 import { getPrometheusMetricsHandler } from "./instrumentation";
 import { logger } from "./logger";
-import { resolveBoundPort } from "./mcp_config";
+import { logListening, longTimeouts } from "./listen";
 import { createAdminApp } from "./routes/admin";
 import { CatalogAdmin, catalogAdminConfig } from "./service/catalog_admin";
 import { settings } from "./settings";
@@ -26,12 +26,7 @@ const adminServer = adminApp.listen(
    ADMIN_PORT,
    ADMIN_HOST,
    function (this: import("net").Server) {
-      const bound = this.address();
-      const host =
-         typeof bound === "object" && bound ? bound.address : ADMIN_HOST;
-      logger.info(
-         `Admin server listening at http://${host.includes(":") ? `[${host}]` : host}:${resolveBoundPort(bound, ADMIN_PORT)}`,
-      );
+      logListening("Admin server", this, ADMIN_HOST, ADMIN_PORT);
       // Nothing to load: ready once the listener is up.
       markReady();
    },
@@ -44,10 +39,7 @@ adminServer.on("error", (error: NodeJS.ErrnoException) => {
    );
    process.exit(1);
 });
-// A file load or a snapshot delete can run for minutes, as on the main API.
-adminServer.timeout = 600000;
-adminServer.keepAliveTimeout = 600000;
-adminServer.headersTimeout = 600000;
+longTimeouts(adminServer);
 
 registerSignalHandlers(
    null,

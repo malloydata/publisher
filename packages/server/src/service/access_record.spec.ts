@@ -27,7 +27,9 @@ import {
    summarizeQueryAccess,
    unrecordedAudit,
    withAccessRecord,
+   enforcedGatesOf,
 } from "./access_record";
+import { QueryPrivileges } from "./model_query_request";
 
 const MODEL = `##! experimental.givens
 #(secure)
@@ -60,17 +62,17 @@ describe("summarizeQueryAccess on an answered query", () => {
    it("records the source, the filter decision, the given names and the fields read with classes", async () => {
       await withAuthorizeModel(MODEL, async ({ model }) => {
          const audit = unrecordedAudit();
-         await model.getQueryResults(
+         await model.runQuery(
             audit,
-            undefined,
-            undefined,
-            "run: accounts_src -> { group_by: area, kid.label; aggregate: total, n }",
-            {},
-            true,
-            { ORGS: ["org1"], NOTE: "mine" } as unknown as Record<
-               string,
-               GivenValue
-            >,
+            {
+               query: "run: accounts_src -> { group_by: area, kid.label; aggregate: total, n }",
+               filterParams: {},
+               givens: { ORGS: ["org1"], NOTE: "mine" } as unknown as Record<
+                  string,
+                  GivenValue
+               >,
+            },
+            QueryPrivileges.of({ bypassFilters: true }),
          );
          const access = audit.summary;
          expect(access).toBeDefined();
@@ -105,14 +107,14 @@ describe("summarizeQueryAccess on an answered query", () => {
    it("records an open source as open, with no gates", async () => {
       await withAuthorizeModel(MODEL, async ({ model }) => {
          const audit = unrecordedAudit();
-         await model.getQueryResults(
+         await model.runQuery(
             audit,
-            undefined,
-            undefined,
-            "run: open_src -> { aggregate: n }",
-            {},
-            true,
-            {},
+            {
+               query: "run: open_src -> { aggregate: n }",
+               filterParams: {},
+               givens: {},
+            },
+            QueryPrivileges.of({ bypassFilters: true }),
          );
          expect(audit.summary).toMatchObject({
             source: "open_src",
@@ -139,7 +141,11 @@ source: patients is duckdb.table('child') extend {
 async function readsOf(modelText: string, query: string) {
    return withAuthorizeModel(modelText, async ({ model }) => {
       const audit = unrecordedAudit();
-      await model.getQueryResults(audit, undefined, undefined, query, {}, true);
+      await model.runQuery(
+         audit,
+         { query, filterParams: {} },
+         QueryPrivileges.of({ bypassFilters: true }),
+      );
       return {
          read: Object.fromEntries(
             (audit.summary?.fieldsRead ?? []).map((f) => [f.path, f]),
@@ -232,6 +238,7 @@ source: a is duckdb.table('child') extend { join_one: b on b.id = id }
                }),
             },
             modelDef,
+            enforced: undefined,
             apiSources: [],
             modelGivens: [],
             source: "patients",
@@ -249,6 +256,7 @@ source: a is duckdb.table('child') extend { join_one: b on b.id = id }
       const summary = await summarizeQueryAccess({
          runnable: { getPreparedQuery: async () => ({ _query: {} }) },
          modelDef: undefined,
+         enforced: undefined,
          apiSources: [],
          modelGivens: [],
          source: undefined,
@@ -261,6 +269,29 @@ source: a is duckdb.table('child') extend { join_one: b on b.id = id }
          fieldsRead: [],
          fieldsReadComplete: false,
       });
+   });
+});
+
+describe("enforcedGatesOf", () => {
+   it("lists a gate once when two checks built separate entries for it", () => {
+      const lock = () => ({
+         route: "authorize",
+         exprs: ["'clinician' in $ROLES"],
+      });
+      expect(enforcedGatesOf([lock(), lock()])).toEqual({
+         authorize: ["'clinician' in $ROLES"],
+         accessFilter: [],
+      });
+   });
+
+   it("keeps distinct gates, by route, in evaluation order", () => {
+      expect(
+         enforcedGatesOf([
+            { route: "authorize", exprs: ["a"] },
+            { route: "access_filter", exprs: ["org_id = $ORG"] },
+            { route: "authorize", exprs: ["b"] },
+         ]),
+      ).toEqual({ authorize: ["a", "b"], accessFilter: ["org_id = $ORG"] });
    });
 });
 

@@ -39,7 +39,7 @@ import {
    resolveCloudStorageCredentials,
 } from "./gcs_s3_utils";
 import { assembleEnvironmentConnections } from "./connection_config";
-import { listStorageTables } from "./materialization_build_session";
+import { listStorageTables } from "./materialization/run/materialization_build_session";
 import {
    ConnectionPoolExhaustedError,
    internalErrorToHttpError,
@@ -63,6 +63,8 @@ import {
 } from "../test_helpers/closing_listener";
 import { installSettings } from "../test_helpers/settings_env";
 import { EnvironmentStore } from "./environment_store";
+import { parseEnvironmentName, parsePackageName } from "./identity";
+import { startedStore } from "../test_helpers/started_store";
 
 type ApiConnection = components["schemas"]["Connection"];
 type AttachedDatabase = components["schemas"]["AttachedDatabase"];
@@ -918,7 +920,9 @@ describe("connection integration tests", () => {
                });
 
                try {
-                  const envStore = new EnvironmentStore(tempServerRoot);
+                  const envStore = startedStore(
+                     new EnvironmentStore(tempServerRoot),
+                  );
                   await envStore.finishedInitialization;
 
                   // initialize() swallows top-level errors and just calls
@@ -932,7 +936,9 @@ describe("connection integration tests", () => {
                   expect(status.operationalState).toBe("serving");
                   expect(status.loadErrors).toBeUndefined();
 
-                  const env = await envStore.getEnvironment("malloy-samples");
+                  const env = await envStore.getEnvironment(
+                     parseEnvironmentName("malloy-samples"),
+                  );
                   const apiPackages = await env.listPackages();
                   expect(apiPackages.map((p) => p.name)).toContain(
                      "bigquery-hackernews",
@@ -950,7 +956,9 @@ describe("connection integration tests", () => {
                   // if every BQ schema introspection failed. Filter for
                   // models that compiled cleanly: at least one is the
                   // real proof that BQ-on-behalf-of-a-package works.
-                  const pkg = await env.getPackage("bigquery-hackernews");
+                  const pkg = await env.getPackage(
+                     parsePackageName("bigquery-hackernews"),
+                  );
                   const models = await pkg.listModels();
                   const okModels = models.filter((m) => !m.error);
                   if (okModels.length === 0) {

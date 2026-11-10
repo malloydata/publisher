@@ -6,13 +6,13 @@
  * `cap_type` and `source` labels tell an operator which cap fired on which
  * query surface, which a bare 413 status count cannot. Gauges expose the
  * effective caps for utilization panels.
- *
- * Lazily created: instruments made before `setGlobalMeterProvider` bind to
- * NoOp (https://github.com/open-telemetry/opentelemetry-js/issues/3505).
  */
 
-import { type Counter } from "@opentelemetry/api";
-import { publisherMeter } from "./telemetry";
+import {
+   lazyInstrument,
+   publisherMeter,
+   resetInstrumentsForTesting,
+} from "./telemetry";
 
 import { getMaxQueryRows, getMaxResponseBytes } from "./config";
 
@@ -24,55 +24,42 @@ import { getMaxQueryRows, getMaxResponseBytes } from "./config";
 export type QueryCapType = "rows" | "bytes" | "unserializable";
 export type QueryCapSource = "connection_sql" | "model_query" | "notebook_cell";
 
-let capExceededCounter: Counter | null = null;
-let configGaugesInstalled = false;
-
-function ensureCapTelemetry(): Counter {
-   if (capExceededCounter && configGaugesInstalled) {
-      return capExceededCounter;
-   }
-   const meter = publisherMeter();
-   if (!capExceededCounter) {
-      capExceededCounter = meter.createCounter(
-         "publisher_query_cap_exceeded_total",
-         {
-            description:
-               "413s for an oversized response. cap_type: rows|bytes exceeded that cap; unserializable could not be turned into JSON at all, so no cap need have been exceeded. source: connection_sql|model_query|notebook_cell.",
-         },
-      );
-   }
-   if (!configGaugesInstalled) {
-      // Read per scrape so an env-var change shows immediately; a parse
-      // failure reports -1 so misconfig is visible.
-      meter
-         .createObservableGauge("publisher_max_query_rows", {
-            description:
-               "Current effective PUBLISHER_MAX_QUERY_ROWS cap (0 = disabled, -1 = misconfigured)",
-         })
-         .addCallback((observation) => {
-            try {
-               observation.observe(getMaxQueryRows());
-            } catch {
-               observation.observe(-1);
-            }
-         });
-      meter
-         .createObservableGauge("publisher_max_response_bytes", {
-            description:
-               "Current effective PUBLISHER_MAX_RESPONSE_BYTES cap (0 = disabled, -1 = misconfigured)",
-            unit: "By",
-         })
-         .addCallback((observation) => {
-            try {
-               observation.observe(getMaxResponseBytes());
-            } catch {
-               observation.observe(-1);
-            }
-         });
-      configGaugesInstalled = true;
-   }
-   return capExceededCounter;
+/** A cap gauge read per scrape, so an env-var change shows immediately; a parse failure reports -1. */
+function observeCap(
+   name: string,
+   description: string,
+   read: () => number,
+   unit?: string,
+): void {
+   publisherMeter()
+      .createObservableGauge(name, { description, ...(unit ? { unit } : {}) })
+      .addCallback((observation) => {
+         try {
+            observation.observe(read());
+         } catch {
+            observation.observe(-1);
+         }
+      });
 }
+
+/** The counter, with the cap gauges installed beside it on first use. */
+const capExceededCounter = lazyInstrument(() => {
+   observeCap(
+      "publisher_max_query_rows",
+      "Current effective PUBLISHER_MAX_QUERY_ROWS cap (0 = disabled, -1 = misconfigured)",
+      getMaxQueryRows,
+   );
+   observeCap(
+      "publisher_max_response_bytes",
+      "Current effective PUBLISHER_MAX_RESPONSE_BYTES cap (0 = disabled, -1 = misconfigured)",
+      getMaxResponseBytes,
+      "By",
+   );
+   return publisherMeter().createCounter("publisher_query_cap_exceeded_total", {
+      description:
+         "413s for an oversized response. cap_type: rows|bytes exceeded that cap; unserializable could not be turned into JSON at all, so no cap need have been exceeded. source: connection_sql|model_query|notebook_cell.",
+   });
+});
 
 /**
  * Record one cap-exceeded event. Call BEFORE throwing, so the metric ticks
@@ -82,11 +69,10 @@ export function recordQueryCapExceeded(
    capType: QueryCapType,
    source: QueryCapSource,
 ): void {
-   ensureCapTelemetry().add(1, { cap_type: capType, source });
+   capExceededCounter().add(1, { cap_type: capType, source });
 }
 
 /** Test-only: drop cached instruments so a fresh MeterProvider captures them. */
 export function resetQueryCapTelemetryForTesting(): void {
-   capExceededCounter = null;
-   configGaugesInstalled = false;
+   resetInstrumentsForTesting();
 }

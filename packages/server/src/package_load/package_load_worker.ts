@@ -14,23 +14,18 @@
  */
 import {
    contextOverlay,
-   isSourceDef,
    type BuildManifestEntry,
    type Connection,
    type FetchSchemaOptions,
    type LookupConnection,
    MalloyConfig,
-   type ModelDef,
    type ModelMaterializer,
-   type NamedQueryDef,
-   type Query,
    Runtime,
    type SQLSourceDef,
    type SQLSourceRequest,
    type TableSourceDef,
 } from "@malloydata/malloy";
 import * as Malloy from "@malloydata/malloy-interfaces";
-import { MalloySQLStatementType } from "@malloydata/malloy-sql";
 import { parseMalloynb } from "../service/deprecated/malloynb";
 import {
    declaredDeprecatedManifestKeys,
@@ -51,64 +46,34 @@ import {
    PACKAGE_MANIFEST_NAME,
 } from "../constants";
 import { isReportEligiblePath, readReportTagOfText } from "../service/report";
-import {
-   recordAuthorizeAdmitAllGate,
-   recordRowLevelGateRejected,
-} from "../authorize_metrics";
 import { HackyDataStylesAccumulator } from "../data_styles";
 import { PackageManifestError } from "../errors";
 import { deserializeError, serializeError } from "./error_wire";
 import { translatorMalloyError } from "../service/translator_error";
-import {
-   assertNoLegacyStringGate,
-   assertNoMisplacedAuthorizeAnnotations,
-   findLegacyStringGates,
-   validateAuthorizeProbes,
-   type AuthorizeMap,
-   type AuthorizeOwnNotesMap,
-   type MisplacedAuthorizeAnnotation,
-} from "../service/authorize";
-import {
-   assertAuthorizeGrammarValid,
-   assertNoRetiredRouteMarkers,
-   collectRetiredRouteMarkers,
-   computeGivenDeclaredTypes,
-} from "../service/gate_classification";
-import {
-   validateSourceLineGateGivenUsage,
-   type ExpandableRefSummary,
-} from "../service/gate_dimension";
+import { extractCheckedModel } from "../service/model_load_checks";
 import { modelInfoOf } from "../service/model_info";
+import { compileNotebookCells } from "../service/model_notebook_cell";
 import { boundedManifestValue } from "../service/package_revision";
-import { type FilterDefinition } from "../service/filter";
 import {
    PackageMaterializationConfig,
    PackageScope,
    materializationWithQueryMetadata,
    parsePackageMaterialization,
+   queryBoundaryActive,
    queryMetadataParseWarnings,
    resolveExplores,
    resolvePackageQueryMetadata,
    resolvePackageScope,
 } from "../service/package_manifest";
 import {
+   type ModelEntitiesPlan,
+   planModelFileEntities,
+} from "../service/entities/plan";
+import {
    type PackageRetrievalSettings,
    ignoredRetrievalWarnings,
    readPackageRetrieval,
-} from "../service/package_retrieval";
-import {
-   collectSourceInfos,
-   extractQueriesFromModelDef,
-   extractSourcesFromModelDef,
-} from "../service/source_extraction";
-import {
-   malloyGivenToApi,
-   type MalloyGiven,
-   type MalloyGivenApi,
-   attachSuggestGivenNames,
-   gateGivenSource,
-   suggestGivenLookup,
-} from "../service/given";
+} from "../service/package_retrieval_settings";
 import { errMessage, ignoreDotfiles } from "../utils";
 import { RpcWaitAccountant } from "./rpc_wait_accountant";
 import { acceptBundledExperimentalDialects } from "../service/experimental_dialects";
@@ -121,7 +86,7 @@ import {
    tryCompileSynthesizedPreaggregation,
    type SynthesizedPreaggregation,
    type SynthesizedRuntimeFactory,
-} from "../service/preaggregation_compile";
+} from "../service/materialization/plan/preaggregation_compile";
 import { type InFlightAnswer, SchemaCache } from "./schema_cache";
 import { plainLogEntry } from "./worker_log";
 import { renderTagTargets } from "../service/render_tag_targets";
@@ -134,7 +99,7 @@ import {
    resolvePackageConnections,
    type BuildPlanParts,
    type WirePackageMaterialization,
-} from "../service/build_plan";
+} from "../service/materialization/plan/build_plan";
 import type {
    ConnectionMetadata,
    ConnectionMetadataRequest,
@@ -154,6 +119,7 @@ import type {
    WorkerBuildPlan,
    WorkerLogMessage,
 } from "./protocol";
+import { PACKAGE_LOAD_PROTOCOL_VERSION } from "./protocol";
 
 if (!parentPort) {
    throw new Error(
@@ -831,82 +797,8 @@ function filterModelPaths(allRelative: string[]): string[] {
 // (Package.getInvalidExplores). An unmatched entry simply lists nothing.
 
 // ──────────────────────────────────────────────────────────────────────
-// Model compile (mirrors service/model.ts but produces SerializedModel)
+// Model compile (the served shape and load checks are model_load_checks.ts)
 // ──────────────────────────────────────────────────────────────────────
-
-interface ApiSourceWire {
-   name: string;
-   annotations?: string[];
-   views?: { name: string; annotations?: string[] }[];
-   filters?: unknown[];
-   givens?: unknown[];
-   authorize?: string[];
-   accessFilter?: string[];
-}
-interface ApiQueryWire {
-   name: string;
-   sourceName?: string;
-   annotations?: string[];
-}
-type ApiGivenWire = MalloyGivenApi;
-
-// A filter parse failure is not logged here; the main thread logs it when it
-// builds the model's filters.
-function extractSources(
-   modelDef: ModelDef,
-   givens: ApiGivenWire[] | undefined,
-): {
-   sources: ApiSourceWire[];
-   filterMap: Map<string, FilterDefinition[]>;
-   authorizeMap: AuthorizeMap;
-   misplacedAuthorize: MisplacedAuthorizeAnnotation[];
-   authorizeOwnNotes: AuthorizeOwnNotesMap;
-   attributedAuthorizeOwnNotes: AuthorizeOwnNotesMap;
-} {
-   const {
-      sources,
-      filterMap,
-      authorizeMap,
-      misplacedAuthorize,
-      authorizeOwnNotes,
-      attributedAuthorizeOwnNotes,
-   } = extractSourcesFromModelDef(modelDef, givens);
-   return {
-      sources: sources as unknown as ApiSourceWire[],
-      filterMap,
-      authorizeMap,
-      misplacedAuthorize,
-      authorizeOwnNotes,
-      attributedAuthorizeOwnNotes,
-   };
-}
-
-/** Collects non-fatal authorize findings for `SerializedModel.authorizeWarnings`. */
-function authorizeWarningCollector(): {
-   onRowLevelGateUnexpressible: (sourceName: string, detail: string) => void;
-   warnings: string[];
-} {
-   const warnings: string[] = [];
-   return {
-      warnings,
-      onRowLevelGateUnexpressible: (sourceName, detail) => {
-         warnings.push(
-            `Row-level #(access_filter) gate not expressible at entry point "${sourceName}"; every query against it will be denied: ${detail}`,
-         );
-      },
-   };
-}
-
-function extractQueries(modelDef: ModelDef): {
-   queries: ApiQueryWire[];
-   misplacedAuthorize: MisplacedAuthorizeAnnotation[];
-} {
-   const { queries, misplacedAuthorize } = extractQueriesFromModelDef(modelDef);
-   return {
-      queries: queries as unknown as ApiQueryWire[],
-      misplacedAuthorize,
-   };
-}
 
 /**
  * Wrap a URLReader so the text it hands the compiler is kept, keyed by URL:
@@ -916,6 +808,8 @@ function extractQueries(modelDef: ModelDef): {
 function captureReadText(inner: { readURL: (url: URL) => Promise<string> }): {
    reader: { readURL: (url: URL) => Promise<string> };
    textFor: (url: URL) => string | undefined;
+   /** Every `file:` text read so far, by absolute path. */
+   fileTexts: () => Map<string, string>;
 } {
    const texts = new Map<string, string>();
    return {
@@ -928,6 +822,15 @@ function captureReadText(inner: { readURL: (url: URL) => Promise<string> }): {
          },
       },
       textFor: (url: URL) => texts.get(url.toString()),
+      fileTexts: () => {
+         const byPath = new Map<string, string>();
+         for (const [href, text] of texts) {
+            if (href.startsWith("file:")) {
+               byPath.set(fileURLToPath(href), text);
+            }
+         }
+         return byPath;
+      },
    };
 }
 
@@ -960,11 +863,14 @@ function buildRuntimeForModel(
    runtime: Runtime;
    urlReader: HackyDataStylesAccumulator;
    textFor: (url: URL) => string | undefined;
+   fileTexts: () => Map<string, string>;
 } {
-   const { reader, textFor } = captureReadText(makeWorkerUrlReader(job));
+   const { reader, textFor, fileTexts } = captureReadText(
+      makeWorkerUrlReader(job),
+   );
    const urlReader = new HackyDataStylesAccumulator(reader);
    const runtime = jobRuntime(job, malloyConfig, urlReader);
-   return { runtime, urlReader, textFor };
+   return { runtime, urlReader, textFor, fileTexts };
 }
 
 /**
@@ -994,6 +900,11 @@ interface LoadContext {
    planStart?: number;
    /** A model reached its plan parts past the soft deadline; the main thread derives the plan. */
    planLeftToMainThread: boolean;
+   /**
+    * Plan entities with the boundary's descents taken provisionally: the
+    * manifest declares a query boundary (see `BoundaryDescents`).
+    */
+   provisionalEntities: boolean;
 }
 
 async function compileMalloyModel(
@@ -1008,7 +919,7 @@ async function compileMalloyModel(
    const modelURL = pathToFileURL(fullPath);
    const importBaseURL = new URL(".", modelURL);
 
-   const { runtime, urlReader, textFor } = buildRuntimeForModel(
+   const { runtime, urlReader, textFor, fileTexts } = buildRuntimeForModel(
       job,
       malloyConfig,
    );
@@ -1016,89 +927,8 @@ async function compileMalloyModel(
    const compiled = await mm.getModel();
    const modelDef = compiled._modelDef;
 
-   const malloyGivens = Array.from(compiled.givens.values());
-   const givens =
-      malloyGivens.length > 0
-         ? malloyGivens.map((g) => malloyGivenToApi(g as MalloyGiven))
-         : undefined;
-
-   // Every source this file's namespace can resolve; see collectSourceInfos.
-   const sourceInfos = collectSourceInfos(modelDef);
-
-   const {
-      sources,
-      filterMap,
-      authorizeMap,
-      misplacedAuthorize,
-      authorizeOwnNotes,
-      attributedAuthorizeOwnNotes,
-   } = extractSources(modelDef, givens);
-   // Now that each source's EFFECTIVE gate is known, say which givens each
-   // `suggest` needs in its request. In place, so the copies on `sources` see it.
-   attachSuggestGivenNames(
-      givens,
-      suggestGivenLookup(
-         modelDef,
-         (name) => gateGivenSource(sources, name),
-         new Set((givens ?? []).map((given) => given.name)),
-      ),
-   );
-   const queryResult = extractQueries(modelDef);
-   const queries = queryResult.queries;
-   // See the identical check in `Model.create`.
-   assertNoRetiredRouteMarkers(collectRetiredRouteMarkers(modelDef));
-   // The checks below run in the same order as `Model.create`. A misplaced
-   // `#(authorize)` would fail OPEN, so it is refused outright.
-   assertNoMisplacedAuthorizeAnnotations([
-      ...misplacedAuthorize,
-      ...queryResult.misplacedAuthorize,
-   ]);
-   // Presence-based `authorizeOwnNotes`, not the attributed map: this refusal
-   // must not narrow (see `extractSourcesFromModelDef`).
-   const legacyStringGates = findLegacyStringGates(authorizeOwnNotes);
-   legacyStringGates.forEach(() =>
-      recordRowLevelGateRejected("legacy_string_gate"),
-   );
-   assertNoLegacyStringGate(legacyStringGates);
-   assertAuthorizeGrammarValid(
-      modelDef,
-      authorizeMap,
-      authorizeOwnNotes,
-      computeGivenDeclaredTypes(givens),
-      (_sourceName, route) => recordAuthorizeAdmitAllGate(route),
-      attributedAuthorizeOwnNotes,
-   );
-   const authorizeWarningCollection = authorizeWarningCollector();
-   // Throws on a bad reference or rejected row-level shape, which becomes this
-   // model's compilationError; an unexpressible inherited gate only warns.
-   await validateAuthorizeProbes(mm, {
-      authorizeMap,
-      authorizeOwnNotes: attributedAuthorizeOwnNotes,
-      onRowLevelGateRejected: recordRowLevelGateRejected,
-      onRowLevelGateUnexpressible:
-         authorizeWarningCollection.onRowLevelGateUnexpressible,
-      // Runs at EVERY entry point whose probe compiled, so `sourceName` may be
-      // an inheritor; `modelDef.contents[sourceName]` is the struct the probe
-      // was grafted onto. Warnings join the authorize warnings.
-      onOwnRowLevelConditionCompiled: (sourceName, condition, route) => {
-         const struct = modelDef.contents[sourceName];
-         if (!struct || !isSourceDef(struct)) return;
-         validateSourceLineGateGivenUsage(
-            sourceName,
-            route,
-            struct,
-            condition.refSummary as ExpandableRefSummary | undefined,
-            condition.e,
-            modelDef,
-            (cause, detail) => {
-               recordRowLevelGateRejected(cause);
-               authorizeWarningCollection.warnings.push(
-                  `#(${route}) gate warning on "${sourceName}" (${cause}): ${detail}`,
-               );
-            },
-         );
-      },
-   });
+   const { sources, queries, filterMap, givens, sourceInfos, warnings } =
+      await extractCheckedModel(mm, compiled);
 
    const compileDurationMs = performance.now() - compileStart;
    const { renderTagResults, preaggregateCompanion } =
@@ -1111,6 +941,12 @@ async function compileMalloyModel(
          queries,
          sources,
       });
+   const entities = await planEntitiesForMainThread(job, malloyConfig, load, {
+      relativePath: modelPath,
+      absolutePath: fullPath,
+      model: compiled,
+      texts: fileTexts(),
+   });
 
    return {
       modelPath,
@@ -1134,12 +970,57 @@ async function compileMalloyModel(
       compileDurationMs,
       problems: job.collectProblems ? compiled.problems : undefined,
       authorizeWarnings:
-         authorizeWarningCollection.warnings.length > 0
-            ? authorizeWarningCollection.warnings
-            : undefined,
+         warnings.length > 0 ? warnings.map((w) => w.message) : undefined,
       renderTagResults,
       preaggregateCompanion,
+      entities,
    };
+}
+
+/**
+ * Plan one compiled model's entities for the main thread, which then only
+ * resolves the plan against the package's query route. Before the soft
+ * deadline only, like the rest of the work done for the main thread: past it,
+ * the main thread plans the model itself. Never throws (a failed plan says so).
+ */
+async function planEntitiesForMainThread(
+   job: LoadPackageRequest,
+   malloyConfig: MalloyConfig,
+   load: LoadContext,
+   file: {
+      relativePath: string;
+      absolutePath: string;
+      model: Awaited<ReturnType<ModelMaterializer["getModel"]>>;
+      /** Every file the compile read, by absolute path. */
+      texts: Map<string, string>;
+   },
+): Promise<ModelEntitiesPlan | undefined> {
+   if (!job.withEntities || load.failed) return undefined;
+   if (performance.now() >= load.softDeadline) return undefined;
+   // The text the model compiled from, as the main thread would read it.
+   let text = file.texts.get(file.absolutePath);
+   if (text === undefined) {
+      try {
+         text = await fs.promises.readFile(file.absolutePath, "utf8");
+      } catch {
+         return undefined;
+      }
+      file.texts.set(file.absolutePath, text);
+   }
+   return planModelFileEntities(
+      {
+         relativePath: file.relativePath,
+         absolutePath: file.absolutePath,
+         model: file.model,
+         text,
+      },
+      {
+         packageRoot: job.packagePath,
+         connections: malloyConfig.connections,
+         provisional: load.provisionalEntities,
+         texts: file.texts,
+      },
+   );
 }
 
 /**
@@ -1305,192 +1186,49 @@ async function compileNotebookModel(
    const importBaseURL = new URL(".", modelURL);
 
    const { runtime, urlReader } = buildRuntimeForModel(job, malloyConfig);
-   const authorizeWarningCollection = authorizeWarningCollector();
-
    const fileContents = await fs.promises.readFile(modelURL, "utf8");
-   const parse = parseMalloynb(fileContents, modelPath);
-
-   // Sequential, so per-cell materializers line up with statement order.
-   let mm: ModelMaterializer | undefined;
-   const perCellMM: (ModelMaterializer | undefined)[] = parse.statements.map(
-      (stmt) => {
-         if (stmt.type === MalloySQLStatementType.MALLOY) {
-            mm =
-               mm === undefined
-                  ? runtime.loadModel(stmt.text, { importBaseURL })
-                  : mm.extendModel(stmt.text, { importBaseURL });
-         }
-         return mm;
-      },
+   const { materializer, cells } = await compileNotebookCells(
+      runtime,
+      importBaseURL,
+      parseMalloynb(fileContents, modelPath).statements,
+   );
+   const notebookCells: SerializedNotebookCell[] = cells.map((cell) =>
+      cell.type === "markdown"
+         ? cell
+         : {
+              type: "code",
+              text: cell.text,
+              cellModelDef: cell.modelDef,
+              cellQueryDef: cell.query?.queryDef,
+              newSources: cell.newSources,
+              queryInfo: cell.queryInfo,
+           },
    );
 
-   const oldSources: Record<string, Malloy.SourceInfo> = {};
-   const notebookCells: SerializedNotebookCell[] = [];
-   for (let i = 0; i < parse.statements.length; i++) {
-      const stmt = parse.statements[i];
-      if (stmt.type === MalloySQLStatementType.MARKDOWN) {
-         notebookCells.push({ type: "markdown", text: stmt.text });
-         continue;
-      }
-      if (stmt.type !== MalloySQLStatementType.MALLOY) continue;
-
-      const localMM = perCellMM[i];
-      if (!localMM) {
-         // Guard rather than fail the whole notebook on one corrupt cell.
-         continue;
-      }
-      const currentModelDef = (await localMM.getModel())._modelDef;
-
-      // Sources this cell added, imports included: its namespace minus what
-      // earlier cells surfaced. A selective import contributes only its names.
-      const currentInfo = modelInfoOf(currentModelDef);
-      const newSources = collectSourceInfos(currentModelDef).filter(
-         (s) => !(s.name in oldSources),
-      );
-      for (const s of newSources) oldSources[s.name] = s;
-
-      const runnable = localMM.loadFinalQuery();
-      let cellQueryDef: Query | undefined;
-      let queryInfo: Malloy.QueryInfo | undefined;
-      try {
-         const prepared = await runnable.getPreparedQuery();
-         cellQueryDef = prepared._query;
-         const queryName =
-            (prepared._query as NamedQueryDef).as ||
-            (prepared._query as NamedQueryDef).name;
-         const anonymous =
-            currentInfo.anonymous_queries[
-               currentInfo.anonymous_queries.length - 1
-            ];
-         if (anonymous) {
-            queryInfo = {
-               name: queryName,
-               schema: anonymous.schema,
-               annotations: anonymous.annotations,
-               definition: anonymous.definition,
-               code: anonymous.code,
-               location: anonymous.location,
-            } as Malloy.QueryInfo;
-         }
-      } catch {
-         // Source-only cells have no final query.
-      }
-
-      notebookCells.push({
-         type: "code",
-         text: stmt.text,
-         cellModelDef: currentModelDef,
-         cellQueryDef,
-         newSources,
-         queryInfo,
-      });
-   }
-
-   // An all-markdown notebook has no modelDef.
-   let finalModelDef: ModelDef | undefined;
-   let finalSources: ApiSourceWire[] | undefined;
-   let finalQueries: ApiQueryWire[] | undefined;
-   let finalSourceInfos: Malloy.SourceInfo[] | undefined;
-   let finalFilterMap: Map<string, FilterDefinition[]> | undefined;
-   let finalGivens: ApiGivenWire[] | undefined;
-   let finalProblems: unknown[] | undefined;
-   if (mm) {
-      const compiled = await mm.getModel();
-      finalProblems = compiled.problems;
-      finalModelDef = compiled._modelDef;
-      const malloyGivens = Array.from(compiled.givens.values());
-      finalGivens =
-         malloyGivens.length > 0
-            ? malloyGivens.map((g) => malloyGivenToApi(g as MalloyGiven))
-            : undefined;
-      finalSourceInfos = collectSourceInfos(finalModelDef);
-      const extracted = extractSources(finalModelDef, finalGivens);
-      finalSources = extracted.sources;
-      // See the identical step in `compileMalloyModel` above.
-      attachSuggestGivenNames(
-         finalGivens,
-         suggestGivenLookup(
-            finalModelDef,
-            (name) => gateGivenSource(extracted.sources, name),
-            new Set((finalGivens ?? []).map((given) => given.name)),
-         ),
-      );
-      finalFilterMap = extracted.filterMap;
-      const finalQueryResult = extractQueries(finalModelDef);
-      finalQueries = finalQueryResult.queries;
-      // See the identical check in `compileMalloyModel` above.
-      assertNoRetiredRouteMarkers(collectRetiredRouteMarkers(finalModelDef));
-      // See the identical check in `compileMalloyModel` above.
-      assertNoMisplacedAuthorizeAnnotations([
-         ...extracted.misplacedAuthorize,
-         ...finalQueryResult.misplacedAuthorize,
-      ]);
-      // See the identical check in `compileMalloyModel` above.
-      const finalLegacyStringGates = findLegacyStringGates(
-         extracted.authorizeOwnNotes,
-      );
-      finalLegacyStringGates.forEach(() =>
-         recordRowLevelGateRejected("legacy_string_gate"),
-      );
-      assertNoLegacyStringGate(finalLegacyStringGates);
-      // See the identical check in `compileMalloyModel` above.
-      assertAuthorizeGrammarValid(
-         finalModelDef,
-         extracted.authorizeMap,
-         extracted.authorizeOwnNotes,
-         computeGivenDeclaredTypes(finalGivens),
-         (_sourceName, route) => recordAuthorizeAdmitAllGate(route),
-         extracted.attributedAuthorizeOwnNotes,
-      );
-      // `const` so the narrowed type survives into the closure below.
-      const finalCompiledModelDef: ModelDef = finalModelDef;
-      await validateAuthorizeProbes(mm, {
-         authorizeMap: extracted.authorizeMap,
-         authorizeOwnNotes: extracted.attributedAuthorizeOwnNotes,
-         onRowLevelGateRejected: recordRowLevelGateRejected,
-         onRowLevelGateUnexpressible:
-            authorizeWarningCollection.onRowLevelGateUnexpressible,
-         // See the identical check in `compileMalloyModel` above.
-         onOwnRowLevelConditionCompiled: (sourceName, condition, route) => {
-            const struct = finalCompiledModelDef.contents[sourceName];
-            if (!struct || !isSourceDef(struct)) return;
-            validateSourceLineGateGivenUsage(
-               sourceName,
-               route,
-               struct,
-               condition.refSummary as ExpandableRefSummary | undefined,
-               condition.e,
-               finalCompiledModelDef,
-               (cause, detail) => {
-                  recordRowLevelGateRejected(cause);
-                  authorizeWarningCollection.warnings.push(
-                     `#(${route}) gate warning on "${sourceName}" (${cause}): ${detail}`,
-                  );
-               },
-            );
-         },
-      });
-   }
-
+   // An all-markdown notebook has no model.
+   const compiled = await materializer?.getModel();
+   const checked =
+      materializer && compiled
+         ? await extractCheckedModel(materializer, compiled)
+         : undefined;
+   const modelDef = compiled?._modelDef;
    return {
       modelPath,
       modelType: "notebook",
-      modelDef: finalModelDef,
-      modelInfo: finalModelDef ? modelInfoOf(finalModelDef) : undefined,
-      sourceInfos: finalSourceInfos,
-      sources: finalSources,
-      queries: finalQueries,
-      filterMap: finalFilterMap
-         ? Array.from(finalFilterMap.entries())
-         : undefined,
-      givens: finalGivens,
+      modelDef,
+      modelInfo: modelDef ? modelInfoOf(modelDef) : undefined,
+      sourceInfos: checked?.sourceInfos,
+      sources: checked?.sources,
+      queries: checked?.queries,
+      filterMap: checked ? Array.from(checked.filterMap.entries()) : undefined,
+      givens: checked?.givens,
       notebookCells,
       dataStyles: urlReader.getHackyAccumulatedDataStyles(),
       compileDurationMs: performance.now() - compileStart,
-      problems: job.collectProblems ? finalProblems : undefined,
+      problems: job.collectProblems ? compiled?.problems : undefined,
       authorizeWarnings:
-         authorizeWarningCollection.warnings.length > 0
-            ? authorizeWarningCollection.warnings
+         checked && checked.warnings.length > 0
+            ? checked.warnings.map((w) => w.message)
             : undefined,
    };
 }
@@ -1583,6 +1321,7 @@ async function loadPackage(
       modelOrder: new Map(modelPaths.map((modelPath, i) => [modelPath, i])),
       failed: false,
       planLeftToMainThread: false,
+      provisionalEntities: queryBoundaryActive(packageMetadata),
    };
    const models = await Promise.all(
       modelPaths.map((modelPath) =>
@@ -1604,6 +1343,7 @@ async function loadPackage(
    return {
       type: "load-package-result",
       requestId: job.requestId,
+      protocolVersion: PACKAGE_LOAD_PROTOCOL_VERSION,
       packageMetadata,
       models,
       replacementMatchedExisting,

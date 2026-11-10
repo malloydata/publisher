@@ -9,10 +9,12 @@ import {
    PackageNotFoundError,
    ServiceUnavailableError,
 } from "../../errors";
+import { PackageController } from "../../controller/package.controller";
+import { testRetrieval } from "../../test_helpers/test_retrieval";
 
-// Capture the handler registerReloadPackageTool passes to McpServer.tool, so it
-// can be exercised against a mocked EnvironmentStore. The tool builds a
-// PackageController internally, which calls environment.getPackage(pkg, reload),
+// Capture the handler registerReloadPackageTool passes to McpServer.registerTool, so it
+// can be exercised against a mocked EnvironmentStore. The tool calls the
+// PackageController it is handed, which calls environment.getPackage(pkg, reload),
 // so the mock only needs getEnvironment -> { getPackage }.
 type Handler = (params: Record<string, unknown>) => Promise<{
    isError?: boolean;
@@ -22,11 +24,17 @@ type Handler = (params: Record<string, unknown>) => Promise<{
 function captureHandler(store: Partial<EnvironmentStore>): Handler {
    let handler: Handler | undefined;
    const fakeServer = {
-      tool: (_name: string, _desc: string, _shape: unknown, h: Handler) => {
+      registerTool: (_name: string, _config: unknown, h: Handler) => {
          handler = h;
       },
    };
-   registerReloadPackageTool(fakeServer as never, store as EnvironmentStore);
+   registerReloadPackageTool(
+      fakeServer as never,
+      new PackageController(
+         store as EnvironmentStore,
+         testRetrieval(store as EnvironmentStore),
+      ),
+   );
    if (!handler) throw new Error("handler was not registered");
    return handler;
 }

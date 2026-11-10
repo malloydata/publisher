@@ -6,9 +6,9 @@ import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import { QueryTimeoutError } from "./errors";
 import {
    PUBLISHER_QUERY_TIMEOUT_REASON,
-   resetQueryTimeoutTelemetryForTesting,
    runWithQueryTimeout,
 } from "./query_timeout";
+import { resetInstrumentsForTesting } from "./telemetry";
 import {
    startMetricsHarness,
    type MetricsHarness,
@@ -158,21 +158,16 @@ describe("runWithQueryTimeout", () => {
          // Drop cached instruments so they re-init against the new
          // provider; otherwise this test's writes go to a counter
          // bound to the *previous* provider's reader.
-         resetQueryTimeoutTelemetryForTesting();
+         resetInstrumentsForTesting();
       });
       afterEach(async () => {
          restoreSettings?.();
          restoreSettings = undefined;
          await harness.shutdown();
-         resetQueryTimeoutTelemetryForTesting();
+         resetInstrumentsForTesting();
       });
 
-      /**
-       * Install telemetry without firing a timeout. After the
-       * `ensureTimeoutTelemetry` fix any successful call is enough
-       * — both the counter and the gauge register on every entry,
-       * not just the timeout branch.
-       */
+      /** Register the timeout gauge without firing a timeout. */
       async function primeTelemetry(): Promise<void> {
          await runWithQueryTimeout(async () => 0, 10_000);
       }

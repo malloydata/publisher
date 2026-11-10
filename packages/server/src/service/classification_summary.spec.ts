@@ -17,13 +17,13 @@ import {
    it,
 } from "bun:test";
 import * as fs from "fs";
-import * as os from "os";
 import * as path from "path";
 import {
    PackageLoadPool,
    __setPackageLoadPoolForTests,
 } from "../package_load/package_load_pool";
 import { Package } from "./package";
+import { writeTempPackage } from "../test_helpers/temp_package";
 
 const ROWS = `duckdb.sql("select * from (values (1,'east','999-11-2222',10,'org-a'),(2,'west','999-33-4444',20,'org-b')) as t(id, region, ssn, amount, org)")`;
 
@@ -85,12 +85,14 @@ describe("Package.getClassificationSummary", () => {
    });
 
    beforeEach(() => {
-      tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "publisher-classsum-"));
+      tempDir = writeTempPackage(
+         {},
+         {
+            prefix: "publisher-classsum-",
+            manifest: { name: "pkg", description: "classification summary" },
+         },
+      ).dir;
       duckdb = new DuckDBConnection("duckdb", ":memory:");
-      fs.writeFileSync(
-         path.join(tempDir, "publisher.json"),
-         JSON.stringify({ name: "pkg", description: "classification summary" }),
-      );
    });
 
    afterEach(async () => {

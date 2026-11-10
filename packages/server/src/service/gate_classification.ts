@@ -28,14 +28,12 @@ import { logger } from "../logger";
 import {
    annotationTexts,
    modelAnnotations,
-   ownLevelNotes,
    ownLevelNoteTexts,
    type AnnotationNote,
    type AnnotationsDef,
 } from "./annotations";
 import {
    buildRowLevelProbe,
-   collectAuthorizeExprsForRoute,
    gateFilterText,
    isLegacyQuotedPayload,
    liftProbeFilterCondition,
@@ -54,18 +52,15 @@ import {
    RETIRED_ROUTES,
    type AuthorizeGrammarRoutedTerm,
 } from "./authorize_grammar";
-import {
-   AUTHORIZE_ROUTE,
-   CANONICAL_AUTHORIZE_ROUTES,
-} from "./authorize_routes";
+import { AUTHORIZE_ROUTE } from "./authorize_routes";
 import type { CallerJoinPath } from "./caller_joins";
 import { expandRefSummaryGivenIds } from "./gate_dimension";
 import {
    ANCESTOR_WALK_MAX_DEPTH,
-   ancestorGateExprs,
-   resolveDeclaredSource,
-   resolveQuerySourceBase,
-} from "./gate_registry_walk";
+   gatePlan,
+   modelDefGateGraph,
+} from "./governance/gate_plan";
+import { resolveDeclaredSource } from "./governance/ir/source_graph";
 
 /** One reachable authorize gate found by {@link collectEntryPointGates}. */
 export type GateEntry = {
@@ -163,91 +158,23 @@ export function createGateClassificationDeps(
 }
 
 /**
- * Effective authorize exprs read off a struct's own annotations (else the
- * nearest ancestor's, via {@link ancestorGateExprs}). Used by the derivation
- * and composite walks, whose structs a `modelDef.contents` name lookup would
- * miss.
+ * The gates that apply to `struct` as an entry point, for both routes: a thin
+ * adapter over `gatePlan` (`./governance/gate_plan.ts`, the one
+ * gate-inheritance walk; its doc says what is and is not walked) with the
+ * `resolved` composite rule, since the query path resolves one composite
+ * branch per query.
  *
- * Fails closed: load-time validation only probes top-level sources, so a
- * malformed gate on a non-top-level base or composite member reaches here
- * unvalidated. A parse failure returns `["false"]`, never "no gate". The
- * sentinel is synthesized on either route because each route decides
- * own-wins-over-ancestor independently and may reach the unreadable branch
- * when the other does not.
+ * Every failure to read a gate is a `["false"]` entry (deny), never "no gate".
  *
- * `excludeNotes` is subtracted by identity from `struct`'s own notes: Malloy's
- * composite resolver copies a `query_source` base's note objects onto the
- * resolved member, and reading them would fold the base's gate into the
- * member's group instead of the separate AND'd entries
- * {@link collectEntryPointGates} produces. Empty except for that recursion.
- *
- * `fromAncestor` reports a gate from a derivation base (see `selfContained`).
- */
-function gateExprsForOwnAnnotations(
-   struct: SourceDef,
-   route: string,
-   modelDef?: ModelDef,
-   excludeNotes: readonly AnnotationNote[] = [],
-): {
-   exprs: string[];
-   fromAncestor: boolean;
-} {
-   // Both note keys: which one a gate lands in is decided by the author's
-   // syntax, not by scope. See {@link ownLevelNoteTexts}.
-   const ownNotes = ownLevelNotes(struct.annotations).filter(
-      (note) => !excludeNotes.includes(note),
-   );
-   try {
-      // The legacy quoted-string form is refused at load
-      // (`assertNoLegacyStringGate`), but a caller without that preflight
-      // (`build_plan.ts`) can still reach here with one. No special case is
-      // needed: the payload is returned verbatim and fails as an ordinary
-      // expression in `resolveGateShape`'s lift (see the comment there).
-      const own = collectAuthorizeExprsForRoute(
-         ownNotes.map((note) => note.text),
-         route,
-      );
-      if (own.length > 0) {
-         return { exprs: own, fromAncestor: false };
-      }
-      const ancestor = ancestorGateExprs(struct, modelDef, route);
-      return { exprs: ancestor, fromAncestor: ancestor.length > 0 };
-   } catch {
-      return {
-         exprs: ["false"],
-         fromAncestor: false,
-      };
-   }
-}
-
-/**
- * The gates that apply to `struct` as an entry point:
- *  - its own `#(authorize)`, else the nearest `extend` ancestor's;
- *  - if query-derived (`source: x is y -> {...}`), the base's gates, since a
- *    `QuerySourceDef`'s own annotations do not carry `y`'s gate and
- *    `source: mine is locked -> {...}` would otherwise launder it away;
- *  - if that base is a composite, the member Malloy resolved for this
- *    derivation (`query.compositeResolvedSourceDef`).
- * Derivation recurses here, so chains are covered at any depth; `seen`
- * (struct identity) guards cycles.
- *
- * Not collected: joined sources, members of a joined composite, query-local
- * joins and a derivation's inner-pipeline joins. A gate governs the source it
- * is declared on, not what its author joined beneath it. Caller-written joins
- * are gated separately (`./caller_joins`, `Model.probeCallerJoinGates`).
- *
- * `excludeNotes`: see {@link gateExprsForOwnAnnotations}. Only the
- * composite-member recursion passes one.
- *
- * `treatAsOwnGate` is true only for the run target itself and its resolved
- * composite branch, the call sites that are the entry point, and marks those
- * entries not self-contained.
+ * `seen`: structs already visited (copied per route). `treatAsOwnGate` is true
+ * only for the run target itself and its resolved composite branch, the call
+ * sites that are the entry point, and marks those entries not self-contained.
+ * `entryPointStruct` is what a row-level gate is grafted onto (see
+ * {@link resolveGraftTarget}). `excludeNotes` is subtracted by identity from
+ * `struct`'s own notes (only the composite-member recursion passes one).
  *
  * Returns entries for both routes. Many consumers call this walk directly, so
  * a separate per-route collector one of them forgot to call would fail open.
- * Each route runs the whole walk ({@link collectEntryPointGatesForRoute})
- * with its own fresh `seen` and its own own-wins-over-ancestor decision, so
- * one route's note never sheds the other route's inherited gate.
  */
 export function collectEntryPointGates(
    struct: SourceDef | undefined,
@@ -257,126 +184,30 @@ export function collectEntryPointGates(
    entryPointStruct: SourceDef | undefined = struct,
    excludeNotes: readonly AnnotationNote[] = [],
 ): GateEntry[] {
-   const results: GateEntry[] = [];
-   for (const route of CANONICAL_AUTHORIZE_ROUTES) {
-      results.push(
-         ...collectEntryPointGatesForRoute(
-            struct,
-            modelDef,
-            route,
-            new Set(seen),
-            treatAsOwnGate,
-            entryPointStruct,
-            excludeNotes,
-         ),
-      );
-   }
-   return results;
-}
-
-/** The single-route walk {@link collectEntryPointGates} runs per route. */
-function collectEntryPointGatesForRoute(
-   struct: SourceDef | undefined,
-   modelDef: ModelDef | undefined,
-   route: string,
-   // The struct that started this walk (run target or resolved composite
-   // branch), held fixed through the recursion: it, not the struct a gate
-   // was read off, is what {@link resolveGraftTarget} grafts onto. Grafting
-   // the base instead cannot reach a model-declared derivation
-   // (`Z is X -> {...}`), which snapshotted its base at declaration.
-   seen: Set<SourceDef>,
-   treatAsOwnGate: boolean,
-   entryPointStruct: SourceDef | undefined,
-   // Non-empty only for the composite-member recursion; see
-   // {@link gateExprsForOwnAnnotations}.
-   excludeNotes: readonly AnnotationNote[],
-): GateEntry[] {
-   if (!struct || !modelDef || seen.has(struct)) return [];
-   seen.add(struct);
-
-   const results: GateEntry[] = [];
-   const label = (struct as { as?: string }).as ?? struct.name;
-   const { exprs: ownExprs, fromAncestor } = gateExprsForOwnAnnotations(
-      struct,
-      route,
-      modelDef,
+   if (!struct || !modelDef) return [];
+   const { steps } = gatePlan(struct, modelDefGateGraph(modelDef), {
+      composite: "resolved",
+      seen,
+      treatAsOwnGate,
+      entryPoint: entryPointStruct,
       excludeNotes,
-   );
-   if (ownExprs.length > 0) {
-      results.push({
-         label,
-         exprs: ownExprs,
-         route,
+   });
+   const entries: GateEntry[] = [];
+   for (const step of steps) {
+      if (step.kind !== "gate") continue;
+      entries.push({
+         label: step.label,
+         exprs: step.exprs,
+         route: step.route,
          // A gate carried in from a derivation base counts as authored
          // elsewhere even when `struct` is the entry point.
-         selfContained: fromAncestor || !treatAsOwnGate,
-         // The entry point, not `struct`: where a row-level gate is grafted.
-         struct: entryPointStruct,
+         selfContained: step.fromAncestor || !step.treatAsOwn,
+         // The entry point, not the level read: where a row-level gate is
+         // grafted. Absent only for the unresolvable-base deny.
+         ...(step.entryPoint ? { struct: step.entryPoint } : {}),
       });
    }
-
-   // Joined sources are deliberately not walked (see the doc above).
-
-   const duck = struct as unknown as {
-      type: string;
-      query?: {
-         structRef?: SourceDef | string;
-         compositeResolvedSourceDef?: SourceDef;
-      };
-   };
-   if (duck.type === "query_source") {
-      // The lookup is shared with `effectiveAncestorGateExprs`; this recursion
-      // (composite handling, `entryPointStruct` threading) is not.
-      const base = resolveQuerySourceBase(struct, modelDef);
-      if (base) {
-         results.push(
-            ...collectEntryPointGatesForRoute(
-               base,
-               modelDef,
-               route,
-               seen,
-               false,
-               entryPointStruct,
-               [],
-            ),
-         );
-      } else {
-         // A `query_source` derives from something by construction, so an
-         // unresolvable base is IR we failed to read, not an ungated source;
-         // contributing nothing would launder the base's gate away. Deny, on
-         // both routes (see `ancestorGateExprs`). An already-visited base
-         // still resolves and takes the branch above.
-         results.push({
-            label,
-            exprs: ["false"],
-            route,
-            selfContained: true,
-         });
-      }
-      // A query-source's base may be a composite (`qs is compose(a, b) ->
-      // {...}`); Malloy resolves it to one member for this derivation, on
-      // `query.compositeResolvedSourceDef` (not `query.structRef`). Without
-      // walking it, a query-source over a locked member would launder that
-      // member's gate away. Recursing here covers any nesting depth.
-      const resolved = duck.query?.compositeResolvedSourceDef;
-      if (resolved) {
-         results.push(
-            ...collectEntryPointGatesForRoute(
-               resolved,
-               modelDef,
-               route,
-               seen,
-               false,
-               entryPointStruct,
-               // Identity-subtract the base's own notes (see `excludeNotes`).
-               base ? ownLevelNotes(base.annotations) : [],
-            ),
-         );
-      }
-      // The derivation's inner-pipeline joins are not walked either.
-   }
-
-   return results;
+   return entries;
 }
 
 /**
@@ -782,10 +613,8 @@ async function liftGateCondition(
    const probe = materializer.loadQuery(
       buildRowLevelProbe(graftTarget, filterText),
    );
-   const prepared = (await probe.getPreparedQuery()) as {
-      _query?: { structRef?: { filterList?: FilterCondition[] } };
-   };
-   return liftProbeFilterCondition(
+   const prepared = await probe.getPreparedQuery();
+   return liftProbeFilterCondition<FilterCondition>(
       prepared,
       `lifted probe for "${graftTarget}"`,
       filterText,
