@@ -140,8 +140,13 @@ export function routesOf(catalog: Catalog, node: CatalogNode): string[] {
 export interface RouteOption extends Route {
    /** Catalog key of the field the route reaches. */
    node: string;
-   /** Widest relationship on the path. */
+   /**
+    * Widest relationship on the route: the joins', or `many` for a member
+    * of a repeated record (throughFanout).
+    */
    fanout: Relationship;
+   /** Widest relationship on the join path alone, without the field's own. */
+   joinFanout: Relationship;
 }
 
 /**
@@ -181,6 +186,7 @@ export function routeOptions(
          from: r.from,
          path: r.path,
          fanout: throughFanout(r.fanout, node.relationship) ?? r.fanout,
+         joinFanout: r.fanout,
          node: node.key,
          id: entityId(
             node.kind,

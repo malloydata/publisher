@@ -259,7 +259,13 @@ function routeOptionLine(index: FcjIndex, option: JudgeOption): string {
    const node = index.catalog.nodes.get(r.node)!;
    const from = index.catalog.sources.get(r.from)?.name ?? r.from;
    const holds = holdsNote(index, r.from);
-   return `[${option.number}] ${from}.${r.path.join(".")}.${node.name} (route from ${from} through ${r.path.join(".")}, join_${r.fanout}): only the ${node.source} rows ${from} reaches${holds ? ` (${holds})` : ""}`;
+   // The join's own kind, and a repeated record's member's `many` beside it:
+   // `join_many` would misname a join_one to `items.sku`.
+   const kind =
+      node.relationship === "many" && r.joinFanout !== "many"
+         ? `join_${r.joinFanout}; ${node.name} is many, one value per array element`
+         : `join_${r.fanout}`;
+   return `[${option.number}] ${from}.${r.path.join(".")}.${node.name} (route from ${from} through ${r.path.join(".")}, ${kind}): only the ${node.source} rows ${from} reaches${holds ? ` (${holds})` : ""}`;
 }
 
 /** Longest quoted doc sentence a route line carries. */

@@ -26,6 +26,7 @@ import {
 } from "../../test_helpers/fcj_index_fixture";
 import { find, KINDS_BY_FIND_TARGET, type FindTarget } from "../search/find";
 import { alsoLikelyFields } from "../search/also_likely";
+import { judgeOptions, renderJudgePrompt } from "../search/judge";
 import { connect } from "../search/connect";
 import { toUnit } from "../index/vectors";
 import { embedText } from "../../test_helpers/get_context_llm_harness";
@@ -768,5 +769,65 @@ source: orders is duckdb.sql("""select 7 as customer_id""") extend {
          relationship: "many",
       });
       expect(node("customer.profile.since.yr")?.joinPath).toBe("customer");
+   });
+});
+
+describe("the judge's route line to a repeated record's member", () => {
+   it("names the join's own kind, and says the member is many", async () => {
+      const settings = {
+         ...CLUSTER_SETTINGS,
+         connect: "list" as const,
+         listTopK: 5,
+         collapseCopies: true,
+      };
+      const f = await buildFcjIndexFixture(settings, {
+         "m.malloy": `
+#(doc) One row per customer.
+source: customers is duckdb.sql("""select 7 as id, [{'sku': 'x'}] as items""")
+#(doc) One row per order.
+source: orders is duckdb.sql("""select 7 as customer_id""") extend {
+  join_one: customer is customers on customer_id = customer.id
+}
+`,
+      });
+      try {
+         const targets: FindTarget[] = [
+            {
+               index: 0,
+               type: "dimension",
+               text: "items sku",
+               kinds: KINDS_BY_FIND_TARGET.dimension,
+            },
+         ];
+         const queries = new Map([[0, toUnit(embedText("items sku"))]]);
+         const found = find({
+            index: f.index,
+            targets,
+            queries,
+            perTarget: 30,
+            keyword: true,
+            values: false,
+            allow: () => true,
+         });
+         const [cluster] = connect({
+            index: f.index,
+            found,
+            queries,
+            settings,
+            allow: () => true,
+         }).clusters;
+         const options = judgeOptions(cluster, targets, {
+            index: f.index,
+            cap: 3,
+         });
+         const line = renderJudgePrompt(f.index, cluster, targets, options, 3)
+            .split("\n")
+            .find((l) => l.includes("orders.customer.items.sku (route"));
+         expect(line).toContain(
+            "(route from orders through customer, join_one; items.sku is many, one value per array element)",
+         );
+      } finally {
+         await f.close();
+      }
    });
 });

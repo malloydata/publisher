@@ -897,8 +897,6 @@ async function collectEntities(pkg: Package): Promise<CollectedModel> {
             sourceName,
             sourceTextFor,
          );
-         // What each reachable field is, declared or by lineage. Absent for a
-         // stand-in with no compiled model; fields then report their own note.
          // Record members this source may still index (collectRecordMembers).
          // One budget for its own records and its joined sources' records:
          // Malloy lists a source's own fields before its joins, so its own
@@ -917,6 +915,8 @@ async function collectEntities(pkg: Package): Promise<CollectedModel> {
                ).schema?.fields ?? []
             ).map((f) => f.name),
          );
+         // What each reachable field is, declared or by lineage. Absent for a
+         // stand-in with no compiled model; fields then report their own note.
          const ir = modelDef ? findIrSource(modelDef, sourceName) : undefined;
          const lineage = modelDef
             ? readSourceClassifications(ir?.fields, ir?.query)
