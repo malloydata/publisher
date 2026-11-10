@@ -952,8 +952,8 @@ in a later release; use `…/reports`.
 
 After editing a report file in a watched environment (`--watch-env`), `GET …/packages/<pkg>?reload=true`
 recompiles the package in place, and a reload that fails to compile leaves the previously compiled model
-serving. Every other package is a published version, which is immutable: a reload returns it unchanged, so
-an edited report ships as a new version. [AGENTS.md](../AGENTS.md) §6 covers the edit loop and watch mode.
+serving. By default every other package is a published version, which is immutable: a reload returns it
+unchanged, so an edited report ships as a new version. [AGENTS.md](../AGENTS.md) §6 covers the edit loop and watch mode.
 
 <a id="the-write-path"></a>
 
@@ -974,8 +974,8 @@ report into a package mounted in place (a watched environment) and reloads it. O
   restored if the reload does not take it or the file is not then a served report. A text that declares a
   real `#(authorize)` or `#(access_filter)` gate outside prose is refused with `400`: gates live in the model.
 - `403` under `frozenConfig`.
-- `409` with `reason` `PACKAGE_IS_VERSIONED` for a package with published versions, which is every package
-  outside a watched environment: a version is immutable. Add the report to the package's source, bump
+- `409` with `reason` `PACKAGE_IS_VERSIONED` for a package with published versions, which by default is every
+  package outside a watched environment: a version is immutable. Add the report to the package's source, bump
   `version` in its `publisher.json`, and publish it again. With versioning off, a package installed from a
   `location` (a publish over the API that named one) answers `409` with `reason`
   `PACKAGE_INSTALLED_FROM_LOCATION` instead: a reload fetches it again and replaces its files, so a report

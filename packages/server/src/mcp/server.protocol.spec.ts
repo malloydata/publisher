@@ -225,7 +225,7 @@ describe("MCP server over the MCP protocol (in-memory)", () => {
       // silently empty model (see F1/F7 in the QA field notes): reload after
       // every edit, and never read an empty getContext as an empty package.
       expect(instructions).toContain(
-         "After every model edit, call reload_package before querying",
+         "In a watched environment, after every model edit, call reload_package before querying",
       );
       expect(instructions).toContain("get_status");
       // Agents are an explicit user choice, so nothing pre-authorization names them.

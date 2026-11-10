@@ -497,6 +497,21 @@ class Roles(unittest.TestCase):
 
 
 
+class WatchNote(unittest.TestCase):
+    """--watch-env mounts in place only on a start that seeds the store."""
+
+    def test_a_preserved_root_is_warned(self):
+        note = serve.watch_note("evals", seed=False)
+        self.assertIn("--reinit", note)
+        self.assertIn("immutable version", note)
+
+    def test_a_seeding_start_is_not(self):
+        self.assertIsNone(serve.watch_note("evals", seed=True))
+
+    def test_no_watch_env_is_not(self):
+        self.assertIsNone(serve.watch_note(None, seed=False))
+
+
 class WarmByDefault(unittest.TestCase):
     def test_the_model_role_warms_when_there_is_a_key(self):
         self.assertTrue(serve.warm_by_default("model", False, {"EMBEDDING_API_KEY": "k"}))
