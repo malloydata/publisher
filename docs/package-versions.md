@@ -11,7 +11,7 @@ Every package a server serves is a published version, with one exception: a watc
 
 A package in `publisher.config.json`, and one an environment created over the API lists, is published from its location as the version its `publisher.json` declares, exactly as `POST …/packages` with that location publishes it. A location holding several packages (one GitHub repository, say) is downloaded once. The config is read on the server's first start and on every `--init`, so that is when it is published; a later start restores what was published. A configured package whose `publisher.json` declares no version, or that a publish would refuse, fails to load (its error is in `/status`), and the others still load. Under `explicit` promotion a configured package's publish does not move `latest` either, so the server starts with no `latest` for it: a request that names no version answers 404 until `PUT …/latest`.
 
-Versions are not optional. Releases before this one had a transition setting, `PUBLISHER_PACKAGE_VERSIONING`, that installed packages in place while it was off; it is gone, and the server ignores it if it is still set. Give every package's `publisher.json` a semantic `version`, and bump it for every release.
+Versions are not optional. Releases before this one had a transition setting, `PUBLISHER_PACKAGE_VERSIONING`, that installed packages in place while it was off; it is gone, and a server that still sets it ignores it, with a warning at startup. Give every package's `publisher.json` a semantic `version`, and bump it for every release.
 
 ## Publish a version
 

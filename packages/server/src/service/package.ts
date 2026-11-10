@@ -2466,7 +2466,7 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
       // loader set (Environment.loadVersionPackage, bindVersionManifest), and
       // its publisher.json never holds it: a recompile keeps it. A package
       // mounted in place reads it from publisher.json.
-      if (this.packageMetadata.versionId === undefined) {
+      if (this.getVersionId() === undefined) {
          this.packageMetadata.manifestLocation =
             outcome.packageMetadata.manifestLocation ?? null;
       }

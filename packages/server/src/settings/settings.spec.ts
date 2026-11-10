@@ -353,6 +353,22 @@ describe("flags", () => {
       ]);
    });
 
+   it("warns about a variable an earlier release read, and ignores it", () => {
+      // A deployment that pinned the old behavior must be told why it is gone.
+      const warnings = (env: Record<string, string>) =>
+         Settings.load({ argv: [], env, cwd: "/nonexistent" }).warnings.map(
+            (warning) => warning.message,
+         );
+      const [only, ...rest] = warnings({ PUBLISHER_PACKAGE_VERSIONING: "off" });
+      expect(rest).toEqual([]);
+      expect(only).toStartWith(
+         "PUBLISHER_PACKAGE_VERSIONING is set, but this release does not read it, so it is ignored:",
+      );
+      expect(only).toContain("--watch-env");
+      // Blank is unset, as it is for every variable.
+      expect(warnings({ PUBLISHER_PACKAGE_VERSIONING: " " })).toEqual([]);
+   });
+
    it("warns about a flag given without its value", () => {
       const warnings = Settings.load({
          argv: ["--admin_port"],

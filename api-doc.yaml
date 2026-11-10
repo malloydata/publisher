@@ -2177,12 +2177,8 @@ paths:
         this write with 409 (`reason` `PACKAGE_IS_VERSIONED`), whatever
         `versionId` names: change the file in the package's source and publish
         a new version. A `versionId` on a package with no versions answers 404
-        (`reason` `VERSION_NOT_FOUND`).
-
-        A package installed from a `location` is fetched again from there on
-        reload, which replaces its files, so it refuses this write with 409
-        (`reason` `PACKAGE_INSTALLED_FROM_LOCATION`): add the report to the
-        package's source and reload it, or publish it as a version.
+        (`reason` `VERSION_NOT_FOUND`). So the write reaches only a package a
+        watched environment mounts in place, whose source it changes.
       parameters:
         - name: environmentName
           in: path
@@ -2234,8 +2230,8 @@ paths:
           description:
             The file changed since the caller opened it; or it already exists
             and no `expectedHash` was sent (`reason` `FILE_EXISTS`); or the
-            package cannot take the write in place (`reason`
-            `PACKAGE_IS_VERSIONED` or `PACKAGE_INSTALLED_FROM_LOCATION`)
+            package is a published version, which cannot take the write
+            (`reason` `PACKAGE_IS_VERSIONED`)
           content:
             application/json:
               schema:
@@ -4155,9 +4151,6 @@ components:
             content. Bump the `version` in publisher.json and publish again.
           * PACKAGE_IS_VERSIONED: the package has published versions, which are
             immutable, so it cannot be changed in place.
-          * PACKAGE_INSTALLED_FROM_LOCATION: the package is fetched again from
-            the location it was installed from on reload, which would discard
-            the change. Make it in the package's source and reload.
           * FILE_EXISTS: a create-only report write found a file at the path.
             Choose another path.
           * VERSION_IS_LATEST: the version is the package's `latest` and cannot
@@ -9307,9 +9300,6 @@ components:
                 different content.
               * PACKAGE_IS_VERSIONED (409): the package has published versions,
                 so it cannot be changed in place (a write).
-              * PACKAGE_INSTALLED_FROM_LOCATION (409): the package is fetched
-                again from a `location` on reload, which would discard a report
-                write or a package update's change to its settings.
               * FILE_EXISTS (409): a report write with no `expectedHash` (a
                 create) found a file already at the path; another path may be
                 free. A stale `expectedHash` answers 409 with no `reason`.
@@ -9331,8 +9321,8 @@ components:
             Known values: TABLE_NOT_FOUND, CONNECTION_FAILED,
             CONNECTION_AUTH_FAILED, CONNECTION_NOT_FOUND,
             MANIFEST_VERSION_MISSING, MANIFEST_VERSION_INVALID,
-            VERSION_CONFLICT, PACKAGE_IS_VERSIONED,
-            PACKAGE_INSTALLED_FROM_LOCATION, FILE_EXISTS, VERSION_IS_LATEST,
+            VERSION_CONFLICT, PACKAGE_IS_VERSIONED, FILE_EXISTS,
+            VERSION_IS_LATEST,
             VERSION_IS_LAST_ACTIVE, VERSION_BUILDING, VERSION_ID_INVALID,
             VERSION_NOT_LATEST, VERSION_NOT_FOUND, VERSION_ARCHIVED.
         problems:

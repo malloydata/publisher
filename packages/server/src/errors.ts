@@ -110,9 +110,6 @@ export type ErrorReason =
    // 409: the package's build plan could not be derived at load; a reload
    // derives it again, a retry does not.
    | "BUILD_PLAN_UNAVAILABLE"
-   // 409: the package is fetched again from the location it was installed
-   // from on reload, which would discard the write.
-   | "PACKAGE_INSTALLED_FROM_LOCATION"
    // 409: a create-only report write found a file at the path; another name
    // may be free.
    | "FILE_EXISTS"
@@ -1105,23 +1102,6 @@ export class WriteConflictError extends Error {
 }
 
 /**
- * A write to a package installed from a `location`, which a reload would
- * discard: a reload fetches the package again from there and replaces its
- * files. 409, `reason` PACKAGE_INSTALLED_FROM_LOCATION. Interim, until package
- * storage keeps server-side writes apart from the fetched copy (#1560).
- */
-export class InstalledFromLocationError extends Error {
-   get kind(): "installed_from_location" {
-      return "installed_from_location";
-   }
-
-   constructor(message: string) {
-      super(message);
-      this.name = "InstalledFromLocationError";
-   }
-}
-
-/**
  * A write that was applied and then rolled back because the package would not
  * serve it: 500, the server's failure. The underlying failure is the `cause`
  * and is logged, never put in the message, since it can carry a path.
@@ -1356,7 +1336,6 @@ interface ErrorByKind {
    materialization_not_found: MaterializationNotFoundError;
    materialization_conflict: MaterializationConflictError;
    write_conflict: WriteConflictError;
-   installed_from_location: InstalledFromLocationError;
    write_rolled_back: WriteRolledBackError;
    write_rollback_failed: WriteRollbackFailedError;
    connection_save: ConnectionSaveError;
@@ -1437,7 +1416,6 @@ const ERROR_CLASSES: {
    materialization_not_found: MaterializationNotFoundError,
    materialization_conflict: MaterializationConflictError,
    write_conflict: WriteConflictError,
-   installed_from_location: InstalledFromLocationError,
    write_rolled_back: WriteRolledBackError,
    write_rollback_failed: WriteRollbackFailedError,
    connection_save: ConnectionSaveError,
@@ -1802,19 +1780,6 @@ export const ERROR_TABLE: { [K in ErrorKind]: ErrorMapping<ErrorByKind[K]> } = {
       status: 409,
       reason: (error) => error.reason,
       mcp: { advice: "internal" },
-   },
-   installed_from_location: {
-      status: 409,
-      reason: "PACKAGE_INSTALLED_FROM_LOCATION",
-      mcp: {
-         // Not transient, and not the model's fault: the message names where
-         // the change belongs.
-         advice: "fixed",
-         suggestions: [
-            "This is not transient: retrying fails the same way while the package is installed from a location.",
-            "Make the change in the package's source at that location and reload the package, or publish it as a version.",
-         ],
-      },
    },
    write_rollback_failed: { status: 500, mcp: { advice: "internal" } },
    // Answered with its message, which names only connections; each failure

@@ -17,6 +17,7 @@ import {
    DryRunCapacityError,
    PackageAdmissionRefusedError,
    BuildPlanUnavailableError,
+   ServiceUnavailableError,
 } from "../errors";
 import { logger } from "../logger";
 import type { RetrievalService } from "../retrieval/service";
@@ -489,8 +490,10 @@ export class PackageController {
       const versions = environment.getVersionService();
       try {
          if (!versions) {
-            throw new Error(
-               `Package versions are not available in environment ${environmentName}.`,
+            // The environment is serving but its version registry is not
+            // bound (its database rows did not save): a 503, not a fault.
+            throw new ServiceUnavailableError(
+               `Package versions are not available in environment ${environmentName} yet, because its version registry is not bound, so nothing can be published to it. Retry later; the server log has the database error.`,
             );
          }
          // The tree is downloaded into a fresh folder and checked before it is

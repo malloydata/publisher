@@ -24,7 +24,7 @@ Two consequences worth knowing. A section merged to `main` ships in the **next**
 
 ## [Unreleased] — breaking: every package is a published version
 
-Package versions are no longer optional. `PUBLISHER_PACKAGE_VERSIONING`, and the way it gave to turn them off, is gone ([#1381](https://github.com/malloydata/publisher/issues/1381)): a server that still sets it ignores it, and every package it serves is an immutable version numbered by the `version` in its own `publisher.json` ([package-versions.md](docs/package-versions.md)).
+Package versions are no longer optional. `PUBLISHER_PACKAGE_VERSIONING`, and the way it gave to turn them off, is gone ([#1381](https://github.com/malloydata/publisher/issues/1381)): a server that still sets it ignores it, with a warning at startup, and every package it serves is an immutable version numbered by the `version` in its own `publisher.json` ([package-versions.md](docs/package-versions.md)).
 
 - **A publish needs a `version`.** `POST …/packages` with a `location` publishes the version its `publisher.json` declares; a missing `version` answers 400 `MANIFEST_VERSION_MISSING`, a non-semver one 400 `MANIFEST_VERSION_INVALID`, and other content under a published version 409 `VERSION_CONFLICT`. Nothing installs a package in place any more. A request without a `location` answers 400.
 - **Packages in `publisher.config.json`, and those an environment created over the API lists, are published as versions too**, so each needs a `version`; one without fails to load and its error is in `/status`. A location holding several packages is downloaded once.

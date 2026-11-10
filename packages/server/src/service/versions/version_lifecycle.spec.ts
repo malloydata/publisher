@@ -968,12 +968,6 @@ describe("the registry records requests read", () => {
          "gs://m/one.json",
       );
 
-      // Setting the package's description is a write too (this host does not
-      // store it): the next request reads the records again.
-      await svc.packageDescriptionOf(PKG);
-      await svc.setPackageDescription(PKG, "the sales package");
-      expect(await readsDuring(() => svc.packageDescriptionOf(PKG))).toBe(2);
-
       // Under on-publish a higher version takes `latest`.
       await publish(svc, "3.0.0");
       expect((await svc.resolve(PKG))!.versionId).toBe("3.0.0");

@@ -418,16 +418,7 @@ const STATUS_OF: Record<RegisteredPhaseKind, PackageStatus> = {
  * so a nested operation stays marked until the outermost finishes.
  */
 export class PackageLoadTracker {
-   private readonly loads = new Map<
-      string,
-      {
-         count: number;
-         since: number;
-         /** Resolves once every load sharing this entry has finished. */
-         settled: Promise<void>;
-         settle: () => void;
-      }
-   >();
+   private readonly loads = new Map<string, { count: number; since: number }>();
 
    /** When the in-flight load of `packageName` began, if one is running. */
    since(packageName: string): number | undefined {
@@ -442,29 +433,12 @@ export class PackageLoadTracker {
       return this.loads.keys();
    }
 
-   /** Resolve once no load of the package is in flight. */
-   async awaitSettled(packageName: string): Promise<void> {
-      let entry = this.loads.get(packageName);
-      while (entry !== undefined) {
-         await entry.settled;
-         entry = this.loads.get(packageName);
-      }
-   }
-
    /** Run `fn` with the package marked as loading. */
    async track<T>(packageName: string, fn: () => Promise<T>): Promise<T> {
       const current = this.loads.get(packageName);
-      let settle = current?.settle;
-      const settled =
-         current?.settled ??
-         new Promise<void>((resolve) => {
-            settle = resolve;
-         });
       this.loads.set(packageName, {
          count: (current?.count ?? 0) + 1,
          since: current?.since ?? Date.now(),
-         settled,
-         settle: settle!,
       });
       try {
          return await fn();
@@ -474,7 +448,6 @@ export class PackageLoadTracker {
             entry.count -= 1;
          } else {
             this.loads.delete(packageName);
-            entry?.settle();
          }
       }
    }

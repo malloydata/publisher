@@ -2907,6 +2907,7 @@ export async function parseScenarioFile(dir: string): Promise<Scenario> {
                   // serving live rather than erroring the package — the degraded
                   // path in bindManifest ("serving live" on fetch failure).
                   await rest.bindManifest(
+                     step.pkg,
                      `file:///hammer/nonexistent/${step.pkg}-missing.json`,
                   );
                } else {
