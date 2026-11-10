@@ -11,7 +11,7 @@ import type { DataStyles } from "@malloydata/render";
 import * as fs from "fs";
 import * as os from "os";
 import * as path from "path";
-import { pathToFileURL } from "url";
+import { fileURLToPath, pathToFileURL } from "url";
 import {
    compileLevels,
    dataStylesForModel,
@@ -186,6 +186,32 @@ describe("ModelCacheView", () => {
             ?.modelDef.name,
       ).toBe("dep");
    });
+
+   it("does not keep a model no package file imports, but keeps what it imports", async () => {
+      const shared = new CacheManager(new InMemoryModelCache());
+      const root = new ModelCacheView(
+         shared,
+         "file:///pkg/index.malloy",
+         false,
+      );
+      expect(
+         await root.setCachedModelDef("file:///pkg/index.malloy", {
+            modelDef: modelDef("index"),
+            invalidationKeys: keyed("file:///pkg/index.malloy"),
+         }),
+      ).toBe(false);
+      await root.setCachedModelDef("file:///pkg/dep.malloy", {
+         modelDef: modelDef("dep"),
+         invalidationKeys: keyed("file:///pkg/dep.malloy"),
+      });
+      expect(
+         await shared.getCachedModelDef(reader, "file:///pkg/index.malloy"),
+      ).toBeUndefined();
+      expect(
+         (await shared.getCachedModelDef(reader, "file:///pkg/dep.malloy"))
+            ?.modelDef.name,
+      ).toBe("dep");
+   });
 });
 
 describe("compileLevels", () => {
@@ -205,7 +231,8 @@ describe("compileLevels", () => {
    }
 
    const reader = {
-      readURL: async (url: URL) => fs.promises.readFile(url.pathname, "utf8"),
+      readURL: async (url: URL) =>
+         fs.promises.readFile(fileURLToPath(url), "utf8"),
    };
 
    it("puts every file a model imports in an earlier level, and notebooks last", async () => {
@@ -279,13 +306,20 @@ describe("compileLevels", () => {
          "a.malloy",
          'import "b.malloy"\nimport "base.malloy"\nsource: a is b\n',
       );
+      const imported = new Set<string>();
       expect(
          await compileLevels(
             dir,
             ["a.malloy", "b.malloy", "base.malloy"],
             reader,
+            imported,
          ),
       ).toEqual([["base.malloy"], ["b.malloy"], ["a.malloy"]]);
+      // a is imported by nothing, so its translation is not kept.
+      expect([...imported].map((u) => path.basename(u)).sort()).toEqual([
+         "b.malloy",
+         "base.malloy",
+      ]);
    });
 
    it("keeps an unreadable file's place for its compile to report", async () => {

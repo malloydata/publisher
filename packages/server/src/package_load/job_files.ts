@@ -45,6 +45,11 @@ export interface JobFiles {
    stylesByUrl: Map<string, DataStyles>;
    /** The load's model cache; give each model a ModelCacheView of it. */
    cache: CacheManager;
+   /**
+    * The URLs of the package's `.malloy` files another package file imports,
+    * filled in by compileLevels. Only these are worth keeping in the cache.
+    */
+   imported: Set<string>;
 }
 
 export function jobFiles(inner: TextReader): JobFiles {
@@ -77,6 +82,7 @@ export function jobFiles(inner: TextReader): JobFiles {
       texts,
       stylesByUrl,
       cache: new CacheManager(new InMemoryModelCache()),
+      imported: new Set<string>(),
    };
 }
 
@@ -92,11 +98,15 @@ export function jobFiles(inner: TextReader): JobFiles {
  * translator writes into the model it imports (it records each source's
  * `#@ persist` flag on the imported model's registry entry), and a model's own
  * result goes on to be served and worked on after its compile.
+ *
+ * A model no package file imports (a root `index.malloy`, a report) is not
+ * kept: nothing would read it, and it is often the package's largest.
  */
 export class ModelCacheView extends CacheManager {
    constructor(
       private readonly shared: CacheManager,
       private readonly ownUrl: string,
+      private readonly keepOwn = true,
    ) {
       super(new InMemoryModelCache());
    }
@@ -112,6 +122,7 @@ export class ModelCacheView extends CacheManager {
    override setCachedModelDef(
       ...[url, cached]: Parameters<CacheManager["setCachedModelDef"]>
    ): ReturnType<CacheManager["setCachedModelDef"]> {
+      if (url === this.ownUrl && !this.keepOwn) return Promise.resolve(false);
       return this.shared.setCachedModelDef(url, {
          ...cached,
          modelDef: structuredClone(cached.modelDef),
@@ -172,12 +183,14 @@ const IMPORT_RE =
  * model imports sits in an earlier level, so its translation is cached before
  * any importer needs it. Models within a level compile concurrently, as all
  * of them used to. A cycle, or an import this scan misses, costs only reuse
- * (see ModelCacheView). Everything else (notebooks) comes last.
+ * (see ModelCacheView). Everything else (notebooks) comes last. The URL of
+ * every package file another one imports is added to `imported`.
  */
 export async function compileLevels(
    packagePath: string,
    modelPaths: string[],
    reader: TextReader,
+   imported: Set<string> = new Set(),
 ): Promise<string[][]> {
    const malloy = modelPaths.filter((p) => p.endsWith(MODEL_FILE_SUFFIX));
    const inPackage = new Set(malloy);
@@ -197,8 +210,14 @@ export async function compileLevels(
          try {
             const resolved = new URL(target, url);
             if (resolved.protocol !== "file:") continue;
-            const rel = path.relative(packagePath, fileURLToPath(resolved));
-            if (inPackage.has(rel)) deps.push(rel);
+            // Spelled as the worker lists model paths: `/` on every platform.
+            const rel = path
+               .relative(packagePath, fileURLToPath(resolved))
+               .replace(/\\/g, "/");
+            if (inPackage.has(rel)) {
+               deps.push(rel);
+               imported.add(resolved.toString());
+            }
          } catch {
             // Not a path this scan understands.
          }

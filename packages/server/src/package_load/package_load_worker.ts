@@ -901,7 +901,11 @@ function sharedRuntimeForModel(
       job,
       malloyConfig,
       files.reader,
-      new ModelCacheView(files.cache, modelURL.toString()),
+      new ModelCacheView(
+         files.cache,
+         modelURL.toString(),
+         files.imported.has(modelURL.toString()),
+      ),
    );
    return {
       runtime,
@@ -1386,6 +1390,7 @@ async function loadPackage(
       job.packagePath,
       modelPaths,
       files.reader,
+      files.imported,
    )) {
       const done = await Promise.all(
          level.map((modelPath) =>

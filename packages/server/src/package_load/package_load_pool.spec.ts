@@ -382,12 +382,15 @@ source: top is a extend { dimension: also_nothing is null }`,
                (m) => m.modelPath === "base.malloy",
             );
             // Malloy names each compile's query sources with a fresh UUID.
-            return JSON.stringify(model?.modelDef)
-               .replaceAll(dir, "<pkg>")
-               .replace(
-                  /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/g,
-                  "<uuid>",
-               );
+            return (
+               JSON.stringify(model?.modelDef)
+                  // The directory appears as a path and as a file URL.
+                  .replaceAll(path.basename(dir), "<pkg>")
+                  .replace(
+                     /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/g,
+                     "<uuid>",
+                  )
+            );
          } finally {
             fs.rmSync(dir, { recursive: true, force: true });
          }
