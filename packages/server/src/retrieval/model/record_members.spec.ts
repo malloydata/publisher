@@ -21,7 +21,11 @@ import {
    CLUSTER_SETTINGS,
    type FcjIndexFixture,
 } from "../../test_helpers/fcj_index_fixture";
-import { find, KINDS_BY_FIND_TARGET } from "../search/find";
+import { find, KINDS_BY_FIND_TARGET, type FindTarget } from "../search/find";
+import { alsoLikelyFields } from "../search/also_likely";
+import { connect } from "../search/connect";
+import { toUnit } from "../index/vectors";
+import { embedText } from "../../test_helpers/get_context_llm_harness";
 import { routeOptions, routesOf, throughFanout } from "../search/routes";
 import {
    compileJoinFixture,
@@ -609,5 +613,73 @@ source: events is duckdb.sql("select 1 as k, {${members}} as params, {'x': 1} as
       );
       expect(input.prompt).toContain("(Showing ");
       expect(input.prompt).toContain("- tail (record)");
+   });
+});
+
+describe("also likely, over record members", () => {
+   it("does not take two records' same-named members for twins", async () => {
+      const f = await buildFcjIndexFixture(CLUSTER_SETTINGS, {
+         "m.malloy": `
+source: orders is duckdb.sql("""select {'city': 'Denver'} as delivery, {'city': 'Boulder'} as billing""")
+source: invoices is duckdb.sql("""select {'city': 'Golden'} as billing""")
+`,
+      });
+      try {
+         const settings = {
+            ...CLUSTER_SETTINGS,
+            connect: "list" as const,
+            listTopK: 15,
+         };
+         const targets: FindTarget[] = [
+            {
+               index: 0,
+               type: "dimension",
+               text: "billing city",
+               kinds: KINDS_BY_FIND_TARGET.dimension,
+            },
+         ];
+         const queries = new Map([[0, toUnit(embedText("billing city"))]]);
+         const found = find({
+            index: f.index,
+            targets,
+            queries,
+            perTarget: 30,
+            keyword: true,
+            values: false,
+            allow: () => true,
+         });
+         const connected = connect({
+            index: f.index,
+            found,
+            queries,
+            settings,
+            allow: () => true,
+         });
+         const out = alsoLikelyFields({
+            index: f.index,
+            found,
+            connected,
+            twins: 2,
+            verdicts: [
+               {
+                  cluster: connected.clusters[0].home,
+                  picks: [
+                     {
+                        target: 0,
+                        keys: ["dimension:orders@m.malloy:billing.city"],
+                     },
+                  ],
+                  caveats: [],
+               },
+            ],
+         });
+         // The other source's billing.city is a twin; orders' own
+         // delivery.city is another field, not the same name.
+         expect(out.map((a) => [a.id, a.rule])).toEqual([
+            ["dimension:invoices:billing.city", "twin"],
+         ]);
+      } finally {
+         await f.close();
+      }
    });
 });
