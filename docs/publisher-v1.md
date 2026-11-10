@@ -609,7 +609,7 @@ A crash before step 3 leaves `staging` rows and a run whose lease expires; the r
 
 **Process-scoped tables (#1419, D5).** Every package has its own `duckdb` connection at `:memory:` (`Package.buildPackageMalloyConfig`), and a `#@ persist` with no `storage=` on a `duckdb.table('data/x.csv')` source builds into it: the tutorial's first step. The run and its entry are durable; the table is not, so today a restart binds a table that is gone and the next query fails. The table's `physical_tables` row carries the run's `boot_id`; at startup the reconciler marks every such row from another boot `dropped` and clears its bindings, so the next build rebuilds. Before any colocated bind, one `information_schema.tables` probe treats a missing table as absent, which also covers a warehouse table someone dropped by hand. A file-backed package-local DuckDB (under the version's checkout) would let such tables survive a restart and is queued as its own brief after the compiled-model store: it changes a contract rather than fixing a bug (the sandbox is memory-only by design; the instance-pooling rules `duckdb_instance_isolation.spec.ts` pins must be re-proven for a file; a DuckDB file never shrinks; memory accounting flips from RSS to disk; Windows keeps the handle after `close()`).
 
-**Generational names (decided).** Server-owned tables get them; caller-owned tables keep theirs. Orchestrated hosts already mint generations; auto-runs today use a stable name, so this changes what a human sees in the warehouse. The stable `base_name` is what the API, the Console and `#@ persist name=` speak; for anyone reading a table by its stable name from outside Publisher, `#@ persist alias=true` maintains a view under the base name on dialects that support `CREATE OR REPLACE VIEW`, repointed after the commit (item 4 of the protocol).
+**Generational names (decided).** Server-owned tables get them; caller-owned tables keep theirs. Orchestrated hosts already mint generations; auto-runs today use a stable name, so this changes what a human sees in the warehouse. The stable `base_name` is what the API, the Console and `#@ persist name=` speak; for anyone reading a server-owned table by its stable name from outside Publisher, `#@ persist name=` maintains a view under that name (`CREATE OR REPLACE VIEW`, comment-marked) on dialects that support it, repointed after the commit (item 4 of the protocol). Under generational names a physical table never equals its `name=`, so `name=` always yields the view, and the reclaimer owns the view beside the tables. Materialization v2 specifies the view (its P13, #5655); an earlier draft of this plan spelled it `alias=true`, which is dropped so the view has one key (decided 2026-11-10).
 
 #### The derived store
 
@@ -869,7 +869,8 @@ Four steps that change no route shape in either API; each can land any time afte
 #### B1: the materialization commit protocol
 
 - `physical_tables`, `manifest_entries`, `serving_bindings`, `external_manifests` (0006 folds today's history once with `newestServingEntries` and imports every version's `manifest_path`); `incremental_ledger` folded into `physical_tables.incremental`.
-- Generational names, the claim transaction and ownership check, the commit transaction, `bindings.changed` and `tables.superseded` on the outbox, the reclaim worker and grace period, scheduled DuckLake expiry, the `alias=true` view.
+- Generational names, the claim transaction and ownership check, the commit transaction, `bindings.changed` and `tables.superseded` on the outbox, the reclaim worker and grace period, scheduled DuckLake expiry, the `name=` view.
+- Materialization v2's consistency phase (generations, its C1 to C4) builds on these records, not on a manifest of its own (decided 2026-11-10).
 - `TableClaims`, `supersededTables`, `writesTables`, the fold, the rename swap and the staging/backup name derivations deleted.
 - v0 mappers for the materialization routes: `Materialization` (`status` in v0's `PENDING`…`MANIFEST_FILE_READY` vocabulary, `metadata` rebuilt from the run's columns, `environmentId`), its `manifest` (`BuildManifest`, with `physicalTableName`, `materializedTableId` and `storageDestinationName` derived from `physical_tables`), `?action=stop`, the inline `buildPlan`, `manifestBindingStatus`/`boundManifestUri`/`storageServeBindings` from `serving_bindings`, v0's `PUT …/versions/{v}/manifest`, and the `storageDestinations` view over `destinations`. They exist only until step 8.
 
@@ -914,6 +915,8 @@ Acceptance: plant an orphan blob, an orphan checkout, a `reclaimable` table, a s
 
 Steps 6 and 8 retire annotations that are *valid but deprecated*. This track is about annotations that are *invalid*: malformed, naming something that does not exist, or on the wrong kind of field. Today the Publisher answers each with a warning, a log line, or nothing, and loads the package. It is not tied to the 90-day clock: each row moves as soon as it is ready, and any refusal can ride the 1.0.0 release.
 
+**Invalid is not the same as unservable** (decided 2026-11-10; materialization v2's outcome tiers are the same rule). This track covers *malformed* annotations, which can't be read as written: they don't parse, carry an unknown key, name nothing, or sit on the wrong kind of field. Those are refused. An annotation that is well-formed but can't be honored in this deployment is *unservable*: a connection that can't hold a table, a missing destination, an access filter another author added later, a source that can't be materialized. It gets a coded, counted publish warning and the source serves live, never a refusal, because the cause is often another author or the deployment. A query that can't use a table it otherwise could is *skipped*, with a reason in the path report.
+
 Each row moves the same way:
 1. **A coded `Package.warnings` entry and a metric.** Several rows have neither.
 2. **Refuse at publish.** The `publish_checks.ts` pattern; packages already published keep loading.
@@ -949,11 +952,11 @@ Two facts shape it:
 | Input | Today | Plan |
 |---|---|---|
 | Retired per-source `#@ persist sharing=`/`schedule=`, invalid cron, `schedule` without `scope: version`, `schedule` together with freshness | Logged only at load (`package_load_gates.ts:92`), not in `Package.warnings`; refused at publish; the scheduler stays disarmed | Put it in `Package.warnings` with a code now |
-| `#@ persist` on a source that cannot be materialized | `droppedPersistWarnings` (`package.ts:2148`); no metric | Code, metric, then refuse at publish |
+| `#@ persist` on a source that cannot be materialized | `droppedPersistWarnings` (`package.ts:2148`); no metric | Unservable: code and metric, a publish warning, and the source serves live; never refused |
 | `partition=` without `storage=`, or naming an unknown or non-public column | `persistRefusalWarnings` (`package.ts:2167`); counted by `publisher_materialization_eligibility_refused_total` | Refuse at publish (the message already reads like a publish error, `persist_partition.ts:43`) |
-| Unknown `#@ persist` key (e.g. a misspelled `merge_key`) | Advisory (`incremental_policy.ts:389`); no metric; silently changes merge to range replace | Code and metric, then refuse at publish |
+| Unknown `#@ persist` key (e.g. a misspelled `merge_key`) | Advisory (`incremental_policy.ts:389`); no metric; silently changes merge to range replace | Code and metric now, so the change of merge is no longer silent. On the legacy `#@ persist` it then follows the deprecation rule: a warning until the 1.0.0 release, refused from it. On materialization v2's new routes an unknown key is refused from the start |
 | A `#@ persist` tag that fails to parse; an invalid `freshness.fallback` | Silently treated as `{}` or dropped (`build_plan.ts:302,320`, `package_manifest.ts:228`) | Coded warning, then refuse |
-| `#@ preaggregate` on a private or internal measure or grain dimension | Warning (`package.ts:2381`); no metric | Code and metric, then refuse at publish. At load it stays a warning, because the annotation can be inherited and the author may not be able to fix it (`package.ts:2369`) |
+| `#@ preaggregate` on a private or internal measure or grain dimension | Warning (`package.ts:2381`); no metric | Unservable: code and metric, a publish warning, and the rollup serves live, because the annotation can be inherited and the author may not be able to fix it (`package.ts:2369`). `#@ preaggregate` itself is deprecated ([section 5](#5-what-10-removes)) |
 | Persist targets that collide (two sources on one table) | Warns at load; refused at publish only under `PERSIST_COLLISION_ENFORCE` | Make enforcement the default (#1560's `TABLE_OWNED_ELSEWHERE` makes it a storage invariant) |
 
 `queryMetadata` bad names, values or budgets stay advisory: metadata never blocks a publish (`materialization_config_validation.ts:14-18`).
@@ -1075,6 +1078,8 @@ Annotations live in users' model files, so each gets the same treatment: in step
 | A `"` note below the `## artifact` tag | Move it above the tag | Read as a fallback; the lint flags it. |
 | `#(description="…")` on a given (the app-route spelling) | `# description=…` | Works in the client but warns `malformed-route` on every compile. Drop the client fallback. |
 | `## materialization.queryMetadata.*` (model) | `## queryMetadata.*` | The model-level home does not warn yet; only the manifest home does. |
+| `#@ preaggregate` (on a measure) | `#(preaggregate) grain=[…]` (materialization v2) | Read and built (`docs/preaggregation.md`). No warning yet; it starts, with the rewrite, in the release that ships v2's annotations. |
+| `#@ -persist` (on a reader of a persisted source) | Persist only the sources that should read the table; under `#(materialize)` a materialized source serves every use of its definition | Shipped in 0.5.1 (#1192), documented in `docs/materialization.md`, read in `materialization_serve_transform.ts`. No warning yet; it starts with `#@ preaggregate`'s. |
 | `.malloynb` notebook format | `.malloy` with `## artifact { layout=linear … }` | Warned (`deprecated-malloynb-notebook`), counted (`malloynb`). Not carried into v1 (decision A4), so v0 is its only API until the 1.0.0 release. |
 
 **Already refused; only the migration message remains.** These never fail open (Malloy ignores an unknown tag; the error only adds a better message), so each refusal drops to a plain parse error at the 1.0.0 release:
@@ -1183,6 +1188,8 @@ Each on the recommended option except A22, which Kyle called directly, A4, which
 - **`.malloynb` is not carried into v1** (decision A4, as revised). Its users have v0 and the 90-day window; the `malloy-pub migrate` rewrite to `.malloy` with `## artifact { layout=linear }` is a step 6 task.
 - **`explores` and `queryableSources` are deprecated, both values included,** and go at the 1.0.0 release with no exception. `queryableSources: "all"`, the one way today to hide an `#(authorize)`-gated source from listings while authorized callers query it by name, has no like-for-like replacement and does not get one: curation is `index.malloy`, access is `#(authorize)`, and the migration guide says so.
 - **One documented form per key and annotation; a deprecated form warns, then refuses, then goes; an invalid form fails at publish; nothing fails open.** The rules in [section 3.3](#33-the-package), applied to every row of [section 5](#5-what-10-removes) and [track C](#track-c-invalid-annotations-that-warn-today-should-fail-loudly).
+- **Malformed is refused; unservable warns and serves live** (2026-11-10). One rule for track C and materialization v2's outcomes: an annotation that can't be read as written is refused; one that is well-formed but can't be honored in this deployment is a coded publish warning, and the source serves live.
+- **`#@ preaggregate` and `#@ -persist` are deprecated under this plan's rule** (2026-11-10): a warning with the rewrite from the release that ships materialization v2's annotations, refused at the 1.0.0 release, readers deleted in 1.1.
 
 ### The configuration (from the configuration design; [Appendix C](#appendix-c-the-configuration-registry-and-mapping))
 
@@ -1204,7 +1211,7 @@ Taken in this design:
 - **A slot is a version under `scope: version` and the package under `scope: package`.** It is what `active_key` already encodes; naming it lets runs, tables and locks share one key.
 - **Serving bindings are per source, not per slot.** The serving manifest today is the newest entries minus superseded tables, filtered per version to the sources its own definition built; a single pointer per slot cannot express that, one row per `(version, source_entity_id)` can, and it makes the external manifest a binding origin instead of a third source of truth.
 - **Per-entry build results live in `manifest_entries`**, so the hot path reads a row and the Console still gets the schema, row count and cost it shows.
-- **Server-owned tables get generational names; caller-owned tables keep theirs**, with `#@ persist alias=true` for readers outside Publisher.
+- **Server-owned tables get generational names; caller-owned tables keep theirs**, with a `name=` view for readers outside Publisher (2026-11-10; replaces the earlier `alias=true`).
 - **Live packages keep API write-through.**
 - **The worker catalog in Credible's pool is replica-local and rebuildable**, not a shared Postgres; the control plane already owns versions, so every placement is made idempotent instead of moving truth into the worker.
 - **Resources are not configuration.** `publisher.config.json` keeps the process's settings; environments, connections and packages are created through the API, and an init script is applied by `malloy-pub apply`, never read by the server. The sketch's "desired state" reconcile is dropped: the catalog has one writer, so there is nothing to reconcile.
