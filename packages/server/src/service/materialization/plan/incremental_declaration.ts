@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 import type { PersistSource } from "@malloydata/malloy";
+import { parseRouteTag } from "../../motly";
 import type { Tag } from "@malloydata/malloy-tag";
 
 import type { IncrementalStrategy } from "../types";
@@ -138,7 +139,7 @@ export interface IncrementalDeclaration {
 /** The source's `#@` tag, or undefined when it does not parse. */
 function safeTag(source: PersistSource): Tag | undefined {
    try {
-      return source.annotations.parseAsTag("@").tag;
+      return parseRouteTag(source.annotations, "@").tag;
    } catch {
       return undefined;
    }

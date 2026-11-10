@@ -13,6 +13,7 @@ import type {
    SourceDef,
    UnbuildableSource,
 } from "@malloydata/malloy";
+import { parseRouteTag } from "../../motly";
 import { Annotations } from "@malloydata/malloy";
 import { components } from "../../../api";
 import { MaterializationEligibilityError } from "../../../errors";
@@ -312,7 +313,7 @@ function packageFreshnessLayer(
 /** The source's `#@` tag, or undefined if it fails to parse (degrade to unset). */
 function safeSourceTag(source: PersistSource): ReadableTag | undefined {
    try {
-      return source.annotations.parseAsTag("@").tag as ReadableTag;
+      return parseRouteTag(source.annotations, "@").tag as ReadableTag;
    } catch {
       return undefined;
    }
@@ -325,7 +326,7 @@ function safeSourceTag(source: PersistSource): ReadableTag | undefined {
  */
 function safeModelTag(source: PersistSource): ReadableTag | undefined {
    try {
-      return source.modelAnnotations.parseAsTag().tag as ReadableTag;
+      return parseRouteTag(source.modelAnnotations).tag as ReadableTag;
    } catch {
       return undefined;
    }
@@ -646,9 +647,10 @@ function detectDroppedPersistSources(
          if (!def || !def.annotations) continue;
          let isPersist = false;
          try {
-            isPersist = new Annotations(def.annotations)
-               .parseAsTag("@")
-               .tag.has("persist");
+            isPersist = parseRouteTag(
+               new Annotations(def.annotations),
+               "@",
+            ).tag.has("persist");
          } catch {
             continue;
          }
@@ -861,7 +863,7 @@ export async function collectModelBuildPlan(
    // getBuildTargets() THROWS on a model without `##! experimental.persistence`,
    // which would abort the whole package's plan. Such a model cannot carry a
    // persist source anyway, so skip it, mirroring Malloy's own guard.
-   const modelTag = malloyModel.modelAnnotations.parseAsTag("!").tag;
+   const modelTag = parseRouteTag(malloyModel.modelAnnotations, "!").tag;
    if (!modelTag.has("experimental", "persistence")) return;
 
    const targets = await runtime.getBuildTargets(malloyModel);

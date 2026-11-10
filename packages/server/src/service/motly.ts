@@ -9,6 +9,7 @@
  * reader of that contract needs the same parse. This module is that one parse.
  */
 
+import { Annotations, type LogMessage } from "@malloydata/malloy";
 import { parseAnnotation, type Tag } from "@malloydata/malloy-tag";
 
 /**
@@ -47,21 +48,8 @@ export function motlyAnnotations(texts: readonly string[]): string[] {
  * could otherwise read a worker's connection credentials back out of the model
  * endpoint. An annotation carrying one is therefore dropped before parsing, in
  * {@link motlyAnnotations}, which every reader in this module goes through.
- *
- * That containment stops at this module's edge. `service/build_plan.ts` calls
- * `annotations.parseAsTag("@")` itself, and both of these reach a client:
- *
- * - `deriveAnnotationFields` returns top-level scalars, so
- *   `#@ persist name=@env.SNOWFLAKE_PRIVATE_KEY` comes back in the wire field
- *   `annotationFields` on `BuildPlan` (`Package.buildPlan`).
- * - `tagQueryMetadataLayer` does the same for
- *   `#@ persist queryMetadata { owner=@env.… }`.
- *
- * The `persist` keyword is load-bearing in both repros: without it a source
- * never enters the build plan's sources and nothing is read. The braced
- * `#@ persist { name=… }` happens not to reach (`text()` on a block is
- * undefined) — not a mitigation. That path needs its own fix; this guard does
- * not cover it.
+ * Readers of the other routes (`#@` persistence, `##!` flags, a model's `##`)
+ * parse through {@link parseRouteTag}, which applies the same drop.
  *
  * Deliberately blunt: not quote-aware (`# description="see @env.md"` is dropped
  * too) and it drops the whole line, not one value — a missing control is
@@ -103,6 +91,58 @@ export const ANNOTATION_TOO_LONG = `annotation exceeds ${MAX_ANNOTATION_CHARS} c
  */
 export const ENV_REFERENCE_DROPPED =
    "annotation dropped for carrying an @env. reference";
+
+/**
+ * `Annotations.parseAsTag(route)`, without the server's environment.
+ *
+ * The tag parser hydrates `@env.NAME` from this process's `process.env`, and
+ * Malloy has no switch to turn that off. What a `#@ persist` line, a model's
+ * `##` tag or a `##!` flag holds reaches clients (the build plan's
+ * `annotationFields` and `queryMetadata`), warehouse query labels and build
+ * SQL, so every `parseAsTag` in the server goes through here instead, and a
+ * spec fails on a direct call.
+ *
+ * Each annotation line that carries an `@env.` reference is dropped before
+ * parsing, by the same blunt rule as {@link hasEnvReference}, and each drop is
+ * added to the log as {@link ENV_REFERENCE_DROPPED}. A dropped `#@ persist`
+ * line means Publisher reads no directive from that line: no `name=`, no
+ * `queryMetadata`, no `storage=`. Malloy itself still sees `persist` (it reads
+ * only whether the key is present), so the source still builds, under its
+ * content address.
+ *
+ * With nothing to drop, this is `parseAsTag` itself, so a package without an
+ * `@env.` reference parses exactly as before.
+ */
+export function parseRouteTag(
+   annotations: Annotations,
+   route = "",
+): ReturnType<Annotations["parseAsTag"]> {
+   const notes = annotations.forRoute(route);
+   const kept = notes.filter((note) => !hasEnvReference(note.text));
+   if (kept.length === notes.length) return annotations.parseAsTag(route);
+
+   // Rebuilt from the kept notes, in the order `forRoute` walked them
+   // (inherited first), so Malloy's own parse and error mapping still apply.
+   const filtered = new Annotations({
+      notes: kept.map((note) => ({
+         text: note.text,
+         at: note.at,
+         ...(note.indentStripped !== undefined
+            ? { indentStripped: note.indentStripped }
+            : {}),
+      })),
+   } as ConstructorParameters<typeof Annotations>[0]);
+   const parsed = filtered.parseAsTag(route);
+   const drops: LogMessage[] = notes
+      .filter((note) => hasEnvReference(note.text))
+      .map((note) => ({
+         code: "env-reference-dropped",
+         severity: "warn",
+         message: ENV_REFERENCE_DROPPED,
+         at: note.at,
+      }));
+   return { tag: parsed.tag, log: [...drops, ...parsed.log] };
+}
 
 /**
  * `parseAnnotation`, with the length bound applied and a throw caught.

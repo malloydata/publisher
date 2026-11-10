@@ -194,6 +194,7 @@ describe("deriveAnnotationFields", () => {
    it("returns all key=value fields of the #@ persist annotation", () => {
       const source = {
          annotations: {
+            forRoute: () => [],
             parseAsTag: () => ({
                tag: {
                   *entries() {
@@ -214,6 +215,7 @@ describe("deriveAnnotationFields", () => {
    it("degrades to {} when the annotation is absent or unparseable", () => {
       const source = {
          annotations: {
+            forRoute: () => [],
             parseAsTag: () => {
                throw new Error("no @ annotation");
             },
@@ -221,6 +223,50 @@ describe("deriveAnnotationFields", () => {
       } as unknown as PersistSource;
 
       expect(deriveAnnotationFields(source)).toEqual({});
+   });
+});
+
+describe("#@ annotations never read the server's environment", () => {
+   // The tag parser hydrates `@env.NAME` from `process.env`, and both of these
+   // reach a client: `annotationFields` on the build plan, and the metadata
+   // attached to every build statement.
+   const SECRET_VAR = "PUBLISHER_SPEC_ENV_SECRET";
+   const SECRET = "s3cr3t-from-the-server-environment";
+   const model = `##! experimental.persistence
+source: raw is duckdb.sql("""SELECT 1 AS x""")
+#@ persist name=@env.${SECRET_VAR}
+source: leaky_name is raw -> { select: * }
+#@ persist name="kept"
+#@ queryMetadata { owner=@env.${SECRET_VAR} }
+source: leaky_metadata is raw -> { select: * }
+`;
+
+   afterEach(() => {
+      delete process.env[SECRET_VAR];
+   });
+
+   it("drops an annotation line that carries an @env. reference, and keeps the others", async () => {
+      process.env[SECRET_VAR] = SECRET;
+      const { connections } = duckdbTestConnections();
+      const { sources } = await compilePersistSources(connections, model);
+
+      // Malloy still plans both: it reads only whether `persist` is present.
+      expect(Object.keys(sources).sort()).toEqual([
+         "leaky_metadata",
+         "leaky_name",
+      ]);
+      expect(deriveAnnotationFields(sources.leaky_name)).toEqual({});
+      expect(deriveAnnotationFields(sources.leaky_metadata)).toEqual({
+         name: "kept",
+      });
+      for (const source of Object.values(sources)) {
+         const read = JSON.stringify([
+            deriveAnnotationFields(source),
+            resolveQueryMetadata(source, null),
+            resolveFreshness(source, null),
+         ]);
+         expect(read).not.toContain(SECRET);
+      }
    });
 });
 
