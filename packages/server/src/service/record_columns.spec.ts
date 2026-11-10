@@ -4,7 +4,11 @@
 import { DuckDBConnection } from "@malloydata/db-duckdb";
 import { afterAll, beforeAll, describe, expect, it, spyOn } from "bun:test";
 import { capColumns, rankLexically } from "../retrieval/index/schema_index";
-import { columnsOfSchema, listTablesForSchema } from "./db_utils";
+import {
+   columnsOfSchema,
+   listTablesForSchema,
+   schemaReadLimits,
+} from "./db_utils";
 import type { ApiConnection } from "./model";
 
 describe("columnsOfSchema", () => {
@@ -215,6 +219,42 @@ describe("a DuckDB schema with STRUCT columns", () => {
          ]);
       } finally {
          await malloy.runSQL("drop table unread");
+      }
+   });
+
+   it("starts each listing's reads with the tables tried longest ago, so the time limit cannot starve the rest", async () => {
+      const names = Array.from({ length: 40 }, (_, i) => `slow${i}`);
+      for (const name of names) {
+         await malloy.runSQL(
+            `create table ${name} as select 1 as id, {'city': 'Denver'} as place`,
+         );
+      }
+      const tried = new Set<string>();
+      // Every read fails, slowly, so nothing is ever cached and each listing
+      // reads again: only the order the reads start in decides coverage.
+      const reads = spyOn(malloy, "fetchSchemaForTables").mockImplementation(
+         async (tables: Record<string, string>) => {
+            for (const key of Object.keys(tables)) tried.add(key);
+            await new Promise((r) => setTimeout(r, 40));
+            throw new Error("warehouse unavailable");
+         },
+      );
+      const deadline = schemaReadLimits.deadlineMs;
+      schemaReadLimits.deadlineMs = 60;
+      try {
+         const list = () =>
+            listTablesForSchema(conn, "memory.main", malloy, names);
+         await list();
+         // One listing reaches only some of the 40 within the limit...
+         expect(tried.size).toBeLessThan(names.length);
+         await list();
+         await list();
+         // ...and the next ones start with those not yet tried.
+         expect(tried.size).toBe(names.length);
+      } finally {
+         schemaReadLimits.deadlineMs = deadline;
+         reads.mockRestore();
+         for (const name of names) await malloy.runSQL(`drop table ${name}`);
       }
    });
 

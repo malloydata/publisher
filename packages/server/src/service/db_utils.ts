@@ -95,6 +95,8 @@ const SCHEMA_READ_CONCURRENCY = 8;
  * schema too large for one listing is covered over the next few.
  */
 const SCHEMA_READ_DEADLINE_MS = 10_000;
+/** The deadline in force; a spec shortens it to exercise the time limit. */
+export const schemaReadLimits = { deadlineMs: SCHEMA_READ_DEADLINE_MS };
 /** Tables whose members are cached per connection. Past it, the oldest go. */
 const MAX_CACHED_TABLES = 2_000;
 
@@ -115,6 +117,17 @@ interface CachedMembers {
  * only when that read fails.
  */
 const memberCache = new WeakMap<Connection, Map<string, CachedMembers>>();
+
+/**
+ * When each table's members were last asked for, per Malloy connection, as a
+ * count of reads started (not the clock). A listing starts its reads with the
+ * tables tried longest ago, never-tried ones first, so a schema too large for
+ * one listing's time limit is covered over the next few, and a table whose
+ * read always fails, or whose type always needs a read (a Databricks
+ * `struct`), cannot keep the tables after it from being read.
+ */
+const lastTried = new WeakMap<Connection, Map<string, number>>();
+let readsStarted = 0;
 
 /**
  * The refresh timestamp of the last fresh read. Malloy re-reads a cached
@@ -178,6 +191,11 @@ async function withRecordMembers(
       cache = new Map();
       memberCache.set(malloyConnection, cache);
    }
+   let tried = lastTried.get(malloyConnection);
+   if (!tried) {
+      tried = new Map();
+      lastTried.set(malloyConnection, tried);
+   }
    const recordTypesOf = (t: ApiTable) =>
       recordColumnsOf(t)
          .map((c) => `${c.name}:${c.type}`)
@@ -192,6 +210,9 @@ async function withRecordMembers(
       );
       if (hit && reusable && hit.recordTypes === recordTypesOf(t)) {
          resolved.set(t.resource!, hit.members);
+         // Used: move it to the back of the eviction order.
+         cache.delete(t.resource!);
+         cache.set(t.resource!, hit);
       } else {
          toRead.push(t);
       }
@@ -199,11 +220,22 @@ async function withRecordMembers(
 
    const failed: string[] = [];
    if (toRead.length > 0) {
+      // Longest since last tried first; a stable sort keeps listing order
+      // among the never-tried.
+      toRead.sort(
+         (a, b) =>
+            (tried!.get(a.resource!) ?? -1) - (tried!.get(b.resource!) ?? -1),
+      );
       const refreshTimestamp = nextRefreshTimestamp();
       let next = 0;
       let expired = false;
       const readOne = async (t: ApiTable) => {
          const resource = t.resource!;
+         tried!.delete(resource);
+         tried!.set(resource, readsStarted++);
+         if (tried!.size > MAX_CACHED_TABLES) {
+            tried!.delete(tried!.keys().next().value!);
+         }
          let error: unknown;
          try {
             const read = await malloyConnection.fetchSchemaForTables(
@@ -259,25 +291,29 @@ async function withRecordMembers(
             ),
          ),
          new Promise<void>((resolve) => {
-            timer = setTimeout(resolve, SCHEMA_READ_DEADLINE_MS);
+            timer = setTimeout(resolve, schemaReadLimits.deadlineMs);
          }),
       ]);
       clearTimeout(timer);
       expired = true;
       const unread = toRead.filter((t) => !resolved.has(t.resource!));
+      const failedSet = new Set(failed);
+      let missed = 0;
       for (const t of unread) {
          // A read that failed or missed the deadline: the last good read
          // serves when the record types have not changed since.
          const hit = cache.get(t.resource!);
          if (hit && hit.recordTypes === recordTypesOf(t)) {
             resolved.set(t.resource!, hit.members);
+         } else if (!failedSet.has(t.resource!)) {
+            // Past the deadline with nothing cached: this table is marked.
+            missed++;
          }
       }
-      const missed = unread.length - failed.length;
       if (missed > 0) {
          logger.warn(
             "Record members not read for some tables: the schema reads ran past the deadline",
-            { tables: missed, deadlineMs: SCHEMA_READ_DEADLINE_MS },
+            { tables: missed, deadlineMs: schemaReadLimits.deadlineMs },
          );
       }
    }
