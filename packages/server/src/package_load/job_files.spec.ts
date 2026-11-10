@@ -252,11 +252,18 @@ describe("ModelCacheView", () => {
 describe("modelFileTexts", () => {
    it("gives a model only its own file and the files it imports, in either URL spelling", () => {
       const files = jobFiles({ readURL: async () => "" });
-      const root = pathToFileURL("/pkg/root.malloy").href;
-      const dep = pathToFileURL("/pkg/my models/bäse.malloy").href;
+      // A real absolute path, so the URL carries a drive letter on Windows.
+      const pkg = path.join(os.tmpdir(), "pkg");
+      const root = pathToFileURL(path.join(pkg, "root.malloy")).href;
+      const dep = pathToFileURL(
+         path.join(pkg, "my models", "bäse.malloy"),
+      ).href;
       files.texts.set(root, "root text");
       files.texts.set(dep, "dep text");
-      files.texts.set(pathToFileURL("/pkg/other.malloy").href, "unrelated");
+      files.texts.set(
+         pathToFileURL(path.join(pkg, "other.malloy")).href,
+         "unrelated",
+      );
       // `dependencies` names the file decoded.
       const texts = modelFileTexts(files, root, { [decodeURI(dep)]: {} });
       expect(
