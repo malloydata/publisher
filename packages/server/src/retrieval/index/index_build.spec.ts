@@ -124,23 +124,56 @@ describe("doc parts by the model", () => {
       "City name.",
    ];
 
-   it("counts the sentences of a doc in any script", async () => {
-      const multi = [
+   it("preserves ASCII admission and uses Unicode for non-ASCII docs", async () => {
+      const sent = [
          "Bestellbetrag in Euro. Über alle Währungen nie summieren.",
          "Importe del pedido. ¿Incluye impuestos?",
          "Сумма заказа в рублях. Исключайте тестовые заказы.",
          "Ποσό παραγγελίας. Εξαιρέστε τις δοκιμαστικές παραγγελίες.",
          "注文金額です。テスト注文は除外してください。",
          "مبلغ الطلب. استبعد طلبات الاختبار.",
+         '"注文金額です。" "テスト注文は除外してください。"',
+         "Сумма заказа. **Исключайте тестовые заказы.**",
+         // A control: `sentencesOf` already finds two sentences here.
          "Amount. (exclude test orders.)",
+         // Known limitation of the per-doc non-ASCII guard.
+         "Größe laut https://example.com/?q=x.",
       ];
-      const single = [
+      const notSent = [
          "Сумма заказа в рублях.",
          "注文金額です。",
+         // One sentence under the fixed "en" locale: Greek's ends one at ";".
+         "Ποσό παραγγελίας; Εξαιρέστε τις δοκιμαστικές.",
+         // Unicode ends a sentence inside each of these ASCII docs.
+         "Link to https://example.com/?q=x.",
+         'Example: run: orders -> { where: country = "U.S." }',
+         "Uses a ?? b as default",
          "Run: orders -> { group_by: a; aggregate: b }",
       ];
-      const out = await resolveDocParts({ docs: [...multi, ...single] });
-      expect(out.longDocs).toBe(multi.length);
+      const chat = scriptedChat((prompt) =>
+         JSON.stringify({
+            results: numberedLines(prompt).map(([index, what]) => ({
+               index,
+               what,
+            })),
+         }),
+      );
+      const out = await resolveDocParts({
+         docs: [...sent, ...notSent],
+         llm: {
+            db,
+            environmentName: "env",
+            packageName: "p",
+            chat: chat.model,
+            instructions: "split",
+            concurrency: 1,
+            budget: new SyncRequestBudget(10),
+         },
+      });
+      expect(
+         chat.prompts.flatMap((p) => numberedLines(p).map(([, line]) => line)),
+      ).toEqual(sent);
+      expect(out.longDocs).toBe(sent.length);
    });
 
    it("sends only multi-sentence docs, keeps the reply, and reuses it on the next build", async () => {

@@ -14,10 +14,10 @@
  * what it is; keeping the rule
  * away from the embedder and in front of the judge fixes both halves.
  *
- * A one-sentence doc is all "what it is" and is never sent. A longer doc is
- * split by the chat model when one is configured (one call per batch of
- * docs, cached by content), and by the rules in {@link splitDocByRules}
- * otherwise, or when the model's call fails.
+ * A doc that is not long ({@link needsSplit} says what long is) is all "what
+ * it is" and is never sent. A long doc is split by the chat model when one is
+ * configured (one call per batch of docs, cached by content), and by the
+ * rules in {@link splitDocByRules} otherwise, or when the model's call fails.
  *
  * What is sent: a node's doc text (see docOnlyText), which on a connection
  * with `dbmeta` on can be the database's description rather than the model's.
@@ -126,19 +126,25 @@ export function splitDocByRules(doc: string): DocParts {
 }
 
 /**
- * Unicode's sentence boundaries, which also end a sentence at "。" or before
- * "Ü", "И" or "¿". They only add docs for the model: the rule split keeps
- * {@link sentencesOf}, so its parts do not change. The locale is fixed so the
- * runtime's default does not change the count (Greek ends a sentence at
- * ";"); ICU versions may still differ.
+ * Unicode's sentence boundaries (UAX #29). The locale is fixed so the
+ * runtime's default does not change them (Greek ends a sentence at ";"); ICU
+ * versions may still differ.
  */
 const SENTENCES = new Intl.Segmenter("en", { granularity: "sentence" });
+const NON_ASCII = /\P{ASCII}/u;
 
-/** Whether a doc is worth splitting at all: more than one sentence. */
+/**
+ * A doc is long when `sentencesOf` finds more than one sentence, or when it
+ * contains non-ASCII text and the Unicode segmenter finds more than one.
+ * ASCII-only docs keep their existing admission rule. The Unicode count
+ * can still split inside links or code in non-ASCII docs. The rule split
+ * uses `sentencesOf` alone.
+ */
 function needsSplit(doc: string): boolean {
    if (sentencesOf(doc).length > 1) return true;
-   let count = 0;
+   if (!NON_ASCII.test(doc)) return false;
    const text = doc.replace(/\s+/g, " ").trim();
+   let count = 0;
    for (const { segment } of SENTENCES.segment(text)) {
       if (segment.trim() && ++count > 1) return true;
    }
@@ -190,7 +196,7 @@ function validateDocParts(
 /** What the doc-parts step did, for the build report. */
 interface DocPartsOutcome {
    parts: Map<string, DocParts>;
-   /** Docs with more than one sentence. */
+   /** Long docs, as {@link needsSplit} defines them. */
    longDocs: number;
    byModel: number;
    byRules: number;
