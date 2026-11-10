@@ -95,8 +95,10 @@ export interface Entity {
    // "dbmeta" when the doc text is the database's description, not the
    // model's.
    docSource?: "dbmeta";
-   // Join cardinality, on `kind: "join"` entities only: whether traversing
-   // the join fans out.
+   // Whether aggregating through this entity fans out. On a `kind: "join"`
+   // entity, the join's cardinality; on a field reached through a join, the
+   // widest relationship on its path; on a member of a repeated record
+   // (`lines.sku`, `tags.each`), `many`, with or without a join.
    relationship?: Relationship;
    // On `kind: "join"` entities: the source the join leads to, when the
    // compiled model names one. Read by the source summary; never serialized.

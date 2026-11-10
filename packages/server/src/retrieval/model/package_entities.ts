@@ -420,9 +420,10 @@ const MAX_RECORD_DEPTH = 4;
 export const MAX_RECORD_MEMBERS_PER_SOURCE = 300;
 
 /**
- * A member name a dotted path can carry as written. A STRUCT key can hold a
- * dot or a space (`{'a.b': 1}`): joined raw, `delivery.a.b` would read as a
- * nested record and does not compile without backticks.
+ * A member name a dotted path can carry segment by segment: bare, or
+ * backticked when it is a reserved word (memberSegment). A STRUCT key can
+ * hold a dot or a space (`{'a.b': 1}`): joined raw, `delivery.a.b` would
+ * read as a nested record, so such a member is not indexed.
  */
 const PLAIN_MEMBER_NAME = /^[A-Za-z_][A-Za-z0-9_]*$/;
 
@@ -488,8 +489,8 @@ export function fieldPathOf(e: {
  *
  * A member of a repeated record (an array of records, `lines.sku`) has
  * relationship `many`, because grouping by it gives a group per element
- * value; a record inside a repeated record stays `many`. A member takes its record's
- * classification when it has none of its own, and its doc from its own
+ * value; a record inside a repeated record stays `many`. A member takes its
+ * record's classification when it has none of its own, and its doc from its own
  * annotations (entityDocs), as any other field does. An array of scalars has
  * one member, its element, named `each` (`tags.each`), also `many`. A member
  * whose name is not a plain identifier (PLAIN_MEMBER_NAME) is not indexed,

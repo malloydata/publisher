@@ -126,7 +126,7 @@ Counting an array has two forms, and they answer different questions:
 
 `tags.each.count()` and `lines.sku.count()` fail with `is not a source or join`, like any method `count` on a field.
 
-Grouping by a `many` field gives one row per element. A measure in each group is still correct (`revenue` for the tag `red` counts each order once), but the groups add up to more than the total, because an order with two tags is in two groups. Also:
+Grouping by a `many` field gives one group per distinct element value, and a row lands in every group its array holds: orders tagged `['r','r','b']` and `['r']` give `r` a `count()` of 2, not 3. A measure in each group is still correct (`revenue` for the tag `red` counts each order once), but the groups add up to more than the total, because an order with two tags is in two groups. Also:
 
 - Alias it: `group_by: tag is tags.each`. Unaliased, the column is named `each`.
 - A row whose array is empty lands in a `null` group.
