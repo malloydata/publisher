@@ -96,8 +96,19 @@ const SCHEMA_READ_CONCURRENCY = 8;
  * the next few.
  */
 const SCHEMA_READ_DEADLINE_MS = 10_000;
-/** The deadline in force; a spec shortens it to exercise the time limit. */
-export const schemaReadLimits = { deadlineMs: SCHEMA_READ_DEADLINE_MS };
+/**
+ * How long a listing waits on a read another listing started. A read older
+ * than this is taken to be hung (a driver with no timeout of its own), and
+ * the listing starts its own, so one read that never returns cannot leave
+ * its table unread until a restart. Longer than the listing deadline, so a
+ * merely slow read is not started again by every listing.
+ */
+const SHARED_READ_MAX_AGE_MS = 60_000;
+/** The limits in force; a spec shortens them to exercise the time limits. */
+export const schemaReadLimits = {
+   deadlineMs: SCHEMA_READ_DEADLINE_MS,
+   sharedReadMaxAgeMs: SHARED_READ_MAX_AGE_MS,
+};
 /** Tables whose members are cached per connection. Past it, the oldest go. */
 const MAX_CACHED_TABLES = 2_000;
 
@@ -134,13 +145,15 @@ const lastTried = new WeakMap<Connection, Map<string, number>>();
 /**
  * Schema reads in flight, by table and record types, per Malloy connection: a listing that
  * needs a table another listing is already reading waits on that read rather
- * than starting a second one. Resolves to the members, or undefined when the
+ * than starting a second one, unless the read is older than
+ * `sharedReadMaxAgeMs`. `read` resolves to the members, or undefined when the
  * read failed.
  */
-const inFlight = new WeakMap<
-   Connection,
-   Map<string, Promise<Map<string, ApiColumn[]> | undefined>>
->();
+interface SharedRead {
+   read: Promise<Map<string, ApiColumn[]> | undefined>;
+   startedAt: number;
+}
+const inFlight = new WeakMap<Connection, Map<string, SharedRead>>();
 let readsStarted = 0;
 
 /**
@@ -260,22 +273,31 @@ async function withRecordMembers(
          // of the table would list that version's members.
          const key = `${resource}\n${recordTypesOf(t)}`;
          const pending = reading!.get(key);
-         if (pending) {
+         if (
+            pending &&
+            Date.now() - pending.startedAt < schemaReadLimits.sharedReadMaxAgeMs
+         ) {
             joined.push(
-               pending.then((members) => {
+               pending.read.then((members) => {
                   if (members && !expired) resolved.set(resource, members);
                   else if (!members) failed.push(resource);
                }),
             );
             return;
          }
-         const read = readFresh(t);
-         reading!.set(key, read);
+         // No read to share, or one too old to trust: start this one. A
+         // listing still waiting on the old read keeps waiting on it.
+         const entry: SharedRead = {
+            read: readFresh(t),
+            startedAt: Date.now(),
+         };
+         reading!.set(key, entry);
          try {
-            const members = await read;
+            const members = await entry.read;
             if (members && !expired) resolved.set(resource, members);
          } finally {
-            reading!.delete(key);
+            // A hung read replaced by a newer one must not remove the newer.
+            if (reading!.get(key) === entry) reading!.delete(key);
          }
       };
       const readFresh = async (

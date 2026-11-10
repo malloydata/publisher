@@ -327,6 +327,48 @@ describe("a DuckDB schema with STRUCT columns", () => {
       }
    });
 
+   it("shares a recent read that has not returned, and starts its own once that read is too old", async () => {
+      await malloy.runSQL(
+         `create table hung as select 1 as id, {'city': 'Denver'} as place`,
+      );
+      const real = malloy.fetchSchemaForTables.bind(malloy);
+      let calls = 0;
+      // The first read never returns; the next one answers.
+      const reads = spyOn(malloy, "fetchSchemaForTables").mockImplementation(((
+         ...args: Parameters<typeof real>
+      ) => {
+         calls++;
+         return calls === 1 ? new Promise(() => {}) : real(...args);
+      }) as typeof real);
+      const limits = { ...schemaReadLimits };
+      schemaReadLimits.deadlineMs = 20;
+      schemaReadLimits.sharedReadMaxAgeMs = 200;
+      try {
+         const list = async () =>
+            (
+               await listTablesForSchema(conn, "memory.main", malloy, ["hung"])
+            )[0];
+         expect((await list()).membersUnread).toBe(true);
+         // The hung read is recent: the next listing waits on it, not a new one.
+         expect((await list()).membersUnread).toBe(true);
+         expect(calls).toBe(1);
+         await Bun.sleep(250);
+         // Now too old to trust: this listing reads the table itself.
+         const table = await list();
+         expect(calls).toBe(2);
+         expect(table.membersUnread).toBeUndefined();
+         expect(table.columns?.map((c) => c.name)).toEqual([
+            "id",
+            "place",
+            "place.city",
+         ]);
+      } finally {
+         Object.assign(schemaReadLimits, limits);
+         reads.mockRestore();
+         await malloy.runSQL(`drop table hung`);
+      }
+   });
+
    it("neither reads nor marks a table whose name Malloy will not read unquoted", async () => {
       await malloy.runSQL(
          `create table "my-tbl" as select 1 as id, {'city': 'Denver'} as place`,
