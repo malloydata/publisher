@@ -26,6 +26,7 @@ import type { EmbeddingModel } from "../llm/types";
 import {
    DEFAULT_EMBEDDING_RETRY,
    embeddingBatchTimeoutMs,
+   MAX_BULK_EMBED_ROWS,
    prepareEmbeddingInput,
 } from "../llm/embedding_provider";
 import type { DuckDBConnection } from "../../storage/duckdb/DuckDBConnection";
@@ -206,7 +207,10 @@ export async function syncVectors(args: {
       );
    progress();
    let chars = 0;
-   const batchSize = Math.max(1, Math.min(provider.maxBatch, 256));
+   const batchSize = Math.max(
+      1,
+      Math.min(provider.maxBatch, MAX_BULK_EMBED_ROWS),
+   );
    const timeoutMs = embeddingBatchTimeoutMs();
    for (let i = 0; i < toEmbed.length; i += batchSize) {
       if (args.shouldStop?.()) break;

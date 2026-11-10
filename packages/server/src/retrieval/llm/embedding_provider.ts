@@ -15,6 +15,7 @@ import type { EmbeddingModel } from "./types";
 
 export {
    EMBEDDING_BATCH_TIMEOUT_MS,
+   MAX_BULK_EMBED_ROWS,
    MAX_EMBED_INPUT_CHARS,
    prepareEmbeddingInput,
 } from "./embedding_http";

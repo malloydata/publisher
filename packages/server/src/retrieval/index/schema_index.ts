@@ -5,9 +5,11 @@ import { createHash } from "crypto";
 import type { EmbeddingModel } from "../llm/types";
 import lunr from "lunr";
 import { logger } from "../../logger";
+import { publicMessage } from "../../service/http_retry";
 import {
    embeddingBatchTimeoutMs,
    EMBEDDING_QUERY_TIMEOUT_MS,
+   MAX_BULK_EMBED_ROWS,
 } from "../llm/embedding_provider";
 // Shared with the package index so a query is humanized the same way
 // whichever index answers it.
@@ -243,8 +245,8 @@ export interface LexicalCacheEntry {
  */
 export class SchemaIndexCaches {
    /**
-    * Embedded schema vectors. Deliberately NOT persisted: rebuilding is one
-    * batch call per schema, and writing a customer's warehouse identifiers to
+    * Embedded schema vectors. Deliberately NOT persisted: vectors are rebuilt
+    * on cache misses, and writing a customer's warehouse identifiers to
     * disk is a separate disclosure decision.
     */
    readonly vectors = new Map<string, VectorCacheEntry>();
@@ -337,6 +339,15 @@ async function tryRankSemantically(args: {
    const fingerprint = schemaFingerprint(tables);
    const providerKey = providerKeyFor(provider);
    let entry = touchCacheEntry(caches.vectors, cacheKey);
+   // The package index's request size: its row cap, or the provider's batch
+   // size when that is smaller.
+   const batchSize = Math.max(
+      1,
+      Math.min(provider.maxBatch, MAX_BULK_EMBED_ROWS),
+   );
+   // Set while the table vectors are embedded, the one step whose deadline is
+   // `retrieval.embedding.timeoutMs`.
+   let tableDeadlineMs: number | undefined;
 
    try {
       if (
@@ -347,10 +358,17 @@ async function tryRankSemantically(args: {
          const texts = tables.map(
             (t) => (provider.documentPrefix ?? "") + tableIndexText(t),
          );
-         const vectors = await provider.embedBatch(
-            texts,
-            embeddingBatchTimeoutMs(),
-         );
+         tableDeadlineMs = embeddingBatchTimeoutMs();
+         const vectors: number[][] = [];
+         for (let i = 0; i < texts.length; i += batchSize) {
+            vectors.push(
+               ...(await provider.embedBatch(
+                  texts.slice(i, i + batchSize),
+                  tableDeadlineMs,
+               )),
+            );
+         }
+         tableDeadlineMs = undefined;
          if (vectors.length !== tables.length) {
             throw new Error(
                `Embedding provider returned ${vectors.length} vectors for ${tables.length} inputs`,
@@ -391,11 +409,20 @@ async function tryRankSemantically(args: {
       pruneCooldowns(caches.cooldownUntilMs);
       // The message can carry a provider body excerpt but never the API key,
       // which stays in the Authorization header.
+      const message = error instanceof Error ? error.message : String(error);
       logger.warn(
          "[MCP Tool searchDatabaseSchema] Embedding failed; ranking lexically",
          {
             cacheKey,
-            error: error instanceof Error ? error.message : String(error),
+            error: message,
+            // A timeout of the table vectors is the failure a setting changes.
+            // An HTTP error whose body mentions a timeout is not one.
+            ...(tableDeadlineMs !== undefined &&
+            /^Embedding request failed: timed out\b/.test(publicMessage(error))
+               ? {
+                    deadline: `${tableDeadlineMs} ms for each request of up to ${batchSize} tables (retrieval.embedding.timeoutMs)`,
+                 }
+               : {}),
          },
       );
       return null;

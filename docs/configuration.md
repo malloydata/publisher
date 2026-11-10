@@ -380,7 +380,7 @@ credentials, what may leave the machine and the spend ceilings are all in the op
 | `embedding.provider`                                                | One of `openai`, `openai-compatible`, `ollama`, `google`, `vertex` (Anthropic has no embeddings API). Omitted: the `EMBEDDING_*` variables decide, as before.                                                                          |
 | `embedding.model`, `dimensions`, `baseUrl`, `projectId`, `location` | As for `llm`. `model` defaults to `text-embedding-3-small` for `openai` and is required for the other providers. `dimensions` is omitted from requests when unset.                                                                     |
 | `embedding.queryPrefix` / `documentPrefix`                          | Text put before a search query / before indexed text (default empty). `nomic-embed-text` wants `search_query: ` and `search_document: `. Changing `documentPrefix` re-embeds; changing `queryPrefix` does not.                         |
-| `embedding.timeoutMs`                                               | Per-attempt timeout of one index-build embedding request, for the package and connection-schema indexes (default `30000`). Raise it for a slow or shared embedding server. A search query's embedding keeps its 5 s limit.             |
+| `embedding.timeoutMs`                                               | Per-attempt timeout of one bulk embedding request, for the package and connection-schema indexes (default `30000`). Raise it for a slow or shared embedding server. The connection-schema index embeds inside the first `search_database_schema` call for a schema (and again after a schema change or a restart), without retries, so a higher value also lets that call wait longer before it ranks lexically. A search query's embedding keeps its 5 s limit. |
 | `egress.preset`                                                     | `default`: entity names, doc text (an entity's `#(doc)` lines, else its `#"` doc strings, else the database's description of its table or column on a connection with `dbmeta` on) and schema context may be sent to the LLM. `full`: also the field's code and matched dimension values. Access predicates (`#(access_filter)`, `#(authorize)`) are never sent, and there is no setting for that. |
 | `dimensionValues.enabled`                                           | See "Dimension value search".                                                                                                                                                                                                          |
 
@@ -684,7 +684,10 @@ What to know before turning it on:
   schemas are held at once, least-recently-used evicted. They are not written to
   `publisher.db`, so a restart re-embeds a schema the first time it is searched again.
 - Failure behavior: if the endpoint is down, times out, or rejects the key, ranking falls back to
-  lexical (with a warning in the server log) and retries after a cool-down. A schema with more than
+  lexical (with a warning in the server log) and retries after a cool-down. A schema's tables are
+  embedded inside the search call, in requests of up to 256 tables, each under
+  `retrieval.embedding.timeoutMs` and without retries, so a raised value also lets that call wait
+  longer before it ranks lexically. A schema with more than
   5,000 tables is not embedded and stays lexical; lexical is not the cheaper branch, it just
   needs no provider. Its index is built once per schema and cached, so the cost lands on the first
   search after a schema changes rather than on every search. A search response carries a `ranking` field (`"semantic"` or `"lexical"`) so you can tell which
