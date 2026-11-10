@@ -132,7 +132,7 @@ const memberCache = new WeakMap<Connection, Map<string, CachedMembers>>();
 const lastTried = new WeakMap<Connection, Map<string, number>>();
 
 /**
- * Schema reads in flight, by table, per Malloy connection: a listing that
+ * Schema reads in flight, by table and record types, per Malloy connection: a listing that
  * needs a table another listing is already reading waits on that read rather
  * than starting a second one. Resolves to the members, or undefined when the
  * read failed.
@@ -250,22 +250,32 @@ async function withRecordMembers(
       const refreshTimestamp = nextRefreshTimestamp();
       let next = 0;
       let expired = false;
+      // Reads another listing started, which this one waits on without
+      // holding a worker: a slow one cannot keep this listing's own reads
+      // from starting.
+      const joined: Promise<void>[] = [];
       const readOne = async (t: ApiTable) => {
          const resource = t.resource!;
-         const pending = reading!.get(resource);
+         // Keyed by the record types too: a read started for another version
+         // of the table would list that version's members.
+         const key = `${resource}\n${recordTypesOf(t)}`;
+         const pending = reading!.get(key);
          if (pending) {
-            const members = await pending;
-            if (members && !expired) resolved.set(resource, members);
-            else if (!members) failed.push(resource);
+            joined.push(
+               pending.then((members) => {
+                  if (members && !expired) resolved.set(resource, members);
+                  else if (!members) failed.push(resource);
+               }),
+            );
             return;
          }
          const read = readFresh(t);
-         reading!.set(resource, read);
+         reading!.set(key, read);
          try {
             const members = await read;
             if (members && !expired) resolved.set(resource, members);
          } finally {
-            reading!.delete(resource);
+            reading!.delete(key);
          }
       };
       const readFresh = async (
@@ -331,7 +341,7 @@ async function withRecordMembers(
                { length: Math.min(SCHEMA_READ_CONCURRENCY, toRead.length) },
                worker,
             ),
-         ),
+         ).then(() => Promise.all(joined)),
          new Promise<void>((resolve) => {
             timer = setTimeout(resolve, schemaReadLimits.deadlineMs);
          }),

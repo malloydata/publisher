@@ -283,6 +283,50 @@ describe("a DuckDB schema with STRUCT columns", () => {
       }
    });
 
+   it("keeps reading other tables while another listing's slow reads are still running", async () => {
+      const stuck = Array.from({ length: 8 }, (_, i) => `stuck${i}`);
+      for (const name of [...stuck, "good"]) {
+         await malloy.runSQL(
+            `create table ${name} as select 1 as id, {'city': 'Denver'} as place`,
+         );
+      }
+      let release: () => void = () => {};
+      const hang = new Promise<void>((r) => (release = r));
+      let goodReads = 0;
+      // The stuck tables' reads never finish while the test runs; `good`
+      // fails at once, so it needs a read on every listing.
+      const reads = spyOn(malloy, "fetchSchemaForTables").mockImplementation(
+         async (tables: Record<string, string>) => {
+            if (Object.keys(tables)[0].endsWith(".good")) {
+               goodReads++;
+               throw new Error("warehouse unavailable");
+            }
+            await hang;
+            throw new Error("warehouse unavailable");
+         },
+      );
+      const deadline = schemaReadLimits.deadlineMs;
+      schemaReadLimits.deadlineMs = 30;
+      try {
+         for (let i = 0; i < 5; i++) {
+            await listTablesForSchema(conn, "memory.main", malloy, [
+               ...stuck,
+               "good",
+            ]);
+         }
+         // The stuck reads outlive every listing; each later listing joins
+         // them without holding a worker, so every listing reads `good`.
+         expect(goodReads).toBe(5);
+      } finally {
+         release();
+         schemaReadLimits.deadlineMs = deadline;
+         reads.mockRestore();
+         for (const name of [...stuck, "good"]) {
+            await malloy.runSQL(`drop table ${name}`);
+         }
+      }
+   });
+
    it("neither reads nor marks a table whose name Malloy will not read unquoted", async () => {
       await malloy.runSQL(
          `create table "my-tbl" as select 1 as id, {'city': 'Denver'} as place`,
