@@ -105,7 +105,7 @@ Two tools, in this order.
 
 A search takes exactly one `scopes` entry, because retrieval is indexed per package. With no `search_targets`, `get_context` lists instead: no arguments lists the environments, `environment` lists that environment's packages, a package in `scopes` lists its sources, and a source lists its fields. A level with only one choice is entered, so on a server with one package a call with no arguments returns its sources.
 
-Use the names it returns exactly. Do not invent environments, packages, sources, or fields. A field reached through a join is named by its full dotted path; pass it verbatim rather than rebuilding it. So is a member of a record column (`delivery.city`). A member of a repeated record has `relationship: "many"`: grouping or aggregating by it counts each element, not each row. An array of plain values is listed as `tags.each`, its values, also `many`.
+Use the names it returns exactly. Do not invent environments, packages, sources, or fields. A field reached through a join is named by its full dotted path; pass it verbatim rather than rebuilding it. So is a member of a record column (`delivery.city`). A member of a repeated record has `relationship: "many"`: grouping by it gives a group per element value, and the groups can add up to more than the total. An array of plain values is listed as `tags.each`, its values, also `many`.
 
 ## 2. Run the query
 

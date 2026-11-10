@@ -348,7 +348,7 @@ describe("record members (#1526)", () => {
                "run: orders -> { group_by: s is traffic_source.`source`, y is traffic_source.`date`.`year` }",
             ),
          ).toEqual([{ s: "google", y: 2024 }]);
-         // Grouping by a repeated record's member counts each element.
+         // Grouping by a repeated record's member gives a group per value.
          expect(
             await run(
                "run: orders -> { group_by: lines.sku; aggregate: n is count() } -> { select: sku, n; order_by: sku }",

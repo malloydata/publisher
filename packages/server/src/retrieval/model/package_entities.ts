@@ -473,8 +473,8 @@ export function memberPathOf(e: {
  * source keeps the join's `joinPath` beside its `recordPath`.
  *
  * A member of a repeated record (an array of records, `lines.sku`) has
- * relationship `many`, because aggregating through it counts each element; a
- * record inside a repeated record stays `many`. A member takes its record's
+ * relationship `many`, because grouping by it gives a group per element
+ * value; a record inside a repeated record stays `many`. A member takes its record's
  * classification when it has none of its own, and its doc from its own
  * annotations (entityDocs), as any other field does. An array of scalars has
  * one member, its element, named `each` (`tags.each`), also `many`. A member
