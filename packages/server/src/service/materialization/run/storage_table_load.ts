@@ -336,11 +336,12 @@ export async function copyStorageTable(params: {
       if (
          partitionedBy.length > 0 &&
          sameCatalog &&
-         source.schemaName === params.schemaName &&
-         source.tableName === params.tableName
+         sameIdentifier(source.schemaName, params.schemaName) &&
+         sameIdentifier(source.tableName, params.tableName)
       ) {
          // The partitioned write replaces the table empty before it reads the
-         // source, so onto itself it would commit zero rows.
+         // source, so onto itself it would commit zero rows. DuckDB resolves
+         // names case-insensitively, so `Events` onto `events` is itself too.
          throw new BadRequestError(
             `Table '${source.schemaName}.${source.tableName}' is partitioned and cannot ` +
                "be copied onto itself; copy it to another name.",
@@ -359,6 +360,15 @@ export async function copyStorageTable(params: {
    } finally {
       await dispose();
    }
+}
+
+/**
+ * Whether two names resolve to the same DuckDB object: DuckDB matches schema and
+ * table names case-insensitively, quoted or not. Both are held to {@link IDENT}
+ * (ASCII), so lowercasing is the whole comparison.
+ */
+function sameIdentifier(a: string, b: string): boolean {
+   return a.toLowerCase() === b.toLowerCase();
 }
 
 /** The alias a copy attaches its source catalog under. */

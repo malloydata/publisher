@@ -601,29 +601,33 @@ describe.skipIf(!SUPERUSER)(
             expect(files.every((f) => Number(f.keys) === 2)).toBe(true);
 
             // Onto itself, the partitioned write would replace the table empty
-            // before reading it.
-            const self = await refusal(
-               admin.putTable(
-                  "ds_owned",
-                  "materialized",
-                  "events",
-                  {
-                     source: {
-                        catalog: "ds_owned",
-                        schema: "materialized",
-                        table: "events",
+            // before reading it. DuckDB resolves names case-insensitively, so
+            // another spelling of the same name is the same table.
+            for (const target of ["events", "Events", "EVENTS"]) {
+               const self = await refusal(
+                  admin.putTable(
+                     "ds_owned",
+                     "materialized",
+                     target,
+                     {
+                        source: {
+                           catalog: "ds_owned",
+                           schema: "materialized",
+                           table: "events",
+                        },
                      },
-                  },
-                  false,
-               ),
-            );
-            expect([self.status, self.reason]).toEqual([
-               400,
-               "INVALID_REQUEST",
-            ]);
-            expect(await writtenEncrypted("ds_owned", "events")).toMatchObject({
-               rows: 6,
-            });
+                     false,
+                  ),
+               );
+               expect([target, self.status, self.reason]).toEqual([
+                  target,
+                  400,
+                  "INVALID_REQUEST",
+               ]);
+               expect(
+                  await writtenEncrypted("ds_owned", "events"),
+               ).toMatchObject({ rows: 6 });
+            }
          } finally {
             await admin.deleteTable("ds_standalone", "main", "events");
          }

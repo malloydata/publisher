@@ -23,6 +23,7 @@ import {
    dropStorageTable,
    dropStorageTableSql,
    partitionKeySql,
+   partitionOrderSql,
    passthroughSourceType,
    wrapPassthrough,
    writePartitionedTable,
@@ -877,6 +878,40 @@ describe("partitionKeySql", () => {
    );
 });
 
+describe("partitionOrderSql", () => {
+   it.each([
+      [[["region", "identity"]], [`"region"`]],
+      [
+         [
+            ["day", "year"],
+            ["category", "identity"],
+         ],
+         [`year("day")`, `"category"`, `"day"`],
+      ],
+      [
+         [
+            ["ts", "month"],
+            ["ts", "day"],
+         ],
+         [`month("ts")`, `day("ts")`, `"ts"`],
+      ],
+      // No scalar `bucket` exists, so a bucket key orders by its column only.
+      [
+         [
+            ["sku", "bucket(16)"],
+            ["region", "identity"],
+         ],
+         [`"region"`, `"sku"`],
+      ],
+   ] as [string[][], string[]][])("orders %j by %j", (keys, terms) => {
+      expect(
+         partitionOrderSql(
+            keys.map(([column, transform]) => ({ column, transform })),
+         ),
+      ).toEqual(terms);
+   });
+});
+
 describe("writePartitionedTable", () => {
    const recordingSession = () => {
       const issued: string[] = [];
@@ -912,9 +947,11 @@ describe("writePartitionedTable", () => {
       expect(transaction[2]).toBe(
          `ALTER TABLE "lake"."main"."events" SET PARTITIONED BY (year("day"), "category", month("day"))`,
       );
-      // Ordered by each key's column once, in key order.
-      expect(transaction[3]).toMatch(
-         /^INSERT INTO "lake"\."main"\."events" \(SELECT \* FROM \(\nSELECT \* FROM "src"\."main"\."events"\n\) AS partitioned_build ORDER BY "day", "category"\)$/,
+      // Ordered by the keys as DuckLake partitions on them, then by the
+      // transformed column, so a year's categories are not interleaved.
+      expect(transaction[3]).toBe(
+         `INSERT INTO "lake"."main"."events" (SELECT * FROM (\nSELECT * FROM "src"."main"."events"\n) ` +
+            `AS partitioned_build ORDER BY year("day"), "category", month("day"), "day")`,
       );
       expect(transaction[4]).toBe("COMMIT");
       // The bounds are set before the transaction and threads restored after.

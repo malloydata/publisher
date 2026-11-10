@@ -153,16 +153,24 @@ export function orderByPartitionColumns(
    partitionColumns: readonly string[],
    dialect: string,
 ): string {
-   if (partitionColumns.length === 0) {
+   return orderByExpressions(
+      selectSQL,
+      partitionColumns.map((name) => quoteIdentifier(name, dialect)),
+   );
+}
+
+/** {@link orderByPartitionColumns}, for order terms already rendered as SQL. */
+export function orderByExpressions(
+   selectSQL: string,
+   expressions: readonly string[],
+): string {
+   if (expressions.length === 0) {
       return selectSQL;
    }
-   const order = partitionColumns
-      .map((name) => quoteIdentifier(name, dialect))
-      .join(", ");
    // A trailing terminator would end the subselect early. The closing paren
    // goes on its own line so a trailing `--` comment cannot swallow it.
    const inner = selectSQL.replace(/[\s;]+$/, "");
-   return `SELECT * FROM (\n${inner}\n) AS partitioned_build ORDER BY ${order}`;
+   return `SELECT * FROM (\n${inner}\n) AS partitioned_build ORDER BY ${expressions.join(", ")}`;
 }
 
 /**
@@ -1659,6 +1667,34 @@ export function partitionKeySql(key: PartitionKey): string {
 }
 
 /**
+ * The ORDER BY terms that bring a partitioned insert's rows in partition order:
+ * each key as DuckLake partitions on it (`year("day")`, not `"day"`, so a year's
+ * categories are not interleaved across its days), then each transformed key's
+ * own column, so a time partition's rows also arrive in time order. Each term
+ * once, in key order.
+ *
+ * A `bucket(N)` key cannot be ordered by: DuckDB has no scalar `bucket`, only
+ * the partition transform. It orders by its column, which does not group a
+ * bucket's rows, so on a bucketed key the appender can meet every bucket at
+ * once and the memory bound the order exists for does not hold for that key.
+ */
+export function partitionOrderSql(keys: readonly PartitionKey[]): string[] {
+   const terms: string[] = [];
+   const add = (term: string) => {
+      if (!terms.includes(term)) terms.push(term);
+   };
+   for (const key of keys) {
+      if (!BUCKET_TRANSFORM.test(key.transform)) add(partitionKeySql(key));
+   }
+   for (const key of keys) {
+      if (key.transform !== "identity") {
+         add(quoteIdentifier(key.column, STORAGE_TARGET_DIALECT));
+      }
+   }
+   return terms;
+}
+
+/**
  * Create `quotedTablePath` empty, lay it out by `keys`, fill it from `selectSQL`,
  * then run `read`, all in ONE transaction, and return what `read` returns.
  * Shared by a partitioned build and a partitioned copy (the admin API's).
@@ -1687,9 +1723,7 @@ export async function writePartitionedTable<T>(
 ): Promise<T> {
    const { quotedTablePath, selectSQL, keys } = params;
    const layout = keys.map(partitionKeySql).join(", ");
-   // Ordered by the keys' columns, each once: rows of one partition arrive
-   // together whatever its transform.
-   const orderColumns = [...new Set(keys.map((key) => key.column))];
+   const order = partitionOrderSql(keys);
    // One switch: `off` on the threshold disables all three bounds, which only
    // work together.
    const flushThreshold = getPartitionedWriteFlushThreshold();
@@ -1718,11 +1752,7 @@ export async function writePartitionedTable<T>(
          );
          // See orderByPartitionColumns.
          const inserted = bounded
-            ? orderByPartitionColumns(
-                 selectSQL,
-                 orderColumns,
-                 STORAGE_TARGET_DIALECT,
-              )
+            ? orderByExpressions(selectSQL, order)
             : selectSQL;
          await session.runSQL(`INSERT INTO ${quotedTablePath} (${inserted})`);
          return await params.read();
