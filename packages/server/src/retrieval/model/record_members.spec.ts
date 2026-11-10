@@ -14,6 +14,9 @@ import { fakeOf } from "../../test_helpers/store_fakes";
 import { RetrievalRegistry } from "../registry";
 import { valueFetcherFor } from "../search/values";
 import { buildSourceSummaryInputs } from "../index/source_summaries";
+import { compileFcjFixture } from "../../test_helpers/fcj_fixture";
+import { DEFAULT_PACKAGE_RETRIEVAL } from "../../service/package_retrieval_settings";
+import { buildCatalog, catalogInputOf } from "./catalog";
 import { registerGetContextTool } from "../../mcp/tools/get_context_tool";
 import { testRetrieval } from "../../test_helpers/test_retrieval";
 import {
@@ -681,5 +684,36 @@ source: invoices is duckdb.sql("""select {'city': 'Golden'} as billing""")
       } finally {
          await f.close();
       }
+   });
+});
+
+describe("record members of a hidden joined source", () => {
+   it("adds the members with the record when unservedCopies copies a hidden source's fields", async () => {
+      const f = await compileFcjFixture(
+         {
+            "m.malloy": `
+#(agent-hidden)
+source: customers is duckdb.sql("""select 7 as id, {'tier': 'gold', 'since': {'yr': 2020}} as profile""")
+source: orders is duckdb.sql("""select 7 as customer_id""") extend {
+  join_many: customer is customers on customer_id = customer.id
+}
+`,
+         },
+         {},
+         DEFAULT_PACKAGE_RETRIEVAL,
+      );
+      const catalog = buildCatalog({
+         ...(await catalogInputOf(f.pkgIndex)),
+         unservedCopies: 3,
+      });
+      const node = (name: string) =>
+         catalog.nodes.get(`dimension:orders@m.malloy:${name}`);
+      expect(node("customer.profile")?.dataType).toBe("record");
+      expect(node("customer.profile.tier")).toMatchObject({
+         dataType: "string",
+         joinPath: "customer",
+         relationship: "many",
+      });
+      expect(node("customer.profile.since.yr")?.joinPath).toBe("customer");
    });
 });

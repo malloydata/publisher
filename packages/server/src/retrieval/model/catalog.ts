@@ -25,8 +25,11 @@ import type { Relationship } from "@malloydata/malloy-interfaces";
 import { compareText as comparePaths } from "../../compare_text";
 import { splitSourceId } from "../../service/source_id";
 import {
+   collectRecordMembers,
    entityDocs,
    enterJoin,
+   type FieldType,
+   MAX_RECORD_MEMBERS_PER_SOURCE,
    modelPathOfUrl,
    sourceContextKey,
 } from "./package_entities";
@@ -810,7 +813,7 @@ interface InfoField {
    annotations?: Array<string | { value: string }>;
    schema?: { fields?: InfoField[] };
    relationship?: Relationship;
-   type?: { kind?: string };
+   type?: FieldType;
 }
 
 /**
@@ -883,6 +886,8 @@ function unservedCopies(args: {
          walked.add(sourceKey);
          const sourceName = sources.get(sourceKey)?.name ?? info.name;
          let paths = 0;
+         // Record members this source's unserved copies may still add.
+         const memberBudget = { left: MAX_RECORD_MEMBERS_PER_SOURCE };
          const visit = (
             fields: readonly InfoField[],
             compiled: readonly CompiledField[] | undefined,
@@ -962,6 +967,40 @@ function unservedCopies(args: {
                      ...(dataType ? { dataType } : {}),
                   } as Entity,
                });
+               // A record's members, as the entity index walks them on a
+               // joined source (collectRecordMembers): `customer.profile.tier`.
+               if (f.kind !== "dimension") continue;
+               const members: Entity[] = [];
+               collectRecordMembers({
+                  type: f.type,
+                  path: name,
+                  recordPath: f.name,
+                  joinPath,
+                  sourceName,
+                  modelPath: model.modelPath,
+                  fanout,
+                  depth: 1,
+                  nextId: () => "",
+                  out: members,
+                  budget: memberBudget,
+               });
+               for (const m of members) {
+                  m.id = `unserved:${sourceKey}:${m.name}`;
+                  if (locked) {
+                     m.doc = "";
+                     m.embedDoc = "";
+                     delete m.docSource;
+                  }
+                  const field = m.name.slice(joinPath.length + 1);
+                  found.push({
+                     field: m.name,
+                     identity: [owner, ...rest, m.kind, field].join("\u0000"),
+                     sourceKey,
+                     exists: hasNode(m.kind, sourceKey, m.name),
+                     depth: path.length,
+                     entity: m,
+                  });
+               }
             }
          };
          visit(

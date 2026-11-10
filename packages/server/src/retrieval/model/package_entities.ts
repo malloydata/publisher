@@ -388,7 +388,7 @@ interface JoinSchemaField {
 }
 
 /** A field's compiled type, as far as the record walk reads it. */
-interface FieldType {
+export interface FieldType {
    kind?: string;
    /**
     * A record's members. A member's annotations carry the database's
@@ -484,7 +484,7 @@ export function memberPathOf(e: {
  * are indexed per source (`budget`), in schema order; a dropped member is
  * still queryable by name, only not offered by search.
  */
-function collectRecordMembers(args: {
+export function collectRecordMembers(args: {
    type: FieldType | undefined;
    /** The member name's dotted prefix: `delivery`, or `customer.profile`. */
    path: string;
