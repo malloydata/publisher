@@ -440,8 +440,12 @@ export const MALLOY_RESERVED_WORDS: ReadonlySet<string> = new Set(
    ).split(" "),
 );
 
-/** A plain member name as a path segment: backticked when it is reserved. */
-function memberSegment(name: string): string {
+/**
+ * A plain name as a segment of a record member's path, backticked when it is
+ * reserved: the record's own column (`` `date`.month ``) as well as each
+ * member under it.
+ */
+export function memberSegment(name: string): string {
    return MALLOY_RESERVED_WORDS.has(name.toLowerCase()) ? `\`${name}\`` : name;
 }
 
@@ -524,7 +528,8 @@ export function collectRecordMembers(args: {
    // A record whose own name holds a dot or a space (`a.b`): a member's
    // dotted name under it would not compile, and memberPathOf could not
    // split it back into segments.
-   if (depth === 1 && !PLAIN_MEMBER_NAME.test(recordPath)) return;
+   if (depth === 1 && !PLAIN_MEMBER_NAME.test(recordPath.replace(/`/g, "")))
+      return;
    for (const member of type.fields ?? []) {
       if (!member.name || !PLAIN_MEMBER_NAME.test(member.name)) continue;
       if (args.budget.left <= 0) return;
@@ -798,8 +803,8 @@ function collectJoinedFields(args: {
       ) {
          collectRecordMembers({
             type: field.type,
-            path: `${joinPath}.${field.name}`,
-            recordPath: field.name,
+            path: `${joinPath}.${memberSegment(field.name)}`,
+            recordPath: memberSegment(field.name),
             joinPath,
             sourceName,
             modelPath,
@@ -1084,12 +1089,12 @@ async function collectEntities(pkg: Package): Promise<CollectedModel> {
                aliasOf !== undefined &&
                (visible.has(aliasOf) ||
                   (aliasOf.includes(".") &&
-                     visible.has(aliasOf.split(".")[0])));
+                     visible.has(aliasOf.split(".")[0].replace(/`/g, ""))));
             if (field.kind === "dimension" && !aliasOfVisible) {
                collectRecordMembers({
                   type: (field as { type?: FieldType }).type,
-                  path: field.name,
-                  recordPath: field.name,
+                  path: memberSegment(field.name),
+                  recordPath: memberSegment(field.name),
                   sourceName,
                   modelPath,
                   fanout: "one",
@@ -1293,8 +1298,15 @@ function malloyType(field: { type?: { kind?: string } }): string | undefined {
  * are listed under the raw record's name.
  */
 function inheritRecordClasses(entities: Entity[]): Entity[] {
+   // Backticks dropped: a record is listed as `date`, while its members'
+   // recordPath spells it `` `date` `` (memberSegment).
    const cardKey = (e: Entity, name: string) =>
-      [e.modelPath, e.source ?? "", e.joinPath ?? "", name].join(KEY_SEPARATOR);
+      [
+         e.modelPath,
+         e.source ?? "",
+         e.joinPath ?? "",
+         name.replace(/`/g, ""),
+      ].join(KEY_SEPARATOR);
    const classesOf = new Map<string, Entity>();
    for (const e of entities) {
       if (e.kind !== "dimension" || !e.classifications) continue;

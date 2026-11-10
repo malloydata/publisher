@@ -57,6 +57,8 @@ const SQL = `select 1 as order_id,
 const MODEL = `##! experimental.access_modifiers
 source: customers is duckdb.sql("""select 7 as id, {'tier': 'gold'} as profile, [{'sku': 'x'}] as items""")
 
+source: visits is duckdb.sql("""select {'source': 'google', 'year': 2024} as "date", {'source': 'bing', 'city': 'Lyon'} as traffic""")
+
 source: tagged is duckdb.sql("""select 'A' as order_ref, ['red', 'blue'] as tags union all select 'B', ['red']""")
 
 source: renamed is duckdb.sql("""select 1 as k, {'city': 'Denver'} as delivery""") extend {
@@ -256,6 +258,23 @@ describe("record members (#1526)", () => {
       ]);
    });
 
+   it("backticks a record whose own column name is a reserved word", () => {
+      expect(
+         fixture.pkgIndex.directEntities
+            .filter((e) => e.source === "visits" && e.recordPath)
+            .map((e) => [e.name, e.recordPath]),
+      ).toEqual([
+         ["`date`.`source`", "`date`"],
+         ["`date`.`year`", "`date`"],
+         ["traffic.`source`", "traffic"],
+         ["traffic.city", "traffic"],
+      ]);
+      expect(memberPathOf(entity("visits", "`date`.`year`")!)).toEqual([
+         "date",
+         "year",
+      ]);
+   });
+
    it("knows Malloy's reserved words, every one of them", async () => {
       // Malloy does not export its keyword list; this reads the copy it
       // generates from its grammar, so a new keyword fails here.
@@ -349,6 +368,12 @@ describe("record members (#1526)", () => {
                "run: orders -> { group_by: s is traffic_source.`source`, y is traffic_source.`date`.`year` }",
             ),
          ).toEqual([{ s: "google", y: 2024 }]);
+         const visits = fixture.pkgIndex.directEntities
+            .filter((e) => e.source === "visits" && e.recordPath)
+            .map((e, i) => `v${i} is ${e.name}`);
+         expect(
+            await run(`run: visits -> { group_by: ${visits.join(", ")} }`),
+         ).toEqual([{ v0: "google", v1: 2024, v2: "bing", v3: "Lyon" }]);
          // Grouping by a repeated record's member gives a group per value.
          expect(
             await run(
@@ -747,7 +772,7 @@ describe("record members of a hidden joined source", () => {
          {
             "m.malloy": `
 #(agent-hidden)
-source: customers is duckdb.sql("""select 7 as id, {'tier': 'gold', 'since': {'yr': 2020}} as profile""")
+source: customers is duckdb.sql("""select 7 as id, {'tier': 'gold', 'since': {'yr': 2020}} as profile, {'yr': 1} as "date" """)
 source: orders is duckdb.sql("""select 7 as customer_id""") extend {
   join_many: customer is customers on customer_id = customer.id
 }
@@ -769,6 +794,7 @@ source: orders is duckdb.sql("""select 7 as customer_id""") extend {
          relationship: "many",
       });
       expect(node("customer.profile.since.yr")?.joinPath).toBe("customer");
+      expect(node("customer.`date`.yr")?.joinPath).toBe("customer");
    });
 });
 

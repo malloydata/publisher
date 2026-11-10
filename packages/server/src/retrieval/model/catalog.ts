@@ -30,6 +30,7 @@ import {
    enterJoin,
    type FieldType,
    MAX_RECORD_MEMBERS_PER_SOURCE,
+   memberSegment,
    modelPathOfUrl,
    sourceContextKey,
 } from "./package_entities";
@@ -973,8 +974,8 @@ function unservedCopies(args: {
                const members: Entity[] = [];
                collectRecordMembers({
                   type: f.type,
-                  path: name,
-                  recordPath: f.name,
+                  path: `${joinPath}.${memberSegment(f.name)}`,
+                  recordPath: memberSegment(f.name),
                   joinPath,
                   sourceName,
                   modelPath: model.modelPath,
