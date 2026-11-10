@@ -57,7 +57,9 @@ const SQL = `select 1 as order_id,
 const MODEL = `##! experimental.access_modifiers
 source: customers is duckdb.sql("""select 7 as id, {'tier': 'gold'} as profile, [{'sku': 'x'}] as items""")
 
-source: visits is duckdb.sql("""select {'source': 'google', 'year': 2024} as "date", {'source': 'bing', 'city': 'Lyon'} as traffic""")
+source: visits is duckdb.sql("""select {'source': 'google', 'year': 2024} as "date", {'source': 'bing', 'city': 'Lyon'} as traffic""") extend {
+  dimension: src is traffic.\`source\`
+}
 
 source: tagged is duckdb.sql("""select 'A' as order_ref, ['red', 'blue'] as tags union all select 'B', ['red']""")
 
@@ -266,13 +268,17 @@ describe("record members (#1526)", () => {
       ).toEqual([
          ["`date`.`source`", "`date`"],
          ["`date`.`year`", "`date`"],
-         ["traffic.`source`", "traffic"],
          ["traffic.city", "traffic"],
       ]);
       expect(memberPathOf(entity("visits", "`date`.`year`")!)).toEqual([
          "date",
          "year",
       ]);
+   });
+
+   it("folds a member named by a reserved word into the dimension declared over it", () => {
+      expect(entity("visits", "traffic.`source`")).toBeUndefined();
+      expect(entity("visits", "src")?.aliases).toEqual(["traffic.`source`"]);
    });
 
    it("knows Malloy's reserved words, every one of them", async () => {
@@ -373,7 +379,7 @@ describe("record members (#1526)", () => {
             .map((e, i) => `v${i} is ${e.name}`);
          expect(
             await run(`run: visits -> { group_by: ${visits.join(", ")} }`),
-         ).toEqual([{ v0: "google", v1: 2024, v2: "bing", v3: "Lyon" }]);
+         ).toEqual([{ v0: "google", v1: 2024, v2: "Lyon" }]);
          // Grouping by a repeated record's member gives a group per value.
          expect(
             await run(

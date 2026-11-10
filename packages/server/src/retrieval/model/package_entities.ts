@@ -348,10 +348,15 @@ function readFieldProvenance(
       // A dotted path is a referent too (`delivery_city is delivery.city`):
       // collapseAliases folds only a source's own fields, so it can match a
       // record member, never a field reached through a join.
+      // A member path is spelled as the index names members (memberSegment),
+      // so `src is traffic_source.\`source\`` finds its referent.
+      const path = field.e?.node === "field" ? (field.e.path ?? []) : [];
       const referent =
-         field.e?.node === "field" && (field.e.path?.length ?? 0) >= 1
-            ? field.e.path!.join(".")
-            : undefined;
+         path.length === 0
+            ? undefined
+            : path.length === 1
+              ? path[0]
+              : path.map(memberSegment).join(".");
       // Malloy fills `code` for scalar expressions only, so a view arrives
       // with none; its text is sliced from the file at its `location`.
       // Turtles only: a physical column's location points at the source's
