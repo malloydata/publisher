@@ -652,6 +652,32 @@ export const CONTRACT: Record<string, Case[]> = {
          expect: fails("INITIALIZE_STORAGE"),
       },
    ],
+   compilePackage: [
+      { name: "unset", expect: value(undefined) },
+      {
+         name: "PUBLISHER_COMPILE_PACKAGE",
+         env: { PUBLISHER_COMPILE_PACKAGE: "/pkgs/sales" },
+         expect: value("/pkgs/sales"),
+      },
+      {
+         name: "--compile-package",
+         argv: ["--compile-package", "/pkgs/sales"],
+         expect: value("/pkgs/sales"),
+      },
+   ],
+   bundleOut: [
+      { name: "unset", expect: value(undefined) },
+      {
+         name: "PUBLISHER_BUNDLE_OUT",
+         env: { PUBLISHER_BUNDLE_OUT: "/out/sales.bundle" },
+         expect: value("/out/sales.bundle"),
+      },
+      {
+         name: "--bundle-out",
+         argv: ["--bundle-out", "/out/sales.bundle"],
+         expect: value("/out/sales.bundle"),
+      },
+   ],
    watchEnvironments: [
       { name: "unset", expect: value([]) },
       {

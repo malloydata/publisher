@@ -1599,6 +1599,8 @@ export const SERVER_VALUE_FLAGS = new Set([
    "--shutdown_drain_duration_seconds",
    "--shutdown_graceful_close_timeout_seconds",
    "--watch-env",
+   "--compile-package",
+   "--bundle-out",
 ]);
 
 /** True when a quote is left open, which sh refuses to run at all. */

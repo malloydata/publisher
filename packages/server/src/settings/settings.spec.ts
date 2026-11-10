@@ -49,6 +49,8 @@ const DESIGN_VARIABLES: Partial<Record<SettingKey, string>> = {
    useBundledDefault: "PUBLISHER_USE_BUNDLED_DEFAULT",
    initializeStorage: "PUBLISHER_INITIALIZE_STORAGE",
    watchEnvironments: "PUBLISHER_WATCH_ENVIRONMENTS",
+   compilePackage: "PUBLISHER_COMPILE_PACKAGE",
+   bundleOut: "PUBLISHER_BUNDLE_OUT",
    "mcp.port": "PUBLISHER_MCP_PORT",
    "mcp.host": "PUBLISHER_MCP_HOST",
    "mcp.corsOrigins": "PUBLISHER_MCP_CORS_ORIGINS",

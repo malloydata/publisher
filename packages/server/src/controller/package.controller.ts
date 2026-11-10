@@ -34,7 +34,11 @@ import {
    recordPackageDryRun,
 } from "../package_load_metrics";
 import type { VersionService } from "../service/versions/version_service";
-import { versionManifestLocation } from "./manifest_location";
+import {
+   MANIFEST_LOCATION_FORMS,
+   isManifestLocation,
+   versionManifestLocation,
+} from "./manifest_location";
 import { changedFields } from "./versioned_patch";
 import { admitPatch } from "../service/package_patch";
 import { loadedPackage } from "./loaded_package";
@@ -609,6 +613,15 @@ export class PackageController {
             if (typeof bodyLocation !== "string") {
                throw new BadRequestError("`location` must be a string.");
             }
+            const bundleLocation = body.modelBundleLocation ?? null;
+            if (
+               bundleLocation !== null &&
+               !isManifestLocation(bundleLocation)
+            ) {
+               throw new BadRequestError(
+                  `\`modelBundleLocation\` must be ${MANIFEST_LOCATION_FORMS}, or null to compile.`,
+               );
+            }
             const download = (stagingPath: string) =>
                this.downloadInto(
                   environmentName,
@@ -659,6 +672,9 @@ export class PackageController {
                      // only recompile a second time.
                      ...(body.manifestLocation
                         ? { manifestLocation: body.manifestLocation }
+                        : {}),
+                     ...(bundleLocation
+                        ? { modelBundleLocation: bundleLocation }
                         : {}),
                   },
                },

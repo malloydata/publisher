@@ -5175,6 +5175,26 @@ components:
             although some of those do change what is served. An unchanged value
             therefore proves an edit to a hashed file did not reach the served
             copy, and says nothing about an edit to anything else.
+        modelBundle:
+          type: object
+          readOnly: true
+          description: >-
+            How this load produced the served models: `hit` hydrated them from
+            the compiled bundle the install named; every other status means
+            they were compiled here, and why the bundle was not used.
+          properties:
+            status:
+              type: string
+              enum: [hit, absent, unreadable, stale_compiler, stale_source, compiled]
+            compilerVersion:
+              type: string
+              description: The compiler version this server hydrates or compiles with.
+            location:
+              type: ["string", "null"]
+              description: The bundle location the load was given, if any.
+            detail:
+              type: string
+              description: For `unreadable`, the error; for a stale status, what differed.
         manifestBindingStatus:
           type: string
           readOnly: true
@@ -5840,6 +5860,34 @@ components:
             persist references (sourceEntityId -> physicalTableName). Null =
             serve live. For a package with published versions, a relative path
             is refused with 400.
+        modelBundleLocation:
+          type: ["string", "null"]
+          description: |
+            Where a compiled model bundle for this package is: a gs:// or s3://
+            URI, a file:// URL, or an absolute path on this server. On (re)load
+            the publisher reads it and, when its stamp names this server's
+            compiler version and this package's source tree, hydrates the
+            models from it instead of compiling them. A bundle that is missing,
+            unreadable or stale falls back to a compile; `modelBundle` on the
+            serving state says which happened. Recorded with the install, so a
+            reload and a restart hydrate from it too. Null = compile.
+        modelBundle:
+          type: object
+          readOnly: true
+          description: >-
+            How the last load produced the served models (also on the serving
+            state): `hit` hydrated them from the bundle; every other status
+            means they were compiled here, and why the bundle was not used.
+          properties:
+            status:
+              type: string
+              enum: [hit, absent, unreadable, stale_compiler, stale_source, compiled]
+            compilerVersion:
+              type: string
+            location:
+              type: ["string", "null"]
+            detail:
+              type: string
         queryMetadata:
           oneOf:
             - $ref: "#/components/schemas/QueryMetadata"
