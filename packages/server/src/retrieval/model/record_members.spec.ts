@@ -13,6 +13,9 @@ import type { PackageLookup } from "../../service/environment_ports";
 import { fakeOf } from "../../test_helpers/store_fakes";
 import { RetrievalRegistry } from "../registry";
 import { valueFetcherFor } from "../search/values";
+import { buildSourceSummaryInputs } from "../index/source_summaries";
+import { registerGetContextTool } from "../../mcp/tools/get_context_tool";
+import { testRetrieval } from "../../test_helpers/test_retrieval";
 import {
    buildFcjIndexFixture,
    CLUSTER_SETTINGS,
@@ -554,5 +557,57 @@ source: visits is duckdb.sql("""select {'source': 'google', 'city': 'Denver'} as
          await duckdb.close();
          fs.rmSync(dir, { recursive: true, force: true });
       }
+   });
+});
+
+describe("listing a source with a wide record", () => {
+   it("lists the source's joins, views and fields before the record's members", async () => {
+      const members = Array.from(
+         { length: 200 },
+         (_, i) => `'m${i}': ${i}`,
+      ).join(", ");
+      const { pkg } = await compileJoinFixture("m.malloy", {
+         modelText: `
+source: items is duckdb.sql("select 1 as k")
+source: events is duckdb.sql("select 1 as k, {${members}} as params, {'x': 1} as tail") extend {
+  join_one: item is items on k = item.k
+  view: by_k is { group_by: k }
+  dimension: late is k + 1
+}
+`,
+      });
+      const store = storeServing(pkg);
+      const handlers = new Map<
+         string,
+         (params: Record<string, unknown>) => Promise<{
+            content: Array<{ resource?: { text: string } }>;
+         }>
+      >();
+      registerGetContextTool(
+         {
+            registerTool: (name: string, _config: unknown, h: never) =>
+               handlers.set(name, h),
+         } as never,
+         store,
+         testRetrieval(store),
+      );
+      const result = await handlers.get("get_context")!({
+         scopes: [{ environment: "env", package: "pkg", source: "events" }],
+      });
+      const payload = JSON.parse(result.content[0].resource!.text);
+      const names: string[] = payload.sources[0].entities.map(
+         (e: { name: string }) => e.name,
+      );
+      expect(names).toContain("item");
+      expect(names).toContain("by_k");
+      expect(names.indexOf("by_k")).toBeLessThan(names.indexOf("params.m0"));
+      // The source summary's field list is capped too: a record column after
+      // the wide one still makes it in.
+      const index = await getPackageIndex(new WeakMap(), store, "env", "pkg");
+      const [input] = buildSourceSummaryInputs(
+         index.retrievalEntities.filter((e) => e.source === "events"),
+      );
+      expect(input.prompt).toContain("(Showing ");
+      expect(input.prompt).toContain("- tail (record)");
    });
 });
