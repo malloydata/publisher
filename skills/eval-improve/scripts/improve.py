@@ -46,10 +46,11 @@ quietly tests the old model. `--watch-mode` says Publisher was started with
 `--watch-env` (`eval.py serve model --set <set> --watch-env <env>`), which symlinks
 local-dir packages in place and makes edits live; then the helper is just a
 reload. Without it the helper syncs the edit onto the served copy first, which
-works only on an older server that serves a copy: a run against published versions
-is refused before any agent starts, because nothing synced there is served and
-the sync would delete them. Either way the agent gets one generated script
-rather than a general shell.
+works only on an older server that serves a copy. Either way a package the
+server serves as a published version is refused before any agent starts (the
+server is asked, in both modes): nothing synced there is served, the sync would
+delete it, and a reload of it answers 200 without reading the edit. Either way
+the agent gets one generated script rather than a general shell.
 """
 from __future__ import annotations
 
@@ -59,6 +60,7 @@ import pathlib
 import subprocess
 import sys
 import time
+import urllib.request
 from typing import Any
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent.parent
@@ -118,6 +120,26 @@ echo "reloaded; if sourceContentSha did not change, the edit did not reach the s
 
 
 SYNC_HELPER = "sync_and_reload.sh"
+
+
+def served_version(rest_url: str | None, environment: str,
+                   package: str) -> str | None:
+    """The version the model server serves this package as, or None.
+
+    The server's own answer: a published version's resource carries its
+    `versionId`, and a watch-mounted or copied package has none. A version
+    is immutable, so neither the sync nor watch mode reaches it. None also
+    when the server cannot be asked; the folder check below still stands.
+    """
+    if not rest_url:
+        return None
+    url = (f"{rest_url.rstrip('/')}/api/v0/environments/{environment}"
+           f"/packages/{package}")
+    try:
+        with urllib.request.urlopen(url, timeout=30) as r:
+            return json.load(r).get("versionId") or None
+    except Exception:
+        return None
 
 
 def served_as_versions(served: pathlib.Path) -> bool:
@@ -500,15 +522,21 @@ def main(argv: list[str] | None = None) -> int:
         print("warning: no --watch-mode and no --server-root, so the agent "
               "cannot sync its edit into Publisher's snapshot; every probe it "
               "runs will test the unedited model")
+    # Asked in both modes: --watch-mode is the caller's claim, and a server
+    # started with --watch-env over a preserved root still serves a version.
+    version = served_version(a.rest_url, a.environment, a.package)
     served = (a.server_root / "publisher_data" / a.environment / a.package
               if a.server_root and not a.watch_mode else None)
-    if served is not None and served_as_versions(served):
+    if version or (served is not None and served_as_versions(served)):
+        what = (f"the model server serves {a.package} as published version "
+                f"{version}" if version else f"{served} holds published versions")
+        why = ("so watch mode is not in effect for it" if a.watch_mode else
+               "no edit synced there is ever served, and the sync would "
+               "delete them")
         raise SystemExit(
-            f"{served} holds published versions, which are immutable: no edit "
-            f"synced there is ever served, and the sync would delete them. "
-            f"Fix: restart the model server in watch mode, `eval.py serve "
-            f"model --set {a.set_dir} --watch-env {a.environment} --reinit`, "
-            f"then pass --watch-mode")
+            f"{what}, which is immutable: {why}. Fix: restart the model "
+            f"server in watch mode, `eval.py serve model --set {a.set_dir} "
+            f"--watch-env {a.environment} --reinit`, then pass --watch-mode")
 
     events = read_jsonl(a.run / "events.jsonl")
     cases = {c["qid"]: c for c in read_jsonl(a.set_dir / "cases.jsonl")}

@@ -575,7 +575,10 @@ def stamp_version(manifest: pathlib.Path) -> None:
     publisher.json declares, and refuses different content under a version it
     already holds (409). A version per build lets a rebuilt report replace the
     one served: the highest version becomes `latest`. The patch is the time in
-    milliseconds, and always above the version it replaces.
+    milliseconds, and above any version already in the file, so a second stamp
+    in the same millisecond still rises. Builds from different machines rely
+    on their clocks: one whose clock runs behind publishes a lower version,
+    which does not become `latest`.
     """
     if not manifest.exists():
         return

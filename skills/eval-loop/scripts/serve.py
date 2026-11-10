@@ -176,6 +176,22 @@ def init_decision(root: pathlib.Path, reinit: bool,
                    f"publisher.config.json")
 
 
+def watch_note(watch_env: str | None, seed: bool) -> str | None:
+    """The warning for --watch-env on a start that does not seed, or None.
+
+    An environment is mounted in place only when it is first loaded from the
+    config, so on a preserved root a package already published stays a
+    version: the flag sets PUBLISHER_WATCH and changes nothing an edit
+    reaches.
+    """
+    if not watch_env or seed:
+        return None
+    return (f"  ! --watch-env {watch_env} on a preserved server root: a package "
+            f"this root already published stays an immutable version, so an "
+            f"edit never reaches it. Pass --reinit too, unless the root was "
+            f"first served with --watch-env")
+
+
 # One ranking call, unscoped, is what kicks the embedding sync.
 #
 # RANKING, because the marker and the sync both hang off the ranking path: a
@@ -577,6 +593,9 @@ def main(argv: list[str] | None = None) -> int:
         env["PUBLISHER_WATCH"] = a.watch_env
     seed, why = init_decision(root, a.reinit, changed)
     print(why)
+    stale_watch = watch_note(a.watch_env, seed)
+    if stale_watch:
+        print(stale_watch)
     note = retrieval_note(env) if a.role != "truth" else None
     if note:
         print(note)

@@ -261,6 +261,40 @@ class ServedAsVersions(unittest.TestCase):
         self.assertFalse(improve.served_as_versions(self.root / "nothing"))
 
 
+class ServedVersion(unittest.TestCase):
+    """The server says whether it serves the package as a published version."""
+
+    def serve(self, body: bytes):
+        import http.server
+        import threading
+
+        class H(http.server.BaseHTTPRequestHandler):
+            def do_GET(self):
+                self.send_response(200)
+                self.end_headers()
+                self.wfile.write(body)
+
+            def log_message(self, *a):
+                pass
+
+        srv = http.server.HTTPServer(("127.0.0.1", 0), H)
+        threading.Thread(target=srv.serve_forever, daemon=True).start()
+        self.addCleanup(srv.shutdown)
+        return f"http://127.0.0.1:{srv.server_port}"
+
+    def test_a_version_is_named(self):
+        base = self.serve(b'{"name": "ecommerce", "versionId": "1.0.0"}')
+        self.assertEqual(improve.served_version(base, "e", "ecommerce"), "1.0.0")
+
+    def test_a_watch_mounted_package_has_none(self):
+        base = self.serve(b'{"name": "ecommerce"}')
+        self.assertIsNone(improve.served_version(base, "e", "ecommerce"))
+
+    def test_a_server_that_cannot_be_asked_is_none(self):
+        self.assertIsNone(improve.served_version("http://127.0.0.1:9", "e", "p"))
+        self.assertIsNone(improve.served_version(None, "e", "p"))
+
+
 class ClusterMembers(unittest.TestCase):
     """The improver sees each case's key. A rows golden kept in
     `golden.path` used to reach it as no key at all."""

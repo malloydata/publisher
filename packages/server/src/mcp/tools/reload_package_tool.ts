@@ -36,7 +36,7 @@ export const RELOAD_FAILURE_IS_SAFE =
  * Keep it a static literal; never derive it from config or request data.
  */
 export const RELOAD_NEEDS_WATCH_MODE =
-   'Only a package in a watched environment (--watch-env) is recompiled from your files. Every other package is a published version, which is immutable: a reload answers it unchanged (mode "unchanged") and your edit is not applied. To ship an edit to one, bump the version in its publisher.json and publish it again.';
+   'A package in a watched environment (--watch-env) is recompiled from your files. By default every other package is a published version, which is immutable: a reload answers it unchanged (mode "unchanged") and your edit is not applied. To ship an edit to one, bump the version in its publisher.json and publish it again.';
 
 /** Said in the response when the reload found a published version. */
 export const VERSION_RELOAD_UNCHANGED =
