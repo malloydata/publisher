@@ -311,7 +311,8 @@ All of that describes the script this tool writes. In a directory that already h
 runs whatever `start` was already there, binding wherever that command says. The same
 goes for everything else on this page that reads off a flag: `--port` and `--mcp_port`
 decide the URLs, `--server_root` and `--config` decide which workspace is served at
-all, and `--watch-env` decides whether an edit on disk is picked up without a reload.
+all, and `--watch-env` decides whether an edit on disk is picked up at all: without it
+the package is served as a published version, which a reload does not change.
 Read them out of the command you are about to run rather than off this page.
 
 Then read it off the server, which is the only ground truth. On boot it prints

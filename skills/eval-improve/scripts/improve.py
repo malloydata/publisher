@@ -39,13 +39,17 @@ events describe diffs that never existed alone.
 
 MAKING AN EDIT VISIBLE TO THE SERVER
 
-Publisher normally serves a snapshot copy under `publisher_data/<env>/<pkg>/`,
-so editing the repo and reloading recompiles the unchanged copy: the reload
-succeeds, nothing changes, and the verification probe quietly tests the old
-model. `--watch-mode` says Publisher was started with `--watch-env`, which
-symlinks local-dir packages in place and makes edits live; then the helper is
-just a reload. Without it the helper syncs first. Either way the agent gets one
-generated script rather than a general shell.
+Publisher serves a package outside a watched environment as a published
+version under `publisher_data/<env>/<pkg>/<version>/`, which is immutable:
+editing the repo and reloading changes nothing, and the verification probe
+quietly tests the old model. `--watch-mode` says Publisher was started with
+`--watch-env` (`eval.py serve model --set <set> --watch-env <env>`), which symlinks
+local-dir packages in place and makes edits live; then the helper is just a
+reload. Without it the helper syncs the edit onto the served copy first, which
+works only on an older server that serves a copy: a run against published versions
+is refused before any agent starts, because nothing synced there is served and
+the sync would delete them. Either way the agent gets one generated script
+rather than a general shell.
 """
 from __future__ import annotations
 
@@ -114,6 +118,17 @@ echo "reloaded; if sourceContentSha did not change, the edit did not reach the s
 
 
 SYNC_HELPER = "sync_and_reload.sh"
+
+
+def served_as_versions(served: pathlib.Path) -> bool:
+    """Whether Publisher serves this package folder as published versions.
+
+    A version lives in `<pkg>/<version>/`, so the folder holds no
+    publisher.json of its own. An older server's copy does, and a watch
+    mount is a symlink to the source.
+    """
+    return (served.is_dir() and not served.is_symlink()
+            and not (served / "publisher.json").exists())
 
 
 def git(args: list[str], cwd: pathlib.Path) -> str:
@@ -386,7 +401,9 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--server-root", type=pathlib.Path, default=None,
                     help="Publisher SERVER_ROOT; only needed without watch "
                          "mode. Each accepted edit is rsynced onto the copy "
-                         "this root serves and reloaded. Default: the one "
+                         "this root serves and reloaded, which works only "
+                         "on an older server that serves a copy: a root "
+                         "serving published versions is refused. Default: the one "
                          "`serve.py --role model` uses, when it exists")
     ap.add_argument("--watch-mode", action="store_true",
                     help="Publisher was started with --watch-env, so edits are "
@@ -483,6 +500,15 @@ def main(argv: list[str] | None = None) -> int:
         print("warning: no --watch-mode and no --server-root, so the agent "
               "cannot sync its edit into Publisher's snapshot; every probe it "
               "runs will test the unedited model")
+    served = (a.server_root / "publisher_data" / a.environment / a.package
+              if a.server_root and not a.watch_mode else None)
+    if served is not None and served_as_versions(served):
+        raise SystemExit(
+            f"{served} holds published versions, which are immutable: no edit "
+            f"synced there is ever served, and the sync would delete them. "
+            f"Fix: restart the model server in watch mode, `eval.py serve "
+            f"model --set {a.set_dir} --watch-env {a.environment} --reinit`, "
+            f"then pass --watch-mode")
 
     events = read_jsonl(a.run / "events.jsonl")
     cases = {c["qid"]: c for c in read_jsonl(a.set_dir / "cases.jsonl")}

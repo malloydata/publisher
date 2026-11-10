@@ -229,6 +229,38 @@ class TruthEnvironment(unittest.TestCase):
 
 
 
+class ServedAsVersions(unittest.TestCase):
+    """The snapshot sync (`rsync --delete` onto the served folder) is safe only
+    over a copy. Over published versions it serves nothing and deletes them,
+    so it is refused."""
+
+    def setUp(self):
+        self.root = pathlib.Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, self.root, True)
+
+    def test_a_folder_of_versions_is_versions(self):
+        served = self.root / "pkg"
+        (served / "1.0.0").mkdir(parents=True)
+        (served / "1.0.0" / "publisher.json").write_text("{}")
+        self.assertTrue(improve.served_as_versions(served))
+
+    def test_a_copy_is_not(self):
+        served = self.root / "pkg"
+        served.mkdir()
+        (served / "publisher.json").write_text("{}")
+        self.assertFalse(improve.served_as_versions(served))
+
+    def test_a_watch_mount_is_not(self):
+        source = self.root / "src"
+        source.mkdir()
+        served = self.root / "pkg"
+        served.symlink_to(source, target_is_directory=True)
+        self.assertFalse(improve.served_as_versions(served))
+
+    def test_a_missing_folder_is_not(self):
+        self.assertFalse(improve.served_as_versions(self.root / "nothing"))
+
+
 class ClusterMembers(unittest.TestCase):
     """The improver sees each case's key. A rows golden kept in
     `golden.path` used to reach it as no key at all."""

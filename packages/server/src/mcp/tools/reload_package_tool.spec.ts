@@ -2,7 +2,10 @@
 // SPDX-License-Identifier: MIT
 
 import { describe, expect, it } from "bun:test";
-import { registerReloadPackageTool } from "./reload_package_tool";
+import {
+   registerReloadPackageTool,
+   VERSION_RELOAD_UNCHANGED,
+} from "./reload_package_tool";
 import type { EnvironmentStore } from "../../service/environment_store";
 import {
    EnvironmentNotFoundError,
@@ -256,9 +259,10 @@ describe("reload_package tool", () => {
    });
 
    it("reports mode unchanged for a published version, recompiling nothing", async () => {
-      // A published version is immutable, so the payload must say nothing was
-      // recompiled: an agent cannot otherwise tell that its saved edit is not
-      // what this package serves.
+      // A published version is immutable, so a reload answers it as it is,
+      // and still as a success: the mode and the message are the only things
+      // that tell an agent its saved edit went nowhere. (The in-place cases
+      // above pin the message's absence.)
       const calls: boolean[] = [];
       const handler = captureHandler(
          storeServingVersion({ name: "ecommerce", versionId: "1.0.0" }, calls),
@@ -268,6 +272,7 @@ describe("reload_package tool", () => {
       expect(parse(result)).toEqual({
          status: "reloaded",
          mode: "unchanged",
+         message: VERSION_RELOAD_UNCHANGED,
          name: "ecommerce",
       });
       expect(calls).not.toContain(true);
