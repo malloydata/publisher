@@ -9341,7 +9341,7 @@ components:
         columns:
           description: |
             The table's columns. A record column (a BigQuery RECORD, a DuckDB
-            STRUCT, a Trino ROW) is followed by its members, named by their
+            STRUCT, a Trino ROW, a Databricks STRUCT) is followed by its members, named by their
             dotted path (`delivery.city`, `delivery.address.zip`). A member
             that follows an `array` column belongs to a repeated record: it
             has one value per element of the array, not one per row. A member

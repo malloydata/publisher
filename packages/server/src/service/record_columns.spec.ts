@@ -258,6 +258,31 @@ describe("a DuckDB schema with STRUCT columns", () => {
       }
    });
 
+   it("reads a table once when listings overlap, and gives each its members", async () => {
+      await malloy.runSQL(
+         "create table shared as select 1 as id, {'city': 'Denver'} as place",
+      );
+      const reads = spyOn(malloy, "fetchSchemaForTables");
+      try {
+         const listings = await Promise.all(
+            [1, 2, 3].map(() =>
+               listTablesForSchema(conn, "memory.main", malloy, ["shared"]),
+            ),
+         );
+         expect(reads).toHaveBeenCalledTimes(1);
+         for (const [table] of listings) {
+            expect(table.columns?.map((c) => c.name)).toEqual([
+               "id",
+               "place",
+               "place.city",
+            ]);
+         }
+      } finally {
+         reads.mockRestore();
+         await malloy.runSQL("drop table shared");
+      }
+   });
+
    it("neither reads nor marks a table whose name Malloy will not read unquoted", async () => {
       await malloy.runSQL(
          `create table "my-tbl" as select 1 as id, {'city': 'Denver'} as place`,

@@ -90,9 +90,10 @@ export function columnsOfSchema(
 const SCHEMA_READ_CONCURRENCY = 8;
 /**
  * How long one listing waits for schema reads. A table not read by then is
- * listed from the cache when its record types are unchanged, and flat
- * otherwise. Reads already in flight still finish and fill the cache, so a
- * schema too large for one listing is covered over the next few.
+ * listed flat and marked `membersUnread`. Reads already in flight still
+ * finish and fill the cache, and the next listing starts with the tables
+ * tried longest ago, so a schema too large for one listing is covered over
+ * the next few.
  */
 const SCHEMA_READ_DEADLINE_MS = 10_000;
 /** The deadline in force; a spec shortens it to exercise the time limit. */
@@ -113,8 +114,8 @@ interface CachedMembers {
  * without reading the schema when the table's record columns still have the
  * same INFORMATION_SCHEMA types, since on DuckDB and Trino that type string
  * spells out every member: `STRUCT(city VARCHAR, ...)`. A type that names no
- * members (a Databricks `struct`) is read every time, and the entry is used
- * only when that read fails.
+ * members (a Databricks `struct`) is read every time and never cached: an
+ * unchanged `struct` says nothing about whether its members changed.
  */
 const memberCache = new WeakMap<Connection, Map<string, CachedMembers>>();
 
@@ -127,6 +128,17 @@ const memberCache = new WeakMap<Connection, Map<string, CachedMembers>>();
  * `struct`), cannot keep the tables after it from being read.
  */
 const lastTried = new WeakMap<Connection, Map<string, number>>();
+
+/**
+ * Schema reads in flight, by table, per Malloy connection: a listing that
+ * needs a table another listing is already reading waits on that read rather
+ * than starting a second one. Resolves to the members, or undefined when the
+ * read failed.
+ */
+const inFlight = new WeakMap<
+   Connection,
+   Map<string, Promise<Map<string, ApiColumn[]> | undefined>>
+>();
 let readsStarted = 0;
 
 /**
@@ -191,6 +203,11 @@ async function withRecordMembers(
       cache = new Map();
       memberCache.set(malloyConnection, cache);
    }
+   let reading = inFlight.get(malloyConnection);
+   if (!reading) {
+      reading = new Map();
+      inFlight.set(malloyConnection, reading);
+   }
    let tried = lastTried.get(malloyConnection);
    if (!tried) {
       tried = new Map();
@@ -203,12 +220,14 @@ async function withRecordMembers(
    // The resolved members of each table in this listing.
    const resolved = new Map<string, Map<string, ApiColumn[]>>();
    const toRead: ApiTable[] = [];
+   // Whether the record types spell out their members (`STRUCT(city ...)`),
+   // so an unchanged type means unchanged members. A Databricks `struct`
+   // names none: its cached members may be stale, so they never stand in.
+   const typesNameMembers = (t: ApiTable) =>
+      recordColumnsOf(t).every((c) => /[(<]/.test(c.type ?? ""));
    for (const t of nested) {
       const hit = cache.get(t.resource!);
-      const reusable = recordColumnsOf(t).every((c) =>
-         /[(<]/.test(c.type ?? ""),
-      );
-      if (hit && reusable && hit.recordTypes === recordTypesOf(t)) {
+      if (hit && typesNameMembers(t) && hit.recordTypes === recordTypesOf(t)) {
          resolved.set(t.resource!, hit.members);
          // Used: move it to the back of the eviction order.
          cache.delete(t.resource!);
@@ -230,6 +249,26 @@ async function withRecordMembers(
       let next = 0;
       let expired = false;
       const readOne = async (t: ApiTable) => {
+         const resource = t.resource!;
+         const pending = reading!.get(resource);
+         if (pending) {
+            const members = await pending;
+            if (members && !expired) resolved.set(resource, members);
+            else if (!members) failed.push(resource);
+            return;
+         }
+         const read = readFresh(t);
+         reading!.set(resource, read);
+         try {
+            const members = await read;
+            if (members && !expired) resolved.set(resource, members);
+         } finally {
+            reading!.delete(resource);
+         }
+      };
+      const readFresh = async (
+         t: ApiTable,
+      ): Promise<Map<string, ApiColumn[]> | undefined> => {
          const resource = t.resource!;
          tried!.delete(resource);
          tried!.set(resource, readsStarted++);
@@ -259,15 +298,15 @@ async function withRecordMembers(
                   }
                }
                cache!.delete(resource);
-               cache!.set(resource, {
-                  recordTypes: recordTypesOf(t),
-                  members,
-               });
+               if (typesNameMembers(t))
+                  cache!.set(resource, {
+                     recordTypes: recordTypesOf(t),
+                     members,
+                  });
                if (cache!.size > MAX_CACHED_TABLES) {
                   cache!.delete(cache!.keys().next().value!);
                }
-               if (!expired) resolved.set(resource, members);
-               return;
+               return members;
             }
             error = read.errors?.[resource];
          } catch (e) {
@@ -278,6 +317,7 @@ async function withRecordMembers(
             table: resource,
             error,
          });
+         return undefined;
       };
       const worker = async () => {
          while (!expired && next < toRead.length) await readOne(toRead[next++]);
@@ -296,20 +336,13 @@ async function withRecordMembers(
       ]);
       clearTimeout(timer);
       expired = true;
-      const unread = toRead.filter((t) => !resolved.has(t.resource!));
+      // A table read neither in time nor successfully is listed flat and
+      // marked. No cached read stands in: a table is only read when its
+      // cached members are missing or may be stale.
       const failedSet = new Set(failed);
-      let missed = 0;
-      for (const t of unread) {
-         // A read that failed or missed the deadline: the last good read
-         // serves when the record types have not changed since.
-         const hit = cache.get(t.resource!);
-         if (hit && hit.recordTypes === recordTypesOf(t)) {
-            resolved.set(t.resource!, hit.members);
-         } else if (!failedSet.has(t.resource!)) {
-            // Past the deadline with nothing cached: this table is marked.
-            missed++;
-         }
-      }
+      const missed = toRead.filter(
+         (t) => !resolved.has(t.resource!) && !failedSet.has(t.resource!),
+      ).length;
       if (missed > 0) {
          logger.warn(
             "Record members not read for some tables: the schema reads ran past the deadline",
