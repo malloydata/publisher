@@ -352,6 +352,94 @@ source: top is a extend { dimension: also_nothing is null }`,
          await duckdb.close();
       }
    });
+
+   it("serves a model the same whoever imports it (#1566)", async () => {
+      // Importing a persistable source makes the translator record each
+      // source's `#@ persist` flag on the imported model's registry entry. The
+      // import must not reach the imported model's own result.
+      const base = `source: facts is duckdb.sql("select 1 as a") -> { group_by: a }\n`;
+      const importer = `import "base.malloy"\nsource: top is facts extend { measure: n is count() }\n`;
+      const { malloyConfig, duckdb } = await buildConfig();
+      const baseModelDef = async (withImporter: boolean) => {
+         const dir = fs.mkdtempSync(path.join(os.tmpdir(), "publisher-alone-"));
+         try {
+            writeManifest(dir);
+            fs.writeFileSync(path.join(dir, "base.malloy"), base);
+            if (withImporter) {
+               fs.writeFileSync(path.join(dir, "importer.malloy"), importer);
+            }
+            const outcome = await pool.loadPackage({
+               packagePath: dir,
+               packageName: "pkg",
+               environmentName: "env",
+               malloyConfig,
+               defaultConnectionName: "duckdb",
+            });
+            for (const m of outcome.models) {
+               expect(m.compilationError).toBeUndefined();
+            }
+            const model = outcome.models.find(
+               (m) => m.modelPath === "base.malloy",
+            );
+            // Malloy names each compile's query sources with a fresh UUID.
+            return JSON.stringify(model?.modelDef)
+               .replaceAll(dir, "<pkg>")
+               .replace(
+                  /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/g,
+                  "<uuid>",
+               );
+         } finally {
+            fs.rmSync(dir, { recursive: true, force: true });
+         }
+      };
+      try {
+         expect(await baseModelDef(true)).toBe(await baseModelDef(false));
+      } finally {
+         await duckdb.close();
+      }
+   });
+
+   it("fails the models of an import cycle, and only those, without holding the load (#1566)", async () => {
+      // a -> b -> c -> a. Malloy has no import-cycle check of its own (the
+      // translator overflows its stack), so each of these fails as it did
+      // before the job cache; nothing is cached from them, and the load ends.
+      writeManifest(tempDir);
+      const write = (rel: string, text: string) =>
+         fs.writeFileSync(path.join(tempDir, rel), text);
+      const src = (name: string) =>
+         `source: ${name} is duckdb.sql("select 1 as a")\n`;
+      write("a.malloy", `import "b.malloy"\n${src("a")}`);
+      write("b.malloy", `import "c.malloy"\n${src("b")}`);
+      write("c.malloy", `import "a.malloy"\n${src("c")}`);
+      write("into_cycle.malloy", `import "a.malloy"\n${src("into")}`);
+      write("free.malloy", src("free"));
+
+      const { malloyConfig, duckdb } = await buildConfig();
+      try {
+         const outcome = await pool.loadPackage({
+            packagePath: tempDir,
+            packageName: "pkg",
+            environmentName: "env",
+            malloyConfig,
+            defaultConnectionName: "duckdb",
+         });
+         const failed = outcome.models
+            .filter((m) => m.compilationError !== undefined)
+            .map((m) => m.modelPath)
+            .sort();
+         expect(failed).toEqual([
+            "a.malloy",
+            "b.malloy",
+            "c.malloy",
+            "into_cycle.malloy",
+         ]);
+         const free = outcome.models.find((m) => m.modelPath === "free.malloy");
+         expect(free?.compilationError).toBeUndefined();
+         expect(free?.modelDef).toBeDefined();
+      } finally {
+         await duckdb.close();
+      }
+   });
 });
 
 // ──────────────────────────────────────────────────────────────────────

@@ -86,6 +86,12 @@ export function jobFiles(inner: TextReader): JobFiles {
  * translated itself and keeps its own problems (a model Malloy returns from
  * its cache carries none), and the compile order only decides how much is
  * reused, never what a model reports.
+ *
+ * The cache holds and hands out copies, so no two compiles share an object, as
+ * when each model had a Runtime of its own. Both directions matter: the
+ * translator writes into the model it imports (it records each source's
+ * `#@ persist` flag on the imported model's registry entry), and a model's own
+ * result goes on to be served and worked on after its compile.
  */
 export class ModelCacheView extends CacheManager {
    constructor(
@@ -95,17 +101,21 @@ export class ModelCacheView extends CacheManager {
       super(new InMemoryModelCache());
    }
 
-   override getCachedModelDef(
+   override async getCachedModelDef(
       ...args: Parameters<CacheManager["getCachedModelDef"]>
    ): ReturnType<CacheManager["getCachedModelDef"]> {
-      if (args[1] === this.ownUrl) return Promise.resolve(undefined);
-      return this.shared.getCachedModelDef(...args);
+      if (args[1] === this.ownUrl) return undefined;
+      const hit = await this.shared.getCachedModelDef(...args);
+      return hit && { ...hit, modelDef: structuredClone(hit.modelDef) };
    }
 
    override setCachedModelDef(
-      ...args: Parameters<CacheManager["setCachedModelDef"]>
+      ...[url, cached]: Parameters<CacheManager["setCachedModelDef"]>
    ): ReturnType<CacheManager["setCachedModelDef"]> {
-      return this.shared.setCachedModelDef(...args);
+      return this.shared.setCachedModelDef(url, {
+         ...cached,
+         modelDef: structuredClone(cached.modelDef),
+      });
    }
 }
 

@@ -7,6 +7,7 @@ import {
    InMemoryModelCache,
    type ModelDef,
 } from "@malloydata/malloy";
+import type { DataStyles } from "@malloydata/render";
 import * as fs from "fs";
 import * as os from "os";
 import * as path from "path";
@@ -33,7 +34,7 @@ describe("importReadOrder", () => {
 });
 
 describe("dataStylesForModel", () => {
-   function filesWithStyles(styles: Record<string, object>) {
+   function filesWithStyles(styles: Record<string, DataStyles>) {
       const files = jobFiles({ readURL: async () => "" });
       for (const [url, s] of Object.entries(styles)) {
          files.stylesByUrl.set(url, s);
@@ -45,27 +46,27 @@ describe("dataStylesForModel", () => {
       // root imports a then b, a imports c. Malloy reads a, b, then c, so
       // c wins over b although a depth-first walk would visit c first.
       const files = filesWithStyles({
-         root: { shared: { renderer: "root" }, own: { renderer: "root" } },
-         b: { shared: { renderer: "b" } },
-         c: { shared: { renderer: "c" } },
+         root: { shared: { renderer: "list" }, own: { renderer: "list" } },
+         b: { shared: { renderer: "bar_chart" } },
+         c: { shared: { renderer: "line_chart" } },
       });
       expect(
          dataStylesForModel(files, "root", { a: { c: {} }, b: {} }),
       ).toEqual({
-         shared: { renderer: "c" },
-         own: { renderer: "root" },
+         shared: { renderer: "line_chart" },
+         own: { renderer: "list" },
       });
    });
 
    it("applies a file imported twice where it was first read", () => {
       // leaf imports base then child, and child imports base again.
       const files = filesWithStyles({
-         base: { shared: { renderer: "base" } },
-         child: { shared: { renderer: "child" } },
+         base: { shared: { renderer: "table" } },
+         child: { shared: { renderer: "percent" } },
       });
       expect(
          dataStylesForModel(files, "leaf", { base: {}, child: { base: {} } }),
-      ).toEqual({ shared: { renderer: "child" } });
+      ).toEqual({ shared: { renderer: "percent" } });
    });
 });
 
@@ -159,6 +160,32 @@ describe("ModelCacheView", () => {
             ?.modelDef.name,
       ).toBe("own");
    });
+
+   it("shares no object between compiles: it keeps a copy and hands out copies", async () => {
+      const shared = new CacheManager(new InMemoryModelCache());
+      const writer = new ModelCacheView(shared, "file:///pkg/dep.malloy");
+      const own = modelDef("dep");
+      await writer.setCachedModelDef("file:///pkg/dep.malloy", {
+         modelDef: own,
+         invalidationKeys: keyed("file:///pkg/dep.malloy"),
+      });
+      // The model's own result is worked on after its compile.
+      own.name = "changed after the compile";
+
+      const first = new ModelCacheView(shared, "file:///pkg/a.malloy");
+      const second = new ModelCacheView(shared, "file:///pkg/b.malloy");
+      const seen = await first.getCachedModelDef(
+         reader,
+         "file:///pkg/dep.malloy",
+      );
+      expect(seen?.modelDef.name).toBe("dep");
+      // An importer writes into what it imports.
+      seen!.modelDef.name = "written by an importer";
+      expect(
+         (await second.getCachedModelDef(reader, "file:///pkg/dep.malloy"))
+            ?.modelDef.name,
+      ).toBe("dep");
+   });
 });
 
 describe("compileLevels", () => {
@@ -222,6 +249,43 @@ describe("compileLevels", () => {
       ];
       const levels = await compileLevels(dir, modelPaths, reader);
       expect(levels.flat().sort()).toEqual([...modelPaths].sort());
+   });
+
+   it("orders a longer cycle, a self-import and a model importing into the cycle without looping", async () => {
+      write("a.malloy", 'import "b.malloy"\n');
+      write("b.malloy", 'import "c.malloy"\n');
+      write("c.malloy", 'import "a.malloy"\n');
+      write("into.malloy", 'import "a.malloy"\n');
+      write("self.malloy", 'import "self.malloy"\n');
+      const modelPaths = [
+         "a.malloy",
+         "b.malloy",
+         "c.malloy",
+         "into.malloy",
+         "self.malloy",
+      ];
+      const levels = await compileLevels(dir, modelPaths, reader);
+      // Every model once, and the one importing into the cycle after it.
+      expect(levels.flat().sort()).toEqual([...modelPaths].sort());
+      const levelOf = (p: string) => levels.findIndex((l) => l.includes(p));
+      expect(levelOf("into.malloy")).toBeGreaterThan(levelOf("a.malloy"));
+   });
+
+   it("puts a file imported directly and through another import before both importers", async () => {
+      // a imports b and base; b imports base.
+      write("base.malloy", "source: base is duckdb.sql('select 1 as x')\n");
+      write("b.malloy", 'import "base.malloy"\nsource: b is base\n');
+      write(
+         "a.malloy",
+         'import "b.malloy"\nimport "base.malloy"\nsource: a is b\n',
+      );
+      expect(
+         await compileLevels(
+            dir,
+            ["a.malloy", "b.malloy", "base.malloy"],
+            reader,
+         ),
+      ).toEqual([["base.malloy"], ["b.malloy"], ["a.malloy"]]);
    });
 
    it("keeps an unreadable file's place for its compile to report", async () => {
