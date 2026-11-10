@@ -55,6 +55,7 @@ import {
    dataStylesForModel,
    jobFiles,
    ModelCacheView,
+   modelFileTexts,
    type JobFiles,
 } from "./job_files";
 import { translatorMalloyError } from "../service/translator_error";
@@ -895,28 +896,19 @@ function sharedRuntimeForModel(
 ): {
    runtime: Runtime;
    textFor: (url: URL) => string | undefined;
-   fileTexts: () => Map<string, string>;
+   fileTexts: (dependencies: unknown) => Map<string, string>;
 } {
    const runtime = jobRuntime(
       job,
       malloyConfig,
       files.reader,
-      new ModelCacheView(
-         files.cache,
-         modelURL.toString(),
-         files.imported.has(modelURL.toString()),
-      ),
+      new ModelCacheView(files, modelURL.toString()),
    );
    return {
       runtime,
       textFor: (url: URL) => files.texts.get(url.toString()),
-      fileTexts: () => {
-         const byPath = new Map<string, string>();
-         for (const [href, text] of files.texts) {
-            if (href.startsWith("file:")) byPath.set(fileURLToPath(href), text);
-         }
-         return byPath;
-      },
+      fileTexts: (dependencies: unknown) =>
+         modelFileTexts(files, modelURL.toString(), dependencies),
    };
 }
 
@@ -995,7 +987,7 @@ async function compileMalloyModel(
       relativePath: modelPath,
       absolutePath: fullPath,
       model: compiled,
-      texts: fileTexts(),
+      texts: fileTexts(modelDef.dependencies),
    });
 
    return {
