@@ -62,8 +62,26 @@ import { components } from "../api";
 import {
    getPackageLoadPool,
    type LoadPackageOutcome,
+   type LoadPackageJob,
 } from "../package_load/package_load_pool";
-import type { LoadPackageRequest } from "../package_load/protocol";
+import {
+   PACKAGE_LOAD_PROTOCOL_VERSION,
+   type LoadPackageRequest,
+   type LoadPackageResult,
+} from "../package_load/protocol";
+import {
+   type BundleLoadStatus,
+   type BundleStamp,
+   BUNDLE_FORMAT,
+   checkBundleStamp,
+   compilerVersion,
+   computeSourceTreeSha,
+   decodeBundle,
+   encodeBundle,
+   publisherVersion,
+   writeBundleFile,
+} from "../package_load/bundle";
+import { readLocationBytes } from "./materialization/run/manifest_loader";
 import { queryBoundaryActive } from "./package_manifest";
 import {
    DEFAULT_PACKAGE_RETRIEVAL,
@@ -99,6 +117,7 @@ import { recordManifestBindDegraded } from "../materialization_metrics";
 import {
    LOAD_DURATION_BUCKETS_MS,
    recordEntitiesFindings,
+   recordPackageBundleLoad,
    recordPackageLoadPhaseDurations,
    recordPackageLoadPhases,
    type PackageLoadStatus,
@@ -534,6 +553,11 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
     */
    private servedRevision: string = mintServedRevision();
    private sourceContentSha: string = "";
+   /** How this load got its models (see package_load/bundle.ts). */
+   private bundleReport: NonNullable<ApiPackage["modelBundle"]> = {
+      status: "compiled",
+      compilerVersion: compilerVersion(),
+   };
    /**
     * The skills in `skills/`, refreshed with the content sha so a skill edit is
     * covered by the reload receipt by construction.
@@ -999,6 +1023,13 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
           * the schema caches, which keep it after.
           */
          refreshSchemas?: boolean;
+         /**
+          * A compiled bundle to hydrate from when its stamp matches this
+          * server, this tree and this load (see package_load/bundle.ts). An
+          * install names it; a reload, a version load and a restart find the
+          * one the install recorded in publisher.json.
+          */
+         bundleLocation?: string | null;
       } = {},
    ): Promise<Package> {
       return withSpan(
@@ -1022,6 +1053,7 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
                   options.versionId,
                   options.database,
                   options.refreshSchemas === true,
+                  options.bundleLocation ?? null,
                ),
             ),
       );
@@ -1037,6 +1069,7 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
       versionId?: string,
       database?: Promise<FreshnessManifest | undefined>,
       refreshSchemas: boolean = false,
+      bundleLocation: string | null = null,
    ): Promise<Package> {
       assertSafeEnvironmentPath(packagePath);
       const startTime = performance.now();
@@ -1071,6 +1104,8 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
             versionId,
             database,
             refreshSchemas,
+            bundleLocation ??
+               (await Package.recordedBundleLocation(packagePath)),
          );
       } catch (error) {
          // No caller ever holds a package whose load failed, so its own
@@ -1172,6 +1207,193 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
             outcome.packageMetadata.materialization?.queryMetadata ?? null,
          scope: outcome.packageMetadata.scope ?? "package",
       };
+   }
+
+   /** The `modelBundleLocation` the package's publisher.json records, or null. */
+   private static async recordedBundleLocation(
+      packagePath: string,
+   ): Promise<string | null> {
+      try {
+         const raw = await fs.readFile(
+            path.join(packagePath, "publisher.json"),
+            "utf-8",
+         );
+         const value = (JSON.parse(raw) as { modelBundleLocation?: unknown })
+            .modelBundleLocation;
+         return typeof value === "string" && value !== "" ? value : null;
+      } catch {
+         return null;
+      }
+   }
+
+   /**
+    * Read the bundle at `location`, if any, and decide whether this process
+    * may hydrate it: same compiler, same worker protocol, same source tree,
+    * compiled as the same kind of load (a published version or not). Every
+    * failure is a miss with a reason, never an error, so a bad bundle costs a
+    * compile and not the load. Counted per load.
+    */
+   private static async tryBundle(
+      packageName: string,
+      packagePath: string,
+      location: string | null,
+      load: { publishedVersion: boolean },
+   ): Promise<{
+      report: NonNullable<ApiPackage["modelBundle"]>;
+      result?: LoadPackageResult;
+   }> {
+      const expectedCompiler = compilerVersion();
+      const done = (
+         status: BundleLoadStatus,
+         extra: { detail?: string; result?: LoadPackageResult } = {},
+      ) => {
+         recordPackageBundleLoad(status);
+         if (status !== "hit" && location) {
+            logger.info("Package bundle not used; compiling", {
+               packageName,
+               status,
+               location,
+               detail: extra.detail,
+            });
+         }
+         return {
+            report: {
+               status,
+               compilerVersion: expectedCompiler,
+               location,
+               ...(extra.detail ? { detail: extra.detail } : {}),
+            },
+            result: extra.result,
+         };
+      };
+      if (!location) return done("compiled");
+      let stamp: BundleStamp;
+      let result: LoadPackageResult;
+      try {
+         ({ stamp, result } = decodeBundle(await readLocationBytes(location)));
+      } catch (err) {
+         const code = (err as NodeJS.ErrnoException).code;
+         return done(code === "ENOENT" ? "absent" : "unreadable", {
+            detail: errMessage(err),
+         });
+      }
+      const sourceTreeSha = computeSourceTreeSha(packagePath);
+      const verdict = checkBundleStamp(stamp, {
+         compilerVersion: expectedCompiler,
+         sourceTreeSha,
+         protocolVersion: PACKAGE_LOAD_PROTOCOL_VERSION,
+         publishedVersion: load.publishedVersion,
+      });
+      if (verdict === "stale_compiler") {
+         return done(verdict, {
+            detail:
+               `bundle compiled by ${stamp.compilerVersion} (protocol ${stamp.protocolVersion}), ` +
+               `this server runs ${expectedCompiler} (protocol ${PACKAGE_LOAD_PROTOCOL_VERSION})`,
+         });
+      }
+      if (verdict === "stale_source") {
+         return done(verdict, {
+            detail:
+               stamp.sourceTreeSha !== sourceTreeSha
+                  ? `bundle source tree ${stamp.sourceTreeSha.slice(0, 12)}, on disk ${sourceTreeSha.slice(0, 12)}`
+                  : `bundle compiled ${stamp.publishedVersion ? "as" : "not as"} a published version, ` +
+                    `loaded ${load.publishedVersion ? "as" : "not as"} one (version-scoped table names differ)`,
+         });
+      }
+      return done("hit", { result });
+   }
+
+   /**
+    * The load-worker request a serving load sends, and the one the compile
+    * seam sends: one builder, so a bundle is compiled exactly as the load it
+    * stands in for would compile. `publishedVersion` changes the outcome (a
+    * version-scoped package names its tables per version), so the stamp
+    * records it.
+    */
+   private static serveLoadRequest(
+      packageName: string,
+      packagePath: string,
+      environmentName: string,
+      malloyConfig: MalloyConfig,
+      publishedVersion: boolean,
+   ): LoadPackageJob {
+      return {
+         // The worker asks for upstream tables' schemas while it plans builds:
+         // a warehouse read like the schema fetch, baked into the plan, never
+         // the manifest's.
+         upstreamSchemas: readUpstreamSchemas,
+         packagePath,
+         packageName,
+         environmentName,
+         malloyConfig,
+         defaultConnectionName: "duckdb",
+         computeBuildPlan: true,
+         withEntities: true,
+         ...(publishedVersion ? { publishedVersion: true } : {}),
+      };
+   }
+
+   /**
+    * The compile seam: run the load worker over `packagePath` exactly as a
+    * serving load would, and write its outcome as a bundle at `outPath`
+    * instead of hydrating it. The bundle's stamp records this compiler, the
+    * worker protocol, the source tree and whether it was compiled as a
+    * published version, so a serving process can tell whether it may hydrate
+    * it. No manifest goes in: a load applies its manifest when it hydrates,
+    * never in the worker's compile. Nothing is served and nothing is kept.
+    */
+   static async compileToBundle(
+      environmentName: string,
+      packageName: string,
+      packagePath: string,
+      environmentMalloyConfig: PackageConnectionInput,
+      outPath: string,
+      options: { publishedVersion?: boolean } = {},
+   ): Promise<{ stamp: BundleStamp; bytes: number; workerMs: number }> {
+      assertSafeEnvironmentPath(packagePath);
+      await Package.validatePackageManifestExistsOrThrowError(packagePath);
+      const publishedVersion = options.publishedVersion === true;
+      const malloyConfig = Package.buildPackageMalloyConfig(
+         packagePath,
+         typeof environmentMalloyConfig === "function"
+            ? environmentMalloyConfig
+            : () => Package.toMalloyConfig(environmentMalloyConfig),
+      );
+      try {
+         const started = performance.now();
+         const outcome = await loadOutcomeOrThrow(
+            getPackageLoadPool().loadPackage(
+               Package.serveLoadRequest(
+                  packageName,
+                  packagePath,
+                  environmentName,
+                  malloyConfig,
+                  publishedVersion,
+               ),
+            ),
+         );
+         assertOutcomeStagesAvailable(outcome);
+         const workerMs = performance.now() - started;
+         const result = outcome as unknown as LoadPackageResult;
+         const stamp: BundleStamp = {
+            format: BUNDLE_FORMAT,
+            compilerVersion: compilerVersion(),
+            publisherVersion: publisherVersion(),
+            packageName,
+            sourceTreeSha: computeSourceTreeSha(packagePath),
+            // The protocol this code speaks: what a server with the same worker
+            // code hydrates, whatever the pool strips from the outcome it hands up.
+            protocolVersion: PACKAGE_LOAD_PROTOCOL_VERSION,
+            publishedVersion,
+            modelCount: outcome.models.length,
+            createdAt: new Date().toISOString(),
+         };
+         const bytes = encodeBundle(stamp, result);
+         writeBundleFile(outPath, bytes);
+         return { stamp, bytes: bytes.length, workerMs };
+      } finally {
+         await closeMalloyConfig(malloyConfig).catch(() => {});
+      }
    }
 
    /**
@@ -1472,24 +1694,35 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
       versionId?: string,
       database?: Promise<FreshnessManifest | undefined>,
       refreshSchemas: boolean = false,
+      bundleLocation: string | null = null,
    ): Promise<Package> {
-      const pool = getPackageLoadPool();
       const dispatchTime = performance.now();
-      // Wrapped on its own so the 503 mapping never touches readDatabases' errors.
-      const workerOutcome = loadOutcomeOrThrow(
-         pool.loadPackage({
-            upstreamSchemas: readUpstreamSchemas,
-            packagePath,
-            packageName,
-            environmentName,
-            malloyConfig,
-            defaultConnectionName: "duckdb",
-            computeBuildPlan: true,
-            withEntities: true,
-            ...(versionId !== undefined ? { publishedVersion: true } : {}),
-            ...(refreshSchemas ? { refreshSchemas: true } : {}),
-         }),
+      // A bundle whose stamp matches stands in for the worker: the same outcome
+      // object, no compile, no connection, no schema fetch (so `refreshSchemas`
+      // has nothing to refresh). Any miss falls back to the pool. The bundle
+      // never depends on the manifest: the worker compiles without it (below).
+      const bundle = await Package.tryBundle(
+         packageName,
+         packagePath,
+         bundleLocation,
+         { publishedVersion: versionId !== undefined },
       );
+      const bundleMs = performance.now() - dispatchTime;
+      // Wrapped on its own so the 503 mapping never touches readDatabases' errors.
+      const workerOutcome = bundle.result
+         ? Promise.resolve(bundle.result as unknown as LoadPackageOutcome)
+         : loadOutcomeOrThrow(
+              getPackageLoadPool().loadPackage({
+                 ...Package.serveLoadRequest(
+                    packageName,
+                    packagePath,
+                    environmentName,
+                    malloyConfig,
+                    versionId !== undefined,
+                 ),
+                 ...(refreshSchemas ? { refreshSchemas: true } : {}),
+              }),
+           );
       const [outcome, databases, databaseEntries] = await Promise.all([
          workerOutcome,
          Package.readDatabases(packagePath, malloyConfig),
@@ -1537,6 +1770,8 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
          : undefined;
       logger.info("Package load via worker pool completed", {
          packageName,
+         modelBundle: bundle.report.status,
+         bundleMs: Math.round(bundleMs),
          manifestValidationMs: dispatchTime - manifestValidationTime,
          workerDurationMs: outcome.loadDurationMs,
          dispatchOverheadMs:
@@ -1624,6 +1859,7 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
       pkg.dryRun = dryRun;
       pkg.refreshesUpstreamSchemas = refreshSchemas;
       pkg.persistNameProblems = nameProblems;
+      pkg.bundleReport = bundle.report;
       let reportTimings: Awaited<ReturnType<Package["discoverReports"]>>;
       let buildPlanMs: Awaited<
          ReturnType<PackageMaterialization["applyLoadBuildPlan"]>
@@ -1690,6 +1926,7 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
          duration: formatDuration(executionTime),
       });
       recordPackageLoadPhaseDurations({
+         bundle: bundleMs,
          worker: workerDoneTime - dispatchTime,
          hydrate: hydrationTimings.hydrateMs,
          render_validation: hydrationTimings.renderValidationMs,
@@ -2313,6 +2550,7 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
       | "servedRevision"
       | "sourceContentSha"
       | "storageServeBindings"
+      | "modelBundle"
    > {
       const binding = this.mz.bindingState();
       return {
@@ -2321,6 +2559,7 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
          boundManifestUri: binding.boundManifestUri,
          servedRevision: this.servedRevision,
          sourceContentSha: this.sourceContentSha,
+         modelBundle: this.bundleReport,
          ...(binding.storageServeBindings.length > 0 && {
             storageServeBindings: binding.storageServeBindings,
          }),
