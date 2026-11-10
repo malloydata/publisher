@@ -422,6 +422,49 @@ export const MAX_RECORD_MEMBERS_PER_SOURCE = 300;
 const PLAIN_MEMBER_NAME = /^[A-Za-z_][A-Za-z0-9_]*$/;
 
 /**
+ * Malloy's reserved words: the keywords its lexer reads without a trailing
+ * colon, matched case-insensitively. A member so named (GA4's
+ * `traffic_source.source`) is a plain identifier but does not compile bare,
+ * only quoted: `` traffic_source.`source` ``. Malloy does not export its
+ * keyword list, so this is a copy of it; record_members.spec.ts checks it
+ * against the list Malloy generates from its grammar.
+ */
+export const MALLOY_RESERVED_WORDS: ReadonlySet<string> = new Set(
+   (
+      "all and as asc avg boolean by case cast compose count date day " +
+      "desc distinct else end exclude export extend false filter for from " +
+      "full has hour import in include inner internal is json left like " +
+      "max min minute month not now null number on or pick private public " +
+      "quarter right second source sql string sum table then this " +
+      "timestamp timestamptz to true virtual week when with year"
+   ).split(" "),
+);
+
+/** A plain member name as a path segment: backticked when it is reserved. */
+function memberSegment(name: string): string {
+   return MALLOY_RESERVED_WORDS.has(name.toLowerCase()) ? `\`${name}\`` : name;
+}
+
+/**
+ * The field reference a record member's name spells, one segment per
+ * element, without quotes: `delivery.address.zip` is
+ * `["delivery", "address", "zip"]`, and `` traffic_source.`source` `` is
+ * `["traffic_source", "source"]`. Undefined for anything that is not a
+ * member of a source's own record, whose name is one name even when it holds
+ * a dot. Sound because collectRecordMembers only walks a record whose name,
+ * and every member name under it, is a plain identifier, and backticks only
+ * a reserved one.
+ */
+export function memberPathOf(e: {
+   name: string;
+   recordPath?: string;
+   joinPath?: string;
+}): string[] | undefined {
+   if (!e.recordPath || e.joinPath) return undefined;
+   return e.name.split(".").map((segment) => segment.replace(/`/g, ""));
+}
+
+/**
  * The members of a record dimension (a BigQuery RECORD, a DuckDB STRUCT) as
  * entities of their own, under dotted names (`delivery.city`), so they can be
  * found and grouped by. A member of a source's own record is that source's
@@ -433,9 +476,11 @@ const PLAIN_MEMBER_NAME = /^[A-Za-z_][A-Za-z0-9_]*$/;
  * relationship `many`, because aggregating through it counts each element; a
  * record inside a repeated record stays `many`. A member takes its record's
  * classification when it has none of its own, and its doc from its own
- * annotations (entityDocs), as any other field does. An array of scalars has one
- * member, its element, named `each` (`tags.each`), also `many`. A member whose name is not a plain identifier (PLAIN_MEMBER_NAME)
- * is not indexed, nor anything under it. At most MAX_RECORD_MEMBERS_PER_SOURCE
+ * annotations (entityDocs), as any other field does. An array of scalars has
+ * one member, its element, named `each` (`tags.each`), also `many`. A member
+ * whose name is not a plain identifier (PLAIN_MEMBER_NAME) is not indexed,
+ * nor anything under it; one named by a reserved word is backticked
+ * (`` traffic_source.`source` ``). At most MAX_RECORD_MEMBERS_PER_SOURCE
  * are indexed per source (`budget`), in schema order; a dropped member is
  * still queryable by name, only not offered by search.
  */
@@ -476,12 +521,22 @@ function collectRecordMembers(args: {
       }
    }
    if (type?.kind !== "record_type" || depth > MAX_RECORD_DEPTH) return;
+   // A record whose own name holds a dot or a space (`a.b`): a member's
+   // dotted name under it would not compile, and memberPathOf could not
+   // split it back into segments.
+   if (depth === 1 && !PLAIN_MEMBER_NAME.test(recordPath)) return;
    for (const member of type.fields ?? []) {
       if (!member.name || !PLAIN_MEMBER_NAME.test(member.name)) continue;
       if (args.budget.left <= 0) return;
       args.budget.left -= 1;
-      const name = `${path}.${member.name}`;
-      const own = classificationOf(args.lineage, name, undefined);
+      const segment = memberSegment(member.name);
+      const name = `${path}.${segment}`;
+      // Lineage is keyed by the unquoted path.
+      const own = classificationOf(
+         args.lineage,
+         `${path}.${member.name}`.replace(/`/g, ""),
+         undefined,
+      );
       const classes = own.classifications ? own : (args.parentClasses ?? {});
       args.out.push({
          id: args.nextId(),
@@ -504,7 +559,7 @@ function collectRecordMembers(args: {
          ...args,
          type: member.type,
          path: name,
-         recordPath: `${recordPath}.${member.name}`,
+         recordPath: `${recordPath}.${segment}`,
          fanout,
          depth: depth + 1,
          parentClasses: classes,

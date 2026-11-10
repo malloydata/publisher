@@ -4,6 +4,15 @@
 import { DuckDBConnection } from "@malloydata/db-duckdb";
 import { SingleConnectionRuntime } from "@malloydata/malloy";
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
+import { type Connection } from "@malloydata/malloy";
+import * as fs from "fs";
+import * as os from "os";
+import * as path from "path";
+import { Model } from "../../service/model";
+import type { PackageLookup } from "../../service/environment_ports";
+import { fakeOf } from "../../test_helpers/store_fakes";
+import { RetrievalRegistry } from "../registry";
+import { valueFetcherFor } from "../search/values";
 import {
    buildFcjIndexFixture,
    CLUSTER_SETTINGS,
@@ -18,7 +27,9 @@ import {
 import { projectEntity, toSourceResults } from "../search/response";
 import {
    getPackageIndex,
+   MALLOY_RESERVED_WORDS,
    MAX_RECORD_MEMBERS_PER_SOURCE,
+   memberPathOf,
 } from "./package_entities";
 
 // A DuckDB STRUCT compiles to the same Malloy record type as a BigQuery
@@ -30,6 +41,7 @@ const SQL = `select 1 as order_id,
   [{'sku': 'a', 'qty': 2}, {'sku': 'b', 'qty': 1}] as lines,
   ['gift', 'rush'] as tags,
   {'ok': 1, 'a.b': 2, 'two words': 3, 'x y': {'z': 4}} as odd,
+  {'source': 'google', 'medium': 'cpc', 'date': {'year': 2024}} as traffic_source,
   7 as customer_id`;
 const MODEL = `##! experimental.access_modifiers
 source: customers is duckdb.sql("""select 7 as id, {'tier': 'gold'} as profile, [{'sku': 'x'}] as items""")
@@ -197,6 +209,50 @@ describe("record members (#1526)", () => {
       ).toEqual([]);
    });
 
+   it("backticks a member named by a reserved word, so the name compiles", () => {
+      expect(
+         fixture.pkgIndex.directEntities
+            .filter(
+               (e) =>
+                  e.source === "orders" && e.name.startsWith("traffic_source."),
+            )
+            .map((e) => [e.name, e.recordPath]),
+      ).toEqual([
+         ["traffic_source.`source`", "traffic_source"],
+         ["traffic_source.medium", "traffic_source"],
+         ["traffic_source.`date`", "traffic_source"],
+         ["traffic_source.`date`.`year`", "traffic_source.`date`"],
+      ]);
+   });
+
+   it("knows Malloy's reserved words, every one of them", async () => {
+      // Malloy does not export its keyword list; this reads the copy it
+      // generates from its grammar, so a new keyword fails here.
+      const dir = path.dirname(
+         require.resolve("@malloydata/malloy/package.json"),
+      );
+      const { KEYWORD_DISPLAY_NAMES } = (await import(
+         path.join(dir, "dist/lang/lib/Malloy/keyword-display-names.js")
+      )) as { KEYWORD_DISPLAY_NAMES: Record<string, string> };
+      const bare = Object.values(KEYWORD_DISPLAY_NAMES)
+         .filter((word) => !word.endsWith(":"))
+         .sort();
+      expect([...MALLOY_RESERVED_WORDS].sort()).toEqual(bare);
+   });
+
+   it("splits a member's name into the segments of its field reference", () => {
+      expect(
+         memberPathOf(entity("orders", "traffic_source.`source`")!),
+      ).toEqual(["traffic_source", "source"]);
+      expect(memberPathOf(entity("orders", "delivery.address.zip")!)).toEqual([
+         "delivery",
+         "address",
+         "zip",
+      ]);
+      // Not a member: one name, even with a dot in it.
+      expect(memberPathOf({ name: "a.b" })).toBeUndefined();
+   });
+
    it("finds a member by its words", () => {
       const [result] = find({
          index: fixture.index,
@@ -240,6 +296,26 @@ describe("record members (#1526)", () => {
                order_count: 1,
             },
          ]);
+         // Every member name the index holds, reserved words included.
+         const members = fixture.pkgIndex.directEntities
+            .filter(
+               (e) =>
+                  e.source === "orders" &&
+                  e.recordPath !== undefined &&
+                  e.dataType !== "record",
+            )
+            .map((e, i) => `m${i} is ${e.name}`);
+         expect(members).toContain("m0 is delivery.region");
+         expect(
+            await run(
+               `run: orders -> { group_by: ${members.join(", ")} } -> { aggregate: rows is count() }`,
+            ),
+         ).toEqual([{ rows: 4 }]);
+         expect(
+            await run(
+               "run: orders -> { group_by: s is traffic_source.`source`, y is traffic_source.`date`.`year` }",
+            ),
+         ).toEqual([{ s: "google", y: 2024 }]);
          // Grouping by a repeated record's member counts each element.
          expect(
             await run(
@@ -413,5 +489,70 @@ source: shipments is duckdb.sql("${ORDERS}") extend {
          description: "Delivery postcode.",
          description_source: "dbmeta",
       });
+   });
+});
+
+// A gated source's values are read at query time with the caller's givens
+// (respond.ts), through the same path as any query.
+describe("reading a record member's values on a gated source", () => {
+   it("quotes each segment of the member's path, reserved word included", async () => {
+      const dir = fs.mkdtempSync(path.join(os.tmpdir(), "record-values-"));
+      const duckdb = new DuckDBConnection("duckdb", ":memory:", dir);
+      try {
+         fs.writeFileSync(
+            path.join(dir, "m.malloy"),
+            `##! experimental.givens
+given: role :: string
+#(authorize) 'analyst' = $role
+source: visits is duckdb.sql("""select {'source': 'google', 'city': 'Denver'} as traffic union all select {'source': 'bing', 'city': 'Boulder'}""")
+`,
+         );
+         const model = await Model.create(
+            "pkg",
+            dir,
+            "m.malloy",
+            new Map<string, Connection>([["duckdb", duckdb]]),
+         );
+         const pkg = {
+            listModels: async () => [{ path: "m.malloy" }],
+            getModel: (p: string) => (p === "m.malloy" ? model : undefined),
+            getVersionId: () => undefined,
+         };
+         const store = fakeOf<PackageLookup>({
+            getEnvironment: async () => ({
+               assertCanAdmitQuery: () => undefined,
+               getPackage: async () => pkg,
+               getStaleCompileErrors: () => new Map(),
+            }),
+         });
+         const index = await getPackageIndex(
+            new WeakMap(),
+            store,
+            "env",
+            "pkg",
+         );
+         const read = async (name: string) => {
+            const member = index.retrievalEntities.find(
+               (e) => e.source === "visits" && e.name === name,
+            )!;
+            const got = await valueFetcherFor(new RetrievalRegistry())({
+               environmentStore: store,
+               environmentName: "env",
+               packageName: "pkg",
+               modelPath: "m.malloy",
+               source: "visits",
+               dimension: memberPathOf(member)!,
+               limit: 10,
+               timeoutMs: 10_000,
+               givens: { role: "analyst" },
+            });
+            return [...got.values].sort();
+         };
+         expect(await read("traffic.city")).toEqual(["Boulder", "Denver"]);
+         expect(await read("traffic.`source`")).toEqual(["bing", "google"]);
+      } finally {
+         await duckdb.close();
+         fs.rmSync(dir, { recursive: true, force: true });
+      }
    });
 });

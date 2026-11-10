@@ -51,7 +51,7 @@ import {
    toSourceResults,
    type SourceCard,
 } from "./response";
-import { sourceContextKey } from "../model/package_entities";
+import { memberPathOf, sourceContextKey } from "../model/package_entities";
 import {
    type PackageIndex,
    type ResolvedRequest,
@@ -673,7 +673,7 @@ async function valuesFor(
          packageName: request.packageName,
          modelPath: cardModelPath(owner, request),
          source: node.source,
-         dimension: node.name,
+         dimension: memberPathOf(node.entities[0] ?? node) ?? node.name,
          limit: GATED_LOOKUP_LIMIT,
          ...(request.givens ? { givens: request.givens } : {}),
          ...(request.filterParams

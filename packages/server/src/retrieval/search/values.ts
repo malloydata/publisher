@@ -101,7 +101,8 @@ interface ValueFetchRequest {
    packageName: string;
    modelPath: string;
    source: string;
-   dimension: string;
+   /** The field: one name, or a record member's path, one entry per segment. */
+   dimension: string | readonly string[];
    /** Distinct values to read; one more is asked for to learn whether there are more. */
    limit: number;
    /** When set, only values containing this text (case-insensitive) are read. */
@@ -135,7 +136,8 @@ interface DistinctValueQuery {
    packageName: string;
    modelPath: string;
    source: string;
-   dimension: string;
+   /** The field: one name, or a record member's path, one entry per segment. */
+   dimension: string | readonly string[];
    /** Rows to read; one more is asked for to learn whether there are more. */
    limit: number;
    timeoutMs: number;
@@ -180,7 +182,12 @@ export async function queryDistinctValues(
          }
          const version = found.pkg.getVersionId();
          if (version) audit.version = version;
-         const dim = quoteMalloyIdentifier(request.dimension);
+         // Each segment of a member's path is quoted on its own:
+         // `delivery.city` quoted whole is one name that does not exist.
+         const dim =
+            typeof request.dimension === "string"
+               ? quoteMalloyIdentifier(request.dimension)
+               : request.dimension.map(quoteMalloyIdentifier).join(".");
          // The stem is letters and digits only (see filterStem), so it needs no escaping.
          const where = request.stem
             ? `${dim} != null and lower(${dim}) ~ '%${request.stem}%'`
