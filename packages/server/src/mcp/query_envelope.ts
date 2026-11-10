@@ -15,8 +15,10 @@ const rowLimitHits = lazyCounter(
 /**
  * The agent-facing shape for a query result. Field names (leading underscores,
  * `renderLogErrors` casing) match Credible's `execute_query` on purpose, so an
- * agent and a shared skill see one shape locally and in production. As in
- * Credible, truncation fields appear only when truncation happened.
+ * agent and a shared skill see one shape locally and in production. The one
+ * exception is `_columns`, which only Publisher sends: a shared skill must read
+ * `_meta.schema` until Credible carries it too. As in Credible, truncation
+ * fields appear only when truncation happened.
  *
  * Three things can shorten a result: the query row cap pushed into the SQL
  * (silent, hence `_limit_hit`), the hard maxRows/maxBytes ceiling (a loud 413),
@@ -27,8 +29,9 @@ interface QueryEnvelope {
    /**
     * What each column is, read from the schema: type, numeric subtype, date
     * grain, label, whether it is an aggregate, its declared display format,
-    * and the zone a timestamp reads in. Publisher's own addition: Credible's
-    * envelope carries the same facts only inside `_meta.schema`.
+    * and the zone a timestamp reads in. Publisher only, for now: Credible's
+    * envelope carries the same facts only inside `_meta.schema`, so shared
+    * skills must not rely on this field.
     */
    _columns: ResultColumn[];
    /** Malloy metadata the flat rows drop: field types, render tags, timezone. */

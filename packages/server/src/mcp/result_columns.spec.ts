@@ -249,6 +249,76 @@ describe("resultColumns", () => {
       expect(column).toEqual({ name: "x", type: "string" });
    });
 
+   it("never reads an @env reference into a nest's timezone", () => {
+      process.env.RESULT_COLUMNS_SPEC_SECRET = "leaked";
+      try {
+         const [column] = resultColumns({
+            schema: {
+               fields: [
+                  {
+                     kind: "dimension",
+                     name: "nested",
+                     type: {
+                        kind: "array_type",
+                        element_type: {
+                           kind: "record_type",
+                           fields: [
+                              { name: "at", type: { kind: "timestamp_type" } },
+                           ],
+                        },
+                     },
+                     annotations: a(
+                        "#(malloy) query_timezone = @env.RESULT_COLUMNS_SPEC_SECRET\n",
+                     ),
+                  },
+               ],
+            },
+         } as unknown as Malloy.Result);
+         expect(column.fields).toEqual([{ name: "at", type: "timestamp" }]);
+      } finally {
+         delete process.env.RESULT_COLUMNS_SPEC_SECRET;
+      }
+   });
+
+   it("gives an array of timestamps the zone its elements read in", () => {
+      const [column] = resultColumns({
+         query_timezone: "America/New_York",
+         schema: {
+            fields: [
+               {
+                  kind: "dimension",
+                  name: "times",
+                  type: {
+                     kind: "array_type",
+                     element_type: { kind: "timestamp_type" },
+                  },
+               },
+            ],
+         },
+      } as unknown as Malloy.Result);
+      expect(column).toEqual({
+         name: "times",
+         type: "array",
+         element: { type: "timestamp", timezone: "America/New_York" },
+      });
+   });
+
+   it("names only the format the renderer applies when a column has two", () => {
+      const [column] = resultColumns({
+         schema: {
+            fields: [
+               {
+                  kind: "dimension",
+                  name: "x",
+                  type: { kind: "number_type" },
+                  annotations: a("# percent\n", "# currency\n"),
+               },
+            ],
+         },
+      } as unknown as Malloy.Result);
+      expect(column.format).toBe("currency");
+   });
+
    it("lists a column it cannot read by name rather than failing the answer", () => {
       const columns = resultColumns({
          schema: { fields: [{ kind: "dimension", name: "odd" }] },

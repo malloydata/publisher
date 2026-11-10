@@ -7,13 +7,15 @@
 // is a string, a bigint may be a string or a number, a revenue is a bare
 // number with nothing saying it is money, and a timestamp is UTC text with
 // nothing saying which zone it should be read in.
-//
-// The shape follows Malloyyo's `columns` (malloydata/malloyyo, MIT,
-// packages/mcp-engine/src/rows.ts), plus `label` and `measure`.
 
-import { parseAnnotation, Tag } from "@malloydata/malloy-tag";
+import { Tag } from "@malloydata/malloy-tag";
 import type * as Malloy from "@malloydata/malloy-interfaces";
-import { motlyTag, tagText } from "../service/motly";
+import {
+   hasEnvReference,
+   motlyTag,
+   parseBounded,
+   tagText,
+} from "../service/motly";
 
 /** One column of a result, as `_columns` lists it. */
 export interface ResultColumn {
@@ -54,7 +56,12 @@ export interface ResultColumn {
    element?: Omit<ResultColumn, "name">;
 }
 
-/** The tag properties that set how one value displays: the renderer's cell formats. */
+/**
+ * The tag properties that set how one value displays: the renderer's cell
+ * formats, in the order it checks them. The renderer applies the first one a
+ * tag has, so a column tagged both `# percent` and `# currency` shows as
+ * currency.
+ */
 const FORMAT_PROPERTIES = [
    "currency",
    "percent",
@@ -67,29 +74,31 @@ type Annotations = Malloy.Annotation[] | undefined;
 const lines = (annotations: Annotations): string[] =>
    (annotations ?? []).map((a) => a.value);
 
-/** The `#(malloy)` tag Malloy writes on a result field (`calculation`, a nest's `query_timezone`). */
+/**
+ * The `#(malloy)` tag Malloy writes on a result field (`calculation`, a nest's
+ * `query_timezone`). A line carrying `@env.` is dropped before the parse, as
+ * the MOTLY path drops it: the parser would fill it from the server's own
+ * environment, and the value would reach the caller as a `timezone`.
+ */
 function malloyTag(annotations: Annotations): Tag | undefined {
-   const own = lines(annotations).filter((l) => l.startsWith("#(malloy)"));
+   const own = lines(annotations).filter(
+      (l) => l.startsWith("#(malloy)") && !hasEnvReference(l),
+   );
    if (own.length === 0) return undefined;
-   try {
-      return parseAnnotation(own).tag;
-   } catch {
-      return undefined;
-   }
+   return parseBounded(own).tag;
 }
 
 /**
- * The declared display format, re-serialized from the parsed tag so it reads
- * exactly as the renderer reads it. Only the format properties: a `label=` or
- * a chart tag on the same line is not a format.
+ * The display format the renderer applies, re-serialized from the parsed tag
+ * so it reads exactly as the renderer reads it. Only that one format property:
+ * a `label=`, a chart tag, or a second format the renderer ignores is not
+ * included.
  */
 function formatOf(tag: Tag | undefined): string | undefined {
    if (!tag) return undefined;
-   const properties: Record<string, unknown> = {};
-   for (const p of FORMAT_PROPERTIES) {
-      if (tag.has(p)) properties[p] = tag.dict[p];
-   }
-   if (Object.keys(properties).length === 0) return undefined;
+   const p = FORMAT_PROPERTIES.find((name) => tag.has(name));
+   if (!p) return undefined;
+   const properties = { [p]: tag.dict[p] };
    try {
       return new Tag({ properties } as ConstructorParameters<typeof Tag>[0])
          .toString()
@@ -110,10 +119,19 @@ function typeOf(
             ? { type: "number", subtype: t.subtype }
             : { type: "number" };
       case "date_type":
+         return t.timeframe
+            ? { type: "date", timeframe: t.timeframe }
+            : { type: "date" };
       case "timestamp_type":
       case "timestamptz_type": {
+         // The zone is set here, not in columnOf, so an array's timestamp
+         // elements carry it too.
          const type = t.kind.replace(/_type$/, "");
-         return t.timeframe ? { type, timeframe: t.timeframe } : { type };
+         return {
+            type,
+            ...(t.timeframe ? { timeframe: t.timeframe } : {}),
+            ...(timezone && timezone !== "UTC" ? { timezone } : {}),
+         };
       }
       case "record_type":
          return {
@@ -151,8 +169,7 @@ function columnOf(
    const tag = motlyTag(lines(annotations));
    const label = tagText(tag, "label");
    const format = formatOf(tag);
-   const { fields, element, ...type } = typeOf(t, zone);
-   const timestamp = type.type === "timestamp" || type.type === "timestamptz";
+   const { fields, element, timezone: ownZone, ...type } = typeOf(t, zone);
    // Keys in the order the interface documents them, nested fields last.
    return {
       name,
@@ -160,7 +177,7 @@ function columnOf(
       ...(label ? { label } : {}),
       ...(measure || internal?.has("calculation") ? { measure: true } : {}),
       ...(format ? { format } : {}),
-      ...(timestamp && zone && zone !== "UTC" ? { timezone: zone } : {}),
+      ...(ownZone ? { timezone: ownZone } : {}),
       ...(element ? { element } : {}),
       ...(fields ? { fields } : {}),
    };
