@@ -43,7 +43,11 @@ import {
 } from "../storage/DatabaseInterface";
 import { StorageConfig, StorageManager } from "../storage/StorageManager";
 import { extractErrorDataFromError, validateAzureUrl } from "./db_utils";
-import { Environment, type PackageListingOptions } from "./environment";
+import {
+   Environment,
+   STAGING_DIR_NAME,
+   type PackageListingOptions,
+} from "./environment";
 import { formatPublishRejections } from "./publish_checks";
 import type { Package } from "./package";
 import { environmentResource } from "../api_resource";
@@ -565,14 +569,19 @@ export class EnvironmentStore
 
    /**
     * Publish each of an environment's packages as the version its
-    * publisher.json declares (see addEnvironment). The packages are mounted first,
-    * by the loop an unversioned environment mounts its packages with
-    * (loadEnvironmentIntoDisk), into a staging folder of their own: a location
-    * holding several packages is downloaded once, with labelled progress, and
-    * one that does not mount is recorded as that package's load error. Each
-    * mounted tree is then published from there. One that cannot be published
-    * (no version, a refused check, a conflict) is recorded as its load error
-    * too, and the others still load.
+    * publisher.json declares (see addEnvironment). A local location (a
+    * directory or a .zip) is published straight from where it is, so it is
+    * copied once. The remote ones (GitHub, gs://, s3://) are mounted first, by
+    * the loop a watched environment mounts its packages with
+    * (loadEnvironmentIntoDisk), into a folder under the environment's
+    * `.staging`: a location holding several packages is downloaded once, with
+    * labelled progress, and one that does not mount is recorded as that
+    * package's load error. Each is then published from its mount. A server
+    * stopped mid-mount leaves that folder behind, and the next boot's sweep of
+    * `.staging` removes it (Environment.sweepStaleInstallDirs), whether that
+    * boot reads the config or restores from the database. A package that
+    * cannot be published (no version, a refused check, a conflict) is recorded
+    * as its load error too, and the others still load.
     */
    private async publishEnvironmentPackages(
       environment: Environment,
@@ -581,30 +590,38 @@ export class EnvironmentStore
       if (packages.length === 0) return;
       const environmentName = environment.getEnvironmentName();
       const versions = environment.getVersionService();
-      const stagingRoot = safeJoinUnderRoot(
+      // A package listed with no location is remote here: the mount refuses
+      // it, which records its load error.
+      const remote = packages.filter((p) => !isLocalPath(p.location ?? ""));
+      // Dot-prefixed, so no package's own staging (`<pkg>-<uuid>`) shares it.
+      const mountRoot = safeJoinUnderRoot(
          environment.getEnvironmentPath(),
-         `.publish_${crypto.randomBytes(8).toString("hex")}`,
+         STAGING_DIR_NAME,
+         `.configured-${crypto.randomUUID()}`,
       );
       try {
-         let mountErrors: ReadonlyMap<string, string>;
-         try {
-            ({ mountErrors } = await this.loadEnvironmentIntoDisk(
-               environmentName,
-               packages,
-               stagingRoot,
-            ));
-         } catch (error) {
-            // Nothing could be staged (the environment's folder refused the
-            // staging folder, say): each package is a load error, as a
-            // location that does not mount is, and the environment serves.
-            const failed = new Map<string, string>();
-            this.recordMountFailure(
-               error,
-               stagingRoot,
-               packages.flatMap((p) => (p.name ? [p.name] : [])),
-               failed,
-            );
-            mountErrors = failed;
+         let mountErrors: ReadonlyMap<string, string> = new Map();
+         if (remote.length > 0) {
+            try {
+               ({ mountErrors } = await this.loadEnvironmentIntoDisk(
+                  environmentName,
+                  remote,
+                  mountRoot,
+               ));
+            } catch (error) {
+               // Nothing could be staged (the environment's folder refused
+               // the staging folder, say): each remote package is a load
+               // error, as a location that does not mount is, and the
+               // environment serves.
+               const failed = new Map<string, string>();
+               this.recordMountFailure(
+                  error,
+                  mountRoot,
+                  remote.flatMap((p) => (p.name ? [p.name] : [])),
+                  failed,
+               );
+               mountErrors = failed;
+            }
          }
          for (const listed of packages) {
             // A package with no name has nothing to record a load error under
@@ -626,20 +643,23 @@ export class EnvironmentStore
                   );
                }
                // A relative or `~/` location is the config's, resolved against
-               // its folder as the mount resolved it (resolveLocalPath), so a
-               // later boot that restores the version from its recorded source
-               // location finds the same folder.
-               const sourceLocation = isLocalPath(configured.location)
+               // its folder (resolveLocalPath), so a later boot that restores
+               // the version from its recorded source location finds the same
+               // folder.
+               const local = isLocalPath(configured.location);
+               const sourceLocation = local
                   ? this.resolveLocalPath(configured.location)
                   : configured.location;
-               const mounted = safeJoinUnderRoot(stagingRoot, configured.name);
+               const fetchFrom = local
+                  ? sourceLocation
+                  : safeJoinUnderRoot(mountRoot, configured.name);
                await versions.publish(
                   configured.name,
                   (stagingPath) =>
                      this.downloadPackageInto(
                         environmentName,
                         configured.name,
-                        mounted,
+                        fetchFrom,
                         stagingPath,
                      ),
                   {
@@ -665,11 +685,11 @@ export class EnvironmentStore
          }
       } finally {
          await fs.promises
-            .rm(stagingRoot, { recursive: true, force: true })
+            .rm(mountRoot, { recursive: true, force: true })
             .catch((error) =>
                logger.warn("Could not remove a package staging folder", {
                   environmentName,
-                  stagingRoot,
+                  stagingRoot: mountRoot,
                   error,
                }),
             );
