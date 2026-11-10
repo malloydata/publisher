@@ -22,8 +22,10 @@ import {
    createTableAndDescribe,
    dropStorageTable,
    dropStorageTableSql,
+   partitionKeySql,
    passthroughSourceType,
    wrapPassthrough,
+   writePartitionedTable,
 } from "./materialization_build_session";
 import {
    buildChainedStorageBuildModel,
@@ -849,6 +851,96 @@ describe("createTableAndDescribe (schema read-back window)", () => {
 
       expect(schema).toEqual([{ name: "a", type: "VARCHAR" }]);
       expect(issued.some((s) => /^DROP TABLE/i.test(s))).toBe(false);
+   });
+});
+
+describe("partitionKeySql", () => {
+   it.each([
+      [{ column: "region", transform: "identity" }, `"region"`],
+      [{ column: "day", transform: "year" }, `year("day")`],
+      [{ column: "day", transform: "month" }, `month("day")`],
+      [{ column: "ts", transform: "day" }, `day("ts")`],
+      [{ column: "ts", transform: "hour" }, `hour("ts")`],
+      [{ column: "sku", transform: "bucket(16)" }, `bucket(16, "sku")`],
+      [{ column: "Mixed Case", transform: "identity" }, `"Mixed Case"`],
+   ])("renders %j as %s", (key, sql) => {
+      expect(partitionKeySql(key)).toBe(sql);
+   });
+
+   it.each(["upper", "bucket(x)", "bucket(16", "truncate(4)", ""])(
+      "refuses the transform %j rather than writing another layout",
+      (transform) => {
+         expect(() => partitionKeySql({ column: "c", transform })).toThrow(
+            BadRequestError,
+         );
+      },
+   );
+});
+
+describe("writePartitionedTable", () => {
+   const recordingSession = () => {
+      const issued: string[] = [];
+      const session = {
+         runSQL: async (sql: string) => {
+            issued.push(sql.trim());
+            return { rows: [] };
+         },
+      } as unknown as DuckDBConnection;
+      return { session, issued };
+   };
+
+   it("creates empty, lays out, then inserts in partition order, in one transaction", async () => {
+      const { session, issued } = recordingSession();
+
+      await writePartitionedTable(session, {
+         quotedTablePath: `"lake"."main"."events"`,
+         selectSQL: `SELECT * FROM "src"."main"."events"`,
+         keys: [
+            { column: "day", transform: "year" },
+            { column: "category", transform: "identity" },
+            { column: "day", transform: "month" },
+         ],
+         createStatement: "CREATE TABLE",
+         bounded: true,
+         read: async () => undefined,
+      });
+
+      const transaction = issued.slice(issued.indexOf("BEGIN TRANSACTION"));
+      expect(transaction[1]).toBe(
+         `CREATE TABLE "lake"."main"."events" AS (SELECT * FROM "src"."main"."events") WITH NO DATA`,
+      );
+      expect(transaction[2]).toBe(
+         `ALTER TABLE "lake"."main"."events" SET PARTITIONED BY (year("day"), "category", month("day"))`,
+      );
+      // Ordered by each key's column once, in key order.
+      expect(transaction[3]).toMatch(
+         /^INSERT INTO "lake"\."main"\."events" \(SELECT \* FROM \(\nSELECT \* FROM "src"\."main"\."events"\n\) AS partitioned_build ORDER BY "day", "category"\)$/,
+      );
+      expect(transaction[4]).toBe("COMMIT");
+      // The bounds are set before the transaction and threads restored after.
+      expect(issued).toContain("SET threads = 1");
+      expect(issued[issued.length - 1]).toBe("RESET threads");
+   });
+
+   it("keeps the build's identity layout through createTableAndDescribe", async () => {
+      const { session, issued } = recordingSession();
+
+      await createTableAndDescribe(
+         session,
+         `"lake"."t"`,
+         "SELECT 1 AS region",
+         ["region"],
+      );
+
+      expect(issued).toContain(
+         `CREATE OR REPLACE TABLE "lake"."t" AS (SELECT 1 AS region) WITH NO DATA`,
+      );
+      expect(issued).toContain(
+         `ALTER TABLE "lake"."t" SET PARTITIONED BY ("region")`,
+      );
+      // A chained build (no passthrough source) inserts unordered, as before.
+      expect(issued).toContain(`INSERT INTO "lake"."t" (SELECT 1 AS region)`);
+      expect(issued).not.toContain("SET threads = 1");
    });
 });
 

@@ -17,8 +17,13 @@ import {
    installAndLoadExtension,
    recordedCatalogSettings,
    stripTrailingSlashes,
+   tablePartitionKeys,
+   type PartitionKey,
 } from "../../connection";
-import { createIsolatedBuildSession } from "./materialization_build_session";
+import {
+   createIsolatedBuildSession,
+   writePartitionedTable,
+} from "./materialization_build_session";
 import { quoteIdentifier } from "../../quoting";
 
 type ApiConnection = components["schemas"]["Connection"];
@@ -242,6 +247,9 @@ export function readerRefusal(
  * - The same table guarantees as {@link loadStorageTable}: one DuckLake
  *   transaction, `create` refusing a table that exists (409), a transient
  *   session with the build session's teardown.
+ * - A partitioned source is written with its partition spec and in partition
+ *   order, as a partitioned build writes it, and the spec is returned. A
+ *   partitioned table copied onto itself is refused (400).
  * - The caller checks that the source exists and that the destination may
  *   hold its rows before calling: this attaches and writes.
  *
@@ -260,7 +268,11 @@ export async function copyStorageTable(params: {
       tableName: string;
    };
    mode: "create" | "replace";
-}): Promise<{ rowCount: number; columns: { name: string; type: string }[] }> {
+}): Promise<{
+   rowCount: number;
+   columns: { name: string; type: string }[];
+   partitionedBy: PartitionKey[];
+}> {
    const { destinationName, destinationConnection, source } = params;
    for (const conn of [destinationConnection, source.connection]) {
       if (conn.type !== "ducklake" || !conn.ducklakeConnection) {
@@ -311,7 +323,39 @@ export async function copyStorageTable(params: {
       const from = [sourceAlias, source.schemaName, source.tableName]
          .map((part) => quoteIdentifier(part, "duckdb"))
          .join(".");
-      return await writeTableAs(session, params, from);
+      // The copy keeps the source's layout: DuckLake applies a partition spec
+      // only to files written after it is set, so a copy written without it
+      // stays unpartitioned until something rewrites it.
+      const partitionedBy = await tablePartitionKeys(
+         session,
+         sourceAlias,
+         source.connection.ducklakeConnection!.catalog?.metadataSchema,
+         source.schemaName,
+         source.tableName,
+      );
+      if (
+         partitionedBy.length > 0 &&
+         sameCatalog &&
+         source.schemaName === params.schemaName &&
+         source.tableName === params.tableName
+      ) {
+         // The partitioned write replaces the table empty before it reads the
+         // source, so onto itself it would commit zero rows.
+         throw new BadRequestError(
+            `Table '${source.schemaName}.${source.tableName}' is partitioned and cannot ` +
+               "be copied onto itself; copy it to another name.",
+         );
+      }
+      return {
+         ...(await writeTableAs(
+            session,
+            params,
+            from,
+            undefined,
+            partitionedBy,
+         )),
+         partitionedBy,
+      };
    } finally {
       await dispose();
    }
@@ -340,6 +384,7 @@ async function writeTableAs(
    },
    from: string,
    refused?: (error: unknown) => Error | null,
+   partitionedBy: readonly PartitionKey[] = [],
 ): Promise<{ rowCount: number; columns: { name: string; type: string }[] }> {
    const { destinationName, schemaName, tableName } = params;
    // Rows go to Parquet, never into the catalog database: inlining off for this
@@ -348,10 +393,23 @@ async function writeTableAs(
    const target = [destinationName, schemaName, tableName]
       .map((part) => quoteIdentifier(part, "duckdb"))
       .join(".");
+   const create =
+      params.mode === "replace" ? "CREATE OR REPLACE TABLE" : "CREATE TABLE";
    try {
-      await session.runSQL(
-         `${params.mode === "replace" ? "CREATE OR REPLACE TABLE" : "CREATE TABLE"} ${target} AS SELECT * FROM ${from}`,
-      );
+      if (partitionedBy.length === 0) {
+         await session.runSQL(`${create} ${target} AS SELECT * FROM ${from}`);
+      } else {
+         // Bounded as a partitioned build is: the writer's memory, not the
+         // source's, is what a wide many-partition insert exhausts.
+         await writePartitionedTable(session, {
+            quotedTablePath: target,
+            selectSQL: `SELECT * FROM ${from}`,
+            keys: partitionedBy,
+            createStatement: create,
+            bounded: true,
+            read: async () => undefined,
+         });
+      }
    } catch (error) {
       if (
          params.mode === "create" &&

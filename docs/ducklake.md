@@ -220,7 +220,12 @@ write's inlined rows are flushed to Parquet straight after it.
 A copy reads a table of another catalog in the same catalog database, attached read-only as that
 catalog's owner, or of the same catalog, and writes it the same way; the configured role must be able to
 act as both owners (otherwise `409 CATALOG_OWNER_UNSUPPORTED`). A copy from an encrypted catalog into an
-unencrypted one is refused, since it would write the rows unencrypted.
+unencrypted one is refused, since it would write the rows unencrypted. A copy keeps the source table's
+partition spec (`partition=`, or any `SET PARTITIONED BY`) and writes its rows in partition order, as a
+partitioned build does, so the copy prunes files the way the source did; a partitioned table copied onto
+itself is refused, since the rewrite would empty it before reading it. `GET …/tables/{table}` reports a
+table's spec as `partitionedBy`, empty for an unpartitioned table, so a migration can check a copy against
+its source.
 
 **History.** Dropping or replacing a table only retires its files: they stay readable at earlier
 snapshots. `DELETE …/snapshots?olderThan=` expires older snapshots (never the latest) and deletes files
