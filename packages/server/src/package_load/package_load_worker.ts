@@ -1431,6 +1431,8 @@ async function loadPackage(
          schemaFetchDurationMs,
          schemaFetchCount,
          schemaCacheHits,
+         translationsStored: files.stats.stored,
+         translationsReused: files.stats.reused,
       },
       buildPlan,
    };

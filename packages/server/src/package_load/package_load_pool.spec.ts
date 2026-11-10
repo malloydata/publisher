@@ -318,6 +318,10 @@ source: top is a extend { dimension: also_nothing is null }`,
          for (const m of outcome.models) {
             expect(m.compilationError).toBeUndefined();
          }
+         // base, a and b are imported, so stored; a and b each get base from
+         // the store, and index gets a and b.
+         expect(outcome.timings.translationsStored).toBe(3);
+         expect(outcome.timings.translationsReused).toBe(4);
          // As a Runtime of the model's own read them: its file, then its
          // imports in the order Malloy reads them, later ones winning.
          expect(byPath.get("base.malloy")!.dataStyles).toEqual({

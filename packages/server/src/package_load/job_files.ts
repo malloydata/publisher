@@ -110,6 +110,15 @@ export function urlKey(url: string): string {
 
 const sameUrl = (a: string, b: string) => a === b || urlKey(a) === urlKey(b);
 
+/** A URL as Malloy names an import: decoded (see urlKey). */
+function decodedUrl(url: string): string {
+   try {
+      return decodeURI(url);
+   } catch {
+      return url;
+   }
+}
+
 /**
  * The load's model cache as one model's compile sees it: every import comes
  * from the shared cache, but never the model's own file. So each model is
@@ -129,6 +138,9 @@ const sameUrl = (a: string, b: string) => a === b || urlKey(a) === urlKey(b);
  * import from outside the package, a dotfile) is translated by each importer,
  * as before the cache, so each importer reports its problems: one cached by
  * its first importer would report them nowhere if that importer then failed.
+ * That costs reuse: a package built around a shared file outside its models
+ * (a `.lib/` dotfile imported by many models) translates it once per
+ * importer, as it did before #1566.
  *
  * It keeps its own store rather than a Malloy `CacheManager`: within a load
  * the files cannot change, so the `CacheManager`'s invalidation checks (a
@@ -143,7 +155,8 @@ const sameUrl = (a: string, b: string) => a === b || urlKey(a) === urlKey(b);
  * translating the import itself does, so it is not served for the import.
  * Malloy also stores each newly translated import under the spelling
  * importers ask for, so for such a path the first importer's translation is
- * the one the later importers reuse.
+ * the one the later importers reuse, and the model's own translation, which
+ * no importer can ask for, is not stored at all.
  */
 export class ModelCacheView extends CacheManager {
    constructor(
@@ -170,6 +183,9 @@ export class ModelCacheView extends CacheManager {
       ...[url, cached]: Parameters<CacheManager["setCachedModelDef"]>
    ): ReturnType<CacheManager["setCachedModelDef"]> {
       if (!this.files.imported.has(urlKey(url))) return false;
+      // Importers ask for an import decoded, so the model's own translation,
+      // stored under an encoded spelling that differs, would never be read.
+      if (sameUrl(url, this.ownUrl) && decodedUrl(url) !== url) return false;
       this.files.models.set(url, {
          modelDef: structuredClone(cached.modelDef),
          invalidationKeys: { ...cached.invalidationKeys },

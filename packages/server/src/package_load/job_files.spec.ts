@@ -189,18 +189,28 @@ describe("ModelCacheView", () => {
       expect([...files.models.keys()]).toEqual([dep]);
    });
 
+   it("keeps a model's own translation when an importer can ask for it", async () => {
+      // A plain path is spelled the same encoded and decoded.
+      const dep = "file:///pkg/dep.malloy";
+      const files = filesImporting(dep);
+      const owner = new ModelCacheView(files, dep);
+      expect(await owner.setCachedModelDef(dep, cached("dep", dep))).toBe(true);
+      expect([...files.models.keys()]).toEqual([dep]);
+   });
+
    it("keeps each translation under the spelling Malloy gave it", async () => {
-      // A model compiled as itself is translated, and stored, under its
-      // encoded URL; an importer translates and asks for it decoded. The two
-      // translations carry different source IDs and locations, so the first
-      // must not be served for the second.
+      // A model compiled as itself is translated under its encoded URL; an
+      // importer translates and asks for it decoded. The two translations
+      // carry different source IDs and locations, so the first must not be
+      // served for the second, and since no importer asks for the encoded
+      // spelling it is not stored at all.
       const encoded = "file:///pkg/my%20models/b%C3%A4se.malloy";
       const decoded = "file:///pkg/my models/bäse.malloy";
       const files = filesImporting(decoded);
       const owner = new ModelCacheView(files, encoded);
       expect(
          await owner.setCachedModelDef(encoded, cached("as itself", encoded)),
-      ).toBe(true);
+      ).toBe(false);
       // Its own file stays its own in either spelling.
       expect(await owner.getCachedModelDef(reader, decoded)).toBeUndefined();
       const first = new ModelCacheView(files, "file:///pkg/a.malloy");
@@ -212,7 +222,7 @@ describe("ModelCacheView", () => {
       expect(
          (await later.getCachedModelDef(reader, decoded))?.modelDef.name,
       ).toBe("as an import");
-      expect(files.stats).toEqual({ stored: 2, reused: 1 });
+      expect(files.stats).toEqual({ stored: 1, reused: 1 });
    });
 
    it("shares no object between compiles: it keeps a copy and hands out copies", async () => {
@@ -308,9 +318,9 @@ describe("a load's translations, through a real compile", () => {
          await compile("my models/bäse.malloy", true);
          const a = await compile("a.malloy", true);
          const b = await compile("b.malloy", true);
-         // base as itself (encoded), then a's translation of it as an import
-         // (decoded), which b reuses.
-         expect(files.stats).toEqual({ stored: 2, reused: 1 });
+         // Only a's translation of base as an import (decoded), which b
+         // reuses; base's own translation (encoded) is not stored.
+         expect(files.stats).toEqual({ stored: 1, reused: 1 });
          expect(a).toBe(await compile("a.malloy", false));
          expect(b).toBe(await compile("b.malloy", false));
       } finally {
