@@ -118,7 +118,7 @@ import {
  * Dot-prefixed so anything that walks an environment for packages never finds
  * a half-downloaded or superseded copy.
  */
-const STAGING_DIR_NAME = ".staging";
+export const STAGING_DIR_NAME = ".staging";
 const RETIRED_DIR_NAME = ".retired";
 
 // Binding happens before a package is SERVING, so a slow manifest store must
