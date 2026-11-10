@@ -270,6 +270,88 @@ describe("PackageLoadPool (real worker)", () => {
          await duckdb.close();
       }
    });
+
+   it("compiles each model over the load's shared imports, keeping its own problems and data styles (#1566)", async () => {
+      // index imports a then b; both import base. index, a and b are each
+      // compiled once with their imports from the load's cache.
+      writeManifest(tempDir);
+      const write = (rel: string, text: string) =>
+         fs.writeFileSync(path.join(tempDir, rel), text);
+      write("base_styles.json", '{"shared":{"renderer":"base"}}');
+      write("b_styles.json", '{"shared":{"renderer":"b"}}');
+      write(
+         "base.malloy",
+         `--! styles base_styles.json
+source: base is duckdb.sql("select 1 as a") extend {
+  dimension: nothing is null
+}`,
+      );
+      write("a.malloy", 'import "base.malloy"\nsource: a is base\n');
+      write(
+         "b.malloy",
+         '--! styles b_styles.json\nimport "base.malloy"\nsource: b is base\n',
+      );
+      write(
+         "index.malloy",
+         `import "a.malloy"
+import "b.malloy"
+source: top is a extend { dimension: also_nothing is null }`,
+      );
+
+      const { malloyConfig, duckdb } = await buildConfig();
+      try {
+         const outcome = await pool.loadPackage({
+            packagePath: tempDir,
+            packageName: "pkg",
+            environmentName: "env",
+            malloyConfig,
+            defaultConnectionName: "duckdb",
+            collectProblems: true,
+         });
+         const byPath = new Map(outcome.models.map((m) => [m.modelPath, m]));
+         expect([...byPath.keys()].sort()).toEqual([
+            "a.malloy",
+            "b.malloy",
+            "base.malloy",
+            "index.malloy",
+         ]);
+         for (const m of outcome.models) {
+            expect(m.compilationError).toBeUndefined();
+         }
+         // As a Runtime of the model's own read them: its file, then its
+         // imports in the order Malloy reads them, later ones winning.
+         expect(byPath.get("base.malloy")!.dataStyles).toEqual({
+            shared: { renderer: "base" },
+         });
+         expect(byPath.get("a.malloy")!.dataStyles).toEqual({
+            shared: { renderer: "base" },
+         });
+         expect(byPath.get("b.malloy")!.dataStyles).toEqual({
+            shared: { renderer: "base" },
+         });
+         // index reads a, b, then base.
+         expect(byPath.get("index.malloy")!.dataStyles).toEqual({
+            shared: { renderer: "base" },
+         });
+         const warningsAt = (modelPath: string) =>
+            (byPath.get(modelPath)!.problems ?? [])
+               .filter(
+                  (p) =>
+                     (p as { code?: string }).code ===
+                     "null-typed-field-definition",
+               )
+               .map((p) =>
+                  path.basename((p as { at?: { url?: string } }).at?.url ?? ""),
+               );
+         // Each file's warning is reported by its own model; an importer that
+         // took base from the cache reports only its own (the package compile
+         // dedupes them across models anyway).
+         expect(warningsAt("base.malloy")).toEqual(["base.malloy"]);
+         expect(warningsAt("index.malloy")).toEqual(["index.malloy"]);
+      } finally {
+         await duckdb.close();
+      }
+   });
 });
 
 // ──────────────────────────────────────────────────────────────────────
