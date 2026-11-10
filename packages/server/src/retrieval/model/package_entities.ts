@@ -698,6 +698,28 @@ function buildJoinReaches(args: {
 }
 
 /**
+ * Whether the source a joined record lives on is listed, not deny-all, and
+ * holds the record as its own field. Then directEntitiesOf drops the joined
+ * copies of its members, which are indexed on that source and reached by
+ * route, so walking them here would only spend the shared member budget
+ * that a later inline-table join's record needs.
+ */
+function joinedMembersListed(
+   reaches: readonly JoinReach[] | undefined,
+   joinPath: string,
+   record: string,
+   listedFields: ReadonlyMap<string, ReadonlySet<string>>,
+   droppedSources: ReadonlySet<string>,
+): boolean {
+   const reach = reaches?.find((r) => r.path.join(".") === joinPath);
+   if (!reach) return false;
+   const key = sourceContextKey(reach.targetModelPath, reach.targetSource);
+   return (
+      !droppedSources.has(key) && (listedFields.get(key)?.has(record) ?? false)
+   );
+}
+
+/**
  * Index the fields reachable THROUGH a join, under their dotted Malloy path.
  *
  * The target source is indexed on its own, but the caller needs the PATH,
@@ -722,6 +744,11 @@ function collectJoinedFields(args: {
    lineage?: Map<string, FieldClassification>;
    /** Record members left to index for this source (collectRecordMembers). */
    budget: { left: number };
+   /**
+    * Whether the source a join reaches lists this record itself, so its
+    * members are indexed there and reached by route (joinedMembersListed).
+    */
+   membersListedElsewhere?: (joinPath: string, record: string) => boolean;
 }): void {
    const {
       fields,
@@ -765,7 +792,10 @@ function collectJoinedFields(args: {
             ? { dataType: malloyType(field) }
             : {}),
       });
-      if (field.kind === "dimension") {
+      if (
+         field.kind === "dimension" &&
+         !args.membersListedElsewhere?.(joinPath, field.name)
+      ) {
          collectRecordMembers({
             type: field.type,
             path: `${joinPath}.${field.name}`,
@@ -816,6 +846,26 @@ async function collectEntities(pkg: Package): Promise<CollectedModel> {
    // One reader for the whole walk: several sources share a model file.
    const sourceTextFor = makeSourceTextReader(pkg);
    let n = 0;
+   // Each listed source's top-level field names, package-wide, and every
+   // deny-all source, both before the walk: a join can name a source from a
+   // later file, and joinedMembersListed reads both.
+   const listedFields = new Map<string, Set<string>>();
+   for (const apiModel of models) {
+      const modelPath = apiModel.path;
+      const model = modelPath ? pkg.getModel(modelPath) : undefined;
+      if (!modelPath || !model) continue;
+      for (const apiSource of model.getSources?.() ?? []) {
+         if (apiSource.name && isUnconditionalDenyAuthorize(apiSource)) {
+            droppedSources.add(sourceContextKey(modelPath, apiSource.name));
+         }
+      }
+      for (const info of model.getSourceInfos() ?? []) {
+         listedFields.set(
+            sourceContextKey(modelPath, info.name),
+            new Set((info.schema?.fields ?? []).map((f) => f.name)),
+         );
+      }
+   }
    for (const apiModel of models) {
       const modelPath = apiModel.path;
       if (!modelPath) continue;
@@ -829,12 +879,6 @@ async function collectEntities(pkg: Package): Promise<CollectedModel> {
       // The compiled IR, for a field's expression. Absent for a spec stand-in
       // or a failed compile; fields then index without provenance.
       const modelDef = model.getModelDef?.();
-
-      for (const apiSource of apiSources) {
-         if (apiSource.name && isUnconditionalDenyAuthorize(apiSource)) {
-            droppedSources.add(sourceContextKey(modelPath, apiSource.name));
-         }
-      }
 
       for (const sourceInfo of sourceInfos) {
          const sourceName = sourceInfo.name;
@@ -859,6 +903,8 @@ async function collectEntities(pkg: Package): Promise<CollectedModel> {
          // One budget for its own records and its joined sources' records:
          // Malloy lists a source's own fields before its joins, so its own
          // members are counted first and a joined record gets what is left.
+         // A joined record its own source lists spends none (see
+         // joinedMembersListed).
          const memberBudget = { left: MAX_RECORD_MEMBERS_PER_SOURCE };
          // The source's visible fields: a hidden one (`include { public: ... }`)
          // is not in its schema, so nothing of it is indexed.
@@ -983,6 +1029,14 @@ async function collectEntities(pkg: Package): Promise<CollectedModel> {
                   out: entities,
                   lineage,
                   budget: memberBudget,
+                  membersListedElsewhere: (joinPath, record) =>
+                     joinedMembersListed(
+                        topology.get(governanceKey),
+                        joinPath,
+                        record,
+                        listedFields,
+                        droppedSources,
+                     ),
                });
                continue;
             }

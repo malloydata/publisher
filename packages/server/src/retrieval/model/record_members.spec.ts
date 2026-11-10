@@ -407,6 +407,37 @@ source: orders is duckdb.sql("""select 1 as k, {'city': 'Denver'} as delivery"""
 
 // BigQuery with `dbmeta` on annotates the fields nested in a RECORD with
 // their column descriptions, as it does top-level columns (#1492).
+describe("record members of joined sources, on a budget", () => {
+   it("spends no member budget on a joined record its own source lists", async () => {
+      const members = Array.from(
+         { length: MAX_RECORD_MEMBERS_PER_SOURCE },
+         (_, i) => `'m${i}': ${i}`,
+      ).join(", ");
+      // events lists params itself, so orders reaches params' members by
+      // route; walking them on orders too would use up the budget before
+      // the inline-SQL join's record, whose members exist nowhere else.
+      const f = await buildFcjIndexFixture(CLUSTER_SETTINGS, {
+         "m.malloy": `
+source: events is duckdb.sql("""select 1 as k, {${members}} as params""")
+source: orders is duckdb.sql("""select 1 as k""") extend {
+  join_one: event is events on k = event.k
+  join_one: geo is duckdb.sql("""select 1 as k, {'city': 'Denver'} as place""") on k = geo.k
+}
+`,
+      });
+      try {
+         const own = (source: string) =>
+            f.pkgIndex.directEntities
+               .filter((e) => e.source === source && e.recordPath)
+               .map((e) => e.name);
+         expect(own("orders")).toEqual(["geo.place.city"]);
+         expect(own("events")).toHaveLength(MAX_RECORD_MEMBERS_PER_SOURCE);
+      } finally {
+         await f.close();
+      }
+   });
+});
+
 describe("record members with database descriptions", () => {
    const ORDERS = `select 1 as id, 7 as customer_id, {'city': 'Denver', 'address': {'zip': '80202'}} as delivery, [{'sku': 'a'}] as lines`;
    const CUSTOMERS = `select 7 as id, {'tier': 'gold'} as profile`;
