@@ -87,6 +87,21 @@ export function jobFiles(inner: TextReader): JobFiles {
 }
 
 /**
+ * One spelling of a file URL. A file is read under the URL's encoded form
+ * (`my%20models/b%C3%A4se.malloy`), while a modelDef's `dependencies` name it
+ * decoded (`my models/bäse.malloy`).
+ */
+function urlKey(url: string): string {
+   try {
+      return new URL(url).href;
+   } catch {
+      return url;
+   }
+}
+
+const sameUrl = (a: string, b: string) => a === b || urlKey(a) === urlKey(b);
+
+/**
  * The load's model cache as one model's compile sees it: every import comes
  * from the shared cache, but never the model's own file. So each model is
  * translated itself and keeps its own problems (a model Malloy returns from
@@ -114,7 +129,7 @@ export class ModelCacheView extends CacheManager {
    override async getCachedModelDef(
       ...args: Parameters<CacheManager["getCachedModelDef"]>
    ): ReturnType<CacheManager["getCachedModelDef"]> {
-      if (args[1] === this.ownUrl) return undefined;
+      if (sameUrl(args[1], this.ownUrl)) return undefined;
       const hit = await this.shared.getCachedModelDef(...args);
       return hit && { ...hit, modelDef: structuredClone(hit.modelDef) };
    }
@@ -122,7 +137,9 @@ export class ModelCacheView extends CacheManager {
    override setCachedModelDef(
       ...[url, cached]: Parameters<CacheManager["setCachedModelDef"]>
    ): ReturnType<CacheManager["setCachedModelDef"]> {
-      if (url === this.ownUrl && !this.keepOwn) return Promise.resolve(false);
+      if (!this.keepOwn && sameUrl(url, this.ownUrl)) {
+         return Promise.resolve(false);
+      }
       return this.shared.setCachedModelDef(url, {
          ...cached,
          modelDef: structuredClone(cached.modelDef),
@@ -142,7 +159,7 @@ export function dataStylesForModel(
 ): DataStyles {
    let styles: DataStyles = {};
    for (const url of [modelUrl, ...importReadOrder(dependencies)]) {
-      styles = { ...styles, ...(files.stylesByUrl.get(url) ?? {}) };
+      styles = { ...styles, ...(files.stylesByUrl.get(urlKey(url)) ?? {}) };
    }
    return styles;
 }
@@ -180,7 +197,7 @@ export function importReadOrder(tree: unknown): string[] {
 }
 
 const IMPORT_RE =
-   /^\s*import\s+(?:\{[^}]*\}\s+from\s+)?(?:"([^"]+)"|'([^']+)')/gm;
+   /^\s*import\s+(?:\{[^}]*\}\s+from\s+)?(?:"([^"]+)"|'([^']+)')/gim;
 
 /** The order a load compiles its models in; see compileOrder. */
 export interface CompileOrder {

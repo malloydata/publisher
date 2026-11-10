@@ -442,6 +442,48 @@ source: top is a extend { dimension: also_nothing is null }`,
       }
    });
 
+   it("keeps an imported file's data styles when its path is not plain ASCII (#1566)", async () => {
+      // A file is read under its encoded URL; a modelDef's dependencies name
+      // it decoded. Both must find its styles.
+      writeManifest(tempDir);
+      fs.mkdirSync(path.join(tempDir, "my models"));
+      fs.writeFileSync(
+         path.join(tempDir, "my models", "styles.json"),
+         '{"k":{"renderer":"bar_chart"}}',
+      );
+      fs.writeFileSync(
+         path.join(tempDir, "my models", "bäse.malloy"),
+         `--! styles styles.json\nsource: base is duckdb.sql("select 1 as x")\n`,
+      );
+      for (const importer of ["root.malloy", "other.malloy"]) {
+         fs.writeFileSync(
+            path.join(tempDir, importer),
+            `import "my models/bäse.malloy"\nsource: s is base\n`,
+         );
+      }
+      const { malloyConfig, duckdb } = await buildConfig();
+      try {
+         const outcome = await pool.loadPackage({
+            packagePath: tempDir,
+            packageName: "pkg",
+            environmentName: "env",
+            malloyConfig,
+            defaultConnectionName: "duckdb",
+         });
+         expect(outcome.models.map((m) => m.modelPath).sort()).toEqual([
+            "my models/bäse.malloy",
+            "other.malloy",
+            "root.malloy",
+         ]);
+         for (const m of outcome.models) {
+            expect(m.compilationError).toBeUndefined();
+            expect(m.dataStyles).toEqual({ k: { renderer: "bar_chart" } });
+         }
+      } finally {
+         await duckdb.close();
+      }
+   });
+
    it("fails the models of an import cycle, and only those, without holding the load (#1566)", async () => {
       // a -> b -> c -> a. Malloy has no import-cycle check of its own (the
       // translator overflows its stack), so each of these fails as it did

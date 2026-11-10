@@ -74,6 +74,20 @@ describe("dataStylesForModel", () => {
          dataStylesForModel(files, "leaf", { base: {}, child: { base: {} } }),
       ).toEqual({ shared: { renderer: "percent" } });
    });
+   it("finds a file's styles whether its URL is spelled encoded or decoded", () => {
+      // Files are read, so stored, under the encoded URL; `dependencies`
+      // names them decoded.
+      const files = filesWithStyles({
+         "file:///pkg/my%20models/b%C3%A4se.malloy": {
+            k: { renderer: "bar_chart" },
+         },
+      });
+      expect(
+         dataStylesForModel(files, "file:///pkg/root.malloy", {
+            "file:///pkg/my models/bäse.malloy": {},
+         }),
+      ).toEqual({ k: { renderer: "bar_chart" } });
+   });
 });
 
 describe("jobFiles", () => {
@@ -354,6 +368,17 @@ describe("compileOrder", () => {
          "b.malloy",
          "base.malloy",
       ]);
+   });
+
+   it("reads an import keyword in any case, as Malloy does", async () => {
+      write("base.malloy", "source: base is duckdb.sql('select 1 as a')\n");
+      write("a.malloy", 'IMPORT "base.malloy"\nsource: a is base\n');
+      const { waitsOn } = await compileOrder(
+         dir,
+         ["a.malloy", "base.malloy"],
+         reader,
+      );
+      expect(waitsOn.get("a.malloy")).toEqual(["base.malloy"]);
    });
 
    it("keeps an unreadable file's place for its compile to report", async () => {
