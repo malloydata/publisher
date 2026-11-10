@@ -140,6 +140,10 @@ export interface Entity {
    // record is that source's own field, not one reached through a join, so
    // it has no `joinPath`. See collectRecordMembers.
    recordPath?: string;
+   // For a member reached through a join whose relationship the member
+   // widens (a repeated record's `items.sku` behind a join_one): the join
+   // path's own relationship, which `relationship` no longer shows.
+   joinRelationship?: Relationship;
 }
 
 /**

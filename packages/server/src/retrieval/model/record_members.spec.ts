@@ -835,6 +835,7 @@ source: customers is duckdb.sql("""select 7 as id, [{'sku': 'x'}] as items""")
 #(doc) One row per order.
 source: orders is duckdb.sql("""select 7 as customer_id""") extend {
   join_one: customer is customers on customer_id = customer.id
+  join_one: hc is duckdb.sql("""select 7 as id, [{'sku': 'y'}] as items""") on customer_id = hc.id
 }
 `,
       });
@@ -873,6 +874,14 @@ source: orders is duckdb.sql("""select 7 as customer_id""") extend {
             .find((l) => l.includes("orders.customer.items.sku (route"));
          expect(line).toContain(
             "(route from orders through customer, join_one; items.sku is many, one value per array element)",
+         );
+         // A joined copy (an inline-SQL join has no source of its own) is a
+         // route already, and says the same.
+         const copy = renderJudgePrompt(f.index, cluster, targets, options, 3)
+            .split("\n")
+            .find((l) => l.includes("a route from orders through hc"));
+         expect(copy).toContain(
+            "a route from orders through hc, join_one; items.sku is many, one value per array element:",
          );
       } finally {
          await f.close();

@@ -510,6 +510,8 @@ export function collectRecordMembers(args: {
    modelPath: string;
    /** The relationship of the path so far: `one` from a plain source. */
    fanout: Relationship;
+   /** The join path's own relationship; `fanout` at depth 1 when absent. */
+   joinFanout?: Relationship;
    depth: number;
    nextId: () => string;
    out: Entity[];
@@ -522,6 +524,7 @@ export function collectRecordMembers(args: {
    budget: { left: number };
 }): void {
    const { path, recordPath, depth } = args;
+   const joinFanout = args.joinFanout ?? args.fanout;
    let type = args.type;
    let fanout = args.fanout;
    if (type?.kind === "array_type") {
@@ -568,6 +571,9 @@ export function collectRecordMembers(args: {
          ...(args.joinPath || fanout === "many"
             ? { relationship: fanout }
             : {}),
+         ...(args.joinPath && fanout !== joinFanout
+            ? { joinRelationship: joinFanout }
+            : {}),
          dataType: malloyType(member),
       });
       collectRecordMembers({
@@ -576,6 +582,7 @@ export function collectRecordMembers(args: {
          path: name,
          recordPath: `${recordPath}.${segment}`,
          fanout,
+         joinFanout,
          depth: depth + 1,
          parentClasses: classes,
       });

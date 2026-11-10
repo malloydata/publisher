@@ -72,6 +72,8 @@ export interface CatalogNode {
     */
    joinedSourceKey?: string;
    relationship?: Relationship;
+   /** See Entity.joinRelationship. */
+   joinRelationship?: Relationship;
    aliases?: string[];
    /** Keys of the nodes this node's expression reads. */
    dependsOn: string[];
@@ -1193,6 +1195,9 @@ export function buildCatalog(input: CatalogInput): Catalog {
          ...(e.code ? { code: e.code } : {}),
          ...(e.joinPath ? { joinPath: e.joinPath } : {}),
          ...(e.relationship ? { relationship: e.relationship } : {}),
+         ...(e.joinRelationship
+            ? { joinRelationship: e.joinRelationship }
+            : {}),
          ...(e.aliases ? { aliases: e.aliases } : {}),
          dependsOn: [],
          uses: [],
