@@ -13,7 +13,7 @@ import * as os from "os";
 import * as path from "path";
 import { fileURLToPath, pathToFileURL } from "url";
 import {
-   compileLevels,
+   compileOrder,
    dataStylesForModel,
    importReadOrder,
    jobFiles,
@@ -21,10 +21,16 @@ import {
 } from "./job_files";
 
 describe("importReadOrder", () => {
-   it("lists a dependency tree level by level, in import order, each URL once", () => {
+   it("lists a file's imports before descending into them, each URL once", () => {
       // root imports a then b; a imports c; b imports c and a.
       const tree = { a: { c: {} }, b: { c: {}, a: { c: {} } } };
       expect(importReadOrder(tree)).toEqual(["a", "b", "c"]);
+   });
+
+   it("reads one import's whole subtree before the next import", () => {
+      // root imports b then c; b imports d, which imports e; c imports f.
+      const tree = { b: { d: { e: {} } }, c: { f: {} } };
+      expect(importReadOrder(tree)).toEqual(["b", "c", "d", "e", "f"]);
    });
 
    it("reads nothing from a model with no imports", () => {
@@ -43,8 +49,8 @@ describe("dataStylesForModel", () => {
    }
 
    it("lets a file read later win, as a reader accumulating its reads did", () => {
-      // root imports a then b, a imports c. Malloy reads a, b, then c, so
-      // c wins over b although a depth-first walk would visit c first.
+      // root imports a then b, a imports c. Malloy asks for a and b together,
+      // then reads a's import c, so c wins over b.
       const files = filesWithStyles({
          root: { shared: { renderer: "list" }, own: { renderer: "list" } },
          b: { shared: { renderer: "bar_chart" } },
@@ -214,7 +220,7 @@ describe("ModelCacheView", () => {
    });
 });
 
-describe("compileLevels", () => {
+describe("compileOrder", () => {
    let dir: string;
 
    beforeEach(() => {
@@ -235,6 +241,23 @@ describe("compileLevels", () => {
          fs.promises.readFile(fileURLToPath(url), "utf8"),
    };
 
+   /** Following the waits from any model ends: no model waits on itself. */
+   function expectNoWaitLoop(waitsOn: Map<string, string[]>): void {
+      const reaches = (
+         from: string,
+         to: string,
+         seen = new Set<string>(),
+      ): boolean =>
+         (waitsOn.get(from) ?? []).some(
+            (d) =>
+               d === to ||
+               (!seen.has(d) && (seen.add(d), reaches(d, to, seen))),
+         );
+      for (const model of waitsOn.keys()) {
+         expect(reaches(model, model)).toBe(false);
+      }
+   }
+
    it("puts every file a model imports in an earlier level, and notebooks last", async () => {
       write("base.malloy", "source: base is duckdb.sql('select 1 as a')\n");
       write("a.malloy", 'import "base.malloy"\nsource: a is base\n');
@@ -254,7 +277,7 @@ describe("compileLevels", () => {
          "a.malloy",
          "base.malloy",
       ];
-      const levels = await compileLevels(dir, modelPaths, reader);
+      const { levels, waitsOn } = await compileOrder(dir, modelPaths, reader);
       expect(levels).toEqual([
          ["base.malloy"],
          ["a.malloy"],
@@ -262,6 +285,10 @@ describe("compileLevels", () => {
          ["index.malloy"],
          ["nb.malloynb"],
       ]);
+      expect(waitsOn.get("index.malloy")).toEqual(["a.malloy", "sub/b.malloy"]);
+      expect(waitsOn.get("sub/b.malloy")).toEqual(["a.malloy", "base.malloy"]);
+      // A notebook compiles without the cache, so it waits for nothing.
+      expect(waitsOn.get("nb.malloynb")).toEqual([]);
    });
 
    it("compiles every model of an import cycle or an unreadable file once", async () => {
@@ -274,8 +301,9 @@ describe("compileLevels", () => {
          "solo.malloy",
          "gone.malloy",
       ];
-      const levels = await compileLevels(dir, modelPaths, reader);
+      const { levels, waitsOn } = await compileOrder(dir, modelPaths, reader);
       expect(levels.flat().sort()).toEqual([...modelPaths].sort());
+      expectNoWaitLoop(waitsOn);
    });
 
    it("orders a longer cycle, a self-import and a model importing into the cycle without looping", async () => {
@@ -291,11 +319,14 @@ describe("compileLevels", () => {
          "into.malloy",
          "self.malloy",
       ];
-      const levels = await compileLevels(dir, modelPaths, reader);
+      const { levels, waitsOn } = await compileOrder(dir, modelPaths, reader);
       // Every model once, and the one importing into the cycle after it.
       expect(levels.flat().sort()).toEqual([...modelPaths].sort());
       const levelOf = (p: string) => levels.findIndex((l) => l.includes(p));
       expect(levelOf("into.malloy")).toBeGreaterThan(levelOf("a.malloy"));
+      expect(waitsOn.get("into.malloy")).toEqual(["a.malloy"]);
+      expect(waitsOn.get("self.malloy")).toEqual([]);
+      expectNoWaitLoop(waitsOn);
    });
 
    it("puts a file imported directly and through another import before both importers", async () => {
@@ -307,14 +338,17 @@ describe("compileLevels", () => {
          'import "b.malloy"\nimport "base.malloy"\nsource: a is b\n',
       );
       const imported = new Set<string>();
-      expect(
-         await compileLevels(
-            dir,
-            ["a.malloy", "b.malloy", "base.malloy"],
-            reader,
-            imported,
-         ),
-      ).toEqual([["base.malloy"], ["b.malloy"], ["a.malloy"]]);
+      const { levels, waitsOn } = await compileOrder(
+         dir,
+         ["a.malloy", "b.malloy", "base.malloy"],
+         reader,
+         imported,
+      );
+      expect(levels).toEqual([["base.malloy"], ["b.malloy"], ["a.malloy"]]);
+      // Each waits for its own imports only.
+      expect(waitsOn.get("a.malloy")).toEqual(["b.malloy", "base.malloy"]);
+      expect(waitsOn.get("b.malloy")).toEqual(["base.malloy"]);
+      expect(waitsOn.get("base.malloy")).toEqual([]);
       // a is imported by nothing, so its translation is not kept.
       expect([...imported].map((u) => path.basename(u)).sort()).toEqual([
          "b.malloy",
@@ -325,8 +359,8 @@ describe("compileLevels", () => {
    it("keeps an unreadable file's place for its compile to report", async () => {
       const url = pathToFileURL(path.join(dir, "gone.malloy"));
       await expect(reader.readURL(url)).rejects.toThrow();
-      expect(await compileLevels(dir, ["gone.malloy"], reader)).toEqual([
-         ["gone.malloy"],
-      ]);
+      expect((await compileOrder(dir, ["gone.malloy"], reader)).levels).toEqual(
+         [["gone.malloy"]],
+      );
    });
 });

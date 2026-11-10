@@ -51,7 +51,7 @@ import { HackyDataStylesAccumulator } from "../data_styles";
 import { PackageManifestError } from "../errors";
 import { deserializeError, serializeError } from "./error_wire";
 import {
-   compileLevels,
+   compileOrder,
    dataStylesForModel,
    jobFiles,
    ModelCacheView,
@@ -1385,22 +1385,31 @@ async function loadPackage(
       provisionalEntities: queryBoundaryActive(packageMetadata),
    };
    const files = jobFiles(makeWorkerUrlReader(job));
-   const compiled = new Map<string, SerializedModel>();
-   for (const level of await compileLevels(
+   const { waitsOn } = await compileOrder(
       job.packagePath,
       modelPaths,
       files.reader,
       files.imported,
-   )) {
-      const done = await Promise.all(
-         level.map((modelPath) =>
+   );
+   // Each model starts once the package files it imports have compiled, so
+   // their translations are in the cache; the rest overlaps as it used to.
+   // compileOneModel reports a failure in-band, so a failed import still lets
+   // its importers start.
+   const compiles = new Map<string, Promise<SerializedModel>>();
+   const compile = (modelPath: string): Promise<SerializedModel> => {
+      let started = compiles.get(modelPath);
+      if (!started) {
+         started = Promise.allSettled(
+            (waitsOn.get(modelPath) ?? []).map(compile),
+         ).then(() =>
             compileOneModel(job, malloyConfig, modelPath, load, files),
-         ),
-      );
-      level.forEach((modelPath, i) => compiled.set(modelPath, done[i]));
-   }
+         );
+         compiles.set(modelPath, started);
+      }
+      return started;
+   };
    // In the package's model order, as the main thread reads them.
-   const models = modelPaths.map((modelPath) => compiled.get(modelPath)!);
+   const models = await Promise.all(modelPaths.map(compile));
 
    const compileEnd = performance.now();
    const schemaFetchDurationMs = schemaWait.waitMs;

@@ -149,49 +149,67 @@ export function dataStylesForModel(
 
 /**
  * The files in a modelDef's `dependencies` tree (`{url: subtree}`) in the
- * order a compile with no cache reads them: Malloy asks for the imports one
- * level at a time, in import order, and reads each URL once.
+ * order a compile with no cache reads them. Malloy asks for all of a file's
+ * unread imports at once, then steps into each import in turn and finishes
+ * its whole subtree before the next (`ImportsAndTablesStep` in
+ * `lang/parse-malloy`): a pre-order walk that lists a node's imports before
+ * descending into them, reading each URL and descending into each file once.
+ * This models Malloy's internals; the pool spec pins it against real loads.
  */
 export function importReadOrder(tree: unknown): string[] {
    const order: string[] = [];
    const seen = new Set<string>();
-   let level: unknown[] = [tree];
-   while (level.length > 0) {
-      const next: unknown[] = [];
-      for (const node of level) {
-         if (!node || typeof node !== "object") continue;
-         for (const [url, sub] of Object.entries(
-            node as Record<string, unknown>,
-         )) {
-            if (!seen.has(url)) {
-               seen.add(url);
-               order.push(url);
-            }
-            next.push(sub);
+   const descended = new Set<string>();
+   const visit = (node: unknown): void => {
+      if (!node || typeof node !== "object") return;
+      const entries = Object.entries(node as Record<string, unknown>);
+      for (const [url] of entries) {
+         if (!seen.has(url)) {
+            seen.add(url);
+            order.push(url);
          }
       }
-      level = next;
-   }
+      for (const [url, sub] of entries) {
+         if (descended.has(url)) continue;
+         descended.add(url);
+         visit(sub);
+      }
+   };
+   visit(tree);
    return order;
 }
 
 const IMPORT_RE =
    /^\s*import\s+(?:\{[^}]*\}\s+from\s+)?(?:"([^"]+)"|'([^']+)')/gm;
 
+/** The order a load compiles its models in; see compileOrder. */
+export interface CompileOrder {
+   /**
+    * Each model's package imports it waits for before compiling, so their
+    * translations are in the cache when it asks: every import in a lower
+    * level. Notebooks wait for nothing.
+    */
+   waitsOn: Map<string, string[]>;
+   /** The `.malloy` models by level (imports first), then the notebooks. */
+   levels: string[][];
+}
+
 /**
- * The package's models in compile levels: every package `.malloy` file a
- * model imports sits in an earlier level, so its translation is cached before
- * any importer needs it. Models within a level compile concurrently, as all
- * of them used to. A cycle, or an import this scan misses, costs only reuse
- * (see ModelCacheView). Everything else (notebooks) comes last. The URL of
- * every package file another one imports is added to `imported`.
+ * The package's models in compile order: every package `.malloy` file a
+ * model imports sits in an earlier level, and a model waits only for those,
+ * so its imports' translations are cached before it asks for them while
+ * everything else (warehouse schema fetches included) overlaps as it used
+ * to. A model waits only on lower levels, so a cycle cannot hold a load; a
+ * cycle, or an import this scan misses, costs only reuse (see
+ * ModelCacheView). The URL of every package file another one imports is
+ * added to `imported`.
  */
-export async function compileLevels(
+export async function compileOrder(
    packagePath: string,
    modelPaths: string[],
    reader: TextReader,
    imported: Set<string> = new Set(),
-): Promise<string[][]> {
+): Promise<CompileOrder> {
    const malloy = modelPaths.filter((p) => p.endsWith(MODEL_FILE_SUFFIX));
    const inPackage = new Set(malloy);
    const imports = new Map<string, string[]>();
@@ -240,12 +258,22 @@ export async function compileLevels(
       return mine;
    };
    const levels: string[][] = [];
+   const waitsOn = new Map<string, string[]>();
    for (const modelPath of malloy) {
-      (levels[levelOf(modelPath)] ??= []).push(modelPath);
+      const mine = levelOf(modelPath);
+      (levels[mine] ??= []).push(modelPath);
+      waitsOn.set(
+         modelPath,
+         (imports.get(modelPath) ?? []).filter((dep) => levelOf(dep) < mine),
+      );
    }
    const rest = modelPaths.filter((p) => !p.endsWith(MODEL_FILE_SUFFIX));
-   return [
-      ...levels.filter((l) => l !== undefined && l.length > 0),
-      ...(rest.length > 0 ? [rest] : []),
-   ];
+   for (const modelPath of rest) waitsOn.set(modelPath, []);
+   return {
+      waitsOn,
+      levels: [
+         ...levels.filter((l) => l !== undefined && l.length > 0),
+         ...(rest.length > 0 ? [rest] : []),
+      ],
+   };
 }
