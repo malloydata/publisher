@@ -59,6 +59,19 @@ import {
 } from "./materialization_run_support";
 import type { SourceBuilder } from "./source_build";
 
+/** sourceID -> the sourceIDs it reads, merged across every connection's build. */
+function upstreamsBySourceID(
+   builds: CompiledBuildPlan["builds"],
+): Map<string, string[]> {
+   const out = new Map<string, string[]>();
+   for (const build of builds) {
+      for (const [sourceID, reads] of Object.entries(build.dependsOn ?? {})) {
+         out.set(sourceID, [...(out.get(sourceID) ?? []), ...reads]);
+      }
+   }
+   return out;
+}
+
 /**
  * The instructed tier: a run's build loop, shared by auto-run and orchestrated
  * builds. It walks the instructions in dependency order, gates each source,
@@ -165,6 +178,8 @@ export class InstructedBuild {
          builtThisRun: [],
          retainedThisRun: [],
          failures: {},
+         failedBySourceID: new Map(),
+         upstreamsBySourceID: upstreamsBySourceID(builds),
          failedReasons: [],
          refusals: [],
          builtSources: [],
@@ -450,6 +465,11 @@ export class InstructedBuild {
          if (!run.failures[failedKey]) {
             const reason = errMessage(err);
             run.refusals.push(err);
+            run.failedBySourceID.set(persistSource.sourceID, {
+               name: persistSource.name,
+               reason,
+               retryable: false,
+            });
             logger.warn("Instructed source refused by the eligibility gate", {
                packageName: run.owner?.packageName,
                sourceName: persistSource.name,
@@ -465,6 +485,7 @@ export class InstructedBuild {
                // Marks the failure permanent, so a caller that retries
                // failures can tell it from one that may clear.
                refused: true,
+               retryable: false,
                connectionName: persistSource.connectionName,
                ...(instruction.destination
                   ? { storageDestinationName: instruction.destination }

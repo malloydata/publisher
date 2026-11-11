@@ -322,6 +322,97 @@ describe("executeInstructedBuild", () => {
       expect(runSQL.called).toBe(false);
    });
 
+   describe("classifying a failure as retryable", () => {
+      function instruction(id: string, table: string): BuildInstruction {
+         return {
+            sourceEntityId: id,
+            materializedTableId: `mt-${table}`,
+            physicalTableName: table,
+            realization: "COPY",
+         };
+      }
+      const strictMiss = () =>
+         Object.assign(
+            new Error("Persisted source 'up' not found in manifest"),
+            { code: "runtime-manifest-strict-miss" },
+         );
+
+      async function runChain(upstreamError: string) {
+         const runSQL = sinon.stub().callsFake(async (sql: string) => {
+            if (String(sql).includes("up_v1")) throw new Error(upstreamError);
+         });
+         const connection = { runSQL } as unknown as MalloyConnection;
+         const ok = fakeSource({
+            name: "ok",
+            sourceEntityId: "b0k0k0k0k0k0k0k0",
+         });
+         const up = fakeSource({
+            name: "up",
+            sourceEntityId: "bupupupupupupupu",
+         });
+         // A strict colocated build of a source whose upstream is not in the
+         // manifest: Malloy refuses to render it. The option-free render that
+         // computes its content address still succeeds.
+         const down = fakeSource({
+            name: "down",
+            sourceEntityId: "bdowndowndowndow",
+            onGetSQL: (opts) => {
+               if (opts) throw strictMiss();
+            },
+         });
+         const compiled = {
+            builds: [
+               {
+                  connectionName: "duckdb",
+                  order: ["ok", "up", "down"],
+                  dependsOn: { down: ["up"] },
+               },
+            ],
+            sources: { ok, up, down },
+            connectionDigests: { duckdb: "dig" },
+            connections: new Map([["duckdb", connection]]),
+         };
+         const result = await callExecute(
+            compiled,
+            [
+               instruction("b0k0k0k0k0k0k0k0", "ok_v1"),
+               instruction("bupupupupupupupu", "up_v1"),
+               instruction("bdowndowndowndow", "down_v1"),
+            ],
+            {},
+         );
+         return result.failures as Record<
+            string,
+            { reason?: string; retryable?: boolean }
+         >;
+      }
+
+      it("marks a dependent of a deterministically failed upstream deterministic, naming the upstream's failure", async () => {
+         const failures = await runChain("Unrecognized name: order_tot");
+         expect(failures["bupupupupupupupu"].retryable).toBe(false);
+         const down = failures["bdowndowndowndow"];
+         expect(
+            down.retryable,
+            "retrying cannot help a source whose upstream fails the same way every time",
+         ).toBe(false);
+         expect(down.reason).toContain(
+            "upstream 'up' failed in this run: Unrecognized name: order_tot",
+         );
+      });
+
+      it("keeps a dependent of a transiently failed upstream retryable", async () => {
+         const failures = await runChain("connect ECONNREFUSED 10.0.0.1:5432");
+         expect(failures["bupupupupupupupu"].retryable).toBe(true);
+         expect(failures["bdowndowndowndow"].retryable).toBe(true);
+      });
+
+      it("omits the field when the failure is not recognized", async () => {
+         const failures = await runChain("something odd happened");
+         expect("retryable" in failures["bupupupupupupupu"]).toBe(false);
+         expect("retryable" in failures["bdowndowndowndow"]).toBe(false);
+      });
+   });
+
    it("redacts a failed source's reason before recording it", async () => {
       // The reason is the warehouse's own text and travels to a consumer that
       // persists and renders it. A connection error commonly echoes the
@@ -1298,6 +1389,7 @@ describe("executeInstructedBuild", () => {
             materializedTableId: "mt-ref",
             // Permanent until the model changes, so a caller need not retry it.
             refused: true,
+            retryable: false,
          });
          expect(result.failures["bref1bref1bref1b"].reason).toMatch(
             /authorize/i,

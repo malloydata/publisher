@@ -272,12 +272,17 @@ export class StorageBuildStrategy
             if (manifest.strict && pinnedRecompute) {
                recordChainedStorageBuild("strict_refused");
                recordStorageBuildFailure(destinationName);
-               throw new Error(
+               const message =
                   `Failed to materialize chained source '${persistSource.name}' ` +
-                     `into storage destination '${destinationName}' by reading ` +
-                     `its materialized upstream, and strict upstreams forbid ` +
-                     `recomputing it from raw: ${safeDetail}`,
-               );
+                  `into storage destination '${destinationName}' by reading ` +
+                  `its materialized upstream, and strict upstreams forbid ` +
+                  `recomputing it from raw: ${safeDetail}`;
+               // Re-raised as the same type, so the run can classify the
+               // failure (build_failure_class.ts): a missing upstream that
+               // failed earlier in the run, or a shape no retry can carry.
+               throw err instanceof ChainedUpstreamMissingError
+                  ? new ChainedUpstreamMissingError(err.missing, message)
+                  : new ChainedShapeNotCarriedError(message);
             }
             recordChainedStorageBuild(
                manifest.strict ? "strict_shape_fallback" : "inline_fallback",

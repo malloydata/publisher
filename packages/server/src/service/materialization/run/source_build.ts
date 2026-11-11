@@ -6,6 +6,7 @@ import type {
    Manifest,
    PersistSource,
 } from "@malloydata/malloy";
+import { ChainedUpstreamMissingError } from "../../../errors";
 import { logger } from "../../../logger";
 import {
    recordChainedStorageBuild,
@@ -207,7 +208,10 @@ export class SourceBuilder {
          if (manifest.strict && reuse.missing.length > 0) {
             recordChainedStorageBuild("strict_refused");
             recordStorageBuildFailure(instruction.destination!);
-            throw new Error(
+            // Typed, so the failure can be attributed to an upstream that
+            // failed earlier in this run (see build_failure_class.ts).
+            throw new ChainedUpstreamMissingError(
+               reuse.missing,
                `Failed to materialize source '${persistSource.name}' into ` +
                   `storage destination '${instruction.destination}': persisted ` +
                   `upstream ${reuse.missing.map((n) => `'${n}'`).join(", ")} is ` +

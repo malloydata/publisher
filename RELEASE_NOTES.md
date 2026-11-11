@@ -21,6 +21,12 @@ Give the heading a title — `## [Unreleased] — what changed`, with an em dash
 
 Two consequences worth knowing. A section merged to `main` ships in the **next** release, whenever that is, so do not write one for work that has not landed. And a heading already stamped with a version is history: a follow-up that changes that behaviour opens a **new** `[Unreleased]` section referencing the shipped version by number, rather than editing the old one.
 
+## [Unreleased] — A failed source says whether retrying it can help
+
+A build that loses a source reports it in `BuildManifest.failures`, but until now the only hint about whether a retry could succeed was `refused`, set for eligibility refusals alone. An orchestrator that retries failed builds had to guess from the message, and two failures read as retryable when they are not: a source refused under `strictUpstreams` because the upstream it reads failed earlier in the same run (its message only said the upstream was missing from the manifest), and a chained `storage=` build that outgrows the build session's DuckDB memory bound (`Out of Memory Error: could not allocate block`), which fails identically on every attempt.
+
+`SourceFailure` gains an optional boolean `retryable`. `false` means the same model, instructions and bounds fail the same way again: an eligibility refusal, a compile or SQL defect (syntax, parser or binder error, an unrecognized name), a missing grant, the DuckDB memory bound, or a strict-upstream refusal whose upstream failed deterministically in this run. That dependent now inherits its upstream's classification, and its `reason` names the upstream's own failure (`upstream 'orders' failed in this run: …`). `true` means the failure is not a property of the inputs: an unreachable or reset connection, a timeout, a rate limit, a cancellation, or an upstream merely absent from the instructions. The field is omitted when Publisher does not recognize the error, so a consumer treats it exactly as it treats a response from an older Publisher. It is a boolean rather than an enum so a strict generated client cannot fail on a value it has not seen. The chained-build strict refusals keep their messages; only their error types change.
+
 ## [Unreleased] — `#@` annotation problems are coded package warnings, and an unparseable one is refused at publish
 
 Every problem Publisher finds on a `#@` annotation is now a package warning with a stable `code`, and an `error` or `warn` severity by whether the annotation can be read at all:
