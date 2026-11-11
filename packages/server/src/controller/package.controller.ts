@@ -39,6 +39,10 @@ import { changedFields } from "./versioned_patch";
 import { admitPatch } from "../service/package_patch";
 import { loadedPackage } from "./loaded_package";
 import {
+   estimatePackageRowCounts,
+   type BuildPlanEstimates,
+} from "../service/materialization/estimate/row_count_estimate";
+import {
    parseEnvironmentName,
    parsePackageName,
    VersionRef,
@@ -313,6 +317,45 @@ export class PackageController {
          );
       }
       return pkg.getBuildPlan() ?? { graphs: [], sources: {} };
+   }
+
+   /**
+    * `POST …/build-plan/estimates`: how many rows each planned table would
+    * hold, by a count over its build query. Runs warehouse statements, so only
+    * here and only when asked; a gated or caller-scoped source is refused
+    * without one.
+    */
+   public async estimatePackageBuildPlan(
+      environmentName: string,
+      packageName: string,
+      body: unknown,
+      versionId: VersionRef = VersionRef.LATEST,
+      signal?: AbortSignal,
+   ): Promise<BuildPlanEstimates> {
+      const pkg = await this.loadedPackage(
+         environmentName,
+         packageName,
+         versionId,
+      );
+      const environment = await this.environment(environmentName);
+      return estimatePackageRowCounts({
+         pkg,
+         environmentName,
+         body,
+         connectionMetadata: (connectionName) => {
+            try {
+               const connection = environment.getApiConnection(connectionName);
+               return {
+                  default: connection.queryMetadata,
+                  enforced: connection.queryMetadataEnforced,
+               };
+            } catch {
+               // Fails open, as a build's tags do: a tag never fails a statement.
+               return null;
+            }
+         },
+         signal,
+      });
    }
 
    /**

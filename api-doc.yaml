@@ -2945,6 +2945,84 @@ paths:
         "503":
           $ref: "#/components/responses/ServiceUnavailable"
 
+  /environments/{environmentName}/packages/{packageName}/build-plan/estimates:
+    post:
+      tags:
+        - packages
+      operationId: estimate-package-build-plan
+      summary: Estimate how many rows each planned table would hold
+      description: |
+        Row-count estimates for the package's build plan: for each `#@ persist`
+        source and each `#@ preaggregate` rollup, how many rows its table would
+        hold if it were built now, with the METHOD that produced the number and
+        its ERROR BAND. Nothing is built and nothing is written.
+
+        **This runs warehouse queries, and only when asked.** Each estimated
+        source costs one count over its build query on the source's own
+        connection, as expensive to read as the build itself (it skips only the
+        write). Estimates are never computed at package load, never cached, and
+        never run implicitly by any other route. The statements carry the
+        build's query metadata with `class` `materialize` and `trigger`
+        `estimate`, under one `run_id` per request, and each one is bounded by
+        `PUBLISHER_QUERY_TIMEOUT_MS`. The route is admission-controlled like a
+        query.
+
+        **Gated sources are refused, not counted.** A count over the build query
+        reads every row the build would, which is every caller's rows. So a
+        source is estimated only when the strictest materialization gate (the
+        one a `storage=` destination applies) admits it: no `#(authorize)` or
+        `#(access_filter)` on it, its base or a joined source, no free
+        parameter and no given in the persisted query; and when the build
+        strips no caller-scoped term from it (`strippedTerms`, `joinedTerms`).
+        Anything else answers `status: refused` with a `reason`, and no
+        statement is issued for it. A source the build plan refuses is reported
+        refused too.
+
+        `maxRows` is a size bound the caller already knows, such as what a
+        build worker's DuckDB can hold: every estimate whose band reaches past
+        it carries `exceedsMaxRows: true`, before anything builds.
+      parameters:
+        - name: environmentName
+          in: path
+          description: Name of the environment
+          required: true
+          schema:
+            $ref: "#/components/schemas/IdentifierPattern"
+        - name: packageName
+          in: path
+          description: Name of the package
+          required: true
+          schema:
+            $ref: "#/components/schemas/IdentifierPattern"
+        - $ref: "#/components/parameters/versionId"
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/BuildPlanEstimateRequest"
+      responses:
+        "200":
+          description: One estimate per selected source
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/BuildPlanEstimates"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "410":
+          $ref: "#/components/responses/Gone"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
+
   /environments/{environmentName}/packages/{packageName}/embedding-index:
     get:
       tags:
@@ -10588,6 +10666,150 @@ components:
             partial rollup and no per-measure omission to check: a measure that
             cannot be correctly re-aggregated is refused at publish, so a rollup
             that exists carries everything that asked to be in it.
+
+    BuildPlanEstimateRequest:
+      type: object
+      description: Which planned sources to estimate, and an optional size bound.
+      properties:
+        sources:
+          type: array
+          description: >-
+            The sources to estimate, each a `sourceID` ("sourceName@modelURL")
+            or a source name from the build plan (a name selects every source
+            of that name). Omitted means every source in `sources` and
+            `refusedSources`. A name the plan does not hold is a 400, and
+            nothing runs.
+          items:
+            type: string
+        maxRows:
+          type: integer
+          format: int64
+          minimum: 0
+          description: >-
+            A row bound to check each estimate against, such as what the build
+            worker's DuckDB can hold. An estimate whose band's `high` is above
+            it carries `exceedsMaxRows: true`. Omitted, nothing is checked.
+
+    BuildPlanEstimates:
+      type: object
+      description: >-
+        Row-count estimates for a package's build plan, one per selected
+        source. Computed on request and never stored.
+      required: [measuredAt, estimates]
+      properties:
+        measuredAt:
+          type: string
+          format: date-time
+          description: >-
+            When the estimates were taken. Every number is as of this time: the
+            band covers the method's own error, not data that changes between
+            the count and a build.
+        maxRows:
+          type: integer
+          format: int64
+          description: The bound the request checked against, echoed; absent when none.
+        estimates:
+          type: object
+          description: Map of sourceID ("sourceName@modelURL") to its estimate.
+          additionalProperties:
+            $ref: "#/components/schemas/RowCountEstimate"
+
+    RowCountEstimate:
+      type: object
+      description: >-
+        How many rows one planned source's table would hold. Every estimate
+        names its `method` and carries a `band`; a refused or failed source
+        carries neither, and says why.
+      required: [sourceID, name, status]
+      properties:
+        sourceID:
+          type: string
+          description: sourceName@modelURL, matching this entry's map key.
+        name:
+          type: string
+          description: The source's name in the plan. A rollup's is generated.
+        modelPath:
+          type: string
+          description: Package-relative path of the model that declares it, as in the plan.
+        origin:
+          type: string
+          enum: [persist, preaggregate]
+          description: >-
+            Which annotation the author wrote, as `PersistSourcePlan.origin`
+            reports it. Absent for a source the plan refused before it had an
+            entry in `sources`.
+        baseSourceName:
+          type: string
+          description: For a rollup, the source its measures are declared on.
+        grainDimensions:
+          type: array
+          description: >-
+            For a rollup, the grain it is built at. Its row count is the number
+            of distinct grain tuples, which is what the count measures.
+          items:
+            type: string
+        status:
+          type: string
+          enum: [estimated, refused, failed]
+          description: >-
+            `estimated`: `rows`, `band` and `method` are set. `refused`: no
+            statement ran, and `reason` says why. `failed`: the statement ran
+            and did not answer; `message` carries the error.
+        rows:
+          type: integer
+          format: int64
+          description: The point estimate.
+        band:
+          $ref: "#/components/schemas/RowCountBand"
+        method:
+          type: string
+          description: >-
+            How `rows` was produced. An open set, so a client must accept a
+            value it does not know. Today one value: `count_query`, an exact
+            `COUNT(*)` over the source's build query on its own connection,
+            whose band is zero wide. Later methods (table metadata, sampled
+            counts, approximate distinct counts, dry runs) widen the band to
+            match their error.
+        methodDetail:
+          type: string
+          description: The method in a sentence, for a person reading the estimate.
+        reason:
+          type: string
+          description: >-
+            Why a `refused` source was not counted. An open set. Today:
+            `not_buildable` (the build plan refuses the source; its own
+            `refusedSources` entry says why), `gated` (an access gate, a free
+            parameter or a given in the persisted query, which the strictest
+            materialization gate refuses), `caller_scoped` (the build strips
+            a caller-scoped term, so its table holds every caller's rows) and
+            `not_examined` (the plan's eligibility was not computed, so nothing
+            proves the source ungated).
+        message:
+          type: string
+          description: A refusal's or a failure's explanation.
+        elapsedMs:
+          type: integer
+          format: int64
+          description: How long the statement took, for an estimated or failed source.
+        exceedsMaxRows:
+          type: boolean
+          description: >-
+            Whether `band.high` is above the request's `maxRows`. Absent when
+            the request set no bound or the source has no estimate.
+
+    RowCountBand:
+      type: object
+      description: >-
+        The interval the true row count lies in, by the method's own error, as
+        of `measuredAt`. `low` equals `high` for an exact method.
+      required: [low, high]
+      properties:
+        low:
+          type: integer
+          format: int64
+        high:
+          type: integer
+          format: int64
 
     Realization:
       type: string

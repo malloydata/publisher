@@ -21,6 +21,12 @@ Give the heading a title — `## [Unreleased] — what changed`, with an em dash
 
 Two consequences worth knowing. A section merged to `main` ships in the **next** release, whenever that is, so do not write one for work that has not landed. And a heading already stamped with a version is history: a follow-up that changes that behaviour opens a **new** `[Unreleased]` section referencing the shipped version by number, rather than editing the old one.
 
+## [Unreleased] — Row-count estimates for a package's build plan
+
+`POST …/packages/{pkg}/build-plan/estimates` is new. It answers how many rows each `#@ persist` source and each `#@ preaggregate` rollup would hold if built now, without building anything, so an agent or an operator can see a rollup that reduces nothing, or a table that would outgrow its build worker, before paying for the build. Every estimate names its method and its error band; the one method today is an exact count over the build query (`count_query`, a zero-wide band), and a rollup's count is its number of distinct grain tuples. An optional `maxRows` flags every estimate above it with `exceedsMaxRows`.
+
+It runs warehouse queries, so it runs only when asked: never at load, on reload or before a build, one count at a time under the query timeout, tagged `class=materialize` and `trigger=estimate`. A source behind `#(authorize)` or `#(access_filter)`, one with a free parameter or a given in its persisted query, and one whose build leaves out a caller-scoped term is refused with a `reason` and no statement, because a count over its build query would report every caller's rows. Additive: a new route and new schemas, no change to an existing response. See [docs/materialization.md](docs/materialization.md#estimate-a-tables-size-before-building-it).
+
 ## [Unreleased] — A failed source says whether retrying it can help
 
 A build that loses a source reports it in `BuildManifest.failures`, but until now the only hint about whether a retry could succeed was `refused`, set for eligibility refusals alone. An orchestrator that retries failed builds had to guess from the message. A source refused under `strictUpstreams` because the upstream it reads failed earlier in the same run read as a fresh failure (its message only said the upstream was missing from the manifest), and a run whose only source failed reported nothing per source at all.
