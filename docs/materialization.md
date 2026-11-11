@@ -603,6 +603,30 @@ The same package definition behaves differently depending on who drives material
 - **Who owns the boundary.** Standalone it is the publisher's own store, always. A hosted deployment that spreads one package's refreshes over several workers can instead hold the boundary itself and echo it back on the instructions ([Supplying the ledger yourself](#supplying-the-ledger-yourself)), because that store is per-process and a refresh landing on a worker that has never seen the table would otherwise re-seed. The publisher still derives every boundary and still validates every one it is handed.
 - **Physical-table GC.** Deleting a materialization with `--drop-tables` drops its tables. Deleting an environment or package removes the materialization **records only** — physical tables are intentionally left in place (physical-table GC is the caller's responsibility), so clean up tables you no longer want explicitly.
 
+## Estimate a table's size before building it
+
+`POST …/packages/{pkg}/build-plan/estimates` says how many rows each planned table would hold if it were built now: every `#@ persist` source and every [pre-aggregation](preaggregation.md) rollup in the build plan. Nothing is built or written.
+
+```bash
+curl -s -X POST \
+  localhost:4000/api/v0/environments/examples/packages/storefront/build-plan/estimates \
+  -H 'content-type: application/json' \
+  -d '{"maxRows": 10000000}' \
+  | jq '.estimates[] | {name, origin, status, rows, band, method, exceedsMaxRows}'
+```
+
+Every estimate carries its **method** and its **error band**. Today there is one method, `count_query`: an exact `COUNT(*)` over the source's build query on its own connection, so `band.low` and `band.high` both equal `rows`. For a rollup the build query groups by the grain, so the count is the number of distinct grain tuples: the rollup's row count, which is what decides whether it pays (a grain near the base's cardinality saves nothing). The band is the method's own error as of `measuredAt`; it does not cover data that changes between the count and a build. Cheaper methods with wider bands (table metadata, sampled or approximate counts, warehouse dry runs) are planned. `method` is an open set, so a client should show a value it does not know rather than reject it.
+
+`maxRows` is a bound you already know, such as what a build worker's DuckDB can hold or what you are willing to store. Each estimate above it carries `exceedsMaxRows: true`, so a rollup that would outgrow its build is caught before the build is tried. `sources` limits the request to named sources (a source name or a `sourceID`).
+
+**It costs a read, so it runs only when asked.** Each estimated source runs one count, which reads what the build would read and skips only the write. Nothing estimates at package load, on reload, before a build or on any other route, and nothing is cached. The counts are tagged like a build of the source (`class=materialize`, `trigger=estimate`, one `run_id` per request; see [Attribute a build's cost](#attribute-a-builds-cost)), each is bounded by `PUBLISHER_QUERY_TIMEOUT_MS`, the route takes a query slot, and they run one at a time.
+
+**A gated source is refused, not counted.** A count over a build query reads every row the build would, which is every caller's rows, so it would hand a caller a number about rows no query of theirs could see. A source is counted only when the strictest materialization gate, the one a `storage=` destination applies, admits it (no `#(authorize)` or `#(access_filter)` on it, its base or a joined source; no free parameter; no given in the persisted query) and its build strips no caller-scoped term. Anything else answers `status: "refused"` with a `reason` (`gated`, `caller_scoped`, `not_buildable` for a source the plan refuses, `not_examined` when eligibility was never computed) and issues no statement. Like a build, the estimate ignores the discovery surface; like every Publisher route, it is only as protected as the gateway in front of it ([operating model](security-posture.md#operating-model-a-microservice-behind-your-gateway)).
+
+**A request is bounded.** It counts at most 25 sources (`maxSources` lowers that), and all its counts share one query timeout (`PUBLISHER_QUERY_TIMEOUT_MS`), so one request never holds a query slot longer than one query would. A source past either bound answers `status: refused` with `reason` `limit` or `deadline`; name it in `sources` in another request. With no query timeout set, only the source cap applies. A count is metered like a build (`statement_usage`, surface `build`) on a managed connection or a storage destination, and carries the package's `version` in its query metadata.
+
+**Some sources are refused for their shape.** A SQL Server source answers `reason: dialect`: SQL Server cannot count a build query that carries a `WITH` or an `ORDER BY` as a derived table, which Malloy's build SQL does. A rollup the authorize gate refuses keeps its plan entry, so its table exists, and it answers `gated`. A count past 2^53 rows carries `rowsRounded: true`, because JSON cannot carry it exactly.
+
 ## Attribute a build's cost
 
 `queryMetadata` at the `publisher.json` root (and the per-source `#@ persist queryMetadata.*`) tags every statement a build issues — the staging CTAS, the swap, the rename — and every statement a _query_ against the source issues, so the backend's own reporting can attribute both. Separating build cost from query traffic is the context layer's job, not the declaration's: publisher adds `class=materialize` plus the package, source, trigger and run id to a build, and `class=interactive` with none of those to a served query. It sits at the root because it declares what the source is, not only how it is built; its old home, `materialization.queryMetadata`, still works and is deprecated. See [query-metadata.md](query-metadata.md).

@@ -325,7 +325,7 @@ Two things are specific to rollups:
 
 A rollup is a table Publisher builds and refreshes, so it is worth being deliberate:
 
-- **A grain near the base's cardinality saves nothing and costs a build.** `customer_id, order_day` on a table with one row per customer per day is a copy of the base. Check the grain's cardinality before annotating.
+- **A grain near the base's cardinality saves nothing and costs a build.** `customer_id, order_day` on a table with one row per customer per day is a copy of the base. Check the grain's cardinality before annotating, or ask Publisher: [`POST …/build-plan/estimates`](materialization.md#estimate-a-tables-size-before-building-it) counts the rows each rollup would hold, and flags any above a `maxRows` bound, before anything builds.
 - **Prefer several small grains to one combined grain** when the combination is large but each dimension is small, as above.
 - **A package with no `#@ preaggregate` pays nothing.** Publisher derives rollups from the compiled model in memory and stops as soon as it finds no annotations, so an unannotated package plans, builds, and serves exactly as it did before.
 

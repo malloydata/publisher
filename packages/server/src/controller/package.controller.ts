@@ -5,6 +5,8 @@ import {
    recordPackageReload,
    type ReloadTrigger,
 } from "../package_state_metrics";
+import { buildQueryMetadataInput } from "../service/query_metadata";
+import { connectionMetadataLayers } from "../service/materialization/run/materialization_run_support";
 import { components } from "../api";
 import { normalizeModelPath } from "../constants";
 import {
@@ -38,6 +40,10 @@ import { versionManifestLocation } from "./manifest_location";
 import { changedFields } from "./versioned_patch";
 import { admitPatch } from "../service/package_patch";
 import { loadedPackage } from "./loaded_package";
+import {
+   estimatePackageRowCounts,
+   type BuildPlanEstimates,
+} from "../service/materialization/estimate/row_count_estimate";
 import {
    parseEnvironmentName,
    parsePackageName,
@@ -313,6 +319,50 @@ export class PackageController {
          );
       }
       return pkg.getBuildPlan() ?? { graphs: [], sources: {} };
+   }
+
+   /**
+    * `POST …/build-plan/estimates`: how many rows each planned table would
+    * hold, by a count over its build query. Runs warehouse statements, so only
+    * here and only when asked; a gated or caller-scoped source is refused
+    * without one.
+    */
+   public async estimatePackageBuildPlan(
+      environmentName: string,
+      packageName: string,
+      body: unknown,
+      versionId: VersionRef = VersionRef.LATEST,
+      signal?: AbortSignal,
+   ): Promise<BuildPlanEstimates> {
+      const pkg = await this.loadedPackage(
+         environmentName,
+         packageName,
+         versionId,
+      );
+      // The plan as GET …/build-plan answers it, 503 rule included.
+      const plan = await this.getPackageBuildPlan(
+         environmentName,
+         packageName,
+         versionId,
+      );
+      const environment = await this.environment(environmentName);
+      return estimatePackageRowCounts({
+         pkg,
+         plan,
+         environmentName,
+         body,
+         // A build's own reader: fails open, and logs a lost enforced layer.
+         connectionMetadata: (connectionName) =>
+            connectionMetadataLayers(environment, connectionName),
+         // The same rule a served query meters by.
+         meteredConnection: buildQueryMetadataInput({
+            environmentName,
+            environment,
+            pkg,
+            noLayersLogMessage: "No query-metadata layers for an estimate",
+         }).meteredConnection,
+         signal,
+      });
    }
 
    /**

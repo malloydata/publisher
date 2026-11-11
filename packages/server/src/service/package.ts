@@ -1458,6 +1458,15 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
       return this.materialization.getBuildPlan();
    }
 
+   /**
+    * Which planned sources the storage-destination gate (the strictest) admits,
+    * by name; undefined when the plan could not be derived. Read by the
+    * row-count estimate, which counts only what this admits.
+    */
+   public getSourceEligibility(): SourceEligibility | undefined {
+      return this.materialization.sourceEligibility;
+   }
+
    /** Whether the build plan could not be derived at load, so `getBuildPlan` says nothing. */
    public isBuildPlanUnavailable(): boolean {
       return this.materialization.isBuildPlanUnavailable();
