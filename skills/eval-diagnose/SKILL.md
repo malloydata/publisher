@@ -296,8 +296,8 @@ without spawning an agent, one issue per source the queries read, component
 
 | Code | When | Owner |
 |---|---|---|
-| `PERSIST-REFUSED` | a slow query reads a source whose `#@ persist` the build plan refuses | model |
-| `PERSIST-NOT-BUILT` | a slow query reads a persisted source with no bound table: build and replay again before editing anything | model |
+| `PERSIST-REFUSED` | a query reads a source whose `#@ persist` the build plan refuses | model |
+| `PERSIST-NOT-BUILT` | a query reads a persisted source with no bound table, slow or not: build and replay again before editing anything | model |
 | `SLOW-QUERY` | a query's median is over `budget_ms`, and neither of the above applies | model |
 | `LIVE-FALLBACK` | `servedFrom: live_fallback`: a `storage=` table failed at query time and the query ran live | model |
 

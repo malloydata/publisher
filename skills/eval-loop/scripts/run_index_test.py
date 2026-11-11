@@ -113,7 +113,7 @@ class Cli(unittest.TestCase):
                     contextlib.redirect_stdout(out):
                 self.assertEqual(ri.main(["versions", "--set", str(s), "--publisher", "http://h"]), 0)
             pv.assert_called_once_with("http://h", "e", "p")
-            self.assertIn("2.0.0          latest    r1", out.getvalue())
+            self.assertIn("2.0.0                latest    r1", out.getvalue())
         finally:
             shutil.rmtree(root, ignore_errors=True)
 

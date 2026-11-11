@@ -329,7 +329,11 @@ def pin_version(a: argparse.Namespace) -> dict[str, Any] | None:
     pv = package_version(a.publisher, a.environment, a.package)
     if not a.target_version:
         if not pv.get("id"):
-            return None
+            # An unversioned package: record the version its publisher.json
+            # names, as an answer run does, so `versions` can tell edits apart.
+            base = rb.base_version(rb.served_package_dir(a.publisher, a.environment, a.package))
+            return ({"id": None, "contentHash": pv.get("contentHash"), "latest": None,
+                     "served": "publisher", "baseVersion": base} if base else None)
         return {"id": pv["id"], "contentHash": pv.get("contentHash"), "latest": True,
                 "served": "publisher", "pinned": True}
     held = {v.get("id"): v for v in package_versions(a.publisher, a.environment, a.package)}
@@ -414,8 +418,10 @@ def replay(a: argparse.Namespace, cfg: config.Config) -> int:
     (a.out / "summary.json").write_text(json.dumps(summary, indent=1) + "\n")
 
     s = summary
+    base = (version or {}).get("baseVersion")
+    shown = vid or (f"{base} (unpublished)" if base else "working copy")
     print(f"\nquery replay of {a.from_run.name}: {s['queries']} queries, {s['errors']} errors, "
-          f"version {vid or 'working copy'}")
+          f"version {shown}")
     print(f"p50 {s['p50_ms']} ms   p95 {s['p95_ms']} ms   max {s['max_ms']} ms   "
           f"total {s['total_ms']} ms" + (f"   over {a.budget_ms} ms: {len(s['slow'])}"
                                          if a.budget_ms else ""))

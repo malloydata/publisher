@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Tests for query_replay.py: which queries replay, the rows hash, timing, the
 comparison rule, and a whole replay against a stub server."""
+import argparse
 import contextlib
 import http.server
 import io
@@ -254,6 +255,15 @@ class Replay(unittest.TestCase):
         self.assertEqual(m["tables"]["eval_query_timings"]["rows"], 2)
         self.assertEqual(m["tables"]["eval_attempts"]["rows"], 0)
 
+    def test_an_unversioned_package_records_its_publisher_json_version(self):
+        with unittest.mock.patch.object(qr.rb, "base_version", return_value="1.2.0"), \
+                unittest.mock.patch.object(qr.rb, "served_package_dir", return_value=None):
+            a = argparse.Namespace(publisher=self.url, environment="e", package="p",
+                                   target_version=None)
+            with unittest.mock.patch.object(qr, "package_version", return_value={"id": None}):
+                pin = qr.pin_version(a)
+        self.assertEqual((pin["id"], pin["baseVersion"]), (None, "1.2.0"))
+
     def test_a_second_replay_with_changed_rows_is_blocked(self):
         self.replay("perf-1")
         old = StubPublisher.rows
@@ -294,6 +304,19 @@ class Replay(unittest.TestCase):
         self.assertEqual(top["speed"], {"faster": 1, "slower": 0, "rows_changed": 0,
                                         "compared": 1, "total_ratio": 0.2})
         self.assertIn("vs 1.0.0: 1 faster, 0 slower", "\n".join(ri.fmt_versions(rows)))
+
+    def test_unpublished_versions_get_a_row_each(self):
+        w = self.root / "w"
+        for name, base in (("u-a", "1.1.0"), ("u-b", "1.2.0")):
+            d = w / "runs" / name
+            d.mkdir(parents=True)
+            (d / "run.json").write_text(json.dumps({
+                "phase": "query-replay", "status": "complete", "started": name,
+                "packageVersion": {"id": None, "baseVersion": base}}))
+            (d / "results.jsonl").write_text(json.dumps(result("q1", 10)) + "\n")
+            (d / "summary.json").write_text(json.dumps({"p50_ms": 10, "total_ms": 10, "queries": 1}))
+        names = [r["version"] for r in ri.versions(ri.runs(w))]
+        self.assertEqual(names[:2], ["1.2.0 (unpublished)", "1.1.0 (unpublished)"])
 
 
 if __name__ == "__main__":

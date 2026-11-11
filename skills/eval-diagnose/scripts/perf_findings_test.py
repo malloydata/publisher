@@ -47,6 +47,11 @@ class Findings(unittest.TestCase):
         self.assertEqual((issue["component"], issue["owner"]), ("performance", "model"))
         self.assertEqual(issue["evidence"]["medianMs"], {"c": 500, "d": 150})
 
+    def test_an_unbuilt_persist_is_reported_when_nothing_is_slow(self):
+        (self.run / "results.jsonl").write_text(json.dumps(row("a", "orders", 40, False)) + "\n")
+        got = [(i["primary_code"], i["qids"]) for i in pf.findings(self.run)]
+        self.assertEqual(got, [("PERSIST-NOT-BUILT", ["a"])])
+
     def test_the_codes_are_the_skills_codes(self):
         skill = (pathlib.Path(pf.__file__).resolve().parent.parent / "SKILL.md").read_text()
         for code in ("PERSIST-REFUSED", "PERSIST-NOT-BUILT", "SLOW-QUERY", "LIVE-FALLBACK"):

@@ -9,8 +9,8 @@ here spawns an agent. Each source whose queries need attention gets one `issue`
 event, component `performance`, owner `model` (a materialization lives in the
 model's annotations), with the codes skill:eval-diagnose defines:
 
-  PERSIST-REFUSED    a slow query reads a source whose `#@ persist` the build plan refuses
-  PERSIST-NOT-BUILT  a slow query reads a persisted source with no bound table
+  PERSIST-REFUSED    a query reads a source whose `#@ persist` the build plan refuses
+  PERSIST-NOT-BUILT  a query reads a persisted source with no bound table
   SLOW-QUERY         a query's median is over `budget_ms`, and neither of the above
   LIVE-FALLBACK      `servedFrom: live_fallback`: the stored table failed and the query ran live
 
@@ -40,10 +40,15 @@ def findings(run: pathlib.Path) -> list[dict[str, Any]]:
     bound = mat.get("bound")
     groups: dict[str, list[dict[str, Any]]] = {}
     for r in rows:
-        if r.get("slow"):
-            groups.setdefault(r.get("source") or "(other)", []).append(r)
+        src = r.get("source") or "(other)"
+        # A persist the build refused or never ran is a finding whatever the
+        # timing: under budget today is not built, and the replay already
+        # warned. Every query on the source is in the group, not only slow ones.
+        if r.get("slow") or src in refused or (src in persisted and not bound):
+            groups.setdefault(src, []).append(r)
     out = []
     for src, rs in sorted(groups.items(), key=lambda kv: -sum(r["median_ms"] for r in kv[1])):
+        slow = sum(1 for r in rs if r.get("slow"))
         if src in refused:
             code, why = "PERSIST-REFUSED", (f"`{src}` declares `#@ persist`, and the build plan "
                                             "refuses it, so it computes live on every query. The "
@@ -60,8 +65,9 @@ def findings(run: pathlib.Path) -> list[dict[str, Any]]:
         out.append(ledger.event(
             "issue", issue_id=f"perf-{src}", qids=sorted(r["qid"] for r in rs),
             primary_code=code, component="performance", owner="model",
-            diagnosis=f"{len(rs)} quer{'y' if len(rs) == 1 else 'ies'} over the budget; {why}",
-            severity="high" if worst > 4 * (budget or worst) else "medium",
+            diagnosis=(f"{len(rs)} quer{'y' if len(rs) == 1 else 'ies'} on `{src}`, "
+                       f"{slow} over the budget; {why}"),
+            severity="high" if budget and worst > 4 * budget else "medium",
             confidence="high", diagnosedBy=BY,
             evidence={"source": src, "budgetMs": budget,
                       "medianMs": {r["qid"]: r["median_ms"] for r in rs},

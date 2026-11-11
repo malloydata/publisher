@@ -205,6 +205,32 @@ COMPARABLE = ("datasetVersion", "datasetSha", "judgeVersion", "rubricSha",
               "retrievalMode", "modelGitSha", "targetVersion", "packageVersion")
 
 
+# The pins that say WHICH MODEL answered. An edit moves the git sha, and a
+# version bump that ships it moves the version with it: that is one change,
+# the edit under test, not two.
+MODEL_PINS = ("modelGitSha", "targetVersion", "packageVersion")
+
+
+def pin_report(ca: dict, cb: dict) -> list[str]:
+    """Lines naming the pins the two arms differ in, and what that makes the flips."""
+    differing = [k for k in COMPARABLE if ca.get(k) != cb.get(k)]
+    if not differing:
+        return []
+    out = [f"\nthe arms differ in {len(differing)} pin(s): {', '.join(differing)}"]
+    out += [f"    {k:<20} {ca.get(k)}  ->  {cb.get(k)}" for k in differing]
+    other = [k for k in differing if k not in MODEL_PINS]
+    changes = len(other) + (len(other) < len(differing))
+    if changes > 1:
+        out.append("  More than one thing changed between the arms, so the "
+                   "flips cannot be put down to any one of them.")
+    elif other:
+        out.append(f"  Only {other[0]} changed: the flips measure that change.")
+    else:
+        out.append("  Only the model changed (its git sha, and the version "
+                   "that ships it): the flips measure that edit.")
+    return out
+
+
 def completeness_note(ca: dict, cb: dict, la: str, lb: str,
                       A: dict, B: dict) -> int:
     """Say which cases one arm excluded and the other scored. Never refuses.
@@ -233,16 +259,23 @@ def completeness_note(ca: dict, cb: dict, la: str, lb: str,
                     and theirs[q]["passed"] is not None]
         if not excluded:
             continue
-        why = ", ".join(
-            [f"{len(cfg.get('truncated') or [])} truncated"]
-            * bool(cfg.get("truncated"))
-            + [f"{len(cfg.get('contaminated') or [])} contaminated"]
-            * bool(cfg.get("contaminated"))) or "unscored"
+        # Name why each one is out. A near_match is the judge calling the
+        # answer arguable, not an attempt that ran long, and blaming truncation
+        # for it sent a reader looking for a turn limit that was never hit.
+        tally: dict[str, int] = {}
+        truncated = set(cfg.get("truncated") or [])
+        for q in excluded:
+            why_q = ("truncated" if q in truncated
+                     else "contaminated" if q in (cfg.get("contaminated") or [])
+                     else mine[q].get("verdict") or "unscored")
+            tally[why_q] = tally.get(why_q, 0) + 1
+        why = ", ".join(f"{n} {k}" for k, n in sorted(tally.items()))
         print(f"\n  ! {label} left {len(excluded)} case(s) unscored that "
               f"the other arm scored ({why}): {', '.join(excluded)}")
-        print("    They are out of the flips above, so the comparison holds --"
-              " but an attempt truncates BECAUSE it ran long, so these are not"
-              " a random sample of the set.")
+        print("    They are out of the flips above, so the comparison holds.")
+        if tally.get("truncated"):
+            print("    An attempt truncates BECAUSE it ran long, so the "
+                  "truncated ones are not a random sample of the set.")
     return 0
 
 
@@ -689,14 +722,8 @@ def main() -> int:
               f"--verdicts near_match")
 
     cfg_a, cfg_b = config(a_args.a), config(a_args.b)
-    differing = [k for k in COMPARABLE
-                 if cfg_a.get(k) != cfg_b.get(k)]
-    if differing:
-        print(f"\nthe arms differ in {len(differing)} pin(s): "
-              f"{', '.join(differing)}")
-        for k in differing:
-            print(f"    {k:<20} {cfg_a.get(k)}  ->  {cfg_b.get(k)}")
-        print("  More than one pin moving makes the flips unattributable.")
+    for line in pin_report(cfg_a, cfg_b):
+        print(line)
 
     gate = retrieval_gate(cfg_a, cfg_b, la, lb,
                           a_args.allow_retrieval_mismatch)

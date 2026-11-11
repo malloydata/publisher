@@ -293,6 +293,16 @@ class CompletenessNote(unittest.TestCase):
         # The caveat that is actually true: the dropped cases are the long ones.
         self.assertIn("BECAUSE it ran long", body)
 
+    def test_a_near_match_is_named_and_not_blamed_on_truncation(self):
+        A = self.verdicts(q1=("match", True), q2=("near_match", None))
+        B = self.verdicts(q1=("match", True), q2=("match", True))
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            ft.completeness_note({}, {}, "arm-a", "arm-b", A, B)
+        body = out.getvalue()
+        self.assertIn("(1 near_match): q2", body)
+        self.assertNotIn("truncates", body)
+
     def test_the_answerer_model_is_already_a_pin(self):
         # Not this note's job, and worth pinning so nobody adds a second
         # mechanism: an arm on one model against another is already reported
@@ -423,3 +433,24 @@ class DisagreementSet(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class PinReport(unittest.TestCase):
+    def test_a_model_edit_with_its_version_bump_is_one_change(self):
+        a = {"modelGitSha": "aaa", "packageVersion": {"baseVersion": "1.0.0"}}
+        b = {"modelGitSha": "bbb", "packageVersion": {"baseVersion": "1.1.0"}}
+        text = "\n".join(ft.pin_report(a, b))
+        self.assertIn("Only the model changed", text)
+        self.assertNotIn("More than one", text)
+
+    def test_one_other_pin_is_named(self):
+        text = "\n".join(ft.pin_report({"judgeModel": "sonnet"}, {"judgeModel": "opus"}))
+        self.assertIn("Only judgeModel changed", text)
+
+    def test_the_model_and_another_pin_together_cannot_be_attributed(self):
+        text = "\n".join(ft.pin_report({"modelGitSha": "a", "judgeModel": "sonnet"},
+                                        {"modelGitSha": "b", "judgeModel": "opus"}))
+        self.assertIn("More than one thing changed", text)
+
+    def test_identical_arms_say_nothing(self):
+        self.assertEqual(ft.pin_report({"modelGitSha": "a"}, {"modelGitSha": "a"}), [])

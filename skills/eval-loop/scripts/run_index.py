@@ -25,8 +25,10 @@ its most recent full run, that run's pass count and set version, and the
 flips against the previous version's most recent full run. Flips are counted
 only over cases both runs scored with the same `question_sha` and
 `golden_revision`, the rule `flip_table.py` uses. A run with no published
-version (`packageVersion.id` null) is a working copy and appears as one row,
-`working copy`.
+version (`packageVersion.id` null) is a working copy. It is keyed by the
+`version` its `publisher.json` named (`1.2.0 (unpublished)`), so a server run
+without package versioning still shows one row per version the author bumped
+to; a run that recorded no version at all appears as `working copy`.
 
 Each version row also carries its most recent query replay: the median and
 total query time, and against the previous version's replay, how many queries
@@ -50,12 +52,13 @@ from ledger import read_jsonl  # noqa: E402
 from publisher_rest import package_versions  # noqa: E402
 
 WORKING_COPY = "working copy"
+UNPUBLISHED = "(unpublished)"
 
 
 def version_key(v: str) -> tuple:
     """Semver order for display, highest first after reverse. A pre-release
     sorts below its release; anything unparseable sorts last."""
-    core, _, pre = v.partition("-")
+    core, _, pre = v.split(" ")[0].partition("-")
     try:
         nums = tuple(int(x) for x in core.split("+")[0].split("."))
     except ValueError:
@@ -86,7 +89,8 @@ def runs(workdir: pathlib.Path, n_cases: int | None = None) -> list[dict[str, An
             "slice": (meta.get("slice") or {}).get("name")
             or ("tags " + ",".join((meta.get("slice") or {}).get("tags") or [])
                 if meta.get("slice") else None),
-            "version": pv.get("id") if pv else meta.get("targetVersion"),
+            "version": (pv.get("id") if pv else meta.get("targetVersion"))
+            or (f"{pv['baseVersion']} {UNPUBLISHED}" if pv.get("baseVersion") else None),
             "contentHash": pv.get("contentHash"),
             "baseVersion": pv.get("baseVersion"),
             "datasetVersion": meta.get("datasetVersion"),
@@ -221,12 +225,12 @@ def fmt_runs(rows: list[dict[str, Any]]) -> list[str]:
 
 
 def fmt_versions(rows: list[dict[str, Any]]) -> list[str]:
-    lines = [f"{'version':<14} {'state':<9} {'run':<30} {'set':>4}  score / flips"]
+    lines = [f"{'version':<20} {'state':<9} {'run':<30} {'set':>4}  score / flips"]
     for r in rows:
         state = ("latest" if r["latest"] else "archived" if r["archived"]
                  else "" if r["latest"] is None else "-")
         if not r["run"]:
-            lines.append(f"{r['version'][:14]:<14} {state:<9} {'(no answer run)':<30}")
+            lines.append(f"{r['version'][:20]:<20} {state:<9} {'(no answer run)':<30}")
             lines += fmt_speed(r)
             continue
         score = f"{r['passed']}/{r['decided']} passed" + ("" if r["full"] else " (not full)")
@@ -235,7 +239,7 @@ def fmt_versions(rows: list[dict[str, Any]]) -> list[str]:
             score += (f"; vs {r['vs']}: {f['fixed']} fixed, {f['broke']} broke"
                       f" over {f['compared']}"
                       + (f", {f['set_aside']} set aside" if f["set_aside"] else ""))
-        lines.append(f"{r['version'][:14]:<14} {state:<9} {r['run'][:30]:<30} "
+        lines.append(f"{r['version'][:20]:<20} {state:<9} {r['run'][:30]:<30} "
                      f"{str(r.get('datasetVersion') or '-'):>4}  {score}")
         lines += fmt_speed(r)
     return lines
