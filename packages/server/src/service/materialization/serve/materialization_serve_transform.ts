@@ -121,6 +121,16 @@ export interface ServeBinding {
    /** The Malloy source name to rebind (`source: <sourceName> is ...`). */
    sourceName: string;
    /**
+    * The sourceIDs of this package's own sources that the table materializes:
+    * the build-plan sources with this name at this content address, from this
+    * server's own compile (see {@link planSourceIds}). A model keeps the binding
+    * only when its own source of that name carries one of them, so an unrelated
+    * same-named source in another model is never served from this table, while
+    * an imported source (which keeps its declaring model's sourceID) still is.
+    * Absent, as on a hand-made binding, the name alone decides, as before.
+    */
+   sourceIDs?: string[];
+   /**
     * `persist` for a modeler-annotated source, `preaggregate` for a synthesized
     * rollup; absent means `persist`. A rollup must not take the ordinary
     * author-model lookups (see {@link rollupServeBindings}).
@@ -148,6 +158,61 @@ export interface ServeBinding {
     */
    freshnessWindowSeconds?: number;
    freshnessFallback?: "live" | "stale_ok" | "fail";
+}
+
+/**
+ * The package's own sourceIDs for a source name at a content address, read from
+ * the build plan's sources (keyed by sourceID).
+ *
+ * Both sides of the comparison come from this server's compile: the plan's
+ * sourceIDs here, and each model's `contents[name].sourceID` in
+ * {@link bindingServesModelSource}. A sourceID embeds an absolute model URL, so
+ * one from another process would not compare; matching the manifest entry to
+ * the plan by name and content address is what lets a binding the host supplied
+ * carry this server's identity.
+ *
+ * When no plan source has the entry's content address (an instructed build on
+ * an unversioned package stamps the caller's address, which this server may not
+ * compute), the one plan source of that name is returned. When the plan holds
+ * several, none is: an empty list matches no model's source, so every source of
+ * that name serves live rather than one being served from another's table.
+ */
+export function planSourceIds(
+   planSources: Record<string, { name?: string; sourceEntityId?: string }>,
+): (sourceName: string, sourceEntityId: string) => string[] {
+   const byName = new Map<string, { sourceID: string; address?: string }[]>();
+   for (const [sourceID, source] of Object.entries(planSources)) {
+      if (!source.name) continue;
+      const named = byName.get(source.name) ?? [];
+      named.push({ sourceID, address: source.sourceEntityId });
+      byName.set(source.name, named);
+   }
+   return (sourceName, sourceEntityId) => {
+      const named = byName.get(sourceName) ?? [];
+      const exact = named.filter((s) => s.address === sourceEntityId);
+      if (exact.length > 0) return exact.map((s) => s.sourceID);
+      // No address matches: trust the name only when one plan source has it.
+      // Two would be two different tables' sources, and picking both serves one
+      // from the other's table, so neither is named and both serve live.
+      return named.length === 1 ? [named[0].sourceID] : [];
+   };
+}
+
+/**
+ * Whether a model may serve `binding`: false only when the model's own source of
+ * that name carries a sourceID the binding does not name, which is an unrelated
+ * source that happens to share the name. A binding with no `sourceIDs`, a
+ * rollup (its name is generated and names nothing in the author's model), and a
+ * name the model does not define are left to the checks downstream, as before.
+ */
+export function bindingServesModelSource(
+   binding: ServeBinding,
+   contents: Record<string, { sourceID?: unknown } | undefined> | undefined,
+): boolean {
+   if (binding.origin === "preaggregate" || !binding.sourceIDs) return true;
+   const sourceID = contents?.[binding.sourceName]?.sourceID;
+   if (typeof sourceID !== "string" || sourceID.length === 0) return true;
+   return binding.sourceIDs.includes(sourceID);
 }
 
 /**
@@ -217,6 +282,8 @@ export function deriveServeBindings(
    aliasesBySourceName: Record<string, string[]>,
    /** A destination's schema by name (see storageTablePath); absent, or answering undefined, is `main`. */
    destinationSchema?: (destinationName: string) => string | undefined,
+   /** The package's own sourceIDs for a name at a content address ({@link planSourceIds}). */
+   sourceIDsFor?: (sourceName: string, sourceEntityId: string) => string[],
 ): ServeBinding[] {
    const bindings: ServeBinding[] = [];
    // Names that OWN a table. An alias never claims one, or the name would be
@@ -248,8 +315,12 @@ export function deriveServeBindings(
          ),
       ].filter((name, i, all) => all.indexOf(name) === i);
       for (const sourceName of names) {
+         // Set whenever there is a plan to read, even empty: an empty list
+         // names no source, so the binding serves nothing (see planSourceIds).
+         const sourceIDs = sourceIDsFor?.(sourceName, entry.sourceEntityId);
          bindings.push({
             sourceName,
+            ...(sourceIDs !== undefined ? { sourceIDs } : {}),
             // Carried, not inferred: a manifest travels without its build plan.
             origin:
                entry.origin === "preaggregate" ? "preaggregate" : "persist",
