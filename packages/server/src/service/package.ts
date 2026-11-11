@@ -1309,6 +1309,8 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
          schemaFetchDurationMs: outcome.timings.schemaFetchDurationMs,
          schemaFetchCount: outcome.timings.schemaFetchCount,
          schemaCacheHits: outcome.timings.schemaCacheHits,
+         translationsStored: outcome.timings.translationsStored,
+         translationsReused: outcome.timings.translationsReused,
          modelCount: outcome.models.length,
          databaseCount: databases.length,
       });

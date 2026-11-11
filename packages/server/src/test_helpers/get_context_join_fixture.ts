@@ -97,12 +97,32 @@ class DescribedDuckDBConnection extends DuckDBConnection {
       return {
          ...def,
          ...dbmetaAnnotations({ description: stub.table }),
-         fields: def.fields.map((field) => ({
-            ...field,
-            ...dbmetaAnnotations({ description: stub.columns?.[field.name] }),
-         })),
+         fields: describeFields(def.fields, stub.columns ?? {}, ""),
       };
    }
+}
+
+/**
+ * Annotate each column with its description, and each member of a record
+ * column (a STRUCT, or an array of them) by its dotted path (`delivery.city`),
+ * as BigQuery does for the fields nested in a RECORD.
+ */
+function describeFields<F extends { name: string }>(
+   fields: F[],
+   columns: Record<string, string>,
+   prefix: string,
+): F[] {
+   return fields.map((field) => {
+      const path = `${prefix}${field.name}`;
+      const nested = (field as { fields?: Array<{ name: string }> }).fields;
+      return {
+         ...field,
+         ...dbmetaAnnotations({ description: columns[path] }),
+         ...(nested
+            ? { fields: describeFields(nested, columns, `${path}.`) }
+            : {}),
+      };
+   });
 }
 
 /** Compile the fixture and return a Package-shaped stand-in over it. */
@@ -119,7 +139,10 @@ export async function compileJoinFixture(
        * index.
        */
       hiddenSources?: string[];
-      /** Database descriptions for `duckdb.sql` sources, by their SQL text. */
+      /**
+       * Database descriptions for `duckdb.sql` sources, by their SQL text;
+       * a record member's column is named by its dotted path.
+       */
       dbmeta?: Record<string, DbmetaStub>;
    } = {},
 ): Promise<{ pkg: unknown; modelDef: ModelDef }> {

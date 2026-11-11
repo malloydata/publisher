@@ -13,6 +13,7 @@
  * `new Worker(...)` does not load the whole server module graph.
  */
 import {
+   type CacheManager,
    contextOverlay,
    type BuildManifestEntry,
    type Connection,
@@ -49,6 +50,14 @@ import { isReportEligiblePath, readReportTagOfText } from "../service/report";
 import { HackyDataStylesAccumulator } from "../data_styles";
 import { PackageManifestError } from "../errors";
 import { deserializeError, serializeError } from "./error_wire";
+import {
+   compileOrder,
+   dataStylesForModel,
+   jobFiles,
+   ModelCacheView,
+   modelFileTexts,
+   type JobFiles,
+} from "./job_files";
 import { translatorMalloyError } from "../service/translator_error";
 import { extractCheckedModel } from "../service/model_load_checks";
 import { modelInfoOf } from "../service/model_info";
@@ -839,10 +848,12 @@ function jobRuntime(
    job: LoadPackageRequest,
    malloyConfig: MalloyConfig,
    urlReader: { readURL: (url: URL) => Promise<string> },
+   cacheManager?: CacheManager,
 ): Runtime {
    return new Runtime({
       urlReader,
       config: malloyConfig,
+      cacheManager,
       buildManifest:
          job.buildManifest !== undefined && job.buildManifest !== null
             ? {
@@ -871,6 +882,34 @@ function buildRuntimeForModel(
    const urlReader = new HackyDataStylesAccumulator(reader);
    const runtime = jobRuntime(job, malloyConfig, urlReader);
    return { runtime, urlReader, textFor, fileTexts };
+}
+
+/**
+ * A `.malloy` model's Runtime over the load's shared files and model cache
+ * (see job_files.ts).
+ */
+function sharedRuntimeForModel(
+   job: LoadPackageRequest,
+   malloyConfig: MalloyConfig,
+   files: JobFiles,
+   modelURL: URL,
+): {
+   runtime: Runtime;
+   textFor: (url: URL) => string | undefined;
+   fileTexts: (dependencies: unknown) => Map<string, string>;
+} {
+   const runtime = jobRuntime(
+      job,
+      malloyConfig,
+      files.reader,
+      new ModelCacheView(files, modelURL.toString()),
+   );
+   return {
+      runtime,
+      textFor: (url: URL) => files.texts.get(url.toString()),
+      fileTexts: (dependencies: unknown) =>
+         modelFileTexts(files, modelURL.toString(), dependencies),
+   };
 }
 
 /**
@@ -912,6 +951,7 @@ async function compileMalloyModel(
    malloyConfig: MalloyConfig,
    modelPath: string,
    load: LoadContext,
+   files: JobFiles,
 ): Promise<SerializedModel> {
    const compileStart = performance.now();
    const fullPath = path.join(job.packagePath, modelPath);
@@ -919,9 +959,11 @@ async function compileMalloyModel(
    const modelURL = pathToFileURL(fullPath);
    const importBaseURL = new URL(".", modelURL);
 
-   const { runtime, urlReader, textFor, fileTexts } = buildRuntimeForModel(
+   const { runtime, textFor, fileTexts } = sharedRuntimeForModel(
       job,
       malloyConfig,
+      files,
+      modelURL,
    );
    const mm = runtime.loadModel(modelURL, { importBaseURL });
    const compiled = await mm.getModel();
@@ -945,7 +987,7 @@ async function compileMalloyModel(
       relativePath: modelPath,
       absolutePath: fullPath,
       model: compiled,
-      texts: fileTexts(),
+      texts: fileTexts(modelDef.dependencies),
    });
 
    return {
@@ -966,7 +1008,11 @@ async function compileMalloyModel(
       // DocumentLocation out of them is cutting the same snapshot the
       // coordinates were computed against. See SerializedModel.
       modelSourceText: textFor(modelURL),
-      dataStyles: urlReader.getHackyAccumulatedDataStyles(),
+      dataStyles: dataStylesForModel(
+         files,
+         modelURL.toString(),
+         modelDef.dependencies,
+      ),
       compileDurationMs,
       problems: job.collectProblems ? compiled.problems : undefined,
       authorizeWarnings:
@@ -1238,10 +1284,17 @@ async function compileOneModel(
    malloyConfig: MalloyConfig,
    modelPath: string,
    load: LoadContext,
+   files: JobFiles,
 ): Promise<SerializedModel> {
    try {
       if (modelPath.endsWith(MODEL_FILE_SUFFIX)) {
-         return await compileMalloyModel(job, malloyConfig, modelPath, load);
+         return await compileMalloyModel(
+            job,
+            malloyConfig,
+            modelPath,
+            load,
+            files,
+         );
       }
       if (modelPath.endsWith(NOTEBOOK_FILE_SUFFIX)) {
          return await compileNotebookModel(job, malloyConfig, modelPath);
@@ -1323,11 +1376,32 @@ async function loadPackage(
       planLeftToMainThread: false,
       provisionalEntities: queryBoundaryActive(packageMetadata),
    };
-   const models = await Promise.all(
-      modelPaths.map((modelPath) =>
-         compileOneModel(job, malloyConfig, modelPath, load),
-      ),
+   const files = jobFiles(makeWorkerUrlReader(job));
+   const { waitsOn } = await compileOrder(
+      job.packagePath,
+      modelPaths,
+      files.reader,
+      files.imported,
    );
+   // Each model starts once the package files it imports have compiled, so
+   // their translations are in the cache; the rest overlaps as it used to.
+   // compileOneModel reports a failure in-band, so a failed import still lets
+   // its importers start.
+   const compiles = new Map<string, Promise<SerializedModel>>();
+   const compile = (modelPath: string): Promise<SerializedModel> => {
+      let started = compiles.get(modelPath);
+      if (!started) {
+         started = Promise.allSettled(
+            (waitsOn.get(modelPath) ?? []).map(compile),
+         ).then(() =>
+            compileOneModel(job, malloyConfig, modelPath, load, files),
+         );
+         compiles.set(modelPath, started);
+      }
+      return started;
+   };
+   // In the package's model order, as the main thread reads them.
+   const models = await Promise.all(modelPaths.map(compile));
 
    const compileEnd = performance.now();
    const schemaFetchDurationMs = schemaWait.waitMs;
@@ -1357,6 +1431,8 @@ async function loadPackage(
          schemaFetchDurationMs,
          schemaFetchCount,
          schemaCacheHits,
+         translationsStored: files.stats.stored,
+         translationsReused: files.stats.reused,
       },
       buildPlan,
    };
