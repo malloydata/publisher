@@ -230,9 +230,18 @@ richer goes in `query`. `givens` ride on either shape to supply [runtime paramet
 rows.
 
 The response is a `QueryResult`, `{rows, metadata}`: plain row objects, and `metadata` with `versionId` (the version
-that answered, `latest` resolved), `rowLimit`, `rowLimitSource`, `rowLimitHit`, `elapsedMs`, `servedFrom`,
+that answered, `latest` resolved), `rowLimit`, `rowLimitSource`, `rowLimitHit`, `elapsedMs`, `path`,
 `scannedBytes`, `queryCorrelationId` and `renderLogs`. Add `"include": ["malloyResult"]` for the full Malloy result,
 with column types, that the renderer consumes, or `["sql"]` for the SQL that ran.
+
+`metadata.path` is the path report: what answered the query and why. `servedBy` names the table that answered and
+its `dataAsOf`, or `kind: live`. `considered` lists every materialized table the router tried, in order, each `used`
+or `skipped` with a `reason` from a closed list (`NOT_BUILT`, `WARNED`, `MISSING_FIELD`, `CONTRACT`,
+`GRAIN_TOO_COARSE`, `TIME_ZONE`, `CROSS_CONNECTION`, `COUNT_SEMANTICS`, `STALE`). `notConsidered` names nearby tables
+the router does not try for this query (a sibling's, or one on a source extending it), nearest first. `joins` says
+how each join resolved (`inline`, `table` or `live`), and `warnings` carries the publish warnings on the
+annotations the query touched. `query` is the query's shape as routing reads it. It replaces v0's `servedFrom`,
+which said where an answer came from but never why.
 
 A query that fails says whose problem it is. Branch on `reason`:
 
@@ -272,7 +281,7 @@ The spec's nouns are the vocabulary, and the Console and the docs follow them:
 | manifest entry   | what a run produced for one source; `tableId` names the physical table                                  |
 | binding          | what a version serves for one source right now                                                          |
 | table            | a warehouse table, browsed under a connection; a built one is identified by its manifest entry's `tableId` and named by its `tableName` |
-| warehouse        | the source's own database; a query `servedFrom` `warehouse` read no materialized table                   |
+| warehouse        | the source's own database; a query whose `path.servedBy.kind` is `live` read no materialized table      |
 | given            | a runtime parameter a model declares; reports render the ones their tiles read as filter controls       |
 | index            | the discovery index `get_context` ranks against                                                         |
 | stale            | a version serving a model older than its content because the newer content failed to compile           |

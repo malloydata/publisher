@@ -6490,6 +6490,160 @@ components:
         read the backend's query history, and on a backend with no native tag mechanism it is visible in the statement
         text.
 
+    QueryPath:
+      type: object
+      description: "The path report: what answered a query and why. Agents read it to learn whether a materialized table
+        answered, and if not, what would let one. Tables are named by `tableId`; a source name alone is ambiguous across
+        a package's models."
+      required:
+        - query
+        - servedBy
+        - considered
+        - notConsidered
+        - joins
+        - warnings
+      properties:
+        query:
+          $ref: "#/components/schemas/QueryShape"
+          readOnly: true
+        servedBy:
+          $ref: "#/components/schemas/QueryPathServer"
+          readOnly: true
+        considered:
+          type: array
+          description: Every materialized table the router tried for this query, in the order it tried them, the one that served
+            it included. Empty when the queried source has no materialized table.
+          items:
+            $ref: "#/components/schemas/QueryPathCandidate"
+        notConsidered:
+          type: array
+          description: "Materialized tables near the queried source that the router does not try for it: a sibling's (one sharing
+            an ancestor, off the queried source's chain), or one on a source that extends the queried one. Nearest
+            first, at most ten. They say what the model has that this query cannot use, and where moving the query, or
+            an annotation, would let a table answer."
+          items:
+            $ref: "#/components/schemas/QueryPathNearby"
+        joins:
+          type: array
+          description: How each join the query used was resolved. Empty when it used none.
+          items:
+            $ref: "#/components/schemas/QueryPathJoin"
+        warnings:
+          type: array
+          description: "The publish warnings on the materialization annotations this query touched: an annotation that is
+            well-formed but cannot be honoured here, so its source answers live. Empty when there are none."
+          items:
+            $ref: "#/components/schemas/Problem"
+      readOnly: true
+
+    QueryPathCandidate:
+      type: object
+      description: A materialized table the router tried for the query.
+      required:
+        - tableId
+        - kind
+        - outcome
+      properties:
+        tableId:
+          type: string
+        kind:
+          $ref: "#/components/schemas/QueryPathTableKind"
+        outcome:
+          type: string
+          enum:
+            - used
+            - skipped
+          description: "`used`, the table answered; `skipped`, it could not, and `reason` says why."
+        reason:
+          $ref: "#/components/schemas/SkipReason"
+        detail:
+          type: string
+          description: "For a skip, the specifics, for a person: the missing field's name, the grain the query needed, the time
+            zones. Absent when `outcome` is `used`."
+      readOnly: true
+
+    QueryPathJoin:
+      type: object
+      description: How one join the query used was resolved.
+      required:
+        - join
+        - resolved
+      properties:
+        join:
+          type: string
+          description: The join's dotted path from the queried source.
+        resolved:
+          type: string
+          enum:
+            - inline
+            - table
+            - live
+          description: "`inline`, its fields were stored in the table that answered; `table`, it read the joined source's own
+            materialized table (or a rollup at the join key); `live`, it read the joined source live."
+        tableId:
+          type: string
+          description: The table the join read. Present exactly when `resolved` is `table`.
+      readOnly: true
+
+    QueryPathNearby:
+      type: object
+      description: A materialized table near the queried source that the router does not try for this query.
+      required:
+        - tableId
+        - kind
+        - sourceName
+        - relationship
+        - built
+      properties:
+        tableId:
+          type: string
+        kind:
+          $ref: "#/components/schemas/QueryPathTableKind"
+        sourceName:
+          type: string
+          description: The source the table materializes.
+        relationship:
+          type: string
+          enum:
+            - sibling
+            - below
+          description: "`sibling`, its source shares an ancestor with the queried source but is off its chain; `below`, its source
+            extends the queried one."
+        built:
+          type: boolean
+          description: Whether the table has been built.
+      readOnly: true
+
+    QueryPathServer:
+      type: object
+      description: What answered the query.
+      required:
+        - kind
+      properties:
+        kind:
+          $ref: "#/components/schemas/QueryPathTableKind"
+        tableId:
+          type: string
+          description: The table that answered. Each generation of a table is its own table, so this also names the generation.
+            Absent when `kind` is `live`.
+        dataAsOf:
+          type: string
+          format: date-time
+          description: The moment the table's rows reflect, as on its manifest entry. Absent when `kind` is `live`, whose rows are
+            read now.
+          readOnly: true
+      readOnly: true
+
+    QueryPathTableKind:
+      type: string
+      enum:
+        - view
+        - rollup
+        - materialized
+        - live
+      description: "What kind of answer: `view`, a persisted view's table; `rollup`, a pre-aggregation; `materialized`, a
+        materialized source's table; `live`, the source's own warehouse."
+
     QueryRequest:
       type: object
       description: "One of two shapes: `query` alone (ad-hoc Malloy compiled in the model's context), or `queryName` without
@@ -6583,16 +6737,13 @@ components:
         elapsedMs:
           type: integer
           description: How long the server took to produce the result, in milliseconds.
-        servedFrom:
-          type: string
-          enum:
-            - warehouse
-            - storage
-            - colocated
-            - warehouse_fallback
-          description: "How the answer was produced: `warehouse` from the source's own warehouse, `storage` or `colocated` from a
-            materialized table, `warehouse_fallback` when a storage read failed and the freshness policy allowed the
-            warehouse. Absent when the server cannot tell."
+        path:
+          $ref: "#/components/schemas/QueryPath"
+          description: "What answered the query and why: the table that served it, every table considered with the reason each was
+            skipped, nearby tables that were not considered, how each join resolved, and the warnings on the annotations
+            the query touched. Always present on a query's result; absent on SQL, which no table serves. Replaces v0's
+            `servedFrom`, which said only where an answer came from, never why."
+          readOnly: true
         scannedBytes:
           type: integer
           description: Warehouse bytes scanned, as the backend reported them. Absent when not reported, never zero.
@@ -6605,6 +6756,42 @@ components:
           description: The renderer's messages about the result's render tags.
           items:
             $ref: "#/components/schemas/Problem"
+      readOnly: true
+
+    QueryShape:
+      type: object
+      description: The query's shape, as routing reads it. A query that starts from a view names it in `viewName`; the rest
+        describe the stage that touches the data.
+      required:
+        - sourceName
+        - groupedBy
+        - filteredBy
+        - measures
+      properties:
+        sourceName:
+          type: string
+          description: The source the query reads.
+        viewName:
+          type: string
+          description: The view the query is an exact call of, or starts from. Absent for a query written inline.
+        groupedBy:
+          type: array
+          description: The dimensions the query groups by, as dotted paths from `sourceName`.
+          items:
+            type: string
+        filteredBy:
+          type: array
+          description: The dimensions the query's filters read, as dotted paths from `sourceName`.
+          items:
+            type: string
+        measures:
+          type: array
+          description: The measures the query aggregates, as dotted paths from `sourceName`.
+          items:
+            type: string
+        timeZone:
+          type: string
+          description: The query's time zone, when it sets one. A table built in another time zone is skipped (`TIME_ZONE`).
       readOnly: true
 
     Range:
@@ -7384,6 +7571,27 @@ components:
         - origin
         - versionId
 
+    SkipReason:
+      type: string
+      enum:
+        - NOT_BUILT
+        - WARNED
+        - MISSING_FIELD
+        - CONTRACT
+        - GRAIN_TOO_COARSE
+        - TIME_ZONE
+        - CROSS_CONNECTION
+        - COUNT_SEMANTICS
+        - STALE
+      description: Why a table could not answer a query. `NOT_BUILT`, it has not been built; `WARNED`, its annotation carries
+        a publish warning and serves live; `MISSING_FIELD`, the query reads a field the table lacks; `CONTRACT`,
+        answering from it would bypass an access control on the queried source; `GRAIN_TOO_COARSE`, a rollup's grain
+        does not cover the query's groups or filters; `TIME_ZONE`, it was built in another time zone than the query's;
+        `CROSS_CONNECTION`, the query needs a join the table's connection cannot reach; `COUNT_SEMANTICS`, a count the
+        table cannot reproduce as the live query computes it; `STALE`, it is past its freshness window. Like every
+        `reason` in this API, a code from a closed list; new codes may be added, so a client treats an unknown one as a
+        skip it cannot explain.
+
     SlotScope:
       type: string
       enum:
@@ -7640,7 +7848,7 @@ components:
           $ref: "#/components/schemas/QueryResultMetadata"
           description: "The query metadata that applies to SQL: the row limit fields, `elapsedMs`, and `scannedBytes` and
             `queryCorrelationId` where reported. `versionId` is present on `run-sql-in-version` and absent at
-            environment scope, which names no version. `servedFrom` and `renderLogs` never apply and are absent."
+            environment scope, which names no version. `path` and `renderLogs` never apply and are absent."
           readOnly: true
       readOnly: true
 
