@@ -142,7 +142,9 @@ export type AuthorizeGrammarParsedTerm =
  *  `and`-joined body, or a single whole-body sentinel (`deny_all` for `false`,
  *  `admit_all` for `true`) — never a mix. */
 export type AuthorizeGrammarTerm =
-   AuthorizeGrammarParsedTerm | { scope: "deny_all" } | { scope: "admit_all" };
+   | AuthorizeGrammarParsedTerm
+   | { scope: "deny_all" }
+   | { scope: "admit_all" };
 
 /**
  * Split an already-`FIELD_PATH_RE`-validated field path on its top-level

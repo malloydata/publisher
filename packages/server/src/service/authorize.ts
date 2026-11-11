@@ -335,7 +335,7 @@ function lexProseRanges(text: string): [number, number][] | undefined {
          return undefined;
       // ANTLR indexes code points; the regex runs over UTF-16 units.
       const utf16: number[] = [];
-      for (let i = 0; i < text.length;) {
+      for (let i = 0; i < text.length; ) {
          utf16.push(i);
          i += (text.codePointAt(i) as number) > 0xffff ? 2 : 1;
       }

@@ -154,7 +154,8 @@ export function modelNotesOfParse(
       const child = root.getChild(i);
       if (!isRuleNode(child)) continue;
       const group = callAccessor(child, "docAnnotations") as
-         ParseNode | undefined;
+         | ParseNode
+         | undefined;
       if (!group) continue;
       for (const note of (callAccessor(group, "docAnnotation") ??
          []) as ParseNode[]) {
@@ -367,7 +368,7 @@ function normalizeNewlines(text: string): string {
 export function codePointMap(text: string): Int32Array {
    const map = new Int32Array([...text].length + 1);
    let cp = 0;
-   for (let i = 0; i < text.length;) {
+   for (let i = 0; i < text.length; ) {
       map[cp++] = i;
       i += (text.codePointAt(i) as number) > 0xffff ? 2 : 1;
    }

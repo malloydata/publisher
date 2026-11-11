@@ -188,11 +188,12 @@ describe("every parseAsTag in the server goes through parseRouteTag", () => {
 
    it("imports the tag parser's parse functions only where each line is screened first", () => {
       // Each of these drops or refuses a line carrying `@env.` before it parses:
-      // motly.ts (hasEnvReference), classification.ts (refuses the value) and
+      // motly.ts (hasEnvReference), annotation_reader.ts (readRouteList refuses
+      // the value) and
       // the `#(dbmeta)` reader in package_entities.ts. A new importer must too.
       const SCREENED = new Set([
          path.join("service", "motly.ts"),
-         path.join("service", "classification.ts"),
+         path.join("service", "annotation_reader.ts"),
          path.join("retrieval", "model", "package_entities.ts"),
       ]);
       expect(
