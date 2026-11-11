@@ -38,6 +38,12 @@ Step 2 of the configuration design. Every setting now has one name of each kind,
 - **A boolean flag takes no value.** `--allow-proxy-connections false` turns proxy connections on, as it did before; startup now warns that the `false` is ignored and names `--no-allow-proxy-connections`.
 - A secret has no flag, and is never logged or echoed in an error. `packageVersioning`, `packageInlineFields` and `modelPage` have no flag either: the design gives the two transition settings and the model page none.
 
+## [Unreleased] — Two models' rollups that would share one table are refused, not overwritten
+
+A pre-aggregation rollup's name folds only its base source's name and grain, and that name is its table. So two models that each declare a source of the same name, and pre-aggregate it at the same grain, produced one table: the second build overwrote the first, and one model's queries could be answered from the other's rollup. `#@ preaggregate` has no `name=` to tell them apart.
+
+Such rollups are now refused when their content differs: neither is built or served from storage, each model's queries answer from its base, and the build plan reports both under `refusedSources` with the new reason `rollup_name_collision`, naming the models. Rename one of the base sources to keep both rollups. Two models that generate the same rollup over the same base still share its table.
+
 ## [Unreleased] — `@env.` references are never read outside MOTLY tags
 
 An annotation can no longer read the server's environment through a `#@`, `##` or `##!` line, or through `#(dbmeta)`. The tag parser fills `@env.NAME` from the server's own environment, and Publisher already dropped any MOTLY (`#`) line that carried one. Now every annotation route it parses applies the same rule: the line is dropped before parsing, and the drop is logged.

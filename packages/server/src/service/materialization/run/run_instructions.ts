@@ -16,6 +16,7 @@ import {
    CompiledBuildPlan,
    computeSourceEntityId,
    sourcesInBuildOrder,
+   tierGateInputs,
 } from "../plan/build_plan";
 import { assertTierEligible } from "../plan/materialization_eligibility";
 import {
@@ -118,7 +119,11 @@ export function deriveSelfInstructions(
          // an authorize-gated source materialized there would be served to
          // every caller.
          try {
-            assertTierEligible(persistSource, !!destination, compiled);
+            assertTierEligible(
+               persistSource,
+               !!destination,
+               tierGateInputs(compiled),
+            );
          } catch (err) {
             if (!(err instanceof MaterializationEligibilityError)) throw err;
             if (include) throw err;
