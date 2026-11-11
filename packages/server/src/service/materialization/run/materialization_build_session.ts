@@ -51,6 +51,7 @@ import {
    managedSearchPathSql,
    federateSourceForPassthrough,
    type FederatedSourceType,
+   type PartitionKey,
 } from "../../connection";
 import type { WatermarkBound } from "./incremental_apply";
 import { storageDestinationRoot } from "../../connection_config";
@@ -152,16 +153,24 @@ export function orderByPartitionColumns(
    partitionColumns: readonly string[],
    dialect: string,
 ): string {
-   if (partitionColumns.length === 0) {
+   return orderByExpressions(
+      selectSQL,
+      partitionColumns.map((name) => quoteIdentifier(name, dialect)),
+   );
+}
+
+/** {@link orderByPartitionColumns}, for order terms already rendered as SQL. */
+export function orderByExpressions(
+   selectSQL: string,
+   expressions: readonly string[],
+): string {
+   if (expressions.length === 0) {
       return selectSQL;
    }
-   const order = partitionColumns
-      .map((name) => quoteIdentifier(name, dialect))
-      .join(", ");
    // A trailing terminator would end the subselect early. The closing paren
    // goes on its own line so a trailing `--` comment cannot swallow it.
    const inner = selectSQL.replace(/[\s;]+$/, "");
-   return `SELECT * FROM (\n${inner}\n) AS partitioned_build ORDER BY ${order}`;
+   return `SELECT * FROM (\n${inner}\n) AS partitioned_build ORDER BY ${expressions.join(", ")}`;
 }
 
 /**
@@ -1623,21 +1632,102 @@ export async function createTableAndDescribe(
          return await describeTable(session, quotedTablePath);
       });
    }
+   return await writePartitionedTable(session, {
+      quotedTablePath,
+      selectSQL,
+      keys: partitionColumns.map((column) => ({
+         column,
+         transform: "identity",
+      })),
+      createStatement: "CREATE OR REPLACE TABLE",
+      bounded: options.sourceType !== undefined,
+      read: () => describeTable(session, quotedTablePath),
+   });
+}
 
-   // Run bare, `WITH NO DATA` would serve zero rows until the INSERT lands,
-   // and a failed INSERT would lose the previous generation; a ROLLBACK keeps
-   // it.
-   //
-   // The layout only means something because the session disabled inlining
-   // (`ducklake_default_data_inlining_row_limit=0`); inlined rows have no files.
-   const columns = partitionColumns
-      .map((name) => quoteIdentifier(name, STORAGE_TARGET_DIALECT))
-      .join(", ");
+const TIME_TRANSFORMS = new Set(["year", "month", "day", "hour"]);
+const BUCKET_TRANSFORM = /^bucket\((\d+)\)$/;
+
+/**
+ * A partition key as `ALTER TABLE … SET PARTITIONED BY` takes it, from the
+ * transform DuckLake records for it. A transform outside the ones DuckLake
+ * defines is refused rather than written as some other layout.
+ */
+export function partitionKeySql(key: PartitionKey): string {
+   const column = quoteIdentifier(key.column, STORAGE_TARGET_DIALECT);
+   if (key.transform === "identity") return column;
+   if (TIME_TRANSFORMS.has(key.transform)) return `${key.transform}(${column})`;
+   const bucket = BUCKET_TRANSFORM.exec(key.transform);
+   if (bucket) return `bucket(${Number(bucket[1])}, ${column})`;
+   throw new BadRequestError(
+      `Partition transform '${key.transform}' on column '${key.column}' is not one ` +
+         "DuckLake defines (identity, year, month, day, hour, bucket(N)), so the " +
+         "table cannot be written with that layout.",
+   );
+}
+
+/**
+ * The ORDER BY terms that bring a partitioned insert's rows in partition order:
+ * each key as DuckLake partitions on it (`year("day")`, not `"day"`, so a year's
+ * categories are not interleaved across its days), then each transformed key's
+ * own column, so a time partition's rows also arrive in time order. Each term
+ * once, in key order.
+ *
+ * A `bucket(N)` key cannot be ordered by: DuckDB has no scalar `bucket`, only
+ * the partition transform. It orders by its column, which does not group a
+ * bucket's rows, so on a bucketed key the appender can meet every bucket at
+ * once and the memory bound the order exists for does not hold for that key.
+ */
+export function partitionOrderSql(keys: readonly PartitionKey[]): string[] {
+   const terms: string[] = [];
+   const add = (term: string) => {
+      if (!terms.includes(term)) terms.push(term);
+   };
+   for (const key of keys) {
+      if (!BUCKET_TRANSFORM.test(key.transform)) add(partitionKeySql(key));
+   }
+   for (const key of keys) {
+      if (key.transform !== "identity") {
+         add(quoteIdentifier(key.column, STORAGE_TARGET_DIALECT));
+      }
+   }
+   return terms;
+}
+
+/**
+ * Create `quotedTablePath` empty, lay it out by `keys`, fill it from `selectSQL`,
+ * then run `read`, all in ONE transaction, and return what `read` returns.
+ * Shared by a partitioned build and a partitioned copy (the admin API's).
+ *
+ * Create-empty / lay out / insert because DuckLake applies a layout only to files
+ * written after it is set. Run bare, `WITH NO DATA` would serve zero rows until
+ * the INSERT lands, and a failed INSERT would lose the previous generation; a
+ * ROLLBACK keeps it.
+ *
+ * The layout only means something because the session disabled inlining
+ * (`ducklake_default_data_inlining_row_limit=0`); inlined rows have no files.
+ *
+ * @param params.bounded Turn on the memory bounds (ordered insert, single
+ *   thread, flush threshold) unless the flush threshold is configured `off`.
+ */
+export async function writePartitionedTable<T>(
+   session: DuckDBConnection,
+   params: {
+      quotedTablePath: string;
+      selectSQL: string;
+      keys: readonly PartitionKey[];
+      createStatement: "CREATE TABLE" | "CREATE OR REPLACE TABLE";
+      bounded: boolean;
+      read: () => Promise<T>;
+   },
+): Promise<T> {
+   const { quotedTablePath, selectSQL, keys } = params;
+   const layout = keys.map(partitionKeySql).join(", ");
+   const order = partitionOrderSql(keys);
    // One switch: `off` on the threshold disables all three bounds, which only
    // work together.
    const flushThreshold = getPartitionedWriteFlushThreshold();
-   const bounded =
-      options.sourceType !== undefined && flushThreshold !== undefined;
+   const bounded = params.bounded && flushThreshold !== undefined;
    if (bounded) {
       // Bounds the rows each appender holds before flushing to partition files
       // (see getPartitionedWriteFlushThreshold). The session is this build's
@@ -1655,21 +1745,17 @@ export async function createTableAndDescribe(
    try {
       return await inTransaction(session, quotedTablePath, async () => {
          await session.runSQL(
-            `CREATE OR REPLACE TABLE ${quotedTablePath} AS (${selectSQL}) WITH NO DATA`,
+            `${params.createStatement} ${quotedTablePath} AS (${selectSQL}) WITH NO DATA`,
          );
          await session.runSQL(
-            `ALTER TABLE ${quotedTablePath} SET PARTITIONED BY (${columns})`,
+            `ALTER TABLE ${quotedTablePath} SET PARTITIONED BY (${layout})`,
          );
          // See orderByPartitionColumns.
          const inserted = bounded
-            ? orderByPartitionColumns(
-                 selectSQL,
-                 partitionColumns,
-                 STORAGE_TARGET_DIALECT,
-              )
+            ? orderByExpressions(selectSQL, order)
             : selectSQL;
          await session.runSQL(`INSERT INTO ${quotedTablePath} (${inserted})`);
-         return await describeTable(session, quotedTablePath);
+         return await params.read();
       });
    } finally {
       // Best-effort: the session is disposed with the build, so a stuck setting

@@ -27,6 +27,7 @@ import {
    buildVirtualMap,
    documentFlagsForLifts,
    liftDerivedSources,
+   bindingServesModelSource,
    narrowSchemaToPublic,
    reachedPersistedSources,
    withholdUnreproducibleCallerScopedJoins,
@@ -81,6 +82,8 @@ export class StorageServeShape {
     * ⇒ no serve routing (the common case).
     */
    serveBindings: ServeBinding[] = [];
+   /** Sources already reported as served live for a name clash. */
+   private readonly shadowedSourcesLogged = new Set<string>();
    /** Memoized serve-shape materializer, keyed by the bound source set. */
    serveShapeCache?: { key: string; materializer: ModelMaterializer };
 
@@ -105,9 +108,38 @@ export class StorageServeShape {
       this.serveShapeCache = undefined;
    }
 
-   /** Set (or clear) this model's `storage=` serve bindings. */
+   /**
+    * Set (or clear) this model's `storage=` serve bindings.
+    *
+    * The package pushes the same set to every model, keyed by source name, and
+    * names are not unique in a package. A binding whose sourceIDs do not include
+    * this model's own source of that name is for another model's source, so it is
+    * dropped here and that source serves live (malloydata/publisher#1001).
+    */
    public setServeBindings(bindings: ServeBinding[]): void {
-      this.serveBindings = bindings;
+      // Read only when some binding carries an identity to check. The lift's
+      // contents, not the model's: the shape also rebinds hidden dependencies
+      // from `sourceRegistry`, which `contents` leaves out.
+      const contents = bindings.some((binding) => binding.sourceIDs)
+         ? this.authorModelLift().contents
+         : undefined;
+      const kept: ServeBinding[] = [];
+      for (const binding of bindings) {
+         if (bindingServesModelSource(binding, contents)) {
+            kept.push(binding);
+         } else if (!this.shadowedSourcesLogged.has(binding.sourceName)) {
+            // Once per source per model: bindings are re-pushed on every bind.
+            this.shadowedSourcesLogged.add(binding.sourceName);
+            logger.info(
+               "Serving a source live: its storage table materializes a same-named source declared elsewhere",
+               {
+                  modelPath: this.host.modelPath(),
+                  source: binding.sourceName,
+               },
+            );
+         }
+      }
+      this.serveBindings = kept;
       this.serveShapeCache = undefined;
    }
 

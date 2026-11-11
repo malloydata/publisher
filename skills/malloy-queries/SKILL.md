@@ -110,6 +110,28 @@ run: candidate -> { aggregate: hiring_manager.employee_count }
 
 Use the field paths defined in the model **verbatim**. If the model defines `hiring_manager.employee_count`, do not strip the `hiring_manager.` prefix; that prefix is the join namespace, not a separate source to navigate to.
 
+### Record and array columns
+
+A dotted name is not always a join. A record column (a BigQuery RECORD, a DuckDB STRUCT) is read the same way: `group_by: delivery.city`. A field whose first part is in the source's join list is reached through a join. A field whose parent is a field of type `record` or `array` is part of the row.
+
+- **A record member** (`delivery.city`) behaves like any other column: one value per row.
+- **A member of an array of records** (`lines.sku`) and **the values of an array of plain values** (`tags.each`) have `relationship: "many"`: one value per element. An array of plain values is read with `.each` and nothing after it.
+
+Counting an array has two forms, and they answer different questions:
+
+| Write | Answers |
+|---|---|
+| `count(tags.each)`, `count(lines.sku)` | How many **distinct** values |
+| `tags.count()`, `lines.count()` | How many **elements**, across all rows |
+
+`tags.each.count()` and `lines.sku.count()` fail with `is not a source or join`, like any method `count` on a field.
+
+Grouping by a `many` field gives one group per distinct element value, and a row lands in every group its array holds: orders tagged `['r','r','b']` and `['r']` give `r` a `count()` of 2, not 3. A measure in each group is still correct (`revenue` for the tag `red` counts each order once), but the groups add up to more than the total, because an order with two tags is in two groups. Also:
+
+- Alias it: `group_by: tag is tags.each`. Unaliased, the column is named `each`.
+- A row whose array is empty lands in a `null` group.
+- Two arrays in one query pair every element of one with every element of the other.
+
 ## Dates and Time
 
 ### Comparisons need `@` literals

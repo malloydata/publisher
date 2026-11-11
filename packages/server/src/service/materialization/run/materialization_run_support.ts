@@ -28,6 +28,7 @@ import { resolvePartitionColumns } from "../plan/persist_partition";
 import { escapeSQL } from "../../connection";
 import {
    groupAliasesByName,
+   planSourceIds,
    type ServeShapeGiven,
 } from "../serve/materialization_serve_transform";
 
@@ -63,6 +64,13 @@ export interface ChainedPlanFacts {
     * for a partitioned source, whose entry the compiler finds only under it.
     */
    compilerKeyBySourceId: Record<string, string | undefined>;
+   /**
+    * The plan's own sourceIDs for a source name at a content address
+    * ({@link planSourceIds}), so a chained build rebinds an upstream only where
+    * the downstream's model means that source. Absent without a plan, which
+    * leaves upstreams matched by name, as before.
+    */
+   sourceIDsFor?: (sourceName: string, sourceEntityId: string) => string[];
 }
 
 /** A build with no plan to consult: nothing is known to be stored. */
@@ -287,6 +295,10 @@ export function chainedPlanFacts(
    connectionDigests: Record<string, string>,
 ): ChainedPlanFacts {
    const planSources: { name: string; sourceEntityId?: string }[] = [];
+   const planSourcesById: Record<
+      string,
+      { name: string; sourceEntityId?: string }
+   > = {};
    const addressBySourceId: Record<string, string | undefined> = {};
    const compilerKeyBySourceId: Record<string, string | undefined> = {};
    for (const [sourceID, source] of Object.entries(sources)) {
@@ -302,6 +314,7 @@ export function chainedPlanFacts(
          // The eligibility gate refuses it on its own path.
       }
       planSources.push({ name: source.name, sourceEntityId });
+      planSourcesById[sourceID] = { name: source.name, sourceEntityId };
       addressBySourceId[sourceID] = sourceEntityId;
    }
    return {
@@ -309,6 +322,7 @@ export function chainedPlanFacts(
       aliasesBySourceName: groupAliasesByName(planSources),
       addressBySourceId,
       compilerKeyBySourceId,
+      sourceIDsFor: planSourceIds(planSourcesById),
    };
 }
 

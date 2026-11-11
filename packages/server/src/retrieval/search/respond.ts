@@ -41,6 +41,7 @@
  * cards (pages.ts).
  */
 
+import type { Relationship } from "@malloydata/malloy-interfaces";
 import type { AccessIdentity } from "../../service/access_record";
 import type { PackageLookup } from "../../service/environment_ports";
 import type { ValueFetcher } from "./values";
@@ -51,7 +52,7 @@ import {
    toSourceResults,
    type SourceCard,
 } from "./response";
-import { sourceContextKey } from "../model/package_entities";
+import { fieldPathOf, sourceContextKey } from "../model/package_entities";
 import {
    type PackageIndex,
    type ResolvedRequest,
@@ -67,7 +68,23 @@ import type { Cluster, ConnectResult, PeerSource } from "./connect";
 import type { FindTarget } from "./find";
 import type { FcjIndex } from "../index/index_build";
 import { keptValues, PATHS_SHOWN, type JudgeVerdict } from "./judge";
-import { parseRouteKey, routesFrom } from "./routes";
+import { parseRouteKey, routesFrom, throughFanout } from "./routes";
+
+/**
+ * What a picked node adds to its route's relationship: a dimension's or
+ * measure's own `many` (a repeated record's member). A join's relationship
+ * is its own hop, already on the path, so a join reports the path's.
+ */
+function fieldFanout(node: CatalogNode): Relationship | undefined {
+   return node.kind === "dimension" || node.kind === "measure"
+      ? node.relationship
+      : undefined;
+}
+
+/** A field path as the value lookup takes it: one name, or its segments. */
+function dimensionOf(path: string[]): string | string[] {
+   return path.length === 1 ? path[0] : path;
+}
 
 /** Distinct values the query-time lookup reads for a gated dimension. */
 const GATED_LOOKUP_LIMIT = 2_000;
@@ -517,7 +534,9 @@ async function place(
          ...(node.doc ? { embedDoc: node.doc } : {}),
          ...(node.docSource ? { docSource: node.docSource } : {}),
          joinPath: path.join("."),
-         ...(entry.fanout ? { relationship: entry.fanout } : {}),
+         ...(throughFanout(entry.fanout, fieldFanout(node))
+            ? { relationship: throughFanout(entry.fanout, fieldFanout(node)) }
+            : {}),
          ...(node.dataType ? { dataType: node.dataType } : {}),
          ...(node.code ? { code: node.code } : {}),
       };
@@ -562,7 +581,9 @@ function routeRow(
       ...(node.doc ? { embedDoc: node.doc } : {}),
       ...(node.docSource ? { docSource: node.docSource } : {}),
       joinPath,
-      ...(hop ? { relationship: hop.fanout } : {}),
+      ...(throughFanout(hop?.fanout, fieldFanout(node))
+         ? { relationship: throughFanout(hop?.fanout, fieldFanout(node)) }
+         : {}),
       ...(node.dataType ? { dataType: node.dataType } : {}),
       ...(node.code ? { code: node.code } : {}),
    };
@@ -669,7 +690,8 @@ async function valuesFor(
          packageName: request.packageName,
          modelPath: cardModelPath(owner, request),
          source: node.source,
-         dimension: node.name,
+         // One name stays a string, as it always was; a path is a list.
+         dimension: dimensionOf(fieldPathOf(node.entities[0] ?? node)),
          limit: GATED_LOOKUP_LIMIT,
          ...(request.givens ? { givens: request.givens } : {}),
          ...(request.filterParams

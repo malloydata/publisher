@@ -36,8 +36,10 @@ import {
    NEVER_THINNED,
    type RollupShapeGroup,
    UNREPRODUCIBLE_FILTER,
+   bindingServesModelSource,
    buildVirtualMap,
    deriveServeBindings,
+   planSourceIds,
    duckdbTypeToMalloy,
    groupAliasesByName,
    extractJoins,
@@ -2471,5 +2473,112 @@ describe("buildServeShapeTiers", () => {
          expect(optional[i]).toBeLessThanOrEqual(optional[i - 1]);
       }
       expect(optional[optional.length - 1]).toBe(0);
+   });
+});
+
+// malloydata/publisher#1001: a binding carries the sourceIDs it materializes.
+describe("serve binding source identity", () => {
+   const plan = {
+      "daily@file:///p/a.malloy": { name: "daily", sourceEntityId: "addr_a" },
+      "daily@file:///p/b.malloy": { name: "daily", sourceEntityId: "addr_b" },
+      "daily_ext@file:///p/a.malloy": {
+         name: "daily_ext",
+         sourceEntityId: "addr_a",
+      },
+   };
+   const entry = (sourceName: string, sourceEntityId: string) => ({
+      sourceEntityId,
+      sourceName,
+      physicalTableName: `${sourceName}_g1`,
+      connectionName: "wh",
+      storageDestinationName: "lake",
+      schema: [{ name: "n", type: "BIGINT" }],
+      realization: "COPY" as const,
+      rowCount: null,
+   });
+
+   it("planSourceIds names the plan sources with that name at that address", () => {
+      const ids = planSourceIds(plan);
+      expect(ids("daily", "addr_a")).toEqual(["daily@file:///p/a.malloy"]);
+      expect(ids("daily", "addr_b")).toEqual(["daily@file:///p/b.malloy"]);
+      expect(ids("nope", "addr_a")).toEqual([]);
+   });
+
+   it("planSourceIds trusts the name when no address matches only if one plan source has it", () => {
+      // An instructed build stamps the caller's address.
+      expect(planSourceIds(plan)("daily_ext", "caller_addr")).toEqual([
+         "daily_ext@file:///p/a.malloy",
+      ]);
+      // Two `daily`s are two tables' sources: naming both would serve one from
+      // the other's table, so neither is named.
+      expect(planSourceIds(plan)("daily", "caller_addr")).toEqual([]);
+   });
+
+   it("an empty sourceIDs list serves no model's source of that name", () => {
+      const binding: ServeBinding = {
+         sourceName: "daily",
+         sourceIDs: [],
+         destinationName: "lake",
+         virtualHandle: "caller_addr",
+         tablePath: "lake.daily_g1",
+         schema: [{ name: "n", type: "BIGINT" }],
+      };
+      expect(
+         bindingServesModelSource(binding, {
+            daily: { sourceID: "daily@file:///p/a.malloy" },
+         }),
+      ).toBe(false);
+   });
+
+   it("deriveServeBindings stamps the builder and its aliases with their own sourceIDs", () => {
+      const bindings = deriveServeBindings(
+         { addr_a: entry("daily", "addr_a") },
+         groupAliasesByName([
+            { name: "daily", sourceEntityId: "addr_a" },
+            { name: "daily_ext", sourceEntityId: "addr_a" },
+         ]),
+         undefined,
+         planSourceIds(plan),
+      );
+      expect(bindings.map((b) => [b.sourceName, b.sourceIDs])).toEqual([
+         ["daily", ["daily@file:///p/a.malloy"]],
+         ["daily_ext", ["daily_ext@file:///p/a.malloy"]],
+      ]);
+   });
+
+   it("deriveServeBindings leaves sourceIDs off when it has no plan to read", () => {
+      const [binding] = deriveServeBindings(
+         { addr_a: entry("daily", "addr_a") },
+         {},
+      );
+      expect(binding.sourceIDs).toBeUndefined();
+   });
+
+   it("bindingServesModelSource refuses only a confirmed mismatch", () => {
+      const binding: ServeBinding = {
+         sourceName: "daily",
+         sourceIDs: ["daily@file:///p/a.malloy"],
+         destinationName: "lake",
+         virtualHandle: "addr_a",
+         tablePath: "lake.daily_g1",
+         schema: [{ name: "n", type: "BIGINT" }],
+      };
+      const own = { daily: { sourceID: "daily@file:///p/a.malloy" } };
+      const other = { daily: { sourceID: "daily@file:///p/b.malloy" } };
+      expect(bindingServesModelSource(binding, own)).toBe(true);
+      expect(bindingServesModelSource(binding, other)).toBe(false);
+      // Not defined here: left to schema narrowing, as before.
+      expect(bindingServesModelSource(binding, {})).toBe(true);
+      // No identity on the binding: the name decides, as before.
+      expect(
+         bindingServesModelSource({ ...binding, sourceIDs: undefined }, other),
+      ).toBe(true);
+      // A rollup's name is generated and names nothing in the author's model.
+      expect(
+         bindingServesModelSource(
+            { ...binding, origin: "preaggregate" },
+            other,
+         ),
+      ).toBe(true);
    });
 });
