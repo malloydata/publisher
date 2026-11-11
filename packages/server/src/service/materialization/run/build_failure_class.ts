@@ -13,6 +13,11 @@ import {
    ModelCompilationError,
    UnconfiguredConnectionError,
 } from "../../../errors";
+import {
+   causeChain,
+   isConnectionFailure,
+   isCredentialRejection,
+} from "../../../driver_errors";
 import { errMessage } from "../../../utils";
 import { strictMissSourceId } from "./materialization_run_support";
 
@@ -22,8 +27,8 @@ import { strictMissSourceId } from "./materialization_run_support";
  *
  * - `false`: deterministic. The same model, instructions and bounds fail the
  *   same way on every attempt (a compile or SQL defect, an eligibility
- *   refusal, an upstream that failed deterministically in this run). Retrying
- *   spends the build again.
+ *   refusal, an upstream that failed deterministically in this run, a
+ *   rejected credential). Retrying spends the build again.
  * - `true`: transient. The failure is not a property of the inputs (a network
  *   or connection fault, a timeout, the build session running out of memory, a
  *   cancellation), so a later attempt can succeed.
@@ -31,8 +36,12 @@ import { strictMissSourceId } from "./materialization_run_support";
  *   its own judgment, exactly as for a Publisher that predates the field.
  *
  * Kept conservative on purpose: a signature is listed only when it is
- * unambiguous. A missing table, for example, is left unclassified, because a
- * referenced upstream reclaimed mid-build reads the same as a model defect.
+ * unambiguous. A missing table or column (a binder error, an unrecognized
+ * name) is left unclassified, because a referenced upstream reclaimed
+ * mid-build reads the same as a model defect. So is a persisted upstream
+ * missing from the manifest on its own: it may be materialized in another
+ * destination (fixed configuration), or left out of instructions an
+ * orchestrator fixed, and a retry of the same instructions would not supply it.
  */
 export type BuildRetryable = boolean | undefined;
 
@@ -45,8 +54,6 @@ const DETERMINISTIC_MARKERS: readonly string[] = [
    "compilation error",
    "syntax error",
    "parser error",
-   "binder error",
-   "unrecognized name",
    // A grant the connection lacks; no retry acquires it.
    "permission denied",
    "access denied",
@@ -62,51 +69,44 @@ const TRANSIENT_MARKERS: readonly string[] = [
    "failed to pin block",
    "build cancelled",
    "operation was aborted",
+   // Phrases, not bare words, so an identifier such as `timeout_ms` quoted in
+   // a defect's message does not read as transient.
    "timed out",
-   "timeout",
+   "statement timeout",
+   "query timeout",
    "deadline exceeded",
    "socket hang up",
    "connection reset",
    "connection refused",
-   "connection terminated",
-   "connection closed",
+   "connection terminated unexpectedly",
    "connection lost",
    "network error",
    "too many connections",
-   "rate limit",
+   "rate limit exceeded",
+   "exceeded rate limits",
    "service unavailable",
    "temporarily unavailable",
 ];
 
-// Node/system error codes of a fault on the way to the database.
-const TRANSIENT_CODES: ReadonlySet<string> = new Set([
-   "ECONNRESET",
-   "ECONNREFUSED",
-   "ECONNABORTED",
-   "ETIMEDOUT",
-   "ESOCKETTIMEDOUT",
-   "EPIPE",
-   "EAI_AGAIN",
-   "ENETUNREACH",
-   "EHOSTUNREACH",
-   "ENETDOWN",
-]);
-
-function errorCode(err: unknown): string | undefined {
-   for (let e = err, depth = 0; e && depth < 4; depth++) {
-      const code = (e as { code?: unknown }).code;
-      if (typeof code === "string") return code;
-      e = (e as { cause?: unknown }).cause;
-   }
-   return undefined;
-}
+// System codes a driver folds into its message ("connect ECONNREFUSED
+// 10.0.0.1:5432") without setting `code`, which isConnectionFailure reads.
+const TRANSIENT_CODES_IN_MESSAGES: readonly string[] = [
+   "econnreset",
+   "econnrefused",
+   "econnaborted",
+   "etimedout",
+   "esockettimedout",
+   "eai_again",
+   "enetunreach",
+   "ehostunreach",
+];
 
 /**
  * Whether `err` is the refusal of a build whose persisted upstream no
  * manifest holds: the chained `storage=` refusal, or Malloy's strict manifest
- * miss on a colocated build. On its own (the upstream merely absent from the
- * instructions) a re-plan can supply it; see {@link classifySourceFailure}
- * for when the upstream failed in this run.
+ * miss on a colocated build. On its own it is unclassified (see
+ * {@link BuildRetryable}); {@link classifySourceFailure} classifies it when
+ * the upstream failed in this run.
  */
 export function isUpstreamMissingError(err: unknown): boolean {
    return (
@@ -120,8 +120,8 @@ export function isUpstreamMissingError(err: unknown): boolean {
  * of the run. See {@link BuildRetryable} for the three answers.
  */
 export function classifyBuildError(err: unknown): BuildRetryable {
-   // An upstream nobody supplied: the next plan can supply it.
-   if (isUpstreamMissingError(err)) return true;
+   // An upstream no manifest holds: unclassified on its own (see above).
+   if (isUpstreamMissingError(err)) return undefined;
    // A property of the model, the package or the environment's configuration.
    if (
       err instanceof MaterializationEligibilityError ||
@@ -138,17 +138,21 @@ export function classifyBuildError(err: unknown): BuildRetryable {
    // Every ConnectionError the server raises means the query never ran: the
    // database was unreachable, or every session was busy.
    if (err instanceof ConnectionError) return true;
-   if ((err as { name?: unknown } | null)?.name === "AbortError") return true;
-   const code = errorCode(err);
-   if (code && TRANSIENT_CODES.has(code)) return true;
+   // The drivers' own reading, shared with the query path: a rejected
+   // credential stays rejected, an unreachable database may come back.
+   if (isCredentialRejection(err)) return false;
+   if (isConnectionFailure(err)) return true;
+   for (const e of causeChain(err)) {
+      if (e.name === "AbortError") return true;
+   }
 
    const message = errMessage(err).toLowerCase();
    if (DETERMINISTIC_MARKERS.some((m) => message.includes(m))) return false;
    if (TRANSIENT_MARKERS.some((m) => message.includes(m))) return true;
    // A driver that folds the system code into its message ("connect
    // ECONNREFUSED 10.0.0.1:5432") rather than setting `code`.
-   for (const c of TRANSIENT_CODES) {
-      if (message.includes(c.toLowerCase())) return true;
+   if (TRANSIENT_CODES_IN_MESSAGES.some((c) => message.includes(c))) {
+      return true;
    }
    return undefined;
 }
@@ -188,9 +192,10 @@ export function classifySourceFailure(
 }
 
 /**
- * The upstream sources of `sourceID` that failed earlier in this run: those
- * the plan says it reads, plus any a missing-upstream error names (by name,
- * for the chained refusal, or by sourceID, for Malloy's strict miss).
+ * The upstream sources of `sourceID` that failed earlier in this run: the
+ * ones the missing-upstream error names (by sourceID for Malloy's strict
+ * miss; by name among this source's declared upstreams for the chained
+ * refusal), or, when it names none, every upstream the plan says it reads.
  */
 export function failedUpstreamsOf(
    sourceID: string,
@@ -198,16 +203,33 @@ export function failedUpstreamsOf(
    upstreamsBySourceID: ReadonlyMap<string, readonly string[]>,
    failedBySourceID: ReadonlyMap<string, FailedUpstream>,
 ): FailedUpstream[] {
-   const ids = new Set(upstreamsBySourceID.get(sourceID) ?? []);
+   const declared = upstreamsBySourceID.get(sourceID) ?? [];
+   // The upstreams the error names, when it names any: only those are why
+   // this source failed. A strict miss names one by sourceID; the chained
+   // refusal names them by bare name, which two models can share, so a name
+   // is matched only among this source's own declared upstreams.
    const missedId = strictMissSourceId(err)?.sourceID;
-   if (missedId) ids.add(missedId);
    const missedNames = new Set(
       err instanceof ChainedUpstreamMissingError ? err.missing : [],
    );
+   let ids: Set<string>;
+   if (missedId) {
+      ids = new Set([missedId]);
+   } else if (missedNames.size > 0) {
+      ids = new Set(
+         declared.filter((id) => {
+            const failed = failedBySourceID.get(id);
+            return failed !== undefined && missedNames.has(failed.name);
+         }),
+      );
+   } else {
+      ids = new Set(declared);
+   }
    const out: FailedUpstream[] = [];
-   for (const [id, failed] of failedBySourceID) {
+   for (const id of ids) {
       if (id === sourceID) continue;
-      if (ids.has(id) || missedNames.has(failed.name)) out.push(failed);
+      const failed = failedBySourceID.get(id);
+      if (failed) out.push(failed);
    }
    return out;
 }

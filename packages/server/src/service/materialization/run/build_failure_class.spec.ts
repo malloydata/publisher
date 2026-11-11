@@ -32,14 +32,6 @@ function strictMiss(sourceID: string): Error {
 describe("classifyBuildError", () => {
    it.each([
       ["a SQL syntax error", 'Parser Error: syntax error at or near "FORM"'],
-      [
-         "a DuckDB binder error",
-         'Binder Error: Referenced column "x" not found in FROM clause!',
-      ],
-      [
-         "a BigQuery name-resolution defect",
-         "Unrecognized name: order_tot at [3:5]",
-      ],
       ["a Malloy compile defect", "Model failed to compile: bad field"],
       ["a missing grant", "Permission denied while writing to dataset x"],
    ])("reads %s as deterministic", (_label, message) => {
@@ -74,10 +66,49 @@ describe("classifyBuildError", () => {
       // A compile error quoting SQL that mentions a `timeout` column.
       expect(
          classifyBuildError(
-            new Error('Binder Error: column "session_timeout" not found'),
+            new Error('Parser Error: syntax error at or near "timed out"'),
          ),
       ).toBe(false);
    });
+
+   it("reads the drivers' own connection and credential fields, through the cause chain", () => {
+      // A Postgres SQLSTATE: class 28 is a rejected credential, class 08 a
+      // connection that never reached the database.
+      const wrapped = (code: string) =>
+         new Error("build failed", {
+            cause: Object.assign(new Error("driver"), { code }),
+         });
+      expect(classifyBuildError(wrapped("28P01"))).toBe(false);
+      expect(classifyBuildError(wrapped("08006"))).toBe(true);
+      expect(classifyBuildError(wrapped("ECONNRESET"))).toBe(true);
+   });
+
+   it("does not read an identifier that contains a transient word as transient", () => {
+      expect(
+         classifyBuildError(
+            new Error(
+               "Conversion Error: Could not convert string 'abc' to INT32 in timeout_ms",
+            ),
+         ),
+      ).toBeUndefined();
+   });
+
+   it.each([
+      [
+         "a DuckDB binder error",
+         'Binder Error: Referenced column "x" not found in FROM clause!',
+      ],
+      [
+         "a BigQuery name-resolution error",
+         "Unrecognized name: order_tot at [3:5]",
+      ],
+      ["a detached catalog", "Binder Error: Catalog 'lake' does not exist"],
+   ])(
+      "leaves %s unclassified: a reclaimed upstream reads the same as a defect",
+      (_label, message) => {
+         expect(classifyBuildError(new Error(message))).toBeUndefined();
+      },
+   );
 
    it("reads the server's own error types before any message", () => {
       expect(
@@ -128,11 +159,13 @@ describe("classifyBuildError", () => {
       expect(classifyBuildError("not an error")).toBeUndefined();
    });
 
-   it("reads an upstream merely absent from the instructions as transient", () => {
+   it("leaves a missing upstream unclassified on its own: another destination, or fixed instructions, will not supply it", () => {
       expect(
          classifyBuildError(new ChainedUpstreamMissingError(["up"], "missing")),
-      ).toBe(true);
-      expect(classifyBuildError(strictMiss("up@file:///m.malloy"))).toBe(true);
+      ).toBeUndefined();
+      expect(
+         classifyBuildError(strictMiss("up@file:///m.malloy")),
+      ).toBeUndefined();
    });
 });
 
@@ -192,8 +225,8 @@ describe("classifySourceFailure", () => {
       expect(own.upstreamDetail).toBeUndefined();
    });
 
-   it("reads a missing upstream that did not fail in this run as transient", () => {
-      expect(classifySourceFailure(missing, []).retryable).toBe(true);
+   it("leaves a missing upstream that did not fail in this run unclassified", () => {
+      expect(classifySourceFailure(missing, []).retryable).toBeUndefined();
    });
 });
 
@@ -214,20 +247,37 @@ describe("failedUpstreamsOf", () => {
       expect(ups.map((u) => u.name)).toEqual(["a"]);
    });
 
-   it("adds the upstream a missing-upstream error names", () => {
+   it("uses only the upstreams the error names, when it names any", () => {
+      // d reads a and b; the refusal is about b, so a's failure is not why.
       expect(
          failedUpstreamsOf(
             "d",
             new ChainedUpstreamMissingError(["b"], "missing"),
-            new Map(),
+            new Map([["d", ["a", "b"]]]),
             failed,
          ).map((u) => u.name),
       ).toEqual(["b"]);
+      // A strict miss names its upstream by sourceID.
       expect(
-         failedUpstreamsOf("d", strictMiss("c"), new Map(), failed).map(
-            (u) => u.name,
-         ),
+         failedUpstreamsOf(
+            "d",
+            strictMiss("c"),
+            new Map([["d", ["a"]]]),
+            failed,
+         ).map((u) => u.name),
       ).toEqual(["c"]);
+   });
+
+   it("matches a chained refusal's bare name only among the source's own upstreams", () => {
+      // `b` here may be another model's source of the same name.
+      expect(
+         failedUpstreamsOf(
+            "d",
+            new ChainedUpstreamMissingError(["b"], "missing"),
+            new Map([["d", ["a"]]]),
+            failed,
+         ),
+      ).toEqual([]);
    });
 });
 

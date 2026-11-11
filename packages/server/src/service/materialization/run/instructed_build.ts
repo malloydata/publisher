@@ -223,10 +223,11 @@ export class InstructedBuild {
                   ...run.refusals.map((e) => e.message),
                   ...priorRefusals.map((r) => r.message),
                ].join("; "),
-               // Every source's own answer; a refusal is deterministic.
+               // Every source's own answer (a refusal is recorded in
+               // `failures` as `false` too), plus auto-run's refusals, which
+               // never reached this loop and are deterministic.
                combineRetryable([
                   ...Object.values(run.failures).map((f) => f.retryable),
-                  ...run.refusals.map(() => false),
                   ...priorRefusals.map(() => false),
                ]),
             );

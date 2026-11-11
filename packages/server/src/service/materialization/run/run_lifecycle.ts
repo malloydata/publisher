@@ -158,15 +158,25 @@ export class RunLifecycle {
                const retryable = cancelled
                   ? undefined
                   : classifyRunFailure(err);
-               const metadata =
-                  retryable === undefined
-                     ? undefined
-                     : {
-                          ...((
-                             await this.repository().getMaterializationById(id)
-                          )?.metadata ?? {}),
-                          errorRetryable: retryable,
-                       };
+               let metadata: Record<string, unknown> | undefined;
+               if (retryable !== undefined) {
+                  // Its own try: a failed read must never cost the status
+                  // transition, which would leave the run active and block
+                  // the package's next one.
+                  try {
+                     const current =
+                        await this.repository().getMaterializationById(id);
+                     metadata = {
+                        ...(current?.metadata ?? {}),
+                        errorRetryable: retryable,
+                     };
+                  } catch (readErr) {
+                     logger.warn(
+                        "Could not read a failed run's metadata; recording its status without errorRetryable",
+                        { materializationId: id, error: errMessage(readErr) },
+                     );
+                  }
+               }
                await this.repository().updateMaterialization(id, {
                   status: next,
                   completedAt: new Date(),

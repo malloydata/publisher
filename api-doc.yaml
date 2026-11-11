@@ -9979,7 +9979,7 @@ components:
           description: Error message if the materialization failed
         metadata:
           type: ["object", "null"]
-          description:
+          description: >-
             Materialization metadata including build options, source counts,
             and durations. Free-form object — fields such as `trigger`
             (ON_DEMAND | SCHEDULER) live here deliberately, so a strict-schema
@@ -10940,8 +10940,8 @@ components:
             `false` is a deterministic failure: the same model, instructions
             and bounds fail the same way on every attempt. It is reported for an
             eligibility refusal (always, beside `refused`), a Malloy or SQL
-            compile defect (a syntax, parser or binder error, an unrecognized
-            name), a missing grant (permission or access denied), and a source refused under
+            compile defect (a syntax or parser error), a rejected credential or
+            missing grant (permission or access denied), and a source refused under
             `strictUpstreams` because a persisted upstream it reads failed
             deterministically earlier in the same run. That last source
             inherits its upstream's classification (`true` when any such
@@ -10955,16 +10955,18 @@ components:
             Memory Error`, `could not allocate block`, `failed to pin block`:
             a worker's builds share its memory, so a build that ran out beside
             others can fit alone, and the consumer's retry cap bounds one that
-            never fits), a cancellation, or a persisted upstream that was
-            merely absent from the instructions (neither built in this run nor
-            supplied by reference), which the next plan can supply.
+            never fits), or a cancellation.
 
 
-            Absent when Publisher does not recognize the error (a missing table
-            or column is deliberately left unclassified: a referenced upstream
-            reclaimed mid-build reads the same as a model defect), and from
+            Absent when Publisher does not recognize the error, and from
             every Publisher that predates the field. A consumer treats absence
-            exactly as it did before this field existed.
+            exactly as it did before this field existed. Deliberately absent: a
+            missing table or column (a binder error, an unrecognized name),
+            because a referenced upstream reclaimed mid-build reads the same as
+            a model defect; and a persisted upstream no manifest holds, on its
+            own, because it may be materialized in another destination or left
+            out of instructions an orchestrator fixed, so retrying the same
+            instructions would not supply it.
 
     ManifestEntry:
       type: object

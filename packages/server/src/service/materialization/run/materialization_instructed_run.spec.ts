@@ -389,7 +389,9 @@ describe("executeInstructedBuild", () => {
       }
 
       it("marks a dependent of a deterministically failed upstream deterministic, naming the upstream's failure", async () => {
-         const failures = await runChain("Unrecognized name: order_tot");
+         const failures = await runChain(
+            'Parser Error: syntax error at or near "FORM"',
+         );
          expect(failures["bupupupupupupupu"].retryable).toBe(false);
          const down = failures["bdowndowndowndow"];
          expect(
@@ -397,7 +399,7 @@ describe("executeInstructedBuild", () => {
             "retrying cannot help a source whose upstream fails the same way every time",
          ).toBe(false);
          expect(down.reason).toContain(
-            "upstream 'up' failed in this run: Unrecognized name: order_tot",
+            `upstream 'up' failed in this run: Parser Error: syntax error at or near "FORM"`,
          );
       });
 
@@ -437,10 +439,12 @@ describe("executeInstructedBuild", () => {
       }
 
       it("carries the run's answer on the error when every source failed", async () => {
-         const deterministic = await runOnly("Unrecognized name: order_tot");
+         const deterministic = await runOnly(
+            'Parser Error: syntax error at or near "FORM"',
+         );
          expect(deterministic).toBeInstanceOf(BuildRunFailedError);
          expect((deterministic as BuildRunFailedError).retryable).toBe(false);
-         expect((deterministic as Error).message).toContain("order_tot");
+         expect((deterministic as Error).message).toContain("FORM");
          const memory = await runOnly(
             "Out of Memory Error: could not allocate block of size 256.0 KiB",
          );
