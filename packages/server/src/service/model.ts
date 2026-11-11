@@ -380,11 +380,14 @@ export interface ModelState {
    gateRuntime?: HydrationRuntime;
 }
 
-/** What a routed variant carries into the run: the storage tier's virtual map and bindings. */
-interface RoutedExtra {
-   virtualMap?: VirtualMap;
-   bindings?: ServeBinding[];
-}
+/**
+ * What a routed variant carries into the run, by kind: the storage tier needs
+ * its virtual map and the bindings that produced the shape; a rollup needs
+ * nothing beyond its runnable.
+ */
+type RoutedExtra =
+   | { kind: "storage"; virtualMap: VirtualMap; bindings: ServeBinding[] }
+   | { kind: "rollup" };
 
 export class Model {
    private packageName: string;
@@ -2880,10 +2883,9 @@ export class Model {
             !!this.storageServe.serveDestinationConfig;
          // Captured once so the guard and the use below see the same companion.
          const preaggServeMaterializer = this.preaggregateServeMaterializer;
-         const liveText = queryString;
          const route = await routeQuery<RoutedExtra>(
             this.routeCandidates({
-               queryString: liveText,
+               queryString,
                surfaceGivens: querySurfaceGivens,
                buildManifest,
                storageRoutingPossible,
@@ -2907,9 +2909,9 @@ export class Model {
          );
          if (route.served === "variant") {
             runnable = route.runnable;
-            if (route.kind === "storage") {
+            if (route.extra.kind === "storage") {
                serveVirtualMap = route.extra.virtualMap;
-               serveShapeBindings = route.extra.bindings ?? [];
+               serveShapeBindings = route.extra.bindings;
                servedFrom = "storage";
             } else {
                preaggRouted = true;
@@ -3344,14 +3346,6 @@ export class Model {
    }
 
    /**
-    * The label set for `queryExecutionHistogram`, shared by every recording
-    * site so success and error paths cannot drift.
-    *
-    * Query text, row count and row limit are deliberately absent: each is
-    * unbounded, or chosen by the caller (a cardinality leak); they stay on the
-    * request log.
-    */
-   /**
     * The router's candidates for one query, in catalog order: the `storage=`
     * serve shape, then the pre-aggregation companion. A candidate is listed
     * only when its variant exists for this model (so the gate check runs
@@ -3401,6 +3395,7 @@ export class Model {
                return {
                   runnable: shaped.runnable,
                   extra: {
+                     kind: "storage",
                      virtualMap: shaped.virtualMap,
                      bindings: shaped.bindings,
                   },
@@ -3487,7 +3482,7 @@ export class Model {
                   rollupMeasuresByMember(this.preaggregateRollupPlans),
                );
                if (uncovered) throw new RollupCoverageError(uncovered);
-               return { runnable: candidate, extra: {} };
+               return { runnable: candidate, extra: { kind: "rollup" } };
             },
             onSkip: (preaggErr) => {
                // Expected and common: the companion imports only the sources it
@@ -3508,6 +3503,14 @@ export class Model {
       return candidates;
    }
 
+   /**
+    * The label set for `queryExecutionHistogram`, shared by every recording
+    * site so success and error paths cannot drift.
+    *
+    * Query text, row count and row limit are deliberately absent: each is
+    * unbounded, or chosen by the caller (a cardinality leak); they stay on the
+    * request log.
+    */
    private queryMetricAttributes(args: {
       environment?: string;
       queryName?: string;
