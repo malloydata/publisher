@@ -12,13 +12,15 @@
  * of a large package took most of a minute, and the pool's other loads queued
  * behind it.
  *
- * Here one Malloy CacheManager serves every model's imports, so each file is
- * translated once per load, and the models compile in import order so a
- * file's translation is cached before any importer asks for it.
+ * Here one store of translations serves every model's imports (see
+ * ModelCacheView), so each file is translated once per load, and each model
+ * starts once the package files it imports have compiled, so their
+ * translations are stored before it asks for them.
  */
 import {
    CacheManager,
    InMemoryModelCache,
+   type CachedModel,
    type URLReader,
 } from "@malloydata/malloy";
 import type { DataStyles } from "@malloydata/render";
@@ -43,13 +45,18 @@ export interface JobFiles {
    texts: Map<string, string>;
    /** Each file's own `--! styles` data styles, by URL. */
    stylesByUrl: Map<string, DataStyles>;
-   /** The load's model cache; give each model a ModelCacheView of it. */
-   cache: CacheManager;
    /**
-    * The URLs of the package's `.malloy` files another package file imports,
-    * filled in by compileLevels. Only these are worth keeping in the cache.
+    * The load's translations, by URL as Malloy spells it; give each model a
+    * ModelCacheView over them.
+    */
+   models: Map<string, CachedModel>;
+   /**
+    * The `urlKey` of every package model another package file imports, filled
+    * in by compileOrder. Only these are kept in `models`.
     */
    imported: Set<string>;
+   /** Translations stored, and handed to importers, during the load. */
+   stats: { stored: number; reused: number };
 }
 
 export function jobFiles(inner: TextReader): JobFiles {
@@ -81,17 +88,19 @@ export function jobFiles(inner: TextReader): JobFiles {
       reader,
       texts,
       stylesByUrl,
-      cache: new CacheManager(new InMemoryModelCache()),
+      models: new Map<string, CachedModel>(),
       imported: new Set<string>(),
+      stats: { stored: 0, reused: 0 },
    };
 }
 
 /**
- * One spelling of a file URL. A file is read under the URL's encoded form
- * (`my%20models/b%C3%A4se.malloy`), while a modelDef's `dependencies` name it
- * decoded (`my models/bäse.malloy`).
+ * One spelling of a file URL, for telling whether two spellings name the same
+ * file. A file is read under the URL's encoded form
+ * (`my%20models/b%C3%A4se.malloy`), while a modelDef's `dependencies`, and an
+ * importer asking for a translation, name it decoded (`my models/bäse.malloy`).
  */
-function urlKey(url: string): string {
+export function urlKey(url: string): string {
    try {
       return new URL(url).href;
    } catch {
@@ -100,6 +109,15 @@ function urlKey(url: string): string {
 }
 
 const sameUrl = (a: string, b: string) => a === b || urlKey(a) === urlKey(b);
+
+/** A URL as Malloy names an import: decoded (see urlKey). */
+function decodedUrl(url: string): string {
+   try {
+      return decodeURI(url);
+   } catch {
+      return url;
+   }
+}
 
 /**
  * The load's model cache as one model's compile sees it: every import comes
@@ -114,37 +132,89 @@ const sameUrl = (a: string, b: string) => a === b || urlKey(a) === urlKey(b);
  * `#@ persist` flag on the imported model's registry entry), and a model's own
  * result goes on to be served and worked on after its compile.
  *
- * A model no package file imports (a root `index.malloy`, a report) is not
- * kept: nothing would read it, and it is often the package's largest.
+ * Only a package model that another package file imports is kept. A root
+ * nothing imports (a root `index.malloy`, a report) would never be read back,
+ * and is often the package's largest. A file that is not a package model (an
+ * import from outside the package, a dotfile) is translated by each importer,
+ * as before the cache, so each importer reports its problems: one cached by
+ * its first importer would report them nowhere if that importer then failed.
+ * That costs reuse: a package built around a shared file outside its models
+ * (a `.lib/` dotfile imported by many models) translates it once per
+ * importer, as it did before #1566.
+ *
+ * It keeps its own store rather than a Malloy `CacheManager`: within a load
+ * the files cannot change, so the `CacheManager`'s invalidation checks (a
+ * re-read and hash of every dependency on each hit) have nothing to catch.
+ *
+ * The store is keyed by the URL exactly as Malloy spells it, as a
+ * `CacheManager` is. A translation carries its URL's spelling in its source
+ * IDs, locations and registry keys, and Malloy translates a model compiled as
+ * itself under its encoded URL (`my%20models/b%C3%A4se.malloy`) but an import
+ * under its decoded one (`my models/bäse.malloy`). Where the two differ, the
+ * model's own translation would give an importer a different modelDef than
+ * translating the import itself does, so it is not served for the import.
+ * Malloy also stores each newly translated import under the spelling
+ * importers ask for, so for such a path the first importer's translation is
+ * the one the later importers reuse, and the model's own translation, which
+ * no importer can ask for, is not stored at all.
  */
 export class ModelCacheView extends CacheManager {
    constructor(
-      private readonly shared: CacheManager,
+      private readonly files: Pick<JobFiles, "models" | "imported" | "stats">,
       private readonly ownUrl: string,
-      private readonly keepOwn = true,
    ) {
       super(new InMemoryModelCache());
    }
 
    override async getCachedModelDef(
-      ...args: Parameters<CacheManager["getCachedModelDef"]>
+      ...[, url]: Parameters<CacheManager["getCachedModelDef"]>
    ): ReturnType<CacheManager["getCachedModelDef"]> {
-      if (sameUrl(args[1], this.ownUrl)) return undefined;
-      const hit = await this.shared.getCachedModelDef(...args);
-      return hit && { ...hit, modelDef: structuredClone(hit.modelDef) };
+      if (sameUrl(url, this.ownUrl)) return undefined;
+      const hit = this.files.models.get(url);
+      if (!hit) return undefined;
+      this.files.stats.reused++;
+      return {
+         modelDef: structuredClone(hit.modelDef),
+         invalidationKeys: { ...hit.invalidationKeys },
+      };
    }
 
-   override setCachedModelDef(
+   override async setCachedModelDef(
       ...[url, cached]: Parameters<CacheManager["setCachedModelDef"]>
    ): ReturnType<CacheManager["setCachedModelDef"]> {
-      if (!this.keepOwn && sameUrl(url, this.ownUrl)) {
-         return Promise.resolve(false);
-      }
-      return this.shared.setCachedModelDef(url, {
-         ...cached,
+      if (!this.files.imported.has(urlKey(url))) return false;
+      // Importers ask for an import decoded, so the model's own translation,
+      // stored under an encoded spelling that differs, would never be read.
+      if (sameUrl(url, this.ownUrl) && decodedUrl(url) !== url) return false;
+      this.files.models.set(url, {
          modelDef: structuredClone(cached.modelDef),
+         invalidationKeys: { ...cached.invalidationKeys },
       });
+      this.files.stats.stored++;
+      return true;
    }
+}
+
+/**
+ * The texts a model's own compile read, by file path: its file and the files
+ * it imports, as a Runtime of its own captured them. The entity plan splits
+ * each one into lines, so it is given only these rather than every file the
+ * load read.
+ */
+export function modelFileTexts(
+   files: Pick<JobFiles, "texts">,
+   modelUrl: string,
+   dependencies: unknown,
+): Map<string, string> {
+   const byPath = new Map<string, string>();
+   for (const url of [modelUrl, ...importReadOrder(dependencies)]) {
+      const key = urlKey(url);
+      const text = files.texts.get(key);
+      if (text !== undefined && key.startsWith("file:")) {
+         byPath.set(fileURLToPath(key), text);
+      }
+   }
+   return byPath;
 }
 
 /**
@@ -251,7 +321,7 @@ export async function compileOrder(
                .replace(/\\/g, "/");
             if (inPackage.has(rel)) {
                deps.push(rel);
-               imported.add(resolved.toString());
+               imported.add(urlKey(resolved.href));
             }
          } catch {
             // Not a path this scan understands.
