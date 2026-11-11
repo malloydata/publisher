@@ -719,3 +719,119 @@ source: tok is ev -> {
       });
    });
 });
+
+// Sources built on a bound source, over a table an older build typed: a join
+// into it, and a source extending it, see its columns through the read cast.
+// A source extending it that names a column no cast makes faithful takes that
+// one base off storage, and nothing else.
+describe("R4: sources built on a mistyped stored source", () => {
+   const seedSql = [
+      `CREATE TABLE ev AS SELECT * FROM (VALUES
+         (1, 10.5::DOUBLE, DATE '2026-01-31'),
+         (2, 20.25::DOUBLE, DATE '2026-02-28'),
+         (3, 5.5::DOUBLE, DATE '2026-03-01')
+       ) AS t(id, amt, d)`,
+   ];
+   const header = `##! experimental { persistence sql_functions }
+source: ev is duckdb.table('ev')
+
+#@ persist name="other" storage="lake"
+source: other is ev -> { select: id, amt } extend { measure: total is amt.sum() }
+source: other_ext is other extend { dimension: big is amt > 10 }
+`;
+   const typed = (extra: string) => `
+#@ persist name="typed" storage="lake"
+source: typed is ev -> {
+  select: id, amt, d, d_next is d + 1 month, flag is sql_boolean("CASE WHEN \${id} > 1 THEN 1 ELSE 0 END")${extra}
+}
+`;
+
+   describe("a join into it, and a source extending it, over cast columns", () => {
+      let fixture: R4Fixture;
+      beforeAll(async () => {
+         fixture = await buildScenario({
+            files: {
+               "m.malloy":
+                  header +
+                  typed("") +
+                  `source: typed_date is typed extend { dimension: nm is d_next.month }
+source: other_join is other extend { join_one: typed on typed.id = id }
+`,
+            },
+            seedSql,
+            uncast: true,
+         });
+      });
+
+      it("reads the cast columns through it", () => {
+         expect(
+            fixture
+               .typeMismatches()[0]
+               .mismatches.map((m) => [m.column, m.handling]),
+         ).toEqual([
+            ["d_next", "cast"],
+            ["flag", "cast"],
+         ]);
+      });
+
+      for (const query of [
+         {
+            name: "a source extending it, over a cast date",
+            malloy:
+               "run: typed_date -> { where: d_next > d; group_by: nm; aggregate: n is count() }",
+         },
+         {
+            name: "a join into it, grouped by a cast boolean",
+            malloy:
+               "run: other_join -> { group_by: typed.flag; aggregate: total }",
+         },
+         {
+            name: "a join into it, filtered on a cast date",
+            malloy:
+               "run: other_join -> { where: typed.d_next > @2026-03-01; aggregate: total }",
+         },
+      ]) {
+         it(`serves ${query.name} from storage, equal to live`, async () => {
+            await expectServedMatchesLive(fixture, query);
+         });
+      }
+   });
+
+   describe("a source extending it that names a column no cast makes faithful", () => {
+      let fixture: R4Fixture;
+      beforeAll(async () => {
+         fixture = await buildScenario({
+            files: {
+               "m.malloy":
+                  header +
+                  typed(
+                     `, amount_text is sql_number("CAST(\${amt} AS VARCHAR)")`,
+                  ) +
+                  `source: typed_text is typed extend { dimension: tagged is concat(amount_text, 'x') }
+`,
+            },
+            seedSql,
+            uncast: true,
+         });
+      });
+
+      it("answers the base's queries live, even those not reading the column", async () => {
+         await expectServedMatchesLive(fixture, {
+            name: "the base, over a cast boolean",
+            malloy: "run: typed -> { where: flag; aggregate: n is count() }",
+            expectLive: true,
+         });
+      });
+
+      it("keeps every other stored source, and sources extending them, on storage", async () => {
+         await expectServedMatchesLive(fixture, {
+            name: "another stored source",
+            malloy: "run: other -> { aggregate: total }",
+         });
+         await expectServedMatchesLive(fixture, {
+            name: "a source extending another stored source",
+            malloy: "run: other_ext -> { group_by: big; aggregate: total }",
+         });
+      });
+   });
+});

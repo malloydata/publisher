@@ -17,8 +17,18 @@ import {
    rebuildWouldRecast,
    serveTypePlan,
    storedColumnTypeMismatches,
+   storageBuildCasts,
    storedTypeServesAs,
 } from "./stored_column_types";
+import {
+   FixedConnectionMap,
+   InMemoryURLReader,
+   Runtime,
+} from "@malloydata/malloy";
+import { plannedSources } from "./plan/build_plan";
+import { mkdtempSync, rmSync } from "fs";
+import { tmpdir } from "os";
+import { join } from "path";
 
 describe("storedTypeServesAs", () => {
    const cases: [string, string, boolean | undefined][] = [
@@ -321,6 +331,64 @@ describe("rebuildWouldRecast", () => {
          ).map((x) => x.column),
       ).toEqual(["d"]);
    });
+
+   it("re-seeds for a string column whatever it was stored as, since any value renders as text", () => {
+      expect(
+         rebuildWouldRecast(
+            [{ name: "code", type: "INTEGER" }],
+            [{ name: "code", type: "string" }],
+         ).map((x) => x.column),
+      ).toEqual(["code"]);
+   });
+
+   // The table a build leaves when its cast could not convert a value: every
+   // column stored as the warehouse returned it. A re-seed would fail the same
+   // cast and store the same table, a full read on every run.
+   it("names none when a column's cast could fail, even beside castable ones", () => {
+      const declared = [
+         { name: "d", type: "date" },
+         { name: "flag", type: "boolean" },
+         { name: "is_open", type: "boolean" },
+      ];
+      expect(
+         rebuildWouldRecast([{ name: "is_open", type: "VARCHAR" }], declared),
+      ).toEqual([]);
+      expect(
+         rebuildWouldRecast(
+            [
+               { name: "d", type: "TIMESTAMP" },
+               { name: "flag", type: "INTEGER" },
+               { name: "is_open", type: "VARCHAR" },
+            ],
+            declared,
+         ),
+      ).toEqual([]);
+      expect(
+         rebuildWouldRecast([{ name: "d", type: "VARCHAR" }], declared),
+      ).toEqual([]);
+   });
+
+   it("re-seeds for exactly the boolean and date columns the serve side reads through a cast", () => {
+      const schema = [
+         { name: "flag", type: "BIGINT" },
+         { name: "d", type: "TIMESTAMP_MS" },
+         { name: "day_of", type: "TIMESTAMP WITH TIME ZONE" },
+      ];
+      const declared = [
+         { name: "flag", type: "boolean" },
+         { name: "d", type: "date" },
+         { name: "day_of", type: "date" },
+      ];
+      const served = serveTypePlan(storedColumnTypeMismatches(schema, declared))
+         .casts.map((c) => c.column)
+         .sort();
+      expect(
+         rebuildWouldRecast(schema, declared)
+            .map((m) => m.column)
+            .sort(),
+      ).toEqual(served);
+      expect(served).toEqual(["d", "day_of", "flag"]);
+   });
 });
 
 describe("isCastConversionError", () => {
@@ -333,5 +401,80 @@ describe("isCastConversionError", () => {
          ),
       ).toBe(true);
       expect(isCastConversionError(new Error("Binder Error: x"))).toBe(false);
+   });
+});
+
+// Every storage build path takes its casts from storageBuildCasts, so this pins
+// what a real build of a real persist source casts, from the compiler's output.
+describe("storageBuildCasts over a compiled persist source", () => {
+   // File-backed: db-duckdb shares one in-memory instance between connections.
+   const dir = mkdtempSync(join(tmpdir(), "build-casts-"));
+   const duckdb = new DuckDBConnection("duckdb", join(dir, "casts.duckdb"));
+   afterAll(async () => {
+      await duckdb.close();
+      rmSync(dir, { recursive: true, force: true });
+   });
+
+   async function persisted(model: string) {
+      const runtime = new Runtime({
+         urlReader: new InMemoryURLReader(
+            new Map([["file:///m.malloy", model]]),
+         ),
+         connections: new FixedConnectionMap(
+            new Map([["duckdb", duckdb]]),
+            "duckdb",
+         ),
+      });
+      const compiled = await runtime
+         .loadModel(new URL("file:///m.malloy"))
+         .getModel();
+      return plannedSources(await runtime.getBuildTargets(compiled));
+   }
+
+   it("declares each output column with its Malloy type, and the query time zone", async () => {
+      await duckdb.runSQL(
+         "CREATE OR REPLACE TABLE ev AS SELECT 1 AS id, DATE '2026-01-31' AS d, TIMESTAMPTZ '2026-01-31 23:00:00+00' AS tz",
+      );
+      const [zoned, plain] =
+         await persisted(`##! experimental { persistence sql_functions }
+source: ev is duckdb.table('ev')
+
+#@ persist name="zoned" storage="lake"
+source: zoned is ev -> {
+  timezone: 'Asia/Tokyo'
+  select: id, d_next is d + 1 month, flag is sql_boolean("\${id} = 1"), day_of is sql_date("\${tz}")
+} extend {
+  measure: n is count()
+  view: by_flag is { group_by: flag; aggregate: n }
+}
+
+#@ persist name="plain" storage="lake"
+source: plain is ev -> { select: id, label is concat('x', id::string) }
+`);
+      const casts = storageBuildCasts(zoned);
+      expect(casts.declaredColumns).toEqual([
+         { name: "id", type: "number" },
+         { name: "d_next", type: "date" },
+         { name: "flag", type: "boolean" },
+         { name: "day_of", type: "date" },
+      ]);
+      expect(casts.castOptions).toEqual({ queryTimezone: "Asia/Tokyo" });
+      // Under the zone a date is not cast at build; the boolean still is.
+      expect(
+         castToDeclaredTypes(
+            "SELECT 1",
+            casts.declaredColumns,
+            casts.castOptions,
+         ),
+      ).toBe(
+         'SELECT * REPLACE (CAST("flag" AS BOOLEAN) AS "flag") FROM (\nSELECT 1\n) AS __declared_types',
+      );
+
+      const plainCasts = storageBuildCasts(plain);
+      expect(plainCasts.declaredColumns).toEqual([
+         { name: "id", type: "number" },
+         { name: "label", type: "string" },
+      ]);
+      expect(plainCasts.castOptions).toEqual({ queryTimezone: undefined });
    });
 });

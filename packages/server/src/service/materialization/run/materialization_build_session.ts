@@ -31,9 +31,8 @@ import {
    type BuildCastOptions,
    castToDeclaredTypes,
    isCastConversionError,
-   persistSourceDeclaredColumns,
-   persistSourceQueryTimezone,
    STORED_COLUMN_TYPE_MISMATCH_CODE,
+   storageBuildCasts,
    type DeclaredColumn,
 } from "../stored_column_types";
 import { recordStoredColumnTypeMismatch } from "../../../materialization_metrics";
@@ -1217,15 +1216,13 @@ export async function buildDownstreamIntoStorage(params: {
          ),
          STORAGE_TARGET_DIALECT,
       );
+      // The downstream's own declared types, as for a recompute.
+      const casts = storageBuildCasts(downstream);
       const schema = await createTableWithDeclaredTypes(
          session,
          target,
          sql,
-         // The downstream's own declared types, as for a recompute.
-         {
-            columns: persistSourceDeclaredColumns(downstream),
-            queryTimezone: persistSourceQueryTimezone(downstream),
-         },
+         { columns: casts.declaredColumns, ...casts.castOptions },
          params.partitionColumns ?? [],
       );
 
@@ -1630,7 +1627,7 @@ function sourceFederationConfig(sourceConnection: ApiConnection): {
  * whose NULLs would be wrong answers. The retry re-reads the source, so it is
  * paid only by a source whose data the cast rejects.
  */
-async function createTableWithDeclaredTypes(
+export async function createTableWithDeclaredTypes(
    session: DuckDBConnection,
    quotedTablePath: string,
    selectSQL: string,

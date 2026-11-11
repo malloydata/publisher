@@ -281,26 +281,25 @@ export function persistSourceQueryTimezone(persistSource: {
    }
 }
 
+/**
+ * What a storage build of `persistSource` casts to: its declared columns, and
+ * the options that decide each cast. The one derivation every build path uses
+ * (a recompute, a chained build, a same-catalog build), so they cannot drift.
+ */
+export function storageBuildCasts(persistSource: {
+   _explore: { intrinsicFields: readonly unknown[] };
+}): { declaredColumns: DeclaredColumn[]; castOptions: BuildCastOptions } {
+   return {
+      declaredColumns: persistSourceDeclaredColumns(persistSource),
+      castOptions: { queryTimezone: persistSourceQueryTimezone(persistSource) },
+   };
+}
+
 /** Whether `err` is DuckDB refusing a value a cast cannot convert. */
 export function isCastConversionError(err: unknown): boolean {
    const message = err instanceof Error ? err.message : String(err);
    return /Conversion Error|Could not convert|Invalid Input Error: .*cast/i.test(
       message,
-   );
-}
-
-/**
- * The stored columns a rebuild would cast to their declared type: a table an
- * older build typed, which a delta (an INSERT into the existing columns) can
- * never correct, so its incremental source re-seeds.
- */
-export function rebuildWouldRecast(
-   schema: readonly { name: string; type: string }[],
-   declared: readonly DeclaredColumn[],
-   options: BuildCastOptions = {},
-): StoredColumnTypeMismatch[] {
-   return storedColumnTypeMismatches(schema, declared).filter(
-      (m) => buildCastTarget(m.declaredType, options) !== undefined,
    );
 }
 
@@ -318,16 +317,77 @@ const NAIVE_TIMESTAMP_TYPES =
    /^(TIMESTAMP|TIMESTAMP_S|TIMESTAMP_MS|TIMESTAMP_NS|TIMESTAMP_US|DATETIME)$/;
 
 /**
- * How the serve shape handles each mismatched column: read it through a cast
- * when the cast gives the value live gives, otherwise report it unservable.
+ * The DuckDB type a mismatched column can be CAST to with no value able to fail
+ * the cast and no value changed from what live gives, or undefined. One rule
+ * for the serve side's read cast ({@link serveTypePlan}) and the incremental
+ * re-seed ({@link rebuildWouldRecast}), so the two never disagree:
  *
  * - `boolean` from any integer width: the flag the integer encodes.
  * - `date` from a naive timestamp: its wall-clock date. From an instant
  *   (TIMESTAMP WITH TIME ZONE) only when the source has no query time zone,
- *   since the serve session takes the date in UTC.
- * - Everything else (a number or boolean stored as text, a string stored as
- *   anything): no cast is safe, because a value it cannot convert fails the
- *   query, and text-to-number has no single right type.
+ *   since the session takes the date in UTC.
+ *
+ * Nothing else: a number or boolean stored as text can hold a value the cast
+ * refuses, and text-to-number has no single right type.
+ */
+export function faithfulCastTarget(
+   m: StoredColumnTypeMismatch,
+   options: BuildCastOptions = {},
+): string | undefined {
+   const base = m.storedType
+      .replace(/\(.*\)/, "")
+      .trim()
+      .toUpperCase();
+   if (m.declaredType === "boolean" && INTEGER_TYPES.test(base)) {
+      return "BOOLEAN";
+   }
+   if (
+      m.declaredType === "date" &&
+      (NAIVE_TIMESTAMP_TYPES.test(base) ||
+         (TIMESTAMPTZ_TYPES.test(base) && !options.queryTimezone))
+   ) {
+      return "DATE";
+   }
+   return undefined;
+}
+
+/**
+ * The stored columns a rebuild would cast to their declared type: a table an
+ * older build typed, which a delta (an INSERT into the existing columns) can
+ * never correct, so its incremental source re-seeds.
+ *
+ * Only when the rebuild's casts are sure to succeed: every mismatched column
+ * the build casts must be one {@link faithfulCastTarget} casts, or a declared
+ * `string` (any value renders as text). One that is neither, such as a boolean
+ * the warehouse returned as text, is what a build leaves when its cast could
+ * not convert a value and it stored the warehouse's types instead
+ * ({@link isCastConversionError}). The build casts every column in one
+ * statement, so a re-seed would fail the same way and store the same types,
+ * and re-seed again on the next run, a full read every time. None is returned
+ * then: the table keeps advancing by delta, and the serve side reads its
+ * castable columns through a cast and answers the rest live.
+ */
+export function rebuildWouldRecast(
+   schema: readonly { name: string; type: string }[],
+   declared: readonly DeclaredColumn[],
+   options: BuildCastOptions = {},
+): StoredColumnTypeMismatch[] {
+   const recast = storedColumnTypeMismatches(schema, declared).filter(
+      (m) => buildCastTarget(m.declaredType, options) !== undefined,
+   );
+   const sure = recast.every(
+      (m) =>
+         m.declaredType === "string" ||
+         faithfulCastTarget(m, options) !== undefined,
+   );
+   return sure ? recast : [];
+}
+
+/**
+ * How the serve shape handles each mismatched column: read it through a cast
+ * when {@link faithfulCastTarget} names one, since that cast gives the value
+ * live gives and no value can fail it; otherwise report it unservable, so only
+ * the queries reading it are answered live.
  */
 export function serveTypePlan(
    mismatches: readonly StoredColumnTypeMismatch[],
@@ -336,18 +396,9 @@ export function serveTypePlan(
    const casts: ReadCast[] = [];
    const unservable: StoredColumnTypeMismatch[] = [];
    for (const m of mismatches) {
-      const base = m.storedType
-         .replace(/\(.*\)/, "")
-         .trim()
-         .toUpperCase();
-      if (m.declaredType === "boolean" && INTEGER_TYPES.test(base)) {
-         casts.push({ column: m.column, castTo: "BOOLEAN" });
-      } else if (
-         m.declaredType === "date" &&
-         (NAIVE_TIMESTAMP_TYPES.test(base) ||
-            (TIMESTAMPTZ_TYPES.test(base) && !options.queryTimezone))
-      ) {
-         casts.push({ column: m.column, castTo: "DATE" });
+      const castTo = faithfulCastTarget(m, options);
+      if (castTo) {
+         casts.push({ column: m.column, castTo });
       } else {
          unservable.push(m);
       }

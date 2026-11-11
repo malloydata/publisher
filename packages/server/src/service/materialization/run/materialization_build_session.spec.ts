@@ -749,6 +749,41 @@ describe.skipIf(process.platform === "win32")(
          }
       });
 
+      // ms2data/service#6642: a chained build casts to the DOWNSTREAM's own
+      // declared types, as a recompute would. DuckDB answers `date + 1 day`
+      // with a timestamp, which Malloy declares a date.
+      it("stores the downstream's columns as the types the downstream declares", async () => {
+         const dir = mkdtempSync(join(tmpdir(), "t3-types-"));
+         try {
+            await seedLake(dir);
+            const result = await buildDownstreamIntoStorage({
+               destinationName: "lake",
+               destinationConnection: {
+                  name: "lake",
+                  type: "duckdb",
+               } as ApiConnection,
+               transientModel: buildChainedStorageBuildModel({
+                  upstreams: [parent],
+                  downstreamName: "next_days",
+                  downstreamDefText:
+                     "next_days is daily_orders -> {\n" +
+                     "  group_by: next_day is order_date + 1 day\n" +
+                     "  aggregate: t is total.sum()\n}",
+                  destinationName: "lake",
+               }),
+               downstreamName: "next_days",
+               virtualMap: buildVirtualMap([parent]),
+               physicalTableName: "next_days__m1",
+               environmentPath: dir,
+            });
+            expect(result.schema.find((c) => c.name === "next_day")?.type).toBe(
+               "DATE",
+            );
+         } finally {
+            rmSync(dir, { recursive: true, force: true });
+         }
+      });
+
       it("raises an infrastructure failure as itself, not as a shape refusal the caller would fall back on", async () => {
          // The model compiles, but the parent's stored table is not in the lake:
          // the CTAS fails against the destination, and recomputing from raw would
