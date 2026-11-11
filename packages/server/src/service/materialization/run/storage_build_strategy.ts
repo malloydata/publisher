@@ -23,6 +23,7 @@ import {
    buildChainedStorageBuildModel,
    buildOverTiers,
    buildVirtualMap,
+   bindingServesModelSource,
    deriveServeBindings,
    documentFlagsForLifts,
    liftDerivedSources,
@@ -531,8 +532,15 @@ export class StorageBuildStrategy
                return undefined;
             }
          },
+         planFacts.sourceIDsFor,
       )
          .filter((b) => b.destinationName === destinationName)
+         // A binding names the source by NAME, and the lift below skips any
+         // candidate whose name is bound. So an upstream materializing another
+         // model's same-named source would stand in for this model's own and be
+         // built into the table (malloydata/publisher#1001). Kept only where the
+         // downstream's model means that source.
+         .filter((b) => bindingServesModelSource(b, lift.contents))
          // A rollup is never an upstream (its synthesized name is in no model
          // file). Filtering it also keeps the legible "no materialized upstream"
          // refusal for a destination holding only rollups.
