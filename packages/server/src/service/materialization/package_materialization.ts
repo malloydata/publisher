@@ -139,6 +139,8 @@ export class PackageMaterialization {
    // `#@ persist` sources Malloy's build walk did not plan, which
    // would silently serve live. Warned, and refused at build.
    private droppedPersistSources: { name: string; modelPath: string }[] = [];
+   private rollupsOverStoredBase: { baseName: string; modelPath?: string }[] =
+      [];
    // Which sources may be served from a materialized table, decided at compile
    // where the compiled sources exist; binding does not recompile. `undefined`
    // means NOT KNOWN (the plan compute failed) and is refused like "nothing is
@@ -235,6 +237,7 @@ export class PackageMaterialization {
          const {
             plan,
             droppedPersistSources,
+            rollupsOverStoredBase,
             sourceEligibility,
             colocatedSourceEligibility,
             incrementalDeclarations,
@@ -244,6 +247,7 @@ export class PackageMaterialization {
          this.buildPlan = plan;
          this.buildPlanFailed = false;
          this.droppedPersistSources = droppedPersistSources;
+         this.rollupsOverStoredBase = rollupsOverStoredBase ?? [];
          this.sourceEligibility = sourceEligibility;
          this.colocatedSourceEligibility = colocatedSourceEligibility;
          this.incrementalPolicySources = Object.entries(plan?.sources ?? {})
@@ -266,6 +270,8 @@ export class PackageMaterialization {
          return performance.now() - buildPlanPhaseStart;
       } catch (err) {
          this.buildPlanFailed = true;
+         // Nothing from the previous load describes this one.
+         this.rollupsOverStoredBase = [];
          recordBuildPlanComputeFailed();
          logger.warn(
             `Failed to compute build plan for package ${this.owner.packageName()}`,
@@ -580,6 +586,29 @@ export class PackageMaterialization {
       for (const model of this.owner.models().values()) {
          model.invalidateServeShapeCache();
       }
+   }
+
+   /**
+    * One warning per `storage=` base whose `#@ preaggregate storage=` rollups
+    * were left out: they can neither build nor serve over a stored base yet
+    * (#6293), so the base serves from its stored table and the rollups do not
+    * exist.
+    */
+   rollupsOverStoredBaseWarnings(): ApiPackageWarning[] {
+      // With the storage tier off the base itself serves live, which
+      // storageWarnings already says; "reads the stored table" would be false.
+      if (getPersistStorageMode() === "off") return [];
+      return this.rollupsOverStoredBase.map((r) => ({
+         ...(r.modelPath ? { model: r.modelPath } : {}),
+         subject: r.baseName,
+         code: "preaggregate-over-stored-base",
+         severity: "warn" as const,
+         message:
+            `declares '#@ preaggregate storage=' rollups, but is itself ` +
+            `persisted with 'storage=', so the rollups are not built: a rollup ` +
+            `over a stored base cannot build or serve yet, and queries read the ` +
+            `base's stored table instead.`,
+      }));
    }
 
    /**

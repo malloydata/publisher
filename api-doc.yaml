@@ -5744,6 +5744,12 @@ components:
                   cannot tell from a real de-identification, so a review has
                   to (one per field, `subject` the source; `warn`; a plain
                   copy under `#(carries)` refuses the load instead).
+                  `preaggregate-over-stored-base`: a source persisted with
+                  `#@ persist storage=` that also declares `#@ preaggregate
+                  storage=` rollups, which are left out of the build plan and
+                  every run because a rollup over a stored base can neither build
+                  nor serve yet (one per base, `subject` the base; `warn`; the
+                  base still builds and serves from storage).
                   `join-bypass`: an author join from a published source to one
                   with a stricter gate, which the join does not carry (one per
                   join, or one for a walk cut short at the join bound; always
