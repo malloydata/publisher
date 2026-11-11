@@ -36,6 +36,7 @@ import {
 } from "../serve/materialization_serve_transform";
 import {
    persistSourceDeclaredColumns,
+   persistSourceQueryTimezone,
    STORED_COLUMN_TYPE_MISMATCH_CODE,
    storedColumnTypeMismatches,
 } from "../stored_column_types";
@@ -212,6 +213,9 @@ export class StorageBuildStrategy
       // Store each column as the type Malloy declares where one DuckDB type
       // is faithful to it (ms2data/service#6642); checked again below.
       const declaredColumns = persistSourceDeclaredColumns(persistSource);
+      const castOptions = {
+         queryTimezone: persistSourceQueryTimezone(persistSource),
+      };
 
       const startTime = performance.now();
       let result;
@@ -327,6 +331,7 @@ export class StorageBuildStrategy
                   physicalTableName,
                   partitionColumns: partitionColumnsForBuild(persistSource),
                   declaredColumns,
+                  castOptions,
                   environmentPath: environment.getEnvironmentPath(),
                   queryMetadata,
                   incremental: refresh,

@@ -145,6 +145,15 @@ export interface ServeBinding {
    /** Authoritative DuckDB columns captured post-build (raw DuckDB types). */
    schema: { name: string; type: string }[];
    /**
+    * Columns read through a cast to their declared type, set by the serve
+    * shape for a table an older build typed (ms2data/service#6642). The shape
+    * then declares the stored table as `<name>__stored` and the source as a
+    * query over it selecting every column, these cast (`::date`), so
+    * everything built on them still compiles. `schema` keeps the STORED
+    * types. Absent reads the table as stored.
+    */
+   readCasts?: { column: string; castTo: string }[];
+   /**
     * The author source's refinements, re-emitted as an `extend {}` on the
     * virtual base. Attached at serve time from the compiled model. Analytic
     * fields are not carried; a query using one serves live.
@@ -486,16 +495,35 @@ function serveShapeFragment(binding: ServeBinding): string {
    const fields = binding.schema
       .map((c) => `   ${emitFieldName(c.name)}::${duckdbTypeToMalloy(c.type)}`)
       .join(",\n");
-   let source =
-      `source: ${binding.sourceName} is ` +
-      `${binding.destinationName}.virtual('${binding.virtualHandle}')::${shapeTypeName}`;
+   const virtual = `${binding.destinationName}.virtual('${binding.virtualHandle}')::${shapeTypeName}`;
+   const casts = new Map(
+      (binding.readCasts ?? []).map((c) => [c.column, c.castTo]),
+   );
+   let prelude = "";
+   let source: string;
+   if (casts.size === 0) {
+      source = `source: ${binding.sourceName} is ${virtual}`;
+   } else {
+      // The stored table under its own name, then the source as a query that
+      // selects every column, the mistyped ones cast to their declared type.
+      const stored = `${binding.sourceName}__stored`;
+      prelude = `source: ${stored} is ${virtual}\n`;
+      const select = binding.schema
+         .map((c) => {
+            const name = emitFieldName(c.name);
+            const to = casts.get(c.name);
+            return to ? `${name} is ${name}::${duckdbTypeToMalloy(to)}` : name;
+         })
+         .join(", ");
+      source = `source: ${binding.sourceName} is ${stored} -> { select: ${select} }`;
+   }
    // Anything a refinement references that the shape lacks fails the shape
    // compile, which safely falls back.
    const lines = refinementLines(binding.refinements ?? []);
    if (lines.length > 0) {
       source += ` extend {\n${lines.join("\n")}\n}`;
    }
-   return `type: ${shapeTypeName} is {\n${fields}\n}\n${source}`;
+   return `type: ${shapeTypeName} is {\n${fields}\n}\n${prelude}${source}`;
 }
 
 /**

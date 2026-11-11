@@ -12,6 +12,10 @@ import {
    STORED_COLUMN_TYPE_MISMATCH_CODE,
    declaredColumnsOf,
    persistSourceDeclaredColumns,
+   isCastConversionError,
+   queryTimezoneOf,
+   rebuildWouldRecast,
+   serveTypePlan,
    storedColumnTypeMismatches,
    storedTypeServesAs,
 } from "./stored_column_types";
@@ -186,35 +190,148 @@ describe("castToDeclaredTypes", () => {
 });
 
 describe("PackageMaterialization.storedColumnTypeWarnings", () => {
-   it("warns once per source and column, under the first model that binds it", () => {
-      const mismatches = [
+   it("warns once per source and column, keyed by the source's sourceID", () => {
+      const of = (sourceID: string, handling: "cast" | "live") => [
          {
             sourceName: "orders",
+            sourceID,
             mismatches: [
                {
                   column: "order_month",
                   storedType: "TIMESTAMP",
                   declaredType: "date",
+                  handling,
                },
             ],
          },
       ];
       const models = new Map<string, unknown>([
-         ["a.malloy", { storedColumnTypeMismatches: () => mismatches }],
-         ["b.malloy", { storedColumnTypeMismatches: () => mismatches }],
-         ["c.malloy", {}],
+         // a.malloy declares orders; b.malloy imports the same source.
+         [
+            "a.malloy",
+            { storedColumnTypeMismatches: () => of("orders@a", "cast") },
+         ],
+         [
+            "b.malloy",
+            { storedColumnTypeMismatches: () => of("orders@a", "cast") },
+         ],
+         // c.malloy declares an orders of its own: reported too.
+         [
+            "c.malloy",
+            { storedColumnTypeMismatches: () => of("orders@c", "live") },
+         ],
+         ["d.malloy", {}],
       ]);
       const materialization = new PackageMaterialization({
          models: () => models,
       } as unknown as PackageMaterializationOwner);
       const warnings = materialization.storedColumnTypeWarnings();
-      expect(warnings).toHaveLength(1);
+      expect(warnings.map((w) => w.model)).toEqual(["a.malloy", "c.malloy"]);
       expect(warnings[0]).toMatchObject({
-         model: "a.malloy",
          subject: "orders",
          code: STORED_COLUMN_TYPE_MISMATCH_CODE,
          severity: "warn",
       });
       expect(warnings[0].message).toContain("`order_month` as TIMESTAMP");
+      expect(warnings[0].message).toContain("read through a cast");
+      expect(warnings[1].message).toContain("answered live");
+   });
+});
+
+describe("the serve-side cast plan", () => {
+   const m = (column: string, storedType: string, declaredType: string) => ({
+      column,
+      storedType,
+      declaredType,
+   });
+
+   it("casts an integer flag to boolean and a naive timestamp to date", () => {
+      expect(
+         serveTypePlan([
+            m("f", "INTEGER", "boolean"),
+            m("d", "TIMESTAMP", "date"),
+         ]),
+      ).toEqual({
+         casts: [
+            { column: "f", castTo: "BOOLEAN" },
+            { column: "d", castTo: "DATE" },
+         ],
+         unservable: [],
+      });
+   });
+
+   it("dates an instant only without a query time zone", () => {
+      const tz = m("d", "TIMESTAMP WITH TIME ZONE", "date");
+      expect(serveTypePlan([tz]).casts).toEqual([
+         { column: "d", castTo: "DATE" },
+      ]);
+      expect(serveTypePlan([tz], { queryTimezone: "Asia/Tokyo" })).toEqual({
+         casts: [],
+         unservable: [tz],
+      });
+   });
+
+   it("casts nothing that could fail a query or has no single right type", () => {
+      const text = [
+         m("n", "VARCHAR", "number"),
+         m("b", "VARCHAR", "boolean"),
+         m("s", "INTEGER", "string"),
+      ];
+      expect(serveTypePlan(text)).toEqual({ casts: [], unservable: text });
+   });
+});
+
+describe("the build cast under a query time zone", () => {
+   it("leaves a date uncast, and still casts a boolean", () => {
+      const sql = castToDeclaredTypes(
+         "SELECT 1",
+         [
+            { name: "d", type: "date" },
+            { name: "b", type: "boolean" },
+         ],
+         { queryTimezone: "Asia/Tokyo" },
+      );
+      expect(sql).toContain('CAST("b" AS BOOLEAN)');
+      expect(sql).not.toContain("AS DATE");
+   });
+
+   it("reads the zone from the query stage that sets it", () => {
+      expect(
+         queryTimezoneOf({
+            type: "query_source",
+            query: { pipeline: [{ queryTimezone: "Asia/Tokyo" }, {}] },
+         }),
+      ).toBe("Asia/Tokyo");
+      expect(queryTimezoneOf({ type: "table" })).toBeUndefined();
+   });
+});
+
+describe("rebuildWouldRecast", () => {
+   it("names only what a rebuild would cast", () => {
+      expect(
+         rebuildWouldRecast(
+            [
+               { name: "d", type: "TIMESTAMP" },
+               { name: "n", type: "VARCHAR" },
+            ],
+            [
+               { name: "d", type: "date" },
+               { name: "n", type: "number" },
+            ],
+         ).map((x) => x.column),
+      ).toEqual(["d"]);
+   });
+});
+
+describe("isCastConversionError", () => {
+   it("recognizes DuckDB refusing a value, and nothing else", () => {
+      expect(
+         isCastConversionError(
+            new Error(
+               "Conversion Error: Could not convert string 'open' to BOOL",
+            ),
+         ),
+      ).toBe(true);
+      expect(isCastConversionError(new Error("Binder Error: x"))).toBe(false);
    });
 });

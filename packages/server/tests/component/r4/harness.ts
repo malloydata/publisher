@@ -40,6 +40,7 @@ import {
 import {
    castToDeclaredTypes,
    persistSourceDeclaredColumns,
+   persistSourceQueryTimezone,
 } from "../../../src/service/materialization/stored_column_types";
 import type { ManifestEntry } from "../../../src/service/materialization/types";
 import { Model } from "../../../src/service/model";
@@ -196,6 +197,7 @@ export async function buildScenario(scenario: R4Scenario): Promise<R4Fixture> {
          : castToDeclaredTypes(
               source.getSQL(),
               persistSourceDeclaredColumns(source),
+              { queryTimezone: persistSourceQueryTimezone(source) },
            );
       await duckdb.runSQL(`CREATE TABLE ${DESTINATION}.${table} AS ${select}`);
       const described = await duckdb.runSQL(`DESCRIBE ${DESTINATION}.${table}`);

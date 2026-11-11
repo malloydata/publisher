@@ -18,13 +18,20 @@
  *   ({@link BUILD_CAST_TARGETS}) is CAST to it in the build's SELECT, so the
  *   table stores the declared type whatever the warehouse returned.
  * - At serve, a column whose stored type does not serve as its declared type
- *   ({@link storedTypeServesAs}) is left off the serve shape, so a query that
- *   reads it is answered live and every other query still reads the table.
- *   That covers tables built before the cast, and the types no cast can safely
- *   produce (a number stored as text).
+ *   ({@link storedTypeServesAs}) is read through a cast to its declared type
+ *   when one is faithful ({@link serveTypePlan}), so a table an older build
+ *   typed still serves every field built on it. A column no cast can make
+ *   faithful (a number stored as text) is left off the shape when nothing on
+ *   the shape names it, so only queries reading it are answered live; when a
+ *   refinement names it, that one binding is withheld instead, so the failure
+ *   stays with that source and never degrades the rest of the shape.
+ * - An incremental source whose stored table holds a type a rebuild would cast
+ *   re-seeds on its next run ({@link rebuildWouldRecast}), since a delta never
+ *   reaches the CTAS that casts.
  */
 
 import { quoteIdentifier } from "../quoting";
+import { fromSubselect } from "./subselect";
 import { duckdbTypeToMalloyType } from "./serve/materialization_serve_transform";
 
 /**
@@ -198,23 +205,152 @@ export function persistSourceDeclaredColumns(persistSource: {
  *
  * Runs in the destination's DuckDB session, never the warehouse, so one
  * spelling serves every source dialect. A CAST is a no-op on a column that is
- * already the target type. A value the cast cannot convert (a date column the
- * warehouse returned as unparseable text) fails the build rather than storing
- * a value live would not produce.
+ * already the target type. A value the cast cannot convert (a boolean the
+ * warehouse returned as 'Y'/'N') makes the build retry without the casts
+ * ({@link isCastConversionError}), storing what the warehouse returned: never
+ * TRY_CAST, whose NULLs would be wrong answers. The serve side then decides
+ * that column.
  */
 export function castToDeclaredTypes(
    selectSQL: string,
    declared: readonly DeclaredColumn[],
+   options: BuildCastOptions = {},
 ): string {
-   const casts = declared
-      .filter((d) => BUILD_CAST_TARGETS[d.type] !== undefined)
-      .map((d) => {
-         const column = quoteIdentifier(d.name, "duckdb");
-         return `CAST(${column} AS ${BUILD_CAST_TARGETS[d.type]}) AS ${column}`;
-      });
+   const casts = declared.flatMap((d) => {
+      const target = buildCastTarget(d.type, options);
+      if (!target) return [];
+      const column = quoteIdentifier(d.name, "duckdb");
+      return [`CAST(${column} AS ${target}) AS ${column}`];
+   });
    if (casts.length === 0) return selectSQL;
-   // A trailing terminator would end the subselect early, and a trailing `--`
-   // comment would swallow the closing paren, hence its own line.
-   const inner = selectSQL.replace(/[\s;]+$/, "");
-   return `SELECT * REPLACE (${casts.join(", ")}) FROM (\n${inner}\n) AS __declared_types`;
+   return `SELECT * REPLACE (${casts.join(", ")}) ${fromSubselect(selectSQL, "__declared_types")}`;
+}
+
+/** What decides a build cast beyond the declared type. */
+export interface BuildCastOptions {
+   /**
+    * The source's query time zone. When set, a `date` is not cast at build: if
+    * the warehouse returned an instant (TIMESTAMP WITH TIME ZONE), DuckDB's
+    * cast would take its date in the build session's UTC, not in this zone, and
+    * could store the day before. The serve side decides such a column instead.
+    */
+   queryTimezone?: string;
+}
+
+/** The DuckDB type a declared Malloy type is cast to at build, or undefined. */
+export function buildCastTarget(
+   declaredType: string,
+   options: BuildCastOptions = {},
+): string | undefined {
+   if (declaredType === "date" && options.queryTimezone) return undefined;
+   return BUILD_CAST_TARGETS[declaredType];
+}
+
+/**
+ * The query time zone a compiled source declares, when it declares one:
+ * Malloy records a query's `timezone:` on its pipeline stage, so a query-shaped
+ * source carries it on `query.pipeline[i].queryTimezone` (the last stage that
+ * sets one wins), or on the source itself.
+ */
+export function queryTimezoneOf(structDef: unknown): string | undefined {
+   const def = structDef as
+      | {
+           queryTimezone?: unknown;
+           query?: { pipeline?: readonly { queryTimezone?: unknown }[] };
+        }
+      | undefined;
+   let tz: unknown = def?.queryTimezone;
+   for (const stage of def?.query?.pipeline ?? []) {
+      if (typeof stage?.queryTimezone === "string") tz = stage.queryTimezone;
+   }
+   return typeof tz === "string" && tz !== "" ? tz : undefined;
+}
+
+/** {@link queryTimezoneOf} for a persist source being built. */
+export function persistSourceQueryTimezone(persistSource: {
+   _explore: unknown;
+}): string | undefined {
+   try {
+      const explore = persistSource._explore as {
+         _structDef?: unknown;
+         structDef?: unknown;
+      };
+      return queryTimezoneOf(explore._structDef ?? explore.structDef);
+   } catch {
+      return undefined;
+   }
+}
+
+/** Whether `err` is DuckDB refusing a value a cast cannot convert. */
+export function isCastConversionError(err: unknown): boolean {
+   const message = err instanceof Error ? err.message : String(err);
+   return /Conversion Error|Could not convert|Invalid Input Error: .*cast/i.test(
+      message,
+   );
+}
+
+/**
+ * The stored columns a rebuild would cast to their declared type: a table an
+ * older build typed, which a delta (an INSERT into the existing columns) can
+ * never correct, so its incremental source re-seeds.
+ */
+export function rebuildWouldRecast(
+   schema: readonly { name: string; type: string }[],
+   declared: readonly DeclaredColumn[],
+   options: BuildCastOptions = {},
+): StoredColumnTypeMismatch[] {
+   return storedColumnTypeMismatches(schema, declared).filter(
+      (m) => buildCastTarget(m.declaredType, options) !== undefined,
+   );
+}
+
+/** A stored column read through a cast to its declared type at serve. */
+export interface ReadCast {
+   column: string;
+   /** The DuckDB type it is read as. */
+   castTo: string;
+}
+
+const INTEGER_TYPES =
+   /^(TINYINT|SMALLINT|INTEGER|INT|INT1|INT2|INT4|INT8|BIGINT|HUGEINT|UTINYINT|USMALLINT|UINTEGER|UBIGINT|UHUGEINT|SHORT|LONG|SIGNED)$/;
+const TIMESTAMPTZ_TYPES = /^(TIMESTAMP WITH TIME ZONE|TIMESTAMPTZ)$/;
+const NAIVE_TIMESTAMP_TYPES =
+   /^(TIMESTAMP|TIMESTAMP_S|TIMESTAMP_MS|TIMESTAMP_NS|TIMESTAMP_US|DATETIME)$/;
+
+/**
+ * How the serve shape handles each mismatched column: read it through a cast
+ * when the cast gives the value live gives, otherwise report it unservable.
+ *
+ * - `boolean` from any integer width: the flag the integer encodes.
+ * - `date` from a naive timestamp: its wall-clock date. From an instant
+ *   (TIMESTAMP WITH TIME ZONE) only when the source has no query time zone,
+ *   since the serve session takes the date in UTC.
+ * - Everything else (a number or boolean stored as text, a string stored as
+ *   anything): no cast is safe, because a value it cannot convert fails the
+ *   query, and text-to-number has no single right type.
+ */
+export function serveTypePlan(
+   mismatches: readonly StoredColumnTypeMismatch[],
+   options: BuildCastOptions = {},
+): { casts: ReadCast[]; unservable: StoredColumnTypeMismatch[] } {
+   const casts: ReadCast[] = [];
+   const unservable: StoredColumnTypeMismatch[] = [];
+   for (const m of mismatches) {
+      const base = m.storedType
+         .replace(/\(.*\)/, "")
+         .trim()
+         .toUpperCase();
+      if (m.declaredType === "boolean" && INTEGER_TYPES.test(base)) {
+         casts.push({ column: m.column, castTo: "BOOLEAN" });
+      } else if (
+         m.declaredType === "date" &&
+         (NAIVE_TIMESTAMP_TYPES.test(base) ||
+            (TIMESTAMPTZ_TYPES.test(base) && !options.queryTimezone))
+      ) {
+         casts.push({ column: m.column, castTo: "DATE" });
+      } else {
+         unservable.push(m);
+      }
+   }
+   return { casts, unservable };
 }

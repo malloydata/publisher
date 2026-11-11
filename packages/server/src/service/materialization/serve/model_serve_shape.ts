@@ -49,6 +49,9 @@ import {
 import { rollupServeBindings } from "./preaggregation_serve_bindings";
 import {
    declaredColumnsOf,
+   queryTimezoneOf,
+   type ReadCast,
+   serveTypePlan,
    STORED_COLUMN_TYPE_MISMATCH_CODE,
    storedColumnTypeMismatches,
    type StoredColumnTypeMismatch,
@@ -65,6 +68,18 @@ type ApiGiven = components["schemas"]["Given"];
 /** One bound source's stored columns that do not serve as their declared type. */
 export interface SourceTypeMismatches {
    sourceName: string;
+   /** The model's own sourceID for it, so two models' same-named sources stay apart. */
+   sourceID?: string;
+   /** Each mismatch, and whether the serve shape casts it or serves it live. */
+   mismatches: (StoredColumnTypeMismatch & { handling: "cast" | "live" })[];
+}
+
+/** One binding's stored columns against its declared types, decided once per bind. */
+interface BindingTypePlan {
+   /** The public schema, under the stored types. */
+   schema: { name: string; type: string }[];
+   casts: ReadCast[];
+   unservable: StoredColumnTypeMismatch[];
    mismatches: StoredColumnTypeMismatch[];
 }
 
@@ -99,6 +114,8 @@ export class StorageServeShape {
    serveBindings: ServeBinding[] = [];
    /** See {@link storedColumnTypeMismatches}. */
    private typeMismatches: SourceTypeMismatches[] = [];
+   /** Each bound binding's type plan, computed in setServeBindings and reused. */
+   private typePlans = new WeakMap<ServeBinding, BindingTypePlan>();
    /** Tables already reported for a stored column type mismatch. */
    private readonly typeMismatchesLogged = new Set<string>();
    /** Sources already reported as served live for a name clash. */
@@ -188,35 +205,77 @@ export class StorageServeShape {
       // A rollup's name resolves to nothing in the author's model, and its
       // columns are measures the planner typed, so it is not checked here.
       const ordinary = bindings.filter((b) => b.origin !== "preaggregate");
+      this.typePlans = new WeakMap();
       if (ordinary.length === 0) return [];
       const { contents } = this.authorModelLift();
       const out: SourceTypeMismatches[] = [];
       for (const binding of ordinary) {
-         const fields = contents?.[binding.sourceName]?.fields;
-         const mismatches = storedColumnTypeMismatches(
-            narrowSchemaToPublic(binding.schema, fields),
-            declaredColumnsOf(fields),
-         );
-         if (mismatches.length === 0) continue;
-         out.push({ sourceName: binding.sourceName, mismatches });
+         const plan = this.typePlanFor(binding, contents);
+         if (plan.mismatches.length === 0) continue;
+         const unservable = new Set(plan.unservable.map((m) => m.column));
+         const def = contents?.[binding.sourceName] as
+            | { sourceID?: unknown }
+            | undefined;
+         out.push({
+            sourceName: binding.sourceName,
+            ...(typeof def?.sourceID === "string"
+               ? { sourceID: def.sourceID }
+               : {}),
+            mismatches: plan.mismatches.map((m) => ({
+               ...m,
+               handling: unservable.has(m.column) ? "live" : "cast",
+            })),
+         });
          const key = `${binding.sourceName}\u0000${binding.virtualHandle}`;
          if (this.typeMismatchesLogged.has(key)) continue;
          // Once per table per model: bindings are re-pushed on every bind.
          this.typeMismatchesLogged.add(key);
-         for (const m of mismatches) {
+         for (const m of plan.mismatches) {
             recordStoredColumnTypeMismatch("serve", m.declaredType);
          }
          logger.warn(
-            "Serving columns live: their stored type does not serve as the declared Malloy type",
+            "Stored column types do not match the declared Malloy types; casting where faithful, serving the rest live",
             {
                code: STORED_COLUMN_TYPE_MISMATCH_CODE,
                modelPath: this.host.modelPath(),
                source: binding.sourceName,
-               columns: mismatches,
+               cast: plan.casts,
+               live: plan.unservable,
             },
          );
       }
       return out;
+   }
+
+   /**
+    * A binding's public schema against the source's declared types: which
+    * columns the shape reads through a cast, and which no cast makes faithful.
+    * Memoized per binding object for the life of one bind.
+    */
+   private typePlanFor(
+      binding: ServeBinding,
+      contents: Record<string, DerivedSourceDef & { sourceID?: unknown }>,
+   ): BindingTypePlan {
+      const memo = this.typePlans.get(binding);
+      if (memo) return memo;
+      const def = contents?.[binding.sourceName];
+      const fields = def?.fields;
+      const publicSchema = narrowSchemaToPublic(binding.schema, fields);
+      const mismatches = storedColumnTypeMismatches(
+         publicSchema,
+         declaredColumnsOf(fields),
+      );
+      const { casts, unservable } = serveTypePlan(mismatches, {
+         queryTimezone: queryTimezoneOf(def),
+      });
+      const plan: BindingTypePlan = {
+         schema: publicSchema,
+         casts,
+         unservable,
+         mismatches,
+      };
+      this.typePlans.set(binding, plan);
+      return plan;
    }
 
    /**
@@ -737,25 +796,54 @@ export class StorageServeShape {
       // Done FIRST: everything below decides against the set of sources that
       // will actually be on the shape.
       //
-      // A column whose stored type does not serve as its declared type is left
-      // off too (ms2data/service#6642): a query reading it fails the shape and
-      // is answered live, and every other query still reads the table.
-      const onShape = bindings
-         .map((b) => {
-            const fields = contents?.[b.sourceName]?.fields;
-            const schema = narrowSchemaToPublic(b.schema, fields);
-            const mistyped = new Set(
-               storedColumnTypeMismatches(
-                  schema,
-                  declaredColumnsOf(fields),
-               ).map((m) => m.column),
-            );
-            return {
+      // A column whose stored type does not serve as its declared type
+      // (ms2data/service#6642) is read through a cast to that type when one is
+      // faithful, so everything built on it still compiles. One no cast makes
+      // faithful is left off when nothing on the shape names it, so only a
+      // query reading it is answered live; when a refinement does name it,
+      // dropping it would fail the whole shape, so that one binding is
+      // withheld instead and every other source keeps serving.
+      const planned = bindings
+         .map((b) => ({ b, plan: this.typePlanFor(b, contents) }))
+         .filter(({ plan }) => plan.schema.length > 0);
+      const provisional = new Set(planned.map(({ b }) => b.sourceName));
+      const named = refinementText(
+         planned.flatMap(({ b }) =>
+            authorRefinementsFor(
+               b.sourceName,
+               { contents, sourceNameById, liftText },
+               provisional,
+            ),
+         ),
+      );
+      const typeWithheld: string[] = [];
+      const onShape = planned.flatMap(({ b, plan }) => {
+         const live = plan.unservable.map((m) => m.column);
+         if (live.some((column) => namesColumn(named, column))) {
+            typeWithheld.push(b.sourceName);
+            return [];
+         }
+         const drop = new Set(live);
+         const schema = plan.schema.filter((c) => !drop.has(c.name));
+         if (schema.length === 0) return [];
+         return [
+            {
                ...b,
-               schema: schema.filter((c) => !mistyped.has(c.name)),
-            };
-         })
-         .filter((b) => b.schema.length > 0);
+               schema,
+               ...(plan.casts.length > 0 ? { readCasts: plan.casts } : {}),
+            },
+         ];
+      });
+      if (typeWithheld.length > 0) {
+         logger.warn(
+            "Withheld storage serve bindings whose mistyped column a refinement names; those sources serve live",
+            {
+               code: STORED_COLUMN_TYPE_MISMATCH_CODE,
+               model: this.host.modelPath(),
+               withheld: typeWithheld,
+            },
+         );
+      }
       const { kept, withheld } = withholdUnreproducibleCallerScopedJoins(
          onShape,
          contents,
@@ -778,4 +866,18 @@ export class StorageServeShape {
          ),
       }));
    }
+}
+
+/** Every refinement's text, for {@link namesColumn}. */
+function refinementText(refinements: readonly unknown[]): string {
+   return JSON.stringify(refinements);
+}
+
+/**
+ * Whether `text` names `column` as an identifier: conservatively, any whole-word
+ * occurrence, so a false positive only withholds a binding (serves it live).
+ */
+function namesColumn(text: string, column: string): boolean {
+   const escaped = column.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+   return new RegExp(`(^|[^A-Za-z0-9_])${escaped}([^A-Za-z0-9_]|$)`).test(text);
 }

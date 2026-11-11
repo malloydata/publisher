@@ -501,7 +501,7 @@ source: typed is ev -> {
       });
 
       it("reports only the column no cast can make faithful", () => {
-         expect(fixture.typeMismatches()).toEqual([
+         expect(fixture.typeMismatches()).toMatchObject([
             {
                sourceName: "typed",
                mismatches: [
@@ -509,6 +509,7 @@ source: typed is ev -> {
                      column: "amount_text",
                      storedType: "VARCHAR",
                      declaredType: "number",
+                     handling: "live",
                   },
                ],
             },
@@ -551,34 +552,170 @@ source: typed is ev -> {
 
       it("reports each column whose stored type does not serve as declared", () => {
          const [only] = fixture.typeMismatches();
-         expect(only.mismatches.map((m) => [m.column, m.storedType])).toEqual([
-            ["d_next", "TIMESTAMP"],
-            ["month_start", "TIMESTAMP"],
-            ["flag", "INTEGER"],
-            ["amount_text", "VARCHAR"],
+         expect(
+            only.mismatches.map((m) => [m.column, m.storedType, m.handling]),
+         ).toEqual([
+            ["d_next", "TIMESTAMP", "cast"],
+            ["month_start", "TIMESTAMP", "cast"],
+            ["flag", "INTEGER", "cast"],
+            ["amount_text", "VARCHAR", "live"],
          ]);
       });
 
-      for (const query of [
-         dateVsDate,
-         dateInZone,
-         truncatedDate,
-         flag,
-         numberAsText,
-      ]) {
-         it(`answers ${query.name} live`, async () => {
-            await expectServedMatchesLive(fixture, {
-               ...query,
-               expectLive: true,
-            });
+      // Read through a cast to the declared type, so the old table still
+      // serves them, equal to live.
+      for (const query of [dateVsDate, dateInZone, truncatedDate, flag]) {
+         it(`serves ${query.name} from storage through a cast, equal to live`, async () => {
+            await expectServedMatchesLive(fixture, query);
          });
       }
+
+      it("answers the text-typed number live", async () => {
+         await expectServedMatchesLive(fixture, numberAsText);
+      });
 
       it("still serves the columns stored faithfully", async () => {
          await expectServedMatchesLive(fixture, decimal);
          for (const query of timestamps) {
             await expectServedMatchesLive(fixture, query);
          }
+      });
+   });
+});
+
+// The review of ms2data/service#6642: a mistyped column must not take the rest
+// of the shape with it, and an instant must not be dated in the wrong zone.
+describe("R4: a mistyped column stays local to its source", () => {
+   const seedSql = [
+      `CREATE TABLE ev AS SELECT * FROM (VALUES
+         (1, 10.5::DOUBLE, TIMESTAMPTZ '2026-01-15 16:30:00+00', DATE '2026-01-31'),
+         (2, 20.25::DOUBLE, TIMESTAMPTZ '2026-02-03 01:00:00+00', DATE '2026-02-28'),
+         (3, 5.5::DOUBLE, TIMESTAMPTZ '2026-02-28 15:30:00+00', DATE '2026-03-01')
+       ) AS t(id, amt, tz, d)`,
+   ];
+   const header = `##! experimental { persistence sql_functions }
+source: ev is duckdb.table('ev')
+`;
+   const other = `
+#@ persist name="other" storage="lake"
+source: other is ev -> { select: id, amt } extend { measure: total is amt.sum() }
+`;
+
+   describe("a refinement over a column no cast makes faithful", () => {
+      let fixture: R4Fixture;
+      beforeAll(async () => {
+         fixture = await buildScenario({
+            files: {
+               "m.malloy":
+                  header +
+                  `
+#@ persist name="typed2" storage="lake"
+source: typed2 is ev -> {
+  select: id, d, d_next is d + 1 month, amount_text is sql_number("CAST(\${amt} AS VARCHAR)")
+} extend {
+  dimension: next_month is d_next.month
+  dimension: amount_twice is amount_text * 2
+}
+` +
+                  other,
+            },
+            seedSql,
+            uncast: true,
+         });
+      });
+
+      it("withholds only that source, which answers live", async () => {
+         await expectServedMatchesLive(fixture, {
+            name: "the source with the mistyped column",
+            malloy:
+               "run: typed2 -> { group_by: next_month; aggregate: n is count() }",
+            expectLive: true,
+         });
+      });
+
+      it("keeps serving every other source from storage, whole", async () => {
+         await expectServedMatchesLive(fixture, {
+            name: "another stored source in the same model",
+            malloy: "run: other -> { group_by: id; aggregate: total }",
+         });
+      });
+   });
+
+   describe("a refinement over a column a cast makes faithful", () => {
+      let fixture: R4Fixture;
+      beforeAll(async () => {
+         fixture = await buildScenario({
+            files: {
+               "m.malloy":
+                  header +
+                  `
+#@ persist name="typed3" storage="lake"
+source: typed3 is ev -> { select: id, amt, d, d_next is d + 1 month } extend {
+  dimension: next_month is d_next.month
+}
+` +
+                  other,
+            },
+            seedSql,
+            uncast: true,
+         });
+      });
+
+      it("serves the refinement from storage through the cast, equal to live", async () => {
+         await expectServedMatchesLive(fixture, {
+            name: "a dimension over a date an older build stored as a timestamp",
+            malloy:
+               "run: typed3 -> { where: d_next > d; group_by: next_month; aggregate: s is amt.sum() }",
+         });
+      });
+
+      it("serves the other source from storage too", async () => {
+         await expectServedMatchesLive(fixture, {
+            name: "another stored source in the same model",
+            malloy: "run: other -> { aggregate: total }",
+         });
+      });
+   });
+
+   describe("a date taken from an instant under a query time zone", () => {
+      let fixture: R4Fixture;
+      beforeAll(async () => {
+         fixture = await buildScenario({
+            files: {
+               "m.malloy":
+                  header +
+                  `
+#@ persist name="tok" storage="lake"
+source: tok is ev -> {
+  timezone: 'Asia/Tokyo'
+  select: id, amt, day_of is sql_date("\${tz}")
+}
+`,
+            },
+            seedSql,
+         });
+      });
+
+      it("is not cast to a date at build", () => {
+         const types = Object.fromEntries(
+            fixture.bindings[0].schema.map((c) => [c.name, c.type]),
+         );
+         expect(types.day_of).toBe("TIMESTAMP WITH TIME ZONE");
+      });
+
+      it("answers a query reading it live, equal to live", async () => {
+         await expectServedMatchesLive(fixture, {
+            name: "the instant's date",
+            malloy: "run: tok -> { group_by: day_of; aggregate: n is count() }",
+            expectLive: true,
+         });
+      });
+
+      it("serves a query not reading it from storage", async () => {
+         await expectServedMatchesLive(fixture, {
+            name: "the rest of the source",
+            malloy: "run: tok -> { aggregate: s is amt.sum() }",
+         });
       });
    });
 });

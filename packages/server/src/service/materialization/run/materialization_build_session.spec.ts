@@ -1095,6 +1095,48 @@ describe("buildSourceIntoStorage (happy path, real DuckDB file destination)", ()
       }
    });
 
+   // A cast that cannot convert a value must not fail a build that used to
+   // succeed: it stores what the warehouse returned, never TRY_CAST's NULLs.
+   it("stores the warehouse's types when a declared-type cast cannot convert a value", async () => {
+      const lake = fileLakeBuild("SELECT 'open' AS is_open, 1 AS n");
+      try {
+         const result = await buildSourceIntoStorage({
+            ...lake.params,
+            declaredColumns: [{ name: "is_open", type: "boolean" }],
+         });
+         expect(result.schema).toEqual([
+            { name: "is_open", type: "VARCHAR" },
+            { name: "n", type: "INTEGER" },
+         ]);
+      } finally {
+         lake.cleanup();
+      }
+   });
+
+   // Under a query time zone a date is not cast at build: an instant's date in
+   // the build session's UTC can be the day before the zone's.
+   it("does not cast a date at build when the source has a query time zone", async () => {
+      const lake = fileLakeBuild(
+         "SELECT TIMESTAMPTZ '2024-03-04 15:00:00+00' AS d, 1 AS is_open",
+      );
+      try {
+         const result = await buildSourceIntoStorage({
+            ...lake.params,
+            declaredColumns: [
+               { name: "d", type: "date" },
+               { name: "is_open", type: "boolean" },
+            ],
+            castOptions: { queryTimezone: "Asia/Tokyo" },
+         });
+         expect(result.schema).toEqual([
+            { name: "d", type: "TIMESTAMP WITH TIME ZONE" },
+            { name: "is_open", type: "BOOLEAN" },
+         ]);
+      } finally {
+         lake.cleanup();
+      }
+   });
+
    it("returns the plan's in-place refresh, with the table's schema, and issues no full read", async () => {
       const lake = fileLakeBuild(SELECT);
       let afterSeedRan = false;

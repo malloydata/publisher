@@ -731,12 +731,12 @@ export class PackageMaterialization {
 
    /**
     * Warnings for stored columns whose type does not serve as the type Malloy
-    * declares for them (ms2data/service#6642), one per source and column. Each
-    * such column is left off the serve shape, so queries reading it are
-    * answered live; a rebuild stores the declared type where one DuckDB type is
-    * faithful to it. Read from the bindings bound now, so it follows the
-    * manifest rather than the load. A source several models import is
-    * reported once, under the first model that binds it.
+    * declares for them (ms2data/service#6642), one per source and column. A
+    * castable column is read through a cast to its declared type, and a
+    * rebuild stores that type; any other is answered live. Read from the
+    * bindings bound now, so it follows the manifest rather than the load. Keyed
+    * by the source's sourceID, so two models' same-named sources both report,
+    * and a source several models import reports once.
     */
    storedColumnTypeWarnings(): ApiPackageWarning[] {
       const warnings: ApiPackageWarning[] = [];
@@ -745,10 +745,11 @@ export class PackageMaterialization {
          // Optional: a model a spec stands in for need not implement it.
          for (const {
             sourceName,
+            sourceID,
             mismatches,
          } of model.storedColumnTypeMismatches?.() ?? []) {
             for (const m of mismatches) {
-               const key = `${sourceName}\u0000${m.column}`;
+               const key = `${sourceID ?? `${modelPath}\u0000${sourceName}`}\u0000${m.column}`;
                if (seen.has(key)) continue;
                seen.add(key);
                warnings.push({
@@ -757,14 +758,16 @@ export class PackageMaterialization {
                   code: STORED_COLUMN_TYPE_MISMATCH_CODE,
                   severity: "warn",
                   message:
-                     `stores column \`${m.column}\` as ${m.storedType}, which ` +
-                     `does not serve as its declared Malloy type ` +
-                     `\`${m.declaredType}\`, so queries that read it are ` +
-                     `answered live instead of from storage. A rebuild casts a ` +
-                     `string, boolean or date column to its declared type. For ` +
-                     `any other type, give the field a native cast in the model ` +
-                     `(for example \`::"double"\`): a cast to the type Malloy ` +
-                     `already believes it has emits no SQL.`,
+                     `stores column \`${m.column}\` as ${m.storedType}, not its ` +
+                     `declared Malloy type \`${m.declaredType}\`. ` +
+                     (m.handling === "cast"
+                        ? `It is read through a cast to \`${m.declaredType}\`, ` +
+                          `so it still serves from storage; the next build ` +
+                          `stores the declared type.`
+                        : `No cast reproduces its values faithfully, so queries ` +
+                          `that read it are answered live. Give the field a ` +
+                          `native cast in the model (for example \`::"double"\`) ` +
+                          `so the warehouse returns the declared type.`),
                });
             }
          }

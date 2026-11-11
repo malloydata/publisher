@@ -427,12 +427,24 @@ A storage build therefore casts each `string`, `boolean` and `date` column to it
 runs exactly the build SQL it ran before. Numbers and timestamps are not cast: every DuckDB numeric
 type serves a Malloy `number`, and either DuckDB timestamp type serves a `timestamp` or
 `timestamptz`, since builds and queries both run in UTC.
+Under a query time zone (`timezone:` in the source's query) a `date` is not cast at build: DuckDB
+would take an instant's date in the build session's UTC, not in that zone. A cast that cannot
+convert a value (a boolean the warehouse returned as `'open'`) retries the build without the casts
+and stores what the warehouse returned, rather than failing a build that used to succeed or storing
+`TRY_CAST`'s NULLs.
 
-A column whose stored type still does not serve as its declared type (a `number` the warehouse
-returned as text, or any column of a table built before this cast) is left off the serve shape: a
-query that reads it is answered live, and every other query still reads the table. The package
-reports each such column as a warning with code `storage-column-type-mismatch`, naming the source,
-the column, its stored type and its declared type. Rebuilding clears the castable ones. For the
+A column whose stored type still does not serve as its declared type, such as any castable column of
+a table built before this cast, is read through a cast to its declared type where that is faithful:
+an integer flag as a `boolean`, a naive timestamp as a `date`, and an instant as a `date` when the
+source has no query time zone. Every field, join and view built on it still serves from storage. A
+column no cast reproduces faithfully (a `number` the warehouse returned as text, a `boolean` stored
+as text) is left off the shape when nothing on the shape names it, so only a query that reads it is
+answered live; when a dimension, measure, join, filter or view names it, that one source is served
+live instead, and the rest of the model keeps serving from storage. An incremental source whose
+table holds a type a rebuild would cast re-seeds on its next run, since a delta only inserts into
+the columns the table already has. The package reports each such column as a warning with code
+`storage-column-type-mismatch`, naming the source, the column, its stored and declared types, and
+whether it is cast or answered live. A rebuild stores the castable ones as declared. For the
 rest, give the field a native cast in the model so the warehouse returns the declared type, for
 example `amount_text::"double"`: a cast to a type Malloy already believes the field has, such as
 `::number` here, emits no SQL.
