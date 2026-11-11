@@ -12,6 +12,7 @@ import { installSettings } from "../../../src/test_helpers/settings_env";
 import {
    buildScenario,
    rowDifference,
+   disposeScenarios,
    freshDuckDB,
    type R4Fixture,
    type R4Query,
@@ -24,7 +25,10 @@ beforeAll(() => {
       env: { PERSIST_STORAGE_MODE: "on" },
    }).restore;
 });
-afterAll(() => restoreSettings());
+afterAll(async () => {
+   restoreSettings();
+   await disposeScenarios();
+});
 
 /** Served must equal live, and must have read a stored table. */
 async function expectServedMatchesLive(fixture: R4Fixture, query: R4Query) {
