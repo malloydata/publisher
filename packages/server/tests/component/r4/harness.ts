@@ -95,9 +95,32 @@ export interface R4Fixture {
  */
 export function freshDuckDB(
    name: string,
-   dir: string = fs.mkdtempSync(path.join(os.tmpdir(), "publisher-r4-")),
+   dir: string = scratchDir(),
 ): DuckDBConnection {
-   return new DuckDBConnection(name, path.join(dir, `${name}.db`));
+   const connection = new DuckDBConnection(name, path.join(dir, `${name}.db`));
+   opened.push(connection);
+   return connection;
+}
+
+// Every connection and directory a scenario made, so disposeScenarios can
+// close and remove them: an open DuckDB file is locked on Windows.
+const opened: DuckDBConnection[] = [];
+const scratchDirs: string[] = [];
+
+function scratchDir(): string {
+   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "publisher-r4-"));
+   scratchDirs.push(dir);
+   return dir;
+}
+
+/** Close every scenario's DuckDB and remove its directory. Call in afterAll. */
+export async function disposeScenarios(): Promise<void> {
+   for (const connection of opened.splice(0)) {
+      await connection.close().catch(() => {});
+   }
+   for (const dir of scratchDirs.splice(0)) {
+      fs.rmSync(dir, { recursive: true, force: true });
+   }
 }
 
 /**
@@ -105,7 +128,7 @@ export function freshDuckDB(
  * queries live and served.
  */
 export async function buildScenario(scenario: R4Scenario): Promise<R4Fixture> {
-   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "publisher-r4-"));
+   const dir = scratchDir();
    const duckdb = freshDuckDB("duckdb", dir);
    for (const sql of scenario.seedSql) await duckdb.runSQL(sql);
    // On disk, as a package's files are: the serve shape lifts a source's joins
@@ -114,8 +137,10 @@ export async function buildScenario(scenario: R4Scenario): Promise<R4Fixture> {
       fs.writeFileSync(path.join(dir, file), text);
    }
    // pathToFileURL, not `file://${dir}`: on Windows `dir` is `D:\…`, and the
-   // in-memory reader's keys must match the URL Malloy normalizes to.
+   // in-memory reader's keys must match the URL Malloy normalizes to. Each
+   // file's own URL too, so a name needing escapes (`my model.malloy`) agrees.
    const root = `${pathToFileURL(dir).href}/`;
+   const urlOf = (file: string) => pathToFileURL(path.join(dir, file)).href;
 
    const authorConnections = new FixedConnectionMap(
       new Map([["duckdb", duckdb]]),
@@ -125,13 +150,13 @@ export async function buildScenario(scenario: R4Scenario): Promise<R4Fixture> {
    const urlReader = new InMemoryURLReader(
       new Map(
          Object.entries(scenario.files).map(([file, text]) => [
-            `${root}${file}`,
+            urlOf(file),
             text,
          ]),
       ),
    );
    const runtime = new Runtime({ urlReader, connections: authorConnections });
-   const materializer = runtime.loadModel(new URL(`${root}${entry}`), {
+   const materializer = runtime.loadModel(new URL(urlOf(entry)), {
       importBaseURL: new URL(root),
    });
    const compiled = await materializer.getModel();
