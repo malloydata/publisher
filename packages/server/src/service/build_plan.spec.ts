@@ -156,6 +156,35 @@ source: open is base -> { group_by: category }
 });
 
 describe("detectDroppedPersistSources under getBuildTargets", () => {
+   it("still reports a dropped source whose #@ persist line carries an @env. reference", async () => {
+      // Malloy decides `persist` over every line; the backstop must agree, or
+      // the annotation becomes a silent no-op.
+      const { duckdb, connections } = duckdbTestConnections();
+      await duckdb.runSQL("CREATE OR REPLACE TABLE t_env AS SELECT 1 AS a");
+      const { runtime, materializer } = loadTestRuntime(
+         connections,
+         `##! experimental.persistence
+#@ persist name=@env.PUBLISHER_SPEC_UNSET_VAR
+source: filtered is duckdb.table('t_env') extend { where: a > 0 }
+`,
+      );
+      const parts = emptyBuildPlanParts();
+      await collectModelBuildPlan(parts, {
+         modelPath: "m.malloy",
+         packagePath: "/test",
+         materializer,
+         malloyModel: await materializer.getModel(),
+         runtime,
+         getRuntime: () => {
+            throw new Error("no pre-aggregation in this model");
+         },
+         synthesized: null,
+      });
+      expect(parts.droppedPersistSources).toEqual([
+         { name: "filtered", modelPath: "m.malloy" },
+      ]);
+   });
+
    it("reports a persisted filtered pass-through of a table, which the walk does not plan", async () => {
       const { duckdb, connections } = duckdbTestConnections();
       await duckdb.runSQL("CREATE TABLE t AS SELECT 1 AS a");

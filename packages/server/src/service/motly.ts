@@ -10,6 +10,7 @@
  */
 
 import { Annotations, type LogMessage } from "@malloydata/malloy";
+import { logger } from "../logger";
 import { parseAnnotation, type Tag } from "@malloydata/malloy-tag";
 
 /**
@@ -93,6 +94,28 @@ export const ENV_REFERENCE_DROPPED =
    "annotation dropped for carrying an @env. reference";
 
 /**
+ * Annotation locations already warned about by {@link warnEnvReferenceDropped},
+ * so a source read on every query warns once, not once per query.
+ */
+const envDropsWarned = new Set<string>();
+
+/**
+ * Warn, once per location, that an annotation was dropped for carrying an
+ * `@env.` reference. Without it a dropped `#@ persist` line silently loses its
+ * `name=` and `storage=`, and the source builds somewhere its author did not say.
+ */
+export function warnEnvReferenceDropped(where: string, route: string): void {
+   const key = `${route}\u0000${where}`;
+   if (envDropsWarned.has(key)) return;
+   if (envDropsWarned.size >= 10_000) envDropsWarned.clear();
+   envDropsWarned.add(key);
+   logger.warn(
+      "Ignoring an annotation that reads the server's environment (@env.); move the value out of the model",
+      { at: where, route },
+   );
+}
+
+/**
  * `Annotations.parseAsTag(route)`, without the server's environment.
  *
  * The tag parser hydrates `@env.NAME` from this process's `process.env`, and
@@ -103,12 +126,13 @@ export const ENV_REFERENCE_DROPPED =
  * spec fails on a direct call.
  *
  * Each annotation line that carries an `@env.` reference is dropped before
- * parsing, by the same blunt rule as {@link hasEnvReference}, and each drop is
- * added to the log as {@link ENV_REFERENCE_DROPPED}. A dropped `#@ persist`
- * line means Publisher reads no directive from that line: no `name=`, no
- * `queryMetadata`, no `storage=`. Malloy itself still sees `persist` (it reads
- * only whether the key is present), so the source still builds, under its
- * content address.
+ * parsing, by the same blunt rule as {@link hasEnvReference}. Each drop is added
+ * to the returned log as {@link ENV_REFERENCE_DROPPED} and warned about once per
+ * location. A dropped `#@ persist` line means Publisher reads no directive from
+ * that line: no `name=`, no `queryMetadata`, no `storage=`. Malloy itself still
+ * sees `persist` (it reads only whether the key is present), so the source still
+ * builds, under its content address. Whether a key is PRESENT, as Malloy
+ * decides it, is {@link routeHasKey}.
  *
  * With nothing to drop, this is `parseAsTag` itself, so a package without an
  * `@env.` reference parses exactly as before.
@@ -118,8 +142,12 @@ export function parseRouteTag(
    route = "",
 ): ReturnType<Annotations["parseAsTag"]> {
    const notes = annotations.forRoute(route);
-   const kept = notes.filter((note) => !hasEnvReference(note.text));
-   if (kept.length === notes.length) return annotations.parseAsTag(route);
+   const kept: typeof notes = [];
+   const dropped: typeof notes = [];
+   for (const note of notes) {
+      (hasEnvReference(note.text) ? dropped : kept).push(note);
+   }
+   if (dropped.length === 0) return annotations.parseAsTag(route);
 
    // Rebuilt from the kept notes, in the order `forRoute` walked them
    // (inherited first), so Malloy's own parse and error mapping still apply.
@@ -133,15 +161,37 @@ export function parseRouteTag(
       })),
    } as ConstructorParameters<typeof Annotations>[0]);
    const parsed = filtered.parseAsTag(route);
-   const drops: LogMessage[] = notes
-      .filter((note) => hasEnvReference(note.text))
-      .map((note) => ({
+   const drops: LogMessage[] = dropped.map((note) => {
+      warnEnvReferenceDropped(
+         `${note.at.url}:${note.at.range.start.line + 1}`,
+         route,
+      );
+      return {
          code: "env-reference-dropped",
          severity: "warn",
          message: ENV_REFERENCE_DROPPED,
          at: note.at,
-      }));
+      };
+   });
    return { tag: parsed.tag, log: [...drops, ...parsed.log] };
+}
+
+/**
+ * Whether a route's annotations declare `path`, decided the way Malloy decides
+ * it: over every line, `@env.` references included.
+ *
+ * For a check that must agree with the compiler about presence alone, such as
+ * whether a source carries `#@ persist` or a model sets
+ * `##! experimental.persistence`. Only a boolean leaves, so no hydrated value
+ * can reach a caller. Anything that reads a VALUE goes through
+ * {@link parseRouteTag}.
+ */
+export function routeHasKey(
+   annotations: Annotations,
+   route: string,
+   ...path: string[]
+): boolean {
+   return annotations.parseAsTag(route).tag.has(...path);
 }
 
 /**

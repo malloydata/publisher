@@ -5,7 +5,9 @@ import { afterEach, describe, expect, it } from "bun:test";
 import { Annotations } from "@malloydata/malloy";
 import { readdirSync, readFileSync, statSync } from "fs";
 import path from "path";
-import { ENV_REFERENCE_DROPPED, parseRouteTag } from "./motly";
+import { logger } from "../logger";
+import * as sinon from "sinon";
+import { ENV_REFERENCE_DROPPED, parseRouteTag, routeHasKey } from "./motly";
 
 const SECRET_VAR = "PUBLISHER_SPEC_ROUTE_TAG_SECRET";
 const SECRET = "s3cr3t-from-the-server-environment";
@@ -91,6 +93,39 @@ describe("parseRouteTag", () => {
    });
 });
 
+describe("routeHasKey", () => {
+   it("decides presence over every line, as Malloy does, and returns only a boolean", () => {
+      const annotations = annotationsOf([`#@ persist name=@env.${SECRET_VAR}`]);
+      expect(routeHasKey(annotations, "@", "persist")).toBe(true);
+      expect(parseRouteTag(annotations, "@").tag.has("persist")).toBe(false);
+      expect(routeHasKey(annotations, "@", "storage")).toBe(false);
+   });
+});
+
+describe("a dropped line is warned about once per location", () => {
+   it("warns once, however many times the same annotation is read", () => {
+      const warn = sinon.stub(logger, "warn");
+      try {
+         const annotations = annotationsOf([
+            "#@ persist storage=lake",
+            `#@ queryMetadata { owner=@env.${SECRET_VAR}_ONCE }`,
+         ]);
+         parseRouteTag(annotations, "@");
+         parseRouteTag(annotations, "@");
+         const calls = warn
+            .getCalls()
+            .filter((call) => String(call.args[0]).includes("@env."));
+         expect(calls).toHaveLength(1);
+         expect(calls[0].args[1]).toMatchObject({
+            at: "file:///m.malloy:2",
+            route: "@",
+         });
+      } finally {
+         warn.restore();
+      }
+   });
+});
+
 describe("every parseAsTag in the server goes through parseRouteTag", () => {
    // A direct call hydrates `@env.` from the server's environment.
    const SRC = path.resolve(__dirname, "..");
@@ -106,19 +141,41 @@ describe("every parseAsTag in the server goes through parseRouteTag", () => {
       });
    }
 
-   it("has no direct call outside motly.ts", () => {
-      const offenders = sourceFiles(SRC)
-         .filter((file) => !ALLOWED.has(path.relative(SRC, file)))
+   /** Files with a line that matches `pattern`, ignoring comment lines. */
+   function filesCalling(pattern: RegExp): string[] {
+      return sourceFiles(SRC)
          .filter((file) =>
             readFileSync(file, "utf8")
                .split("\n")
-               // Comments may name it.
                .some(
-                  (line) =>
-                     /\.parseAsTag\(/.test(line) && !/^\s*(\*|\/\/)/.test(line),
+                  (line) => pattern.test(line) && !/^\s*(\*|\/\/)/.test(line),
                ),
          )
          .map((file) => path.relative(SRC, file));
-      expect(offenders).toEqual([]);
+   }
+
+   it("has no direct parseAsTag or tagParse call outside motly.ts", () => {
+      // `Explore.tagParse()` hydrates `@env.` the same way.
+      expect(
+         filesCalling(/\.(parseAsTag|tagParse)\(/).filter(
+            (file) => !ALLOWED.has(file),
+         ),
+      ).toEqual([]);
+   });
+
+   it("imports the tag parser's parse functions only where each line is screened first", () => {
+      // Each of these drops or refuses a line carrying `@env.` before it parses:
+      // motly.ts (hasEnvReference), classification.ts (refuses the value) and
+      // the `#(dbmeta)` reader in package_entities.ts. A new importer must too.
+      const SCREENED = new Set([
+         path.join("service", "motly.ts"),
+         path.join("service", "classification.ts"),
+         path.join("retrieval", "model", "package_entities.ts"),
+      ]);
+      expect(
+         filesCalling(
+            /import\s*\{[^}]*\b(parseAnnotation|parseTag|TagParser)\b[^}]*\}\s*from\s*"@malloydata\/malloy-tag"/,
+         ).filter((file) => !SCREENED.has(file)),
+      ).toEqual([]);
    });
 });

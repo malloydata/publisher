@@ -13,7 +13,7 @@ import type {
    SourceDef,
    UnbuildableSource,
 } from "@malloydata/malloy";
-import { parseRouteTag } from "../../motly";
+import { parseRouteTag, routeHasKey } from "../../motly";
 import { Annotations } from "@malloydata/malloy";
 import { components } from "../../../api";
 import { MaterializationEligibilityError } from "../../../errors";
@@ -647,10 +647,13 @@ function detectDroppedPersistSources(
          if (!def || !def.annotations) continue;
          let isPersist = false;
          try {
-            isPersist = parseRouteTag(
+            // Presence only, read over every line as Malloy reads it, so a
+            // `#@ persist` line carrying an `@env.` reference is still caught.
+            isPersist = routeHasKey(
                new Annotations(def.annotations),
                "@",
-            ).tag.has("persist");
+               "persist",
+            );
          } catch {
             continue;
          }
@@ -863,8 +866,17 @@ export async function collectModelBuildPlan(
    // getBuildTargets() THROWS on a model without `##! experimental.persistence`,
    // which would abort the whole package's plan. Such a model cannot carry a
    // persist source anyway, so skip it, mirroring Malloy's own guard.
-   const modelTag = parseRouteTag(malloyModel.modelAnnotations, "!").tag;
-   if (!modelTag.has("experimental", "persistence")) return;
+   // Presence only, decided as Malloy decides it.
+   if (
+      !routeHasKey(
+         malloyModel.modelAnnotations,
+         "!",
+         "experimental",
+         "persistence",
+      )
+   ) {
+      return;
+   }
 
    const targets = await runtime.getBuildTargets(malloyModel);
    for (const msg of targets.tagParseLog) {
