@@ -2,12 +2,16 @@
 // SPDX-License-Identifier: MIT
 
 import type { PersistSource } from "@malloydata/malloy";
+import { RECOGNIZED_PERSIST_KEYS } from "../../annotation_reader";
 import { parseRouteTag } from "../../motly";
 import type { Tag } from "@malloydata/malloy-tag";
 
 import type { IncrementalStrategy } from "../types";
 import { deriveColumns } from "./persist_source_fields";
 import { readTimeDynamicTerms } from "./persist_dynamic_terms";
+
+/** Persist-tag keys the publisher knows about, declared in the annotation reader's registry. */
+export { RECOGNIZED_PERSIST_KEYS };
 
 // Shared with the store: the strategy a declaration implies is what the ledger records.
 export type { IncrementalStrategy };
@@ -32,14 +36,6 @@ export type { IncrementalStrategy };
 
 /** The `refresh=` values the publisher recognizes; unset means "full". */
 const REFRESH_MODES = ["full", "incremental"] as const;
-
-/**
- * Persist-tag keys the publisher knows about; anything else is a load-time
- * WARNING, never a rejection. Declared once, in the annotation reader's
- * registry.
- */
-import { RECOGNIZED_PERSIST_KEYS } from "../../annotation_reader";
-export { RECOGNIZED_PERSIST_KEYS };
 
 /**
  * Malloy types a `<`/`>=` range can be built over. Struct/array columns never

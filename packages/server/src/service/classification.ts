@@ -55,9 +55,11 @@
 
 import type { ModelDef, SourceDef } from "@malloydata/malloy";
 import {
+   byCodepoint,
+   isOnRoute,
    payloadsOnRoute,
    readRouteList,
-   routeOfNote,
+   tokenSet,
 } from "./annotation_reader";
 import type { components } from "../api";
 import { annotationTexts, type AnnotationsDef } from "./annotations";
@@ -91,18 +93,11 @@ function annotationText(a: AnnotationText): string {
 
 /** Whether an annotation line is a `#(classification)` or `#(carries)` note. */
 export function isClassificationLine(text: string): boolean {
-   const route = routeOfNote(text);
-   return route === "classification" || route === "carries";
+   return isOnRoute(text, "classification") || isOnRoute(text, "carries");
 }
 
-/** Codepoint order, so two servers on identical bytes agree. */
-export const byCodepoint = (a: string, b: string) =>
-   a < b ? -1 : a > b ? 1 : 0;
-
-/** A sorted set of tokens. */
-function tokenSet(tokens: Iterable<string>): string[] {
-   return Array.from(new Set(tokens)).sort(byCodepoint);
-}
+/** Codepoint order, so two servers on identical bytes agree (see annotation_reader.ts). */
+export { byCodepoint };
 
 /**
  * The classes a field's `#(classification)` declares: one quoted class, or a
@@ -644,10 +639,8 @@ function walkForCarries(
          const notes = obj[key];
          if (
             Array.isArray(notes) &&
-            notes.some(
-               (n) =>
-                  routeOfNote(String((n as { text?: unknown })?.text)) ===
-                  "carries",
+            notes.some((n) =>
+               isOnRoute(String((n as { text?: unknown })?.text), "carries"),
             )
          ) {
             return true;

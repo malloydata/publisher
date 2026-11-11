@@ -4,6 +4,7 @@
 import { describe, expect, it } from "bun:test";
 import { Annotations } from "@malloydata/malloy";
 import {
+   isOnRoute,
    payloadOfNote,
    payloadsOnRoute,
    PUBLISHER_ROUTES,
@@ -41,19 +42,28 @@ describe("routeOfNote and payloadOfNote", () => {
       expect(routeOfNote('#(classification "x")')).toBeUndefined();
    });
 
-   // The callers that moved off a regex (`#(secure)` on a given, `#(index)` on
-   // a dimension) compare the route; these are the spellings where the regex
-   // and Malloy disagreed.
-   it("routes the spellings where the replaced regexes disagreed with Malloy", () => {
-      // A prefix glued to its payload is malformed: it declares nothing now,
-      // where `/^#\(secure\)/` and `/^\s*#\(index\b/` counted it.
-      expect(routeOfNote("#(secure)x")).toBeUndefined();
-      expect(routeOfNote("#(index)x")).toBeUndefined();
-      // The legacy `#(index_values)` stays its own route, as the `\b` kept it.
-      expect(routeOfNote("#(index_values)")).toBe("index_values");
-      // Well-formed spellings agree.
-      expect(routeOfNote("#(secure)")).toBe("secure");
-      expect(routeOfNote("  #(index) values=all")).toBe("index");
+   // Malloy calls a prefix glued to its payload malformed. Publisher's readers
+   // have always read one on their routes, and a `#(carries)` that stopped
+   // counting would fail its leak check open, so isOnRoute and payloadsOnRoute
+   // keep reading them.
+   it("reads a glued prefix on a Publisher route as that route, as the replaced regexes did", () => {
+      expect(routeOfNote('#(carries)["phi.clinical"]')).toBeUndefined();
+      expect(isOnRoute('#(carries)["phi.clinical"]', "carries")).toBe(true);
+      expect(
+         payloadsOnRoute(['#(carries)["phi.clinical"]'], "carries"),
+      ).toEqual(['["phi.clinical"]']);
+      expect(isOnRoute("#(secure)x", "secure")).toBe(true);
+      expect(isOnRoute("#(index)values=all", "index")).toBe(true);
+      expect(payloadsOnRoute(['#"Orders, one row'], '"')).toEqual([
+         "Orders, one row",
+      ]);
+   });
+
+   it("does not read a different route, or a route Publisher does not own", () => {
+      // `#(index-v2)` is its own route; the old `\b` regex matched it by accident.
+      expect(isOnRoute("#(index-v2) x", "index")).toBe(false);
+      expect(isOnRoute("#(docs) x", "doc")).toBe(false);
+      expect(isOnRoute("#(someone_else)x", "someone_else")).toBe(false);
    });
 
    it("reads a block note's payload like a line note's", () => {

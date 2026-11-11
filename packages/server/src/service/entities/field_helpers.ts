@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 import type { Entity, JoinSourceMetadata } from "./internal_types";
+import { isOnRoute } from "../annotation_reader";
 import { AccessModifierEnum, EntityTypeEnum } from "./internal_types";
 import { extractCodeFromEntity } from "./model_text";
 import { motlyTag } from "../motly";
@@ -185,7 +186,9 @@ const normalizeNewlines = (s: string): string => s.replace(/\r\n?/g, "\n");
  * must flatten them); only outer whitespace is trimmed.
  */
 export function parseDocAnnotation(text: string | undefined): string | null {
-   if (!text) return null;
+   // On the `doc` route as Publisher reads it, not by prefix: `startsWith`
+   // took `#(docs) …` for a doc.
+   if (!text || !isOnRoute(text, "doc")) return null;
    const trimmed = text.trim();
    for (const prefix of DOC_BLOCK_PREFIXES) {
       if (trimmed === prefix) return "";

@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 import { isUnconditionalDenyAuthorize } from "../../service/entities/access_gates";
-import { payloadsOnRoute, routeOfNote } from "../../service/annotation_reader";
+import { isOnRoute, payloadsOnRoute } from "../../service/annotation_reader";
 import { hasEnvReference, warnEnvReferenceDropped } from "../../service/motly";
 import path from "path";
 import { fileURLToPath } from "url";
@@ -77,7 +77,7 @@ function authoredDoc(lines: string[]): string {
 
 function dbmetaDescription(lines: string[]): string {
    for (const line of lines) {
-      if (routeOfNote(line) !== "dbmeta") continue;
+      if (!isOnRoute(line, "dbmeta")) continue;
       // The tag parser hydrates `@env.` from the server's environment, and this
       // description is served to clients as the entity's doc.
       if (hasEnvReference(line)) {

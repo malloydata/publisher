@@ -39,14 +39,57 @@ export function payloadOfNote(text: string): string {
    );
 }
 
+/**
+ * A prefix glued to its payload on a route Publisher reads: `#(carries)["x"]`,
+ * `#"Orders`. Malloy calls these malformed and declares nothing, but
+ * Publisher's readers have always read them, and a `#(carries)` that silently
+ * stopped counting would fail its leak check open. So they keep their route,
+ * and the rest of the line is the payload; reporting them is a finding's job.
+ */
+const GLUED_PREFIX = /^\s*##?\((\w+)\)(?=\S)([\s\S]*)$/;
+const GLUED_DOC_STRING = /^\s*#"(?=[^\s"])([\s\S]*)$/;
+
+/** A note's route and payload as Publisher reads it, or `undefined` when it is on no route. */
+function readNote(
+   text: string,
+): { route: string; payload: string } | undefined {
+   const route = routeOfNote(text);
+   if (route !== undefined) return { route, payload: payloadOfNote(text) };
+   const glued = GLUED_PREFIX.exec(text);
+   if (glued && glued[1] !== undefined && glued[1] in PUBLISHER_ROUTES) {
+      return { route: glued[1], payload: glued[2] ?? "" };
+   }
+   const docString = GLUED_DOC_STRING.exec(text);
+   if (docString) return { route: '"', payload: docString[1] ?? "" };
+   return undefined;
+}
+
+/** Whether a note is on `route`, as Publisher reads it (glued prefixes included). */
+export function isOnRoute(text: string, route: string): boolean {
+   return readNote(text)?.route === route;
+}
+
 /** The payloads of every note in `texts` that is on `route`, in order. */
 export function payloadsOnRoute(
    texts: ReadonlyArray<string>,
    route: string,
 ): string[] {
-   return texts
-      .filter((text) => routeOfNote(text) === route)
-      .map(payloadOfNote);
+   const out: string[] = [];
+   for (const text of texts) {
+      const note = readNote(text);
+      if (note?.route === route) out.push(note.payload);
+   }
+   return out;
+}
+
+/** A sorted set, in codepoint order, so two servers on identical bytes agree. */
+export function tokenSet(tokens: Iterable<string>): string[] {
+   return Array.from(new Set(tokens)).sort(byCodepoint);
+}
+
+/** Codepoint order, so two servers on identical bytes agree. */
+export function byCodepoint(a: string, b: string): number {
+   return a < b ? -1 : a > b ? 1 : 0;
 }
 
 /** How a route's payload reads. */
@@ -125,9 +168,11 @@ export const PUBLISHER_ROUTES: Readonly<Record<string, RouteSpec>> = {
 
 /**
  * Every key a `#@ persist` line may carry, retired ones included so they get
- * their own message rather than a vaguer "unknown key". Anything else is a
- * load-time warning, never a refusal, so a new directive needs no Publisher
- * change.
+ * their own message rather than a vaguer "unknown key". Narrower than the
+ * `@` route's `keys`, which also hold the `#@ preaggregate` line's keys: a
+ * persist source is checked against this set, a rollup against its own.
+ * Anything else is a load-time warning, never a refusal, so a new directive
+ * needs no Publisher change.
  */
 export const RECOGNIZED_PERSIST_KEYS: ReadonlySet<string> = new Set([
    ...PERSIST_KEYS,
@@ -238,15 +283,8 @@ export function readRouteList(
    if (!items || items.some((item) => typeof item !== "string")) {
       return fault("holds something other than quoted text");
    }
-   const values = Array.from(
-      new Set((items as string[]).map((v) => v.trim())),
-   ).sort(byCodepoint);
+   const values = tokenSet((items as string[]).map((v) => v.trim()));
    if (values.length === 0) return fault("names nothing");
    if (values.some((v) => v === "")) return fault("names an empty value");
    return { values };
-}
-
-/** Codepoint order, so two servers on identical bytes agree. */
-function byCodepoint(a: string, b: string): number {
-   return a < b ? -1 : a > b ? 1 : 0;
 }
