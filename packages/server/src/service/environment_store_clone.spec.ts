@@ -9,6 +9,7 @@ import {
    emptyRepository,
    stubStorageManager,
 } from "../test_helpers/storage_manager_stub";
+import { inMemoryVersionRegistry } from "../test_helpers/in_memory_version_registry";
 import { logger } from "../logger";
 import { EnvironmentStore } from "./environment_store";
 import { GIT_CLONE_OPTIONS } from "./package_sources";
@@ -75,7 +76,7 @@ const fakeSimpleGit = ((factoryOpts?: typeof lastFactoryOpts) => {
             mkdirSync(pkgDir, { recursive: true });
             writeFileSync(
                path.join(pkgDir, "publisher.json"),
-               JSON.stringify({ name }),
+               JSON.stringify({ name, version: "1.0.0" }),
             );
          }
          // Drive the progress handler the way the real plugin would.
@@ -95,8 +96,12 @@ const storageManager = stubStorageManager({
    initialize: async () => {
       if (storageInitFails) throw new Error(storageInitMessage);
    },
-   getRepository: () => emptyRepository(),
+   // A configured package is published as a version at boot, so the store
+   // records it in a registry: fresh for each test (beforeEach).
+   getRepository: () => emptyRepository(versionRegistry),
 });
+
+let versionRegistry = inMemoryVersionRegistry();
 
 const newStore = () =>
    startedStore(
@@ -114,6 +119,7 @@ describe("git clone wiring", () => {
       rmSync(serverRootPath, { recursive: true, force: true });
       mkdirSync(serverRootPath, { recursive: true });
       recordedClones = [];
+      versionRegistry = inMemoryVersionRegistry();
       lastFactoryOpts = null;
       storageInitFails = false;
       storageInitMessage = "storage init failed (test)";
@@ -177,7 +183,8 @@ describe("git clone wiring", () => {
          `[${ENV_NAME}] cloning example/repo (${PKG_NAME}): receiving 50% (1/2)`,
       );
 
-      // The package extracted from the (fake) clone and mounted.
+      // The package extracted from the (fake) clone and was published as
+      // the version its publisher.json declares.
       expect(
          existsSync(
             path.join(
@@ -185,6 +192,7 @@ describe("git clone wiring", () => {
                "publisher_data",
                ENV_NAME,
                PKG_NAME,
+               "1.0.0",
                "publisher.json",
             ),
          ),
