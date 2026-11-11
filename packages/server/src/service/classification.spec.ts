@@ -45,6 +45,19 @@ import { Package } from "./package";
 import { writeTempPackage } from "../test_helpers/temp_package";
 
 describe("readClassification", () => {
+   it("reads a block-form note, as Malloy routes it (the regex it replaced did not)", () => {
+      // A compiled block note: dedented, no closer.
+      expect(
+         readClassification(['#|(classification)\n["phi.direct_identifier"]']),
+      ).toEqual({ values: ["phi.direct_identifier"] });
+   });
+
+   it("says a malformed prefix declares nothing, as Malloy does", () => {
+      expect(readClassification(['#(classification "phi.x")'])).toEqual({
+         values: [],
+      });
+   });
+
    it("reads one quoted class, or a quoted list, from a string or a {value} note", () => {
       expect(
          readClassification(['#(classification) "phi.direct_identifier"']),

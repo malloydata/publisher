@@ -54,7 +54,11 @@
  */
 
 import type { ModelDef, SourceDef } from "@malloydata/malloy";
-import { readRouteList } from "./annotation_reader";
+import {
+   payloadsOnRoute,
+   readRouteList,
+   routeOfNote,
+} from "./annotation_reader";
 import type { components } from "../api";
 import { annotationTexts, type AnnotationsDef } from "./annotations";
 import {
@@ -78,9 +82,6 @@ export const CLASSIFICATION_MALFORMED = "classification-malformed";
 /** `PackageWarning.code` of a computed field that declares a lower class than the fields it reads. */
 export const CLASSIFICATION_DOWNGRADE = "classification-downgrade";
 
-const CLASSIFICATION_LINE = /^#\(classification\)(.*)$/s;
-const CARRIES_LINE = /^#\(carries\)(.*)$/s;
-
 /** One annotation note, as `to_stable` (`{value}`) or a raw string carries it. */
 type AnnotationText = string | { value: string };
 
@@ -90,8 +91,8 @@ function annotationText(a: AnnotationText): string {
 
 /** Whether an annotation line is a `#(classification)` or `#(carries)` note. */
 export function isClassificationLine(text: string): boolean {
-   const t = text.trim();
-   return CLASSIFICATION_LINE.test(t) || CARRIES_LINE.test(t);
+   const route = routeOfNote(text);
+   return route === "classification" || route === "carries";
 }
 
 /** Codepoint order, so two servers on identical bytes agree. */
@@ -101,17 +102,6 @@ export const byCodepoint = (a: string, b: string) =>
 /** A sorted set of tokens. */
 function tokenSet(tokens: Iterable<string>): string[] {
    return Array.from(new Set(tokens)).sort(byCodepoint);
-}
-
-/** The content after a route, from every note on that route. */
-function routeContents(
-   texts: ReadonlyArray<string>,
-   pattern: RegExp,
-): string[] {
-   return texts
-      .map((text) => pattern.exec(text.trim()))
-      .filter((m): m is RegExpExecArray => m !== null)
-      .map((m) => m[1]);
 }
 
 /**
@@ -124,9 +114,9 @@ export function readClassification(
    annotations: ReadonlyArray<AnnotationText> | undefined,
 ): { values: string[]; malformed?: string } {
    if (!annotations || annotations.length === 0) return { values: [] };
-   const contents = routeContents(
+   const contents = payloadsOnRoute(
       annotations.map(annotationText),
-      CLASSIFICATION_LINE,
+      "classification",
    );
    if (contents.length === 0) return { values: [] };
    if (contents.length > 1) {
@@ -165,7 +155,7 @@ export function readCarries(annotations: AnnotationsDef | undefined): {
             malformed: `has an annotation chain deeper than ${MAX_CARRIES_HOPS} levels, past which its #(carries) cannot be read`,
          };
       }
-      const contents = routeContents(ownTexts(node), CARRIES_LINE);
+      const contents = payloadsOnRoute(ownTexts(node), "carries");
       if (contents.length > 0) {
          const classes = new Set<string>();
          for (const content of contents) {
@@ -654,10 +644,10 @@ function walkForCarries(
          const notes = obj[key];
          if (
             Array.isArray(notes) &&
-            notes.some((n) =>
-               CARRIES_LINE.test(
-                  String((n as { text?: unknown })?.text).trim(),
-               ),
+            notes.some(
+               (n) =>
+                  routeOfNote(String((n as { text?: unknown })?.text)) ===
+                  "carries",
             )
          ) {
             return true;
@@ -713,11 +703,13 @@ export function structCeilings(
          }
          const asStruct = node as unknown as SourceDef;
          const resolved = resolveCompositeResolvedBase(asStruct) as
-            IrField | undefined;
+            | IrField
+            | undefined;
          if (resolved) climb(resolved, resolved.as ?? resolved.name ?? label);
          if (!node.query?.structRef) return;
          const base = resolveQuerySourceBase(asStruct, modelDef) as
-            IrField | undefined;
+            | IrField
+            | undefined;
          if (!base) {
             unresolved = true;
             return;
