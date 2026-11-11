@@ -209,10 +209,10 @@ Seven phases in two lanes: telemetry and cost work run beside the serving work.
 | Now. Standalone fixes | #6644 (a same-named source reads the wrong table; v1 fix), #5967 (stale data reporting fresh; control plane) and the @env. fix. Each is its own PR and waits for no phase. | None |
 | 0. Prove it | Most of this ran on 2026-11-07 (Evidence): the re-rooted served copy with inline join_one, the pair table with childless parents, rolling windows, view-call recognition and the include-item annotation. Left: the R4 harness grown from the #7098 fixture, the cross-connection join (#6982), and a measured rerun of the Nov 1 pair-table timings on the served form used here. | S1, S2, S2a, S25 |
 | 1. Router, path report, annotations (on v1) | Variant router replacing the `runQueryResults` chain, taking a catalog; D1 report; three-tier outcomes with serve verdict at publish (#6277), preview (#7090) and reasons (#6446); one annotation reader for every Publisher route, with closed keys, the near-miss scan and the `#@ preaggregate` deprecation; D3 flag removal | S9, S12a, S13, S14, S14a |
-| 2. v1 defects and telemetry base | #7096, #6646, #6293, #7087, #6642, #6145, #6986 and #6847 (failure classification), #7078; workload log on the access record and an opt-in local store (T1); table stats (T2); what-if over existing annotations (T3); row-count estimates (T4); build_plan.ts moved off the deprecated getSQL() and makeBuildId() | S17 |
+| 2. v1 defects and telemetry base | #7096, #6646, #6293, #7087, #6642, #6145, #6986 and #6847 (failure classification), #7078; workload log on the access record and an opt-in local store (T1); table stats (T2); what-if over existing annotations (T3); build_plan.ts moved off the deprecated getSQL() and makeBuildId() | S17 |
 | 3. `#(materialize)` | Source map; re-root rewriter (cross-file, query-shaped segments, inline joins); build-file generator; served model on `virtual` with load-time compile; reference joins; inline join_one with the uniqueness check; P9 probes; rolling windows with the incremental delete; extension tables; `name=` view; contracts at read (R3); the shared chain, probe service and generated-file host; v1 packages served through the same rewriter, gated on the #7098 fixture | S1–S7, S2c, S2d, S3, S3a, S6a, S12, S25–S25c |
 | 4. Rollups, view routing, inline join_many | `#(preaggregate)` A1–A7 on the source map and measure grammar; rollup variants in the user's file; retire `preaggregation_coverage.ts` and the IR classifier; `#@ persist` view leg (P14); join-to-rollup leg (A7); pair-table serving (P5) | S2a, S8–S11, S9a, S9b, S15, S16, S16a |
-| 5. Cost estimation and the agent loop | T4 in full, T5 adapters, T6 compare, T7 tools; what-if over proposed v2 annotations; the `estimating` skill reference and tuning guide; a v1-to-#(materialize) migration recipe | S18–S21 |
+| 5. Cost estimation and the agent loop | T4 (row counts first, then column widths and dry runs), T5 adapters, T6 compare, T7 tools; what-if over proposed v2 annotations; the `estimating` skill reference and tuning guide; a v1-to-#(materialize) migration recipe | S18–S21 |
 | 6. Consistency | Own design pass first, then: run manifest published whole, per-query manifest pinning, upstream-pinned fingerprints, per-warehouse as-of reads, as-of in D1 and T1; the control plane's promote and cleanup, all on the v1 plan's B1 records (#1563) | S22–S24 |
 
 ```mermaid
@@ -242,7 +242,7 @@ The serving lane is the critical path, phases 0, 1, 3, 4 and then 6; everything 
 **Where the suggested delivery order changes.**
 
 1. **Build routing once.** The hand-off puts the path report on v1 first (item 1) and new routing later (item 6), which builds routing twice. Phase 1 builds the variant router on v1's annotations, and D1 comes from it; phase 4 adds legs to the same router.
-2. **What-if needs the desugaring.** T3 can land before join work, as the hand-off says, but not before P1–P3: routing against a proposed `#(materialize)` needs its columns, which come from the build-source generator. What-if over existing v1 annotations lands in phase 2, and over proposed v2 annotations in phase 5. Row-count estimates need no generator and land in phase 2.
+2. **What-if needs the desugaring.** T3 can land before join work, as the hand-off says, but not before P1–P3: routing against a proposed `#(materialize)` needs its columns, which come from the build-source generator. What-if over existing v1 annotations lands in phase 2, and over proposed v2 annotations in phase 5. Row-count estimates need no generator, but they wait for phase 5: their consumer is the estimate half of the agent loop, and until the T5 adapters land the only method is an exact count that scans everything the build would read.
 3. **Wrong-data issues move early.** #6644 (a same-named source reading the wrong table), #5967 (reuse reporting fresh) and the @env. fix each ship now as a standalone PR, outside the phases. #5967 stays a control-plane fix, and C2 still depends on it.
 4. **D3 goes with annotation ownership** in phase 1, since the annotation reader is what removes the flag.
 
@@ -426,7 +426,7 @@ All 41 requirements land in Publisher, with C1, C3, T1 and T2 shared with the co
 | T1 workload log | Shape, path report and cost added to the access record; an opt-in local store in OSS, Credible's store at scale. | 2 |
 | T2 table statistics | From the manifest, build records and path reports. | 2 |
 | T3 what-if | The router over a proposed catalog. | 2 (v1 annotations), 5 (v2) |
-| T4 cost estimation | Count queries, column widths, dry runs (Telemetry and cost estimation). | 2 (row counts), 5 |
+| T4 cost estimation | Count queries, column widths, dry runs (Telemetry and cost estimation). | 5 |
 | T5 warehouse adapters | BigQuery, Snowflake, Postgres, DuckDB. | 5 |
 | T6 before/after | Workload log split at the build time. | 5 |
 | T7 agent tools | `workload`, `table_stats`, `explain`, `what_if`, `compare` on MCP and REST. | 5 |
@@ -446,7 +446,7 @@ The plan accounts for all 60 open issues under [ms2data/service#6647](https://gi
 | #7096 | P1 | A rollup on a source `index.malloy` re-exports collides by name | A3: one artifact per content address; first check whether #7054 already cleared it | 2 |
 | #6984 | P1 | A trailing `extend { rename: }` fails the storage build | Re-rooting drops `rename:`, which the build already applied (verified 2026-11-07) | 3 |
 | #6986 | P1 | A source failed by its upstream's deterministic failure is retried to the cap | Publisher half: each build target's failure classified deterministic or transient | 2 |
-| #6847 | P1 | A chained rollup that outgrows the worker's DuckDB bound is retried five times | The same classification; T4 warns on rollup size before anything builds | 2, 5 |
+| #6847 | P1 | A chained rollup that outgrows the worker's DuckDB bound is retried five times | The same classification (phase 2); the pre-dispatch size check over T4 is not scheduled; when it is, it reads the phase 5 estimates | 2 |
 | #6982 | P1 | A join across connections between stored sources is rejected at compile (malloy#3032) | When both sides are on the storage tier, both re-root onto the storage connection, so the join is on one connection. Across connections colocated stays a Malloy limit. | 0 (verify), 3 |
 | #6145 | P1 | The echoed ledger address disagrees with Publisher's | One key on both sides: `build_plan.ts` moves to the target's `buildId`, and the address-equality spec gains a given-reading source | 2 |
 | #6642 | P1 | Stored column types come from the warehouse | R4 type check after build | 2 |
