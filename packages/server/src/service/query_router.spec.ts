@@ -1,0 +1,133 @@
+// Copyright (c) Credible Data Inc.
+// SPDX-License-Identifier: MIT
+
+import type { QueryMaterializer } from "@malloydata/malloy";
+import { describe, expect, it } from "bun:test";
+import { routeQuery, type Variant } from "./query_router";
+
+const runnable = (name: string) => ({ name }) as unknown as QueryMaterializer;
+
+function variant(
+   kind: Variant["kind"],
+   outcome: "answers" | "misses" | "inapplicable",
+   calls: string[],
+): Variant<string> {
+   return {
+      kind,
+      applicable: outcome !== "inapplicable",
+      attempt: async () => {
+         calls.push(`attempt:${kind}`);
+         if (outcome === "misses") throw new Error(`${kind} cannot answer`);
+         return { runnable: runnable(kind), extra: `${kind}-extra` };
+      },
+      onSkip: () => {
+         calls.push(`skip:${kind}`);
+      },
+   };
+}
+
+describe("routeQuery", () => {
+   it("takes the first candidate that answers, and tries nothing after it", async () => {
+      const calls: string[] = [];
+      const decision = await routeQuery(
+         [
+            variant("storage", "answers", calls),
+            variant("rollup", "answers", calls),
+         ],
+         async () => false,
+      );
+      expect(decision).toMatchObject({
+         served: "variant",
+         kind: "storage",
+         extra: "storage-extra",
+      });
+      expect(calls).toEqual(["attempt:storage"]);
+      expect(decision.considered).toEqual([
+         { kind: "storage", outcome: "used" },
+      ]);
+   });
+
+   it("falls through a miss to the next candidate, recording why", async () => {
+      const calls: string[] = [];
+      const decision = await routeQuery(
+         [
+            variant("storage", "misses", calls),
+            variant("rollup", "answers", calls),
+         ],
+         async () => false,
+      );
+      expect(decision).toMatchObject({ served: "variant", kind: "rollup" });
+      expect(calls).toEqual([
+         "attempt:storage",
+         "skip:storage",
+         "attempt:rollup",
+      ]);
+      expect(decision.considered).toEqual([
+         {
+            kind: "storage",
+            outcome: "skipped",
+            reason: "does_not_answer",
+            detail: "storage cannot answer",
+         },
+         { kind: "rollup", outcome: "used" },
+      ]);
+   });
+
+   it("answers live when no candidate answers", async () => {
+      const calls: string[] = [];
+      const decision = await routeQuery(
+         [
+            variant("storage", "misses", calls),
+            variant("rollup", "misses", calls),
+         ],
+         async () => false,
+      );
+      expect(decision.served).toBe("live");
+      expect(decision.considered.map((c) => c.reason)).toEqual([
+         "does_not_answer",
+         "does_not_answer",
+      ]);
+   });
+
+   it("skips every candidate behind a row-level gate without compiling any", async () => {
+      const calls: string[] = [];
+      const decision = await routeQuery(
+         [
+            variant("storage", "answers", calls),
+            variant("rollup", "answers", calls),
+         ],
+         async () => true,
+      );
+      expect(decision.served).toBe("live");
+      expect(calls).toEqual([]);
+      expect(decision.considered.map((c) => c.reason)).toEqual([
+         "row_level_gate",
+         "row_level_gate",
+      ]);
+   });
+
+   it("asks about the gate once when a candidate exists, even an inapplicable one, and never when none does", async () => {
+      let asked = 0;
+      const gate = async () => {
+         asked++;
+         return false;
+      };
+      await routeQuery([variant("rollup", "inapplicable", [])], gate);
+      expect(asked).toBe(1);
+      const none = await routeQuery<string>([], gate);
+      expect(asked).toBe(1);
+      expect(none).toEqual({ served: "live", considered: [] });
+   });
+
+   it("skips an inapplicable candidate without attempting it", async () => {
+      const calls: string[] = [];
+      const decision = await routeQuery(
+         [variant("rollup", "inapplicable", calls)],
+         async () => false,
+      );
+      expect(calls).toEqual([]);
+      expect(decision.considered).toEqual([
+         { kind: "rollup", outcome: "skipped", reason: "not_applicable" },
+      ]);
+   });
+});
