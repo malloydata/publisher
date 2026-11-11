@@ -287,6 +287,26 @@ also model-definition: the field may compute correctly while its doc is false,
 and an agent that trusts the doc answers wrongly without ever failing a query.
 Probe the claim before writing the issue.
 
+### performance (a query replay, not an answer)
+
+A query replay (`skill:eval-loop`, `reference/query-performance.md`) has
+timings instead of verdicts. `diagnose.py --run <replay>` writes its findings
+without spawning an agent, one issue per source the queries read, component
+`performance`:
+
+| Code | When | Owner |
+|---|---|---|
+| `PERSIST-REFUSED` | a slow query reads a source whose `#@ persist` the build plan refuses | model |
+| `PERSIST-NOT-BUILT` | a slow query reads a persisted source with no bound table: build and replay again before editing anything | model |
+| `SLOW-QUERY` | a query's median is over `budget_ms`, and neither of the above applies | model |
+| `LIVE-FALLBACK` | `servedFrom: live_fallback`: a `storage=` table failed at query time and the query ran live | model |
+
+Before proposing a persist for a `SLOW-QUERY` group, read the source's build
+cost and history (the `malloy-materialization` skill, `reference/tuning.md`). A
+source that takes longer to build than all its queries take to run, or that
+changes every hour, may be cheaper left live. Say so in the issue rather than
+proposing the edit.
+
 ## Step 3: Read the failure shape
 
 | Signature | Look here |

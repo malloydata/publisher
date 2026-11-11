@@ -849,6 +849,13 @@ def main(argv: list[str] | None = None) -> int:
               "may not be the version this run measured. Pass --target-version "
               "or --scope ENV/PACKAGE@VERSION.")
 
+    if run_meta.get("phase") == "query-replay":
+        # Timings, not verdicts: every finding is read off the replay, so no
+        # agent runs and none of the flags above apply.
+        import perf_findings
+        perf_findings.report(a.run, perf_findings.write(a.run))
+        return 0
+
     events = read_jsonl(a.run / "events.jsonl")
     cases = {c["qid"]: c for c in read_jsonl(a.set_dir / "cases.jsonl")}
     slices.narrow(a, a.set_dir, list(cases.values()))

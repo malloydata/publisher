@@ -682,6 +682,10 @@
       "description": "Measurement. Reference detail for the eval-loop skill."
     },
     {
+      "name": "eval-loop/query-performance",
+      "description": "Query speed in the loop. Reference detail for the eval-loop skill."
+    },
+    {
       "name": "eval-loop/replaying-a-logged-session",
       "description": "Scoring a session that ran somewhere else. Reference detail for the eval-loop skill."
     },

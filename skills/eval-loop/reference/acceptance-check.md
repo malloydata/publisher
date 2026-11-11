@@ -22,7 +22,12 @@ Cheap and deterministic, every edit:
    survive).
 2. Save, then reload the package. Confirm it is not serving a stale model.
 3. Replay stored final queries from previously-passing cases. They must still
-   execute, and a judge must still call them a match.
+   execute, and a judge must still call them a match. `eval.py query-replay
+   --from <stored replay> --baseline <stored replay>` does it: a query whose
+   rows are unchanged needs no judge, and the ones it lists as changed or
+   erroring go to the judge against their goldens. Build the package's
+   materializations first if it persists anything, since a reload unbinds
+   them (`query-performance.md`).
 4. A *fresh* blind re-answer of the affected question. The fix must be
    discoverable, not merely possible. The improver writing the query it
    already knows proves only that the edit exists.
@@ -54,6 +59,12 @@ Acceptance rules (replacing any vague "results improve"):
   regresses. Measure, join, or definition edits need the full rules above,
   including the flip-count bar in Measurement, which means enough affected
   cases to clear it.
+- **Speed edits** (`#@ persist`, `#@ preaggregate`, made only after the user
+  approves each one) accept on a query replay instead of an answer run: build,
+  replay every stored query that reads the changed source, no rows change, the
+  targeted queries are faster than the latency band and none is slower.
+  `query-performance.md` has the steps. A speed edit that also renames a field
+  or changes a doc is two edits, and the second takes the rules above.
 - Independent deterministic justification (a probed-wrong definition
   corrected) may accept without a measured win. Record that as the acceptance check
   `reason`.

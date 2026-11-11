@@ -5,7 +5,8 @@
 ## Which run to reach for
 
 Running the whole set for every idea is the slow, expensive habit this section
-replaces. Three sizes of run, from cheapest to most expensive:
+replaces. Three sizes of run, from cheapest to most expensive, and a query
+replay beside them for speed:
 
 1. **Retrieval replay** (`eval.py replay`, `reference/retrieval-replay.md`).
    No answering agent and no judge: each case's `searchTargets` go to
@@ -24,6 +25,12 @@ replaces. Three sizes of run, from cheapest to most expensive:
    baseline a targeted run is compared against. Batch several targeted fixes
    into one full run rather than running the set after each.
 
+**Query replay** (`eval.py query-replay --from <run>`,
+`reference/query-performance.md`). No agent and no judge: the queries behind a
+run's passing answers are re-run and timed, and their rows hashed. Reach for it
+to time the model, to accept a materialization edit, and for acceptance step 3
+on any edit (stored queries still run and return the same rows).
+
 A slice is a name in the set's `slices.json` (`scripts/slices.py` in
 `skill:eval-answer` lists them). Editing `slices.json` never moves `datasetSha`,
 so it voids no stored run and no calibrated band. A run that used one records
@@ -41,7 +48,8 @@ Without `--slice`, two runs over different cases are refused.
 `eval.py runs --set <set>` lists every run of the set with its kind, package
 version and score. `eval.py versions --set <set>` gives one row per package
 version: whether it is `latest` or archived, its most recent full run, and what
-that run fixed and broke against the previous version's.
+that run fixed and broke against the previous version's, and under it the
+version's most recent query replay.
 
 ## Running one, concretely
 

@@ -22,7 +22,7 @@ keeps runs grows with every arm, and nothing in it reads them back. So:
 python3 skills/eval-loop/scripts/eval.py export --set <set> --label baseline-01
 ```
 
-This writes five CSV files and a `manifest.json` into `<run>/export/`. Every
+This writes six CSV files and a `manifest.json` into `<run>/export/`. Every
 row carries `run_id`.
 
 | table | one row per | holds |
@@ -32,6 +32,7 @@ row carries `run_id`.
 | `eval_events` | ledger event | the event itself, as JSON text |
 | `eval_transcripts` | attempt | the answerer transcript, the answer, and the judge's write-up, as text |
 | `eval_cases` | case | the set as it was run, keyed by `dataset_sha`: question, tags, split, golden |
+| `eval_query_timings` | query, in a query replay | median and max time, where it was served from, the rows' hash; empty for any other run |
 
 `manifest.json` names each file and the table name to load it under
 (`eval_attempts__<run id>`). The export refuses a set whose `datasetSha` differs

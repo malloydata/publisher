@@ -185,6 +185,28 @@ new modeling mistake. `improve.py` installs it with the rest of the `modeling`
 manifest group, so it is loaded alongside this skill rather than reached from
 here.
 
+### A speed edit (component `performance`)
+
+An issue from a query replay (`SLOW-QUERY`, `PERSIST-REFUSED`) is a speed gap,
+not a wrong answer. Its edit is a `#@ persist` or a `#@ preaggregate` on the
+source the issue names, or a fix to the refusal the build plan reported. Write
+it with the `malloy-materialization` skill (in the `modeling` manifest group, not
+the `eval` group), which covers the annotation, chaining,
+and the access-filter cases where a persist must not be added at all.
+
+Two differences from every other edit here:
+
+1. **Propose it, then wait for the user.** A persisted table costs storage and
+   a rebuild on every refresh, and whether that is worth the speedup is the
+   user's call. Show the annotation, the issue's queries and their times, and
+   the source's build cost from its materialization history. Make the edit only
+   when they say yes. `PERSIST-NOT-BUILT` needs no edit at all: build and replay.
+2. **It changes no name and no doc.** Keep it that way. A speed edit that also
+   renames or redocuments something is two edits; split them.
+
+Its acceptance is a query replay, not an answer run (`skill:eval-loop`,
+`reference/query-performance.md`).
+
 ## Step 4: Check what your edit did to the answer key
 
 An edit that changes what a field *means* can silently invalidate goldens for

@@ -48,6 +48,7 @@ all of them for every run is how a skill stops being read.
 | about to quote a number, set the band, or read a set's flips | `reference/measurement.md` |
 | measuring whether `get_context` returns the right fields, with no answerer | `reference/retrieval-replay.md` |
 | keeping runs, sharing them with a team, or comparing package versions | `reference/sharing-runs.md` |
+| timing queries, or making them faster with a persist or preaggregate | `reference/query-performance.md` |
 | the run finished and someone has to read it | `skill:eval-report` |
 | you changed judge doctrine or its inputs | `reference/checking-the-judge.md` |
 

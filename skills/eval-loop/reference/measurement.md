@@ -151,6 +151,16 @@ retrieval and for nothing else, and the block records that.
 written before the harness recorded this would make the gate unusable rather
 than safe. It is not evidence that the arms matched.
 
+## Timings have a band too
+
+A query replay (`query-performance.md`) times queries rather than scoring
+answers, and timings move with nothing changed: a warm cache, a busy warehouse,
+another tenant. Two replays of one version, back to back, measure how far. Set
+`[performance] latency_band` in `eval.toml` from that, not from the 20% default,
+before you call a 25% speedup real. The floor (`--min-delta-ms`) keeps a 2 ms
+query that took 4 ms out of the count. Changed rows are never noise: they block,
+whatever the band.
+
 ## A band belongs to the cases it was measured on
 
 A noise band measured on the whole set says nothing about a 15-case slice, and
