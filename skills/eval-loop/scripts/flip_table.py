@@ -17,6 +17,12 @@ A case counts only where both runs scored the same question against the same
 golden: its `question_sha` and `golden_revision` must match. One that differs
 is set aside and listed, never counted as a flip. So editing one case's key
 leaves the stored results for every other case usable.
+
+Two query replays (`query_replay.py`, phase `query-replay`) are compared on
+speed instead: rows first (a query whose rows changed blocks, exit 1), then
+which queries got faster or slower than `--latency-band` (default: the newer
+replay's `latencyBand`, else 0.2). Run it on two replays of one version to see
+how far timings move with nothing changed.
 """
 from __future__ import annotations
 
@@ -493,6 +499,37 @@ def incomparable(A: dict[str, dict[str, Any]], B: dict[str, dict[str, Any]]) -> 
     return out
 
 
+def speed_report(args: argparse.Namespace, la: str, lb: str, phases: list[Any]) -> int:
+    """Two query replays, query by query: rows first, then speed."""
+    from query_replay import compare, fmt_compare
+    if phases != ["query-replay", "query-replay"]:
+        print(f"one run is a query replay and the other is not ({phases[0]}, {phases[1]}): "
+              "a speed comparison needs two query replays.")
+        return 2
+    ca, cb = config(args.a), config(args.b)
+    for k in ("environment", "package", "repeats"):
+        if ca.get(k) != cb.get(k):
+            print(f"note: {k} differs ({ca.get(k)} vs {cb.get(k)})")
+    band = args.latency_band or cb.get("latencyBand") or 0.2
+    A = [json.loads(x) for x in (args.a / "results.jsonl").read_text().splitlines() if x.strip()]
+    B = [json.loads(x) for x in (args.b / "results.jsonl").read_text().splitlines() if x.strip()]
+    if args.slice or args.tag:
+        if not args.set_dir:
+            print("--slice and --tag need --set, to read the set's slices.json and tags")
+            return 2
+        cases = [json.loads(x) for x in
+                 (args.set_dir / "cases.jsonl").read_text().splitlines() if x.strip()]
+        keep = set(slices.resolve(args.set_dir, cases, args.slice, args.tag)["qids"])
+        A = [r for r in A if r["qid"] in keep]
+        B = [r for r in B if r["qid"] in keep]
+    va = (ca.get("packageVersion") or {}).get("id") or "working copy"
+    vb = (cb.get("packageVersion") or {}).get("id") or "working copy"
+    print(f"{la}: version {va}    {lb}: version {vb}")
+    c = compare(A, B, band)
+    print("\n".join(fmt_compare(c, la, lb)))
+    return 1 if c["blocked"] else 0
+
+
 def main() -> int:
     p = argparse.ArgumentParser()
     p.add_argument("--a", type=Path, required=True)
@@ -516,6 +553,8 @@ def main() -> int:
     p.add_argument("--set", dest="set_dir", type=Path, default=None,
                    help="the set directory; needed with --slice or --tag")
     slices.add_arguments(p)
+    p.add_argument("--latency-band", type=float, default=None,
+                   help="for two query replays: a change under this fraction is noise")
     p.add_argument("--calibration", action="store_true",
                    help="print the set's CALIBRATION.md entry for this pair, "
                         "ready to append. Use it on an A/A.")
@@ -523,6 +562,9 @@ def main() -> int:
 
     la = a_args.label_a or a_args.a.name
     lb = a_args.label_b or a_args.b.name
+    phases = [config(r).get("phase") for r in (a_args.a, a_args.b)]
+    if "query-replay" in phases:
+        return speed_report(a_args, la, lb, phases)
     A, B = verdicts(a_args.a), verdicts(a_args.b)
     B2 = verdicts(a_args.b2) if a_args.b2 else None
     picked = None

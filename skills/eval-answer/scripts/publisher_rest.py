@@ -47,6 +47,7 @@ from __future__ import annotations
 
 import json
 import pathlib
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -140,6 +141,106 @@ def try_query(base: str, environment: str, package: str, model: str,
         return [], f"HTTP {exc.code}: {exc.read().decode()[:300]}"
     except Exception as exc:                        # noqa: BLE001
         return [], f"{exc}"[:300] or exc.__class__.__name__
+
+
+def timed_query(base: str, environment: str, package: str, model: str,
+                malloy: str, timeout: int = 180,
+                givens: dict[str, Any] | None = None,
+                version: str | None = None) -> dict[str, Any]:
+    """Run a Malloy query and keep what the server says about how it ran. Never raises.
+
+    `{"rows", "error", "executionTimeMs", "servedFrom", "queryCostBytes",
+    "roundTripMs"}`. `executionTimeMs` is the server's own figure: compile,
+    authorize, routing and the warehouse round trip, without serialization or
+    transport. `roundTripMs` is what this caller waited, so it reads higher.
+    `servedFrom` reports only the `storage=` tier: a query answered from a table
+    built in the source's own warehouse reads null, the same as a live one.
+
+    `version` pins a published package version (`versionId` on the request),
+    which REST can do and the MCP tools cannot.
+    """
+    body: dict[str, Any] = {"query": malloy, "compactJson": True}
+    if givens:
+        body["givens"] = givens
+    if version:
+        body["versionId"] = version
+    req = urllib.request.Request(
+        _query_url(base, environment, package, model),
+        data=json.dumps(body).encode(),
+        headers={"Content-Type": "application/json"})
+    out: dict[str, Any] = {"rows": [], "error": None, "executionTimeMs": None,
+                           "servedFrom": None, "queryCostBytes": None, "roundTripMs": None}
+    t0 = time.perf_counter()
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as r:
+            payload = json.loads(r.read().decode())
+    except urllib.error.HTTPError as exc:
+        out["error"] = f"HTTP {exc.code}: {exc.read().decode()[:300]}"
+        return out
+    except Exception as exc:                        # noqa: BLE001
+        out["error"] = f"{exc}"[:300] or exc.__class__.__name__
+        return out
+    out["roundTripMs"] = round((time.perf_counter() - t0) * 1000, 1)
+    try:
+        out["rows"] = rows_from_result(payload)
+    except (ValueError, TypeError) as exc:
+        out["error"] = f"unreadable result: {exc}"[:300]
+    if isinstance(payload, dict):
+        for k in ("executionTimeMs", "servedFrom", "queryCostBytes"):
+            out[k] = payload.get(k)
+    return out
+
+
+def materialization_state(base: str, environment: str, package: str,
+                          version: str | None = None) -> dict[str, Any]:
+    """What the package persists and whether its tables are bound. Never raises.
+
+    Read from `GET …/build-plan` (the persist sources a build makes, and the
+    ones it refuses), `GET …/status` (`manifestBindingStatus`,
+    `manifestEntryCount`, `storageServeBindings`) and the newest
+    `GET …/materializations` entry. A key the server could not answer is absent.
+
+    `persistSources` with `bound` false is the state to warn about: the model
+    declares persisted tables, and queries still compute live, because no build
+    ran since the last load or reload.
+    """
+    pkg_path = (f"api/v0/environments/{urllib.parse.quote(environment)}"
+                f"/packages/{urllib.parse.quote(package)}")
+    q = f"?versionId={urllib.parse.quote(version)}" if version else ""
+    out: dict[str, Any] = {}
+    try:
+        plan = get_json(base, f"{pkg_path}/build-plan{q}")
+        if isinstance(plan, dict):
+            out["persistSources"] = sorted(str(k).split("@")[0]
+                                           for k in (plan.get("sources") or {}))
+            out["refusedSources"] = sorted(str(k).split("@")[0]
+                                           for k in (plan.get("refusedSources") or {}))
+    except Exception:                                   # noqa: BLE001
+        pass
+    try:
+        st = get_json(base, f"{pkg_path}/status{q}")
+        if isinstance(st, dict):
+            for k in ("manifestBindingStatus", "manifestEntryCount"):
+                if k in st:
+                    out[k] = st[k]
+            ssb = st.get("storageServeBindings")
+            if isinstance(ssb, list):
+                out["storageServeBindings"] = len(ssb)
+    except Exception:                                   # noqa: BLE001
+        pass
+    try:
+        runs = get_json(base, f"{pkg_path}/materializations?limit=1"
+                        + (f"&versionId={urllib.parse.quote(version)}" if version else ""))
+        if isinstance(runs, list) and runs and isinstance(runs[0], dict):
+            m = runs[0]
+            out["latestMaterialization"] = {k: m.get(k) for k in
+                                            ("id", "status", "completedAt")}
+    except Exception:                                   # noqa: BLE001
+        pass
+    if "persistSources" in out:
+        out["bound"] = (out.get("manifestBindingStatus") == "bound"
+                        or bool(out.get("storageServeBindings")))
+    return out
 
 
 def get_json(base: str, path: str, timeout: int = 30) -> Any:

@@ -5,7 +5,7 @@ database a team can query. Stdlib only.
   python3 export_run.py --run <run-dir> --set <set-dir> [--out <dir>]
   # or: python3 eval.py export --set <set-dir> --label baseline-01
 
-Runs do not go in git. This is how a run leaves the laptop instead: five CSV
+Runs do not go in git. This is how a run leaves the laptop instead: six CSV
 files in `<run>/export/` (or `--out`), each row carrying `run_id`, plus a
 `manifest.json` naming each file and the table name to load it under. It calls nothing remote. Where the files go is the caller's choice:
 `reference/sharing-runs.md` lists the options, and a host can ship its own
@@ -18,6 +18,9 @@ upload step that reads `manifest.json`.
                     judge write-up as text
   eval_cases        one row per case of the set as it was run, keyed by
                     `dataset_sha`: the question, tags, split and golden
+  eval_query_timings  one row per query of a query replay (`query_replay.py`):
+                    median and max time, where it was served from, the rows'
+                    hash; empty for any other kind of run
 
 Every row of a table has the same columns, in a fixed order, and a nested value
 (a list, an object) is written as JSON text. CSV and not JSON lines, because a
@@ -51,7 +54,8 @@ import ledger  # noqa: E402
 from ledger import read_jsonl  # noqa: E402
 from run_index import runs as index_runs  # noqa: E402
 
-TABLES = ("eval_runs", "eval_attempts", "eval_events", "eval_transcripts", "eval_cases")
+TABLES = ("eval_runs", "eval_attempts", "eval_events", "eval_transcripts", "eval_cases",
+          "eval_query_timings")
 # A table name a loader accepts: a lowercase letter or _ first, then lowercase
 # letters, digits or _, at most 63 characters. The run id is appended to keep
 # one run's tables apart from another's until the loader can append to one.
@@ -95,6 +99,7 @@ def rows_runs(run: pathlib.Path, meta: dict[str, Any], index_row: dict[str, Any]
         "cases": index_row.get("cases"), "passed": index_row.get("passed"),
         "decided": index_row.get("decided"), "recall_exact": index_row.get("recall_exact"),
         "answerer_cost_usd": meta.get("answererCostUsd"), "judge_cost_usd": meta.get("judgeCostUsd"),
+        "p50_ms": index_row.get("p50_ms"), "total_ms": index_row.get("total_ms"),
         "run_json": as_text(meta),
     }]
 
@@ -108,6 +113,9 @@ ATTEMPT_COLUMNS = ("run_id", "qid", "sample", "phase", "question_sha", "golden_r
 
 def rows_attempts(run: pathlib.Path, events: list[dict], cases: dict[str, dict]) -> list[dict]:
     out = []
+    phase = json.loads((run / "run.json").read_text()).get("phase")
+    if phase == "query-replay":                              # timings, not attempts
+        return out
     if (run / "results.jsonl").is_file():                    # a retrieval replay
         for r in read_jsonl(run / "results.jsonl"):
             c = cases.get(r.get("qid"), {})
@@ -162,6 +170,24 @@ def rows_transcripts(run: pathlib.Path, events: list[dict]) -> list[dict]:
     return out
 
 
+TIMING_COLUMNS = ("run_id", "qid", "tags", "source", "model_path", "query", "givens",
+                  "median_ms", "min_ms", "max_ms", "round_trip_ms", "timing", "served_from",
+                  "query_cost_bytes", "rows_sha", "n_rows", "unstable_rows", "slow", "error")
+
+
+def rows_timings(run: pathlib.Path, meta: dict[str, Any]) -> list[dict]:
+    if meta.get("phase") != "query-replay" or not (run / "results.jsonl").is_file():
+        return []
+    out = []
+    for r in read_jsonl(run / "results.jsonl"):
+        row = {k: r.get(k) for k in TIMING_COLUMNS if k in r}
+        row.update(run_id=run.name, model_path=r.get("modelPath"),
+                   tags=as_text(r.get("tags") or []), givens=as_text(r.get("givens")),
+                   served_from=as_text(r.get("served_from")))
+        out.append(row)
+    return out
+
+
 def rows_cases(run_id: str, dataset_sha: str | None, cases: list[dict]) -> list[dict]:
     return [{"run_id": run_id, "dataset_sha": dataset_sha, "qid": c.get("qid"),
              "question": c.get("question"), "question_sha": c.get("questionSha"),
@@ -176,12 +202,14 @@ COLUMNS = {
                   "dataset_version", "dataset_sha", "slice_name", "slice_qids", "answerer_model",
                   "judge_model", "judge_version", "rubric_sha", "judge_prompt_sha",
                   "retrieval_mode", "model_git_sha", "cases", "passed", "decided",
-                  "recall_exact", "answerer_cost_usd", "judge_cost_usd", "run_json"),
+                  "recall_exact", "answerer_cost_usd", "judge_cost_usd", "p50_ms", "total_ms",
+                  "run_json"),
     "eval_attempts": ATTEMPT_COLUMNS,
     "eval_events": ("run_id", "seq", "kind", "qid", "sample", "event"),
     "eval_transcripts": ("run_id", "qid", "transcript", "answer", "judge"),
     "eval_cases": ("run_id", "dataset_sha", "qid", "question", "question_sha", "tags", "split",
                    "golden_revision", "golden", "case"),
+    "eval_query_timings": TIMING_COLUMNS,
 }
 
 
@@ -200,7 +228,7 @@ def write_csv(path: pathlib.Path, rows: list[dict[str, Any]], columns: tuple[str
 
 
 def export(run: pathlib.Path, set_dir: pathlib.Path, out: pathlib.Path) -> dict[str, Any]:
-    """Write the five files and manifest.json; return the manifest."""
+    """Write the six files and manifest.json; return the manifest."""
     meta = json.loads((run / "run.json").read_text())
     events = read_jsonl(run / "events.jsonl") if (run / "events.jsonl").is_file() else []
     case_list = read_jsonl(set_dir / "cases.jsonl")
@@ -219,6 +247,7 @@ def export(run: pathlib.Path, set_dir: pathlib.Path, out: pathlib.Path) -> dict[
         "eval_events": rows_events(run, events),
         "eval_transcripts": rows_transcripts(run, events),
         "eval_cases": rows_cases(run.name, sha, case_list),
+        "eval_query_timings": rows_timings(run, meta),
     }
     out.mkdir(parents=True, exist_ok=True)
     manifest: dict[str, Any] = {"runId": run.name, "setName": meta.get("setName"),

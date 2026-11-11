@@ -13,6 +13,8 @@ a second record of the same facts would drift from the runs it describes.
 version, and score. A run's KIND is:
 
   replay   a retrieval replay (no answerer); its score is exact recall
+  perf     a query replay (no answerer): passing queries re-run and timed;
+           its score is the median query time
   slice    an answer run limited with --slice or --tag
   run      any other answer run; `full` when it scored every case of the set
 
@@ -25,6 +27,10 @@ only over cases both runs scored with the same `question_sha` and
 `golden_revision`, the rule `flip_table.py` uses. A run with no published
 version (`packageVersion.id` null) is a working copy and appears as one row,
 `working copy`.
+
+Each version row also carries its most recent query replay: the median and
+total query time, and against the previous version's replay, how many queries
+got faster or slower and how many changed rows (`query_replay.compare`).
 """
 from __future__ import annotations
 
@@ -88,7 +94,19 @@ def runs(workdir: pathlib.Path, n_cases: int | None = None) -> list[dict[str, An
             "answererModel": meta.get("answererModel"),
             "judgeModel": meta.get("judgeModel"),
         }
-        if meta.get("phase") == "replay" or meta.get("mode") == "retrieval":
+        if meta.get("phase") == "query-replay":
+            row["kind"] = "perf"
+            summary = {}
+            try:
+                summary = json.loads((run / "summary.json").read_text())
+            except (OSError, ValueError):
+                pass
+            row["p50_ms"] = summary.get("p50_ms")
+            row["total_ms"] = summary.get("total_ms")
+            row["slow"] = len(summary.get("slow") or [])
+            row["cases"] = summary.get("queries")
+            row["errors"] = summary.get("errors")
+        elif meta.get("phase") == "replay" or meta.get("mode") == "retrieval":
             row["kind"] = "replay"
             summary = {}
             try:
@@ -124,11 +142,18 @@ def versions(rows: list[dict[str, Any]],
     """One row per package version with an answer run, highest first."""
     state = {v.get("id"): v for v in served or [] if isinstance(v, dict)}
     answer_runs = [r for r in rows if r["kind"] == "run" and r.get("status") == "complete"]
+    perf: dict[str, dict[str, Any]] = {}
+    for r in rows:                  # oldest first, so the newest replay wins
+        # A replay in which no query ran says nothing about its version's speed.
+        if (r["kind"] == "perf" and r.get("status") == "complete" and r["version"]
+                and (r.get("errors") or 0) < (r.get("cases") or 0)):
+            perf[r["version"]] = r
     by_version: dict[str, list[dict[str, Any]]] = {}
     for r in answer_runs:
         by_version.setdefault(r["version"] or WORKING_COPY, []).append(r)
     names = sorted((v for v in by_version if v != WORKING_COPY), key=version_key, reverse=True)
     names += [v for v in state if v not in by_version and v]
+    names += [v for v in perf if v not in by_version]
     names = sorted(set(names), key=version_key, reverse=True)
     if WORKING_COPY in by_version:
         names.append(WORKING_COPY)
@@ -150,19 +175,38 @@ def versions(rows: list[dict[str, Any]],
             "decided": best.get("decided") if best else None,
             "datasetVersion": best.get("datasetVersion") if best else None,
             "runs": len(rs),
+            "perf": perf.get(v),
         })
     published = [r for r in out if r["version"] != WORKING_COPY and r["path"]]
     for newer, older in zip(published, published[1:]):
         newer["vs"] = older["version"]
         newer["flips"] = flips(pathlib.Path(older["path"]), pathlib.Path(newer["path"]))
+    timed = [r for r in out if r.get("perf")]
+    for newer, older in zip(timed, timed[1:]):
+        newer["speed"] = speed(pathlib.Path(older["perf"]["path"]),
+                               pathlib.Path(newer["perf"]["path"]))
+        newer["speed_vs"] = older["version"]
     return out
+
+
+def speed(a: pathlib.Path, b: pathlib.Path) -> dict[str, Any]:
+    """Query-by-query comparison of two query replays, as `query_replay.compare` makes it."""
+    from query_replay import compare
+    band = json.loads((b / "run.json").read_text()).get("latencyBand") or 0.2
+    c = compare(read_jsonl(a / "results.jsonl"), read_jsonl(b / "results.jsonl"), band)
+    return {"faster": len(c["faster"]), "slower": len(c["slower"]),
+            "rows_changed": len(c["rows_changed"]) + len(c["broke"]),
+            "compared": c["compared"], "total_ratio": c["total_ratio"]}
 
 
 def fmt_runs(rows: list[dict[str, Any]]) -> list[str]:
     lines = [f"{'run':<34} {'kind':<7} {'version':<14} {'set':>4}  score"]
     for r in rows:
         kind = "full" if r.get("full") else r["kind"]
-        if r["kind"] == "replay":
+        if r["kind"] == "perf":
+            score = (f"p50 {r['p50_ms']} ms, total {r['total_ms']} ms"
+                     + (f", {r['slow']} slow" if r.get("slow") else ""))
+        elif r["kind"] == "replay":
             rec = r.get("recall_exact")
             score = f"recall {rec:.2f}" if isinstance(rec, (int, float)) else "recall -"
         else:
@@ -183,6 +227,7 @@ def fmt_versions(rows: list[dict[str, Any]]) -> list[str]:
                  else "" if r["latest"] is None else "-")
         if not r["run"]:
             lines.append(f"{r['version'][:14]:<14} {state:<9} {'(no answer run)':<30}")
+            lines += fmt_speed(r)
             continue
         score = f"{r['passed']}/{r['decided']} passed" + ("" if r["full"] else " (not full)")
         if r.get("flips"):
@@ -192,7 +237,22 @@ def fmt_versions(rows: list[dict[str, Any]]) -> list[str]:
                       + (f", {f['set_aside']} set aside" if f["set_aside"] else ""))
         lines.append(f"{r['version'][:14]:<14} {state:<9} {r['run'][:30]:<30} "
                      f"{str(r.get('datasetVersion') or '-'):>4}  {score}")
+        lines += fmt_speed(r)
     return lines
+
+
+def fmt_speed(r: dict[str, Any]) -> list[str]:
+    """The version's query replay, on the line under its score."""
+    p = r.get("perf")
+    if not p:
+        return []
+    text = f"{'':<14} {'':<9} {p['run'][:30]:<30} {'':>4}  p50 {p['p50_ms']} ms, total {p['total_ms']} ms"
+    s = r.get("speed")
+    if s:
+        text += (f"; vs {r['speed_vs']}: {s['faster']} faster, {s['slower']} slower"
+                 + (f", {s['rows_changed']} ROWS CHANGED" if s["rows_changed"] else "")
+                 + (f", total x{s['total_ratio']}" if s["total_ratio"] else ""))
+    return [text]
 
 
 def main(argv: list[str] | None = None) -> int:

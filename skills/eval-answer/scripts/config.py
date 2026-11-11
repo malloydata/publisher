@@ -19,6 +19,11 @@ the servers and paths every step of a run needs:
     [paths]
     workdir = "~/.malloy-eval/storefront-tour"   # runs, packages, server roots
 
+    [performance]              # query_replay.py; all optional
+    budget_ms    = 2000        # a query slower than this is marked slow
+    repeats      = 5           # timed calls per query, after one warm-up
+    latency_band = 0.2         # a change under 20% is noise, not faster or slower
+
 A value is taken from a flag first, then this file, then `set.json`, then a
 built-in. Relative paths in the file resolve against the file's own directory,
 so a command reads the same from any working directory.
@@ -62,6 +67,9 @@ SCHEMA: dict[str, dict[str, Any]] = {
     "truth": {"environment": str, "port": int, "mcp_port": int,
               "publisher": str, "package_dir": "path"},
     "paths": {"publisher_dir": "path", "skills_root": "path", "workdir": "path"},
+    # How a query replay times queries (eval-loop's query_replay.py).
+    # `budget_ms` marks a query slow; unset, a replay only reports times.
+    "performance": {"budget_ms": "count", "repeats": "count", "latency_band": "fraction"},
 }
 
 BUILTIN: dict[tuple[str, str], Any] = {
@@ -70,6 +78,8 @@ BUILTIN: dict[tuple[str, str], Any] = {
     ("truth", "port"): 4881,
     ("truth", "mcp_port"): 4882,
     ("truth", "environment"): "truth",
+    ("performance", "repeats"): 5,
+    ("performance", "latency_band"): 0.2,
 }
 
 
@@ -291,6 +301,18 @@ def _check(path: pathlib.Path, raw: dict[str, Any]) -> dict[str, dict[str, Any]]
                 p = pathlib.Path(value).expanduser()
                 out[section][key] = (p if p.is_absolute()
                                      else path.parent / p).resolve()
+            elif kind == "count":
+                if isinstance(value, bool) or not isinstance(value, int) or value < 1:
+                    raise ConfigError(f"Invalid {path} on '{section}.{key}': "
+                                      f"expected a whole number of at least 1, got {value!r}.")
+                out[section][key] = value
+            elif kind == "fraction":
+                if (isinstance(value, bool) or not isinstance(value, (int, float))
+                        or not 0 < value < 1):
+                    raise ConfigError(f"Invalid {path} on '{section}.{key}': "
+                                      f"expected a fraction between 0 and 1, such as 0.2, "
+                                      f"got {value!r}.")
+                out[section][key] = float(value)
             elif kind is int:
                 if isinstance(value, bool) or not isinstance(value, int):
                     raise ConfigError(f"Invalid {path} on '{section}.{key}': "

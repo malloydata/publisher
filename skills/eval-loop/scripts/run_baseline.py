@@ -3535,6 +3535,9 @@ def attempt_event(c: dict[str, Any], att: dict[str, Any], phase: str | None,
         # The runtime parameters the final query ran under.
         # Without them a replay of final_query runs unscoped.
         final_givens=att.get("final_givens"),
+        # The model file the final query was sent to. A query replay
+        # runs it there; null means the run's default model path.
+        final_model_path=att.get("final_model_path"),
         # The revision that actually answered. Documented
         # as "package revision actually queried" and left
         # None until now, so nothing could tell an attempt

@@ -7,6 +7,7 @@
   python3 eval.py verify   --set <set-dir>         # goldens still re-derive
   python3 eval.py run      --set <set-dir> --label baseline-01
   python3 eval.py replay   --set <set-dir> --label replay-01   # retrieval only, no answerer
+  python3 eval.py query-replay --set <set-dir> --from baseline-01 --label perf-01   # time passing queries
   python3 eval.py diagnose --set <set-dir> --label baseline-01
   python3 eval.py package  --set <set-dir> --label baseline-01
   python3 eval.py runs     --set <set-dir>         # every run of the set, by kind and version
@@ -35,8 +36,8 @@ for d in ("eval-answer", "eval-loop", "eval-diagnose"):
 
 import config  # noqa: E402
 
-VERBS = ("check", "serve", "verify", "run", "replay", "diagnose", "package",
-         "runs", "versions", "export")
+VERBS = ("check", "serve", "verify", "run", "replay", "query-replay", "diagnose",
+         "package", "runs", "versions", "export")
 
 
 def flag_value(args: list[str], flag: str) -> str | None:
@@ -133,6 +134,9 @@ def dispatch(argv: list[str]) -> int:
     if verb == "replay":
         import retrieval_replay
         return retrieval_replay.main(rest)
+    if verb == "query-replay":
+        import query_replay
+        return query_replay.main(rest)
     if verb == "export":
         import export_run
         return export_run.main(run_dir_from_label(rest))
