@@ -4,21 +4,22 @@
 // A linear report: prose and charts read top to bottom, over the storefront model. The
 // `## artifact` tag makes this file a report rather than a model; `layout=linear` lays its
 // tiles out in one column, and `tiles=[…]` lists them in reading order: text tiles (the
-// `##|(markdown)` blocks below, by name) and query tiles (views on `order_items_tiles`).
+// `##|(markdown)` blocks below, by name) and query tiles (this report's own queries over
+// the model's views, declared at the end of the file). It declares no source of its own.
 ##! experimental.givens
 ##" One category at a time: how it sells across the year, which brands carry it, and the products that lead it.
 ##| artifact { layout=linear title="Category review"
   tiles=[
     intro { kind=text },
-    "order_items_tiles -> revenue_by_month",
+    "revenue_by_month",
     brands_intro { kind=text },
-    "order_items_tiles -> category_top_brands",
+    "category_top_brands",
     products_intro { kind=text },
-    "order_items_tiles -> category_top_products"
+    "category_top_products"
   ]
 }
 |##
-import { order_items, products } from "storefront.malloy"
+import { order_items } from "storefront.malloy"
 
 ##|(markdown) intro
 Pick a **Category** in the controls above and every chart below re-runs for it.
@@ -27,7 +28,7 @@ way revenue is moving.
 |##
 
 # description="Narrow to one product category. Leave empty for all"
-# label="Category" control=select suggest { source=products dimension=category }
+# label="Category" control=select suggest { source=order_items dimension=category }
 given: CATEGORY :: filter<string> is f''
 
 ##|(markdown) brands_intro
@@ -38,18 +39,17 @@ The brand ranking says who is behind those numbers.
 Last, the best-selling products in the category.
 |##
 
-source: order_items_tiles is order_items extend {
-  # line_chart
-  # label="Revenue by month"
-  # subtitle="Revenue by month for the selected category"
-  view: revenue_by_month is sales_by_month + { where: category ~ $CATEGORY }
+# viz=line
+# label="Revenue by month"
+# subtitle="Revenue by month for the selected category"
+query: revenue_by_month is order_items -> sales_by_month + { where: category ~ $CATEGORY }
 
-  # bar_chart
-  # label="Top brands"
-  # subtitle="The eight brands with the most revenue in the selected category"
-  view: category_top_brands is top_brands + { where: category ~ $CATEGORY }
+# viz=bar
+# label="Top brands"
+# subtitle="The eight brands with the most revenue in the selected category"
+query: category_top_brands is order_items -> top_brands + { where: category ~ $CATEGORY }
 
-  # label="Top products"
-  # subtitle="The ten best-selling products in the selected category"
-  view: category_top_products is top_products + { where: category ~ $CATEGORY }
-}
+# label="Top products"
+# subtitle="The ten best-selling products in the selected category"
+query: category_top_products is order_items -> top_products + { where: category ~ $CATEGORY }
+

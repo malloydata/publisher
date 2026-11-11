@@ -14,24 +14,19 @@
  * before the renderer is asked.
  *
  * Conservative by design: anything it cannot read (a channel placed by hand,
- * on a field or on the chart tag, a `viz=` it does not know, a result that
- * does not parse) is left to the renderer.
+ * on a field or on the chart tag, a result that does not parse) is left to
+ * the renderer.
  */
 
 import { blankQuoted } from "../../utils/blankQuoted";
+import { resolvedChart } from "../../utils/resolvedChart";
 
-/** The charts that plot rows along an x axis, by their tag and their `viz=` name. */
+/** The charts that plot rows along an x axis, by their tag. */
 const ROW_CHARTS: Record<string, string> = {
    line_chart: "A line chart",
    bar_chart: "A bar chart",
    scatter_chart: "A scatter chart",
    combo_chart: "A bar and line chart",
-};
-const VIZ_NAMES: Record<string, string> = {
-   line: "line_chart",
-   bar: "bar_chart",
-   scatter: "scatter_chart",
-   combo: "combo_chart",
 };
 
 /** A field tag that names a chart channel: the author placed fields by hand. */
@@ -59,34 +54,10 @@ function tagWords(line: string): string[] {
       .filter(Boolean);
 }
 
-/**
- * The chart the result's lines ask for, read in order: a later line overrides,
- * `-tag` takes one off.
- *
- * A `viz=` wins over every chart tag, as it does in the renderer, whatever its
- * value. One this does not know (`viz=table`, or a quoted value, blanked to
- * `""`) comes back as written, which is no chart that plots rows, so the
- * result is left to the renderer rather than read as an inherited chart tag.
- */
+/** The chart plugin the result's lines are drawn by, as the renderer picks it ({@link resolvedChart}); undefined for a table or no chart. */
 export function requestedChart(lines: readonly string[]): string | undefined {
-   const on: string[] = [];
-   let viz: string | undefined;
-   for (const line of lines)
-      for (const word of tagWords(line)) {
-         if (word.startsWith("-")) {
-            const name = word.slice(1);
-            if (name === "viz") viz = undefined;
-            const at = on.indexOf(name);
-            if (at >= 0) on.splice(at, 1);
-         } else if (word.startsWith("viz=")) {
-            viz = VIZ_NAMES[word.slice(4)] ?? word;
-         } else if (ROW_CHARTS[word] !== undefined || word === "big_value") {
-            const at = on.indexOf(word);
-            if (at >= 0) on.splice(at, 1);
-            on.push(word);
-         }
-      }
-   return viz ?? on.at(-1);
+   const chart = resolvedChart(lines);
+   return chart === "table" || chart === "dashboard" ? undefined : chart;
 }
 
 /** Whether the lines ask for a chart that plots rows (bar, line, scatter, bar and line), not big numbers or a table. */

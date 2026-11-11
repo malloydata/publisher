@@ -195,20 +195,27 @@ describe("mappings", () => {
       expect(queryTile(d, 2).filters).toBeUndefined();
    });
 
-   it("still skips a tile the writer cannot locate at all: inherited", () => {
+   // A tile naming a served view takes a binding: the editor then makes it a
+   // query of the report's own, where the binding is written.
+   it("binds a tile that names a served view, and still skips a query it only reads", () => {
       const d = doc();
       d.tiles.push({
          name: "by_region",
          source: "orders",
          declaration: { kind: "inherited" },
       });
+      d.tiles.push({ name: "top_brands", declaration: { kind: "query" } });
       applyMapping(d, "SINCE", [
          { include: false, field: "created_at" },
          { include: false, field: "created_at" },
          { include: false, field: "created_at" },
          { include: true, field: "created_at", op: ">=" },
+         { include: true, field: "created_at", op: ">=" },
       ]);
-      expect(queryTile(d, 3).filters).toBeUndefined();
+      expect(queryTile(d, 3).filters).toEqual([
+         { field: "created_at", given: "SINCE", op: ">=" },
+      ]);
+      expect(queryTile(d, 4).filters).toBeUndefined();
    });
 });
 
@@ -217,9 +224,9 @@ describe("canBind", () => {
    // query, not a reference", which stopped a filter from being addable on
    // the majority of real dashboards: an inline body is how most tiles are
    // actually written. What is excluded is the two kinds with nowhere to put
-   // a binding: a view declared on the model, and one declared here whose
-   // body the builder does not rewrite.
-   it("excludes inherited and opaque, and nothing else", () => {
+   // a binding: a query the builder only reads, and a view declared here whose
+   // body the builder does not rewrite. A tile naming a served view takes one.
+   it("excludes a query it only reads and opaque, and nothing else", () => {
       const d = doc();
       d.tiles.push({
          name: "by_region",
@@ -231,7 +238,9 @@ describe("canBind", () => {
          source: "orders",
          declaration: { kind: "opaque", why: "a chained refinement" },
       });
+      d.tiles.push({ name: "top_brands", declaration: { kind: "query" } });
       expect(d.tiles.map((t) => canBind(t))).toEqual([
+         true,
          true,
          true,
          true,

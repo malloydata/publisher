@@ -6,7 +6,9 @@ import { describe, expect, it } from "bun:test";
 import {
    CHART_TAGS,
    chartLineText,
+   chartResetFor,
    chartStateOf,
+   drawsAs,
    isChartPick,
    mentionsChartTag,
    parseChartLine,
@@ -44,13 +46,22 @@ describe("parseChartLine", () => {
          negated: ["bar_chart", "viz"],
       });
       expect(parseChartLine("  #  -viz  \r")).toEqual({ negated: ["viz"] });
+      expect(parseChartLine("# viz=line")).toEqual({
+         negated: [],
+         pick: "line_chart",
+      });
+      expect(parseChartLine("# viz=table")).toEqual({
+         negated: [],
+         pick: "table",
+      });
    });
 
    it("does not recognize a line with properties, other tags, or two picks", () => {
       for (const line of [
          "# bar_chart { size=spark }",
          '# line_chart label="Revenue"',
-         "# viz=line",
+         "# viz=line { stack }",
+         "# viz=pie",
          "# bar_chart line_chart",
          "# line_chart -bar_chart",
          "# bar_chart colspan=2",
@@ -72,7 +83,8 @@ describe("mentionsChartTag", () => {
    it("flags the unmodelled lines a chart edit must not touch", () => {
       expect(mentionsChartTag("# bar_chart { size=spark }")).toBe(true);
       expect(mentionsChartTag('# line_chart label="Revenue"')).toBe(true);
-      expect(mentionsChartTag("# viz=line")).toBe(true);
+      expect(mentionsChartTag("# viz=line { stack }")).toBe(true);
+      expect(mentionsChartTag("# viz=line")).toBe(false);
       expect(mentionsChartTag("# line_chart")).toBe(false);
       expect(mentionsChartTag('# label="Sales"')).toBe(false);
       expect(mentionsChartTag('#" about the bar_chart')).toBe(false);
@@ -80,55 +92,18 @@ describe("mentionsChartTag", () => {
 });
 
 describe("chartLineText", () => {
-   it("negates every other chart tag and viz, in a fixed order", () => {
-      expect(chartLineText("line_chart")).toBe(
-         "# -bar_chart -big_value -scatter_chart -shape_map -segment_map -combo_chart -viz line_chart",
-      );
-      expect(chartLineText("bar_chart")).toBe(
-         "# -line_chart -big_value -scatter_chart -shape_map -segment_map -combo_chart -viz bar_chart",
-      );
+   it("writes line, bar, bar and line and a table as a viz, and the rest as their own key", () => {
+      expect(chartLineText("line_chart")).toBe("# viz=line");
+      expect(chartLineText("bar_chart")).toBe("# viz=bar");
+      expect(chartLineText("combo_chart")).toBe("# viz=combo");
+      expect(chartLineText("none")).toBe("# viz=table");
+      expect(chartLineText("big_value")).toBe("# big_value");
+      expect(chartLineText("scatter_chart")).toBe("# scatter_chart");
    });
 
-   it("writes a combo chart, bars and a line on two axes, like any other pick", () => {
-      expect(chartLineText("combo_chart")).toBe(
-         "# -line_chart -bar_chart -big_value -scatter_chart -shape_map -segment_map -viz combo_chart",
-      );
-      expect(chartLineText("combo_chart", ["bar_chart"])).toBe(
-         "# -bar_chart -viz combo_chart",
-      );
-   });
-
-   it("writes -viz on the no-chart line, which keeps a viz= view from rendering a chart", () => {
-      expect(chartLineText("none")).toBe(
-         "# -line_chart -bar_chart -big_value -scatter_chart -shape_map -segment_map -combo_chart -viz",
-      );
-   });
-
-   it("negates only the chart tags the view carries when the catalog knows them", () => {
-      expect(chartLineText("line_chart", ["bar_chart"])).toBe(
-         "# -bar_chart -viz line_chart",
-      );
-      expect(chartLineText("bar_chart", ["bar_chart"])).toBe(
-         "# -viz bar_chart",
-      );
-      expect(chartLineText("line_chart", [])).toBe("# -viz line_chart");
-   });
-
-   // A view of totals draws as big numbers with no tag (the KPI promotion
-   // adds one), so Table takes `big_value` off whatever the view carries.
-   it("always takes big_value off for Table", () => {
-      expect(chartLineText("none", ["bar_chart"])).toBe(
-         "# -bar_chart -big_value -viz",
-      );
-      expect(chartLineText("none", [])).toBe("# -big_value -viz");
-   });
-
-   it("reads a narrowed line back as the same state", () => {
-      expect(chartStateOf([chartLineText("line_chart", ["bar_chart"])])).toBe(
-         "line_chart",
-      );
-      expect(chartStateOf([chartLineText("none", ["bar_chart"])])).toBe("none");
-      expect(chartStateOf([chartLineText("none", [])])).toBe("none");
+   it("takes nothing off without a reset: no such line negates a tag", () => {
+      for (const pick of [...CHART_TAGS.filter(isChartPick), "none" as const])
+         expect(chartLineText(pick)).not.toContain("-");
    });
 
    it("emits lines the recognizer reads back as the same state", () => {
@@ -138,7 +113,7 @@ describe("chartLineText", () => {
    });
 });
 
-describe("chartLineText through the tag parser", () => {
+describe("chartLineText over a view's own chart", () => {
    const PLUGINS = [
       "line_chart",
       "bar_chart",
@@ -148,51 +123,67 @@ describe("chartLineText through the tag parser", () => {
       "segment_map",
       "combo_chart",
    ] as const;
-   const BASES = [
-      "# bar_chart",
-      "# combo_chart",
-      "# line_chart",
-      "# viz=line",
-      "# big_value",
-      "# scatter_chart",
-   ];
 
-   it("leaves exactly the picked tag over any base, stacked as the renderer inherits", () => {
-      for (const base of BASES)
-         for (const pick of PLUGINS) {
-            const { tag, log } = parseAnnotation([
-               base,
-               `${chartLineText(pick)}\n`,
-            ]);
-            expect(log).toEqual([]);
-            for (const name of [...PLUGINS, "viz"])
-               expect(tag.has(name)).toBe(name === pick);
-         }
-   });
-
-   it("a narrowed line over a view carrying its tag leaves the same tags as the full line", () => {
-      for (const carried of PLUGINS)
+   it("parses cleanly over any base, merged as the renderer merges a tile's tags", () => {
+      for (const base of ["# bar_chart", "# viz=line", "# big_value"])
          for (const pick of [...PLUGINS, "none" as const]) {
-            const { tag, log } = parseAnnotation([
-               `# ${carried}`,
-               `${chartLineText(pick, [carried])}\n`,
-            ]);
+            const { log } = parseAnnotation([base, `${chartLineText(pick)}\n`]);
             expect(log).toEqual([]);
-            for (const name of [...PLUGINS, "viz"])
-               expect(tag.has(name)).toBe(name === pick);
          }
    });
 
-   it("turns every chart and viz off for none", () => {
-      for (const base of BASES) {
-         const { tag, log } = parseAnnotation([
-            base,
-            `${chartLineText("none")}\n`,
-         ]);
-         expect(log).toEqual([]);
-         for (const name of [...PLUGINS, "viz"])
-            expect(tag.has(name)).toBe(false);
-      }
+   // What `drawsAs` promises is the renderer's rule (resolvedChart, which a
+   // spec checks against the renderer itself).
+   it("draws every pick over every view, with the reset chartResetFor writes", () => {
+      for (const view of [undefined, ...PLUGINS])
+         for (const pick of [...PLUGINS, "none" as const])
+            expect(drawsAs(pick, view)).toBe(true);
+   });
+
+   it("resets only where a viz alone cannot win", () => {
+      // A viz replaces line, bar and bar and line, and those come first.
+      for (const view of [undefined, "bar_chart", "line_chart", "combo_chart"])
+         for (const pick of [
+            "line_chart",
+            "bar_chart",
+            "combo_chart",
+            "none",
+         ] as const)
+            expect(chartResetFor(pick, view)).toEqual([]);
+      expect(chartResetFor("bar_chart", "big_value")).toEqual([]);
+      expect(chartResetFor("big_value", "shape_map")).toEqual([]);
+      expect(chartResetFor("scatter_chart", undefined)).toEqual([]);
+      // Big value, scatter and the maps draw on their own key.
+      expect(chartLineText("none", chartResetFor("none", "big_value"))).toBe(
+         "# -big_value viz=table",
+      );
+      expect(chartLineText("none", chartResetFor("none", "shape_map"))).toBe(
+         "# -shape_map viz=table",
+      );
+      expect(
+         chartLineText(
+            "scatter_chart",
+            chartResetFor("scatter_chart", "big_value"),
+         ),
+      ).toBe("# -big_value scatter_chart");
+      // Over line, bar or bar and line the view may have said it as a viz.
+      expect(
+         chartLineText(
+            "scatter_chart",
+            chartResetFor("scatter_chart", "bar_chart"),
+         ),
+      ).toBe("# -bar_chart -viz scatter_chart");
+      expect(
+         chartLineText("big_value", chartResetFor("big_value", "line_chart")),
+      ).toBe("# -line_chart -viz big_value");
+      // The reset line parses back to its pick and what it takes off.
+      expect(parseChartLine("# -big_value viz=table")).toEqual({
+         negated: ["big_value"],
+         pick: "table",
+      });
+      expect(chartStateOf(["# -bar_chart -viz scatter_chart"])).toBe(
+         "scatter_chart",
+      );
    });
 });
 
@@ -212,6 +203,6 @@ describe("mentionsChartTag: quoted values", () => {
       expect(mentionsChartTag('# label="Sales viz"')).toBe(false);
       expect(mentionsChartTag('# label="a \\" viz"')).toBe(false);
       expect(mentionsChartTag('# line_chart label="Revenue"')).toBe(true);
-      expect(mentionsChartTag("# viz=line")).toBe(true);
+      expect(mentionsChartTag("# viz=line size=spark")).toBe(true);
    });
 });

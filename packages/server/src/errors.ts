@@ -1064,6 +1064,24 @@ export class OffSurfaceError extends NotQueryableError {
    }
 }
 
+/**
+ * A target the addressed file does not have, that another file of the same
+ * package declares: a report's own named query or source asked of
+ * index.malloy. The message names the file to address instead. Only thrown
+ * when neither file carries a gate, so it never confirms a hidden name. Still
+ * a 404.
+ */
+export class DeclaredElsewhereError extends NotQueryableError {
+   override get kind(): "declared_elsewhere" {
+      return "declared_elsewhere";
+   }
+
+   constructor(message: string) {
+      super(message);
+      this.name = "DeclaredElsewhereError";
+   }
+}
+
 export class MaterializationNotFoundError extends Error {
    get kind(): "materialization_not_found" {
       return "materialization_not_found";
@@ -1305,7 +1323,7 @@ type ConnectionKind =
    | "connection"
    | "connection_failed"
    | "connection_pool_exhausted";
-type NotQueryableKind = "not_queryable" | "off_surface";
+type NotQueryableKind = "not_queryable" | "off_surface" | "declared_elsewhere";
 type PackageAdmissionKind = "package_admission_refused" | "dry_run_capacity";
 type ServiceUnavailableKind = "service_unavailable" | PackageAdmissionKind;
 type PayloadTooLargeKind = "payload_too_large" | "response_unserializable";
@@ -1353,6 +1371,7 @@ interface ErrorByKind {
    query_compile: QueryCompileError;
    not_queryable: NotQueryableError;
    off_surface: OffSurfaceError;
+   declared_elsewhere: DeclaredElsewhereError;
    materialization_not_found: MaterializationNotFoundError;
    materialization_conflict: MaterializationConflictError;
    write_conflict: WriteConflictError;
@@ -1434,6 +1453,7 @@ const ERROR_CLASSES: {
    query_compile: QueryCompileError,
    not_queryable: NotQueryableError,
    off_surface: OffSurfaceError,
+   declared_elsewhere: DeclaredElsewhereError,
    materialization_not_found: MaterializationNotFoundError,
    materialization_conflict: MaterializationConflictError,
    write_conflict: WriteConflictError,
@@ -1685,6 +1705,16 @@ export const ERROR_TABLE: { [K in ErrorKind]: ErrorMapping<ErrorByKind[K]> } = {
          ],
       },
       mcpSetup: "model",
+   },
+   declared_elsewhere: {
+      status: 404,
+      mcp: {
+         // Not `not_found`, which would drop the file this names.
+         advice: "fixed",
+         suggestions: [
+            "The name is real; it is declared in a different file of this package. Call execute_query again with the modelPath the message names, and the same query.",
+         ],
+      },
    },
    query_compile: {
       status: 400,

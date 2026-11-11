@@ -3,7 +3,11 @@
 
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { registerTool } from "../register_tool";
-import { BadRequestError, ModelNotFoundError } from "../../errors";
+import {
+   BadRequestError,
+   DeclaredElsewhereError,
+   ModelNotFoundError,
+} from "../../errors";
 import { ErrorCode, McpError } from "@modelcontextprotocol/sdk/types.js";
 import { z } from "zod/v3";
 import type { GivenValue } from "@malloydata/malloy";
@@ -319,7 +323,10 @@ export function registerExecuteQueryTool(
             // published version never changes, so reloading it does nothing:
             // there the way to a new name is a new version.
             const suggestions = [...errorDetails.suggestions];
-            if (isUndefinedNameError(errorDetails.message)) {
+            if (
+               !(queryError instanceof DeclaredElsewhereError) &&
+               isUndefinedNameError(errorDetails.message)
+            ) {
                suggestions.push(
                   pkg?.getVersionId() !== undefined
                      ? "This package serves published versions, which never change, so reload_package does not pick up a source or view added or renamed on disk. Publish the change as a new version (bump `version` in publisher.json), then query it once it is the package's latest."

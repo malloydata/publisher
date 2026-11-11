@@ -2319,6 +2319,38 @@
       ]
     }
   },
+  "DeclaredElsewhereError": {
+    "class": "DeclaredElsewhereError",
+    "http": {
+      "status": 404,
+      "json": {
+        "code": 404,
+        "message": "'revenue' is not defined in index.malloy. It is a query in overview.malloy; run it with modelPath \"overview.malloy\"."
+      },
+      "logged": false,
+      "logs": []
+    },
+    "mcp": {
+      "message": "'revenue' is not defined in index.malloy. It is a query in overview.malloy; run it with modelPath \"overview.malloy\".",
+      "suggestions": [
+        "The name is real; it is declared in a different file of this package. Call execute_query again with the modelPath the message names, and the same query."
+      ],
+      "logs": []
+    },
+    "mcpSetup": {
+      "message": "An unexpected internal error occurred during executeQuery (Setup).: 'revenue' is not defined in index.malloy. It is a query in overview.malloy; run it with modelPath \"overview.malloy\".",
+      "suggestions": [
+        "Try the request again later.",
+        "If the problem persists, check server logs or contact support."
+      ],
+      "logs": [
+        [
+          "error",
+          "[MCP Server Error] Error accessing package/model for query"
+        ]
+      ]
+    }
+  },
   "MaterializationNotFoundError": {
     "class": "MaterializationNotFoundError",
     "http": {

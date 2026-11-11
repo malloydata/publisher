@@ -137,6 +137,7 @@ export async function runModelQuery(
    const renderLogs = filterPublisherOwnedRenderLogs(
       validateRenderTags(outcome.result),
       pkg.getModel(modelPath)?.carriesReportTag() ?? false,
+      outcome.result,
    );
    return { ...outcome, renderLogs };
 }

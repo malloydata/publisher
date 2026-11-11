@@ -2835,9 +2835,13 @@ export class QueryGovernor {
     *  - NO recursion into `fields` (joins), the `pipeline`, or a composite's
     *    `sources[]` (composite member snapshots fail closed).
     *
-    * Idempotent by `condition.code`. For a gated `query_source` the filter
-    * applies inside the stored query's run target, so its aggregates are
-    * caller-rows, not all-rows.
+    * A snapshot that already holds this condition is left alone. One with a
+    * `sourceID` is matched by that id and deduped by `condition.code`. One
+    * with none (an inline `extend`) is matched by {@link resolveGraftTarget}
+    * and deduped by the condition object, so a `where:` the query's author
+    * wrote with the same text does not stand in for the gate. For a gated
+    * `query_source` the filter applies inside the stored query's run target,
+    * so its aggregates are caller-rows, not all-rows.
     */
    private graftIntoNamedQuerySnapshots(
       copy: ModelDef,
@@ -2861,11 +2865,14 @@ export class QueryGovernor {
          const struct = snapshot as SourceDef;
          // An inline extension (`query: q is gated extend { … } -> v`) stores
          // a new struct with NO `sourceID` of its own, so the identity match
-         // above never reaches it. Match it the way the request path chose
-         // this graft target for that same struct (`resolveGraftTarget`),
-         // so the two decisions cannot disagree. The bind guards that run
-         // after the graft still prove the condition reads `graftTarget`'s
-         // own column on this struct.
+         // below never reaches it. Match it with `resolveGraftTarget`, the
+         // resolution the request path used to choose this graft target. On
+         // the query path both model defs are this copy, so the two agree. A
+         // `.malloynb` cell's graft scope and the struct's origin can differ,
+         // so they can disagree; a miss does not attach the condition, and
+         // the proof that it landed denies the query. The bind guards that
+         // run after a graft that does land still prove the condition reads
+         // `graftTarget`'s own column on this struct.
          if (struct.sourceID === undefined) {
             if (resolveGraftTargetImpl(struct, copy, copy) !== graftTarget)
                continue;

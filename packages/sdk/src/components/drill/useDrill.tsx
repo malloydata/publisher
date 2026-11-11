@@ -23,7 +23,9 @@ import {
    drillValueToFilter,
    humanizeSlug,
    resolveDrill,
+   withEntryDrill,
    type DrillClickPayload,
+   type EntryDrill,
    type DrillIntent,
    type DrillNavigation,
    type DrillRowsRequest,
@@ -89,9 +91,14 @@ export interface UseDrillResult {
    /**
     * The binding for one result on a surface with several, such as a
     * dashboard's tiles: its clicks carry `context`. `rows: false` turns rows
-    * off for that result, leaving its tag drills.
+    * off for that result, leaving its tag drills. `entries` is the tile
+    * entry's `drill { … }`, by dimension.
     */
-   bindingFor: (context: string | undefined, rows: boolean) => DrillBinding;
+   bindingFor: (
+      context: string | undefined,
+      rows: boolean,
+      entries?: Readonly<Record<string, EntryDrill>>,
+   ) => DrillBinding;
    /** Render anywhere in the subtree: the menu every drillable click opens. */
    drillMenu: ReactNode;
 }
@@ -121,6 +128,27 @@ function fieldLabel(field: DrillField | undefined): string {
       field.name
    );
 }
+
+/**
+ * A tag action as the click menu names it: `Filter to Region: West`, or
+ * `Open Regional review (Region: West)` for a report path, by the report's
+ * title when it has one, else its file name. Exported so the builder's preview
+ * of a tile's click menu says exactly what the menu will.
+ */
+export function drillDestinationLabel(
+   destination: string,
+   value: string,
+   selfLabel: string,
+   title?: string,
+): string {
+   return destination === DRILL_SELF
+      ? `${selfLabel} ${value}`
+      : // A report's path from the package root; its file name reads as its name.
+        `Open ${title ?? humanizeSlug(destination.split("/").pop() ?? destination)} (${value})`;
+}
+
+/** The rows entry of the click menu, naming the values it filters on. */
+export const showRowsLabel = (values: string) => `Show rows (${values})`;
 
 /**
  * The values the rows behind a click are filtered on, each named by its
@@ -280,14 +308,12 @@ export function useDrill({
          }`;
          const items: DrillMenuItem[] = destinations.map((destination) => ({
             key: `to:${destination}`,
-            label:
-               destination === DRILL_SELF
-                  ? `Filter to ${value}`
-                  : // The report's title, else its file name (a path from the package root).
-                    `Open ${
-                       destinationTitle?.(destination) ??
-                       humanizeSlug(destination.split("/").pop() ?? destination)
-                    } (${value})`,
+            label: drillDestinationLabel(
+               destination,
+               value,
+               "Filter to",
+               destinationTitle?.(destination),
+            ),
             run: () => {
                if (intent) go(intent, destination, payload.event);
             },
@@ -295,7 +321,7 @@ export function useDrill({
          if (rows && payload.field)
             items.push({
                key: "rows",
-               label: `Show rows (${rowsValuesLabel(rows, payload.field)})`,
+               label: showRowsLabel(rowsValuesLabel(rows, payload.field)),
                run: () => onRows?.(rows),
             });
          if (items.length === 0) return;
@@ -328,16 +354,31 @@ export function useDrill({
    );
 
    const bindingFor = useCallback(
-      (context: string | undefined, rows: boolean): DrillBinding => ({
-         canDrill: (field) =>
-            canDrillTag(field) || (rows && canDrillRows(field)),
-         onClick: (payload) =>
-            onClick({
-               ...payload,
-               ...(context === undefined ? {} : { context }),
-               ...(rows ? {} : { noRows: true }),
-            }),
-      }),
+      (
+         context: string | undefined,
+         rows: boolean,
+         /**
+          * The tile entry's `drill { … }`, by dimension: for a dimension it
+          * names, it is the field's drill on this tile in place of the model's
+          * tag ({@link withEntryDrill}).
+          */
+         entries?: Readonly<Record<string, EntryDrill>>,
+      ): DrillBinding => {
+         const read = (field: DrillField) => withEntryDrill(field, entries);
+         return {
+            canDrill: (field) =>
+               canDrillTag(read(field)) || (rows && canDrillRows(field)),
+            onClick: (payload) =>
+               onClick({
+                  ...payload,
+                  ...(payload.field === undefined
+                     ? {}
+                     : { field: read(payload.field) }),
+                  ...(context === undefined ? {} : { context }),
+                  ...(rows ? {} : { noRows: true }),
+               }),
+         };
+      },
       [onClick, canDrillTag, canDrillRows],
    );
 

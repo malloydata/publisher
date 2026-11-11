@@ -18,6 +18,7 @@ import { isEditSearch } from "../../common/documentRoutes";
 import { usePackageRoute } from "../../common/usePackageRoute";
 import ReportPage from "../ReportPage/ReportPage";
 import RoutedDocument from "./RoutedDocument";
+import OlderNotebookNotice from "./OlderNotebookNotice";
 import { PAGE_FRAME_SX } from "../pageFrame";
 
 function ModelPage() {
@@ -155,7 +156,16 @@ function ModelPage() {
       );
    }
    if (modelPath?.endsWith(".malloynb")) {
-      // A legacy `.malloynb` is a linear report, opened by its own path.
+      // A legacy `.malloynb` is a linear report, opened by its own path, and
+      // never edited: `?edit` on it says so.
+      if (isEditSearch(search))
+         return (
+            <OlderNotebookNotice
+               environmentName={params.environmentName as string}
+               packageName={params.packageName as string}
+               path={modelPath}
+            />
+         );
       return (
          <ReportPage
             environmentName={params.environmentName}

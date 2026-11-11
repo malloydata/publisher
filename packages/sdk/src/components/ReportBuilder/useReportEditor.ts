@@ -4,6 +4,7 @@
 import { useCallback } from "react";
 import { type DashboardDocument } from "./document";
 import { spliceDashboardDocument, tileFileKey } from "./spliceDocument";
+import { normalizeTileForms } from "./tileForm";
 import {
    type DocumentEditor,
    type SaveHandler,
@@ -57,5 +58,6 @@ export function useReportEditor(options: {
       ...rest,
       splice,
       structural: tilesChanged,
+      normalize: normalizeTileForms,
    });
 }

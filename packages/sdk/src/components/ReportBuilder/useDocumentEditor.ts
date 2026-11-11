@@ -119,6 +119,8 @@ export interface DocumentEditorOptions<T> {
    structural?: (saved: T, document: T) => boolean;
    /** Whether saving `document` over `saved` makes the history unsafe to step back into; the stack is then emptied on save. */
    clearsHistory?: (saved: T, document: T) => boolean;
+   /** Put an edited draft into the document's canonical form, after every change and before it is compared or kept; `before` is the state it was made from. */
+   normalize?: (draft: T, before: T) => void;
 }
 
 export function useDocumentEditor<T>(
@@ -129,6 +131,7 @@ export function useDocumentEditor<T>(
       onSave,
       structural: isStructural,
       clearsHistory: isClearing,
+      normalize,
    } = options;
    const [history, setHistory] = useState<History<T>>({
       stack: [options.document],
@@ -176,26 +179,30 @@ export function useDocumentEditor<T>(
       | undefined
    >(undefined);
 
-   const update = useCallback((change: (draft: T) => void) => {
-      setError(undefined);
-      setHistory((previous) => {
-         const draft = structuredClone(previous.stack[previous.index]);
-         change(draft);
-         // A change that changes nothing does not deserve a history entry;
-         // otherwise a click that sets a value to what it already was makes
-         // undo appear broken.
-         if (
-            JSON.stringify(draft) ===
-            JSON.stringify(previous.stack[previous.index])
-         )
-            return previous;
-         // Editing after undo discards the redo tail, which is what every
-         // editor does and what a reader expects.
-         const kept = previous.stack.slice(0, previous.index + 1);
-         const stack = [...kept, draft].slice(-HISTORY_LIMIT);
-         return { stack, index: stack.length - 1 };
-      });
-   }, []);
+   const update = useCallback(
+      (change: (draft: T) => void) => {
+         setError(undefined);
+         setHistory((previous) => {
+            const draft = structuredClone(previous.stack[previous.index]);
+            change(draft);
+            normalize?.(draft, previous.stack[previous.index]);
+            // A change that changes nothing does not deserve a history entry;
+            // otherwise a click that sets a value to what it already was makes
+            // undo appear broken.
+            if (
+               JSON.stringify(draft) ===
+               JSON.stringify(previous.stack[previous.index])
+            )
+               return previous;
+            // Editing after undo discards the redo tail, which is what every
+            // editor does and what a reader expects.
+            const kept = previous.stack.slice(0, previous.index + 1);
+            const stack = [...kept, draft].slice(-HISTORY_LIMIT);
+            return { stack, index: stack.length - 1 };
+         });
+      },
+      [normalize],
+   );
 
    const undo = useCallback(() => {
       setError(undefined);

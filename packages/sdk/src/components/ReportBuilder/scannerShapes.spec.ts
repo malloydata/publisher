@@ -101,7 +101,8 @@ source: a is one extend {
 describe("a SQL literal that could be mistaken for the next declaration", () => {
    // declarationExtent: `file:///…` reaches for `<word>:` just as readily as a
    // real declaration does. Read as one, it would end the source's extent at
-   // that line — an anchor inside the SQL text rather than after the block.
+   // that line — an anchor inside the SQL text rather than after the block,
+   // which is where a tile's query is written.
    it("does not read a URI inside a SQL literal as the next declaration", async () => {
       const source = `## artifact { title="T" tiles=["s -> v"] }
 source: s is duckdb.sql("""
@@ -115,15 +116,12 @@ file:///data/orders.csv
          d.tiles.push({
             name: "w",
             source: "s",
-            declaration: { kind: "reference", from: "vw" },
+            declaration: { kind: "named", from: "vw" },
+            label: "W",
          });
       });
       expect(out).toContain(
-         '""") extend {\n  view: v is { group_by: a }\n\n  view: w is vw\n}',
-      );
-      // Never inside the literal, and never ahead of the source line.
-      expect(out.indexOf("view: w")).toBeGreaterThan(
-         out.indexOf('""") extend'),
+         '""") extend {\n  view: v is { group_by: a }\n}\n\n# label="W"\nquery: w is s -> vw\n',
       );
    });
 
@@ -159,13 +157,14 @@ source: bad is duckdb.sql("""
          d.tiles.push({
             name: "w",
             source: "bad",
-            declaration: { kind: "reference", from: "vw" },
+            declaration: { kind: "named", from: "vw" },
+            label: "W",
          });
       });
       expect(out).toContain("  select {'region': 'West'} as s");
-      expect(out).toContain("view: w is vw");
-      expect(out.indexOf("view: w is vw")).toBeGreaterThan(
-         out.indexOf('""") extend {'),
+      expect(out).toContain("query: w is bad -> vw");
+      expect(out.indexOf("query: w is bad -> vw")).toBeGreaterThan(
+         out.indexOf("  view: x is y\n}"),
       );
    });
 });

@@ -8,9 +8,9 @@ import {
 } from "../RenderedResult/chartShapeProblem";
 import { exportedSources } from "../DocumentCreate/exportedSources";
 import { CHART_TAGS } from "./chartLine";
-import { chartOf, docOf } from "./viewAnnotations";
+import { authorPaletteOf, chartOf, docOf, labelOf } from "./viewAnnotations";
 
-export { chartOf, docOf };
+export { authorPaletteOf, chartOf, docOf, labelOf };
 
 export { CHART_TAGS };
 
@@ -37,10 +37,17 @@ export interface CatalogField {
 
 export interface CatalogView {
    name: string;
+   /** Its `# label`: what the reader titles a tile naming it. */
+   label?: string;
    /** From a `#(doc)` annotation, which is what a picker should show. */
    description?: string;
    /** `bar_chart`, `line_chart`, `shape_map`, … if the view declares one. */
    chart?: string;
+   /**
+    * The view sets a multi-colour `# theme.palette.series`. A colour on a
+    * tile of it would replace that palette, so the builder does not offer one.
+    */
+   authorPalette?: true;
    /** Every output column is an aggregate, which is the only shape `big_value` renders. Absent when the model did not say. */
    aggregateOnly?: boolean;
    /** How many of its output columns are group-bys and how many are totals, when the model said: what decides which charts can draw it. */
@@ -186,10 +193,14 @@ function catalogViewOf(
 ): CatalogView {
    const description = docOf(view.annotations);
    const chart = chartOf(view.annotations);
+   const authorPalette = authorPaletteOf(view.annotations);
+   const label = labelOf(view.annotations);
    return {
       name: view.name,
+      ...(label ? { label } : {}),
       ...(description ? { description } : {}),
       ...(chart ? { chart } : {}),
+      ...(authorPalette ? { authorPalette } : {}),
       ...shape,
    };
 }

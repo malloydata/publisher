@@ -73,7 +73,7 @@ A finding's category tells the reader *what kind of problem*, independent of sev
 | `correctness-type` | Date/time function vs property confusion, boolean-column quoting, `::number` cast misses |
 | `queries` | Chart view multi-aggregate, `order_by` joined-field aliasing, trailing commas, inline measure definitions (DRY) |
 | `docs` | `#(doc)` presence, doc-string quality (no jargon), tag ordering |
-| `rendering` | Scale on measure def (no), `# big_value` missing `# label`, sparkline `# hidden`+`.sparkline=` pair, `# number=id` on years/IDs |
+| `rendering` | Scale on measure def (no), `# big_value` missing `# label`, `# big_value { sparkline= / comparison_field= }` on the measure, not the view, `# number=id` on years/IDs |
 | `structure` | Base vs joined split, `primary_key:` declared, `include {}` curation on base sources, source-definition order |
 | `governance` | Access modifiers explicit when `##! experimental.access_modifiers` is on, `public: *` softened to a documentation-discipline nudge |
 | `style` | Reserved-word aliases, business-language naming |

@@ -174,6 +174,7 @@ import { sqlLiteral } from "./introspection_sql";
 import { isQuotedIdentifierPath, quoteManifestTablePath } from "./quoting";
 import { Model } from "./model";
 import {
+   type DeclaringFilesResolver,
    PackageModelPolicy,
    type OffSurfaceContext,
    type QueryBoundaryPolicy,
@@ -819,6 +820,28 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
       this.modelPolicy.setSiblingModelDefResolver(
          (url: string): ModelDef | undefined => byUrl.get(url)?.getModelDef(),
       );
+      const declaringFiles: DeclaringFilesResolver = (name, askingPath) => {
+         const exploreSet = this.exploreSet();
+         const found: ReturnType<DeclaringFilesResolver> = [];
+         for (const [modelPath, model] of this.models) {
+            if (modelPath === askingPath) continue;
+            if (
+               exploreSet &&
+               !exploreSet.has(modelPath) &&
+               !this.isServedReport(modelPath)
+            )
+               continue;
+            const def = model.getModelDef();
+            if (!def?.exports.includes(name) || model.carriesAnyGate())
+               continue;
+            found.push({
+               modelPath,
+               kind: def.contents[name]?.type === "query" ? "query" : "source",
+            });
+         }
+         return found;
+      };
+      this.modelPolicy.setDeclaringFilesResolver(declaringFiles);
    }
 
    static async create(
@@ -2847,19 +2870,26 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
             : undefined;
       };
       const tileDefinitions = new Set<string>();
+      const anyTileDefinitions = new Set<string>();
       for (const report of this.reports.values()) {
-         if (report.layout !== "grid") continue;
          for (const tile of queryTiles(report.manifest?.tiles)) {
             const key = identity(report.path, tile.query);
-            if (key) tileDefinitions.add(key);
+            if (!key) continue;
+            anyTileDefinitions.add(key);
+            if (report.layout === "grid") tileDefinitions.add(key);
          }
       }
-      const kept = dropGridTileLayoutFindings(raw, (finding) => {
+      const isIn = (keys: Set<string>) => (finding: ApiPackageWarning) => {
          if (finding.model === undefined || finding.subject === undefined)
             return false;
          const key = identity(finding.model, finding.subject);
-         return key !== undefined && tileDefinitions.has(key);
-      });
+         return key !== undefined && keys.has(key);
+      };
+      const kept = dropGridTileLayoutFindings(
+         raw,
+         isIn(tileDefinitions),
+         isIn(anyTileDefinitions),
+      );
       // One line per checked view, as the check logged them before. A finding
       // with no subject is the check itself not finishing, which
       // hydrateWorkerModels already logged with its cause.
@@ -3289,6 +3319,11 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
          title: manifest?.title ?? listing.title ?? report.name,
          description: manifest?.description ?? listing.description,
          editable: report.path.endsWith(MODEL_FILE_SUFFIX),
+         ...(manifest?.givens && {
+            givenNames: manifest.givens
+               .map((given) => given.name)
+               .filter((name): name is string => typeof name === "string"),
+         }),
          ...(error !== undefined && { error }),
       };
    }

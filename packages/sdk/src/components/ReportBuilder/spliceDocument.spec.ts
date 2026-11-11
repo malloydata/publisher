@@ -11,7 +11,13 @@ import {
    spliceFailed,
    syntaxErrors,
 } from "./spliceDocument";
-import { openDocument, refused, splice, spliced } from "./testing/fixtures";
+import {
+   edited,
+   openDocument,
+   refused,
+   splice,
+   spliced,
+} from "./testing/fixtures";
 import { whatMoved } from "./__test__/inventory";
 import { lintNotebookText } from "../../../../server/src/service/notebook_lint";
 import { queryTile } from "./testing/fixtures";
@@ -1387,66 +1393,57 @@ source: a is one extend {
 }`);
    });
 
-   it("adds a tile inside the extension of the source it reads", async () => {
-      const out = await spliced(SOURCE, (d) => {
+   // A tile with settings of its own is a query of the report's own, written
+   // after the file's last source; the extension is left as it was.
+   it("adds a tile with settings as a query of the report's own, after the last source", async () => {
+      const out = await edited(SOURCE, (d) => {
          d.tiles.push({
-            name: "by_state_tile",
+            name: "sales_by_state",
             source: "a",
-            declaration: { kind: "reference", from: "sales_by_state" },
+            declaration: { kind: "inherited" },
             colspan: 6,
             label: "By state",
             filters: [{ field: "category", given: "CATEGORY" }],
          });
       });
       expect(out).toContain(
-         'tiles=["a -> by_cat", "a -> by_brand", "a -> by_state_tile" { colspan=6 }]',
+         'tiles=["a -> by_cat", "a -> by_brand", "sales_by_state_tile" { colspan=6 }]',
       );
       expect(out).toContain(`  # colspan=6
   view: by_brand is by_brand_view
+}
 
-  # label="By state"
-  view: by_state_tile is sales_by_state + { where: category ~ $CATEGORY }
-}`);
+# label="By state"
+query: sales_by_state_tile is a -> sales_by_state + { where: category ~ $CATEGORY }
+`);
    });
 
-   // A source the file imports BY NAME can take a new extension; the builder
-   // never adds an import, so that is the only kind that can.
-   it("adds a tile on a named import by declaring a new extension", async () => {
+   // A source the file imports BY NAME is one a tile can name directly; the
+   // builder declares no extension to hold it.
+   it("adds a tile on a named import by naming its view, declaring no source", async () => {
       const source = `## artifact { title="T" tiles=["a -> x"] }
 import { one, products } from "../m.malloy"
 
 source: a is one extend {
   view: x is vx
 }`;
-      const out = await spliced(source, (d) => {
-         d.sources.push({ name: "products_tiles", base: "products" });
+      const out = await edited(source, (d) => {
          d.tiles.push({
-            name: "by_brand_tile",
-            source: "products_tiles",
-            declaration: { kind: "reference", from: "by_brand" },
-            colspan: 4,
+            name: "by_brand",
+            source: "products",
+            declaration: { kind: "inherited" },
          });
       });
-      expect(out)
-         .toBe(`## artifact { title="T" tiles=["a -> x", "products_tiles -> by_brand_tile" { colspan=4 }] }
-import { one, products } from "../m.malloy"
-
-source: a is one extend {
-  view: x is vx
-}
-
-source: products_tiles is products extend {
-  view: by_brand_tile is by_brand
-}
-`);
+      expect(out).toBe(
+         source.replace('"a -> x"', '"a -> x", "products -> by_brand"'),
+      );
    });
 
    const addOnOrderItems = (d: DashboardDocument) => {
-      d.sources.push({ name: "orders_tiles", base: "order_items" });
       d.tiles.push({
-         name: "t",
-         source: "orders_tiles",
-         declaration: { kind: "reference", from: "by_category" },
+         name: "by_category",
+         source: "order_items",
+         declaration: { kind: "inherited" },
       });
    };
 
@@ -1463,7 +1460,7 @@ source: products_tiles is products extend {
    });
 
    // A whole-file import brings every source the model exports, so the builder
-   // adds no named import and the extension has to be accepted without one.
+   // adds no named import and the tile has to be accepted without one.
    it("accepts a tile on a source a whole-file import carries", async () => {
       const r = await splice(SOURCE, addOnOrderItems);
       expect(r.ok).toBe(true);
@@ -1481,15 +1478,26 @@ describe("spliceDashboardDocument: what it refuses", () => {
       if (spliceFailed(r)) expect(r.reason).toContain("whole-file");
    });
 
-   // An inherited tile's tags live on the model's view, and the builder never
-   // writes model files. Saying so beats writing a tag onto the wrong object.
-   it("refuses to restyle a tile declared on its source", async () => {
+   // A served view's tags live on the model's view, and the builder never
+   // writes model files: a setting makes the tile a query of the report's own.
+   // Handed one directly, the writer says so rather than tag the wrong object.
+   it("writes a setting on a served view as a query of the report's own, never on the view", async () => {
       const source = `## artifact { title="T" tiles=["orders -> by_brand"] }\nimport { orders } from '../orders.malloy'`;
+      expect(
+         await edited(source, (d) => {
+            queryTile(d, 0).label = "Brands";
+         }),
+      ).toBe(`## artifact { title="T" tiles=["by_brand_tile"] }
+import { orders } from '../orders.malloy'
+
+# label="Brands"
+query: by_brand_tile is orders -> by_brand
+`);
       const r = await splice(source, (d) => {
          queryTile(d, 0).label = "Brands";
       });
       expect(r.ok).toBe(false);
-      if (spliceFailed(r)) expect(r.reason).toContain("declared on its source");
+      if (spliceFailed(r)) expect(r.reason).toContain("names a served view");
    });
 
    // Its layout is not the model's, though: the entry is this report's own.
@@ -1504,6 +1512,14 @@ describe("spliceDashboardDocument: what it refuses", () => {
       );
       const back = await openDocument(out);
       expect(back.tiles[0]).toMatchObject({ colspan: 6, rowspan: 4 });
+      // A layout alone never makes a query: the tile still names the view.
+      expect(
+         await edited(source, (d) => {
+            d.tiles[0].colspan = 6;
+         }),
+      ).toBe(
+         `## artifact { title="T" tiles=["orders -> by_brand" { colspan=6 }] }\nimport { orders } from '../orders.malloy'`,
+      );
    });
 
    // A named query stays a named query: the entry is moved or dropped as
@@ -1514,7 +1530,7 @@ describe("spliceDashboardDocument: what it refuses", () => {
 import { flights } from '../flights.malloy'
 
 # bar_chart
-query: by_carrier is flights -> { group_by: carrier; aggregate: flight_count }`;
+query: by_carrier is flights -> { group_by: carrier; aggregate: flight_count } -> { select: * }`;
 
       it("moves with its entry spelled as written", async () => {
          const out = await spliced(NAMED, (d) => {
@@ -1522,7 +1538,7 @@ query: by_carrier is flights -> { group_by: carrier; aggregate: flight_count }`;
          });
          expect(out).toContain('tiles=["flights -> by_month", "by_carrier"]');
          expect(out).toContain(
-            "# bar_chart\nquery: by_carrier is flights -> { group_by: carrier; aggregate: flight_count }",
+            "# bar_chart\nquery: by_carrier is flights -> { group_by: carrier; aggregate: flight_count } -> { select: * }",
          );
       });
 
@@ -1536,11 +1552,19 @@ query: by_carrier is flights -> { group_by: carrier; aggregate: flight_count }`;
          expect(out).toContain('tiles=["flights -> by_month", by_carrier]');
       });
 
-      it("leaves its query in the file when the tile is removed", async () => {
+      it("takes its query out with the tile when nothing else names it", async () => {
          const out = await spliced(NAMED, (d) => {
             d.tiles.shift();
          });
          expect(out).toContain('tiles=["flights -> by_month"]');
+         expect(out).not.toContain("query: by_carrier");
+      });
+
+      it("keeps its query when another query is built on it", async () => {
+         const built = `${NAMED}\nquery: by_carrier_top is by_carrier -> { select: * limit: 5 }\n`;
+         const out = await spliced(built, (d) => {
+            d.tiles.shift();
+         });
          expect(out).toContain("query: by_carrier is flights");
       });
 
@@ -1594,20 +1618,20 @@ query: by_carrier is flights -> { group_by: carrier; aggregate: flight_count }`;
          await refused(SOURCE, (d) => {
             d.sources[0].base = "other_orders";
          }),
-      ).toContain("cannot be changed or removed");
+      ).toContain("does not add, change or remove a source");
       expect(
          await refused(SOURCE, (d) => {
             d.sources = [];
          }),
-      ).toContain("cannot be changed or removed");
+      ).toContain("does not add, change or remove a source");
    });
 
-   it("refuses a new extension that no tile reads", async () => {
+   it("refuses a new extension, whether or not a tile reads it", async () => {
       expect(
          await refused(SOURCE, (d) => {
             d.sources.push({ name: "b", base: "scoped_orders" });
          }),
-      ).toContain("needs a tile on it");
+      ).toContain("does not add, change or remove a source");
    });
 
    it("refuses a drill that names no destination", async () => {
@@ -2382,66 +2406,48 @@ source: regional is duckdb.sql("""
       );
    });
 
-   // planAddedTiles's `close`: a new view on THIS source is inserted before
-   // its own closing brace, which is AFTER the SQL literal — never before the
-   // `source:` line, where the old bug anchored every insertion.
-   it("adds a tile inside the extension, after the SQL literal", async () => {
-      const out = await spliced(MULTILINE, (d) => {
+   // planAddedTiles's anchor: a tile's query goes after the LAST source in
+   // the file, which has to know where this one actually ends: after its
+   // closing brace, past the SQL literal, never at its `source:` line.
+   it("writes a tile's query after the source's real close, past the SQL literal", async () => {
+      const out = await edited(MULTILINE, (d) => {
          d.tiles.push({
-            name: "by_year",
+            name: "year_view",
             source: "regional",
-            declaration: { kind: "reference", from: "year_view" },
+            declaration: { kind: "inherited" },
+            label: "By year",
          });
       });
-      expect(out).toContain(`  view: by_month is month_view
-
-  view: by_year is year_view
-}`);
-      // Never inside the literal, and never ahead of the `source:` line.
-      expect(out.indexOf("view: by_year")).toBeGreaterThan(
-         out.indexOf('""") extend'),
+      expect(out).toBe(
+         MULTILINE.replace(
+            '"regional -> by_month"]',
+            '"regional -> by_month", "year_view_tile"]',
+         ) +
+            '\n\n# label="By year"\nquery: year_view_tile is regional -> year_view\n',
       );
    });
 
-   // planAddedTiles's `lastExtensionEnd`: anchoring a brand NEW extension after
-   // the LAST one in the file has to know where this one actually ends.
-   it("anchors a new extension after this source's real close, not its source line", async () => {
-      const out = await spliced(MULTILINE, (d) => {
-         d.sources.push({ name: "other_tiles", base: "other_source" });
-         d.tiles.push({
-            name: "by_year",
-            source: "other_tiles",
-            declaration: { kind: "reference", from: "year_view" },
-         });
-      });
-      const sourceEnd = out.indexOf('""") extend {\n');
-      const newExtension = out.indexOf("source: other_tiles");
-      expect(newExtension).toBeGreaterThan(sourceEnd);
-      expect(out).toContain(`source: other_tiles is other_source extend {
-  view: by_year is year_view
-}`);
-   });
-
-   // A brace inside the `"""` span is the one case the round-trip gate cannot
-   // catch: a spliced-in `view:` would read back as belonging to the source
-   // above it either way. Refused outright rather than risked.
-   // A brace inside the literal used to be unresolvable by a text scan, so
-   // this refused. The lexer knows where the literal ends, so the tile lands
-   // inside the extension instead.
-   it("adds a tile past a brace inside the SQL literal", async () => {
+   // A brace inside the literal used to be unresolvable by a text scan. The
+   // lexer knows where the literal ends, so the query lands after the source.
+   it("writes a tile's query past a brace inside the SQL literal", async () => {
       const source = MULTILINE.replace(
          "select region, sum(amount) as total from orders group by 1",
          "select {'region': 'West'} as region",
       );
-      const out = await spliced(source, (d) => {
+      const out = await edited(source, (d) => {
          d.tiles.push({
-            name: "by_year",
+            name: "year_view",
             source: "regional",
-            declaration: { kind: "reference", from: "year_view" },
+            declaration: { kind: "inherited" },
+            label: "By year",
          });
       });
       expect(out).toContain("select {'region': 'West'} as region");
-      expect(out).toContain("view: by_year is year_view");
+      expect(
+         out.endsWith(
+            '}\n\n# label="By year"\nquery: year_view_tile is regional -> year_view\n',
+         ),
+      ).toBe(true);
    });
 });
 
@@ -2699,17 +2705,21 @@ describe("spliceDashboardDocument: a CRLF file", () => {
    const bareNewlines = (text: string) => text.match(/(?<!\r)\n/g)?.length ?? 0;
 
    it("writes its own line ending into every line it inserts", async () => {
-      const out = await spliced(CRLF, (d) => {
+      const out = await edited(CRLF, (d) => {
          queryTile(d, 0).label = "Categories";
          queryTile(d, 1).filters = [{ field: "brand", given: "BRAND" }];
          queryTile(d, 1).subtitle = "Top brands";
          d.tiles.push({
-            name: "by_state",
+            name: "by_state_view",
             source: "a",
-            declaration: { kind: "reference", from: "by_state_view" },
+            declaration: { kind: "inherited" },
+            label: "By state",
          });
       });
       expect(out).toContain('# label="Categories"\r\n');
+      expect(out).toContain(
+         '# label="By state"\r\nquery: by_state_view_tile is a -> by_state_view\r\n',
+      );
       expect(out).toContain("by_state");
       expect(bareNewlines(out)).toBe(0);
    });

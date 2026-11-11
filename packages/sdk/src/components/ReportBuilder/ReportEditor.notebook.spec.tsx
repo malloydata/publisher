@@ -210,7 +210,7 @@ describe("ReportEditor as a notebook", () => {
          mount({ dashboardName: "old.malloynb" }, onEvent);
          expect(
             await screen.findByText(
-               /a \.malloynb notebook is read, not edited/,
+               /this is an older notebook\. It can't be edited here/,
             ),
          ).toBeDefined();
          expect(getModel).not.toHaveBeenCalled();
