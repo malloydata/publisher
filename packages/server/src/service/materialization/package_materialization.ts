@@ -270,6 +270,8 @@ export class PackageMaterialization {
          return performance.now() - buildPlanPhaseStart;
       } catch (err) {
          this.buildPlanFailed = true;
+         // Nothing from the previous load describes this one.
+         this.rollupsOverStoredBase = [];
          recordBuildPlanComputeFailed();
          logger.warn(
             `Failed to compute build plan for package ${this.owner.packageName()}`,
@@ -587,18 +589,15 @@ export class PackageMaterialization {
    }
 
    /**
-    * Warnings for `#@ persist` sources Malloy's build walk did not plan (e.g.
-    * a filtered pass-through), which would otherwise silently serve
-    * live. Independent of {@link buildPlan}: a package whose only persist
-    * source is dropped has no plan.
-    */
-   /**
     * One warning per `storage=` base whose `#@ preaggregate storage=` rollups
     * were left out: they can neither build nor serve over a stored base yet
     * (#6293), so the base serves from its stored table and the rollups do not
     * exist.
     */
    rollupsOverStoredBaseWarnings(): ApiPackageWarning[] {
+      // With the storage tier off the base itself serves live, which
+      // storageWarnings already says; "reads the stored table" would be false.
+      if (getPersistStorageMode() === "off") return [];
       return this.rollupsOverStoredBase.map((r) => ({
          ...(r.modelPath ? { model: r.modelPath } : {}),
          subject: r.baseName,
@@ -612,6 +611,12 @@ export class PackageMaterialization {
       }));
    }
 
+   /**
+    * Warnings for `#@ persist` sources Malloy's build walk did not plan (e.g.
+    * a filtered pass-through), which would otherwise silently serve
+    * live. Independent of {@link buildPlan}: a package whose only persist
+    * source is dropped has no plan.
+    */
    droppedPersistWarnings(): ApiPackageWarning[] {
       return this.droppedPersistSources.map((d) => ({
          model: d.modelPath,

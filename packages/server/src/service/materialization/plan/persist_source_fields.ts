@@ -77,3 +77,10 @@ export interface PersistSourceGateOutcome {
    classification: PersistSourceGateClassification;
    attributed: boolean;
 }
+
+/** The `storage=` destination a persist source declares, trimmed; undefined for none. */
+export function declaredStorage(
+   persistSource: PersistSource,
+): string | undefined {
+   return deriveAnnotationFields(persistSource).storage?.trim() || undefined;
+}

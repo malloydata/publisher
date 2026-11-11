@@ -11,11 +11,7 @@ Curated release notes for `@malloy-publisher/sdk`, `@malloy-publisher/app`, and 
 
 The `Release (NPM + Docker + PyPI)` workflow (`.github/workflows/release.yml`) creates GitHub releases automatically with a standard header (NPM/Docker links) plus an auto-generated "What's Changed" PR list via `gh release create --generate-notes`. That auto list is sufficient for routine patch releases.
 
-For releases that warrant narrative — redesigns, breaking changes, migration steps — write a `## [Unreleased] — A rollup over a `storage=` base is left out instead of failing its build
-
-A `#@ preaggregate storage=` rollup on a source that is itself `#@ persist storage=` could never work: the chained storage build recovers a downstream's definition from its model file, which a synthesized rollup does not have, so the build failed with an error naming an internal mechanism; and had it built, the base's own stored table claims the name the rollup would be served under, so nothing would have read it. Such rollups are now left out of the build plan and every run, so no build is attempted, and the package carries a `preaggregate-over-stored-base` warning (`warn`, one per base). The base still builds and serves from its stored table. No wire enum changes: the rollup is absent from `BuildPlan.sources`, not added to `refusedSources`.
-
-## [Unreleased]` section below, in the PR that changes the behaviour. **The release workflow does almost all of the rest**: `prepare` restamps every `[Unreleased]` heading with the release's version on the `release/v<version>` branch it publishes from, in the same commit as the version bump, and `gh-release` appends those sections to the release page alongside the generated PR list. Nothing to paste, and nothing to remember while writing.
+For releases that warrant narrative — redesigns, breaking changes, migration steps — write a `## [Unreleased]` section below, in the PR that changes the behaviour. **The release workflow does almost all of the rest**: `prepare` restamps every `[Unreleased]` heading with the release's version on the `release/v<version>` branch it publishes from, in the same commit as the version bump, and `gh-release` appends those sections to the release page alongside the generated PR list. Nothing to paste, and nothing to remember while writing.
 
 One step is a human's: someone has to open `release/v<version>` as a PR into `main` and merge it. `main` requires a pull request, so the release cannot land it itself, and the job summary prints the link. Until it merges the headings on `main` still read `[Unreleased]` and the next release would ship them twice, so the `Release sync` check (`release-sync.yml`) fails on `main` and on every pull request until it does. Whoever cuts the release owns that PR; the `publisher-release` skill makes it a step.
 
@@ -24,6 +20,10 @@ Both steps handle several sections, which matters because unrelated narratives a
 Give the heading a title — `## [Unreleased] — what changed`, with an em dash, a colon or a hyphen. The version is already the release's own title, so the marker is stripped and the title is what appears on the page; a bare `## [Unreleased]` has nothing to put there and fails CI on the PR that writes it.
 
 Two consequences worth knowing. A section merged to `main` ships in the **next** release, whenever that is, so do not write one for work that has not landed. And a heading already stamped with a version is history: a follow-up that changes that behaviour opens a **new** `[Unreleased]` section referencing the shipped version by number, rather than editing the old one.
+
+## [Unreleased] — A rollup over a `storage=` base is left out instead of failing its build
+
+A `#@ preaggregate storage=` rollup on a source that is itself `#@ persist storage=` could never work: the chained storage build recovers a downstream's definition from its model file, which a synthesized rollup does not have, so the build failed with an error naming an internal mechanism; and had it built, the base's own stored table claims the name the rollup would be served under, so nothing would have read it. Such rollups are now left out of the build plan and every run, so no build is attempted, and the package carries a `preaggregate-over-stored-base` warning (`warn`, one per base). The base still builds and serves from its stored table. No wire enum changes: the rollup is absent from `BuildPlan.sources`, not added to `refusedSources`.
 
 ## [Unreleased] — Pre-aggregation routes through a model that imports the rollup's base
 

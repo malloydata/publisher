@@ -268,6 +268,60 @@ describe("executeInstructedBuild", () => {
       ).toContain("Permission denied while writing to dataset analytics");
    });
 
+   it("refuses a host-instructed rollup over a stored base with its reason, not a chained-build error (#6293)", async () => {
+      const runSQL = sinon.stub().resolves();
+      const orders = fakeSource({
+         name: "orders",
+         sourceEntityId: "b0r0r0r0r0r0r0r0",
+         annotationFields: { storage: "lake" },
+      });
+      const rollup = fakeSource({
+         name: "orders__preagg__category",
+         sourceEntityId: "brollrollrollroll",
+         annotationFields: { storage: "lake" },
+      });
+      const compiled = {
+         builds: [
+            {
+               connectionName: "duckdb",
+               order: ["orders", "orders__preagg__category"],
+               dependsOn: {},
+            },
+         ],
+         sources: { orders, orders__preagg__category: rollup },
+         connectionDigests: { duckdb: "dig" },
+         connections: new Map([
+            ["duckdb", { runSQL } as unknown as MalloyConnection],
+         ]),
+         preaggregatePlans: {
+            orders__preagg__category: {
+               baseSourceName: "orders",
+               baseSourceID: "orders",
+               grainDimensions: ["category"],
+               measures: [],
+            },
+         },
+      };
+      // Only the rollup instructed: refused, so the run has nothing to build.
+      const err = await callExecute(
+         compiled,
+         [
+            {
+               sourceEntityId: "brollrollrollroll",
+               materializedTableId: "mt-r",
+               physicalTableName: "r_v1",
+               realization: "COPY",
+            },
+         ],
+         {},
+      ).then(
+         () => undefined,
+         (e: unknown) => e as Error,
+      );
+      expect(err?.message).toContain("cannot build or serve yet");
+      expect(runSQL.called).toBe(false);
+   });
+
    it("redacts a failed source's reason before recording it", async () => {
       // The reason is the warehouse's own text and travels to a consumer that
       // persists and renders it. A connection error commonly echoes the

@@ -25,6 +25,7 @@ import {
    deriveAnnotationFields,
    sourcesInBuildOrder,
    tierGateInputs,
+   storedBaseOfRollup,
 } from "../plan/build_plan";
 import {
    assertMaterializationEligible,
@@ -407,6 +408,22 @@ export class InstructedBuild {
       // instructs a refused source, so reaching the catch means the plan and
       // this gate disagreed.
       try {
+         // A host instructing from an older plan can still name a rollup over
+         // a stored base, which can never build (storedBaseOfRollup). Refuse
+         // it with the reason, rather than fail inside the chained build.
+         // No `reason` enum value: the refusal rides `failures` as text.
+         const storedBase = storedBaseOfRollup(
+            compiled,
+            persistSource.sourceID,
+         );
+         if (storedBase) {
+            throw new MaterializationEligibilityError({
+               message:
+                  `'${persistSource.name}' is a '#@ preaggregate storage=' rollup ` +
+                  `over '${storedBase.name}', which is itself persisted with ` +
+                  `'storage=': a rollup over a stored base cannot build or serve yet`,
+            });
+         }
          // Host-supplied storage instructions are gated too, not trusted.
          // Skipped when the mode is off: the destination refusal owns that.
          const storage =

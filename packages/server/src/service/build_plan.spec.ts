@@ -1117,6 +1117,44 @@ source: orders is duckdb.sql("""SELECT * FROM (VALUES (10, 'A')) AS t(amount, ca
          expect(Object.values(plan?.refusedSources ?? {})).toEqual([]);
          // Reported once per base, for the package warning.
          expect(rollupsOverStoredBase).toMatchObject([{ baseName: "orders" }]);
+         // Out of the graph too: every node is planned or refused.
+         const nodes = (plan?.graphs ?? []).flatMap((g) =>
+            g.nodes.flat().map((n) => n.sourceID),
+         );
+         for (const id of nodes) {
+            expect(Object.keys(plan?.sources ?? {})).toContain(id);
+         }
+      },
+      { timeout: 20000 },
+   );
+
+   it(
+      "does not let a left-out rollup over a stored base refuse another model's rollup for a name collision",
+      async () => {
+         const pkg = await packages.create({
+            "a.malloy": `##! experimental { persistence composite_sources }
+#@ persist storage="lake"
+source: orders is duckdb.sql("""SELECT * FROM (VALUES (10, 'A')) AS t(amount, category)""") -> { select: * } extend {
+  #@ preaggregate grain="category" storage="lake"
+  measure: total is amount.sum()
+}
+`,
+            "b.malloy": `##! experimental { persistence composite_sources }
+source: orders is duckdb.sql("""SELECT * FROM (VALUES (99, 'A')) AS t(amount, category)""") extend {
+  #@ preaggregate grain="category" storage="lake"
+  measure: total is amount.sum()
+}
+`,
+         });
+
+         const { plan } = await computePackageBuildPlan(pkg);
+
+         expect(Object.values(plan?.refusedSources ?? {})).toEqual([]);
+         const rollups = Object.values(plan?.sources ?? {}).filter(
+            (s) => s.origin === "preaggregate",
+         );
+         // b.malloy's rollup builds; a.malloy's is left out.
+         expect(rollups.map((r) => r.modelPath)).toEqual(["b.malloy"]);
       },
       { timeout: 20000 },
    );

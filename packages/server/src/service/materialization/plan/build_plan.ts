@@ -57,6 +57,7 @@ import {
    deriveColumns,
    type PersistSourceGateClassification,
    type PersistSourceGateOutcome,
+   declaredStorage,
 } from "./persist_source_fields";
 import { quoteIdentifier } from "../../quoting";
 
@@ -959,7 +960,6 @@ export async function resolveConnectionDigests(
    return connectionDigests;
 }
 
-/** Project the compiled plan into the trimmed wire BuildPlan. */
 /**
  * The base a `storage=` rollup is declared over, when that base is itself
  * persisted with `storage=`; undefined for every other source. Such a rollup
@@ -980,12 +980,11 @@ export function storedBaseOfRollup(
 ): PersistSource | undefined {
    const plan = compiled.preaggregatePlans?.[sourceID];
    const rollup = compiled.sources[sourceID];
-   if (!plan?.baseSourceID || !rollup) return undefined;
-   if (!deriveAnnotationFields(rollup).storage?.trim()) return undefined;
+   if (!plan?.baseSourceID || !rollup || !declaredStorage(rollup)) {
+      return undefined;
+   }
    const base = compiled.sources[plan.baseSourceID];
-   return base && deriveAnnotationFields(base).storage?.trim()
-      ? base
-      : undefined;
+   return base && declaredStorage(base) ? base : undefined;
 }
 
 /** Memo for {@link collidingRollups}, per compiled `sources` record. */
@@ -1017,6 +1016,8 @@ export function collidingRollups(compiled: {
    >();
    for (const [sourceID, source] of Object.entries(compiled.sources)) {
       if (!compiled.preaggregatePlans?.[sourceID]) continue;
+      // Left out of the plan entirely, so it shares no table with anyone.
+      if (storedBaseOfRollup(compiled, sourceID)) continue;
       let address: string;
       try {
          address = computeSourceEntityId(source, compiled.connectionDigests);
@@ -1066,6 +1067,7 @@ export function tierGateInputs(
    return { ...compiled, collidingRollups: collidingRollups(compiled) };
 }
 
+/** Project the compiled plan into the trimmed wire BuildPlan. */
 export function deriveBuildPlan(
    builds: SourceBuild[],
    sources: Record<string, PersistSource>,
@@ -1083,13 +1085,27 @@ export function deriveBuildPlan(
    // One level holding every source with every table it reads. A host walks
    // these edges for a rerun's upstream closure, freshness inheritance and
    // lineage, so none may be left out.
+   // A rollup over a stored base is left out of the plan (storedBaseOfRollup),
+   // so of its graph too: every node is in `sources` or `refusedSources`.
+   const leftOut = new Set(
+      Object.keys(sources).filter((sourceID) =>
+         storedBaseOfRollup(
+            { sources, preaggregatePlans: options?.preaggregatePlans },
+            sourceID,
+         ),
+      ),
+   );
    const wireGraphs: WireBuildGraph[] = builds.map((build) => ({
       connectionName: build.connectionName,
       nodes: [
-         build.order.map((sourceID) => ({
-            sourceID,
-            dependsOn: build.dependsOn[sourceID] ?? [],
-         })),
+         build.order
+            .filter((sourceID) => !leftOut.has(sourceID))
+            .map((sourceID) => ({
+               sourceID,
+               dependsOn: (build.dependsOn[sourceID] ?? []).filter(
+                  (upstream) => !leftOut.has(upstream),
+               ),
+            })),
       ],
    }));
 
@@ -1141,14 +1157,7 @@ export function deriveBuildPlan(
          } else {
             // A storage rollup over a storage= base can neither build nor
             // serve (see storedBaseOfRollup): out of the plan, warned on.
-            if (
-               storedBaseOfRollup(
-                  { sources, preaggregatePlans: options?.preaggregatePlans },
-                  sourceID,
-               )
-            ) {
-               continue;
-            }
+            if (leftOut.has(sourceID)) continue;
             // Before the other gates: a rollup sharing its table with another
             // model's must neither build nor serve, so it leaves `sources`.
             try {
