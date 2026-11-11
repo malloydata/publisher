@@ -10,6 +10,7 @@
  */
 
 import type { AtomicField, PersistSource } from "@malloydata/malloy";
+import { parseRouteTag } from "../../motly";
 import { components } from "../../../api";
 import { logger } from "../../../logger";
 import { errMessage } from "../../../utils";
@@ -45,7 +46,7 @@ export function deriveAnnotationFields(
 ): Record<string, string> {
    const out: Record<string, string> = {};
    try {
-      const tag = persistSource.annotations.parseAsTag("@").tag;
+      const tag = parseRouteTag(persistSource.annotations, "@").tag;
       for (const [key, value] of tag.entries()) {
          const text = value.text();
          if (text !== undefined) out[key] = text;

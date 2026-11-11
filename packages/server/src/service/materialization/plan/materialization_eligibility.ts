@@ -17,6 +17,7 @@ import {
    readTimeDynamicTerms,
    type DynamicTerm,
 } from "./persist_dynamic_terms";
+import { routeReadsEnv } from "../../motly";
 import { resolvePartitionColumns } from "./persist_partition";
 
 /**
@@ -654,6 +655,22 @@ export function assertTierEligible(
    plan: TierGateInputs | undefined,
    annotationFields: Record<string, string> = deriveAnnotationFields(source),
 ): void {
+   // Its `#@` route was dropped whole (parseRouteTag), so Publisher reads no
+   // `storage=` or `name=` for it while Malloy still plans it. Building would
+   // write a table into the source warehouse its author never named, so it is
+   // refused and serves live.
+   if (routeReadsEnv(source.annotations, "@")) {
+      recordEligibilityRefused("env_reference");
+      throw new MaterializationEligibilityError({
+         reason: "env_reference",
+         message:
+            `'${source.name}' cannot be materialized: one of its '#@' lines ` +
+            `reads the server's environment (@env.), so Publisher ignores all ` +
+            `of its '#@' directives (name=, storage=, queryMetadata) and serves ` +
+            `it live rather than build a table where its author did not say. ` +
+            `Move the value out of the model.`,
+      });
+   }
    if (storage) {
       assertMaterializationEligible(source, annotationFields);
       return;
