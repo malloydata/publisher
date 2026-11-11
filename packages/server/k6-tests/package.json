@@ -31,7 +31,6 @@
     "perf:baseline": "bun perf/run.ts all --preset medium --duration 60 --warmup-rounds 3",
     "perf:gen-package": "bun perf/gen-package.ts",
     "perf:report": "bun perf/report.ts",
-    "perf:router": "bun perf/router.ts",
     "typecheck:perf": "tsc --noEmit -p perf"
   },
   "resolutions": {

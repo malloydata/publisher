@@ -86,17 +86,12 @@ export interface R4Fixture {
    bindings: ServeBinding[];
    run(query: R4Query): Promise<R4Run>;
    /**
-    * One query, live (`bindings: []`) or served (`bindings`), with nothing
-    * else around it: for timing a path on its own. Setting bindings clears the
-    * memoized serve shape, so the next served query compiles it again.
+    * Point the model at `bindings` (`[]` for live), clearing the memoized
+    * serve shape, so the next served query compiles it again. Kept apart from
+    * {@link runAsIs} so a benchmark can do it outside its stopwatch.
     */
-   runWith(
-      bindings: ServeBinding[],
-      malloy: string,
-   ): Promise<{ rows: Row[]; servedFrom: string | null }>;
-   /** Point the model at `bindings`, clearing the memoized serve shape. */
    setBindings(bindings: ServeBinding[]): void;
-   /** The same query without touching bindings: for warm, repeated timing. */
+   /** One query under the bindings already set, with nothing around it. */
    runAsIs(malloy: string): Promise<{ rows: Row[]; servedFrom: string | null }>;
 }
 
@@ -159,8 +154,7 @@ export async function buildScenario(scenario: R4Scenario): Promise<R4Fixture> {
       new Map([["duckdb", duckdb]]),
       "duckdb",
    );
-   const entry = Object.keys(scenario.files)[0];
-   if (entry === undefined) throw new Error("a scenario needs a model file");
+   const [entry] = Object.keys(scenario.files);
    const urlReader = new InMemoryURLReader(
       new Map(
          Object.entries(scenario.files).map(([file, text]) => [
@@ -241,10 +235,6 @@ export async function buildScenario(scenario: R4Scenario): Promise<R4Fixture> {
 
    return {
       bindings,
-      async runWith(next, malloy) {
-         model.setServeBindings(next);
-         return runOnce(malloy);
-      },
       setBindings(next) {
          model.setServeBindings(next);
       },
@@ -323,11 +313,9 @@ export function rowDifference(
       sortKey(p, columns).localeCompare(sortKey(q, columns)),
    );
    for (let i = 0; i < a.length; i++) {
-      const x = a[i] ?? {};
-      const y = b[i] ?? {};
       for (const c of columns) {
-         if (!valuesEqual(x[c], y[c])) {
-            return `row ${i} column ${c}: ${JSON.stringify(normalizeValue(x[c]))} against ${JSON.stringify(normalizeValue(y[c]))}`;
+         if (!valuesEqual(a[i][c], b[i][c])) {
+            return `row ${i} column ${c}: ${JSON.stringify(normalizeValue(a[i][c]))} against ${JSON.stringify(normalizeValue(b[i][c]))}`;
          }
       }
    }

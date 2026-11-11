@@ -304,41 +304,56 @@ October's in parentheses where comparable.
 
 ### Router
 
-`bun run perf:router --sources N`: what today's routing decision (`Model.runQueryResults`) costs per
-query, in process, on the [R4 harness](../packages/server/tests/component/r4/harness.ts)'s real
-build-and-bind path. It has no HTTP, so it isolates the routing from transport. Materialization v2
-replaces this chain with a variant router, and its phase 1 is held to these numbers.
+`bun run perf:router --sources N` (in `packages/server`): what today's routing decision
+(`Model.runQueryResults`) costs per query, in process, on the
+[R4 harness](../packages/server/tests/component/r4/harness.ts)'s real build-and-bind path. It has no
+HTTP, so it isolates the routing from transport. Materialization v2 replaces this chain with a
+variant router, and its phase 1 is held to these numbers. The script is
+[`tests/perf/router_bench.ts`](../packages/server/tests/perf/router_bench.ts); `--rows`,
+`--iterations` and `--sources` take `--name value` or `--name=value`.
 
 The workload is a 200,000-row fact table with a `join_one` to an unstored dimension table. `--sources
 N` declares N persisted sources over the fact table, all bound. Queries read the first, so the stored
 table holds the same rows as its source and served minus live is roughly the routing overhead.
 `cheap` is one aggregate, and `grouped` a group-by. `miss` goes through the unstored join, which the
-serve shape cannot carry, so the storage variant fails to compile and the query runs live. *Warm*
-keeps the bindings, so the serve shape stays memoized. *Cold* re-sets them before each query, so each
-query compiles the shape.
+serve shape cannot carry, so the storage variant fails to compile and the query runs live; the run
+checks it reports no tier, so a storage run that fell back would fail it. *Warm* keeps the bindings,
+so the serve shape stays memoized. *Cold* re-sets them before each query, outside the stopwatch, so
+the timed query compiles the shape.
 
-Recorded on 2026-11-11, same machine as above, 30 iterations after 5 warm-up each. Each cell is
-`median · p95` ms, with served minus the live median in parentheses. Differences under ~0.5 ms are
-within the run-to-run noise.
+Each path runs on its own fixture, so measuring one never disturbs another's state, and each
+iteration times live, warm and cold in a rotating order, so no path is always measured first. The
+logger is raised to `error` while timing, so no log line falls inside the stopwatch.
 
-| sources | query   | live        | served, warm         | served, cold         |
-| ------: | ------- | ----------- | -------------------- | -------------------- |
-|       1 | cheap   | 1.65 · 2.18 | 1.98 · 2.54 (+0.33)  | 3.42 · 4.03 (+1.77)  |
-|       1 | grouped | 2.37 · 2.85 | 2.94 · 3.48 (+0.57)  | 3.76 · 4.28 (+1.39)  |
-|       1 | miss    | 2.45 · 2.74 | 2.43 · 4.07 (−0.02)  | 3.43 · 4.67 (+0.98)  |
-|       8 | cheap   | 1.19 · 1.60 | 1.65 · 2.77 (+0.46)  | 3.66 · 8.65 (+2.48)  |
-|       8 | grouped | 2.22 · 2.45 | 2.34 · 2.85 (+0.12)  | 4.49 · 5.79 (+2.27)  |
-|       8 | miss    | 2.12 · 2.63 | 2.21 · 2.69 (+0.10)  | 4.01 · 4.62 (+1.89)  |
-|      32 | cheap   | 1.07 · 1.38 | 1.24 · 1.66 (+0.18)  | 7.23 · 9.43 (+6.17)  |
-|      32 | grouped | 1.98 · 2.32 | 2.17 · 2.29 (+0.19)  | 6.78 · 8.85 (+4.80)  |
-|      32 | miss    | 2.05 · 2.23 | 3.04 · 4.50 (+1.00)  | 7.51 · 8.97 (+5.46)  |
+Recorded on 2026-11-11 with `bun run perf:router --sources 1`, `8` and `32` (defaults: 200,000 rows,
+30 iterations after 5 warm-up each), on the same machine as above but under load (load average
+about 6), so treat sub-millisecond differences as noise. Each cell is `median · p95` ms, with served
+minus the live median in parentheses.
 
-- **The warm decision is cheap:** under a millisecond at every size.
+| sources | query   | live        | served, warm         | served, cold          |
+| ------: | ------- | ----------- | -------------------- | --------------------- |
+|       1 | cheap   | 2.09 · 3.03 | 2.82 · 4.94 (+0.74)  | 5.00 · 6.80 (+2.92)   |
+|       1 | grouped | 2.58 · 2.88 | 3.22 · 4.00 (+0.65)  | 4.62 · 5.78 (+2.04)   |
+|       1 | miss    | 2.85 · 4.10 | 3.24 · 4.65 (+0.39)  | 4.85 · 6.48 (+2.00)   |
+|       8 | cheap   | 1.00 · 1.46 | 1.50 · 2.02 (+0.50)  | 3.95 · 8.15 (+2.95)   |
+|       8 | grouped | 2.40 · 3.20 | 3.01 · 3.97 (+0.61)  | 5.54 · 8.76 (+3.14)   |
+|       8 | miss    | 3.09 · 4.21 | 3.29 · 4.31 (+0.19)  | 5.71 · 6.88 (+2.62)   |
+|      32 | cheap   | 1.46 · 2.40 | 1.95 · 3.39 (+0.49)  | 8.79 · 13.19 (+7.33)  |
+|      32 | grouped | 2.63 · 3.56 | 3.07 · 4.77 (+0.44)  | 9.25 · 11.59 (+6.62)  |
+|      32 | miss    | 2.65 · 3.31 | 3.04 · 3.60 (+0.38)  | 8.59 · 11.04 (+5.93)  |
+
+- **The warm decision is cheap:** under a millisecond at every size (+0.2 to +0.7 ms).
 - **Compiling the serve shape grows with the package**, because it is compiled over every binding:
-  about 1.5 ms of overhead at 1 source, 2.4 ms at 8, and 5 to 6 ms at 32.
-- **A miss pays for the failed variant compile**, and that also grows: about 1 ms warm at 32
-  sources. A router that compiles several variants per query pays this once per variant it rules
-  out.
+  about 2 to 3 ms of overhead at 1 and 8 sources, and 6 to 7 ms at 32. With binding installation
+  now outside the stopwatch this is the compile alone.
+- **A miss pays for the failed variant compile:** cold, about the same as a hit's compile; warm,
+  under half a millisecond. A router that compiles several variants per query pays the cold cost
+  once per variant it rules out.
+
+An earlier recording (same day, unloaded machine, paths measured in a fixed order with the logger on)
+put warm overhead at 0.1 to 0.6 ms and cold at 1 to 6 ms. The shape of the result is unchanged; the
+absolute numbers here are higher mainly because of the load, so rerun on a quiet machine before
+gating phase 1 on them.
 
 Not covered yet: colocated routing (the manifest tier) and pre-aggregation rollups. They need a
 package directory and the rollup companion model, so they come with the variant router itself.
