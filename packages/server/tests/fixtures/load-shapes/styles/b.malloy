@@ -1,0 +1,3 @@
+import "d.malloy"
+
+source: st_b is st_d

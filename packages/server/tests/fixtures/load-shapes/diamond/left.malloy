@@ -1,0 +1,6 @@
+import "base.malloy"
+
+source: left_items is items extend {
+  dimension: side is v * 2
+  measure: side_total is side.sum()
+}

@@ -1,0 +1,7 @@
+import "b.malloy"
+import "c.malloy"
+
+source: st_root is st_b
+
+#(doc) Expect n 1.
+query: check_styles is st_root -> { aggregate: n is count() }

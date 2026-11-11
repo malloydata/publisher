@@ -1,0 +1,3 @@
+import "../../diamond/base.malloy"
+
+source: spelled_items is items extend { dimension: tag is 'spelled' }

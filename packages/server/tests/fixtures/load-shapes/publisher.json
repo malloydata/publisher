@@ -1,0 +1,5 @@
+{
+  "name": "load-shapes",
+  "version": "1.0.1",
+  "description": "Import shapes the package load must get right (publisher #1566). Each check_* query has a fixed answer; see README.md."
+}

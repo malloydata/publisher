@@ -1,0 +1,14 @@
+import "../../mapping/joined.malloy"
+import "../../core/orders.malloy"
+
+source: report is joined extend {
+  measure: item_v is item.v_total
+}
+
+#(doc) Items 1 and 2 are joined (1 twice): expect order_count 3, amount_total 600, item_v 30.
+query: check_nested_report is report -> {
+  aggregate:
+    order_count
+    amount_total
+    item_v
+}

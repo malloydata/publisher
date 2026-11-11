@@ -1,0 +1,9 @@
+#(doc) Three orders over items 1, 1 and 2.
+source: orders is duckdb.sql("""
+  select * from (values (1, 1, 100), (2, 1, 200), (3, 2, 300)) as t(order_id, item_id, amount)
+""") extend {
+  primary_key: order_id
+  measure:
+    order_count is count()
+    amount_total is amount.sum()
+}
