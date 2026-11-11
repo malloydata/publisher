@@ -38,6 +38,8 @@ import { settings } from "../settings";
 import { ACCESS_FILTER_ROUTE, AUTHORIZE_ROUTE } from "./authorize_routes";
 import { readQueryFieldReads } from "./classification";
 import { readPreparedQuery } from "./governance/ir/prepared_query";
+import { accessRecordSink } from "./access_record_sink";
+import { workloadShapeOf, type WorkloadShape } from "./workload_shape";
 
 const MAX_RECORDED_ERROR_CHARS = 2000;
 
@@ -105,6 +107,12 @@ export interface QueryAccessSummary {
    fieldsReadComplete: boolean;
    /** Rows returned, after the cap. */
    rowCount: number;
+   /**
+    * The query's workload shape, literals replaced (materialization v2, T1):
+    * what the workload log groups by. Absent when the compiled query could
+    * not be read.
+    */
+   shape?: WorkloadShape;
 }
 
 const byCodepoint = (a: string, b: string) => (a < b ? -1 : a > b ? 1 : 0);
@@ -172,6 +180,8 @@ export async function summarizeQueryAccess(args: {
    bypassAuthorize: boolean;
    grafts: ReadonlyArray<{ givenNames: readonly string[] }>;
    rowCount: number;
+   /** The view the request named on its source, for the workload shape. */
+   view?: string;
 }): Promise<QueryAccessSummary> {
    const apiSource =
       !args.enforced && args.source
@@ -193,8 +203,19 @@ export async function summarizeQueryAccess(args: {
 
    let fieldsRead: FieldRead[] = [];
    let fieldsReadComplete = false;
+   let shape: WorkloadShape | undefined;
    try {
       const prepared = await readPreparedQuery(args.runnable);
+      try {
+         shape = workloadShapeOf({
+            query: prepared.query,
+            modelDef: prepared.modelDef ?? args.modelDef,
+            source: args.source,
+            view: args.view,
+         });
+      } catch {
+         // The record is emitted without a shape rather than not at all.
+      }
       // The compiled model, which holds a source the caller declared in the query.
       const reads = readQueryFieldReads(
          prepared.modelDef ?? args.modelDef,
@@ -258,6 +279,7 @@ export async function summarizeQueryAccess(args: {
       fieldsRead,
       fieldsReadComplete,
       rowCount: args.rowCount,
+      ...(shape ? { shape } : {}),
    };
 }
 
@@ -305,6 +327,15 @@ export interface AccessRecord extends Partial<QueryAccessSummary> {
    durationMs: number;
    servedFrom?: string | null;
    executionTimeMs?: number;
+   /**
+    * Warehouse bytes the query scanned, where the backend reports them inline
+    * (BigQuery today). Absent is not zero.
+    */
+   scannedBytes?: number;
+   // The path report (materialization v2, D1) attaches here as `path` when
+   // it lands: which variants the router considered and why each was
+   // skipped. The workload log stores whatever the record carries, so it
+   // needs no change for it.
    /** The refusal's message, on a non-ok outcome. Never a gate's detail: the route already redacts those. */
    error?: string;
 }
@@ -315,6 +346,8 @@ export interface AccessRecord extends Partial<QueryAccessSummary> {
  */
 export function emitAccessRecord(record: AccessRecord): void {
    logger.info("Access record", record);
+   // The workload log's local store, when it is on; it never throws.
+   accessRecordSink()?.add(record);
    const span = trace.getActiveSpan();
    if (!span) return;
    span.setAttributes({
@@ -359,6 +392,7 @@ export interface QueryAudit {
    version?: string;
    servedFrom?: string | null;
    executionTimeMs?: number;
+   scannedBytes?: number;
 }
 
 /** What a route knows before it runs the request. */
@@ -463,6 +497,9 @@ export async function withAccessRecord<T>(
          : {}),
       ...(audit.executionTimeMs !== undefined
          ? { executionTimeMs: audit.executionTimeMs }
+         : {}),
+      ...(audit.scannedBytes !== undefined
+         ? { scannedBytes: audit.scannedBytes }
          : {}),
    }));
    return result;

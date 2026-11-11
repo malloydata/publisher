@@ -56,6 +56,8 @@ which count decisions with no identity attached.
 | `fieldsReadComplete`                                      | `false` when a read could not be placed or the join walk stopped at its bound, so `fieldsRead` may be short. A record with `true` lists every field the query read. |
 | `outcome`, `status`                                       | `ok` 200; `denied_lock` 403; `refused_surface` 404; `bad_request` 400; `cancelled` 499 (the client abandoned the request); `error` otherwise.                                                                                                                                                                                                         |
 | `rowCount`, `durationMs`, `executionTimeMs`, `servedFrom` | What came back and how.                                                                                                                                                                                                                                                                           |
+| `scannedBytes`                                            | Warehouse bytes the query scanned, where the backend reports them inline (BigQuery today). Absent is not zero. |
+| `shape`                                                   | The query's workload shape, with every literal replaced: the source, the view the request named, the dimensions and measures of its first stage, the fields its `where:` reads, its filter expressions with each value as `?`, its time zone, and a `key` two runs of the same question share. See [the workload log](#the-workload-log). |
 | `connection`                                              | The connection a raw SQL request ran against. Raw SQL records no `modelPath`, `source`, `gates` or `fieldsRead`.                                                                                                                                                                                  |
 | `caller`                                                  | The value of the request header the deployment names (below), verbatim. Absent when the request carried none. The MCP routes carry it too.                                                                                                                                                        |
 | `traceId`                                                 | The W3C trace id from the request's `traceparent`, when it carried one, so the record joins the request log and the span.                                                                                                                                                                         |
@@ -66,6 +68,8 @@ caller; it has what the request named and the outcome. The exception is a query 
 past its source's [`#(carries)`](classification.md#the-ceiling-is-checked-per-query): it compiled,
 so its record is `bad_request` with the `source`, the `fieldsRead` that crossed the ceiling and
 `fieldsReadComplete`, and `error` names the field.
+
+A refused query carries no `shape` either.
 
 ## What it can leave out
 
@@ -80,7 +84,42 @@ The record is written through the server's logger at `info`, as JSON when the lo
 mode, under the message `Access record`, so it lands wherever the operator already ships logs.
 The same facts are set as attributes on the active span (`publisher.access.*`), so a trace shows
 the decision beside the query. Retention, integrity and tamper evidence are the log store's;
-Publisher writes and forgets.
+Publisher writes and forgets, unless the opt-in [workload log store](#the-workload-log) is on, which
+keeps a bounded local copy for workload analysis and is not an audit store.
+
+## The workload log
+
+`shape` makes the access records a workload log too: what was asked of each source, keyed so the
+runs of one question count together, beside how it was served (`servedFrom`) and what it cost
+(`durationMs`, `scannedBytes`). It is read from the compiled query's first stage, which is the one
+that reads the source, and it records names and the structure of expressions, never a value: a
+filter `region = 'west'` is recorded as `region` among `filteredDimensions` and `=(region,?)`
+among `filters`. A field the query defines is recorded by its expression without its alias, so
+`n is count()` and `rows is count()` agree. A row filter a gate grafts is not in the shape; it is in
+`gates` and `decision`. `complete` is `false` when a field could not be placed as a dimension or a
+measure, and `nested` is `true` when the stage nests a query, whose nest is not in the shape.
+
+The records go to the log either way. To keep them locally as well, set
+`PUBLISHER_WORKLOAD_LOG_STORE=on` ([configuration.md](configuration.md)): each record is written to
+the `workload_log` table of Publisher's own metadata database (`publisher.db`), with columns for
+what the workload is read by (time, environment, package, model, source, shape key, served-from,
+outcome, duration, rows, scanned bytes) and the whole record as JSON. The store keeps the record as
+logged except for the values of `#(secure)` givens, whose names stay in `givenNames`: those values
+are the caller's verified attributes, which an audit line carries on purpose and a workload store
+has no use for. It keeps 30 days and at most a million rows by default
+(`PUBLISHER_WORKLOAD_LOG_RETENTION_DAYS`, `PUBLISHER_WORKLOAD_LOG_MAX_ROWS`), deleting older rows
+as it writes. Writes are buffered and flushed every two seconds, off the query path; a failed write
+drops its batch, logs a warning and counts in `publisher_workload_log_dropped_total`, and never fails
+a query. A process that exits loses at most the last interval's records. Like the rest of
+`publisher.db`, the table is wiped by `--init`.
+
+The store holds what the record holds: query shapes, field paths, caller identities and error
+text. Treat `publisher.db` as you treat the log store it duplicates. Publisher still authenticates
+no one, so `caller` is only what the gateway in front of it set.
+
+Materialization v2's path report (which stored variants the router considered for a query, and why
+each was skipped) will attach to the record as `path` when it lands; the store keeps whatever the
+record carries, so it needs no change for it.
 
 ## Who the caller is
 
