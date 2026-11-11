@@ -2,6 +2,42 @@
 
 # Running a run, concretely
 
+## Which run to reach for
+
+Running the whole set for every idea is the slow, expensive habit this section
+replaces. Three sizes of run, from cheapest to most expensive:
+
+1. **Retrieval replay** (`eval.py replay`, `reference/retrieval-replay.md`).
+   No answering agent and no judge: each case's `searchTargets` go to
+   `get_context` and the fields that come back are scored. Minutes, almost no
+   cost. Reach for it when diagnosis says the field never came back
+   (`get_context/retrieval` in `skill:eval-diagnose`). A replay says nothing
+   about the answer, so it never accepts an edit on its own.
+2. **Targeted run** on a slice (`--slice <name>` or `--tag <t>` on
+   `run_baseline.py`, `diagnose.py` and `flip_table.py`). Ten to twenty cases
+   that share the failure being fixed, plus a few passing cases with the same
+   tags. Work it like a unit test: watch the targeted cases fail first, make
+   the fix, watch them pass. This is how the acceptance check
+   (`reference/acceptance-check.md`) picks its cases, under its existing rules.
+3. **Full run**: the whole set. Nightly, or when a package version is
+   published. It is the record of how that version scored, and the stored
+   baseline a targeted run is compared against. Batch several targeted fixes
+   into one full run rather than running the set after each.
+
+A slice is a name in the set's `slices.json` (`scripts/slices.py` in
+`skill:eval-answer` lists them). Editing `slices.json` never moves `datasetSha`,
+so it voids no stored run and no calibrated band. A run that used one records
+the qids it resolved to in `run.json` as `slice`.
+
+To compare a targeted run with the same cases of a stored full run:
+
+```bash
+python3 skills/eval-loop/scripts/flip_table.py --a <full-run> --b <targeted-run> \
+  --set <set> --slice <name>
+```
+
+Without `--slice`, two runs over different cases are refused.
+
 ## Running one, concretely
 
 `scripts/run_baseline.py` does steps 3 and 7 and the whole of **Per question**:

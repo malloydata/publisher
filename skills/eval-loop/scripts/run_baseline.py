@@ -189,6 +189,7 @@ sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent.parent
 import config  # noqa: E402
 import golden_rows  # noqa: E402
 import ledger  # noqa: E402
+import slices  # noqa: E402
 from ledger import read_jsonl  # noqa: E402
 from mcp_payload import (doc_tokens, entity_hits,  # noqa: E402
                          entity_ids, search_targets, search_terms,
@@ -1722,6 +1723,26 @@ def evidence_lines(evidence: dict | None) -> list[str]:
     return lines
 
 
+def tag_breakdown(cases: list[dict[str, Any]],
+                  scored: dict[str, dict[str, Any]]) -> dict[str, tuple[int, int]]:
+    """tag -> (passed, decided), over the same `scored` verdicts as the headline.
+
+    Decided means `match` or `no_match`, as in the headline, so the tag rows
+    add up to it wherever every case carries one tag. A case with several tags
+    counts under each.
+    """
+    out: dict[str, list[int]] = {}
+    for c in cases:
+        v = (scored.get(c["qid"]) or {}).get("verdict")
+        if v not in ("match", "no_match"):
+            continue
+        for t in c.get("tags") or []:
+            row = out.setdefault(t, [0, 0])
+            row[0] += v == "match"
+            row[1] += 1
+    return {t: (p, d) for t, (p, d) in sorted(out.items())}
+
+
 def summary_lines(*, out: pathlib.Path, set_dir: pathlib.Path, events_n: int,
                   attempted: int, decided: int, passed: int, near: int,
                   human: int, doubted: list, vetoed: list, alt_path: int,
@@ -1739,7 +1760,8 @@ def summary_lines(*, out: pathlib.Path, set_dir: pathlib.Path, events_n: int,
                   skill_uses: dict | None = None,
                   targets: dict | None = None,
                   source: str = "spawned",
-                  queried: dict[str, int] | None = None) -> list[str]:
+                  queried: dict[str, int] | None = None,
+                  by_tag: dict[str, tuple[int, int]] | None = None) -> list[str]:
     """The end-of-run report, in three layers.
 
     A run produces four different kinds of fact and they used to arrive in one
@@ -1819,6 +1841,11 @@ def summary_lines(*, out: pathlib.Path, set_dir: pathlib.Path, events_n: int,
         for reason, n in sorted((contamination_reasons or {}).items(),
                                 key=lambda kv: (-kv[1], kv[0])):
             lines += [f"                {n}x {reason}"]
+    if by_tag and not incomplete:
+        # Per tag, so a slice's movement shows against the kind of question it
+        # targets. Withheld with the headline on an incomplete arm, for the
+        # same reason.
+        lines += ["  by tag        " + ", ".join(f"{t} {p}/{d}" for t, (p, d) in by_tag.items())]
     lines += [
              f"  cost          ${answerer_cost:.2f} answerer"
              + (f" + ${judge_cost:.2f} judge" if judge_cost else "")]
@@ -3653,6 +3680,7 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--limit", type=int, default=None,
                     help="how many to process; each one spawns a real agent. Omit for no limit. 0 means zero, not unlimited.")
     ap.add_argument("--only", default=None, help="comma-separated qids")
+    slices.add_arguments(ap)
     ap.add_argument("--phase", default="baseline")
     ap.add_argument("--no-judge", action="store_true")
     ap.add_argument("--rebuild", action="store_true",
@@ -3670,6 +3698,10 @@ def main(argv: list[str] | None = None) -> int:
     a = ap.parse_args(argv)
     cfg = resolve_config(a)
     imply_flags(a)
+    # A slice becomes `--only` here, before anything reads `a.only` (the
+    # coverage check, the rebuild, the case list), and run.json records it.
+    a.slice_used = (slices.narrow(a, a.set_dir, read_jsonl(a.set_dir / "cases.jsonl"))
+                    if (a.slice or a.tag) else None)
     # Resolved once here rather than per attempt: the answerer's granted tool
     # list is part of what a run measured, so it must not vary within a run.
     a.hosted_tools = hosted_tools(
@@ -4080,7 +4112,7 @@ def main(argv: list[str] | None = None) -> int:
         targetVersion=a.target_version,
         scope=a.scope if a.target == "platform" else None,
         answererModel=a.model, judgeModel=a.judge_model,
-        effort=a.effort, phase=a.phase,
+        effort=a.effort, phase=a.phase, slice=a.slice_used,
         # The answerer's cap, pinned with the rest. `eval-loop` step 6 says to
         # freeze the call budget for the whole arm and this is it; until now it
         # was a flag that left no trace, so a run could not be compared with a
@@ -4409,6 +4441,7 @@ def main(argv: list[str] | None = None) -> int:
             retrieval_mode=mode, tally=tally, rs=rs, evidence=evidence,
             coverage_report=coverage_report, cascade=funnel,
             skill_uses=skill_uses, source=source, queried=queried,
+            by_tag=tag_breakdown(cases, scored),
             answerer_cost=cost, judge_cost=judge_cost,
             targets=score_targets.summarise(score_targets.score(
                 events, {c["qid"]: c for c in cases})),

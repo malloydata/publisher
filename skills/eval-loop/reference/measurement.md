@@ -151,6 +151,25 @@ retrieval and for nothing else, and the block records that.
 written before the harness recorded this would make the gate unusable rather
 than safe. It is not evidence that the arms matched.
 
+## A band belongs to the cases it was measured on
+
+A noise band measured on the whole set says nothing about a 15-case slice, and
+one measured on one slice says nothing about another. So:
+
+- A targeted run is judged by the per-case rules below: name the cases first,
+  then they flip, in two post-edit arms.
+- Quote an aggregate band for a slice only when it was measured on that same
+  slice (`flip_table.py --set <set> --slice <name> --calibration` records the
+  slice in the `CALIBRATION.md` block).
+
+**Comparison is per case.** `flip_table.py` sets a case aside, and lists it,
+when its `question_sha` or `golden_revision` differs between the two runs: that
+case was not the same case, and a flip across the edit is the edit. Every other
+case stays comparable, so a stored full run survives one case's key being
+fixed. This loosens nothing about the judge: the run-level pins (judge model,
+`rubricSha`, `judgePromptSha`, answerer model, retrieval mode) must still match
+for a band to be quoted.
+
 ## A targeted fix needs a targeted test
 
 The flip-count table is the right instrument for a broad change and the wrong

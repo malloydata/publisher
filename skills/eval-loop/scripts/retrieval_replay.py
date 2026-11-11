@@ -53,6 +53,7 @@ sys.path.insert(0, str(HERE))
 
 import config  # noqa: E402
 import ledger  # noqa: E402
+import slices  # noqa: E402
 import run_baseline as rb  # noqa: E402
 from import_cases import search_target_findings  # noqa: E402
 from mcp_payload import (doc_tokens, entity_hits, entity_ids,  # noqa: E402
@@ -314,6 +315,10 @@ def resolve(a: argparse.Namespace) -> config.Config:
 
 
 def replay(a: argparse.Namespace, cfg: config.Config) -> int:
+    picked = None
+    if a.slice or a.tag:
+        picked = slices.narrow(a, a.set_dir, ledger.read_jsonl(a.set_dir / "cases.jsonl"),
+                               joined=False)
     cases, skipped = read_cases(a.set_dir, a.only)
     if a.limit:
         cases = cases[: a.limit]
@@ -374,6 +379,8 @@ def replay(a: argparse.Namespace, cfg: config.Config) -> int:
         "retrievalMode": mode, "retrievalCalls": calls, "retrievalGate": gate,
         "harnessVersion": ledger.skills_git_sha(),
     }
+    if picked:
+        pins["slice"] = picked
     if a.set_version:
         pins["setVersion"] = a.set_version
     if a.set_manifest:
@@ -413,6 +420,7 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--set-manifest", type=pathlib.Path, default=None,
                     help="that version's manifest file; its sha256 is recorded in run.json")
     ap.add_argument("--only", action="append", default=None, metavar="QID", help="replay only this case (repeatable)")
+    slices.add_arguments(ap)
     ap.add_argument("--limit", type=int, default=0, help="the first N cases only (smoke test)")
     ap.add_argument("--timeout", type=int, default=120, help="seconds per get_context call")
     ap.add_argument("--ready-tries", type=int, default=12)

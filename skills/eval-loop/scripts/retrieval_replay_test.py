@@ -275,6 +275,21 @@ class EndToEnd(unittest.TestCase):
         self.assertEqual((s["errors"], s["scored"], s["recall_exact"]), (1, 0, None))
         self.assertEqual(json.loads((out / "run.json").read_text())["retrievalMode"], "unavailable")
 
+    def test_a_slice_runs_only_its_cases_and_run_json_records_what_it_resolved_to(self):
+        (self.d / "slices.json").write_text('{"one": {"qids": ["q2"]}}')
+        self.assertEqual(self.run_main("--slice", "one"), 0)
+        out = self.d / "work" / "runs" / "r1"
+        self.assertEqual(ledger.validate_run(out), ([], []))
+        run = json.loads((out / "run.json").read_text())
+        self.assertEqual(run["slice"], {"name": "one", "tags": [], "qids": ["q2"]})
+        self.assertEqual([e["qid"] for e in ledger.read_jsonl(out / "events.jsonl")], ["q2"])
+
+    def test_a_slice_and_only_together_are_refused(self):
+        (self.d / "slices.json").write_text('{"one": {"qids": ["q2"]}}')
+        with self.assertRaises(SystemExit) as e:
+            self.run_main("--slice", "one", "--only", "q1")
+        self.assertIn("pass one of them", str(e.exception))
+
     def test_an_existing_run_is_not_overwritten(self):
         self.assertEqual(self.run_main(), 0)
         with self.assertRaises(SystemExit) as e:

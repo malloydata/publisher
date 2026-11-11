@@ -91,7 +91,13 @@ questions came from outside, which is most of the time. While importing:
 
 - Freeze each case's `split`: `dev` or `holdout`. Diagnose and improve read
   dev cases only; the acceptance check runs both. A set that is all dev cannot defend an
-  accept.
+  accept. On a small set a holdout is too few cases to mean anything (three
+  dev and seven holdout from ten cases says nothing); there, say the set is
+  all dev, accept nothing on it alone, and grow it.
+- Tag each case with what it tests: the behaviour (`near-twin-sources`,
+  `ambiguous-doc`, `dimensional-value`) and, once diagnosed, the layer that
+  failed. Tags are the set's own vocabulary; no list is prescribed. A tag is
+  what lets a targeted run pick its cases by name (`slices.json`).
 - Later, each diagnosed-and-fixed failure becomes a new frozen dev case, so a
   fixed bug cannot silently return.
 
@@ -421,7 +427,10 @@ the run measure something other than what it names:
    what the acceptance check attributes for the price of the affected cases
    plus holdout. Budget five arms for a defensible claim (a baseline, two for
    the A/A, two post-edit), not one per edit, and let `skill:eval-improve`
-   carry each cluster.
+   carry each cluster. Most of those arms need not be the whole set:
+   `reference/running-a-run.md` ("Which run to reach for") says when a
+   retrieval replay or a targeted run on a slice is enough, and when only a
+   full run will do.
 
    The instrument is the other axis: the answer key, the judge and its prompt,
    the answerer model, the skills. Move one of those together with the model

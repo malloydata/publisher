@@ -1510,6 +1510,19 @@ class RunSummary(unittest.TestCase):
     def index_of(self, lines, needle):
         return next(i for i, l in enumerate(lines) if needle in l)
 
+    def test_by_tag_counts_decided_verdicts_under_every_tag(self):
+        cases = [{"qid": "a", "tags": ["join"]}, {"qid": "b", "tags": ["join", "rank"]},
+                 {"qid": "c", "tags": ["rank"]}, {"qid": "d", "tags": ["join"]}]
+        scored = {"a": {"verdict": "match"}, "b": {"verdict": "no_match"},
+                  "c": {"verdict": "match"}, "d": {"verdict": "near_match"}}
+        by_tag = rb.tag_breakdown(cases, scored)
+        self.assertEqual(by_tag, {"join": (1, 2), "rank": (1, 2)})
+        self.assertIn("  by tag        join 1/2, rank 1/2", self.lines(by_tag=by_tag))
+
+    def test_by_tag_is_withheld_with_the_headline_on_an_incomplete_arm(self):
+        body = "\n".join(self.lines(by_tag={"join": (1, 2)}, truncated=["q1"]))
+        self.assertNotIn("by tag", body)
+
     def test_a_logged_run_does_not_blame_skills_it_never_granted(self):
         body = "\n".join(self.lines(
             source="logs", skill_uses={"attempts": 3, "with_skill": 0}))

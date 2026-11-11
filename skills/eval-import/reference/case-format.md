@@ -64,7 +64,7 @@ trusting a name that looks familiar, and write down the mapping you used in
 | `sql`, `malloy`, `gold_query` | their derivation | Malloy: run it (`SKILL.md` step 3). SQL: keep it as evidence of how they got the number, but do not run it; derive the number in Malloy over the truth package instead. Either way, this is the field that upgrades a typed number into something checkable |
 | `criteria`, `rubric`, `assertions`, `must_include` | prose criteria | apply the query test in `SKILL.md` step 4 to EACH one, not to the field |
 | `id`, `case_id`, `uuid` | their id | keep it, prefixed. Two sets from one customer collide otherwise |
-| `difficulty`, `category`, `tags` | their own labels | keep as-is on the case for slicing. Never let one become `split` |
+| `difficulty`, `category`, `tags` | their own labels | keep as-is: copy them into the case's `tags` (a `category` of `joins` becomes the tag `joins`), so a slice in `slices.json` can select them. Never let one become `split` |
 
 A field you cannot map is a question for its author. Keep it verbatim under a
 `sourceFields` object on the case rather than discarding it or forcing it into

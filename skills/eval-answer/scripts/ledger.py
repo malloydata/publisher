@@ -230,6 +230,10 @@ RUN_OPTIONAL = {"label", "effort", "environment", "package", "modelPath",
                 # that cannot say which it was cannot be compared with one that
                 # can, and a T1 run has no pass rate to quote at all.
                 "source", "sourceTier", "queriedPackages",
+                # The cases this run was limited to, when it was: the slice's
+                # name, its tags, and the qids it resolved to on the day, so a
+                # later edit to slices.json cannot change what this run meant.
+                "slice",
                 "callBudget", "status", "answererSkills",
                 "answererCostUsd", "judgeCostUsd", "goldenCheck",
                 # The run whose attempts this run's answerer cost was COPIED

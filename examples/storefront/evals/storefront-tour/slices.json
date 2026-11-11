@@ -1,0 +1,5 @@
+{
+ "joins": {"tags": ["join", "join-depth"], "description": "questions whose answer crosses a join"},
+ "conventions": {"tags": ["convention", "unmodeled-convention", "unmodelled-convention"], "description": "questions that turn on a house convention the agent must read"},
+ "search-targets": {"qids": ["storefront-tour-top-category", "storefront-tour-top-margin-brand", "storefront-tour-net-sales-2025"], "description": "the cases with golden searchTargets; replayable with eval.py replay"}
+}

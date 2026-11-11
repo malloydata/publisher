@@ -38,7 +38,14 @@ Acceptance rules (replacing any vague "results improve"):
   passes nor failures; the delta is computed without them.
 - **Both splits.** The acceptance check runs the affected dev cases AND the holdout
   slice. Diagnose and improve never saw holdout; that is what makes its delta
-  evidence rather than memorization.
+  evidence rather than memorization. Name the affected cases as a slice in
+  `slices.json` before the run (`skill:eval-diagnose` proposes one per
+  cluster), and pass `--slice` to `run_baseline.py` and `flip_table.py`, so
+  the cases are fixed in writing before any verdict exists.
+- **Against the stored baseline.** The affected cases need not be re-run
+  before the edit when a full run of the parent model already scored them:
+  `flip_table.py --a <full-run> --b <post-edit> --set <set> --slice <name>`.
+  A case whose question or key changed since is set aside, not compared.
 - **Twice.** An improvement must survive a second independent run with fresh
   blind answerers before acceptance. A delta that appears once and vanishes
   on re-run was answerer or judge variance, not a fix.

@@ -405,6 +405,26 @@ same git commit. They are still separate owners, because the edit they license
 is different and the acceptance check treats them differently: a model edit
 changes what the data means, a package-skill edit changes what the agent is told.
 
+**Propose a slice per cluster.** The fix for a cluster is tested on a slice,
+not the whole set (`reference/running-a-run.md` in `skill:eval-loop`, "Which
+run to reach for"). For each cluster, write a slice into the set's
+`slices.json`:
+
+- the cluster's failing cases;
+- a few PASSING cases that carry the same tags, so a fix that only fits the
+  failing wording shows up as a broken pass;
+- a `description` naming the cluster's issue id.
+
+Prefer `{"qids": [...]}` here: a tag slice changes when someone re-tags a
+case, and the acceptance check needs its cases fixed before any verdict
+exists. Tag the cluster's cases with the behaviour they share, so the next
+cluster like it can be found by tag.
+
+Say which run tests the fix. A cluster whose cases fail at
+`get_context/retrieval` (the field never came back) is tested by a retrieval
+replay of that slice (`eval.py replay --slice <name>`): minutes, no agent. Only
+a cluster that fails after retrieval delivered the field needs answer runs.
+
 `owner: agent-skill` findings go back into the shared analysis or
 phrase-detection skill, outside this loop. Retrieval findings go to the tool.
 `BAD-REFERENCE` and `AMBIGUOUS-REFERENCE` go to the golden side door in

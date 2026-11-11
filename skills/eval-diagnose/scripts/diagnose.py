@@ -61,6 +61,7 @@ from agent_harness import (NO_EDITS, NO_SHELL, default_manifest,  # noqa: E402
                            manifest_skills, skills_roots, spawn_agent)
 import config  # noqa: E402
 import ledger  # noqa: E402
+import slices  # noqa: E402
 import cluster_failures  # noqa: E402
 import golden_rows  # noqa: E402
 import score_retrieval  # noqa: E402
@@ -741,6 +742,7 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--timeout", type=int, default=900)
     ap.add_argument("--retries", type=int, default=2)
     ap.add_argument("--only", default=None, help="comma-separated qids")
+    slices.add_arguments(ap)
     ap.add_argument("--verdicts", default="no_match",
                     help="comma-separated verdicts to diagnose. A near_match "
                          "that is STABLE across two arms is a coverage "
@@ -849,6 +851,7 @@ def main(argv: list[str] | None = None) -> int:
 
     events = read_jsonl(a.run / "events.jsonl")
     cases = {c["qid"]: c for c in read_jsonl(a.set_dir / "cases.jsonl")}
+    slices.narrow(a, a.set_dir, list(cases.values()))
     codes = skill_codes()
 
     # Dev failures only. A holdout case the improve step never saw is the only

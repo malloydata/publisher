@@ -9,7 +9,14 @@ harness.
     python3 flip_table.py --a results/sonnet-baseline --b results/sonnet-aa
 
 Exits 1 if the runs disagree about which cases they contain, because a flip table
-over two different case sets is not a flip table.
+over two different case sets is not a flip table. To compare a targeted run with
+the same cases of a stored full run, name them: `--set <set> --slice <name>` (or
+`--tag`) limits both runs to that slice's qids first.
+
+A case counts only where both runs scored the same question against the same
+golden: its `question_sha` and `golden_revision` must match. One that differs
+is set aside and listed, never counted as a flip. So editing one case's key
+leaves the stored results for every other case usable.
 """
 from __future__ import annotations
 
@@ -20,6 +27,9 @@ import sys
 import time
 from pathlib import Path
 from typing import Any
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent / "eval-answer" / "scripts"))
+import slices  # noqa: E402
 
 # A flip is movement between PASS and FAIL. Everything else is neither.
 #
@@ -85,11 +95,13 @@ def verdicts(run: Path) -> dict[str, dict[str, Any]]:
     out: dict[str, dict[str, Any]] = {}
     queries: dict[str, str | None] = {}
     givens: dict[str, Any] = {}
+    shas: dict[str, Any] = {}
     for line in (run / "events.jsonl").read_text().splitlines():
         if not line.strip():
             continue
         e = json.loads(line)
         if e.get("kind") == "attempt":
+            shas[e["qid"]] = e.get("question_sha")
             # The query the arm actually ran. A flip is a matched pair -- same
             # question, same model, one right answer and one wrong one -- and
             # the diff between the two queries is what isolates the cause. It
@@ -107,12 +119,19 @@ def verdicts(run: Path) -> dict[str, dict[str, Any]]:
             "reason": (e.get("reason") or "")[:200],
             "final_query": queries.get(e["qid"]),
             "final_givens": givens.get(e["qid"]),
+            # What the verdict was about: the question as sealed, and the key's
+            # revision. A case whose question or key moved between two runs is
+            # not the same case, and a "flip" across that edit is the edit.
+            "golden_revision": e.get("golden_revision"),
             # near_match and needs_human are neither: counting either as a fail
             # would manufacture a flip every time the judge hedged in one run
             # and not the other.
             "outcome": outcome(v),
             "passed": {"pass": True, "fail": False}.get(outcome(v)),
         }
+    # Filled after the loop: an attempt event may follow its score event.
+    for q, row in out.items():
+        row["question_sha"] = shas.get(q)
     return out
 
 
@@ -293,7 +312,8 @@ def retrieval_gate(ca: dict, cb: dict, la: str, lb: str,
 
 
 def calibration_block(ca: dict, cb: dict, la: str, lb: str, pa: int, pb: int,
-                      scored: int, flips: int, stable_near: list[str]) -> str:
+                      scored: int, flips: int, stable_near: list[str],
+                      picked: dict | None = None) -> str:
     """The set's CALIBRATION.md entry for this pair, ready to append.
 
     A band is only quotable against the configuration it was measured on, and
@@ -309,6 +329,10 @@ def calibration_block(ca: dict, cb: dict, la: str, lb: str, pa: int, pb: int,
         "",
         f"Measured {time.strftime('%Y-%m-%d')} from `{la}` and `{lb}`.",
         "",
+        *([f"Slice: `{picked['name'] or ', '.join(picked['tags'])}`, "
+           f"{len(picked['qids'])} cases. Quote this band only for runs of this "
+           "same slice; it says nothing about the whole set or another slice.", ""]
+          if picked else []),
         "| pin | value |",
         "| --- | --- |",
         *rows,
@@ -439,6 +463,36 @@ def targeted_report(args: argparse.Namespace, A: dict, B: dict,
               "\n  told from a noise flip. Pass --b2 with a second arm.")
 
 
+def restrict(runs: dict[str, dict[str, dict[str, Any]]],
+             qids: list[str]) -> list[str]:
+    """Limit every run to `qids`, in place. Returns '<label>: <qid>' for each
+    qid a run does not hold, which the caller refuses: a slice compared against
+    a run that never scored part of it is not the same slice."""
+    missing = [f"{label}: {q}" for label, D in runs.items() for q in qids if q not in D]
+    for D in runs.values():
+        for q in list(D):
+            if q not in qids:
+                del D[q]
+    return missing
+
+
+def incomparable(A: dict[str, dict[str, Any]], B: dict[str, dict[str, Any]]) -> dict[str, str]:
+    """qid -> why, for cases whose question or key differs between the runs.
+
+    A field either run did not record (a run older than the field) is not a
+    difference: there is nothing to compare, and refusing would void every
+    stored run at once.
+    """
+    out = {}
+    for q in sorted(set(A) & set(B)):
+        for field, what in (("question_sha", "question"), ("golden_revision", "golden revision")):
+            va, vb = A[q].get(field), B[q].get(field)
+            if va is not None and vb is not None and va != vb:
+                out[q] = f"{what} {va} -> {vb}"
+                break
+    return out
+
+
 def main() -> int:
     p = argparse.ArgumentParser()
     p.add_argument("--a", type=Path, required=True)
@@ -459,6 +513,9 @@ def main() -> int:
                    help="report a pair whose arms used different retrievers. "
                         "The flips are then not a measurement of the change; "
                         "say so wherever the number is quoted.")
+    p.add_argument("--set", dest="set_dir", type=Path, default=None,
+                   help="the set directory; needed with --slice or --tag")
+    slices.add_arguments(p)
     p.add_argument("--calibration", action="store_true",
                    help="print the set's CALIBRATION.md entry for this pair, "
                         "ready to append. Use it on an A/A.")
@@ -467,6 +524,33 @@ def main() -> int:
     la = a_args.label_a or a_args.a.name
     lb = a_args.label_b or a_args.b.name
     A, B = verdicts(a_args.a), verdicts(a_args.b)
+    B2 = verdicts(a_args.b2) if a_args.b2 else None
+    picked = None
+    if a_args.slice or a_args.tag:
+        if not a_args.set_dir:
+            print("--slice and --tag need --set, to read the set's slices.json and tags")
+            return 2
+        cases = [json.loads(x) for x in
+                 (a_args.set_dir / "cases.jsonl").read_text().splitlines() if x.strip()]
+        picked = slices.resolve(a_args.set_dir, cases, a_args.slice, a_args.tag)
+        runs = {la: A, lb: B, **({"b2": B2} if B2 is not None else {})}
+        missing = restrict(runs, picked["qids"])
+        if missing:
+            print(f"a run did not score every case of the slice ({len(missing)}):")
+            for m in missing[:10]:
+                print(f"  {m}")
+            return 1
+        print(f"limited to {picked['name'] or 'tags ' + ', '.join(picked['tags'])}: "
+              f"{len(picked['qids'])} case(s)")
+
+    moved = incomparable(A, B)
+    if moved:
+        print(f"set aside, the case changed between the runs ({len(moved)}):")
+        for q, why in moved.items():
+            print(f"  {q}: {why}")
+        for D in (A, B) + ((B2,) if B2 is not None else ()):
+            for q in moved:
+                D.pop(q, None)
 
     only_a, only_b = sorted(set(A) - set(B)), sorted(set(B) - set(A))
     if only_a or only_b:
@@ -543,8 +627,7 @@ def main() -> int:
             print(query_diff(A[q], B[q], la, lb))
 
     if a_args.targets:
-        targeted_report(a_args, A, B, la, lb,
-                        verdicts(a_args.b2) if a_args.b2 else None)
+        targeted_report(a_args, A, B, la, lb, B2)
 
     # Stable on both sides: the judge is not hedging at random, it is saying
     # the model cannot distinguish two readings the question does. That is a
@@ -588,7 +671,7 @@ def main() -> int:
         print("\n--- CALIBRATION.md entry, append to the set "
               "---------------------\n")
         print(calibration_block(cfg_a, cfg_b, la, lb, pa, pb, scored, flips,
-                                stable_near))
+                                stable_near, picked))
 
     return gate
 
