@@ -4,9 +4,12 @@
 import { describe, expect, it } from "bun:test";
 import { Annotations } from "@malloydata/malloy";
 import {
+   findingSeverity,
    isOnRoute,
+   persistAnnotationFindings,
    payloadOfNote,
    payloadsOnRoute,
+   persistUnparseableFinding,
    PUBLISHER_ROUTES,
    readRouteList,
    readRouteTag,
@@ -125,6 +128,89 @@ describe("the #@ route's keys", () => {
          ["persist-retired-key", "malformed", "schedule="],
       ]);
       expect(findings[1]?.rewrite).toContain("materialization.schedule");
+   });
+});
+
+describe("persist annotation findings", () => {
+   it("suggests the key an unknown one is a near miss of", () => {
+      const [finding] = persistAnnotationFindings(
+         annotationsOf(['#@ persist name="t" mergekey="id"']),
+         "daily",
+      );
+      expect(finding?.message).toContain("did you mean `merge_key=`?");
+      // Nothing near: no suggestion.
+      const [far] = persistAnnotationFindings(
+         annotationsOf(['#@ persist name="t" colour="red"']),
+         "daily",
+      );
+      expect(far?.message).not.toContain("did you mean");
+   });
+
+   it("says what an unknown key costs on an incremental source", () => {
+      const [finding] = persistAnnotationFindings(
+         annotationsOf(['#@ persist name="t" mergekey="id"']),
+         "daily",
+         "m.malloy",
+         { incremental: true },
+      );
+      expect(finding?.message).toContain("range replace");
+      expect(finding?.message).toContain("row identity");
+   });
+
+   it("names the recovered source when a broken #@ line sits beside a good one", () => {
+      const planned = persistUnparseableFinding(
+         { message: "unterminated string" },
+         "m.malloy",
+         { subject: "daily", line: '#@ refresh="incremental" watermark="x' },
+      );
+      expect(planned.message).toContain("built from its other #@ lines");
+      expect(planned.message).not.toContain("served live");
+      expect(planned.subject).toBe("daily");
+      const dropped = persistUnparseableFinding(
+         { message: "unterminated string" },
+         "m.malloy",
+      );
+      expect(dropped.message).toContain("served live");
+   });
+
+   it("checks a persist source against the persist keys, not the preaggregate ones", () => {
+      const findings = persistAnnotationFindings(
+         annotationsOf(['#@ persist name="t" grain="x"']),
+         "daily",
+         "m.malloy",
+      );
+      expect(findings).toEqual([
+         expect.objectContaining({
+            code: "persist-unknown-key",
+            tier: "unservable",
+            subject: "daily",
+            model: "m.malloy",
+         }),
+      ]);
+      expect(findingSeverity(findings[0])).toBe("warn");
+   });
+
+   it("builds the unparseable finding Malloy's build log reports, naming the line", () => {
+      const finding = persistUnparseableFinding(
+         {
+            message: "Unterminated string",
+            at: {
+               url: "file:///m.malloy",
+               range: {
+                  start: { line: 4, character: 0 },
+                  end: { line: 4, character: 9 },
+               },
+            },
+         },
+         "m.malloy",
+      );
+      expect(finding).toMatchObject({
+         code: "persist-unparseable",
+         tier: "malformed",
+         model: "m.malloy",
+      });
+      expect(finding.message).toContain("line 5");
+      expect(findingSeverity(finding)).toBe("error");
    });
 });
 

@@ -5750,6 +5750,20 @@ components:
                   every run because a rollup over a stored base can neither build
                   nor serve yet (one per base, `subject` the base; `warn`; the
                   base still builds and serves from storage).
+                  `persist-unparseable`: a `#@` annotation that does not
+                  parse, so Malloy drops its source from the build and it is
+                  served live (one per annotation, `model` its file; `error`;
+                  refused at publish, while a package already published keeps
+                  loading). `persist-retired-key`: a `#@ persist` key no longer
+                  read, `sharing=` or `schedule=`, with what to write instead
+                  (one per key, `subject` the source; `error`; refused at
+                  publish). `persist-unknown-key`: a `#@ persist` key Publisher
+                  does not read, such as a misspelled `merge_key=` (one per
+                  key, `subject` the source; `warn`).
+                  `persist-not-materializable`: a `#@ persist` source the build
+                  walk did not recognize, served live (`subject` the source;
+                  `warn`). `preaggregate-hidden-field`: a `#@ preaggregate` on a
+                  private or internal field or grain dimension (`warn`).
                   `join-bypass`: an author join from a published source to one
                   with a stricter gate, which the join does not carry (one per
                   join, or one for a walk cut short at the join bound; always
