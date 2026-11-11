@@ -21,6 +21,7 @@
  */
 
 import type { ModelDef } from "@malloydata/malloy";
+import { isOnRoute } from "../../service/annotation_reader";
 import type { Relationship } from "@malloydata/malloy-interfaces";
 import { compareText as comparePaths } from "../../compare_text";
 import { splitSourceId } from "../../service/source_id";
@@ -806,7 +807,7 @@ function hasIndexTag(field: {
    annotations?: Array<string | { value: string }>;
 }): boolean {
    return (field.annotations ?? []).some((a) =>
-      /^\s*#\(index\b/.test(typeof a === "string" ? a : a.value),
+      isOnRoute(typeof a === "string" ? a : a.value, "index"),
    );
 }
 
