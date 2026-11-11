@@ -47,6 +47,7 @@ import {
    groupAliasesByName,
    planSourceIds,
 } from "./serve/materialization_serve_transform";
+import { STORED_COLUMN_TYPE_MISMATCH_CODE } from "./stored_column_types";
 import type {
    BuildManifest,
    BuildPlan,
@@ -724,6 +725,52 @@ export class PackageMaterialization {
             subject: rollup ? rollup.baseSourceName : source.name,
             message,
          });
+      }
+      return warnings;
+   }
+
+   /**
+    * Warnings for stored columns whose type does not serve as the type Malloy
+    * declares for them (ms2data/service#6642), one per source and column. A
+    * castable column is read through a cast to its declared type, and a
+    * rebuild stores that type; any other is answered live. Read from the
+    * bindings bound now, so it follows the manifest rather than the load. Keyed
+    * by the source's sourceID, so two models' same-named sources both report,
+    * and a source several models import reports once.
+    */
+   storedColumnTypeWarnings(): ApiPackageWarning[] {
+      const warnings: ApiPackageWarning[] = [];
+      const seen = new Set<string>();
+      for (const [modelPath, model] of this.owner.models()) {
+         // Optional: a model a spec stands in for need not implement it.
+         for (const {
+            sourceName,
+            sourceID,
+            mismatches,
+         } of model.storedColumnTypeMismatches?.() ?? []) {
+            for (const m of mismatches) {
+               const key = `${sourceID ?? `${modelPath}\u0000${sourceName}`}\u0000${m.column}`;
+               if (seen.has(key)) continue;
+               seen.add(key);
+               warnings.push({
+                  model: modelPath,
+                  subject: sourceName,
+                  code: STORED_COLUMN_TYPE_MISMATCH_CODE,
+                  severity: "warn",
+                  message:
+                     `stores column \`${m.column}\` as ${m.storedType}, not its ` +
+                     `declared Malloy type \`${m.declaredType}\`. ` +
+                     (m.handling === "cast"
+                        ? `It is read through a cast to \`${m.declaredType}\`, ` +
+                          `so it still serves from storage; the next build ` +
+                          `stores the declared type.`
+                        : `No cast reproduces its values faithfully, so queries ` +
+                          `that read it are answered live. Give the field a ` +
+                          `native cast in the model (for example \`::"double"\`) ` +
+                          `so the warehouse returns the declared type.`),
+               });
+            }
+         }
       }
       return warnings;
    }

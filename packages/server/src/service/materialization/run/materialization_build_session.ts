@@ -26,6 +26,16 @@ import { logger } from "../../../logger";
 import { getPartitionedWriteFlushThreshold } from "../../../config";
 import { errMessage } from "../../../utils";
 import { quoteIdentifier, quoteManifestTablePath } from "../../quoting";
+import { fromSubselect } from "../subselect";
+import {
+   type BuildCastOptions,
+   castToDeclaredTypes,
+   isCastConversionError,
+   STORED_COLUMN_TYPE_MISMATCH_CODE,
+   storageBuildCasts,
+   type DeclaredColumn,
+} from "../stored_column_types";
+import { recordStoredColumnTypeMismatch } from "../../../materialization_metrics";
 import { plannedSources, projectToPublicColumns } from "../plan/build_plan";
 import {
    bigQueryQueryLabelValue,
@@ -167,10 +177,7 @@ export function orderByExpressions(
    if (expressions.length === 0) {
       return selectSQL;
    }
-   // A trailing terminator would end the subselect early. The closing paren
-   // goes on its own line so a trailing `--` comment cannot swallow it.
-   const inner = selectSQL.replace(/[\s;]+$/, "");
-   return `SELECT * FROM (\n${inner}\n) AS partitioned_build ORDER BY ${expressions.join(", ")}`;
+   return `SELECT * ${fromSubselect(selectSQL, "partitioned_build")} ORDER BY ${expressions.join(", ")}`;
 }
 
 /**
@@ -746,6 +753,14 @@ export async function buildSourceIntoStorage(params: {
     * single-statement CTAS.
     */
    partitionColumns?: string[];
+   /**
+    * The source's public columns as Malloy declares them; the CTAS casts the
+    * ones with a single faithful DuckDB type to it ({@link castToDeclaredTypes}).
+    * Absent or empty stores whatever the warehouse returned.
+    */
+   declaredColumns?: readonly DeclaredColumn[];
+   /** What decides a build cast beyond the declared type (see BuildCastOptions). */
+   castOptions?: BuildCastOptions;
    environmentPath: string;
    /**
     * Per-query metadata for the warehouse read, already resolved. Applied here
@@ -910,10 +925,13 @@ export async function buildSourceIntoStorage(params: {
 
       // The serve transform declares exactly this schema, and the compiler does
       // not type-check a virtual source's declared columns.
-      const schema = await createTableAndDescribe(
+      // Cast in DuckDB, around the passthrough: the warehouse runs exactly
+      // the build SQL, and only the stored types change.
+      const schema = await createTableWithDeclaredTypes(
          session,
          target,
          passthrough.selectSQL,
+         { columns: params.declaredColumns ?? [], ...params.castOptions },
          params.partitionColumns ?? [],
          { sourceType },
       );
@@ -985,6 +1003,8 @@ async function buildSameCatalogIntoStorage(params: {
    sourceCarriesAuthorSql?: boolean;
    physicalTableName: string;
    partitionColumns?: string[];
+   declaredColumns?: readonly DeclaredColumn[];
+   castOptions?: BuildCastOptions;
    environmentPath: string;
 }): Promise<StorageBuildResult> {
    const { destinationName, destinationConnection, physicalTableName } = params;
@@ -1026,10 +1046,11 @@ async function buildSameCatalogIntoStorage(params: {
          ),
          STORAGE_TARGET_DIALECT,
       );
-      const schema = await createTableAndDescribe(
+      const schema = await createTableWithDeclaredTypes(
          session,
          target,
          params.buildSQL,
+         { columns: params.declaredColumns ?? [], ...params.castOptions },
          params.partitionColumns ?? [],
       );
       // Reads no warehouse, as a chained build does: nothing was charged.
@@ -1195,10 +1216,13 @@ export async function buildDownstreamIntoStorage(params: {
          ),
          STORAGE_TARGET_DIALECT,
       );
-      const schema = await createTableAndDescribe(
+      // The downstream's own declared types, as for a recompute.
+      const casts = storageBuildCasts(downstream);
+      const schema = await createTableWithDeclaredTypes(
          session,
          target,
          sql,
+         { columns: casts.declaredColumns, ...casts.castOptions },
          params.partitionColumns ?? [],
       );
 
@@ -1592,6 +1616,62 @@ function sourceFederationConfig(sourceConnection: ApiConnection): {
       // federatePostgres opens the tunnel; buildSourceIntoStorage closes it.
       proxy: sourceConnection.proxy,
    };
+}
+
+/**
+ * {@link createTableAndDescribe} over `selectSQL` with its columns cast to their
+ * declared types (ms2data/service#6642). A value a cast cannot convert (a
+ * boolean the warehouse returned as 'Y'/'N') retries the CTAS without the
+ * casts, storing what the warehouse returned, rather than failing a build that
+ * used to succeed; the serve side then decides that column. Never TRY_CAST,
+ * whose NULLs would be wrong answers. The retry re-reads the source, so it is
+ * paid only by a source whose data the cast rejects.
+ */
+export async function createTableWithDeclaredTypes(
+   session: DuckDBConnection,
+   quotedTablePath: string,
+   selectSQL: string,
+   declared: { columns: readonly DeclaredColumn[] } & BuildCastOptions,
+   partitionColumns: readonly string[],
+   options: Parameters<typeof createTableAndDescribe>[4] = {},
+): Promise<WireColumn[]> {
+   const cast = castToDeclaredTypes(selectSQL, declared.columns, declared);
+   if (cast === selectSQL) {
+      return createTableAndDescribe(
+         session,
+         quotedTablePath,
+         selectSQL,
+         partitionColumns,
+         options,
+      );
+   }
+   try {
+      return await createTableAndDescribe(
+         session,
+         quotedTablePath,
+         cast,
+         partitionColumns,
+         options,
+      );
+   } catch (err) {
+      if (!isCastConversionError(err)) throw err;
+      recordStoredColumnTypeMismatch("build", "cast_failed");
+      logger.warn(
+         "A declared-type cast could not convert a stored value; storing the warehouse's types instead",
+         {
+            code: STORED_COLUMN_TYPE_MISMATCH_CODE,
+            table: quotedTablePath,
+            error: errMessage(err),
+         },
+      );
+      return await createTableAndDescribe(
+         session,
+         quotedTablePath,
+         selectSQL,
+         partitionColumns,
+         options,
+      );
+   }
 }
 
 /**

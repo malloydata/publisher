@@ -145,6 +145,15 @@ export interface ServeBinding {
    /** Authoritative DuckDB columns captured post-build (raw DuckDB types). */
    schema: { name: string; type: string }[];
    /**
+    * Columns read through a cast to their declared type, set by the serve
+    * shape for a table an older build typed (ms2data/service#6642). The shape
+    * then declares the stored table as `<name>__stored` and the source as a
+    * query over it selecting every column, these cast (`::date`), so
+    * everything built on them still compiles. `schema` keeps the STORED
+    * types. Absent reads the table as stored.
+    */
+   readCasts?: { column: string; castTo: string }[];
+   /**
     * The author source's refinements, re-emitted as an `extend {}` on the
     * virtual base. Attached at serve time from the compiled model. Analytic
     * fields are not carried; a query using one serves live.
@@ -344,42 +353,33 @@ export function deriveServeBindings(
 }
 
 /**
- * Map a DuckDB column type (as reported by `DESCRIBE`) to a Malloy basic type
- * for the serve-shape `type:` declaration.
- *
- * Only Malloy's basic scalar types are legal in `type:`, so every DuckDB type
- * collapses onto one. Anything unrecognized falls back to `json`, a lossy
- * carrier so an exotic column never breaks the whole serve shape, and is logged.
+ * The Malloy basic type a DuckDB column type (as reported by `DESCRIBE`) maps
+ * onto, or `undefined` for a type with no faithful mapping: a collection
+ * (`array`) or anything unrecognized (nested, struct, enum, blob). Pure; see
+ * {@link duckdbTypeToMalloy} for the serve shape's lossy fallback.
  */
-export function duckdbTypeToMalloy(duckdbType: string): string {
+export function duckdbTypeToMalloyType(
+   duckdbType: string,
+): { type: string } | { unmapped: "array" | "unrecognized" } {
    const raw = duckdbType.trim();
-   if (/\[\s*\]/.test(raw)) {
-      recordServeShapeTypeFallback("array");
-      logger.warn(
-         "Mapping DuckDB array/collection type to json for serve shape",
-         {
-            duckdbType: raw,
-         },
-      );
-      return "json";
-   }
+   if (/\[\s*\]/.test(raw)) return { unmapped: "array" };
    // DECIMAL(18,2) -> DECIMAL
    const base = raw
       .replace(/\(.*\)/, "")
       .trim()
       .toUpperCase();
 
-   if (base === "DATE") return "date";
+   if (base === "DATE") return { type: "date" };
    if (
       base.startsWith("TIMESTAMP") ||
       base === "DATETIME" ||
       base === "TIMESTAMPTZ"
    ) {
-      return "timestamp";
+      return { type: "timestamp" };
    }
    if (base === "TIME") {
       // Malloy has no time-of-day scalar; carry as string to preserve the value.
-      return "string";
+      return { type: "string" };
    }
 
    switch (base) {
@@ -403,27 +403,41 @@ export function duckdbTypeToMalloy(duckdbType: string): string {
       case "REAL":
       case "DECIMAL":
       case "NUMERIC":
-         return "number";
+         return { type: "number" };
       case "VARCHAR":
       case "TEXT":
       case "CHAR":
       case "BPCHAR":
       case "STRING":
       case "UUID":
-         return "string";
+         return { type: "string" };
       case "BOOLEAN":
       case "BOOL":
-         return "boolean";
+         return { type: "boolean" };
       default:
-         recordServeShapeTypeFallback("unrecognized");
-         logger.warn(
-            "Unrecognized DuckDB type; mapping to json for serve shape",
-            {
-               duckdbType: raw,
-            },
-         );
-         return "json";
+         return { unmapped: "unrecognized" };
    }
+}
+
+/**
+ * Map a DuckDB column type (as reported by `DESCRIBE`) to a Malloy basic type
+ * for the serve-shape `type:` declaration.
+ *
+ * Only Malloy's basic scalar types are legal in `type:`, so every DuckDB type
+ * collapses onto one. Anything unrecognized falls back to `json`, a lossy
+ * carrier so an exotic column never breaks the whole serve shape, and is logged.
+ */
+export function duckdbTypeToMalloy(duckdbType: string): string {
+   const mapped = duckdbTypeToMalloyType(duckdbType);
+   if ("type" in mapped) return mapped.type;
+   recordServeShapeTypeFallback(mapped.unmapped);
+   logger.warn(
+      mapped.unmapped === "array"
+         ? "Mapping DuckDB array/collection type to json for serve shape"
+         : "Unrecognized DuckDB type; mapping to json for serve shape",
+      { duckdbType: duckdbType.trim() },
+   );
+   return "json";
 }
 
 /** A Malloy identifier that needs no quoting. */
@@ -481,16 +495,35 @@ function serveShapeFragment(binding: ServeBinding): string {
    const fields = binding.schema
       .map((c) => `   ${emitFieldName(c.name)}::${duckdbTypeToMalloy(c.type)}`)
       .join(",\n");
-   let source =
-      `source: ${binding.sourceName} is ` +
-      `${binding.destinationName}.virtual('${binding.virtualHandle}')::${shapeTypeName}`;
+   const virtual = `${binding.destinationName}.virtual('${binding.virtualHandle}')::${shapeTypeName}`;
+   const casts = new Map(
+      (binding.readCasts ?? []).map((c) => [c.column, c.castTo]),
+   );
+   let prelude = "";
+   let source: string;
+   if (casts.size === 0) {
+      source = `source: ${binding.sourceName} is ${virtual}`;
+   } else {
+      // The stored table under its own name, then the source as a query that
+      // selects every column, the mistyped ones cast to their declared type.
+      const stored = `${binding.sourceName}__stored`;
+      prelude = `source: ${stored} is ${virtual}\n`;
+      const select = binding.schema
+         .map((c) => {
+            const name = emitFieldName(c.name);
+            const to = casts.get(c.name);
+            return to ? `${name} is ${name}::${duckdbTypeToMalloy(to)}` : name;
+         })
+         .join(", ");
+      source = `source: ${binding.sourceName} is ${stored} -> { select: ${select} }`;
+   }
    // Anything a refinement references that the shape lacks fails the shape
    // compile, which safely falls back.
    const lines = refinementLines(binding.refinements ?? []);
    if (lines.length > 0) {
       source += ` extend {\n${lines.join("\n")}\n}`;
    }
-   return `type: ${shapeTypeName} is {\n${fields}\n}\n${source}`;
+   return `type: ${shapeTypeName} is {\n${fields}\n}\n${prelude}${source}`;
 }
 
 /**

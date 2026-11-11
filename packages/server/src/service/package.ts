@@ -1883,6 +1883,7 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
             severity: "warn" as const,
          })),
          ...this.materialization.storageWarnings(),
+         ...this.materialization.storedColumnTypeWarnings(),
          ...this.materialization.droppedPersistWarnings(),
          ...this.materialization.rollupsOverStoredBaseWarnings(),
          ...this.materialization.annotationFindingWarnings(),
