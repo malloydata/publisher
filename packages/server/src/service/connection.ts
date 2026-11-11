@@ -1382,6 +1382,54 @@ export async function recordedSchemaPath(
    return { path: row.path, relative: row.path_is_relative !== false };
 }
 
+/**
+ * One key of a DuckLake table's partition spec: a column, and the transform
+ * DuckLake records for it (`identity`, `year`, `month`, `day`, `hour`, or
+ * `bucket(N)`).
+ */
+export interface PartitionKey {
+   column: string;
+   transform: string;
+}
+
+/**
+ * The partition spec `schemaName.tableName` has now, in the catalog attached as
+ * `alias`, in key order. Empty when the table is not partitioned, including a
+ * table whose spec was reset (DuckLake records that as a spec with no keys), and
+ * when no such table exists.
+ */
+export async function tablePartitionKeys(
+   connection: DuckDBConnection,
+   alias: string,
+   metadataSchema: string | undefined,
+   schemaName: string,
+   tableName: string,
+): Promise<PartitionKey[]> {
+   const meta = metadataCatalogRef(alias, metadataSchema);
+   const rows = runSQLRows(
+      await connection.runSQL(
+         `SELECT c.column_name, pc.transform
+            FROM ${meta}.ducklake_table t
+            JOIN ${meta}.ducklake_schema s
+              ON s.schema_id = t.schema_id AND s.end_snapshot IS NULL
+            JOIN ${meta}.ducklake_partition_info pi
+              ON pi.table_id = t.table_id AND pi.end_snapshot IS NULL
+            JOIN ${meta}.ducklake_partition_column pc
+              ON pc.partition_id = pi.partition_id AND pc.table_id = t.table_id
+            JOIN ${meta}.ducklake_column c
+              ON c.table_id = t.table_id AND c.column_id = pc.column_id AND c.end_snapshot IS NULL
+           WHERE s.schema_name = '${escapeSQL(schemaName)}'
+             AND t.table_name = '${escapeSQL(tableName)}'
+             AND t.end_snapshot IS NULL
+           ORDER BY pc.partition_key_index`,
+      ),
+   );
+   return rows.map((row) => ({
+      column: String(row.column_name),
+      transform: String(row.transform),
+   }));
+}
+
 /** `url` without its trailing slashes. A loop, not `/\/+$/`, which backtracks on a long run of them. */
 export function stripTrailingSlashes(url: string): string {
    let end = url.length;

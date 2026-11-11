@@ -47,7 +47,7 @@ function setVariable(name: string, value: string | undefined): void {
 }
 
 function versioning(on: boolean): void {
-   setVariable(FLAG, on ? "on" : undefined);
+   setVariable(FLAG, on ? "on" : "off");
 }
 
 /** A package whose query reads its own data.csv, and whose page says `n`. */

@@ -9,10 +9,10 @@ import { tmpName } from "./helpers/fixtures";
 
 /**
  * The package page's version switch, against a server that publishes
- * versions (`PUBLISHER_PACKAGE_VERSIONING=on`, promotion `on-publish`). The
- * spec publishes its own package to a fresh environment: `sales` 1.0.0 with
- * one model, then 1.1.0, which adds a second, so each version's page is told
- * apart by what it lists. Skipped on a server with versioning off.
+ * versions (`PUBLISHER_PACKAGE_VERSIONING=on`, as playwright.config.ts starts
+ * it, promotion `on-publish`). The spec publishes its own package to a fresh
+ * environment: `sales` 1.0.0 with one model, then 1.1.0, which adds a second,
+ * so each version's page is told apart by what it lists.
  *
  * Routes carry the version as a path segment, `/<env>/<pkg>/<version>/…`,
  * `latest` spelled out, and a bare package route is canonicalized onto
@@ -104,15 +104,9 @@ test.describe("package versions — the version switch", () => {
    test.beforeAll(async ({}, testInfo) => {
       const baseURL = testInfo.project.use.baseURL ?? "http://localhost:4000";
       const status = await (await api(baseURL, "GET", "/status")).json();
-      // CI runs this spec against a server it started with versioning on, and
-      // says so: there a server reporting it off is a failure, not a skip.
-      if (process.env.EXPECT_PACKAGE_VERSIONING === "on") {
-         expect(status.packageVersioning).toBe("on");
-      }
-      test.skip(
-         status.packageVersioning !== "on",
-         "the server does not publish versions (PUBLISHER_PACKAGE_VERSIONING is off)",
-      );
+      // The suite's server publishes versions (playwright.config.ts): one
+      // that does not is a failure, not a skip.
+      expect(status.packageVersioning).toBe("on");
       env = tmpName("versions");
       const created = await api(baseURL, "POST", "/environments", {
          name: env,

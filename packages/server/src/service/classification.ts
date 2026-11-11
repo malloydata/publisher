@@ -6,7 +6,7 @@
  * source: what a field is and what an entry point may expose, both in the
  * words of the package's access policy. Values are
  * quoted and lists are bracketed and comma-separated, read by Malloy's tag
- * parser (`readTagList`). Publisher reads the shape and never
+ * parser (`readRouteList`, in annotation_reader.ts). Publisher reads the shape and never
  * the vocabulary: `phi.direct_identifier`, `confidential` and `pci.pan` are
  * all just text to it, and which values a
  * package may use is the policy's to say and a review's to check. What
@@ -54,7 +54,13 @@
  */
 
 import type { ModelDef, SourceDef } from "@malloydata/malloy";
-import { parseAnnotation } from "@malloydata/malloy-tag";
+import {
+   byCodepoint,
+   isOnRoute,
+   payloadsOnRoute,
+   readRouteList,
+   tokenSet,
+} from "./annotation_reader";
 import type { components } from "../api";
 import { annotationTexts, type AnnotationsDef } from "./annotations";
 import {
@@ -78,9 +84,6 @@ export const CLASSIFICATION_MALFORMED = "classification-malformed";
 /** `PackageWarning.code` of a computed field that declares a lower class than the fields it reads. */
 export const CLASSIFICATION_DOWNGRADE = "classification-downgrade";
 
-const CLASSIFICATION_LINE = /^#\(classification\)(.*)$/s;
-const CARRIES_LINE = /^#\(carries\)(.*)$/s;
-
 /** One annotation note, as `to_stable` (`{value}`) or a raw string carries it. */
 type AnnotationText = string | { value: string };
 
@@ -90,83 +93,11 @@ function annotationText(a: AnnotationText): string {
 
 /** Whether an annotation line is a `#(classification)` or `#(carries)` note. */
 export function isClassificationLine(text: string): boolean {
-   const t = text.trim();
-   return CLASSIFICATION_LINE.test(t) || CARRIES_LINE.test(t);
+   return isOnRoute(text, "classification") || isOnRoute(text, "carries");
 }
 
-/** Codepoint order, so two servers on identical bytes agree. */
-export const byCodepoint = (a: string, b: string) =>
-   a < b ? -1 : a > b ? 1 : 0;
-
-/** A sorted set of tokens. */
-function tokenSet(tokens: Iterable<string>): string[] {
-   return Array.from(new Set(tokens)).sort(byCodepoint);
-}
-
-/**
- * Read an annotation's content as a tag value: a quoted string (`"x"`) or a
- * quoted, comma-separated list (`["x", "y"]`), the form every list-valued
- * annotation in Publisher uses (`tiles=[…]`, `# drill { to=[…] }`). Parsed by
- * Malloy's own tag parser, so a malformed list is a parse error with its
- * reason, never a silent split. `values` is a sorted set; `malformed` says
- * what is wrong in the words the load uses.
- */
-export function readTagList(
-   route: string,
-   content: string,
-   { list }: { list: "required" | "optional" },
-): { values: string[]; malformed?: string } {
-   const trimmed = content.trim();
-   const example =
-      route === "carries"
-         ? '["phi.clinical", "none"]'
-         : '"phi.direct_identifier" or ["phi.direct_identifier", "gdpr.personal"]';
-   const fault = (why: string) => ({
-      values: [] as string[],
-      malformed: `has a #(${route}) annotation that ${why}; write ${list === "required" ? "a quoted, comma-separated list" : "a quoted string or a quoted, comma-separated list"}, such as #(${route}) ${example}`,
-   });
-   if (trimmed === "") return fault("names nothing");
-   // An environment reference would be hydrated from the server's own
-   // environment by the tag parser; never read one here.
-   if (/@env\./.test(trimmed)) return fault("reads the environment");
-   const isList = trimmed.startsWith("[");
-   if (!isList && !trimmed.startsWith('"')) {
-      return fault(`is not quoted ("${trimmed}")`);
-   }
-   if (!isList && list === "required") return fault("is not a list");
-   let parsed: ReturnType<typeof parseAnnotation>;
-   try {
-      parsed = parseAnnotation(`# v=${trimmed}`);
-   } catch (error) {
-      return fault(
-         `does not parse (${error instanceof Error ? error.message : String(error)})`,
-      );
-   }
-   if (parsed.log.length > 0) {
-      return fault(`does not parse (${parsed.log[0].message})`);
-   }
-   const items = isList
-      ? parsed.tag.array("v")?.map((item) => item.text())
-      : [parsed.tag.text("v")];
-   if (!items || items.some((item) => typeof item !== "string")) {
-      return fault("holds something other than quoted text");
-   }
-   const values = tokenSet((items as string[]).map((v) => v.trim()));
-   if (values.length === 0) return fault("names nothing");
-   if (values.some((v) => v === "")) return fault("names an empty value");
-   return { values };
-}
-
-/** The content after a route, from every note on that route. */
-function routeContents(
-   texts: ReadonlyArray<string>,
-   pattern: RegExp,
-): string[] {
-   return texts
-      .map((text) => pattern.exec(text.trim()))
-      .filter((m): m is RegExpExecArray => m !== null)
-      .map((m) => m[1]);
-}
+/** Codepoint order, so two servers on identical bytes agree (see annotation_reader.ts). */
+export { byCodepoint };
 
 /**
  * The classes a field's `#(classification)` declares: one quoted class, or a
@@ -178,9 +109,9 @@ export function readClassification(
    annotations: ReadonlyArray<AnnotationText> | undefined,
 ): { values: string[]; malformed?: string } {
    if (!annotations || annotations.length === 0) return { values: [] };
-   const contents = routeContents(
+   const contents = payloadsOnRoute(
       annotations.map(annotationText),
-      CLASSIFICATION_LINE,
+      "classification",
    );
    if (contents.length === 0) return { values: [] };
    if (contents.length > 1) {
@@ -192,7 +123,7 @@ export function readClassification(
             `#(classification) ["phi.direct_identifier", "gdpr.personal"]`,
       };
    }
-   return readTagList("classification", contents[0], { list: "optional" });
+   return readRouteList("classification", contents[0], { list: "optional" });
 }
 
 const MAX_CARRIES_HOPS = 64;
@@ -219,11 +150,13 @@ export function readCarries(annotations: AnnotationsDef | undefined): {
             malformed: `has an annotation chain deeper than ${MAX_CARRIES_HOPS} levels, past which its #(carries) cannot be read`,
          };
       }
-      const contents = routeContents(ownTexts(node), CARRIES_LINE);
+      const contents = payloadsOnRoute(ownTexts(node), "carries");
       if (contents.length > 0) {
          const classes = new Set<string>();
          for (const content of contents) {
-            const read = readTagList("carries", content, { list: "required" });
+            const read = readRouteList("carries", content, {
+               list: "required",
+            });
             if (read.malformed) {
                return {
                   declared: true,
@@ -707,9 +640,7 @@ function walkForCarries(
          if (
             Array.isArray(notes) &&
             notes.some((n) =>
-               CARRIES_LINE.test(
-                  String((n as { text?: unknown })?.text).trim(),
-               ),
+               isOnRoute(String((n as { text?: unknown })?.text), "carries"),
             )
          ) {
             return true;

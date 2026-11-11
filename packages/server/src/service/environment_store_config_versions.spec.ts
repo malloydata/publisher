@@ -215,6 +215,7 @@ describe("configured packages with package versioning on", () => {
 
 describe("configured packages with package versioning off", () => {
    it("loads them as before, with no versions, whatever their publisher.json says", async () => {
+      env.PUBLISHER_PACKAGE_VERSIONING = "off";
       configure([{ name: "sales", location: source("sales", "1.0.0") }]);
 
       const s = await openStore();

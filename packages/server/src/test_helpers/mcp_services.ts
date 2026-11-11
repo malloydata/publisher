@@ -5,9 +5,12 @@ import type { McpServices } from "../app_services";
 import { CompileController } from "../controller/compile.controller";
 import { ConnectionController } from "../controller/connection.controller";
 import { PackageController } from "../controller/package.controller";
+import { QueryController } from "../controller/query.controller";
+import { ReportController } from "../controller/report.controller";
 import { QuerySlots } from "../query_concurrency";
 import { RetrievalService } from "../retrieval/service";
 import type { EnvironmentStore } from "../service/environment_store";
+import { ThemeStore } from "../service/theme_store";
 import { QueryUseCase } from "../usecases/query";
 
 /**
@@ -24,11 +27,16 @@ export function mcpServicesFor(store: unknown): McpServices {
          environmentStore.storageManager.getDuckDbConnection(),
    });
    const querySlots = new QuerySlots();
+   const queryUseCase = new QueryUseCase(environmentStore, querySlots);
    return {
       environmentStore,
       retrieval,
       querySlots,
-      queryUseCase: new QueryUseCase(environmentStore, querySlots),
+      queryUseCase,
+      queryController: new QueryController(queryUseCase),
+      reportController: new ReportController(environmentStore),
+      // Storage is read lazily, so a fake store without it is fine here.
+      themeStore: new ThemeStore(environmentStore.storageManager, "/"),
       compileController: new CompileController(environmentStore),
       packageController: new PackageController(environmentStore, retrieval),
       connectionController: new ConnectionController(environmentStore),

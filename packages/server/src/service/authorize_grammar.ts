@@ -48,15 +48,10 @@
  * `where: (true)`, keeping every row).
  */
 
-import { routeOf } from "@malloydata/malloy";
 import { ParseUtil } from "@malloydata/malloy-tag";
+import { routeOfNote } from "./annotation_reader";
 import { ModelCompilationError } from "../errors";
 import { ACCESS_FILTER_ROUTE, AUTHORIZE_ROUTE } from "./authorize_routes";
-
-/** Malloy's own routing for ONE note — see `authorize.ts`'s identical helper. */
-function noteRoute(text: string): string | undefined {
-   return routeOf({ value: text.trimStart() } as Parameters<typeof routeOf>[0]);
-}
 
 /** Every way an `#(authorize)` body is refused by the grammar, named so a
  *  caller can branch on which rule fired. `fanout_path` is raised by
@@ -684,7 +679,7 @@ export const RETIRED_ROUTES = ["partition"] as const;
  */
 export function containsRetiredRouteTag(texts: string[]): string | undefined {
    for (const text of texts) {
-      const route = noteRoute(text);
+      const route = routeOfNote(text);
       if (
          route !== undefined &&
          (RETIRED_ROUTES as readonly string[]).includes(route)

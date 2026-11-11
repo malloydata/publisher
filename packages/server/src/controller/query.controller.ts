@@ -53,13 +53,22 @@ export class QueryController {
    /**
     * Answer a query and emit its access record (`access_record.ts`), on
     * success and on refusal alike.
+    *
+    * `querySlotLabel` is for a caller that holds no slot of its own (the MCP
+    * report panel, which answers as this route does): the slot is then taken
+    * inside the record, so a refusal at the cap is recorded too. The REST
+    * route leaves it unset, because its middleware already holds one.
     */
-   public async getQuery(request: QueryRequest): Promise<ApiQuery> {
+   public async getQuery(
+      request: QueryRequest,
+      { querySlotLabel }: { querySlotLabel?: string } = {},
+   ): Promise<ApiQuery> {
       const { environmentName, packageName, modelPath } = request;
       return this.queryUseCase.run(
          { ...request, version: request.versionId },
          {
             ...REST_QUERY_OPTIONS,
+            ...(querySlotLabel !== undefined ? { querySlotLabel } : {}),
             // Serialize and byte-cap exactly the shape this request receives.
             shape: request.compactJson === true ? "compact" : "full",
          },

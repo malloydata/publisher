@@ -2,6 +2,8 @@
 // SPDX-License-Identifier: MIT
 
 import { isUnconditionalDenyAuthorize } from "../../service/entities/access_gates";
+import { isOnRoute, payloadsOnRoute } from "../../service/annotation_reader";
+import { hasEnvReference, warnEnvReferenceDropped } from "../../service/motly";
 import path from "path";
 import { fileURLToPath } from "url";
 import { parseAnnotation } from "@malloydata/malloy-tag";
@@ -50,7 +52,8 @@ export function truncateDoc(doc: string, max: number): string {
 
 type AnnotationLines = Array<string | { value: string }>;
 
-const AUTHORED_DOC_LINES = [/^\s*#\(doc\)\s*(.*)/, /^\s*#"\s*(.*)/];
+/** The routes an authored doc is read from, in order: `#(doc)`, then a `#"` doc string. */
+const AUTHORED_DOC_ROUTES = ["doc", '"'];
 
 function linesOf(annotations?: AnnotationLines): string[] {
    return (annotations ?? []).map((a) => (typeof a === "string" ? a : a.value));
@@ -62,9 +65,9 @@ function oneLine(text: string): string {
 
 /** `#(doc)` text, else `#"` doc string text, empty when there is neither. */
 function authoredDoc(lines: string[]): string {
-   for (const pattern of AUTHORED_DOC_LINES) {
-      const text = lines
-         .map((line) => line.match(pattern)?.[1]?.trim() ?? "")
+   for (const route of AUTHORED_DOC_ROUTES) {
+      const text = payloadsOnRoute(lines, route)
+         .map((payload) => payload.trim())
          .filter(Boolean)
          .join(" ");
       if (text) return text;
@@ -74,7 +77,13 @@ function authoredDoc(lines: string[]): string {
 
 function dbmetaDescription(lines: string[]): string {
    for (const line of lines) {
-      if (!/^#\(dbmeta\)\s/.test(line)) continue;
+      if (!isOnRoute(line, "dbmeta")) continue;
+      // The tag parser hydrates `@env.` from the server's environment, and this
+      // description is served to clients as the entity's doc.
+      if (hasEnvReference(line)) {
+         warnEnvReferenceDropped(line.slice(0, 80), "dbmeta");
+         continue;
+      }
       const { tag, log } = parseAnnotation(line);
       if (log.length > 0) continue;
       const description = tag.text("description")?.trim();

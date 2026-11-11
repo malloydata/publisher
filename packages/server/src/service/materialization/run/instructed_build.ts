@@ -24,6 +24,7 @@ import {
    computeSourceEntityId,
    deriveAnnotationFields,
    sourcesInBuildOrder,
+   tierGateInputs,
 } from "../plan/build_plan";
 import {
    assertMaterializationEligible,
@@ -417,7 +418,11 @@ export class InstructedBuild {
          // auto-run already cleared the source through one of the two gates.
          // Never both: the storage gate already runs the same IR walk.
          if (storage || !run.clearedTiers?.has(persistSource.sourceID)) {
-            assertTierEligible(persistSource, storage, compiled);
+            assertTierEligible(
+               persistSource,
+               storage,
+               tierGateInputs(compiled),
+            );
          }
       } catch (err) {
          if (!(err instanceof MaterializationEligibilityError)) throw err;

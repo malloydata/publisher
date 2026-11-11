@@ -15,23 +15,39 @@ import {
    Request,
    Result,
 } from "@modelcontextprotocol/sdk/types.js";
+import fs from "fs";
 import http from "http";
 import { AddressInfo } from "net";
+import os from "os";
+import path from "path";
 import {
    McpE2ETestEnvironment,
    cleanupE2ETestEnvironment,
    setupE2ETestEnvironment,
 } from "../../harness/mcp_test_setup";
+import { bootMainServer } from "../../harness/main_server";
 
 /**
  * End-to-end coverage of semantic get_context retrieval: the real
  * server, the real DuckDB vector cache, and a deterministic in-test
  * embedding endpoint (letter-bigram bag-of-words vectors, so related
  * phrases genuinely land near each other, no network, no key).
+ *
+ * The package is a copy of the bundled storefront in an environment of the
+ * suite's own, mounted in place: a package loaded here for the first time
+ * builds its search index under the embedding provider configured below, and
+ * a reload of a package mounted in place recompiles it into a new Package
+ * whose index is built again. (The configured `examples` storefront is a
+ * published version, which an earlier spec in the process may already have
+ * indexed under another provider, and which a reload answers unchanged.)
  */
 
-const ENVIRONMENT_NAME = "examples";
+const ENVIRONMENT_NAME = `semantic-retrieval-${Date.now()}`;
 const PACKAGE_NAME = "storefront";
+const STOREFRONT = path.resolve(
+   __dirname,
+   "../../../../../examples/storefront",
+);
 const DIMS = 64;
 
 /** Deterministic unit vector from letter bigrams. */
@@ -48,6 +64,8 @@ function bigramVector(text: string): number[] {
 let env: McpE2ETestEnvironment | null = null;
 let mcpClient: Client<Request, Notification, Result>;
 let embeddingStub: http.Server;
+/** The storefront copy the suite's environment mounts in place. */
+let sourceDir = "";
 let stubFailing = false;
 let stubRequests = 0;
 /** Every text the stub was asked to embed, in order. */
@@ -80,7 +98,7 @@ function rankedEntities(payload: GetContextPayload) {
 }
 
 /**
- * One ranked search target against the storefront package, optionally narrowed
+ * One ranked search target against the storefront copy, optionally narrowed
  * to a single source. The target type is not optional: the kinds in play come
  * only from the targets a caller writes, so there is no "search everything"
  * request to inherit and each case names the type its answer should be.
@@ -166,19 +184,27 @@ describe.serial("MCP getContext semantic retrieval (E2E Integration)", () => {
       });
       mcpClient = env.mcpClient;
       // The search index is built once for each loaded package and keeps the
-      // embedding provider it was built with. When an earlier spec in the same
-      // process already loaded this package, reload it so its index is built
-      // under the provider configured above.
-      await mcpClient.callTool({
-         name: "reload_package",
-         arguments: {
-            environmentName: ENVIRONMENT_NAME,
-            packageName: PACKAGE_NAME,
-         },
+      // embedding provider it was built with, so the package is one this
+      // process has never loaded: a copy, in an environment created here.
+      sourceDir = fs.mkdtempSync(
+         path.join(os.tmpdir(), "semantic-storefront-"),
+      );
+      fs.cpSync(STOREFRONT, sourceDir, { recursive: true });
+      const { environmentStore } = await bootMainServer();
+      environmentStore.markInPlace(ENVIRONMENT_NAME);
+      await environmentStore.addEnvironment({
+         name: ENVIRONMENT_NAME,
+         packages: [{ name: PACKAGE_NAME, location: sourceDir }],
+         connections: [],
       });
    });
 
    afterAll(async () => {
+      const { environmentStore } = await bootMainServer();
+      await environmentStore
+         .deleteEnvironment(ENVIRONMENT_NAME)
+         .catch(() => undefined);
+      if (sourceDir) fs.rmSync(sourceDir, { recursive: true, force: true });
       await cleanupE2ETestEnvironment(env);
       env = null;
       await new Promise<void>((resolve, reject) =>

@@ -357,7 +357,7 @@ describe("an empty versionId answers as no versionId", () => {
       expect(created.status).toBeLessThan(300);
 
       // Off: installed in place, with no versions.
-      setFlag(undefined);
+      setFlag("off");
       const plain = await publish(
          PLAIN,
          writePackage(path.join(root, "plain"), { name: PLAIN }, 0),
@@ -386,7 +386,7 @@ describe("an empty versionId answers as no versionId", () => {
             version,
          );
       }
-      setFlag(undefined);
+      setFlag("off");
    }, 180_000);
 
    afterAll(async () => {
@@ -411,7 +411,7 @@ describe("an empty versionId answers as no versionId", () => {
             expect(built.status).toBe("MANIFEST_FILE_READY");
          }, 180_000);
 
-         afterAll(() => setFlag(undefined));
+         afterAll(() => setFlag("off"));
 
          it("answers each report, dashboard, notebook cell, skill, agent and connection-table read the same with versionId= as with none", async () => {
             await expectEmptyReadsAsNone(kind.pkg, kind.n);
@@ -581,7 +581,7 @@ describe("an empty versionId answers as no versionId", () => {
                "notes.malloynb",
             ]);
          } finally {
-            setFlag(undefined);
+            setFlag("off");
          }
       });
 

@@ -36,8 +36,8 @@
  * `./annotations`, `./authorize_routes` and `./governance/ir`.
  */
 
-import { payloadOf, routeOf } from "@malloydata/malloy";
 import { createRequire } from "module";
+import { payloadOfNote, routeOfNote } from "./annotation_reader";
 import { BadRequestError, ModelCompilationError } from "../errors";
 import { logger } from "../logger";
 import { type AnnotationNote } from "./annotations";
@@ -51,30 +51,6 @@ import {
    preparedQueryView,
    probeFilterList,
 } from "./governance/ir/prepared_query";
-
-/**
- * Malloy's own routing for ONE note, via the public `routeOf`. Three outcomes,
- * and all three are load-bearing here:
- *
- *   a name (`"authorize"`, `"authorize-v2"`, `"doc"`)  an app's namespace
- *   `""`                                              MOTLY / render tags
- *   `undefined`                                        a malformed prefix
- *
- * Reading the compiler's answer rather than text-matching is what keeps
- * publisher from inventing its own grammar — see this module's header.
- */
-function noteRoute(text: string): string | undefined {
-   return routeOf({ value: text.trimStart() } as Parameters<typeof routeOf>[0]);
-}
-
-/** The note's payload — the part after the prefix, dedented for a block note. */
-function notePayload(text: string): string {
-   return (
-      payloadOf({ value: text.trimStart() } as Parameters<
-         typeof payloadOf
-      >[0]) ?? ""
-   );
-}
 
 /**
  * A caller-text pattern for an `authorize` annotation, and deliberately a
@@ -209,9 +185,9 @@ export function malformedAuthorizeAttemptPattern(route: string): RegExp {
 function authorizeNoteContent(
    text: string,
 ): { route: string; content: string } | undefined {
-   const route = canonicalAuthorizeRoute(noteRoute(text));
+   const route = canonicalAuthorizeRoute(routeOfNote(text));
    if (route === undefined) return undefined;
-   return { route, content: notePayload(text) };
+   return { route, content: payloadOfNote(text) };
 }
 
 /** The canonical route of ONE note (`access_filter` / `authorize`), or
@@ -398,13 +374,13 @@ function lexProseRanges(text: string): [number, number][] | undefined {
          ) {
             if (!range) return undefined;
             block = {
-               prose: PROSE_ROUTES.has(noteRoute(text.slice(...range)) ?? ""),
+               prose: PROSE_ROUTES.has(routeOfNote(text.slice(...range)) ?? ""),
                next: token.stopIndex + 1,
             };
          } else if (name === "ANNOTATION" || name === "DOC_ANNOTATION") {
             if (!range) return undefined;
             // One token to the end of the line, routed by its prefix, which cannot itself be a hit.
-            if (PROSE_ROUTES.has(noteRoute(text.slice(...range)) ?? ""))
+            if (PROSE_ROUTES.has(routeOfNote(text.slice(...range)) ?? ""))
                prose.push([range[0] + 1, range[1]]);
          }
       }
@@ -585,13 +561,13 @@ export function collectAuthorizeNearMisses(
    const found: string[] = [];
    for (const text of texts) {
       const trimmed = text.trimStart();
-      const noted = noteRoute(trimmed);
+      const noted = routeOfNote(trimmed);
       if (noted === route) continue; // a real gate
       const nearMiss =
          noted === undefined
             ? malformedPattern.test(trimmed)
             : noted === ""
-              ? motlyPattern.test(notePayload(trimmed))
+              ? motlyPattern.test(payloadOfNote(trimmed))
               : nearMissNames.has(noted.toLowerCase());
       if (!nearMiss) continue;
       // The first line only — the part that decides routing — so the gate

@@ -45,6 +45,27 @@ import { Package } from "./package";
 import { writeTempPackage } from "../test_helpers/temp_package";
 
 describe("readClassification", () => {
+   it("reads a block-form note, as Malloy routes it (the regex it replaced did not)", () => {
+      // A compiled block note: dedented, no closer.
+      expect(
+         readClassification(['#|(classification)\n["phi.direct_identifier"]']),
+      ).toEqual({ values: ["phi.direct_identifier"] });
+   });
+
+   it("says a malformed prefix declares nothing, as Malloy does", () => {
+      expect(readClassification(['#(classification "phi.x")'])).toEqual({
+         values: [],
+      });
+   });
+
+   it("still reads a prefix glued to its payload, as the regex it replaced did", () => {
+      expect(
+         readClassification(['#(classification)"phi.direct_identifier"']),
+      ).toEqual({
+         values: ["phi.direct_identifier"],
+      });
+   });
+
    it("reads one quoted class, or a quoted list, from a string or a {value} note", () => {
       expect(
          readClassification(['#(classification) "phi.direct_identifier"']),
@@ -1669,6 +1690,19 @@ describe("the join walk's bounds", () => {
       expect(readSourceClassifications(fields)).toBe(
          readSourceClassifications(fields),
       );
+   });
+
+   // A glued `#(carries)` that read as undeclared would skip the leak check:
+   // the fail-open the annotation reader's glued-prefix rule exists to prevent.
+   it("declares a #(carries) glued to its list, so its leak check still runs", () => {
+      const node = {
+         notes: [{ text: '#(carries)["phi.clinical","none"]' }],
+      } as unknown as AnnotationsDef;
+      expect(readCarries(node)).toMatchObject({ declared: true });
+      expect([...readCarries(node).classes].sort()).toEqual([
+         "none",
+         "phi.clinical",
+      ]);
    });
 
    it("refuses an annotation chain past the hop bound instead of reading none", () => {
