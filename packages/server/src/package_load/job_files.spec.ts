@@ -2,11 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
-import {
-   CacheManager,
-   InMemoryModelCache,
-   type ModelDef,
-} from "@malloydata/malloy";
+import type { ModelDef } from "@malloydata/malloy";
 import type { DataStyles } from "@malloydata/render";
 import * as fs from "fs";
 import * as os from "os";
@@ -18,6 +14,8 @@ import {
    importReadOrder,
    jobFiles,
    ModelCacheView,
+   modelFileTexts,
+   urlKey,
 } from "./job_files";
 
 describe("importReadOrder", () => {
@@ -141,96 +139,201 @@ describe("ModelCacheView", () => {
          queryList: [],
          dependencies: {},
       }) as unknown as ModelDef;
-   // A fixed invalidation key, so a cached entry stays valid.
-   const reader = {
-      readURL: async () => "",
-      getInvalidationKey: async () => "k",
+   const reader = { readURL: async () => "" };
+   const cached = (name: string, url: string) => ({
+      modelDef: modelDef(name),
+      invalidationKeys: { [url]: "k" },
+   });
+   /** A load's files whose import scan found `imported`. */
+   const filesImporting = (...imported: string[]) => {
+      const files = jobFiles({ readURL: async () => "" });
+      for (const url of imported) files.imported.add(urlKey(url));
+      return files;
    };
-   const keyed = (url: string) => ({ [url]: "k" });
 
-   it("serves every import from the shared cache but never the model's own file", async () => {
-      const shared = new CacheManager(new InMemoryModelCache());
-      await shared.setCachedModelDef("file:///pkg/own.malloy", {
-         modelDef: modelDef("own"),
-         invalidationKeys: keyed("file:///pkg/own.malloy"),
-      });
-      await shared.setCachedModelDef("file:///pkg/dep.malloy", {
-         modelDef: modelDef("dep"),
-         invalidationKeys: keyed("file:///pkg/dep.malloy"),
-      });
-      const view = new ModelCacheView(shared, "file:///pkg/own.malloy");
-      expect(
-         await view.getCachedModelDef(reader, "file:///pkg/own.malloy"),
-      ).toBeUndefined();
-      expect(
-         (await view.getCachedModelDef(reader, "file:///pkg/dep.malloy"))
-            ?.modelDef.name,
-      ).toBe("dep");
+   it("serves every stored import but never the model's own file", async () => {
+      const own = "file:///pkg/own.malloy";
+      const dep = "file:///pkg/dep.malloy";
+      const files = filesImporting(own, dep);
+      const writer = new ModelCacheView(files, "file:///pkg/other.malloy");
+      await writer.setCachedModelDef(own, cached("own", own));
+      await writer.setCachedModelDef(dep, cached("dep", dep));
+      const view = new ModelCacheView(files, own);
+      expect(await view.getCachedModelDef(reader, own)).toBeUndefined();
+      expect((await view.getCachedModelDef(reader, dep))?.modelDef.name).toBe(
+         "dep",
+      );
+      expect(files.stats).toEqual({ stored: 2, reused: 1 });
    });
 
-   it("writes what it translates to the shared cache", async () => {
-      const shared = new CacheManager(new InMemoryModelCache());
-      const view = new ModelCacheView(shared, "file:///pkg/own.malloy");
-      await view.setCachedModelDef("file:///pkg/own.malloy", {
-         modelDef: modelDef("own"),
-         invalidationKeys: keyed("file:///pkg/own.malloy"),
-      });
+   it("keeps only package models another package file imports", async () => {
+      const dep = "file:///pkg/dep.malloy";
+      const files = filesImporting(dep);
+      const view = new ModelCacheView(files, "file:///pkg/index.malloy");
+      // A root nothing imports, and a file that is not a package model, are
+      // not kept: the first is never read back, and each importer translates
+      // the second itself, so each reports its problems.
       expect(
-         (await shared.getCachedModelDef(reader, "file:///pkg/own.malloy"))
-            ?.modelDef.name,
-      ).toBe("own");
+         await view.setCachedModelDef(
+            "file:///pkg/index.malloy",
+            cached("index", "file:///pkg/index.malloy"),
+         ),
+      ).toBe(false);
+      expect(
+         await view.setCachedModelDef(
+            "file:///shared/x.malloy",
+            cached("x", "file:///shared/x.malloy"),
+         ),
+      ).toBe(false);
+      expect(await view.setCachedModelDef(dep, cached("dep", dep))).toBe(true);
+      expect([...files.models.keys()]).toEqual([dep]);
+   });
+
+   it("keeps a model's own translation when an importer can ask for it", async () => {
+      // A plain path is spelled the same encoded and decoded.
+      const dep = "file:///pkg/dep.malloy";
+      const files = filesImporting(dep);
+      const owner = new ModelCacheView(files, dep);
+      expect(await owner.setCachedModelDef(dep, cached("dep", dep))).toBe(true);
+      expect([...files.models.keys()]).toEqual([dep]);
+   });
+
+   it("keeps each translation under the spelling Malloy gave it", async () => {
+      // A model compiled as itself is translated under its encoded URL; an
+      // importer translates and asks for it decoded. The two translations
+      // carry different source IDs and locations, so the first must not be
+      // served for the second, and since no importer asks for the encoded
+      // spelling it is not stored at all.
+      const encoded = "file:///pkg/my%20models/b%C3%A4se.malloy";
+      const decoded = "file:///pkg/my models/bäse.malloy";
+      const files = filesImporting(decoded);
+      const owner = new ModelCacheView(files, encoded);
+      expect(
+         await owner.setCachedModelDef(encoded, cached("as itself", encoded)),
+      ).toBe(false);
+      // Its own file stays its own in either spelling.
+      expect(await owner.getCachedModelDef(reader, decoded)).toBeUndefined();
+      const first = new ModelCacheView(files, "file:///pkg/a.malloy");
+      expect(await first.getCachedModelDef(reader, decoded)).toBeUndefined();
+      // The first importer's translation of the import is stored decoded, and
+      // that is what a later importer gets.
+      await first.setCachedModelDef(decoded, cached("as an import", decoded));
+      const later = new ModelCacheView(files, "file:///pkg/b.malloy");
+      expect(
+         (await later.getCachedModelDef(reader, decoded))?.modelDef.name,
+      ).toBe("as an import");
+      expect(files.stats).toEqual({ stored: 1, reused: 1 });
    });
 
    it("shares no object between compiles: it keeps a copy and hands out copies", async () => {
-      const shared = new CacheManager(new InMemoryModelCache());
-      const writer = new ModelCacheView(shared, "file:///pkg/dep.malloy");
+      const dep = "file:///pkg/dep.malloy";
+      const files = filesImporting(dep);
+      const writer = new ModelCacheView(files, dep);
       const own = modelDef("dep");
-      await writer.setCachedModelDef("file:///pkg/dep.malloy", {
+      await writer.setCachedModelDef(dep, {
          modelDef: own,
-         invalidationKeys: keyed("file:///pkg/dep.malloy"),
+         invalidationKeys: { [dep]: "k" },
       });
       // The model's own result is worked on after its compile.
       own.name = "changed after the compile";
 
-      const first = new ModelCacheView(shared, "file:///pkg/a.malloy");
-      const second = new ModelCacheView(shared, "file:///pkg/b.malloy");
-      const seen = await first.getCachedModelDef(
-         reader,
-         "file:///pkg/dep.malloy",
-      );
+      const first = new ModelCacheView(files, "file:///pkg/a.malloy");
+      const second = new ModelCacheView(files, "file:///pkg/b.malloy");
+      const seen = await first.getCachedModelDef(reader, dep);
       expect(seen?.modelDef.name).toBe("dep");
       // An importer writes into what it imports.
       seen!.modelDef.name = "written by an importer";
-      expect(
-         (await second.getCachedModelDef(reader, "file:///pkg/dep.malloy"))
-            ?.modelDef.name,
-      ).toBe("dep");
-   });
-
-   it("does not keep a model no package file imports, but keeps what it imports", async () => {
-      const shared = new CacheManager(new InMemoryModelCache());
-      const root = new ModelCacheView(
-         shared,
-         "file:///pkg/index.malloy",
-         false,
+      expect((await second.getCachedModelDef(reader, dep))?.modelDef.name).toBe(
+         "dep",
       );
+   });
+});
+
+describe("modelFileTexts", () => {
+   it("gives a model only its own file and the files it imports, in either URL spelling", () => {
+      const files = jobFiles({ readURL: async () => "" });
+      // A real absolute path, so the URL carries a drive letter on Windows.
+      const pkg = path.join(os.tmpdir(), "pkg");
+      const root = pathToFileURL(path.join(pkg, "root.malloy")).href;
+      const dep = pathToFileURL(
+         path.join(pkg, "my models", "bäse.malloy"),
+      ).href;
+      files.texts.set(root, "root text");
+      files.texts.set(dep, "dep text");
+      files.texts.set(
+         pathToFileURL(path.join(pkg, "other.malloy")).href,
+         "unrelated",
+      );
+      // `dependencies` names the file decoded.
+      const texts = modelFileTexts(files, root, { [decodeURI(dep)]: {} });
       expect(
-         await root.setCachedModelDef("file:///pkg/index.malloy", {
-            modelDef: modelDef("index"),
-            invalidationKeys: keyed("file:///pkg/index.malloy"),
-         }),
-      ).toBe(false);
-      await root.setCachedModelDef("file:///pkg/dep.malloy", {
-         modelDef: modelDef("dep"),
-         invalidationKeys: keyed("file:///pkg/dep.malloy"),
-      });
-      expect(
-         await shared.getCachedModelDef(reader, "file:///pkg/index.malloy"),
-      ).toBeUndefined();
-      expect(
-         (await shared.getCachedModelDef(reader, "file:///pkg/dep.malloy"))
-            ?.modelDef.name,
-      ).toBe("dep");
+         [...texts.entries()].map(([p, t]) => [path.basename(p), t]),
+      ).toEqual([
+         ["root.malloy", "root text"],
+         ["bäse.malloy", "dep text"],
+      ]);
+   });
+});
+
+describe("a load's translations, through a real compile", () => {
+   const UUID = /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/g;
+
+   it("reuses a translation whose path has a space and a non-ASCII letter, and compiles each model as without the cache", async () => {
+      const { DuckDBConnection } = await import("@malloydata/db-duckdb");
+      const { FixedConnectionMap, MalloyConfig, Runtime } = await import(
+         "@malloydata/malloy"
+      );
+      const dir = fs.mkdtempSync(path.join(os.tmpdir(), "publisher-reuse-"));
+      const duckdb = new DuckDBConnection("duckdb", ":memory:", dir);
+      try {
+         fs.mkdirSync(path.join(dir, "my models"));
+         fs.writeFileSync(
+            path.join(dir, "my models", "bäse.malloy"),
+            `source: base is duckdb.sql("select 1 as x")\n`,
+         );
+         for (const name of ["a", "b"]) {
+            fs.writeFileSync(
+               path.join(dir, `${name}.malloy`),
+               `import "my models/bäse.malloy"\nsource: ${name} is base\n`,
+            );
+         }
+         const malloyConfig = new MalloyConfig({ connections: {} });
+         malloyConfig.wrapConnections(
+            () =>
+               new FixedConnectionMap(new Map([["duckdb", duckdb]]), "duckdb"),
+         );
+         const disk = {
+            readURL: async (url: URL) =>
+               fs.promises.readFile(fileURLToPath(url), "utf8"),
+         };
+         const files = jobFiles(disk);
+         const modelPaths = ["a.malloy", "b.malloy", "my models/bäse.malloy"];
+         await compileOrder(dir, modelPaths, files.reader, files.imported);
+         const compile = async (rel: string, cached: boolean) => {
+            const url = pathToFileURL(path.join(dir, rel));
+            const runtime = new Runtime({
+               urlReader: cached ? files.reader : disk,
+               config: malloyConfig,
+               cacheManager: cached
+                  ? new ModelCacheView(files, url.toString())
+                  : undefined,
+            });
+            const model = await runtime.loadModel(url).getModel();
+            return JSON.stringify(model._modelDef).replace(UUID, "<uuid>");
+         };
+         // The imported file first, as compileOrder schedules it.
+         await compile("my models/bäse.malloy", true);
+         const a = await compile("a.malloy", true);
+         const b = await compile("b.malloy", true);
+         // Only a's translation of base as an import (decoded), which b
+         // reuses; base's own translation (encoded) is not stored.
+         expect(files.stats).toEqual({ stored: 1, reused: 1 });
+         expect(a).toBe(await compile("a.malloy", false));
+         expect(b).toBe(await compile("b.malloy", false));
+      } finally {
+         await duckdb.close();
+         fs.rmSync(dir, { recursive: true, force: true });
+      }
    });
 });
 
