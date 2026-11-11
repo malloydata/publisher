@@ -7507,7 +7507,18 @@ components:
           type: boolean
           description: >-
             Whether the joined source exists only inside this join (an inline
-            `extend` or a table read), so its fields are listed through it.
+            `extend`, a table read, or a record column), so its fields are
+            listed through it.
+        relationship:
+          type: string
+          enum: [one, many, cross]
+          description: >-
+            How many rows of the joined source each row of the parent meets,
+            from the compiled join: `one` for `join_one:` and a record column,
+            `many` for `join_many:` and a repeated-record or array column,
+            `cross` for `join_cross:`. A field reached through a `many` or
+            `cross` join fans out: an aggregate over the parent counts each of
+            its rows once per joined row.
 
     IndexFingerprint:
       type: object

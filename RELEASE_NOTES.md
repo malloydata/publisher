@@ -21,6 +21,12 @@ Give the heading a title — `## [Unreleased] — what changed`, with an em dash
 
 Two consequences worth knowing. A section merged to `main` ships in the **next** release, whenever that is, so do not write one for work that has not landed. And a heading already stamped with a version is history: a follow-up that changes that behaviour opens a **new** `[Unreleased]` section referencing the shipped version by number, rather than editing the old one.
 
+## [Unreleased] — Package entities list a record column's members, and every join says how many rows it meets
+
+The package entities (`ModelEntities.fields`) walked a record or repeated-record column (a BigQuery RECORD, a DuckDB STRUCT or STRUCT[]) as if it were a join to a source of the same name. When the model also had a top-level source with that name, the column's members (`lines.sku`, `lines.qty`) were never listed, and the column's `join` named that unrelated source. A record column is now always `nested`, with no `sourceName`, and its members are always listed under dotted names.
+
+`EntityJoin` gains an optional `relationship`: `one`, `many` or `cross`, from Malloy's compiled join. A record column is `one` and a repeated record or array column is `many`, the same as `join_one:` and `join_many:`, so a reader can tell that a field reached through it fans out.
+
 ## [Unreleased] — A failed source says whether retrying it can help
 
 A build that loses a source reports it in `BuildManifest.failures`, but until now the only hint about whether a retry could succeed was `refused`, set for eligibility refusals alone. An orchestrator that retries failed builds had to guess from the message. A source refused under `strictUpstreams` because the upstream it reads failed earlier in the same run read as a fresh failure (its message only said the upstream was missing from the manifest), and a run whose only source failed reported nothing per source at all.

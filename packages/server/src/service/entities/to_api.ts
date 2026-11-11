@@ -79,6 +79,7 @@ function toApiField(entity: Entity): ApiEntityField {
          ...(join.original_source_path != null && {
             sourcePath: join.original_source_path,
          }),
+         ...(join.relationship && { relationship: join.relationship }),
       };
    }
    if (entity.dim_index_fingerprint) {

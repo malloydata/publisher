@@ -187,6 +187,7 @@ exports[`the rich package's entities 1`] = `
         "code": "reps is duckdb.table('reps.csv') on rep_id = reps.rep_id",
         "join": {
           "nested": true,
+          "relationship": "one",
         },
         "kind": "join",
         "name": "reps",
@@ -241,6 +242,7 @@ exports[`the rich package's entities 1`] = `
 ,
         "join": {
           "nested": true,
+          "relationship": "one",
         },
         "kind": "join",
         "name": "rep_names",
@@ -733,6 +735,7 @@ exports[`the surface package's entities 1`] = `
         "code": "gated is locked on order_id = gated.order_id",
         "join": {
           "nested": false,
+          "relationship": "one",
           "sourceName": "locked",
           "sourcePath": "base.malloy",
         },
@@ -1044,6 +1047,7 @@ exports[`the surface package's entities 1`] = `
         "code": "gated is locked on order_id = gated.order_id",
         "join": {
           "nested": false,
+          "relationship": "one",
           "sourceName": "locked",
           "sourcePath": "base.malloy",
         },
@@ -1206,6 +1210,7 @@ exports[`the surface package's entities 1`] = `
         "code": "gated is locked on order_id = gated.order_id",
         "join": {
           "nested": false,
+          "relationship": "one",
           "sourceName": "locked",
           "sourcePath": "base.malloy",
         },
@@ -1262,6 +1267,7 @@ exports[`the surface package's entities 1`] = `
 ,
         "join": {
           "nested": true,
+          "relationship": "one",
         },
         "kind": "join",
         "name": "inner_gate",
