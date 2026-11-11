@@ -21,6 +21,12 @@ Give the heading a title — `## [Unreleased] — what changed`, with an em dash
 
 Two consequences worth knowing. A section merged to `main` ships in the **next** release, whenever that is, so do not write one for work that has not landed. And a heading already stamped with a version is history: a follow-up that changes that behaviour opens a **new** `[Unreleased]` section referencing the shipped version by number, rather than editing the old one.
 
+## [Unreleased] — Two models' rollups that would share one table are refused, not overwritten
+
+A pre-aggregation rollup's name folds only its base source's name and grain, and that name is its table. So two models that each declare a source of the same name, and pre-aggregate it at the same grain, produced one table: the second build overwrote the first, and one model's queries could be answered from the other's rollup. `#@ preaggregate` has no `name=` to tell them apart.
+
+Such rollups are now refused when their content differs: neither is built or served from storage, each model's queries answer from its base, and the build plan reports both under `refusedSources` with the new reason `rollup_name_collision`, naming the models. Rename one of the base sources to keep both rollups. Two models that generate the same rollup over the same base still share its table.
+
 ## [Unreleased] — `@env.` references are never read outside MOTLY tags
 
 An annotation can no longer read the server's environment through a `#@`, `##` or `##!` line, or through `#(dbmeta)`. The tag parser fills `@env.NAME` from the server's own environment, and Publisher already dropped any MOTLY (`#`) line that carried one. Now every annotation route it parses applies the same rule: the line is dropped before parsing, and the drop is logged.
