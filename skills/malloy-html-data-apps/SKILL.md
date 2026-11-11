@@ -172,7 +172,7 @@ If you did not start the server (someone handed you a running one), **probe befo
 }
 ```
 
-A local package uses a filesystem `location` (`"./<pkg>"`, relative to the directory holding `publisher.config.json`); a remote one uses a GitHub `tree` URL. If one model in the package fails to compile, the **whole package** fails to load, so a stray notebook/model error blanks every tile. (Common one: a notebook that imports `x.malloy` more than once, such as a `.malloynb` whose cells each `import "x.malloy"`, compiles as one batch, so the repeated import errors `Cannot redefine 'x'`. Import once, at the top.)
+A local package uses a filesystem `location` (`"./<pkg>"`, relative to the directory holding `publisher.config.json`); a remote one uses a GitHub `tree` URL. If one model in the package fails to compile, the **whole package** fails to load, so a stray notebook/model error blanks every tile. (Common one: a report that imports `x.malloy` more than once compiles as one batch, so the repeated import errors `Cannot redefine 'x'`. Import once, at the top.)
 
 ### Publishing
 
