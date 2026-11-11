@@ -266,3 +266,117 @@ source: account_usage is accounts extend { join_many: u is usage on u.account_id
       ).toBeUndefined();
    });
 });
+
+// Rolling windows (the plan's "Rolling windows" section, scenario S25): a
+// current-time `where:` is evaluated at build with `now` written as a literal,
+// and re-applied at every read. Over the serving window [b, b + interval), the
+// literal must make the stored set the WIDEST the window needs, or a read comes
+// up short. v2's build does not exist yet and `now` cannot be pinned, so this
+// hand-builds the tables the build would write and pins each read by writing
+// its time into the query. Malloy still does the time arithmetic.
+describe("R4 probe: rolling windows keep the widest set over the serving window", () => {
+   const ROOT = "file:///r4window/";
+   const B = "2026-11-10 00:00:00"; // build start
+   // Interval: one day. Reads at b, mid-interval, and just before b + interval.
+   const READS = [
+      "2026-11-10 00:00:00",
+      "2026-11-10 12:00:00",
+      "2026-11-10 23:59:59",
+   ];
+   let duckdb: DuckDBConnection;
+   let runtime: Runtime;
+
+   beforeAll(async () => {
+      duckdb = freshDuckDB("duckdb");
+      // One event an hour, from well before b - 30 days to after b + 1 day.
+      await duckdb.runSQL(`CREATE TABLE events AS
+         SELECT ts, row_number() OVER (ORDER BY ts) AS amount
+         FROM range(TIMESTAMP '${B}' - INTERVAL 36 DAY, TIMESTAMP '${B}' + INTERVAL 2 DAY, INTERVAL 1 HOUR) t(ts)`);
+      const build = (table: string, where: string) =>
+         duckdb.runSQL(
+            `CREATE TABLE ${table} AS SELECT * FROM events WHERE ${where}`,
+         );
+      // Lower bound, "the last 30 days".
+      await build("lower_widest", `ts >= TIMESTAMP '${B}' - INTERVAL 30 DAY`);
+      await build(
+         "lower_s25",
+         `ts >= TIMESTAMP '${B}' + INTERVAL 1 DAY - INTERVAL 30 DAY`,
+      );
+      // Upper bound, "older than 30 days".
+      await build(
+         "upper_widest",
+         `ts < TIMESTAMP '${B}' + INTERVAL 1 DAY - INTERVAL 30 DAY`,
+      );
+      await build("upper_narrow", `ts < TIMESTAMP '${B}' - INTERVAL 30 DAY`);
+      const model = [
+         "events",
+         "lower_widest",
+         "lower_s25",
+         "upper_widest",
+         "upper_narrow",
+      ]
+         .map((t) => `source: ${t} is duckdb.table('${t}')`)
+         .join("\n");
+      runtime = new Runtime({
+         urlReader: new InMemoryURLReader(
+            new Map([[`${ROOT}m.malloy`, model]]),
+         ),
+         connections: new FixedConnectionMap(
+            new Map([["duckdb", duckdb]]),
+            "duckdb",
+         ),
+      });
+   });
+
+   /** `source` read at `at`, with the window's term re-applied at that time. */
+   async function read(
+      source: string,
+      term: ">=" | "<",
+      at: string,
+   ): Promise<Row[]> {
+      const query = `run: ${source} -> {
+        where: ts ${term} @${at} - 30 days
+        aggregate: n is count(), total is amount.sum()
+      }`;
+      const result = await runtime
+         .loadModel(new URL(`${ROOT}m.malloy`), {
+            importBaseURL: new URL(ROOT),
+         })
+         .loadQuery(query)
+         .run();
+      return result.data.toObject() as Row[];
+   }
+
+   for (const at of READS) {
+      it(`a lower bound built with now = b matches live at ${at}`, async () => {
+         expect(
+            rowDifference(
+               await read("events", ">=", at),
+               await read("lower_widest", ">=", at),
+            ),
+         ).toBeUndefined();
+      });
+      it(`an upper bound built with now = b + interval matches live at ${at}`, async () => {
+         expect(
+            rowDifference(
+               await read("events", "<", at),
+               await read("upper_widest", "<", at),
+            ),
+         ).toBeUndefined();
+      });
+   }
+
+   it("a lower bound built as S25 first expected (now = b + 1 day) comes up short mid-interval", async () => {
+      const at = READS[1];
+      const [live] = await read("events", ">=", at);
+      const [served] = await read("lower_s25", ">=", at);
+      expect(Number(served.n)).toBeLessThan(Number(live.n));
+   });
+
+   it("an upper bound built with now = b comes up short after b", async () => {
+      const at = READS[1];
+      const [live] = await read("events", "<", at);
+      const [served] = await read("upper_narrow", "<", at);
+      expect(Number(served.n)).toBeLessThan(Number(live.n));
+   });
+});
