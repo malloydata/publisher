@@ -15,7 +15,7 @@ import { startedStore } from "../test_helpers/started_store";
 
 /**
  * A publish of a version is a load in flight from its download until it
- * settles, as an install is: `/status?includeLoading=true` reports it as
+ * settles: `/status?includeLoading=true` reports it as
  * loading, never as a failed load, and once its tree names the version, as a
  * version entry an orchestrator can match by its `versionId`. Under explicit
  * promotion a read that took the package for one not loaded and loaded it
@@ -50,10 +50,9 @@ beforeEach(() => {
          ],
       }),
    );
-   // Versioning on, explicit promotion, and no other variables.
+   // Explicit promotion, and no other variables.
    restoreSettings = installSettings({
       env: {
-         PUBLISHER_PACKAGE_VERSIONING: "on",
          PUBLISHER_VERSION_PROMOTION: "explicit",
       },
       cwd: path.join(root, "server"),

@@ -319,7 +319,7 @@ describe("package agents", () => {
       });
    });
 
-   describe("reload and metadata PATCH", () => {
+   describe("reload and metadata update", () => {
       it("picks up an agent edit on reload and re-pins the sha", async () => {
          manifest({ agents: { analyst: analyst() } });
          const pkg = await load();
@@ -396,10 +396,11 @@ describe("package agents", () => {
          expect(pkg.getPackageMetadata().agents).toBeUndefined();
       });
 
-      it("keeps agents across a metadata PATCH and ignores agents in the body", async () => {
+      it("keeps agents across a metadata update and ignores agents in the new metadata", async () => {
          manifest({ agents: { analyst: analyst() } });
          const pkg = await load();
-         // Environment.updatePackage replaces the stored metadata exactly like this.
+         // A version's load replaces the stored metadata like this, from a
+         // copy of getPackageMetadata() that carries the listed agents.
          pkg.setPackageMetadata({
             name: "pkg",
             description: "patched",

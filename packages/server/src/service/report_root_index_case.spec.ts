@@ -14,6 +14,7 @@ import fs from "fs/promises";
 import os from "os";
 import path from "path";
 import { Environment } from "./environment";
+import { installTestPackage } from "../test_helpers/install_test_package";
 import { isReportEligiblePath, reportWritePathProblem } from "./report";
 import { writePackageFiles } from "../test_helpers/temp_package";
 import { parsePackageName } from "./identity";
@@ -44,7 +45,7 @@ describe("a tagged root index file in another letter case", () => {
    });
 
    it("is not served, and its tag is reported as ignored", async () => {
-      await env.installPackage(PACKAGE, async (stagingPath) =>
+      await installTestPackage(env, PACKAGE, async (stagingPath) =>
          writePackageFiles(
             stagingPath,
             {

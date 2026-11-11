@@ -16,6 +16,7 @@ import fs from "fs/promises";
 import os from "os";
 import path from "path";
 import { Environment } from "./environment";
+import { installTestPackage } from "../test_helpers/install_test_package";
 import type { Model } from "./model";
 import { Package } from "./package";
 import { parsePackageName } from "./identity";
@@ -91,7 +92,7 @@ describe("a reload's report swap", () => {
    };
 
    it("answers from the previous generation until the swap, and from the new one after", async () => {
-      await env.installPackage(PKG, async (stagingPath) => {
+      await installTestPackage(env, PKG, async (stagingPath) => {
          await fs.mkdir(stagingPath, { recursive: true });
          for (const [name, text] of Object.entries(FILES))
             await fs.writeFile(path.join(stagingPath, name), text);

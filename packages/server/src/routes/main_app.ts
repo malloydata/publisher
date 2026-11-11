@@ -17,10 +17,6 @@ import { MAX_OVERLAY_BYTES } from "../constants";
 import { frameAncestorsMiddleware } from "../frame_ancestors";
 import { drainingGuard, registerHealthEndpoints } from "../health";
 import { httpMetricsMiddleware } from "../instrumentation";
-import {
-   legacyPackageNameBodyMiddleware,
-   legacyPackageNameMiddleware,
-} from "../legacy_package_name";
 import { loggerMiddleware } from "../logger";
 import { rateLimitMiddleware } from "../rate_limit";
 import { registerLegacyRoutes } from "../server-old";
@@ -73,9 +69,6 @@ export function createMainApp(options: MainAppOptions): express.Express {
    // Mounted before every route; probes and /metrics are exempt inside it.
    app.use(rateLimitMiddleware(options.rateLimitPerMinute ?? 0));
 
-   // Before every package route, the data-app static routes included: a
-   // package version named in a combined package name (see legacy_package_name).
-   app.use(legacyPackageNameMiddleware());
    // Before the SPA catch-all and the dev-server proxy.
    registerDataAppStaticRoutes(
       app,
@@ -117,7 +110,6 @@ export function createMainApp(options: MainAppOptions): express.Express {
          : next();
    });
    app.use(bodyParser.json({ limit: "1mb" }));
-   app.use(legacyPackageNameBodyMiddleware());
 
    if (options.metricsHandler) app.get("/metrics", options.metricsHandler);
 

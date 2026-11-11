@@ -9,6 +9,7 @@ import os from "os";
 import path from "path";
 import { AccessDeniedError, BadRequestError } from "../errors";
 import { Environment } from "./environment";
+import { installTestPackage } from "../test_helpers/install_test_package";
 import { writePackageFiles } from "../test_helpers/temp_package";
 import { parsePackageName } from "./identity";
 
@@ -41,7 +42,7 @@ describe("compileSource checks filter given values", () => {
       const envPath = path.join(rootDir, "env");
       await fs.mkdir(envPath, { recursive: true });
       env = await Environment.create("testEnv", envPath, []);
-      await env.installPackage("pkg", async (stagingPath) =>
+      await installTestPackage(env, "pkg", async (stagingPath) =>
          writePackageFiles(
             stagingPath,
             {

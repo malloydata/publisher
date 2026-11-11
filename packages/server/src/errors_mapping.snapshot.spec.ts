@@ -61,7 +61,6 @@ import {
    UnsupportedCatalogFormatError,
    VersionFilesMissingError,
    WriteConflictError,
-   InstalledFromLocationError,
    WriteRollbackFailedError,
    WriteRolledBackError,
    WriteVerifyError,
@@ -399,13 +398,6 @@ const CASES: Array<[string, () => unknown]> = [
    [
       "WriteConflictError (FILE_EXISTS)",
       () => new WriteConflictError("file exists", "FILE_EXISTS"),
-   ],
-   [
-      "InstalledFromLocationError",
-      () =>
-         new InstalledFromLocationError(
-            "installed from gs://b/p.zip; a reload would discard the change",
-         ),
    ],
    [
       "WriteRolledBackError",

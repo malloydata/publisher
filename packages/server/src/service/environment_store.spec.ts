@@ -901,7 +901,7 @@ describe("EnvironmentStore Service", () => {
       // loop, so with three packages from one repo a throw on the second meant
       // the third was never copied even though nothing was wrong with it.
       // A repository, because a local location is published without the
-      // shared download (publishConfiguredPackages).
+      // shared download (publishEnvironmentPackages).
       const packageNames = ["first", "middle", "last"];
       const fakeGit = (() => ({
          clone: (

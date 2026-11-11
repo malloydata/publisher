@@ -35,6 +35,14 @@ export interface SettingWarning {
    message: string;
 }
 
+/** Variables an earlier release read, and what replaced each. */
+const RETIRED_VARIABLES: ReadonlyArray<readonly [string, string]> = [
+   [
+      "PUBLISHER_PACKAGE_VERSIONING",
+      "every package is a published version, numbered by the semantic `version` in its publisher.json, except in a watched environment (--watch-env). A package with no `version` fails to load. See docs/package-versions.md.",
+   ],
+];
+
 /** A value a higher-precedence source hid, kept so it can be reported. */
 export interface ShadowedValue {
    source: SettingSource;
@@ -252,6 +260,7 @@ class Loader {
       for (const entry of this.registry) this.resolve(entry);
       this.warnAboutFlags();
       this.warnAboutFileKeys();
+      this.warnAboutRetiredVariables();
       return {
          slots: this.slots,
          configPath: this.configPath,
@@ -312,6 +321,21 @@ class Loader {
       for (const name of this.flagsWithoutValue) {
          this.warnings.push({
             message: `${name} has no value after it, so it is ignored.`,
+         });
+      }
+   }
+
+   /**
+    * A variable an earlier release read and this one does not. Without a word
+    * at startup, a deployment that set it to keep the old behavior gets the
+    * new one with nothing pointing at the cause.
+    */
+   private warnAboutRetiredVariables(): void {
+      for (const [name, why] of RETIRED_VARIABLES) {
+         const raw = this.env[name];
+         if (raw === undefined || raw.trim() === "") continue;
+         this.warnings.push({
+            message: `${name} is set, but this release does not read it, so it is ignored: ${why}`,
          });
       }
    }

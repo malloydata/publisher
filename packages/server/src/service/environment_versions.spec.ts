@@ -192,6 +192,23 @@ describe("Environment loading of published versions", () => {
       }
    });
 
+   it("fires the package-loaded hook once for a version that loads as latest, and not for one that does not", async () => {
+      // The hook feeds work keyed by package name (the retrieval index), so
+      // only the version a request without a version reaches may fire it.
+      const env = await newEnvironment();
+      const loaded: Package[] = [];
+      env.setPackageLoadedHook((pkg) => {
+         loaded.push(pkg);
+      });
+      const v1 = (await publish(env, source("1.0.0", 1))).loaded;
+      expect(loaded).toEqual([v1]);
+      await publish(env, source("2.0.0", 2), "explicit");
+      expect(loaded).toEqual([v1]);
+      // A cached read of latest is not a load.
+      await env.getPackage(parsePackageName(PKG));
+      expect(loaded).toEqual([v1]);
+   });
+
    it("after a restart, loads a version on first use, once, however many reads race", async () => {
       await publish(await newEnvironment(), source("1.0.0", 1));
       await publish(await newEnvironment(), source("2.0.0", 2));
@@ -615,21 +632,13 @@ describe("Environment loading: races, listings and bookkeeping", () => {
       }
    });
 
-   it("refuses to add or install a versioned package as a single slot, keeping its versions", async () => {
+   it("refuses to add a versioned package as a single slot, keeping its versions", async () => {
       const env = await newEnvironment();
       await publish(env, source("1.0.0", 1));
       expect(await refusal(env.addPackage(PKG))).toEqual({
          status: 409,
          reason: "PACKAGE_IS_VERSIONED",
       });
-      const other = writePackage(path.join(root, "unversioned"), {}, 7);
-      expect(
-         await refusal(
-            env.installPackage(PKG, async (stagingPath) => {
-               await fs.promises.cp(other, stagingPath, { recursive: true });
-            }),
-         ),
-      ).toEqual({ status: 409, reason: "PACKAGE_IS_VERSIONED" });
       expect(fs.readdirSync(path.join(envPath, PKG))).toEqual(["1.0.0"]);
       expect(await answerOf(await env.getPackage(parsePackageName(PKG)))).toBe(
          1,

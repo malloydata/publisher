@@ -15,10 +15,7 @@
  *   fallback (`service/legacy_report_views.ts`; not under a development
  *   server, where Vite serves the app); a query carrying
  *   `filterParams` / `filter_params` or `bypassFilters` / `bypass_filters`
- *   (`filter_deprecation.ts`), on REST and MCP alike; and a
- *   `PATCH …/packages/{pkg}`, counted in its controller
- *   (`PackageController.updatePackage`) so the environment and project paths
- *   count alike.
+ *   (`filter_deprecation.ts`), on REST and MCP alike.
  * - A package load or reload: per package that sets `explores` or
  *   `queryableSources` in publisher.json, per `.malloynb` file, and per source
  *   that declares `#(filter)` annotations (`service/deprecated/*`).
@@ -41,7 +38,6 @@ export type DeprecatedFeature =
    | "filter_annotation"
    | "filter_params"
    | "bypass_filters"
-   | "package_patch"
    | "environment_reload";
 
 const counter = lazyCounter(

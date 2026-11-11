@@ -116,22 +116,19 @@ describe("package_load_metrics", () => {
       expect(compile.boundaries[compile.boundaries.length - 1]).toBe(300_000);
    });
 
-   it("times a reload or install by outcome, and rethrows a failure", async () => {
+   it("times a reload by outcome, and rethrows a failure", async () => {
       expect(await measurePackageOperation("reload", async () => "ok")).toBe(
          "ok",
       );
       const failure = new Error("did not compile");
       await expect(
-         measurePackageOperation("install", async () => {
+         measurePackageOperation("reload", async () => {
             throw failure;
          }),
       ).rejects.toBe(failure);
 
-      for (const [name, outcome] of [
-         ["publisher_package_reload_duration_ms", "success"],
-         ["publisher_package_install_duration_ms", "failure"],
-      ]) {
-         expect((await harness.collectAttributes(name)).length).toBe(1);
+      const name = "publisher_package_reload_duration_ms";
+      for (const outcome of ["success", "failure"]) {
          expect((await harness.collectHistogram(name, { outcome })).count).toBe(
             1,
          );

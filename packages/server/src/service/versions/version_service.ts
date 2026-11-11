@@ -840,20 +840,8 @@ export class VersionService<P = unknown> {
       }));
    }
 
-   /** Set the package's own description (not any version's). */
-   async setPackageDescription(
-      packageName: string,
-      description: string,
-   ): Promise<void> {
-      try {
-         await this.requireHost().ensurePackageRecord(packageName, description);
-      } finally {
-         this.forgetRecords(packageName);
-      }
-   }
-
    /**
-    * The package's own description, set by a create or PATCH request; null
+    * The package's own description, set by a publish request; null
     * when none was. A version's publisher.json description is that version's.
     */
    async packageDescriptionOf(packageName: string): Promise<string | null> {

@@ -1156,7 +1156,7 @@ describe("the archive hook and the startup sweep, as main_server.ts wires them",
       )?.status ?? null;
 
    beforeEach(() => {
-      env = { ...ALLOW_SETUP_SQL, PUBLISHER_PACKAGE_VERSIONING: "on" };
+      env = { ...ALLOW_SETUP_SQL };
       root = fs.realpathSync(
          fs.mkdtempSync(
             path.join(os.tmpdir(), "materialization-reclaim-wired-"),
@@ -1521,34 +1521,6 @@ describe("the archive hook and the startup sweep, as main_server.ts wires them",
       expect(kept.rows).toEqual([{ v1: 101, v2: 202 }]);
       // The package's run records went with it, as deleting a package does.
       expect(await statusOf(server, run2.id)).toBeNull();
-   });
-
-   it("an unversioned package's delete still drops nothing and starts no cleanup, as before versions", async () => {
-      env.PUBLISHER_PACKAGE_VERSIONING = "off";
-      const server = await openServer();
-      await server.sweep;
-      await server.store.addEnvironment({
-         name: ENV,
-         connections: [WAREHOUSE],
-      } as never);
-      await publish(server, "1.0.0", 1, "package");
-      const created = await server.service.createMaterialization(ENV, PKG, {});
-      const run = await settledRun(
-         server.store.storageManager.getRepository(),
-         server.service,
-         created.id,
-      );
-      expect(run.status).toBe("MANIFEST_FILE_READY");
-      expect(await tables(server)).toEqual(["summary"]);
-
-      await new PackageController(
-         server.store,
-         testRetrieval(server.store),
-      ).deletePackage(ENV, PKG);
-      await new Promise((resolve) => setTimeout(resolve, 50));
-      expect(server.calls).toEqual([]);
-      expect(await tables(server)).toEqual(["summary"]);
-      expect(await statusOf(server, run.id)).toBeNull();
    });
 
    // Skipped on Windows, where DuckDB keeps the OS handle on a file database

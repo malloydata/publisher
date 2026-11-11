@@ -630,7 +630,7 @@ def register(base: str, env: str, out: pathlib.Path) -> str | None:
 
     A POST publishes the build as the version stamp_version gave it, so a
     rebuilt report becomes the package's `latest` and replaces the one it
-    served; no delete is needed first. (A server with versioning off
+    served; no delete is needed first. (An older server that serves a copy
     re-copies the package instead, to the same effect.)
     """
     body = json.dumps({"name": out.name, "location": str(out.resolve())}).encode()

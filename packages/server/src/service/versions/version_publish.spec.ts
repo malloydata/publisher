@@ -9,6 +9,7 @@ import * as path from "path";
 import type { VersionPromotionMode } from "../../config";
 import {
    BadRequestError,
+   PackageAdmissionRefusedError,
    PackageVersionError,
    type PackageVersionErrorReason,
 } from "../../errors";
@@ -289,6 +290,35 @@ describe("VersionService.publish", () => {
          "MANIFEST_VERSION_INVALID",
       );
       expect(versionDirs()).toEqual([]);
+   });
+
+   it("refuses a publish memory back-pressure does not admit, before anything is downloaded", async () => {
+      // The admission gate every package load passes, here for a version:
+      // refused before the download, so a server under pressure takes on no
+      // new tree, and nothing is placed or recorded.
+      let downloaded = false;
+      const refusing = new VersionService<Loaded>(repo, ENV_ID, store, {
+         ...host(),
+         admit: (packageName, reason) => {
+            throw new PackageAdmissionRefusedError(
+               `memory back-pressure: cannot ${reason} ${packageName}`,
+            );
+         },
+      });
+      const location = source("v1", { version: "1.0.0" });
+      await expect(
+         refusing.publish(
+            PKG,
+            async (stagingPath) => {
+               downloaded = true;
+               await copyFrom(location)(stagingPath);
+            },
+            { sourceLocation: location, promotion: "on-publish" },
+         ),
+      ).rejects.toBeInstanceOf(PackageAdmissionRefusedError);
+      expect(downloaded).toBe(false);
+      expect(versionDirs()).toEqual([]);
+      expect(await repo.getPackageByName(ENV_ID, PKG)).toBeFalsy();
    });
 
    it("refuses a watch-mounted package", async () => {

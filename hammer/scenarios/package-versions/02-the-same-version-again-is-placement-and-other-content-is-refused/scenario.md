@@ -21,7 +21,6 @@ published.
 ## Publisher
 
 - PERSIST_STORAGE_MODE: on
-- PUBLISHER_PACKAGE_VERSIONING: on
 
 ## Model anchor/anchor.malloy
 

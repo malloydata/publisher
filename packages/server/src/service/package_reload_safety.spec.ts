@@ -23,9 +23,10 @@ import { parsePackageName } from "./identity";
  * reload_package MCP tool by any caller that saves a broken model and
  * reloads, which is the ordinary authoring mistake.
  *
- * Directory cleanup is now opt-in and only `installPackage` asks for it, so
- * these two guard the reload path. Run against a real `Environment` and a real
- * `Package.create` over temp dirs, the same way package_rollback.spec.ts does.
+ * Directory cleanup is now opt-in and only a freshly staged tree (a dry run)
+ * asks for it, so these guard the reload path. Run against a real
+ * `Environment` and a real `Package.create` over temp dirs, the same way
+ * package_rollback.spec.ts does.
  */
 describe("failed reload does not destroy a serving package", () => {
    let rootDir: string;
@@ -42,11 +43,6 @@ describe("failed reload does not destroy a serving package", () => {
          },
          { manifest: { name: "pkg", description: "reload fixture" } },
       );
-   }
-
-   async function copyDir(src: string, dst: string): Promise<void> {
-      await fs.mkdir(dst, { recursive: true });
-      await fs.cp(src, dst, { recursive: true });
    }
 
    beforeEach(async () => {
@@ -105,96 +101,6 @@ describe("failed reload does not destroy a serving package", () => {
       expect(stillServing).toBe(servingBefore);
       expect(env.getPackageStatus("pkg")?.status).toBe(PackageStatus.SERVING);
       expect((await env.listPackages()).map((p) => p.name)).toContain("pkg");
-   });
-
-   it("keeps a rolled-back reinstall listed and serving", async () => {
-      // The other reload path. A package with an install location reloads via
-      // installPackage, whose rollback restores the previous tree but used to
-      // drop the status while `packages` kept the old package: it answered
-      // getPackage but vanished from listPackages and discovery until a
-      // restart. Both maps must agree that it is still serving.
-      const env = await Environment.create("testEnv", envPath, []);
-      const goodFixture = path.join(rootDir, "good");
-      const brokenFixture = path.join(rootDir, "broken");
-      await writePackageDir(goodFixture, GOOD_MODEL);
-      await writePackageDir(brokenFixture, BROKEN_MODEL);
-
-      await env.installPackage("pkg", (stagingPath) =>
-         copyDir(goodFixture, stagingPath),
-      );
-      const servingBefore = await env.getPackage(
-         parsePackageName("pkg"),
-         false,
-      );
-
-      await expect(
-         env.installPackage("pkg", (stagingPath) =>
-            copyDir(brokenFixture, stagingPath),
-         ),
-      ).rejects.toThrow();
-
-      expect(env.getPackageStatus("pkg")?.status).toBe(PackageStatus.SERVING);
-      expect((await env.listPackages()).map((p) => p.name)).toContain("pkg");
-      expect(await env.getPackage(parsePackageName("pkg"), false)).toBe(
-         servingBefore,
-      );
-      // The on-disk half of the same claim: the rejected tree is gone and the
-      // user's is back. Without this, nothing pins "your files are left alone".
-      expect(
-         await fs.readFile(path.join(envPath, "pkg", "model.malloy"), "utf-8"),
-      ).toBe(GOOD_MODEL);
-   });
-
-   it("does not advertise a package as serving when the rollback could not restore it", async () => {
-      // Keeping the last-good package served is only honest when the rollback
-      // actually put its tree back. If nothing was restored, the cached package
-      // no longer matches disk, and claiming SERVING would advertise a package
-      // over a canonical path that is missing or still holds rejected content.
-      const env = await Environment.create("testEnv", envPath, []);
-      const pkgDir = path.join(envPath, "pkg");
-      await writePackageDir(pkgDir, GOOD_MODEL);
-      await env.addPackage("pkg");
-      expect(env.getPackageStatus("pkg")?.status).toBe(PackageStatus.SERVING);
-
-      // Record retirements rather than scheduling the real drain, which is a
-      // 30s timer this test has no reason to wait on.
-      const retiredLabels: string[] = [];
-      (
-         env as unknown as {
-            retireConnectionGeneration: (label: string) => void;
-         }
-      ).retireConnectionGeneration = (label: string) => {
-         retiredLabels.push(label);
-      };
-
-      // The tree disappears from under Publisher, so the reinstall has nothing
-      // to retire and the rollback has nothing to restore.
-      await fs.rm(pkgDir, { recursive: true, force: true });
-
-      const brokenFixture = path.join(rootDir, "broken-nofallback");
-      await writePackageDir(brokenFixture, BROKEN_MODEL);
-      await expect(
-         env.installPackage("pkg", (stagingPath) =>
-            copyDir(brokenFixture, stagingPath),
-         ),
-      ).rejects.toThrow();
-
-      // Eviction is the honest outcome here, and both maps must agree on it.
-      expect(env.getPackageStatus("pkg")).toBeUndefined();
-      expect((await env.listPackages()).map((p) => p.name)).not.toContain(
-         "pkg",
-      );
-      // Assert the packages map too, not just the status: asserting only the
-      // status leaves the half that actually strands a package untested.
-      await expect(
-         env.getPackage(parsePackageName("pkg"), false),
-      ).rejects.toThrow();
-
-      // Evicting must retire the old package's connections. Once it leaves
-      // this.packages, closeAllConnections cannot reach its MalloyConfig, so
-      // skipping the retire orphans its native handles for the process's life.
-      // The drain is timer-based, so assert it was scheduled, not that it ran.
-      expect(retiredLabels).toContain("package pkg");
    });
 
    it("recovers on the next reload once the model compiles again", async () => {

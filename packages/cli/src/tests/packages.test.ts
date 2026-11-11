@@ -93,36 +93,6 @@ describe("Package Commands", () => {
     );
   });
 
-  test("updatePackage should call update API with location", async () => {
-    const mockClient = {
-      updatePackage: mock(() => Promise.resolve()),
-    } as unknown as PublisherClient;
-
-    await packageCommands.updatePackage(mockClient, "proj", "pkg-1", {
-      location: "/new/location",
-    });
-
-    expect(mockClient.updatePackage).toHaveBeenCalledWith("proj", "pkg-1", {
-      name: "pkg-1",
-      location: "/new/location",
-    });
-  });
-
-  test("updatePackage should call update API with description", async () => {
-    const mockClient = {
-      updatePackage: mock(() => Promise.resolve()),
-    } as unknown as PublisherClient;
-
-    await packageCommands.updatePackage(mockClient, "proj", "pkg-1", {
-      description: "Updated description",
-    });
-
-    expect(mockClient.updatePackage).toHaveBeenCalledWith("proj", "pkg-1", {
-      name: "pkg-1",
-      description: "Updated description",
-    });
-  });
-
   test("deletePackage should call delete API with correct args", async () => {
     const mockClient = {
       deletePackage: mock(() => Promise.resolve()),

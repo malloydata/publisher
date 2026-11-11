@@ -332,16 +332,10 @@ program
           await environmentCommands.updateEnvironment(client, name, options);
           break;
         case "package":
-          if (!options.environment) {
-            logError("--environment is required");
-            process.exit(1);
-          }
-          await packageCommands.updatePackage(
-            client,
-            options.environment,
-            options.package,
-            options,
+          logError(
+            "A package is not updated in place: publish a new version (`create package` with its location, after bumping the version in its publisher.json).",
           );
+          process.exit(1);
           break;
         case "connection":
           if (!options.environment) {
@@ -510,7 +504,9 @@ program
 // SCHEDULE COMMANDS (a package's materialization.schedule cron)
 const schedule = program
   .command("schedule")
-  .description("View or edit a package's materialization schedule");
+  .description(
+    "View a package's materialization schedule (set in its publisher.json)",
+  );
 
 schedule
   .command("view")
@@ -520,49 +516,6 @@ schedule
   .action(async (options) => {
     try {
       await scheduleCommands.viewSchedule(
-        getClient(),
-        options.environment,
-        options.package,
-      );
-    } catch (error: any) {
-      logError("Command failed", error);
-      process.exit(1);
-    }
-  });
-
-schedule
-  .command("set <cron>")
-  .description(
-    'Set the schedule (5-field UNIX cron in UTC, e.g. "0 6 * * *"); also sets scope: version. ' +
-      "A published version refuses it (409): set materialization.schedule in its publisher.json and publish a new version",
-  )
-  .requiredOption("--environment <n>", "Environment name")
-  .requiredOption("--package <n>", "Package name")
-  .action(async (cron, options) => {
-    try {
-      await scheduleCommands.setSchedule(
-        getClient(),
-        options.environment,
-        options.package,
-        cron,
-      );
-    } catch (error: any) {
-      logError("Command failed", error);
-      process.exit(1);
-    }
-  });
-
-schedule
-  .command("clear")
-  .description(
-    "Clear the schedule (revert to publish / on-demand only). " +
-      "A published version refuses it (409): remove materialization.schedule from its publisher.json and publish a new version",
-  )
-  .requiredOption("--environment <n>", "Environment name")
-  .requiredOption("--package <n>", "Package name")
-  .action(async (options) => {
-    try {
-      await scheduleCommands.clearSchedule(
         getClient(),
         options.environment,
         options.package,

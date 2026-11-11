@@ -219,12 +219,11 @@ export type ReportWriteReason =
    | "not_found"
    | "reload_failed"
    | "bad_request"
-   | "installed_from_location"
    | "other";
 
 const writeCounter = lazyCounter(
    "publisher_report_writes_total",
-   "Report write attempts. Labels: outcome ('created'|'replaced'|'conflict'|'compile_failed'|'refused'|'rolled_back'|'rollback_failed'), layout ('grid'|'linear'), reason ('none'|'frozen_config'|'invalid_path'|'missing_source'|'untagged'|'not_a_report'|'conflict'|'compile_failed'|'not_found'|'reload_failed'|'bad_request'|'installed_from_location'|'other').",
+   "Report write attempts. Labels: outcome ('created'|'replaced'|'conflict'|'compile_failed'|'refused'|'rolled_back'|'rollback_failed'), layout ('grid'|'linear'), reason ('none'|'frozen_config'|'invalid_path'|'missing_source'|'untagged'|'not_a_report'|'conflict'|'compile_failed'|'not_found'|'reload_failed'|'bad_request'|'other').",
 );
 
 const writeDuration = lazyHistogram(

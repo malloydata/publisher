@@ -455,7 +455,6 @@ function histograms(text: string): Map<string, { sum: number; count: number }> {
    const out = new Map<string, { sum: number; count: number }>();
    const names = [
       "publisher_package_load_phase_duration_ms",
-      "publisher_package_install_duration_ms",
       "publisher_package_reload_duration_ms",
    ];
    for (const line of text.split("\n")) {

@@ -46,9 +46,9 @@ quietly tests the old model. `--watch-mode` says Publisher was started with
 `--watch-env` (`eval.py serve model --set <set> --watch-env <env>`), which symlinks
 local-dir packages in place and makes edits live; then the helper is just a
 reload. Without it the helper syncs the edit onto the served copy first, which
-works only on a server with versioning off. Either way a package the server
-serves as a published version is refused before any agent starts (the server
-is asked, in both modes): nothing synced there is served, the sync would
+works only on an older server that serves a copy. Either way a package the
+server serves as a published version is refused before any agent starts (the
+server is asked, in both modes): nothing synced there is served, the sync would
 delete it, and a reload of it answers 200 without reading the edit. Either way
 the agent gets one generated script rather than a general shell.
 """
@@ -146,7 +146,7 @@ def served_as_versions(served: pathlib.Path) -> bool:
     """Whether Publisher serves this package folder as published versions.
 
     A version lives in `<pkg>/<version>/`, so the folder holds no
-    publisher.json of its own. A copy (versioning off) does, and a watch
+    publisher.json of its own. An older server's copy does, and a watch
     mount is a symlink to the source.
     """
     return (served.is_dir() and not served.is_symlink()
@@ -424,8 +424,8 @@ def main(argv: list[str] | None = None) -> int:
                     help="Publisher SERVER_ROOT; only needed without watch "
                          "mode. Each accepted edit is rsynced onto the copy "
                          "this root serves and reloaded, which works only "
-                         "with versioning off: a root serving published "
-                         "versions is refused. Default: the one "
+                         "on an older server that serves a copy: a root "
+                         "serving published versions is refused. Default: the one "
                          "`serve.py --role model` uses, when it exists")
     ap.add_argument("--watch-mode", action="store_true",
                     help="Publisher was started with --watch-env, so edits are "

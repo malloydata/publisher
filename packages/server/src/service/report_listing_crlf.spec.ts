@@ -13,6 +13,7 @@ import fs from "fs/promises";
 import os from "os";
 import path from "path";
 import { Environment } from "./environment";
+import { installTestPackage } from "../test_helpers/install_test_package";
 import { writePackageFiles } from "../test_helpers/temp_package";
 import { parsePackageName } from "./identity";
 
@@ -57,7 +58,7 @@ describe("report listing over CRLF text", () => {
 
    const listing = async (eol: (text: string) => string) => {
       const name = eol === crlf ? "crlf" : "lf";
-      await env.installPackage(name, async (stagingPath) =>
+      await installTestPackage(env, name, async (stagingPath) =>
          writePackageFiles(
             stagingPath,
             Object.fromEntries(

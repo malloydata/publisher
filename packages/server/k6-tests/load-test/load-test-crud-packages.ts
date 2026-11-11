@@ -251,11 +251,6 @@ export const loadTestPackages: TestPreset = {
             "p(95)<1500",
             "p(99)<2500",
          ],
-         "http_req_duration{name:update_package}": [
-            "p(90)<1000",
-            "p(95)<1500",
-            "p(99)<2500",
-         ],
          "http_req_duration{name:delete_package}": [
             "p(90)<1000",
             "p(95)<1500",
@@ -422,26 +417,9 @@ export const loadTestPackages: TestPreset = {
             sleep(0.2); // Delay between operations
          });
 
-         // Update package
-         group("Update Package", () => {
-            const updatePackageResponse = packagesClient.updatePackage(
-               projectName,
-               selectedPackage,
-               {
-                  name: selectedPackage,
-                  description: "Updated description for load testing",
-               },
-               { tags: { name: "update_package" } },
-            );
-            const updateStatus = updatePackageResponse.response.status;
-            check(updatePackageResponse.response, {
-               "update package request successful": (r) => r.status === 200,
-            });
-            if (updateStatus === 0) {
-               return;
-            }
-            sleep(0.2); // Delay before delete to allow update to complete
-         });
+         // No update step: a published version is immutable, and the package
+         // PATCH is gone. A new version is a publish, which the create step
+         // above already measures.
 
          // Delete package
          group("Delete Package", () => {

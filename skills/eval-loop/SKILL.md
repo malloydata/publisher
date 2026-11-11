@@ -496,9 +496,11 @@ existed before the bad direction.
 Take a checkpoint of the current model *before* the first improve batch if no
 commit pins it yet. Rolling back by hand is guesswork.
 
-If reload reports `mode: reinstalled`, the package was re-fetched from its
-install location and may have overwritten the restored files. Prefer in-place
-/ watch-mounted packages for this loop.
+The restore reaches the server only through a watch-mounted package: the reload
+must report `mode: in-place`. A package served as a published version answers
+`mode: unchanged` and never reads the restored files, so serve the model in
+watch mode for this loop (`eval.py serve model --set <set> --watch-env <env>
+--reinit`).
 
 ## Out of scope
 

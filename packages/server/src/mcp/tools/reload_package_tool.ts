@@ -52,10 +52,10 @@ ${RELOAD_FAILURE_IS_SAFE} compile_model at scope "package" first is the faster w
 - environmentName, packageName (required): the package to recompile. Use the names get_context returns.
 
 ## Behavior
-With versioning off (PUBLISHER_PACKAGE_VERSIONING=off), a configured package recompiles from its copy under publisher_data/, and one installed from a location is re-fetched, overwriting on-disk edits.
+Recompiles a watch-mounted package from its source directory. A published version is answered as it is: nothing is recompiled.
 
 ## Response
-A JSON object with status "reloaded", a mode, the package name, sourceContentSha and servedRevision, any render-tag warnings, and any exploresWarnings (curated-discovery entries that did not resolve to a model). Mode "in-place" recompiled your on-disk edits; "reinstalled" re-fetched over them; "unchanged" is a published version, with a message saying your edit was not applied. A hard compile error returns an error payload instead.`;
+A JSON object with status "reloaded", a mode, the package name, sourceContentSha and servedRevision, any render-tag warnings, and any exploresWarnings (curated-discovery entries that did not resolve to a model). Mode "in-place" recompiled your on-disk edits; "unchanged" is a published version, with a message saying your edit was not applied. A hard compile error returns an error payload instead.`;
 
 /**
  * Registers reload_package: recompiles a package from disk so a saved edit is
@@ -103,8 +103,8 @@ export function registerReloadPackageTool(
 
          const payload = {
             status: "reloaded" as const,
-            // "in-place" recompiled the tree on disk; "reinstalled"
-            // re-fetched it, so on-disk edits are gone. Only this says which.
+            // "in-place" recompiled the tree on disk; "unchanged" is a
+            // published version, which no reload changes. Only this says which.
             mode,
             // A version answers a reload as a success, so an agent that just
             // edited a file is told the edit went nowhere.

@@ -26,7 +26,7 @@ SPDX-License-Identifier: MIT
 Two things to know about it on a standalone server:
 
 - **It changes nothing there except gating `schedule`.** A standalone auto-run keys tables by content address regardless of scope; true per-version tables are produced when a hosted control plane assigns versioned build targets. Standalone is the place to exercise the *policy* rules, not per-version fan-out.
-- **A root-level `scope` is the deprecated home** and still works, with a warning. Whenever the server rewrites the manifest (any package PATCH, including a description-only one) it writes **both** homes with the same value, so the root key reappears after an API edit. **The two homes holding different values is not a warning: the package fails to load**, disappears from the server, and says so only in `/status` `loadErrors`. Editing by hand, change `materialization.scope` and delete the root copy; never edit the root one.
+- **A root-level `scope` is the deprecated home** and still works, with a warning. **The two homes holding different values is not a warning: the package fails to load**, disappears from the server, and says so only in `/status` `loadErrors`. Editing by hand, change `materialization.scope` and delete the root copy; never edit the root one.
 
 ## `queryMetadata`
 
@@ -49,4 +49,4 @@ The scope / schedule / freshness coherence rules - a single package-level scope,
 | package load | warned; the package still serves |
 | the scheduler | an offending package is skipped |
 
-Only those coherence rules are gates. `queryMetadata` findings, the deprecated homes, and an unrecognized `#@ persist` key are advisory. An invalid `refresh="incremental"` declaration is the other way round: it **fails the load** outright (`reference/refresh.md`). The `malloy-pub schedule` commands share the publish gate, so a rejection from them means the change was unsafe - and `schedule set` replaces the whole `materialization` block, dropping a freshness policy it finds there.
+Only those coherence rules are gates. `queryMetadata` findings, the deprecated homes, and an unrecognized `#@ persist` key are advisory. An invalid `refresh="incremental"` declaration is the other way round: it **fails the load** outright (`reference/refresh.md`). A schedule is set in `publisher.json` and ships with the next published version, which runs the same gate.

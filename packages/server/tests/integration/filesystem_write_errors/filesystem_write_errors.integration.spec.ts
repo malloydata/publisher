@@ -33,6 +33,7 @@ import {
 } from "fs";
 import os from "os";
 import path from "path";
+import { bootMainServer } from "../../harness/main_server";
 import { RestE2EEnv, startRestE2E } from "../../harness/rest_e2e";
 
 const GENERIC_INTERNAL_MESSAGE = "Internal server error.";
@@ -186,15 +187,19 @@ describe.skipIf(!canRevokeWrite || !hasZip)(
  * Writes into the server's own data directory, which a publisher_data volume
  * left root-owned by a root-run 0.8.x denies. Each case revokes access on a
  * directory the server created, runs one request, and restores it, so the
- * cases are independent. Three of them pin that the errno survives a write
- * site that re-wraps the error: the README and publisher.json writes wrap it
- * in a fresh Error, and a manifest that cannot be stat'ed must not be reported
- * as one that does not exist.
+ * cases are independent. Two of them pin that the errno survives a site that
+ * re-wraps the error: the README write wraps it in a fresh Error, and a
+ * manifest that cannot be stat'ed must not be reported as one that does not
+ * exist. A published version never reads its files again, so the cases that
+ * load a package's own files use a package mounted in place, whose files a
+ * reload reads.
  */
 describe.skipIf(!canRevokeWrite)(
    "a write into the server's own data directory it cannot make (E2E)",
    () => {
       const DATA_ENV = `fs-data-errors-env-${Date.now()}`;
+      // Mounted in place, as a watched environment is.
+      const IN_PLACE_ENV = `fs-in-place-errors-env-${Date.now()}`;
       let env: (RestE2EEnv & { stop(): Promise<void> }) | null = null;
       let baseUrl: string;
       let workDir: string;
@@ -249,22 +254,56 @@ describe.skipIf(!canRevokeWrite)(
          }
          environmentPath = ((await createRes.json()) as { location: string })
             .location;
+
+         writeTinyPackage(path.join(workDir, "inplace"), "inplace");
+         writeTinyPackage(path.join(workDir, "unreadable"), "unreadable");
+         const { environmentStore } = await bootMainServer();
+         environmentStore.markInPlace(IN_PLACE_ENV);
+         const inPlaceRes = await fetch(`${baseUrl}/api/v0/environments`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+               name: IN_PLACE_ENV,
+               packages: ["inplace", "unreadable"].map((name) => ({
+                  name,
+                  location: path.join(workDir, name),
+               })),
+               connections: [],
+            }),
+         });
+         if (!inPlaceRes.ok) {
+            throw new Error(
+               `Failed to create the in-place environment (${inPlaceRes.status}): ${await inPlaceRes.text()}`,
+            );
+         }
+         for (const name of ["inplace", "unreadable"]) {
+            const loaded = await fetch(
+               `${baseUrl}/api/v0/environments/${IN_PLACE_ENV}/packages/${name}`,
+            );
+            if (!loaded.ok) {
+               throw new Error(
+                  `In-place package ${name} did not load (${loaded.status}): ${await loaded.text()}`,
+               );
+            }
+         }
       });
 
       afterAll(async () => {
          if (baseUrl) {
-            await fetch(`${baseUrl}/api/v0/environments/${DATA_ENV}`, {
-               method: "DELETE",
-            }).catch(() => {
-               /* best-effort cleanup */
-            });
+            for (const name of [DATA_ENV, IN_PLACE_ENV]) {
+               await fetch(`${baseUrl}/api/v0/environments/${name}`, {
+                  method: "DELETE",
+               }).catch(() => {
+                  /* best-effort cleanup */
+               });
+            }
          }
          await env?.stop();
          env = null;
          if (workDir) rmSync(workDir, { recursive: true, force: true });
       });
 
-      it("names the errno when a runtime install cannot stage into the environment", async () => {
+      it("names the errno when a publish cannot stage into the environment", async () => {
          const body = await withMode(environmentPath, 0o555, async () =>
             json(
                await fetch(
@@ -340,45 +379,16 @@ describe.skipIf(!canRevokeWrite)(
          expect(body.message).toMatch(/EACCES|permission denied/i);
       });
 
-      it("names the errno when a package's publisher.json cannot be written", async () => {
-         const manifest = path.join(
-            environmentPath,
-            SEED_PACKAGE,
-            "publisher.json",
-         );
-         const res = await withMode(manifest, 0o444, async () =>
-            fetch(
-               `${baseUrl}/api/v0/environments/${DATA_ENV}/packages/${SEED_PACKAGE}`,
-               {
-                  method: "PATCH",
-                  headers: { "Content-Type": "application/json" },
-                  body: JSON.stringify({
-                     name: SEED_PACKAGE,
-                     description: "updated description",
-                  }),
-               },
-            ),
-         );
-         const body = await json(res);
-         expect(res.ok).toBe(false);
-         expect(body.message).not.toBe(GENERIC_INTERNAL_MESSAGE);
-         expect(body.message).toMatch(/EACCES|permission denied/i);
-      });
-
       it("names the errno when a package's own file is unreadable inside the load worker", async () => {
          // The directory is traversable, so the main thread's stat passes and
          // the refusal happens inside the package-load worker, which answers
          // through the worker boundary. A bare 503 "worker pool unavailable"
          // here reads as "retry", which an orchestrator would do forever.
-         const inPlace = path.join(environmentPath, "inplace");
-         writeTinyPackage(inPlace, "inplace");
-         const manifest = path.join(inPlace, "publisher.json");
+         const manifest = path.join(workDir, "inplace", "publisher.json");
          const res = await withMode(manifest, 0o000, async () =>
-            fetch(`${baseUrl}/api/v0/environments/${DATA_ENV}/packages`, {
-               method: "POST",
-               headers: { "Content-Type": "application/json" },
-               body: JSON.stringify({ name: "inplace" }),
-            }),
+            fetch(
+               `${baseUrl}/api/v0/environments/${IN_PLACE_ENV}/packages/inplace?reload=true`,
+            ),
          );
          const body = await json(res);
          expect(res.status).toBe(500);
@@ -394,7 +404,7 @@ describe.skipIf(!canRevokeWrite)(
          };
          expect(
             status.loadErrors?.find(
-               (e) => e.environment === DATA_ENV && e.package === "inplace",
+               (e) => e.environment === IN_PLACE_ENV && e.package === "inplace",
             )?.message,
          ).toMatch(/EACCES|permission denied/i);
       });
@@ -402,10 +412,10 @@ describe.skipIf(!canRevokeWrite)(
       it("does not report an unreadable package as one that does not exist", async () => {
          // A 404 "does not exist" sends the operator looking for a missing
          // file when the file is there and only its permissions are wrong.
-         const packageDir = path.join(environmentPath, SEED_PACKAGE);
+         const packageDir = path.join(workDir, "unreadable");
          const res = await withMode(packageDir, 0o000, async () =>
             fetch(
-               `${baseUrl}/api/v0/environments/${DATA_ENV}/packages/${SEED_PACKAGE}?reload=true`,
+               `${baseUrl}/api/v0/environments/${IN_PLACE_ENV}/packages/unreadable?reload=true`,
             ),
          );
          const body = await json(res);

@@ -74,13 +74,9 @@ export default defineConfig({
               // downloads fixture packages, marks ready when done).
               command: "npm run start:init",
               cwd: "../../",
-              // The suite runs with package versioning on: every package is
-              // an immutable published version, except in the environments
-              // the authoring specs write into, which are mounted in place.
-              env: {
-                 PUBLISHER_PACKAGE_VERSIONING: "on",
-                 PUBLISHER_WATCH: AUTHORING_ENVS.join(","),
-              },
+              // The environments the authoring specs write into, mounted in
+              // place: every other package is an immutable published version.
+              env: { PUBLISHER_WATCH: AUTHORING_ENVS.join(",") },
               url: `${BASE_URL}/api/v0/status`,
               reuseExistingServer: true,
               timeout: 300_000,

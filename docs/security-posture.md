@@ -291,7 +291,7 @@ own files, is refused. Measured against the connector: absolute paths pass, rela
 and `allowed_paths` does not rescue them. Publisher compiles packages in `worker_threads` sharing
 one process working directory, so per-package `chdir` is not available either.
 
-**7. With package versioning on, an older version keeps its own governance.** A published
+**7. An older version keeps its own governance.** A published
 version serves its own files, so its own `#(authorize)` gates, row filters and `index.malloy`
 curation. A gate or a hidden source added in a new version does not reach the older ones: a
 request that names an older version with `versionId` is answered under that version's rules

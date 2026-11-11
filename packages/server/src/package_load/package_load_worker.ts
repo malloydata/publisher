@@ -42,7 +42,6 @@ import { fileURLToPath, pathToFileURL } from "url";
 import {
    MODEL_FILE_SUFFIX,
    NOTEBOOK_FILE_SUFFIX,
-   installRecordPath,
    normalizeModelPath,
    PACKAGE_MANIFEST_NAME,
 } from "../constants";
@@ -603,31 +602,6 @@ function buildWorkerMalloyConfig(job: LoadPackageRequest): MalloyConfig {
 // Filesystem helpers
 // ──────────────────────────────────────────────────────────────────────
 
-/** The install location the server recorded for the package, if any. */
-async function readInstallRecord(
-   packagePath: string,
-): Promise<string | undefined> {
-   try {
-      const raw = await fs.promises.readFile(
-         installRecordPath(
-            path.dirname(packagePath),
-            path.basename(packagePath),
-         ),
-         "utf8",
-      );
-      const record: unknown = JSON.parse(raw);
-      const location =
-         typeof record === "object" && record !== null
-            ? (record as { location?: unknown }).location
-            : undefined;
-      return typeof location === "string" && location !== ""
-         ? location
-         : undefined;
-   } catch {
-      return undefined;
-   }
-}
-
 /**
  * Which declared `explores` entries are reports, read from each file's text
  * before the compile because the manifest is resolved first. Never throws.
@@ -749,10 +723,6 @@ async function readPackageMetadata(
    return {
       name: parsed.name,
       description: parsed.description,
-      // Only from the server's own record outside the package directory (see
-      // Environment.writePackageManifest), never from package content: a
-      // reload re-fetches from this value, so only the server may set it.
-      location: await readInstallRecord(packagePath),
       explores: explores.explores,
       // Fail-safe: anything but an explicit "all" keeps the query boundary.
       queryableSources: parsed.queryableSources === "all" ? "all" : "declared",

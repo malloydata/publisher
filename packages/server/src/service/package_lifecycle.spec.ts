@@ -142,13 +142,12 @@ describe("PackageLoadTracker", () => {
       });
       const since = tracker.since("p");
       expect(since).toBeNumber();
-      let settled = false;
-      const waiting = tracker.awaitSettled("p").then(() => (settled = true));
+      // The inner load has finished; the outer one still holds the entry.
       await Promise.resolve();
-      expect(settled).toBe(false);
+      expect(tracker.has("p")).toBe(true);
+      expect(tracker.since("p")).toBe(since);
       release();
       await outer;
-      await waiting;
       expect(tracker.has("p")).toBe(false);
       expect([...tracker.names()]).toEqual([]);
    });

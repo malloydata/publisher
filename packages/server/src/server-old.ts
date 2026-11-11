@@ -23,10 +23,7 @@ import { DatabaseController } from "./controller/database.controller";
 import { MaterializationController } from "./controller/materialization.controller";
 import { LegacyReportController } from "./controller/legacy_report.controller";
 import { ModelController } from "./controller/model.controller";
-import {
-   PackageController,
-   setPackagePatchDeprecationHeaders,
-} from "./controller/package.controller";
+import { PackageController } from "./controller/package.controller";
 import { QueryController } from "./controller/query.controller";
 import { BadRequestError } from "./errors";
 import { logger, redactSensitive } from "./logger";
@@ -345,18 +342,6 @@ export function registerLegacyRoutes(
             req.params.packageName,
             reload,
             versionRefOf(req),
-         );
-      }),
-   );
-
-   app.patch(
-      `${LEGACY_API_PREFIX}/projects/:projectName/packages/:packageName`,
-      apiRoute(async (req, res) => {
-         setPackagePatchDeprecationHeaders(res);
-         return packageController.updatePackage(
-            req.params.projectName,
-            req.params.packageName,
-            req.body,
          );
       }),
    );

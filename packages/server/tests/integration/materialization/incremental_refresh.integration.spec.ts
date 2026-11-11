@@ -29,7 +29,7 @@ const ADVISORY_PACKAGE = "persist-advisory-test";
 // rejection without needing a live Postgres or BigQuery. The two paths matter
 // separately because a package can arrive by either — `POST /packages` for a
 // publish, and environment creation (as here) for the load a control plane's
-// worker performs, which never passes through the publish endpoint.
+// worker performs, which publishes each package without the publish endpoint.
 //
 // The delta DML's own behavior is executed against a real engine in
 // incremental_dml_semantics.spec.ts, and the SEED/DELTA/SKIP decisions are
@@ -44,8 +44,8 @@ describe("Incremental refresh over REST", () => {
       env = await startRestE2E();
       baseUrl = env.baseUrl;
 
-      // Added through environment creation, which does not run the publish gate
-      // — the same way a package uploaded to a control plane's storage arrives.
+      // Added through environment creation — the same way a package uploaded to
+      // a control plane's storage arrives — which publishes each as a version.
       const createRes = await fetch(`${baseUrl}/api/v0/environments`, {
          method: "POST",
          headers: { "Content-Type": "application/json" },
@@ -92,16 +92,18 @@ describe("Incremental refresh over REST", () => {
 
    it("REFUSES to serve a package whose declaration the gate rejects", async () => {
       // The change this fixture exists for: the package used to load, serve, and
-      // rebuild in full forever with the rejection in a worker log. A read now
-      // answers the gate's own text, as a 400 — an authoring error, not the 424 a
-      // dependency failure would map to.
+      // rebuild in full forever with the rejection in a worker log. Environment
+      // creation publishes each package as a version, through the publish gate,
+      // so the rejected one is never published: a read finds no such package,
+      // and the gate's reason is in /status (next test).
       const res = await fetch(
          `${baseUrl}/api/v0/environments/${PROJECT_NAME}/packages/${REJECTED_PACKAGE}`,
       );
-      expect(res.status).toBe(400);
-      const body = (await res.json()) as { message?: string };
-      expect(body.message).toContain('refresh="incremental"');
-      expect(body.message).toContain('dialect "duckdb"');
+      expect(res.status).toBe(404);
+      const listed = (await (
+         await fetch(`${baseUrl}/api/v0/environments/${PROJECT_NAME}/packages`)
+      ).json()) as { name: string }[];
+      expect(listed.map((p) => p.name)).toEqual([ADVISORY_PACKAGE]);
    });
 
    it("names the failed package, and why, in /status loadErrors", async () => {

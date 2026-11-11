@@ -18,6 +18,7 @@
 
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
 import fs from "fs/promises";
+import os from "os";
 import path from "path";
 import {
    fixture,
@@ -162,16 +163,19 @@ describe("Dashboard discovery (E2E)", () => {
       expect(res.status).toBe(404);
    });
 
-   it("answers a versionId on a package with no versions as no such version", async () => {
-      // This package was loaded from a directory, so it has no published
-      // versions: a well-formed version is 404, a malformed one 400.
+   it("answers a versionId the package does not have as no such version", async () => {
+      // The package is published as the version its publisher.json declares,
+      // 1.0.0: that version answers, another well-formed one is 404, and a
+      // malformed one 400.
       for (const sub of [
          "/reports",
          "/reports/dashboards/overview.malloy",
          "/dashboards",
          "/dashboards/overview",
       ]) {
-         const missing = await fetch(apiUrl(`${sub}?versionId=1.0.0`));
+         const served = await fetch(apiUrl(`${sub}?versionId=1.0.0`));
+         expect(served.status).toBe(200);
+         const missing = await fetch(apiUrl(`${sub}?versionId=9.9.9`));
          expect(missing.status).toBe(404);
          expect(((await missing.json()) as { reason?: string }).reason).toBe(
             "VERSION_NOT_FOUND",
@@ -626,7 +630,9 @@ describe("Dashboard discovery (E2E)", () => {
       /**
        * A broken shared include fails the reload outright rather than
        * half-loading the package, so the previously-compiled dashboards keep
-       * serving unchanged and no phantom appears.
+       * serving unchanged and no phantom appears. Only a package mounted in
+       * place reloads from disk (a published version is immutable), so this
+       * runs on a copy of the lint package mounted in place.
        *
        * This pins the surrounding contract, NOT the guard in
        * `claimsToBeADashboard`. Measured while writing it: `?reload=true`
@@ -639,13 +645,16 @@ describe("Dashboard discovery (E2E)", () => {
        * and deliberately not claimed here as pinned.
        */
       it("fails the reload rather than inventing a dashboard from a broken include", async () => {
-         const include = path.resolve(
-            "publisher_data",
-            ENV_NAME,
-            LINT_PACKAGE,
+         const inPlace = await startPackageEnv(
+            "dashboards-lint-reload-env",
+            { [LINT_PACKAGE]: fixture(LINT_PACKAGE) },
+            { copy: true },
+         );
+         const include = path.join(
+            inPlace.location(),
             "dashboards/_shared.malloy",
          );
-         const listUrl = `${baseUrl}/api/v0/environments/${ENV_NAME}/packages/${LINT_PACKAGE}`;
+         const listUrl = inPlace.api();
          try {
             await fs.writeFile(
                include,
@@ -668,10 +677,9 @@ describe("Dashboard discovery (E2E)", () => {
                "v1.2",
             ]);
          } finally {
-            await fs.rm(include, { force: true });
-            await fetch(`${listUrl}?reload=true`);
+            await inPlace.stop();
          }
-      });
+      }, 120_000);
 
       /**
        * A name outside the documented pattern is SERVED and only noted. The
@@ -1035,51 +1043,68 @@ describe("Dashboard discovery (E2E)", () => {
             ).toEqual([]);
          });
 
-         it("re-checks tile findings after a metadata PATCH changes the surface", async () => {
-            const pkgUrl = curatedUrl("");
-            expect(await wontLoad(pkgUrl)).toEqual([]);
+         it("checks a new version's tile findings against the surface it declares", async () => {
+            // The surface changes only with a new version, so this publishes
+            // one, into an environment of its own: the shared one keeps
+            // serving the fixture's surface to the tests around this one.
+            const versionsEnvName = "dashboards-surface-versions-env";
+            const versions = await startPackageEnv(versionsEnvName, {
+               [CURATED_PACKAGE]: fixture(CURATED_PACKAGE),
+            });
+            const source = await fs.mkdtemp(
+               path.join(os.tmpdir(), "dashboards-surface-"),
+            );
             try {
+               const pkgUrl = versions.api("", CURATED_PACKAGE);
+               expect(await wontLoad(pkgUrl)).toEqual([]);
+
                // Take orders.malloy off the surface: nothing listed exports
                // orders. `listed.malloy` stays on it, a model, so the finding
                // comes from a dashboard that is not listed.
-               const patch = await fetch(pkgUrl, {
-                  method: "PATCH",
-                  headers: { "Content-Type": "application/json" },
-                  body: JSON.stringify({
-                     name: CURATED_PACKAGE,
+               await fs.cp(fixture(CURATED_PACKAGE), source, {
+                  recursive: true,
+               });
+               const manifestPath = path.join(source, "publisher.json");
+               const manifest = JSON.parse(
+                  await fs.readFile(manifestPath, "utf8"),
+               ) as Record<string, unknown>;
+               await fs.writeFile(
+                  manifestPath,
+                  JSON.stringify({
+                     ...manifest,
+                     version: "1.0.1",
                      explores: ["dashboards/listed.malloy"],
                      queryableSources: "declared",
                   }),
-               });
-               expect(patch.ok).toBe(true);
+               );
+               const published = await versions.post(
+                  `${versions.baseUrl}/api/v0/environments/${versionsEnvName}/packages`,
+                  { name: CURATED_PACKAGE, location: source },
+               );
+               expect(published.ok).toBe(true);
+
                const after = await wontLoad(pkgUrl);
                expect(after).toContain(
                   `Tile unlisted on dashboard unlisted reads orders, which no file "explores" lists ` +
                      `exports, so it won't load. Fix: add orders to the export ` +
                      `{ ... } in dashboards/listed.malloy.`,
                );
+               // The previous version keeps the findings of its own surface.
+               expect(
+                  await wontLoad(
+                     versions.api("?versionId=1.0.0", CURATED_PACKAGE),
+                  ),
+               ).toEqual([]);
                // Still listed: the surface limits what it reads, not whether it shows.
-               const listed = (await (
-                  await fetch(curatedUrl("/reports"))
-               ).json()) as DashboardItem[];
+               const listed = await versions.getJson<DashboardItem[]>(
+                  versions.api("/reports", CURATED_PACKAGE),
+               );
                expect(listed.map((d) => d.name)).toContain("unlisted");
             } finally {
-               await fetch(pkgUrl, {
-                  method: "PATCH",
-                  headers: { "Content-Type": "application/json" },
-                  body: JSON.stringify({
-                     name: CURATED_PACKAGE,
-                     explores: [
-                        "orders.malloy",
-                        "dashboards/listed.malloy",
-                        "dashboards/composite.malloy",
-                     ],
-                     queryableSources: "declared",
-                  }),
-               });
-               await fetch(curatedUrl("?reload=true"));
+               await versions.stop();
+               await fs.rm(source, { recursive: true, force: true });
             }
-         });
+         }, 120_000);
 
          it("reports no dead drill at a dashboard explores does not list", async () => {
             // `orders.malloy` carries `# drill { to="dashboards/unlisted" }`. The
@@ -1110,8 +1135,9 @@ describe("Dashboard discovery (E2E)", () => {
        */
 
       /**
-       * A metadata PATCH changes the surface without changing a file, so the
-       * tile findings have to be re-checked then, not only at load.
+       * A surface changes only with a new version, whose tile findings are
+       * checked against the surface it declares, while the previous version
+       * keeps its own.
        */
 
       /**

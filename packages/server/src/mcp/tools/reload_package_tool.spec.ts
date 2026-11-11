@@ -17,8 +17,10 @@ import { testRetrieval } from "../../test_helpers/test_retrieval";
 
 // Capture the handler registerReloadPackageTool passes to McpServer.registerTool, so it
 // can be exercised against a mocked EnvironmentStore. The tool calls the
-// PackageController it is handed, which calls environment.getPackage(pkg, reload),
-// so the mock only needs getEnvironment -> { getPackage }.
+// PackageController it is handed, which asks the environment's version service
+// whether the package is a published version and then calls
+// environment.getPackage(pkg, reload), so the mock needs getEnvironment ->
+// { getVersionService, getPackage } (and describePackage for a version).
 type Handler = (params: Record<string, unknown>) => Promise<{
    isError?: boolean;
    content: Array<{ resource: { text: string } }>;
@@ -46,9 +48,10 @@ function parse(result: { content: Array<{ resource: { text: string } }> }) {
    return JSON.parse(result.content[0].resource.text);
 }
 
-// A store whose package reload returns `metadata`. `location` is left undefined
-// so PackageController takes the in-place-reload branch (no re-download). The
-// optional `calls` array records the `reload` flag of every getPackage call.
+// A store whose package reload returns `metadata`. It has no version service,
+// so the package is not a published version and PackageController recompiles
+// it in place. The optional `calls` array records the `reload` flag of every
+// getPackage call.
 // The reload receipt (`servedRevision`, `sourceContentSha`) is the package's
 // serving state, so the stub serves it from the same record.
 function operationalOf(metadata: Record<string, unknown>) {
@@ -78,37 +81,29 @@ function storeReturning(
    };
 }
 
-// A store whose cached package metadata carries `location`, so PackageController
-// takes the re-fetch branch: installPackage instead of an in-place recompile.
-// This is the only remaining path that overwrites on-disk edits, so it is worth
-// pinning that the routing and the reported mode both match.
-function storeWithInstallLocation(installed: Record<string, unknown>): {
-   store: Partial<EnvironmentStore>;
-   installCalls: string[];
-} {
-   const installCalls: string[] = [];
+// A store whose package is a published version: the version service resolves
+// it, so PackageController answers it as it is and recompiles nothing. The
+// `calls` array records the `reload` flag of every getPackage call.
+function storeServingVersion(
+   metadata: Record<string, unknown>,
+   calls: boolean[],
+): Partial<EnvironmentStore> {
+   const version = {
+      getPackageMetadata: () => metadata,
+      getOperationalFields: () => operationalOf(metadata),
+   };
    return {
-      installCalls,
-      store: {
-         getEnvironment: async () =>
-            ({
-               getVersionService: () => null,
-               getPackage: async () =>
-                  ({
-                     getPackageMetadata: () => ({
-                        name: "ecommerce",
-                        location: "https://github.com/example/pkg",
-                     }),
-                  }) as never,
-               installPackage: async (pkg: string) => {
-                  installCalls.push(pkg);
-                  return {
-                     getPackageMetadata: () => installed,
-                     getOperationalFields: () => operationalOf(installed),
-                  } as never;
-               },
-            }) as never,
-      },
+      getEnvironment: async () =>
+         ({
+            getVersionService: () => ({
+               resolve: async () => ({ versionId: "1.0.0" }),
+            }),
+            getPackage: async (_pkg: string, reload: boolean) => {
+               calls.push(reload);
+               return version as never;
+            },
+            describePackage: async () => metadata,
+         }) as never,
    };
 }
 
@@ -179,9 +174,8 @@ describe("reload_package tool", () => {
          storeReturning({ name: "ecommerce" }, calls),
       );
       await handler(args);
-      // The controller probes cached metadata (reload=false) then reloads
-      // (reload=true); the tool must trigger the recompile.
-      expect(calls).toContain(true);
+      // A package mounted in place is recompiled, not read from the cache.
+      expect(calls).toEqual([true]);
    });
 
    it("surfaces a thrown error as a tool error, not a transport fault", async () => {
@@ -244,11 +238,11 @@ describe("reload_package tool", () => {
 
    it("surfaces a hard compile failure on reload as a tool error", async () => {
       // A Package.create compile failure propagates out of environment.getPackage
-      // (the reload site), not out of getEnvironment. The controller swallows the
-      // first probe call and re-throws on the reload call.
+      // (the reload site), not out of getEnvironment.
       const handler = captureHandler({
          getEnvironment: async () =>
             ({
+               getVersionService: () => null,
                getPackage: async () => {
                   throw new Error("'nonexistent_status_field' is not defined");
                },
@@ -259,44 +253,20 @@ describe("reload_package tool", () => {
       expect(parse(result).error).toBeDefined();
    });
 
-   it("reports mode in-place for a package with no install location", async () => {
+   it("reports mode in-place for a package that is not a published version", async () => {
       const handler = captureHandler(storeReturning({ name: "ecommerce" }));
       expect(parse(await handler(args)).mode).toBe("in-place");
    });
 
-   it("re-fetches and reports mode reinstalled when the package carries an install location", async () => {
-      // The one path that still overwrites on-disk edits. It must route through
-      // installPackage, and the payload must say so, since an agent cannot
-      // otherwise tell that its saved edit was just re-fetched over.
-      const { store, installCalls } = storeWithInstallLocation({
-         name: "ecommerce",
-         location: "https://github.com/example/pkg",
-      });
-      const handler = captureHandler(store);
-      const result = await handler(args);
-      expect(result.isError).toBe(false);
-      expect(installCalls).toEqual(["ecommerce"]);
-      expect(parse(result).mode).toBe("reinstalled");
-   });
-
-   it("tells the caller a published version took no edit", async () => {
-      // A version is immutable, so a reload answers it as it is, and still as
-      // a success: the message is the only thing that tells an agent its
-      // saved edit went nowhere. (The in-place cases above pin its absence.)
-      const handler = captureHandler({
-         getEnvironment: async () =>
-            ({
-               getVersionService: () => ({
-                  resolve: async () => ({ versionId: "1.0.0" }),
-               }),
-               getPackage: async () =>
-                  ({ getOperationalFields: () => ({}) }) as never,
-               describePackage: async () => ({
-                  name: "ecommerce",
-                  versionId: "1.0.0",
-               }),
-            }) as never,
-      });
+   it("reports mode unchanged for a published version, recompiling nothing", async () => {
+      // A published version is immutable, so a reload answers it as it is,
+      // and still as a success: the mode and the message are the only things
+      // that tell an agent its saved edit went nowhere. (The in-place cases
+      // above pin the message's absence.)
+      const calls: boolean[] = [];
+      const handler = captureHandler(
+         storeServingVersion({ name: "ecommerce", versionId: "1.0.0" }, calls),
+      );
       const result = await handler(args);
       expect(result.isError).toBe(false);
       expect(parse(result)).toEqual({
@@ -305,18 +275,30 @@ describe("reload_package tool", () => {
          message: VERSION_RELOAD_UNCHANGED,
          name: "ecommerce",
       });
+      expect(calls).not.toContain(true);
    });
 
    it("never echoes the package location back to the caller", async () => {
       // The payload hand-picks fields; REST spreads the whole ApiPackage. Pin
       // that the allowlist holds, since location is the one field here that is
-      // deployment detail rather than something an agent needs.
-      const { store } = storeWithInstallLocation({
-         name: "ecommerce",
-         location: "https://github.com/example/pkg",
-      });
-      const parsed = parse(await captureHandler(store)(args));
-      expect(parsed.location).toBeUndefined();
+      // deployment detail rather than something an agent needs. A published
+      // version always carries the location it was published from.
+      for (const store of [
+         storeReturning({
+            name: "ecommerce",
+            location: "https://github.com/example/pkg",
+         }),
+         storeServingVersion(
+            {
+               name: "ecommerce",
+               location: "https://github.com/example/pkg",
+            },
+            [],
+         ),
+      ]) {
+         const parsed = parse(await captureHandler(store)(args));
+         expect(parsed.location).toBeUndefined();
+      }
    });
 
    // DEPRECATED FEATURE COVERAGE — delete together with `explores` (see

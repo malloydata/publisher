@@ -10,6 +10,7 @@ import path from "path";
 import { AccessDeniedError, NotQueryableError } from "../../../src/errors";
 import { hasCallerAuthorizeAnnotation } from "../../../src/service/authorize";
 import { Environment } from "../../../src/service/environment";
+import { installTestPackage } from "../../../src/test_helpers/install_test_package";
 import { writePackageFiles } from "../../../src/test_helpers/temp_package";
 import { governorOf } from "../../../src/test_helpers/governor";
 import { parsePackageName } from "../../../src/service/identity";
@@ -101,9 +102,9 @@ describe("compile-path authorize gate (compileSource)", () => {
       const envPath = path.join(rootDir, "env");
       await fs.mkdir(envPath, { recursive: true });
       env = await Environment.create("testEnv", envPath, []);
-      await env.installPackage("pkg", async (stagingPath) =>
+      await installTestPackage(env, "pkg", async (packagePath) =>
          writePackageFiles(
-            stagingPath,
+            packagePath,
             {
                "model.malloy": MODEL,
             },
@@ -839,9 +840,9 @@ describe("caller-annotation guard on markdown prose (compileSource)", () => {
       const envPath = path.join(rootDir, "env");
       await fs.mkdir(envPath, { recursive: true });
       env = await Environment.create("testEnv", envPath, []);
-      await env.installPackage("pkg", async (stagingPath) =>
+      await installTestPackage(env, "pkg", async (packagePath) =>
          writePackageFiles(
-            stagingPath,
+            packagePath,
             {
                "model.malloy": model,
             },
@@ -1019,8 +1020,8 @@ describe("compile-path is exempt from the query boundary (compileSource)", () =>
       const envPath = path.join(rootDir, "env");
       await fs.mkdir(envPath, { recursive: true });
       env = await Environment.create("testEnv", envPath, []);
-      await env.installPackage("pkg", async (stagingPath) =>
-         writePackageFiles(stagingPath, {
+      await installTestPackage(env, "pkg", async (packagePath) =>
+         writePackageFiles(packagePath, {
             "base.malloy": `source: base_source is duckdb.sql("select 1 as id") extend {
   measure: c is count()
 }`,
@@ -1081,8 +1082,8 @@ describe("compile exemption is not an existence oracle (compileSource)", () => {
       const envPath = path.join(rootDir, "env");
       await fs.mkdir(envPath, { recursive: true });
       env = await Environment.create("testEnv", envPath, []);
-      await env.installPackage("pkg", async (stagingPath) =>
-         writePackageFiles(stagingPath, {
+      await installTestPackage(env, "pkg", async (packagePath) =>
+         writePackageFiles(packagePath, {
             // Hidden file (not imported by index.malloy's exports) holding a gated source.
             "secret.malloy": `##! experimental.givens
 

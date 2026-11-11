@@ -166,55 +166,19 @@ describe("CLI integration (real server)", () => {
     expect(r.output.toLowerCase()).toContain("not found");
   });
 
-  // ── schedule set / view / clear ───────────────────────────────────
+  // ── schedule view ─────────────────────────────────────────────────
 
-  it("sets, views, and clears a materialization schedule", async () => {
-    const set = await runCli(
-      ["schedule", "set", "0 6 * * *", ...SCOPE],
-      baseUrl,
-    );
-    expect(set.code).toBe(0);
-    expect(set.output).toContain("Schedule set");
-
+  it("views a package's materialization schedule", async () => {
+    // A schedule lives in publisher.json and ships with a published version;
+    // the CLI only reads it.
     const view = await runCli(["schedule", "view", ...SCOPE], baseUrl);
     expect(view.code).toBe(0);
-    expect(view.output).toContain("0 6 * * *");
-    // A schedule forces version scope.
-    expect(view.output).toContain("version");
-
-    const clear = await runCli(["schedule", "clear", ...SCOPE], baseUrl);
-    expect(clear.code).toBe(0);
-    expect(clear.output).toContain("Schedule cleared");
-
-    const viewAfter = await runCli(["schedule", "view", ...SCOPE], baseUrl);
-    expect(viewAfter.code).toBe(0);
-    expect(viewAfter.output.toLowerCase()).toContain("none");
+    expect(view.output).toContain("Schedule:");
   });
 
-  it("clear on an already-cleared package no-ops (exit 0, never PATCHes)", async () => {
-    // The prior test cleared the schedule; the persist-test fixture declares no
-    // freshness, so this exercises the live no-op path: presence is `!= null`,
-    // so with nothing to clear the command returns before it PATCHes rather than
-    // sending a fresh `materialization` object (which would wipe a freshness
-    // policy on a freshness-only package -- that survival case is unit-covered).
-    const clear = await runCli(["schedule", "clear", ...SCOPE], baseUrl);
-    expect(clear.code).toBe(0);
-    expect(clear.output.toLowerCase()).toContain("nothing to clear");
-  });
-
-  it("rejects an invalid cron via the server publish gate (exit 1)", async () => {
-    const r = await runCli(
-      ["schedule", "set", "not-a-cron", ...SCOPE],
-      baseUrl,
-    );
-    expect(r.code).toBe(1);
-    expect(r.output.toLowerCase()).toContain("cron");
-  });
-
-  it("rejects an empty cron client-side (exit 1)", async () => {
-    const r = await runCli(["schedule", "set", "", ...SCOPE], baseUrl);
-    expect(r.code).toBe(1);
-    expect(r.output.toLowerCase()).toContain("cron");
+  it("has no command that changes a schedule in place", async () => {
+    const r = await runCli(["schedule", "set", "0 6 * * *", ...SCOPE], baseUrl);
+    expect(r.code).not.toBe(0);
   });
 
   // ── listing requires a package ────────────────────────────────────

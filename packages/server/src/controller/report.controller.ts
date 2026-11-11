@@ -9,7 +9,6 @@ import {
    DashboardNotFoundError,
    EnvironmentNotFoundError,
    FrozenConfigError,
-   InstalledFromLocationError,
    InvalidModelPathError,
    PackageNotFoundError,
    PackageVersionError,
@@ -93,20 +92,18 @@ function outcomeOf(error: Error): {
    if (error instanceof WriteRolledBackError)
       return { outcome: "rolled_back", reason: "reload_failed" };
    const reason: ReportWriteReason =
-      error instanceof InstalledFromLocationError
-         ? "installed_from_location"
-         : error instanceof ReportWriteRefusedError
-           ? error.reason
-           : error instanceof InvalidModelPathError
-             ? "invalid_path"
-             : error instanceof FrozenConfigError
-               ? "frozen_config"
-               : error instanceof EnvironmentNotFoundError ||
-                   error instanceof PackageNotFoundError
-                 ? "not_found"
-                 : error instanceof BadRequestError
-                   ? "bad_request"
-                   : "other";
+      error instanceof ReportWriteRefusedError
+         ? error.reason
+         : error instanceof InvalidModelPathError
+           ? "invalid_path"
+           : error instanceof FrozenConfigError
+             ? "frozen_config"
+             : error instanceof EnvironmentNotFoundError ||
+                 error instanceof PackageNotFoundError
+               ? "not_found"
+               : error instanceof BadRequestError
+                 ? "bad_request"
+                 : "other";
    return { outcome: "refused", reason };
 }
 
@@ -276,21 +273,10 @@ export class ReportController {
          );
       }
       await versions?.resolve(packageName, versionId.requested());
-      // Loads the package, or 404s.
-      const target = await environment.getPackage(
-         parsePackageName(packageName),
-         false,
-      );
-      // A package installed from a location is fetched again from it on
-      // reload, which replaces its files: a report written here would be lost.
-      // Interim, until package storage keeps API writes apart from the fetched
-      // copy (#1560).
-      const installedFrom = target.getPackageMetadata().location;
-      if (installedFrom) {
-         throw new InstalledFromLocationError(
-            `Package ${packageName} was installed from ${installedFrom}, and a reload fetches it again from there, which would discard a report written here. Add the report to the package's source and reload it, or publish it as a version.`,
-         );
-      }
+      // Loads the package, or 404s. Past the version check above it is
+      // mounted in place (a watched environment), so the write lands in its
+      // source and a reload reads it.
+      await environment.getPackage(parsePackageName(packageName), false);
 
       const { problems } = await environment.compileSource(
          packageName,

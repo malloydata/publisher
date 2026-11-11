@@ -351,19 +351,34 @@ export class Rest {
          );
    }
 
-   async patchPackage(
+   /**
+    * Bind the package's `latest` version to a build manifest, or clear the
+    * binding with null, as an orchestrator does:
+    * PUT …/packages/:pkg/versions/:latest/manifest.
+    */
+   async bindManifest(
       pkg: string,
-      body: Record<string, unknown>,
+      manifestLocation: string | null,
    ): Promise<Record<string, unknown>> {
-      const res = await fetch(this.pkgUrl(pkg), {
-         method: "PATCH",
-         headers: { "content-type": "application/json" },
-         body: JSON.stringify({ name: pkg, ...body }),
-      });
+      const current = await fetch(this.pkgUrl(pkg));
+      const meta = (await current.json()) as Record<string, unknown>;
+      const latest = meta.latestVersion ?? meta.versionId;
+      if (!current.ok || typeof latest !== "string")
+         throw new Error(
+            `bindManifest ${pkg}: no latest version (${current.status}: ${JSON.stringify(meta)})`,
+         );
+      const res = await fetch(
+         this.pkgUrl(pkg, `/versions/${encodeURIComponent(latest)}/manifest`),
+         {
+            method: "PUT",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({ manifestLocation }),
+         },
+      );
       const json = (await res.json()) as Record<string, unknown>;
       if (!res.ok)
          throw new Error(
-            `patchPackage ${pkg} ${res.status}: ${JSON.stringify(json)}`,
+            `bindManifest ${pkg} ${res.status}: ${JSON.stringify(json)}`,
          );
       return json;
    }
@@ -372,7 +387,7 @@ export class Rest {
     * The `entries` map of the package's most recent successful materialization
     * (MANIFEST_FILE_READY). This is the manifest the orchestrator would stamp
     * and distribute; the harness re-serves it via `writeManifest` + a
-    * `manifestLocation` PATCH to exercise the orchestrator bind path.
+    * version manifest bind to exercise the orchestrator bind path.
     */
    async latestManifestEntries(pkg: string): Promise<Record<string, unknown>> {
       const runs = await this.listMaterializations(pkg);

@@ -24,6 +24,8 @@ const __dirname = path.dirname(__filename);
 const PROJECT_NAME = "freshness-gate-project";
 const PACKAGE_NAME = "persist-test";
 const MODEL_PATH = "persist_test.malloy";
+// The version the fixture's publisher.json declares: the one served as latest.
+const VERSION = "1.0.0";
 const API = `/api/v0/environments/${PROJECT_NAME}/packages/${PACKAGE_NAME}`;
 
 /**
@@ -39,7 +41,8 @@ const API = `/api/v0/environments/${PROJECT_NAME}/packages/${PACKAGE_NAME}`;
  *    with no rebind (proves per-query re-evaluation, not bind-time filtering)
  *
  * The manifest is bound once physically (auto-run builds the table), then a
- * manifest URI keyed by the source's real sourceEntityId routes served queries.
+ * manifest URI keyed by the source's real sourceEntityId, bound to the served
+ * version through `PUT …/versions/{version}/manifest`, routes served queries.
  * `executedSql()` is the routing evidence: it scans `order_summary` when routed
  * to the table, and `data/orders.csv` when serving live.
  */
@@ -153,8 +156,19 @@ describe("Per-query freshness gate (E2E)", () => {
       const { id } = (await createRes.json()) as { id: string };
       const built = await pollUntilTerminal(id);
       expect(built.status).toBe("MANIFEST_FILE_READY");
-      await fetch(url("?reload=true"));
+      // Clearing the version's manifest drops the auto-load binding and keeps
+      // the built table.
+      expect((await setManifest(null)).status).toBe(200);
       await fetch(url(`/materializations/${id}`), { method: "DELETE" });
+   }
+
+   /** Bind the served version to a manifest URI, or to none with null. */
+   function setManifest(manifestLocation: string | null): Promise<Response> {
+      return fetch(url(`/versions/${VERSION}/manifest`), {
+         method: "PUT",
+         headers: { "Content-Type": "application/json" },
+         body: JSON.stringify({ manifestLocation }),
+      });
    }
 
    /** Write a CP-shaped manifest carrying the freshness fields. */
@@ -190,14 +204,7 @@ describe("Per-query freshness gate (E2E)", () => {
    }
 
    async function bind(manifestFile: string): Promise<void> {
-      const patchRes = await fetch(url(""), {
-         method: "PATCH",
-         headers: { "Content-Type": "application/json" },
-         body: JSON.stringify({
-            name: PACKAGE_NAME,
-            manifestLocation: manifestFile,
-         }),
-      });
+      const patchRes = await setManifest(manifestFile);
       expect(patchRes.status).toBe(200);
       const patched = (await patchRes.json()) as Record<string, unknown>;
       // The bind is recorded regardless of per-query freshness — freshness is
@@ -207,12 +214,7 @@ describe("Per-query freshness gate (E2E)", () => {
    }
 
    async function revertToLive(): Promise<void> {
-      await fetch(url(""), {
-         method: "PATCH",
-         headers: { "Content-Type": "application/json" },
-         body: JSON.stringify({ name: PACKAGE_NAME, manifestLocation: null }),
-      });
-      await fetch(url("?reload=true"));
+      await setManifest(null);
    }
 
    it(

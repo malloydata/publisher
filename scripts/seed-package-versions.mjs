@@ -7,8 +7,9 @@
  *
  *   node scripts/seed-package-versions.mjs [--base http://localhost:4000] [--env demo] [--reset]
  *
- * The server must publish versions, as it does unless started with
- * `PUBLISHER_PACKAGE_VERSIONING=off` (promotion `on-publish`, the default).
+ * The server must publish versions, as every release from this one does
+ * (an older one only when its versioning setting was on), with promotion
+ * `on-publish`, the default.
  * It must be on this machine (`--base` a loopback address): the script
  * deletes and recreates an environment.
  *
@@ -230,7 +231,7 @@ async function main() {
    const status = await waitForServing();
    if (status.packageVersioning !== "on") {
       console.error(
-         `${BASE} has packageVersioning=${status.packageVersioning}; restart it without PUBLISHER_PACKAGE_VERSIONING=off.`,
+         `${BASE} has packageVersioning=${status.packageVersioning}, so it does not publish versions; run this against a release that does (an older one only with PUBLISHER_PACKAGE_VERSIONING=on).`,
       );
       process.exit(1);
    }

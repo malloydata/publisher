@@ -2,8 +2,9 @@
 // SPDX-License-Identifier: MIT
 
 /**
- * A package with published versions is immutable, so the package list offers
- * no Edit on it, only Delete. A package with no versions keeps both.
+ * A package is never edited in place from the list: a published version is
+ * immutable, and a package mounted in place is edited at its source. The list
+ * offers Delete, whether or not the package has versions.
  */
 import { beforeEach, expect, it, mock } from "bun:test";
 import { fireEvent, render, screen } from "@testing-library/react";
@@ -50,12 +51,8 @@ async function menuItemsFor(packageName: string): Promise<string[]> {
    return items.map((item) => item.textContent ?? "");
 }
 
-it("offers Edit and Delete on a package with no versions", async () => {
-   expect(await menuItemsFor("plain")).toEqual(["Edit", "Delete"]);
-});
-
-it.each([["versioned"], ["unpromoted"]])(
-   "offers only Delete on a package with published versions (%s)",
+it.each([["plain"], ["versioned"], ["unpromoted"]])(
+   "offers only Delete on a package (%s)",
    async (packageName) => {
       expect(await menuItemsFor(packageName)).toEqual(["Delete"]);
    },

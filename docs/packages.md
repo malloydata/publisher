@@ -68,12 +68,13 @@ The fields the server reads:
 Unknown top-level keys are ignored and preserved. Inside `retrieval` they are not: an unknown key fails the
 package load with a message naming the valid ones. `version` is read when the package is published
 from a location (`POST …/packages` with a `location`): it numbers the immutable version that publish
-creates, and a publish without one is refused. A package in `publisher.config.json` is published
-the same way, unless its environment is watched (`--watch-env`), which mounts it in place and
-ignores it. See [package-versions.md](package-versions.md). (One more field, `manifestLocation`, exists for orchestrated
-control-plane deployments; a locally authored package never needs it. It is deprecated and goes
-away with the package `PATCH` that writes it: bind a version's build manifest with
-`PUT …/versions/{v}/manifest` instead. See [#1540](https://github.com/malloydata/publisher/issues/1540).)
+creates, and a publish without one is refused. A package in `publisher.config.json`, or one an
+environment created over the API lists, is published the same way, unless its environment is
+watched (`--watch-env`), which mounts it in place and ignores it. See
+[package-versions.md](package-versions.md). (One more field, `manifestLocation`, exists for orchestrated
+control-plane deployments; a locally authored package never needs it. It is deprecated: bind a
+version's build manifest with `PUT …/versions/{v}/manifest` instead. See
+[#1540](https://github.com/malloydata/publisher/issues/1540).)
 
 ## Skills
 
@@ -176,49 +177,36 @@ There is no directory scan: a package on disk serves only once it is registered.
   the rest of the API this endpoint is unauthenticated, so keep the server on localhost or behind
   a gateway.
 
-## Lifecycle: what is served
+## Lifecycle: the served copy
 
-When an environment is first created, Publisher publishes each configured package as the version
-its `publisher.json` declares, into its own storage at `publisher_data/<env>/<pkg>/<version>/` (in
-the server root: the directory the server was launched from, unless `--server_root` set another),
-compiles it, and serves it. A package that declares no `version` fails to load. Consequences:
+Every package a server serves is a published [version](package-versions.md): when an environment
+is first created, Publisher publishes each configured package from its location as the version its
+`publisher.json` declares, into its own storage at `publisher_data/<env>/<pkg>/<version>/` (in the
+server root: the directory the server was launched from, unless `--server_root` set another), and
+serves that immutable copy. Consequences:
 
-- A published version is immutable. Editing your original source directory afterwards changes
-  nothing, and neither does a reload: `GET …/packages/{pkg}?reload=true` or `reload_package`
-  answers the version unchanged. To ship an edit, bump `version` in `publisher.json` and publish
-  again. See [package-versions.md](package-versions.md).
-- In watch mode (`--watch-env <env>`), the environment's local packages are mounted in place as
-  symlinks instead, with no versions, and an edit is read: reload the package to recompile it,
-  `GET /api/v0/environments/{env}/packages/{pkg}?reload=true` over REST or the `reload_package`
-  MCP tool. A reload that fails to compile leaves the files alone and keeps serving the previous
-  model.
+- A configured package needs a semantic `version` in its `publisher.json`; one without fails to
+  load, and its error is in `GET /api/v0/status`.
+- Editing your original source directory afterwards changes nothing, and a reload answers the
+  version unchanged. To serve new content, bump the `version` and publish it again
+  (`POST …/packages` with its location).
+- To edit and reload in place, run the environment in watch mode (`--watch-env <env>`), which
+  mounts local packages as symlinks instead. A save recompiles the package, and
+  `GET /api/v0/environments/{env}/packages/{pkg}?reload=true` (or the `reload_package` MCP tool)
+  recompiles it on demand. A reload that fails to compile leaves the files alone and keeps serving
+  the previous model.
 - `--init` deletes `publisher_data/` and publishes everything again from the configured
   locations. Keep your source of truth outside `publisher_data/`.
 
-### Installed packages (versioning off)
+### Published packages
 
-With `PUBLISHER_PACKAGE_VERSIONING=off`, a package can also arrive through the API: a `POST` to an environment's `packages` with a
-`location`, or a `PATCH` on a package that names one. The server downloads it, compiles the new
-copy beside the one that is serving (if any), and swaps it in; the previous copy answers queries
-until the swap. Four things follow from how that is recorded:
+A package can also arrive through the API: a `POST` to an environment's `packages` with a
+`location` publishes the version its `publisher.json` declares, and the versions already published
+keep serving. The server records where it fetched each version from, and a version whose files go
+missing is fetched again from there. Nothing inside the package is read as that location, neither a
+`location` an author puts in `publisher.json` nor a file shipped with the content.
 
-- The server writes where it fetched the package from into its own file outside the package
-  directory, `publisher_data/<env>/.install-records/<pkg>.json`. It never writes that into
-  `publisher.json`, and nothing inside the package is read as one, neither a `location` an author
-  puts in `publisher.json` nor a record file shipped with the content: a reload re-fetches from
-  the recorded location, so only the server may set it.
-- A `PATCH` whose `location` equals the recorded one is a metadata update. Nothing is fetched or
-  recompiled beyond what a new `manifestLocation` requires. A `PATCH` with a different `location`
-  installs from it. A `PATCH` never changes the recorded location by itself. To fetch the same
-  location again, reload the package.
-- A `PATCH` that arrives while a load of the package is in progress waits for it, and is applied
-  to whichever copy that load leaves resident. So it lands on the copy being installed, or, if the
-  install failed, on the copy that is still serving.
-- A reload of an installed package re-fetches from the recorded location and re-applies the
-  manifest binding it had. Everything else, the description, `explores`, policy, is what the
-  re-fetched `publisher.json` declares.
-
-While a package is loading, reinstalling or recompiling, the `status` on its entry in
+While a package is loading or recompiling, the `status` on its entry in
 `GET /api/v0/status` reports `loading: true`
 alongside `serving`, which stays true for as long as a previous copy answers queries. A package
 loading for the first time is listed only by `GET /api/v0/status?includeLoading=true`; every other

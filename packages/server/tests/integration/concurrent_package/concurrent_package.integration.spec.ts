@@ -6,16 +6,18 @@
 /**
  * Regression test for the per-package download/unzip race.
  *
- * Before fix: concurrent POST/PATCH/GET-with-reload against the same package
- * name landed in `downloadPackage` *before* acquiring the per-package mutex.
+ * Before fix: concurrent POST/GET-with-reload against the same package name
+ * landed in `downloadPackage` *before* acquiring the per-package mutex.
  * Multiple callers would `rm -rf <targetPath>` and then `cp -r` / `extractAllTo`
  * in parallel, leaving the directory in an inconsistent state. Subsequent
  * reads failed with "Package manifest for ... does not exist" and any
  * in-flight model compilation would 500 with "compiling model path not found".
  *
- * After fix: download is run inside the per-package mutex, so concurrent
- * callers serialize on the same target path. All N requests must succeed
- * and the package must be usable afterwards.
+ * Every publish now downloads into its own staging folder, and a publish of
+ * the version the package already holds, with the same content, is a
+ * placement: it answers 200 and writes nothing. So concurrent publishes of
+ * the same tree must all succeed, and readers alongside them must never see
+ * a missing manifest or a half-extracted directory.
  */
 
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
@@ -109,7 +111,7 @@ describe("Concurrent package operations (E2E)", () => {
       env = null;
    });
 
-   it("concurrent POST /packages for the same name all succeed", async () => {
+   it("concurrent POST /packages of the same version all succeed", async () => {
       const requests = Array.from({ length: CONCURRENCY }, () =>
          fetch(`${baseUrl}/api/v0/environments/${ENV_NAME}/packages`, {
             method: "POST",
@@ -135,13 +137,26 @@ describe("Concurrent package operations (E2E)", () => {
          expect(forbidden).toBeUndefined();
       }
 
-      // Package must be loadable after the storm.
+      // Package must be loadable after the storm, still as the one version
+      // the seed published: each publish was a placement.
       const res = await fetch(
          `${baseUrl}/api/v0/environments/${ENV_NAME}/packages/${PACKAGE_NAME}`,
       );
       expect(res.status).toBe(200);
-      const meta = (await res.json()) as { name?: string };
+      const meta = (await res.json()) as {
+         name?: string;
+         versionId?: string;
+         latestVersion?: string;
+      };
       expect(meta.name).toBe(PACKAGE_NAME);
+      expect(meta.versionId).toBe("1.0.0");
+      expect(meta.latestVersion).toBe("1.0.0");
+      const versionsRes = await fetch(
+         `${baseUrl}/api/v0/environments/${ENV_NAME}/packages/${PACKAGE_NAME}/versions`,
+      );
+      expect(versionsRes.status).toBe(200);
+      const versions = (await versionsRes.json()) as Array<{ id?: string }>;
+      expect(versions.map((v) => v.id)).toEqual(["1.0.0"]);
 
       // Models must be listable — proves the model files survived the unzip
       // race and Package.create read a consistent directory.
@@ -178,63 +193,6 @@ describe("Concurrent package operations (E2E)", () => {
          `${baseUrl}/api/v0/environments/${ENV_NAME}/packages/${PACKAGE_NAME}/models`,
       );
       expect(modelsRes.status).toBe(200);
-   });
-
-   it("simultaneous POST + PATCH for the same package serialize cleanly", async () => {
-      // Fire create and update at the same time. Both should land under the
-      // same per-package mutex. Whichever wins the mutex first runs first;
-      // the loser sees a coherent post-condition. After both settle the
-      // package must be loadable and the description must reflect the PATCH
-      // when the PATCH ran *after* a successful POST.
-      const newDescription = `concurrent-update-${Date.now()}`;
-      const [postRes, patchRes] = await Promise.all([
-         fetch(`${baseUrl}/api/v0/environments/${ENV_NAME}/packages`, {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({
-               name: PACKAGE_NAME,
-               location: fixtureDir,
-            }),
-         }),
-         fetch(
-            `${baseUrl}/api/v0/environments/${ENV_NAME}/packages/${PACKAGE_NAME}`,
-            {
-               method: "PATCH",
-               headers: { "Content-Type": "application/json" },
-               body: JSON.stringify({
-                  name: PACKAGE_NAME,
-                  description: newDescription,
-               }),
-            },
-         ),
-      ]);
-
-      // POST is idempotent here — always succeeds.
-      expect(postRes.status).toBe(200);
-      const postBody = await postRes.json().catch(() => null);
-      expect(findForbiddenError(postBody)).toBeUndefined();
-
-      // PATCH either applies the description (ran after POST published the
-      // version: a published package's description is not its content, so a
-      // PATCH may change it: 200), is refused (ran against the package
-      // installed from a location before it, whose description a reload
-      // would discard: 409) or 404s (ran before POST populated
-      // `this.packages`). It must NOT silently rewrite disk and then 404, and
-      // must never surface the forbidden error fragments.
-      const patchBody = await patchRes.json().catch(() => null);
-      expect(findForbiddenError(patchBody)).toBeUndefined();
-      expect([200, 404, 409]).toContain(patchRes.status);
-
-      // Whatever happened, the package must remain loadable.
-      const getRes = await fetch(
-         `${baseUrl}/api/v0/environments/${ENV_NAME}/packages/${PACKAGE_NAME}`,
-      );
-      expect(getRes.status).toBe(200);
-      const meta = (await getRes.json()) as {
-         name?: string;
-         description?: string;
-      };
-      expect(meta.name).toBe(PACKAGE_NAME);
    });
 
    it("interleaved POST + GET-reload + model list never surface stale-dir errors", async () => {

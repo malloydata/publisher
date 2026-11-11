@@ -14,7 +14,6 @@ import type express from "express";
 import { readBypassAuthorize } from "../authorize_bypass_header";
 import type { AppServices } from "../app_services";
 import { accessIdentityOf } from "../service/access_record";
-import { setPackagePatchDeprecationHeaders } from "../controller/package.controller";
 import { BadRequestError, ServiceUnavailableError } from "../errors";
 import { setFilterDeprecationHeaders } from "../filter_deprecation";
 import { logger, redactSensitive } from "../logger";
@@ -551,18 +550,6 @@ function registerPackageRoutes(
             req.params.packageName,
             reload,
             versionRefOf(req),
-         );
-      }),
-   );
-   // Deprecated (see setPackagePatchDeprecationHeaders), and kept working.
-   app.patch(
-      pkg,
-      apiRoute((req, res) => {
-         setPackagePatchDeprecationHeaders(res);
-         return packageController.updatePackage(
-            req.params.environmentName,
-            req.params.packageName,
-            req.body,
          );
       }),
    );

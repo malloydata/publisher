@@ -13,6 +13,7 @@
 
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
 import fs from "fs";
+import path from "path";
 import { writeTempPackage } from "../../../src/test_helpers/temp_package";
 import { startPackageEnv, type PackageEnv } from "../../harness/reports";
 
@@ -50,7 +51,8 @@ describe("GET /status (E2E)", () => {
          { name: PKG },
       );
       removePackage = cleanup;
-      env = await startPackageEnv(ENV, { [PKG]: dir });
+      // Copied, so mounted in place: only such a package reloads from disk.
+      env = await startPackageEnv(ENV, { [PKG]: dir }, { copy: true });
    }, 300_000);
 
    afterAll(async () => {
@@ -68,7 +70,10 @@ describe("GET /status (E2E)", () => {
    });
 
    it("reports a failed reload as stale while the package keeps serving", async () => {
-      fs.writeFileSync(env.served("m.malloy"), "source: s is duckdb.sql(\n");
+      fs.writeFileSync(
+         path.join(env.location(), "m.malloy"),
+         "source: s is duckdb.sql(\n",
+      );
       const reload = await fetch(env.api("?reload=true"));
       expect(reload.ok).toBe(false);
 

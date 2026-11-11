@@ -107,17 +107,15 @@ as_root() {
    docker run --rm --user 0 "$@"
 }
 
-# start <name> [docker run args...]: start a server in the background, with
-# package versioning on (every server this script starts). The port it
-# publishes is $port afterwards (not a subshell, so the container is recorded
-# for cleanup).
+# start <name> [docker run args...]: start a server in the background. The
+# port it publishes is $port afterwards (not a subshell, so the container is
+# recorded for cleanup).
 start() {
    local name=$1
    shift
    port=$next_port
    next_port=$((next_port + 1))
-   docker run -d --name "$PREFIX-$name" -p "$port:4000" \
-      -e PUBLISHER_PACKAGE_VERSIONING=on "$@" "$IMAGE" >/dev/null
+   docker run -d --name "$PREFIX-$name" -p "$port:4000" "$@" "$IMAGE" >/dev/null
    containers+=("$PREFIX-$name")
 }
 
