@@ -1884,6 +1884,7 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
          })),
          ...this.materialization.storageWarnings(),
          ...this.materialization.droppedPersistWarnings(),
+         ...this.materialization.rollupsOverStoredBaseWarnings(),
          ...this.materialization.persistRefusalWarnings(),
          // Not in exploresWarnings: an import-only file must not block publish.
          ...this.emptyDiscoveryWarnings(),

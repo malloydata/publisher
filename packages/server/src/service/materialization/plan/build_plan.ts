@@ -960,6 +960,34 @@ export async function resolveConnectionDigests(
 }
 
 /** Project the compiled plan into the trimmed wire BuildPlan. */
+/**
+ * The base a `storage=` rollup is declared over, when that base is itself
+ * persisted with `storage=`; undefined for every other source. Such a rollup
+ * can neither build nor serve today (#6293): the chained storage build lifts a
+ * downstream's definition from its file, and a rollup lives in the
+ * synthesized companion, which is never written; and the base's own stored
+ * binding claims the name the rollup would be served under. So it is left out
+ * of the plan and every run, with a package warning, and the base still builds
+ * and serves from storage. Rollups over a stored base are materialization v2
+ * phase 4 (`#(preaggregate)`).
+ */
+export function storedBaseOfRollup(
+   compiled: {
+      sources: Record<string, PersistSource>;
+      preaggregatePlans?: Record<string, RollupPlan>;
+   },
+   sourceID: string,
+): PersistSource | undefined {
+   const plan = compiled.preaggregatePlans?.[sourceID];
+   const rollup = compiled.sources[sourceID];
+   if (!plan?.baseSourceID || !rollup) return undefined;
+   if (!deriveAnnotationFields(rollup).storage?.trim()) return undefined;
+   const base = compiled.sources[plan.baseSourceID];
+   return base && deriveAnnotationFields(base).storage?.trim()
+      ? base
+      : undefined;
+}
+
 /** Memo for {@link collidingRollups}, per compiled `sources` record. */
 const collidingRollupsBySources = new WeakMap<
    Record<string, PersistSource>,
@@ -1111,6 +1139,16 @@ export function deriveBuildPlan(
                continue;
             }
          } else {
+            // A storage rollup over a storage= base can neither build nor
+            // serve (see storedBaseOfRollup): out of the plan, warned on.
+            if (
+               storedBaseOfRollup(
+                  { sources, preaggregatePlans: options?.preaggregatePlans },
+                  sourceID,
+               )
+            ) {
+               continue;
+            }
             // Before the other gates: a rollup sharing its table with another
             // model's must neither build nor serve, so it leaves `sources`.
             try {
@@ -1223,6 +1261,12 @@ export function deriveBuildPlan(
 export interface BuildPlanOutcome {
    plan: BuildPlan | null;
    droppedPersistSources: { name: string; modelPath: string }[];
+   /**
+    * Storage rollups left out because their base is itself `storage=`
+    * persisted (see storedBaseOfRollup). Optional: a worker that predates it
+    * sends none.
+    */
+   rollupsOverStoredBase?: { baseName: string; modelPath?: string }[];
    sourceEligibility: SourceEligibility;
    colocatedSourceEligibility: ColocatedSourceEligibility;
    incrementalDeclarations: Record<string, IncrementalDeclaration>;
@@ -1256,9 +1300,24 @@ export function deriveBuildPlanOutcome(
                  sourceGateOutcomes: compiled.sourceGateOutcomes,
               },
            );
+   // One entry per base: its grains share the reason.
+   const overStoredBase = new Map<
+      string,
+      { baseName: string; modelPath?: string }
+   >();
+   for (const sourceID of Object.keys(compiled.sources)) {
+      const base = storedBaseOfRollup(compiled, sourceID);
+      if (!base || overStoredBase.has(base.sourceID)) continue;
+      const modelPath = compiled.sourceModelPaths?.[base.sourceID];
+      overStoredBase.set(base.sourceID, {
+         baseName: base.name,
+         ...(modelPath ? { modelPath } : {}),
+      });
+   }
    return {
       plan,
       droppedPersistSources,
+      rollupsOverStoredBase: [...overStoredBase.values()],
       sourceEligibility: collectSourceEligibility(compiled),
       colocatedSourceEligibility: collectColocatedSourceEligibility(compiled),
       incrementalDeclarations,

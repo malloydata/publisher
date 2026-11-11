@@ -1096,6 +1096,52 @@ export { notes }
    );
 
    it(
+      "leaves out a storage rollup over a storage= base, which could never build or serve (#6293)",
+      async () => {
+         const pkg =
+            await packages.create(`##! experimental { persistence composite_sources }
+#@ persist storage="lake"
+source: orders is duckdb.sql("""SELECT * FROM (VALUES (10, 'A')) AS t(amount, category)""") -> { select: * } extend {
+  #@ preaggregate grain="category" storage="lake"
+  measure: total is amount.sum()
+}
+`);
+
+         const { plan, rollupsOverStoredBase } =
+            await computePackageBuildPlan(pkg);
+
+         const entries = Object.values(plan?.sources ?? {});
+         expect(entries.filter((s) => s.origin === "preaggregate")).toEqual([]);
+         // The base still builds into storage.
+         expect(entries.map((s) => s.name)).toEqual(["orders"]);
+         expect(Object.values(plan?.refusedSources ?? {})).toEqual([]);
+         // Reported once per base, for the package warning.
+         expect(rollupsOverStoredBase).toMatchObject([{ baseName: "orders" }]);
+      },
+      { timeout: 20000 },
+   );
+
+   it(
+      "still plans a storage rollup over a base that is not storage-persisted",
+      async () => {
+         const pkg =
+            await packages.create(`##! experimental { persistence composite_sources }
+source: orders is duckdb.sql("""SELECT * FROM (VALUES (10, 'A')) AS t(amount, category)""") extend {
+  #@ preaggregate grain="category" storage="lake"
+  measure: total is amount.sum()
+}
+`);
+         const { plan } = await computePackageBuildPlan(pkg);
+         expect(
+            Object.values(plan?.sources ?? {}).filter(
+               (s) => s.origin === "preaggregate",
+            ),
+         ).toHaveLength(1);
+      },
+      { timeout: 20000 },
+   );
+
+   it(
       "still plans a rollup that only one model generates",
       async () => {
          const pkg = await packages.create({
