@@ -2,21 +2,23 @@
 // SPDX-License-Identifier: MIT
 
 import { expect, test, type Locator, type Page } from "@playwright/test";
-import fs from "fs/promises";
-import path from "path";
-import { fileURLToPath } from "url";
 import {
    closeFilter,
    expectFilterValue,
    filterButton,
    openFilter,
 } from "./helpers/filters";
-import { DEFAULT_ENV, PACKAGES } from "./helpers/fixtures";
+import { PACKAGES } from "./helpers/fixtures";
+import {
+   exampleFixture,
+   publishPackageEnv,
+   type PackageEnv,
+} from "./helpers/packageEnv";
 
 /**
  * The notebook's Filters panel, now that its values live in the URL.
  *
- * Runs against `governed-analytics`, which is the only shipped package whose
+ * Runs against a copy of `governed-analytics`, the only shipped package whose
  * model declares `given:`, `REGION :: filter<string>` and
  * `MIN_AMOUNT :: number`. Both render as typed text boxes: `select` and
  * `multiselect` need `Given.control` and `Given.suggest` populated by the
@@ -25,24 +27,16 @@ import { DEFAULT_ENV, PACKAGES } from "./helpers/fixtures";
  * the multiselect works end to end.
  */
 const FIXTURE_NOTEBOOK = "test_givens_url_notebook.malloy";
-const NOTEBOOK = `/${DEFAULT_ENV}/${PACKAGES.governed}/test_givens_url_notebook`;
-const PKG_DIR = path.resolve(
-   path.dirname(fileURLToPath(import.meta.url)),
-   "../../../server/publisher_data/examples/governed-analytics",
-);
-// The examples ship no report over these givens, so this suite writes the
-// linear report it drives and removes it afterwards.
+// The examples ship no report over these givens, so this suite adds the
+// linear report it drives to a throwaway copy of the package.
 const NOTEBOOK_SOURCE = `##! experimental.givens
 ## artifact { layout=linear title="Governed analytics — interactive controls" tiles=["sales -> overview", "sales -> by_region"] }
 import "orders.malloy"
 `;
 
-async function reloadPackage(baseURL: string): Promise<void> {
-   const res = await fetch(
-      `${baseURL}/api/v0/environments/${DEFAULT_ENV}/packages/${PACKAGES.governed}?reload=true`,
-   );
-   if (!res.ok) throw new Error(`Package reload failed: ${res.status}`);
-}
+let pe: PackageEnv;
+/** The report's route in the copy registered in `beforeAll`. */
+const notebookPath = () => `/${pe.path}/test_givens_url_notebook`;
 
 /**
  * A count that has stopped moving, rather than the first count seen.
@@ -83,7 +77,7 @@ async function resultsText(page: Page): Promise<string> {
 
 /** The filter row is only rendered once the notebook's sources have loaded. */
 async function openNotebook(page: Page, search = "") {
-   await page.goto(`${NOTEBOOK}${search}`);
+   await page.goto(`${notebookPath()}${search}`);
    await expect(page.getByRole("group", { name: "Filters" })).toBeVisible({
       timeout: 60_000,
    });
@@ -97,16 +91,19 @@ async function setMinAmount(page: Page, value: string) {
 }
 
 test.describe("notebook givens are URL-addressable", () => {
-   test.beforeAll(async ({ baseURL }) => {
-      await fs.writeFile(path.join(PKG_DIR, FIXTURE_NOTEBOOK), NOTEBOOK_SOURCE);
-      await reloadPackage(baseURL!);
+   // eslint-disable-next-line no-empty-pattern
+   test.beforeAll(async ({}, testInfo) => {
+      pe = await publishPackageEnv(
+         testInfo.project.use.baseURL ?? "http://localhost:4000",
+         "nbgivensurl",
+         exampleFixture(PACKAGES.governed),
+         PACKAGES.governed,
+         { [FIXTURE_NOTEBOOK]: NOTEBOOK_SOURCE },
+      );
    });
 
-   test.afterAll(async ({ baseURL }) => {
-      await fs
-         .unlink(path.join(PKG_DIR, FIXTURE_NOTEBOOK))
-         .catch(() => undefined);
-      await reloadPackage(baseURL!).catch(() => undefined);
+   test.afterAll(async () => {
+      await pe?.dispose();
    });
 
    test("renders a control per declared given, with its description", async ({
@@ -243,7 +240,7 @@ test.describe("notebook givens are URL-addressable", () => {
       // the fragment to empty, so changing any control dropped whatever anchor
       // the reader had arrived on. Browser-level, so it is pinned here rather
       // than in a unit test.
-      await page.goto(`${NOTEBOOK}#cell-2`);
+      await page.goto(`${notebookPath()}#cell-2`);
       await expect(page.getByRole("group", { name: "Filters" })).toBeVisible({
          timeout: 60_000,
       });

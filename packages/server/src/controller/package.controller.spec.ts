@@ -1654,11 +1654,11 @@ describe("PackageController.addPackage with package versioning off or on", () =>
          String(message).includes("Package versioning is off"),
       );
 
-   it("off (the default): installs in place as before, whatever the tree declares, and warns", async () => {
+   it("off: installs in place as before, whatever the tree declares, and warns", async () => {
       // What every publish from a location did before versions, with the
       // install's own arguments. The version service is never asked: off, a
       // publisher.json's version is not read.
-      versioning();
+      versioning("off");
       const versions = versionsPublishing(installedPackage);
       const installPackage = sinon.stub().resolves(installedPackage);
       const warn = spyOnWarn();
@@ -1688,7 +1688,7 @@ describe("PackageController.addPackage with package versioning off or on", () =>
    });
 
    it("off: warns once per package, not on every republish", async () => {
-      versioning();
+      versioning("off");
       const controller = controllerWith(
          versionsPublishing(installedPackage),
          sinon.stub().resolves(installedPackage),
@@ -1960,6 +1960,7 @@ describe("PackageController.dryRunPackage", () => {
    });
 
    it("does not read a version when versioning is off", async () => {
+      versioning("off");
       const { controller, seen } = controllerWith(
          async (options) => options.describe(loadedPackage, undefined),
          { versioned: true },
