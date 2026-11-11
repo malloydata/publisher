@@ -13,21 +13,26 @@
 import { afterEach, beforeEach, describe, expect, it, spyOn } from "bun:test";
 import express from "express";
 import request from "supertest";
+import { PackageController } from "./controller/package.controller";
 import { resetDeprecatedUsageMetricsForTest } from "./deprecated_usage_metrics";
-import { EnvironmentNotFoundError, ServiceUnavailableError } from "./errors";
+import {
+   EnvironmentNotFoundError,
+   PackageNotFoundError,
+   ServiceUnavailableError,
+} from "./errors";
 import {
    recordDeprecatedFilterUsage,
    setFilterDeprecationHeaders,
 } from "./filter_deprecation";
 import { logger } from "./logger";
 import { registerDeprecatedRoutes } from "./routes/deprecated";
+import { QuerySlots } from "./query_concurrency";
 import { registerLegacyRoutes, type LegacyControllerSet } from "./server-old";
 import { recordDeprecatedFormatUsage } from "./service/deprecated/lints";
 import {
    declaredDeprecatedManifestKeys,
    recordDeprecatedManifestKeys,
 } from "./service/deprecated/manifest_keys";
-import type { EnvironmentStore } from "./service/environment_store";
 import {
    isLegacyReportAlias,
    recordConsoleAliasUse,
@@ -35,10 +40,17 @@ import {
 import type { Model } from "./service/model";
 import type { Package } from "./service/package";
 import { linesMentioning } from "./test_helpers/log_lines";
+import { buildRouteApp } from "./test_helpers/route_app";
 import {
    startMetricsHarness,
    type MetricsHarness,
 } from "./test_helpers/metrics_harness";
+import { fakeOf } from "./test_helpers/store_fakes";
+import type {
+   EnvironmentAdmin,
+   PackageAdmin,
+} from "./service/environment_ports";
+import { testRetrieval } from "./test_helpers/test_retrieval";
 
 describe("publisher_deprecated_usage_total", () => {
    let harness: MetricsHarness;
@@ -61,13 +73,13 @@ describe("publisher_deprecated_usage_total", () => {
          fail: (name: string) => Error = (name) =>
             new EnvironmentNotFoundError(`Environment ${name} does not exist`),
       ) => {
-         const store = {
+         const store = fakeOf<EnvironmentAdmin & PackageAdmin>({
             getEnvironment: async (name: string) => {
                throw fail(name);
             },
-         } as unknown as EnvironmentStore;
+         });
          const server = express();
-         registerDeprecatedRoutes(server, "/api/v0", store);
+         registerDeprecatedRoutes(server, "/api/v0", store, new QuerySlots());
          return server;
       };
       const pkg = "/api/v0/environments/env/packages/pkg";
@@ -89,17 +101,18 @@ describe("publisher_deprecated_usage_total", () => {
       });
 
       it("counts the project-path notebook routes under the same features, once each", async () => {
-         const store = {
+         const store = fakeOf<EnvironmentAdmin & PackageAdmin>({
             getEnvironment: async (name: string) => {
                throw new EnvironmentNotFoundError(
                   `Environment ${name} does not exist`,
                );
             },
-         } as unknown as EnvironmentStore;
+         });
          const server = express();
-         registerDeprecatedRoutes(server, "/api/v0", store);
+         registerDeprecatedRoutes(server, "/api/v0", store, new QuerySlots());
          registerLegacyRoutes(server, {
             environmentStore: store,
+            querySlots: new QuerySlots(),
          } as unknown as LegacyControllerSet);
          const project = "/api/v0/projects/env/packages/pkg";
          await request(server).get(`${project}/notebooks`);
@@ -215,6 +228,135 @@ describe("publisher_deprecated_usage_total", () => {
          expect(isLegacyReportAlias(pkg, "dashboards/sales")).toBe(true);
          expect(isLegacyReportAlias(pkg, "dashboards/q3")).toBe(false);
          expect(await used("console_alias")).toBe(0);
+      });
+   });
+
+   describe("the package PATCH", () => {
+      /** Both PATCH paths over a real PackageController; every environment is missing. */
+      const app = () => {
+         const store = fakeOf<EnvironmentAdmin & PackageAdmin>({
+            publisherConfigIsFrozen: false,
+            getEnvironment: async (name: string) => {
+               throw new EnvironmentNotFoundError(
+                  `Environment ${name} does not exist`,
+               );
+            },
+         });
+         return buildRouteApp({
+            environmentStore: store,
+            packageController: new PackageController(
+               store,
+               testRetrieval(store),
+            ),
+         });
+      };
+
+      it("counts each request on both paths, whatever it answers, and marks it deprecated", async () => {
+         const server = app();
+         const answers = [
+            await request(server)
+               .patch("/api/v0/environments/env/packages/pkg")
+               .send({ description: "d" }),
+            await request(server)
+               .patch("/api/v0/projects/env/packages/pkg")
+               .send({ description: "d" }),
+         ];
+
+         for (const res of answers) {
+            expect(res.status).toBe(404);
+            expect(res.headers["deprecation"]).toBe("true");
+            expect(res.headers["link"]).toContain(
+               'docs/package-versions.md>; rel="deprecation"',
+            );
+         }
+         expect(await used("package_patch")).toBe(2);
+      });
+
+      it("warns once per package with published versions, naming the route that replaces it, and never for a name that is not one", async () => {
+         const probe = "package-patch-probe";
+         // `versioned` has published versions (and no latest, so the PATCH is
+         // refused after the warning); `plain` has none.
+         const environment = {
+            getVersionService: () => ({
+               isVersioned: async (name: string) => name === "versioned",
+               latestOf: async () => null,
+            }),
+            awaitPackageLoads: async () => undefined,
+            peekPackage: () => undefined,
+            updatePackage: async (name: string) => {
+               throw new PackageNotFoundError(`Package ${name} not found`);
+            },
+         };
+         const store = fakeOf<EnvironmentAdmin & PackageAdmin>({
+            publisherConfigIsFrozen: false,
+            getEnvironment: async (name: string) => {
+               if (name === probe) return environment;
+               throw new EnvironmentNotFoundError(
+                  `Environment ${name} does not exist`,
+               );
+            },
+         });
+         const server = buildRouteApp({
+            environmentStore: store,
+            packageController: new PackageController(
+               store,
+               testRetrieval(store),
+            ),
+         });
+         const warn = spyOn(logger, "warn");
+         try {
+            for (const [env, name] of [
+               [probe, "versioned"],
+               [probe, "versioned"],
+               [probe, "plain"],
+               // Names that resolve to no package must not be remembered.
+               [probe, "missing-1"],
+               [`${probe}-gone`, "versioned"],
+            ]) {
+               await request(server)
+                  .patch(`/api/v0/environments/${env}/packages/${name}`)
+                  .send({});
+            }
+            const deprecations = linesMentioning(warn, probe).filter(
+               ([message]) => String(message).includes("is deprecated"),
+            );
+            expect(deprecations.map(([, fields]) => fields)).toEqual([
+               { environmentName: probe, packageName: "versioned" },
+            ]);
+            expect(String(deprecations[0][0])).toContain(
+               "PUT .../packages/versioned/versions/{version}/manifest",
+            );
+         } finally {
+            warn.mockRestore();
+         }
+         // Every request is counted, whatever it answered.
+         expect(await used("package_patch")).toBe(5);
+      });
+   });
+
+   describe("GET /environments/{env}?reload=true", () => {
+      it("marks a reload deprecated and counts it; a plain read is neither", async () => {
+         const seen: boolean[] = [];
+         const app = buildRouteApp({
+            environmentStore: {
+               getEnvironment: async (_name: unknown, reload?: boolean) => {
+                  seen.push(reload === true);
+                  return { serialize: () => ({ name: "env" }) } as never;
+               },
+            } as never,
+         });
+         const reload = await request(app).get(
+            "/api/v0/environments/env?reload=true",
+         );
+         expect(reload.status).toBe(200);
+         expect(reload.headers["deprecation"]).toBe("true");
+
+         const plain = await request(app).get("/api/v0/environments/env");
+         expect(plain.status).toBe(200);
+         expect(plain.headers["deprecation"]).toBeUndefined();
+
+         expect(seen).toEqual([true, false]);
+         expect(await used("environment_reload")).toBe(1);
       });
    });
 

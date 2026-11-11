@@ -11,6 +11,8 @@ import {
    describe,
    expect,
    it,
+   mock,
+   spyOn,
 } from "bun:test";
 import fs from "fs/promises";
 import os from "os";
@@ -21,6 +23,7 @@ import {
    attachDuckLakeReadOnlyIfPresent,
    attachDuckLakeReadWrite,
    buildCloudStorageSecretSQL,
+   storageSecretScope,
    buildEnvironmentMalloyConfig,
    buildPgConnectionString,
    buildProxiedSslQuery,
@@ -36,7 +39,7 @@ import {
    resolveCloudStorageCredentials,
 } from "./gcs_s3_utils";
 import { assembleEnvironmentConnections } from "./connection_config";
-import { listStorageTables } from "./materialization_build_session";
+import { listStorageTables } from "./materialization/run/materialization_build_session";
 import {
    ConnectionPoolExhaustedError,
    internalErrorToHttpError,
@@ -46,12 +49,22 @@ import {
    UnsupportedCatalogFormatError,
 } from "../errors";
 import { logger } from "../logger";
+import { pollUntil } from "../test_helpers/poll";
+import {
+   clientPrivatePem,
+   closeQuietly,
+   startSshServer,
+} from "../test_helpers/ssh_tunnel_harness";
+import type { ProxyEndpoint } from "./proxy";
 import { isStreamingConnection, streamSqlWithBudget } from "../stream_helpers";
 import {
    startClosingListener,
    type ClosingListener,
 } from "../test_helpers/closing_listener";
+import { installSettings } from "../test_helpers/settings_env";
 import { EnvironmentStore } from "./environment_store";
+import { parseEnvironmentName, parsePackageName } from "./identity";
+import { startedStore } from "../test_helpers/started_store";
 
 type ApiConnection = components["schemas"]["Connection"];
 type AttachedDatabase = components["schemas"]["AttachedDatabase"];
@@ -901,11 +914,15 @@ describe("connection integration tests", () => {
                // DO NOT copy this pattern into a test that points
                // EnvironmentStore at a non-empty or shared serverRoot
                // — it will delete state.
-               const previousInitializeStorage = process.env.INITIALIZE_STORAGE;
-               process.env.INITIALIZE_STORAGE = "true";
+               const { restore } = installSettings({
+                  env: { INITIALIZE_STORAGE: "true" },
+                  cwd: tempServerRoot,
+               });
 
                try {
-                  const envStore = new EnvironmentStore(tempServerRoot);
+                  const envStore = startedStore(
+                     new EnvironmentStore(tempServerRoot),
+                  );
                   await envStore.finishedInitialization;
 
                   // initialize() swallows top-level errors and just calls
@@ -919,7 +936,9 @@ describe("connection integration tests", () => {
                   expect(status.operationalState).toBe("serving");
                   expect(status.loadErrors).toBeUndefined();
 
-                  const env = await envStore.getEnvironment("malloy-samples");
+                  const env = await envStore.getEnvironment(
+                     parseEnvironmentName("malloy-samples"),
+                  );
                   const apiPackages = await env.listPackages();
                   expect(apiPackages.map((p) => p.name)).toContain(
                      "bigquery-hackernews",
@@ -937,7 +956,9 @@ describe("connection integration tests", () => {
                   // if every BQ schema introspection failed. Filter for
                   // models that compiled cleanly: at least one is the
                   // real proof that BQ-on-behalf-of-a-package works.
-                  const pkg = await env.getPackage("bigquery-hackernews");
+                  const pkg = await env.getPackage(
+                     parsePackageName("bigquery-hackernews"),
+                  );
                   const models = await pkg.listModels();
                   const okModels = models.filter((m) => !m.error);
                   if (okModels.length === 0) {
@@ -948,11 +969,7 @@ describe("connection integration tests", () => {
                   }
                   expect(okModels.length).toBeGreaterThan(0);
                } finally {
-                  if (previousInitializeStorage === undefined) {
-                     delete process.env.INITIALIZE_STORAGE;
-                  } else {
-                     process.env.INITIALIZE_STORAGE = previousInitializeStorage;
-                  }
+                  restore();
                }
             },
             { timeout: 180000 },
@@ -2193,8 +2210,9 @@ describe("connection integration tests", () => {
                   );
                   return;
                }
-               const previous = process.env.PUBLISHER_POSTGRES_POOL_MAX;
-               process.env.PUBLISHER_POSTGRES_POOL_MAX = "3";
+               const { restore } = installSettings({
+                  env: { PUBLISHER_POSTGRES_POOL_MAX: "3" },
+               });
                const config = buildPlainPostgresConfig();
                try {
                   const connection =
@@ -2207,11 +2225,7 @@ describe("connection integration tests", () => {
                   expect(pool.options.max).toBe(3);
                } finally {
                   await config.releaseConnections();
-                  if (previous === undefined) {
-                     delete process.env.PUBLISHER_POSTGRES_POOL_MAX;
-                  } else {
-                     process.env.PUBLISHER_POSTGRES_POOL_MAX = previous;
-                  }
+                  restore();
                }
             },
             { timeout: 30000 },
@@ -2788,7 +2802,7 @@ describe("connection integration tests", () => {
       // where an unscreened setupSQL would run first. The marker file is the
       // proof: setupSQL either ran (file present) or it did not.
       describe("DuckDB setupSQL opt-in", () => {
-         const originalAllow = process.env.PUBLISHER_ALLOW_DUCKDB_SETUP_SQL;
+         let restoreSettings: (() => void) | undefined;
          let dir: string;
 
          beforeEach(async () => {
@@ -2796,11 +2810,8 @@ describe("connection integration tests", () => {
          });
 
          afterEach(async () => {
-            if (originalAllow === undefined) {
-               delete process.env.PUBLISHER_ALLOW_DUCKDB_SETUP_SQL;
-            } else {
-               process.env.PUBLISHER_ALLOW_DUCKDB_SETUP_SQL = originalAllow;
-            }
+            restoreSettings?.();
+            restoreSettings = undefined;
             await fs.rm(dir, { recursive: true, force: true });
          });
 
@@ -2819,7 +2830,7 @@ describe("connection integration tests", () => {
             );
 
          it("refuses setupSQL without running it when the opt-in is unset", async () => {
-            delete process.env.PUBLISHER_ALLOW_DUCKDB_SETUP_SQL;
+            restoreSettings = installSettings({ env: {} }).restore;
             const marker = path.join(dir, "ran.csv");
 
             const result = await testConnectionConfig(markerConfig(marker));
@@ -2832,7 +2843,9 @@ describe("connection integration tests", () => {
          });
 
          it("runs setupSQL when the opt-in is set", async () => {
-            process.env.PUBLISHER_ALLOW_DUCKDB_SETUP_SQL = "true";
+            restoreSettings = installSettings({
+               env: { PUBLISHER_ALLOW_DUCKDB_SETUP_SQL: "true" },
+            }).restore;
             const marker = path.join(dir, "ran.csv");
 
             const result = await testConnectionConfig(markerConfig(marker));
@@ -3619,9 +3632,19 @@ describe("buildCloudStorageSecretSQL", () => {
             endpoint: "https://minio.internal:9000",
          });
          expect(sql).toContain("PROVIDER credential_chain");
-         expect(sql).toContain("ENDPOINT 'https://minio.internal:9000'");
+         expect(sql).toContain("ENDPOINT 'minio.internal:9000'");
          expect(sql).toContain("URL_STYLE 'path'");
+         expect(sql).not.toContain("USE_SSL");
          expect(sql).not.toContain("KEY_ID");
+      });
+
+      it("refuses a plain http:// endpoint, which would send the host's credentials in cleartext", () => {
+         expect(() =>
+            chainSQL({
+               provider: "credential_chain",
+               endpoint: "http://minio.internal:9000",
+            }),
+         ).toThrow("must use https:// with provider credential_chain");
       });
 
       it("escapes a chain containing a quote", () => {
@@ -3653,7 +3676,7 @@ describe("buildCloudStorageSecretSQL", () => {
             chainSQL({
                ...keys,
                region: "us-west-2",
-               endpoint: "https://mi.no",
+               endpoint: "mi.no",
             }),
          ).toBe(`
             CREATE OR REPLACE SECRET s3_root (
@@ -3661,8 +3684,64 @@ describe("buildCloudStorageSecretSQL", () => {
                KEY_ID 'AKIA',
                SECRET 'shhh',
                REGION 'us-west-2',
-               ENDPOINT 'https://mi.no',
+               ENDPOINT 'mi.no',
                URL_STYLE 'path'
+            );
+         `);
+      });
+
+      // DuckDB's ENDPOINT takes no scheme: given one, it requested
+      // `https://https://mi.no/…`. An https:// endpoint now writes the same
+      // secret a bare one always did.
+      it("custom endpoint written with https:// gives the bare endpoint's secret", () => {
+         expect(
+            chainSQL({
+               ...keys,
+               region: "us-west-2",
+               endpoint: "https://mi.no/",
+            }),
+         ).toBe(chainSQL({ ...keys, region: "us-west-2", endpoint: "mi.no" }));
+      });
+
+      // The endpoint arm used to drop the token, so a temporary key pair behind
+      // an endpoint listed fine (the SDK sent it) and failed every DuckDB read.
+      it("custom endpoint with a session token keeps the token", () => {
+         expect(
+            chainSQL({
+               ...keys,
+               region: "us-west-2",
+               endpoint: "mi.no",
+               sessionToken: "tok",
+            }),
+         ).toBe(`
+            CREATE OR REPLACE SECRET s3_root (
+               TYPE s3,
+               KEY_ID 'AKIA',
+               SECRET 'shhh',
+               REGION 'us-west-2',
+               ENDPOINT 'mi.no',
+               URL_STYLE 'path',
+               SESSION_TOKEN 'tok'
+            );
+         `);
+      });
+
+      it("custom endpoint written with http:// turns TLS off", () => {
+         expect(
+            chainSQL({
+               ...keys,
+               region: "us-west-2",
+               endpoint: "http://minio:9000",
+            }),
+         ).toBe(`
+            CREATE OR REPLACE SECRET s3_root (
+               TYPE s3,
+               KEY_ID 'AKIA',
+               SECRET 'shhh',
+               REGION 'us-west-2',
+               ENDPOINT 'minio:9000',
+               URL_STYLE 'path',
+               USE_SSL false
             );
          `);
       });
@@ -3881,6 +3960,241 @@ describe("environment connection lookup for a connection the environment does no
    });
 });
 
+describe("environment connection lookup for a proxied Postgres connection", () => {
+   const proxied = (): ApiConnection => ({
+      name: "pg_tunneled",
+      type: "postgres",
+      postgresConnection: {
+         host: "db.internal",
+         port: 5432,
+         userName: "u",
+         password: "p",
+         databaseName: "d",
+      },
+      proxy: {
+         type: "ssh",
+         ssh: {
+            host: "bastion",
+            username: "u",
+            privateKey: "key",
+            hostKey: "AAAA",
+         },
+      },
+   });
+
+   // A scripted tunnel: `die()` is the tunnel dying on its own.
+   const tunnels = () => {
+      const opened: {
+         endpoint: ProxyEndpoint;
+         die: () => void;
+         close: ReturnType<typeof mock>;
+      }[] = [];
+      const open = async (): Promise<ProxyEndpoint> => {
+         const listeners: ((cause?: Error) => void)[] = [];
+         const close = mock(async () => {});
+         const endpoint: ProxyEndpoint = {
+            host: "127.0.0.1",
+            port: 40000 + opened.length,
+            close,
+            onClose: (listener) => listeners.push(listener),
+         };
+         opened.push({
+            endpoint,
+            close,
+            die: () => listeners.forEach((l) => l(new Error("ssh gone"))),
+         });
+         return endpoint;
+      };
+      return { opened, open };
+   };
+
+   let infoSpy: ReturnType<typeof spyOn<typeof logger, "info">>;
+   beforeEach(() => {
+      infoSpy = spyOn(logger, "info").mockImplementation(() => logger);
+   });
+   afterEach(() => infoSpy.mockRestore());
+
+   const build = (open: () => Promise<ProxyEndpoint>) =>
+      buildEnvironmentMalloyConfig([proxied()], "/tmp", false, {
+         openProxy: open,
+      });
+   const lookup = (config: ReturnType<typeof build>) =>
+      config.malloyConfig.connections.lookupConnection("pg_tunneled");
+
+   it("sizes the pool like a direct connection, without running a query", async () => {
+      const { open } = tunnels();
+      const config = build(open);
+      try {
+         const connection = (await lookup(
+            config,
+         )) as unknown as PooledPostgresConnection;
+         const { options } = await connection.getPool();
+         expect(options.max).toBe(5);
+         expect(options.maxUses).toBe(1);
+         expect(options.connectionTimeoutMillis).toBe(30_000);
+         expect(options.application_name).toBe("malloy-publisher");
+      } finally {
+         await config.releaseConnections();
+      }
+   });
+
+   it("rebuilds the tunnel on the next lookup after it dies", async () => {
+      const { opened, open } = tunnels();
+      const config = build(open);
+      try {
+         const first = await lookup(config);
+         expect(await lookup(config)).toBe(first);
+         const closeFirst = spyOn(first, "close");
+         opened[0].die();
+         const second = await lookup(config);
+         expect(opened).toHaveLength(2);
+         expect(second).not.toBe(first);
+         expect(closeFirst).toHaveBeenCalledTimes(1);
+         expect(opened[0].close).toHaveBeenCalledTimes(1);
+      } finally {
+         await config.releaseConnections();
+      }
+   });
+
+   it("shares one rebuild between concurrent lookups after an eviction", async () => {
+      const { opened, open } = tunnels();
+      const config = build(open);
+      try {
+         await lookup(config);
+         opened[0].die();
+         const [a, b] = await Promise.all([lookup(config), lookup(config)]);
+         expect(a).toBe(b);
+         expect(opened).toHaveLength(2);
+      } finally {
+         await config.releaseConnections();
+      }
+   });
+
+   it("ignores a close from a superseded tunnel", async () => {
+      const { opened, open } = tunnels();
+      const config = build(open);
+      try {
+         await lookup(config);
+         opened[0].die();
+         const second = await lookup(config);
+         opened[0].die();
+         expect(await lookup(config)).toBe(second);
+         expect(opened).toHaveLength(2);
+         expect(opened[1].close).not.toHaveBeenCalled();
+      } finally {
+         await config.releaseConnections();
+      }
+   });
+
+   it("releases an evicted connection's replacement without closing anything twice", async () => {
+      const { opened, open } = tunnels();
+      const config = build(open);
+      const first = await lookup(config);
+      const closeFirst = spyOn(first, "close");
+      opened[0].die();
+      await lookup(config);
+      await config.releaseConnections();
+      expect(closeFirst).toHaveBeenCalledTimes(1);
+      expect(opened[0].close).toHaveBeenCalledTimes(1);
+      expect(opened[1].close).toHaveBeenCalledTimes(1);
+   });
+
+   it("waits for an evicted connection's close before release resolves", async () => {
+      const { opened, open } = tunnels();
+      const config = build(open);
+      const first = await lookup(config);
+      let finishClose!: () => void;
+      spyOn(first, "close").mockImplementation(
+         () => new Promise<void>((res) => (finishClose = res)),
+      );
+      opened[0].die();
+      let released = false;
+      const release = config.releaseConnections().then(() => {
+         released = true;
+      });
+      await new Promise((res) => setTimeout(res, 20));
+      expect(released).toBe(false);
+      finishClose();
+      await release;
+      expect(released).toBe(true);
+   });
+
+   it(
+      "recovers on the next query after the SSH tunnel to a real Postgres drops",
+      async () => {
+         if (!hasPostgresCredentials()) {
+            console.log("Skipping: PostgreSQL credentials not configured");
+            return;
+         }
+         const bastion = await startSshServer({});
+         const fields = {
+            host: process.env.POSTGRES_TEST_HOST,
+            port: parseInt(process.env.POSTGRES_TEST_PORT || "5432"),
+            userName: process.env.POSTGRES_TEST_USER!,
+            password: process.env.POSTGRES_TEST_PASSWORD!,
+            databaseName: process.env.POSTGRES_TEST_DATABASE,
+            // The test server has no TLS, and a proxied default demands it.
+            sslmode: "disable" as const,
+         };
+         const config = buildEnvironmentMalloyConfig(
+            [
+               {
+                  name: "pg_tunneled",
+                  type: "postgres",
+                  postgresConnection: fields,
+                  proxy: {
+                     type: "ssh",
+                     ssh: {
+                        host: "127.0.0.1",
+                        port: bastion.port,
+                        username: "testuser",
+                        privateKey: clientPrivatePem,
+                        hostKey: bastion.hostKeyBase64,
+                     },
+                  },
+               },
+            ],
+            "/tmp",
+         );
+         const sql = "SELECT row_to_json(t) AS row FROM (SELECT 1 AS ok) t";
+         try {
+            const first = await lookup(config);
+            expect((await first.runSQL(sql)).rows[0]).toEqual({ ok: 1 });
+
+            bastion.destroySockets();
+            // A dropped session is noticed on the client's next write (here a
+            // query; idle, the keepalive), so the query on it fails first.
+            const started = Date.now();
+            await expect(first.runSQL(sql)).rejects.toThrow();
+            expect(Date.now() - started).toBeLessThan(10_000);
+            let second = first;
+            expect(
+               await pollUntil(async () => {
+                  second = await lookup(config);
+                  return second !== first;
+               }, 5_000),
+            ).toBe(true);
+            expect((await second.runSQL(sql)).rows[0]).toEqual({ ok: 1 });
+         } finally {
+            await config.releaseConnections();
+            await closeQuietly(() => bastion.close());
+         }
+      },
+      { timeout: 30000 },
+   );
+
+   it("does not double-end a pool when release races an eviction", async () => {
+      const { opened, open } = tunnels();
+      const config = build(open);
+      const first = await lookup(config);
+      const closeFirst = spyOn(first, "close");
+      const release = config.releaseConnections();
+      opened[0].die();
+      await release;
+      expect(closeFirst).toHaveBeenCalledTimes(1);
+   });
+});
+
 describe("buildPgConnectionString", () => {
    const fields = {
       host: "db.example.com",
@@ -3899,31 +4213,74 @@ describe("buildPgConnectionString", () => {
       else process.env.PGSSLMODE = previousPgSslMode;
    });
 
-   it("builds a DuckLake catalog's string exactly as before, whatever the new fields say", () => {
-      const withFields = buildPgConnectionString(
-         {
-            ...fields,
-            sslmode: "verify-full",
-            statementTimeoutMilliseconds: 5000,
-         },
-         { name: "lake", applyConnectionOptions: false },
-      );
-      expect(withFields).toBe(
-         "host=db.example.com port=5432 dbname=lake user=u password=p",
-      );
-      process.env.PGSSLMODE = "require";
+   it("builds a DuckLake catalog's string without its statement timeout, and with no sslmode when neither it nor PGSSLMODE sets one", () => {
       expect(
          buildPgConnectionString(
-            {
-               ...fields,
-               sslmode: "disable",
-               statementTimeoutMilliseconds: 5000,
-            },
+            { ...fields, statementTimeoutMilliseconds: 5000 },
             { name: "lake", applyConnectionOptions: false },
          ),
-      ).toBe(
-         "host=db.example.com port=5432 dbname=lake user=u password=p sslmode=require",
-      );
+      ).toBe("host=db.example.com port=5432 dbname=lake user=u password=p");
+   });
+
+   describe("a DuckLake catalog given as fields", () => {
+      // The worker's PGSSLMODE=allow makes libpq try plaintext first; a server
+      // that requires TLS refuses and logs each refusal.
+      beforeEach(() => {
+         process.env.PGSSLMODE = "allow";
+      });
+
+      it("takes its own sslmode over the deployment PGSSLMODE", () => {
+         expect(
+            buildPgConnectionString(
+               { ...fields, sslmode: "no-verify" },
+               { name: "lake", applyConnectionOptions: false },
+            ),
+         ).toBe(
+            "host=db.example.com port=5432 dbname=lake user=u password=p sslmode=require",
+         );
+         const verifyFull = buildPgConnectionString(
+            { ...fields, sslmode: "verify-full" },
+            { name: "lake", applyConnectionOptions: false },
+         );
+         expect(verifyFull).toContain("sslmode=verify-full");
+         expect(verifyFull).toContain("sslrootcert=");
+         expect(verifyFull).not.toContain("sslmode=allow");
+      });
+
+      it("gets no statement timeout, whatever the connection sets", () => {
+         expect(
+            buildPgConnectionString(
+               {
+                  ...fields,
+                  sslmode: "no-verify",
+                  statementTimeoutMilliseconds: 5000,
+               },
+               { name: "lake", applyConnectionOptions: false },
+            ),
+         ).not.toContain("statement_timeout");
+      });
+
+      it("takes its own disable over the deployment PGSSLMODE", () => {
+         expect(
+            buildPgConnectionString(
+               { ...fields, sslmode: "disable" },
+               { name: "lake", applyConnectionOptions: false },
+            ),
+         ).toBe(
+            "host=db.example.com port=5432 dbname=lake user=u password=p sslmode=disable",
+         );
+      });
+
+      it("falls back to the deployment PGSSLMODE when it sets no sslmode", () => {
+         expect(
+            buildPgConnectionString(fields, {
+               name: "lake",
+               applyConnectionOptions: false,
+            }),
+         ).toBe(
+            "host=db.example.com port=5432 dbname=lake user=u password=p sslmode=allow",
+         );
+      });
    });
 
    it("gives an attached database its statement timeout and its own sslmode", () => {
@@ -4265,5 +4622,188 @@ describe("buildPgConnectionString", () => {
       } finally {
          warn.restore();
       }
+   });
+});
+
+describe("buildCloudStorageSecretSQL — scope", () => {
+   const base = { accessKeyId: "AK", secretAccessKey: "SK", region: "r" };
+
+   it("adds SCOPE to the S3 chain, S3 key and GCS arms", () => {
+      const chain = buildCloudStorageSecretSQL("s", {
+         type: "s3",
+         ...base,
+         provider: "credential_chain",
+         scope: "s3://b/p/",
+      });
+      const key = buildCloudStorageSecretSQL("s", {
+         type: "s3",
+         ...base,
+         scope: "s3://b/p/",
+      });
+      const gcs = buildCloudStorageSecretSQL("s", {
+         type: "gcs",
+         ...base,
+         scope: "gs://b/p/",
+      });
+      expect(chain).toContain("PROVIDER credential_chain");
+      expect(chain).toContain("SCOPE 's3://b/p/'");
+      expect(key).toContain("SCOPE 's3://b/p/'");
+      expect(gcs).toContain("SCOPE 'gs://b/p/'");
+   });
+
+   it("escapes the scope literal", () => {
+      expect(
+         buildCloudStorageSecretSQL("s", {
+            type: "s3",
+            ...base,
+            scope: "s3://b/o'brien/",
+         }),
+      ).toContain("SCOPE 's3://b/o''brien/'");
+   });
+
+   it("emits no SCOPE when none is set, as the generic attach does", () => {
+      for (const type of ["s3", "gcs"] as const) {
+         expect(
+            buildCloudStorageSecretSQL("s", { type, ...base }),
+         ).not.toContain("SCOPE");
+      }
+   });
+});
+
+// The prefix a DuckLake storage secret is held to. A configured data path wins;
+// a catalog whose config states none (an orchestrator's, which leaves the path to
+// the catalog so no attach can create one) is scoped to the path it recorded.
+describe("storageSecretScope", () => {
+   const main = { path: "main/", relative: true };
+
+   it("takes the configured data path with exactly one trailing slash", () => {
+      for (const [url, scope] of [
+         ["s3://bucket", "s3://bucket/"],
+         ["s3://bucket/prefix", "s3://bucket/prefix/"],
+         ["s3://bucket/prefix/", "s3://bucket/prefix/"],
+         ["s3://bucket/prefix//", "s3://bucket/prefix/"],
+      ]) {
+         expect(
+            storageSecretScope({
+               configuredDataPath: url,
+               readOnly: false,
+               managed: false,
+            }),
+         ).toBe(scope);
+      }
+   });
+
+   it("falls back to the data path the catalog recorded", () => {
+      expect(
+         storageSecretScope({
+            recordedDataPath: "gs://bucket/org_a/db_b/",
+            mainSchemaPath: main,
+            readOnly: false,
+            managed: false,
+         }),
+      ).toBe("gs://bucket/org_a/db_b/");
+   });
+
+   it("prefers a configured path over the recorded one", () => {
+      expect(
+         storageSecretScope({
+            configuredDataPath: "s3://bucket/configured",
+            recordedDataPath: "s3://bucket/recorded/",
+            readOnly: false,
+            managed: false,
+         }),
+      ).toBe("s3://bucket/configured/");
+   });
+
+   it("narrows a managed read-only attach to the main schema's path", () => {
+      expect(
+         storageSecretScope({
+            recordedDataPath: "s3://bucket/org_a/db_b",
+            mainSchemaPath: main,
+            readOnly: true,
+            managed: true,
+         }),
+      ).toBe("s3://bucket/org_a/db_b/main/");
+      expect(
+         storageSecretScope({
+            recordedDataPath: "s3://bucket/org_a/db_b/",
+            mainSchemaPath: { path: "/main", relative: true },
+            readOnly: true,
+            managed: true,
+         }),
+      ).toBe("s3://bucket/org_a/db_b/main/");
+      expect(
+         storageSecretScope({
+            recordedDataPath: "s3://bucket/org_a/db_b/",
+            mainSchemaPath: { path: "s3://elsewhere/main", relative: false },
+            readOnly: true,
+            managed: true,
+         }),
+      ).toBe("s3://elsewhere/main/");
+   });
+
+   it("does not narrow a managed read-write attach, which writes other schemas", () => {
+      expect(
+         storageSecretScope({
+            recordedDataPath: "s3://bucket/org_a/db_b/",
+            mainSchemaPath: main,
+            readOnly: false,
+            managed: true,
+         }),
+      ).toBe("s3://bucket/org_a/db_b/");
+   });
+
+   it("fails closed: no path, or a managed view without its main path, scopes to nothing", () => {
+      expect(
+         storageSecretScope({ readOnly: true, managed: false }),
+      ).toBeUndefined();
+      expect(
+         storageSecretScope({
+            recordedDataPath: "s3://bucket/org_a/db_b/",
+            readOnly: true,
+            managed: true,
+         }),
+      ).toBeUndefined();
+   });
+
+   it("reads an empty main path as the data path itself, as a catalog migrated from DuckLake 0.2 records it", () => {
+      expect(
+         storageSecretScope({
+            recordedDataPath: "s3://bucket/org_a/db_b",
+            mainSchemaPath: { path: "", relative: true },
+            readOnly: true,
+            managed: true,
+         }),
+      ).toBe("s3://bucket/org_a/db_b/");
+   });
+
+   it("refuses a root that names no bucket, which DuckDB would match against every URL of the scheme", () => {
+      for (const root of ["s3://", "s3:///", "gs://"]) {
+         expect(
+            storageSecretScope({
+               configuredDataPath: root,
+               readOnly: false,
+               managed: false,
+            }),
+         ).toBeUndefined();
+      }
+      expect(
+         storageSecretScope({
+            recordedDataPath: "s3://bucket/org_a/db_b/",
+            mainSchemaPath: { path: "gs://", relative: false },
+            readOnly: true,
+            managed: true,
+         }),
+      ).toBeUndefined();
+   });
+
+   it("leaves a local data path alone", () => {
+      expect(
+         storageSecretScope({
+            configuredDataPath: "/srv/lake//",
+            readOnly: false,
+            managed: false,
+         }),
+      ).toBe("/srv/lake/");
    });
 });

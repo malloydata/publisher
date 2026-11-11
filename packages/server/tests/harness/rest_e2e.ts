@@ -12,9 +12,9 @@ export interface RestE2EEnv {
 /**
  * Spin up an HTTP server wrapping the real Express REST app.
  *
- * Works regardless of which test file first imported server.ts —
- * reuses the cached Express app and binds on an OS-assigned port
- * to avoid collisions.
+ * Works regardless of which test file first booted the main server: reuses
+ * the one process-wide app (tests/harness/main_server.ts) and binds it on an
+ * OS-assigned port to avoid collisions.
  *
  * Callers are responsible for creating any test-specific environments
  * via the REST API (POST /api/v0/environments) and cleaning them up.
@@ -22,7 +22,8 @@ export interface RestE2EEnv {
 export async function startRestE2E(): Promise<
    RestE2EEnv & { stop(): Promise<void> }
 > {
-   const { app } = await import("../../src/server");
+   const { bootMainServer } = await import("./main_server");
+   const { rest: app } = await bootMainServer();
 
    const httpServer: http.Server = await new Promise<http.Server>(
       (resolve, reject) => {

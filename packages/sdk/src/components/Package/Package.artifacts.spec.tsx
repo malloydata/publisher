@@ -10,6 +10,7 @@ import {
    mockServerProvider,
    pending,
    serverWrapper,
+   noVersions,
 } from "../../../test/serverProvider";
 import type {
    DocumentLocator,
@@ -18,12 +19,20 @@ import type {
 import { DocumentStorageProvider } from "../DocumentStorage/DocumentStorageProvider";
 
 let reports: { path: string; layout: string; title?: string }[] = [];
+/** The package's versions: none (the listing answers 404) unless a test publishes some. */
+let published: { id: string; latest: boolean; archiveStatus: string }[] = [];
 const listReports = mock((_e: string, _p: string, _v?: string) =>
    Promise.resolve({ data: reports }),
 );
 
 mockServerProvider(
    {
+      versions: {
+         listPackageVersions: () =>
+            published.length > 0
+               ? Promise.resolve({ data: published })
+               : noVersions.listPackageVersions(),
+      },
       packages: { getPackage: pending },
       reports: { listReports, getReport: pending },
       models: { listModels: () => Promise.resolve({ data: [] }) },
@@ -72,6 +81,7 @@ const rows = async () => {
 beforeEach(() => {
    clearCache();
    reports = [];
+   published = [];
    onClick.mockClear();
    listReports.mockClear();
 });
@@ -163,6 +173,31 @@ it("treats a 404 on the reports list as none, without an error", async () => {
 
    expect(await rows()).toEqual([]);
    expect(screen.queryByText(/Could not list/)).toBeNull();
+});
+
+it("lists no drafts on a versioned package, where the builder could not save one", async () => {
+   const storage: DocumentStorage = {
+      listWorkspaces: async () => [
+         { name: "browser", writeable: true, description: "This browser" },
+      ],
+      listDocuments: async () => [
+         { workspace: "browser", type: "grid", path: "env/pkg/d-one.malloy" },
+      ],
+      getDocument: async () => {
+         throw new Error("absent");
+      },
+      saveDocument: async () => {},
+      deleteDocument: async () => {},
+      moveDocument: async () => {},
+   };
+   published = [{ id: "1.0.0", latest: true, archiveStatus: "unarchive" }];
+   reports = [{ path: "overview.malloy", layout: "grid" }];
+   mount(storage);
+
+   expect(await rows()).toEqual(["overviewgrid"]);
+   await new Promise((resolve) => setTimeout(resolve, 20));
+   expect(screen.queryByRole("heading", { name: "Drafts" })).toBeNull();
+   expect(screen.queryByText("d-one.malloy")).toBeNull();
 });
 
 it("lists host drafts by path whatever layout they record, each opening its editor", async () => {

@@ -115,3 +115,16 @@ export function safeJoinUnderRoot(root: string, ...segments: string[]): string {
    }
    return joined;
 }
+
+/**
+ * Whether a path relative to the package root steps outside it: `..` itself or
+ * a path that starts with `..` as a whole segment. A name that merely begins
+ * with two dots (`..prompts`) is an ordinary name and stays inside.
+ */
+export function stepsOutside(within: string): boolean {
+   return (
+      within === ".." ||
+      within.startsWith(`..${path.sep}`) ||
+      path.isAbsolute(within)
+   );
+}

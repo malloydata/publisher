@@ -7,31 +7,34 @@ import { fileURLToPath } from "url";
 import { components } from "./api";
 import {
    API_PREFIX,
-   DEFAULT_MAX_CONCURRENT_QUERIES,
-   DEFAULT_MAX_QUERY_ROWS,
-   DEFAULT_MAX_RESPONSE_BYTES,
-   DEFAULT_POSTGRES_POOL_MAX,
-   DEFAULT_QUERY_ROW_LIMIT,
-   DEFAULT_QUERY_TIMEOUT_MS,
+   DEFAULT_EMBEDDING_MIN_SIMILARITY,
    PUBLISHER_CONFIG_NAME,
 } from "./constants";
 import { logger } from "./logger";
-import { defaultOpenAiBaseUrl } from "./providers/openai_compatible";
+import { defaultOpenAiBaseUrl } from "./retrieval/llm/openai_compatible";
+import {
+   referencedVariable,
+   settings,
+   Settings,
+   type SettingValue,
+} from "./settings";
 import type {
    EmbeddingSettings,
    LlmSettings,
    ProviderName,
-} from "./providers/types";
+} from "./retrieval/llm/types";
 import {
    DEFAULT_SEMANTIC_INDEX_MAX_ENTITIES,
+   loadedRetrievalConfig,
    parseRetrievalConfig,
    type RetrievalConfig,
    type RetrievalEmbeddingConfig,
    type RetrievalLlmConfig,
-} from "./retrieval_config";
+} from "./retrieval/config";
 
 // Re-exported: callers import these from here.
 export {
+   DEFAULT_EMBEDDING_MIN_SIMILARITY,
    DEFAULT_SEMANTIC_INDEX_MAX_ENTITIES,
    parseRetrievalConfig,
    type RetrievalConfig,
@@ -52,11 +55,10 @@ const BUNDLED_DEFAULT_CONFIG_PATH = path.join(
  * Decide which `publisher.config.json` to read.
  *
  * Precedence:
- *   1. `--config <path>` (surfaced via `process.env.PUBLISHER_CONFIG_PATH`)
+ *   1. the `config` setting (`--config <path>`, `PUBLISHER_CONFIG_PATH`)
  *   2. `<serverRoot>/publisher.config.json`
- *   3. The bundled default, ONLY when `PUBLISHER_USE_BUNDLED_DEFAULT` is
- *      "true" (set for a zero-flag CLI run), so programmatic callers get no
- *      surprise filesystem fallback.
+ *   3. The bundled default, ONLY when `useBundledDefault` is on (a zero-flag
+ *      CLI run), so programmatic callers get no surprise filesystem fallback.
  *
  * Returns `null` if step 1 names a missing file: an explicit mistake to
  * surface, not to fall back from.
@@ -65,8 +67,8 @@ function resolvePublisherConfigPath(serverRoot: string): {
    path: string;
    isBundledDefault: boolean;
 } | null {
-   const explicitPath = process.env.PUBLISHER_CONFIG_PATH;
-   if (explicitPath && explicitPath.length > 0) {
+   const explicitPath = settings.get("config");
+   if (explicitPath) {
       if (!fs.existsSync(explicitPath)) {
          return null;
       }
@@ -79,7 +81,7 @@ function resolvePublisherConfigPath(serverRoot: string): {
    }
 
    if (
-      process.env.PUBLISHER_USE_BUNDLED_DEFAULT === "true" &&
+      settings.get("useBundledDefault") &&
       fs.existsSync(BUNDLED_DEFAULT_CONFIG_PATH)
    ) {
       return { path: BUNDLED_DEFAULT_CONFIG_PATH, isBundledDefault: true };
@@ -138,22 +140,48 @@ export type Environment = {
    storageDestinations?: Connection[];
 };
 
-/** The `mcp` block of publisher.config.json: settings for the MCP server. */
-export type McpConfig = {
-   /**
-    * Offer `includeHiddenFilesAndSources` on MCP `execute_query`. Default false.
-    * See {@link isMcpIncludeHiddenFilesAndSources}.
-    */
-   includeHiddenFilesAndSources?: boolean;
-};
-
+/**
+ * What publisher.config.json serves. Its scalar settings (`frozenConfig`,
+ * `mcp.includeHiddenFilesAndSources`, the API switches) are read through the
+ * settings registry, not from here.
+ */
 export type PublisherConfig = {
-   frozenConfig: boolean;
    theme?: Theme;
-   mcp?: McpConfig;
    retrieval?: RetrievalConfig;
    environments: Environment[];
 };
+
+/**
+ * `PUBLISHER_PACKAGE_VERSIONING`: `on` or `off` (the default). A TRANSITION
+ * flag, read from the environment only, and checked in one place: the publish
+ * from a location. Off, that publish installs the package in place as before
+ * versions; on, it publishes the version its publisher.json declares and
+ * refuses a tree that declares none. The flag and the off branch go together,
+ * once every deployment runs with it on.
+ */
+export type PackageVersioningMode = "off" | "on";
+
+/**
+ * `PUBLISHER_MODEL_PAGE`: which page the Console shows for a model, `explorer`
+ * (the default) or `viewer`. Read from the environment only, and reported on
+ * `/status` as `modelPage`, where the Console reads it; the Console keeps both
+ * pages. The Explorer writes the queries it builds back to Malloy text through
+ * `@malloydata/malloy-interfaces`, which puts a string value in unescaped
+ * (`escapeString` is a TODO), so a drilled value holding a double quote
+ * rewrites the query. `viewer` shows a page that builds no query, and takes
+ * the Explorer out of the legacy notebook too.
+ */
+export type ModelPageMode = "explorer" | "viewer";
+
+/**
+ * Who moves a package's `latest` version.
+ *
+ *  - `on-publish` (default): a publish makes the new version `latest` unless a
+ *    higher version already is.
+ *  - `explicit`: a publish never moves it; only `PUT .../packages/{name}/latest`
+ *    does. For an orchestrator that decides when a version is ready to serve.
+ */
+export type VersionPromotionMode = "on-publish" | "explicit";
 
 export type ProcessedEnvironment = {
    name: string;
@@ -168,7 +196,6 @@ export type ProcessedEnvironment = {
 };
 
 export type ProcessedPublisherConfig = {
-   frozenConfig: boolean;
    theme?: Theme;
    environments: ProcessedEnvironment[];
 };
@@ -192,101 +219,26 @@ export interface MemoryGovernorConfig {
    backpressureEnabled: boolean;
 }
 
-const DEFAULT_HIGH_WATER_FRACTION = 0.8;
-const DEFAULT_LOW_WATER_FRACTION = 0.7;
-const DEFAULT_CHECK_INTERVAL_MS = 5_000;
-const MIN_CHECK_INTERVAL_MS = 100;
-
-function parseIntEnv(name: string): number | undefined {
-   const raw = process.env[name];
-   if (raw === undefined || raw.trim() === "") return undefined;
-   const value = Number.parseInt(raw, 10);
-   if (!Number.isFinite(value) || String(value) !== raw.trim()) {
-      throw new Error(
-         `Invalid value for ${name}: expected a base-10 integer, got "${raw}"`,
-      );
-   }
-   return value;
-}
-
-function parseFloatEnv(name: string, example: string): number | undefined {
-   const raw = process.env[name];
-   if (raw === undefined || raw.trim() === "") return undefined;
-   const trimmed = raw.trim();
-   // Match the whole string: parseFloat reads "0.5abc" as 0.5. A round-trip
-   // check like parseIntEnv's would reject "0.50", ".5" and "1e-3".
-   const invalid = () =>
-      new Error(
-         `Invalid value for ${name}: expected a finite number, got "${raw}". ` +
-            `Fix: ${name}=${example}`,
-      );
-   if (!/^[+-]?(\d+\.?\d*|\.\d+)([eE][+-]?\d+)?$/.test(trimmed)) {
-      throw invalid();
-   }
-   const value = Number.parseFloat(trimmed);
-   if (!Number.isFinite(value)) {
-      throw invalid();
-   }
-   return value;
-}
-
-export function parseBoolEnv(name: string): boolean | undefined {
-   const raw = process.env[name];
-   if (raw === undefined || raw.trim() === "") return undefined;
-   const normalised = raw.trim().toLowerCase();
-   if (["1", "true", "yes", "on"].includes(normalised)) return true;
-   if (["0", "false", "no", "off"].includes(normalised)) return false;
-   throw new Error(
-      `Invalid value for ${name}: expected a boolean (true/false), got "${raw}"`,
-   );
-}
-
 /**
- * Memory-governor settings from the environment, or `null` when
- * `PUBLISHER_MAX_MEMORY_BYTES` is unset or `0`. Throws on malformed input so
- * a manifest typo fails loudly instead of silently disabling the cap.
+ * Memory-governor settings, or `null` when `memory.maxBytes` is `0` (its
+ * default). The fractions and interval are read only with a ceiling set, so a
+ * bad one fails then rather than while the governor is off.
  */
 export const getMemoryGovernorConfig = (): MemoryGovernorConfig | null => {
-   const maxMemoryBytes = parseIntEnv("PUBLISHER_MAX_MEMORY_BYTES");
-   if (maxMemoryBytes === undefined || maxMemoryBytes === 0) {
+   const maxMemoryBytes = settings.get("memory.maxBytes");
+   if (maxMemoryBytes === 0) {
       return null;
    }
-   if (maxMemoryBytes < 0) {
-      throw new Error(
-         `PUBLISHER_MAX_MEMORY_BYTES must be a positive integer (got ${maxMemoryBytes})`,
-      );
-   }
 
-   const highWaterFraction =
-      parseFloatEnv("PUBLISHER_MEMORY_HIGH_WATER_FRACTION", "0.8") ??
-      DEFAULT_HIGH_WATER_FRACTION;
-   const lowWaterFraction =
-      parseFloatEnv("PUBLISHER_MEMORY_LOW_WATER_FRACTION", "0.7") ??
-      DEFAULT_LOW_WATER_FRACTION;
-   const checkIntervalMs =
-      parseIntEnv("PUBLISHER_MEMORY_CHECK_INTERVAL_MS") ??
-      DEFAULT_CHECK_INTERVAL_MS;
-   const backpressureEnabled =
-      parseBoolEnv("PUBLISHER_MEMORY_BACKPRESSURE") ?? true;
+   const highWaterFraction = settings.get("memory.highWaterFraction");
+   const lowWaterFraction = settings.get("memory.lowWaterFraction");
+   const checkIntervalMs = settings.get("memory.checkIntervalMs");
+   const backpressureEnabled = settings.get("memory.backpressureEnabled");
 
-   if (highWaterFraction <= 0 || highWaterFraction >= 1) {
-      throw new Error(
-         `PUBLISHER_MEMORY_HIGH_WATER_FRACTION must be in (0, 1) (got ${highWaterFraction})`,
-      );
-   }
-   if (lowWaterFraction <= 0 || lowWaterFraction >= 1) {
-      throw new Error(
-         `PUBLISHER_MEMORY_LOW_WATER_FRACTION must be in (0, 1) (got ${lowWaterFraction})`,
-      );
-   }
+   // The one rule across settings here; each value's own range is its type's.
    if (lowWaterFraction >= highWaterFraction) {
       throw new Error(
          `PUBLISHER_MEMORY_LOW_WATER_FRACTION (${lowWaterFraction}) must be strictly less than PUBLISHER_MEMORY_HIGH_WATER_FRACTION (${highWaterFraction})`,
-      );
-   }
-   if (checkIntervalMs < MIN_CHECK_INTERVAL_MS) {
-      throw new Error(
-         `PUBLISHER_MEMORY_CHECK_INTERVAL_MS must be >= ${MIN_CHECK_INTERVAL_MS} (got ${checkIntervalMs})`,
       );
    }
 
@@ -305,7 +257,7 @@ export const getMemoryGovernorConfig = (): MemoryGovernorConfig | null => {
  * startup warning about unbounded instances.
  */
 export const isDuckDBMemoryLimitDisabled = (): boolean =>
-   process.env.PUBLISHER_DUCKDB_MEMORY_LIMIT?.trim().toLowerCase() === "off";
+   settings.get("duckdb.memoryLimit")?.toLowerCase() === "off";
 
 /**
  * DuckDB `memory_limit` for every Publisher-owned DuckDB session and instance,
@@ -315,11 +267,8 @@ export const isDuckDBMemoryLimitDisabled = (): boolean =>
  * docs/configuration.md.
  */
 export const getDuckDBMemoryLimit = (): string | undefined => {
-   const raw = process.env.PUBLISHER_DUCKDB_MEMORY_LIMIT?.trim();
-   if (raw === undefined || raw === "" || raw.toLowerCase() === "off") {
-      return undefined;
-   }
-   return raw;
+   const raw = settings.get("duckdb.memoryLimit");
+   return raw?.toLowerCase() === "off" ? undefined : raw;
 };
 
 /**
@@ -329,10 +278,8 @@ export const getDuckDBMemoryLimit = (): string | undefined => {
  * `memory_limit`; bytes rather than rows so one value suits narrow and wide
  * tables. See docs/configuration.md.
  */
-export const getDuckLakeRowGroupSizeBytes = (): string | undefined => {
-   const raw = process.env.PUBLISHER_DUCKLAKE_ROW_GROUP_SIZE_BYTES?.trim();
-   return raw === undefined || raw === "" ? undefined : raw;
-};
+export const getDuckLakeRowGroupSizeBytes = (): string | undefined =>
+   settings.get("ducklake.rowGroupSizeBytes");
 
 /**
  * Bound on how large a Parquet file DuckLake writes before rotating to the next
@@ -345,10 +292,8 @@ export const getDuckLakeRowGroupSizeBytes = (): string | undefined => {
  * Want the largest value that clears the memory ceiling; see
  * docs/configuration.md.
  */
-export const getDuckLakeTargetFileSizeBytes = (): string | undefined => {
-   const raw = process.env.PUBLISHER_DUCKLAKE_TARGET_FILE_SIZE_BYTES?.trim();
-   return raw === undefined || raw === "" ? undefined : raw;
-};
+export const getDuckLakeTargetFileSizeBytes = (): string | undefined =>
+   settings.get("ducklake.targetFileSizeBytes");
 
 /**
  * How many rows the appender buffers before a partitioned storage build flushes
@@ -363,20 +308,14 @@ export const getDuckLakeTargetFileSizeBytes = (): string | undefined => {
  * manager, so this term fails as `failed to pin block`. The threshold bounds
  * rows buffered before a flush; the per-partition up-front cost is bounded by
  * the ordered, single-threaded insert (`orderByPartitionColumns` in
- * service/materialization_build_session.ts). Neither half suffices alone. See
+ * service/materialization/run/materialization_build_session.ts). Neither half suffices alone. See
  * docs/configuration.md.
  */
 export const DEFAULT_PARTITIONED_WRITE_FLUSH_THRESHOLD = 8192;
 
 export const getPartitionedWriteFlushThreshold = (): number | undefined => {
-   const raw = process.env.PUBLISHER_PARTITIONED_WRITE_FLUSH_THRESHOLD?.trim();
-   if (raw === undefined || raw === "") {
-      return DEFAULT_PARTITIONED_WRITE_FLUSH_THRESHOLD;
-   }
-   if (raw.toLowerCase() === "off") {
-      return undefined;
-   }
-   return Number(raw);
+   const raw = settings.get("duckdb.partitionedWriteFlushThreshold");
+   return raw.toLowerCase() === "off" ? undefined : Number(raw);
 };
 
 /**
@@ -386,10 +325,8 @@ export const getPartitionedWriteFlushThreshold = (): number | undefined => {
  * No `off` sentinel, unlike {@link getDuckDBMemoryLimit}: a directory named
  * `off` is a legal path, and unset already means "DuckDB's default".
  */
-export const getDuckDBTempDirectory = (): string | undefined => {
-   const raw = process.env.PUBLISHER_DUCKDB_TEMP_DIRECTORY?.trim();
-   return raw === undefined || raw === "" ? undefined : raw;
-};
+export const getDuckDBTempDirectory = (): string | undefined =>
+   settings.get("duckdb.tempDirectory");
 
 /**
  * The byte sizes DuckDB itself accepts (probed against v1.5.5): the 1000^i and
@@ -436,11 +373,8 @@ export function assertDuckDBResourceConfig(): void {
             `size like "256MB", got "${targetFileSizeBytes}"`,
       );
    }
-   const flushThreshold =
-      process.env.PUBLISHER_PARTITIONED_WRITE_FLUSH_THRESHOLD?.trim();
+   const flushThreshold = settings.get("duckdb.partitionedWriteFlushThreshold");
    if (
-      flushThreshold !== undefined &&
-      flushThreshold !== "" &&
       flushThreshold.toLowerCase() !== "off" &&
       !/^[1-9]\d{0,8}$/.test(flushThreshold)
    ) {
@@ -500,13 +434,29 @@ export interface EmbeddingConfig {
 const DEFAULT_EMBEDDING_MODEL = "text-embedding-3-small";
 const DEFAULT_EMBEDDING_API_BASE = "https://api.openai.com/v1";
 
+type FileFirstEmbeddingKey =
+   | "retrieval.embedding.model"
+   | "retrieval.embedding.baseUrl"
+   | "retrieval.embedding.dimensions";
+
 /**
- * Default cosine-similarity floor for semantic retrieval. Tunable because
- * cosine similarity is not calibrated across embedding models; deliberately
- * permissive, preferring a weak match to a lost real one. See
- * docs/configuration.md.
+ * A `retrieval.embedding` key the file gives ahead of its variable. With no
+ * `file`, because the `retrieval` block was rejected, the file's value is set
+ * aside for the variable's, as it was before the registry: a block the server
+ * refused must not choose where the embedding key is sent.
  */
-export const DEFAULT_EMBEDDING_MIN_SIMILARITY = 0.2;
+function embeddingValue<K extends FileFirstEmbeddingKey>(
+   key: K,
+   file: RetrievalEmbeddingConfig | undefined,
+): SettingValue<K> | undefined {
+   if (file !== undefined || settings.source(key).kind !== "file") {
+      return settings.get(key);
+   }
+   const variable = settings
+      .shadowed(key)
+      .find((shadowed) => shadowed.source.kind !== "file");
+   return variable?.value as SettingValue<K> | undefined;
+}
 
 /**
  * Embedding-provider settings for semantic `get_context` retrieval, or `null`
@@ -525,7 +475,7 @@ export const getEmbeddingConfig = (
 ): EmbeddingConfig | null => {
    const provider = file?.provider;
    if (provider === "google" || provider === "vertex") return null;
-   const envKey = process.env.EMBEDDING_API_KEY?.trim();
+   const envKey = settings.get("retrieval.embedding.apiKey");
    // Ollama serves without a key; for every other provider no key means the
    // feature is off, never an error.
    if (!envKey && provider !== "ollama") {
@@ -533,10 +483,12 @@ export const getEmbeddingConfig = (
    }
    const apiKey = envKey || "ollama";
 
-   const rawBase = process.env.EMBEDDING_API_BASE;
+   // model, baseUrl and dimensions come from the file before their variables,
+   // as the registry records (retrieval.embedding.*, `fileFirst`), unless the
+   // block was rejected.
+   const rawBase = embeddingValue("retrieval.embedding.baseUrl", file);
    const baseUrl = (
-      file?.baseUrl ||
-      rawBase?.trim() ||
+      rawBase ||
       (provider ? defaultOpenAiBaseUrl(provider) : undefined) ||
       DEFAULT_EMBEDDING_API_BASE
    ).replace(/\/+$/, "");
@@ -549,16 +501,10 @@ export const getEmbeddingConfig = (
    }
 
    const model =
-      file?.model ||
-      process.env.EMBEDDING_MODEL?.trim() ||
+      embeddingValue("retrieval.embedding.model", file) ||
       DEFAULT_EMBEDDING_MODEL;
 
-   const dimensions = file?.dimensions ?? parseIntEnv("EMBEDDING_DIMENSIONS");
-   if (dimensions !== undefined && dimensions <= 0) {
-      throw new Error(
-         `EMBEDDING_DIMENSIONS must be a positive integer (got ${dimensions})`,
-      );
-   }
+   const dimensions = embeddingValue("retrieval.embedding.dimensions", file);
 
    return {
       apiKey,
@@ -572,20 +518,13 @@ export const getEmbeddingConfig = (
    };
 };
 
-/** The cosine floor from `EMBEDDING_MIN_SIMILARITY`, validated. */
+/**
+ * The cosine floor. Its range, [0, 1), is refused rather than clamped: a floor
+ * of 1 returns nothing and a negative one everything, and both look like a
+ * broken index, not a bad setting.
+ */
 function embeddingMinSimilarity(): number {
-   const minSimilarity =
-      parseFloatEnv("EMBEDDING_MIN_SIMILARITY", "0.35") ??
-      DEFAULT_EMBEDDING_MIN_SIMILARITY;
-   // Rejected rather than clamped: a floor of 1 returns nothing and a negative
-   // one everything, and both look like a broken index, not a bad setting.
-   if (minSimilarity < 0 || minSimilarity >= 1) {
-      throw new Error(
-         `Invalid EMBEDDING_MIN_SIMILARITY: expected a number in [0, 1), got ${minSimilarity}. ` +
-            `Fix: EMBEDDING_MIN_SIMILARITY=0.35 (default ${DEFAULT_EMBEDDING_MIN_SIMILARITY})`,
-      );
-   }
-   return minSimilarity;
+   return settings.get("retrieval.embedding.minSimilarity");
 }
 
 /**
@@ -601,7 +540,7 @@ export function getEmbeddingSettings(
    const documentPrefix = file?.documentPrefix ?? "";
    const provider = file?.provider;
    if (provider === "google" || provider === "vertex") {
-      const apiKey = process.env.EMBEDDING_API_KEY?.trim() || undefined;
+      const apiKey = settings.get("retrieval.embedding.apiKey") || undefined;
       if (provider === "google" && !apiKey) return null;
       if (!file?.model) return null;
       return {
@@ -621,7 +560,7 @@ export function getEmbeddingSettings(
    const config = getEmbeddingConfig(file);
    if (!config) return null;
    const keyless =
-      provider === "ollama" && !process.env.EMBEDDING_API_KEY?.trim();
+      provider === "ollama" && !settings.get("retrieval.embedding.apiKey");
    return {
       provider: config.provider ?? "openai-compatible",
       model: config.model,
@@ -664,7 +603,7 @@ export function embeddingStartupNotices(
 ): StartupNotice[] {
    if (!file) return [];
    const notices: StartupNotice[] = [];
-   const key = process.env.EMBEDDING_API_KEY?.trim();
+   const key = settings.get("retrieval.embedding.apiKey");
    const provider = file.provider;
    if (
       !key &&
@@ -681,28 +620,28 @@ export function embeddingStartupNotices(
    }
    const reembeds =
       "Changing the model or its dimensions re-embeds every package.";
-   const envModel = process.env.EMBEDDING_MODEL?.trim();
+   const envModel = fromVariable("retrieval.embedding.model");
    if (file.model && envModel && envModel !== file.model) {
       notices.push({
          level: "info",
          message: `retrieval.embedding.model "${file.model}" in publisher.config.json overrides EMBEDDING_MODEL "${envModel}". ${reembeds}`,
       });
    }
-   const envDimensions = process.env.EMBEDDING_DIMENSIONS?.trim();
+   const envDimensions = fromVariable("retrieval.embedding.dimensions");
    if (
       file.dimensions !== undefined &&
-      envDimensions &&
-      envDimensions !== String(file.dimensions)
+      envDimensions !== undefined &&
+      String(envDimensions) !== String(file.dimensions)
    ) {
       notices.push({
          level: "info",
          message: `retrieval.embedding.dimensions ${file.dimensions} in publisher.config.json overrides EMBEDDING_DIMENSIONS ${envDimensions}. ${reembeds}`,
       });
    }
-   const envBase = process.env.EMBEDDING_API_BASE?.trim();
+   const envBase = fromVariable("retrieval.embedding.baseUrl");
    if (
       file.baseUrl &&
-      envBase &&
+      typeof envBase === "string" &&
       envBase.replace(/\/+$/, "") !== file.baseUrl.replace(/\/+$/, "")
    ) {
       notices.push({
@@ -711,6 +650,18 @@ export function embeddingStartupNotices(
       });
    }
    return notices;
+}
+
+/** A variable's value that the file's value overrides, if one was given. */
+function fromVariable(
+   key:
+      | "retrieval.embedding.model"
+      | "retrieval.embedding.dimensions"
+      | "retrieval.embedding.baseUrl",
+): unknown {
+   return settings
+      .shadowed(key)
+      .find((shadowed) => shadowed.source.kind === "env")?.value;
 }
 
 /**
@@ -722,7 +673,7 @@ export function embeddingStartupNotices(
  */
 export function getLlmSettings(file?: RetrievalLlmConfig): LlmSettings | null {
    if (!file) return null;
-   const apiKey = process.env.LLM_API_KEY?.trim() || undefined;
+   const apiKey = settings.get("retrieval.llm.apiKey") || undefined;
    const needsKey = file.provider !== "ollama" && file.provider !== "vertex";
    if (needsKey && !apiKey) return null;
    return {
@@ -740,6 +691,18 @@ export function getLlmSettings(file?: RetrievalLlmConfig): LlmSettings | null {
 }
 
 /**
+ * Whether the operator has an LLM configured: the publisher.config.json
+ * `retrieval.llm` block in force resolves to settings (see
+ * {@link getLlmSettings}). Reads settings only, so package loading can ask it
+ * without depending on the retrieval engine; retrieval's chat-model slot
+ * (retrieval/llm/chat_model_slot.ts, `settings()`) answers the same question,
+ * and a test may override it.
+ */
+export function operatorLlmConfigured(): boolean {
+   return getLlmSettings(loadedRetrievalConfig()?.llm) !== null;
+}
+
+/**
  * Whether `search_database_schema` may send a connection's table and
  * column names to the configured embedding provider. Off unless set.
  *
@@ -749,7 +712,7 @@ export function getLlmSettings(file?: RetrievalLlmConfig): LlmSettings | null {
  * ranks lexically with no network.
  */
 export const schemaEmbeddingEnabled = (): boolean =>
-   parseBoolEnv("EMBEDDING_INDEX_CONNECTION_SCHEMA") ?? false;
+   settings.get("retrieval.embedding.connectionSchemaIndexingEnabled");
 
 /**
  * Tunables for the standalone {@link MaterializationScheduler}, which fires a
@@ -763,13 +726,9 @@ export interface MaterializationSchedulerConfig {
    maxFiresPerTick: number;
 }
 
-const DEFAULT_SCHEDULER_INTERVAL_MS = 60_000;
-const MIN_SCHEDULER_INTERVAL_MS = 1_000;
-const DEFAULT_SCHEDULER_MAX_FIRES_PER_TICK = 10;
-
 /**
  * Standalone-scheduler settings, or `null` unless
- * `PUBLISHER_LOCAL_MATERIALIZATION_SCHEDULER` is set. Throws on malformed input.
+ * `materialization.schedulerEnabled` is on. Throws on malformed input.
  *
  * **Never set it on an orchestrated worker.** It is the primary guard: a
  * control-plane-loaded package serving live has `manifestLocation === null`,
@@ -778,32 +737,15 @@ const DEFAULT_SCHEDULER_MAX_FIRES_PER_TICK = 10;
  */
 export const getMaterializationSchedulerConfig =
    (): MaterializationSchedulerConfig | null => {
-      const enabled =
-         parseBoolEnv("PUBLISHER_LOCAL_MATERIALIZATION_SCHEDULER") ?? false;
-      if (!enabled) {
+      if (!settings.get("materialization.schedulerEnabled")) {
          return null;
       }
-
-      const tickIntervalMs =
-         parseIntEnv("PUBLISHER_MATERIALIZATION_SCHEDULER_INTERVAL_MS") ??
-         DEFAULT_SCHEDULER_INTERVAL_MS;
-      const maxFiresPerTick =
-         parseIntEnv(
-            "PUBLISHER_MATERIALIZATION_SCHEDULER_MAX_FIRES_PER_TICK",
-         ) ?? DEFAULT_SCHEDULER_MAX_FIRES_PER_TICK;
-
-      if (tickIntervalMs < MIN_SCHEDULER_INTERVAL_MS) {
-         throw new Error(
-            `PUBLISHER_MATERIALIZATION_SCHEDULER_INTERVAL_MS must be >= ${MIN_SCHEDULER_INTERVAL_MS} (got ${tickIntervalMs})`,
-         );
-      }
-      if (maxFiresPerTick <= 0) {
-         throw new Error(
-            `PUBLISHER_MATERIALIZATION_SCHEDULER_MAX_FIRES_PER_TICK must be a positive integer (got ${maxFiresPerTick})`,
-         );
-      }
-
-      return { tickIntervalMs, maxFiresPerTick };
+      return {
+         tickIntervalMs: settings.get("materialization.schedulerIntervalMs"),
+         maxFiresPerTick: settings.get(
+            "materialization.schedulerMaxFiresPerTick",
+         ),
+      };
    };
 
 /**
@@ -812,32 +754,15 @@ export const getMaterializationSchedulerConfig =
  * Like every getter here, throws on malformed input so a manifest typo fails
  * loudly instead of silently changing the bound.
  */
-export const getMaxQueryRows = (): number => {
-   const raw = parseIntEnv("PUBLISHER_MAX_QUERY_ROWS");
-   if (raw === undefined) return DEFAULT_MAX_QUERY_ROWS;
-   if (raw < 0) {
-      throw new Error(
-         `PUBLISHER_MAX_QUERY_ROWS must be a non-negative integer (got ${raw})`,
-      );
-   }
-   return raw;
-};
+export const getMaxQueryRows = (): number => settings.get("query.maxRows");
 
 /**
  * Byte cap on ad-hoc connection SQL responses from a `StreamingConnection`
  * (`PUBLISHER_MAX_RESPONSE_BYTES`, default {@link DEFAULT_MAX_RESPONSE_BYTES}).
  * `0` disables it, leaving only the row cap.
  */
-export const getMaxResponseBytes = (): number => {
-   const raw = parseIntEnv("PUBLISHER_MAX_RESPONSE_BYTES");
-   if (raw === undefined) return DEFAULT_MAX_RESPONSE_BYTES;
-   if (raw < 0) {
-      throw new Error(
-         `PUBLISHER_MAX_RESPONSE_BYTES must be a non-negative integer (got ${raw})`,
-      );
-   }
-   return raw;
-};
+export const getMaxResponseBytes = (): number =>
+   settings.get("query.maxResponseBytes");
 
 /**
  * Default row limit for a Malloy model query that carries no `LIMIT` of its
@@ -846,31 +771,14 @@ export const getMaxResponseBytes = (): number => {
  * silently break every report, and the operator likely meant
  * `PUBLISHER_MAX_QUERY_ROWS=0`.
  */
-export const getDefaultQueryRowLimit = (): number => {
-   const raw = parseIntEnv("PUBLISHER_DEFAULT_QUERY_ROW_LIMIT");
-   if (raw === undefined) return DEFAULT_QUERY_ROW_LIMIT;
-   if (raw <= 0) {
-      throw new Error(
-         `PUBLISHER_DEFAULT_QUERY_ROW_LIMIT must be a positive integer (got ${raw})`,
-      );
-   }
-   return raw;
-};
+export const getDefaultQueryRowLimit = (): number =>
+   settings.get("query.defaultRowLimit");
 
 /**
  * Per-query wall-clock timeout in ms (`PUBLISHER_QUERY_TIMEOUT_MS`, default
  * {@link DEFAULT_QUERY_TIMEOUT_MS}). `0` disables it.
  */
-export const getQueryTimeoutMs = (): number => {
-   const raw = parseIntEnv("PUBLISHER_QUERY_TIMEOUT_MS");
-   if (raw === undefined) return DEFAULT_QUERY_TIMEOUT_MS;
-   if (raw < 0) {
-      throw new Error(
-         `PUBLISHER_QUERY_TIMEOUT_MS must be a non-negative integer (got ${raw})`,
-      );
-   }
-   return raw;
-};
+export const getQueryTimeoutMs = (): number => settings.get("query.timeoutMs");
 
 /**
  * Per-process inbound query concurrency cap
@@ -878,32 +786,16 @@ export const getQueryTimeoutMs = (): number => {
  * {@link DEFAULT_MAX_CONCURRENT_QUERIES}). `0` disables it, for deployments
  * with concurrency control upstream.
  */
-export const getMaxConcurrentQueries = (): number => {
-   const raw = parseIntEnv("PUBLISHER_MAX_CONCURRENT_QUERIES");
-   if (raw === undefined) return DEFAULT_MAX_CONCURRENT_QUERIES;
-   if (raw < 0) {
-      throw new Error(
-         `PUBLISHER_MAX_CONCURRENT_QUERIES must be a non-negative integer (got ${raw})`,
-      );
-   }
-   return raw;
-};
+export const getMaxConcurrentQueries = (): number =>
+   settings.get("query.maxConcurrent");
 
 /**
- * Cap on open sessions for one plain (non-proxied) Postgres connection
+ * Cap on open sessions for one Postgres connection
  * (`PUBLISHER_POSTGRES_POOL_MAX`, default {@link DEFAULT_POSTGRES_POOL_MAX}).
  * `0` is rejected: the pool could open nothing.
  */
-export const getPostgresPoolMax = (): number => {
-   const raw = parseIntEnv("PUBLISHER_POSTGRES_POOL_MAX");
-   if (raw === undefined) return DEFAULT_POSTGRES_POOL_MAX;
-   if (raw < 1) {
-      throw new Error(
-         `PUBLISHER_POSTGRES_POOL_MAX must be a positive integer (got ${raw})`,
-      );
-   }
-   return raw;
-};
+export const getPostgresPoolMax = (): number =>
+   settings.get("postgres.poolMax");
 
 /**
  * DuckDB extension-fetch policy. Governs whether Publisher's explicit extension
@@ -926,17 +818,8 @@ export type ExtensionFetchPolicy = "on-demand" | "local-only";
  * there rather than on the first DuckDB connection, possibly long after
  * `serving`; it is also read per connection, so no restart is needed.
  */
-export const getExtensionFetchPolicy = (): ExtensionFetchPolicy => {
-   const raw = process.env.EXTENSION_FETCH_POLICY;
-   if (raw === undefined || raw.trim() === "") return "on-demand";
-   const normalised = raw.trim().toLowerCase();
-   if (normalised === "on-demand" || normalised === "local-only") {
-      return normalised;
-   }
-   throw new Error(
-      `Invalid value for EXTENSION_FETCH_POLICY: expected "on-demand" or "local-only", got "${raw}"`,
-   );
-};
+export const getExtensionFetchPolicy = (): ExtensionFetchPolicy =>
+   settings.get("duckdb.extensionFetchPolicy");
 
 export const ALLOW_DUCKDB_SETUP_SQL_ENV = "PUBLISHER_ALLOW_DUCKDB_SETUP_SQL";
 
@@ -950,13 +833,16 @@ export const ALLOW_DUCKDB_SETUP_SQL_ENV = "PUBLISHER_ALLOW_DUCKDB_SETUP_SQL";
  * deployments whose connection authors are trusted with the host.
  */
 export const isDuckdbSetupSqlAllowed = (): boolean =>
-   parseBoolEnv(ALLOW_DUCKDB_SETUP_SQL_ENV) === true;
+   settings.get("allow.duckdbSetupSql");
 
 /**
  * Where an `s3` connection may select `provider: credential_chain` — host-resolved
  * credentials rather than a configured key pair.
  */
 export type S3CredentialChainPolicy = "any" | "destinations-only" | "off";
+
+/** Who authored a connection config, which is what S3CredentialChainPolicy turns on. */
+export type ConnectionOrigin = "connection" | "storage-destination";
 
 /**
  * Resolve the S3 credential-chain policy from `S3_CREDENTIAL_CHAIN_POLICY`; falls
@@ -975,22 +861,8 @@ export type S3CredentialChainPolicy = "any" | "destinations-only" | "off";
  *
  * Throws on an unrecognised value rather than choosing the permissive option.
  */
-export const getS3CredentialChainPolicy = (): S3CredentialChainPolicy => {
-   const raw = process.env.S3_CREDENTIAL_CHAIN_POLICY;
-   if (raw === undefined || raw.trim() === "") return "any";
-   const normalised = raw.trim().toLowerCase();
-   if (
-      normalised === "any" ||
-      normalised === "destinations-only" ||
-      normalised === "off"
-   ) {
-      return normalised;
-   }
-   throw new Error(
-      `Invalid value for S3_CREDENTIAL_CHAIN_POLICY: expected "any", ` +
-         `"destinations-only" or "off", got "${raw}"`,
-   );
-};
+export const getS3CredentialChainPolicy = (): S3CredentialChainPolicy =>
+   settings.get("allow.s3CredentialChain");
 
 /**
  * The three `#@ persist storage=<conn>` deployment modes, read from
@@ -1008,29 +880,12 @@ export const getS3CredentialChainPolicy = (): S3CredentialChainPolicy => {
  */
 export type PersistStorageMode = "off" | "write-only" | "on";
 
-const PERSIST_STORAGE_MODES: readonly PersistStorageMode[] = [
-   "off",
-   "write-only",
-   "on",
-];
-
 /**
  * The `storage=` deployment mode from `PERSIST_STORAGE_MODE` (default `off`).
  * Case-insensitive; throws on an unrecognized value.
  */
-export const getPersistStorageMode = (): PersistStorageMode => {
-   const raw = process.env.PERSIST_STORAGE_MODE;
-   if (raw === undefined || raw.trim() === "") return "off";
-   const value = raw.trim().toLowerCase();
-   if ((PERSIST_STORAGE_MODES as readonly string[]).includes(value)) {
-      return value as PersistStorageMode;
-   }
-   throw new Error(
-      `PERSIST_STORAGE_MODE must be one of ${PERSIST_STORAGE_MODES.join(
-         " | ",
-      )} (got ${JSON.stringify(raw)})`,
-   );
-};
+export const getPersistStorageMode = (): PersistStorageMode =>
+   settings.get("persist.storageMode");
 
 /**
  * Whether a within-package persist-target COLLISION (two distinct persist
@@ -1042,8 +897,7 @@ export const getPersistStorageMode = (): PersistStorageMode => {
  * do not break. Load is ALWAYS warn-only; the flag governs publish only.
  */
 export const getPersistCollisionEnforce = (): boolean =>
-   // parseBoolEnv, not `=== "true"`, so `1` or `yes` cannot fail open.
-   parseBoolEnv("PERSIST_COLLISION_ENFORCE") ?? false;
+   settings.get("persist.collisionEnforcementEnabled");
 
 /**
  * Which origins may read a cross-origin response from the MCP endpoint, from
@@ -1054,14 +908,8 @@ export const getPersistCollisionEnforce = (): boolean =>
  * endpoint that can read whatever the models connect to.
  */
 export const getMcpCorsOrigins = (): string[] | boolean | string => {
-   const raw = process.env.MCP_CORS_ORIGINS;
-   if (raw === undefined || raw.trim() === "") return false;
-   const trimmed = raw.trim();
-   if (trimmed === "*") return "*";
-   const origins = trimmed
-      .split(",")
-      .map((origin) => origin.trim())
-      .filter((origin) => origin.length > 0);
+   const origins = settings.get("mcp.corsOrigins");
+   if (origins.length === 1 && origins[0] === "*") return "*";
    // A value that parses to nothing (`","`) is a typo: deny, never allow all.
    return origins.length > 0 ? origins : false;
 };
@@ -1079,21 +927,14 @@ export const getMcpCorsOrigins = (): string[] | boolean | string => {
  */
 export type QueryMetadataMode = "on" | "off";
 
-export const getQueryMetadataMode = (): QueryMetadataMode => {
-   const raw = process.env.PUBLISHER_QUERY_METADATA;
-   if (raw === undefined || raw.trim() === "") return "off";
-   const value = raw.trim().toLowerCase();
-   if (value === "on" || value === "off") return value;
-   throw new Error(
-      `PUBLISHER_QUERY_METADATA must be on | off (got ${JSON.stringify(raw)})`,
-   );
-};
+export const getQueryMetadataMode = (): QueryMetadataMode =>
+   settings.get("query.metadataEnabled") ? "on" : "off";
 
 function substituteEnvVars(value: string): string {
    const envVarPattern = /\$\{([A-Z_][A-Z0-9_]*)\}/g;
 
    return value.replace(envVarPattern, (_match, varName) => {
-      const envValue = process.env[varName];
+      const envValue = referencedVariable(varName);
 
       if (envValue !== undefined) {
          return envValue;
@@ -1149,6 +990,36 @@ export const getPublisherConfigDir = (serverRoot: string): string | null => {
 };
 
 /**
+ * Which of the server's APIs this process may run: `servingApiEnabled` (the
+ * main API and MCP, and the environments they serve) and `adminApiEnabled` (the
+ * admin API, when its port is set), both `true` by default.
+ * `declaresEnvironments` is whether the config lists any.
+ *
+ * Each is a top-level setting (registry/server.ts): its key in the file,
+ * `PUBLISHER_SERVING_API_ENABLED` / `PUBLISHER_ADMIN_API_ENABLED`, or
+ * `--[no-]serving-api-enabled` / `--[no-]admin-api-enabled`, with the flag over
+ * the variable over the file. In the file the value is `true` or `false`, or a
+ * `${VAR}` reference read as a variable is. A config that cannot be read
+ * contributes nothing: the main server reports that file's error itself, on
+ * /status.
+ */
+export type ServerApiSettings = {
+   servingApiEnabled: boolean;
+   adminApiEnabled: boolean;
+   declaresEnvironments: boolean;
+};
+
+export const getServerApiSettings = (): ServerApiSettings => {
+   const environments = settings.get("environments");
+   return {
+      servingApiEnabled: settings.get("servingApiEnabled"),
+      adminApiEnabled: settings.get("adminApiEnabled"),
+      declaresEnvironments:
+         Array.isArray(environments) && environments.length > 0,
+   };
+};
+
+/**
  * The `publisher.config.json` path that was looked for and not found, or null
  * whenever a config did resolve. `explicit` says the path came from `--config`.
  *
@@ -1162,8 +1033,8 @@ export const getUnresolvedPublisherConfigPath = (
    if (resolvePublisherConfigPath(serverRoot)) {
       return null;
    }
-   const explicitPath = process.env.PUBLISHER_CONFIG_PATH;
-   if (explicitPath && explicitPath.length > 0) {
+   const explicitPath = settings.get("config");
+   if (explicitPath) {
       return { path: explicitPath, explicit: true };
    }
    return {
@@ -1175,19 +1046,14 @@ export const getUnresolvedPublisherConfigPath = (
 export const getPublisherConfig = (serverRoot: string): PublisherConfig => {
    const resolved = resolvePublisherConfigPath(serverRoot);
    if (!resolved) {
-      if (
-         process.env.PUBLISHER_CONFIG_PATH &&
-         process.env.PUBLISHER_CONFIG_PATH.length > 0
-      ) {
+      const explicitPath = settings.get("config");
+      if (explicitPath) {
          // A typo in --config must not boot silently with no environments.
          logger.error(
-            `--config path not found: ${process.env.PUBLISHER_CONFIG_PATH}. Using default empty config.`,
+            `--config path not found: ${explicitPath}. Using default empty config.`,
          );
       }
-      return {
-         frozenConfig: false,
-         environments: [],
-      };
+      return { environments: [] };
    }
    const publisherConfigPath = resolved.path;
    if (resolved.isBundledDefault) {
@@ -1237,10 +1103,7 @@ export const getPublisherConfig = (serverRoot: string): PublisherConfig => {
       logger.error(
          `Invalid ${PUBLISHER_CONFIG_NAME}: the "environments" field must be a JSON array. Using default empty config.`,
       );
-      return {
-         frozenConfig: false,
-         environments: [],
-      };
+      return { environments: [] };
    }
 
    let environments: unknown[] = [];
@@ -1254,17 +1117,6 @@ export const getPublisherConfig = (serverRoot: string): PublisherConfig => {
          .environments;
    }
 
-   let frozenConfig = false;
-   if (
-      processedConfig &&
-      typeof processedConfig === "object" &&
-      "frozenConfig" in processedConfig
-   ) {
-      frozenConfig = Boolean(
-         (processedConfig as { frozenConfig: unknown }).frozenConfig,
-      );
-   }
-
    const instanceTheme = sanitizeTheme(
       processedConfig &&
          typeof processedConfig === "object" &&
@@ -1274,14 +1126,6 @@ export const getPublisherConfig = (serverRoot: string): PublisherConfig => {
       "publisher.config.json",
    );
 
-   const mcp = sanitizeMcpConfig(
-      processedConfig &&
-         typeof processedConfig === "object" &&
-         "mcp" in processedConfig
-         ? (processedConfig as { mcp: unknown }).mcp
-         : undefined,
-   );
-
    const retrieval = parseRetrievalConfig(
       processedConfig && typeof processedConfig === "object"
          ? (processedConfig as { retrieval?: unknown }).retrieval
@@ -1289,37 +1133,52 @@ export const getPublisherConfig = (serverRoot: string): PublisherConfig => {
    );
 
    return {
-      frozenConfig,
       ...(instanceTheme ? { theme: instanceTheme } : {}),
-      ...(mcp ? { mcp } : {}),
       ...(retrieval ? { retrieval } : {}),
       environments,
    } as PublisherConfig;
 };
 
 /**
- * Read the `mcp` block. Like `theme`, a bad field is warned about and dropped,
- * so it takes its default rather than failing the whole config.
+ * `PUBLISHER_PACKAGE_INLINE_FIELDS`: `on` (the default) or `off`. A TRANSITION
+ * flag. On, a package response still carries the fields that moved off
+ * `Package` (`buildPlan`, `agents`, `secureGivens`, `embeddingIndex`, the
+ * manifest-binding and serving fields), marked deprecated, as it did before
+ * they moved. Off, it carries only the package's own fields, and each moved
+ * field is read where it now lives: `GET …/build-plan`, `…/agents`,
+ * `…/entities`, `…/embedding-index`, or the package's entry in `GET /status`. A later
+ * release turns it off by default, and the one after removes it with the
+ * fields.
  */
-function sanitizeMcpConfig(raw: unknown): McpConfig | undefined {
-   if (raw === undefined) return undefined;
-   if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
-      logger.warn(
-         `Invalid "mcp" in ${PUBLISHER_CONFIG_NAME}: expected an object. Ignoring.`,
-      );
-      return undefined;
-   }
-   const mcp: McpConfig = {};
-   const value = (raw as Record<string, unknown>).includeHiddenFilesAndSources;
-   if (typeof value === "boolean") {
-      mcp.includeHiddenFilesAndSources = value;
-   } else if (value !== undefined) {
-      logger.warn(
-         `Invalid "mcp.includeHiddenFilesAndSources" in ${PUBLISHER_CONFIG_NAME}: expected a boolean (got ${JSON.stringify(value)}). Ignoring field.`,
-      );
-   }
-   return Object.keys(mcp).length > 0 ? mcp : undefined;
-}
+export type PackageInlineFieldsMode = "off" | "on";
+
+/**
+ * Whether a package response carries the moved fields inline
+ * (`PUBLISHER_PACKAGE_INLINE_FIELDS`; on when unset).
+ */
+export const isPackageInlineFieldsEnabled = (): boolean =>
+   settings.get("packageInlineFields") === "on";
+
+/**
+ * Whether a publish from a location publishes versions
+ * (`PUBLISHER_PACKAGE_VERSIONING=on`; off when unset).
+ */
+export const isVersioningEnabled = (): boolean =>
+   settings.get("packageVersioning") === "on";
+
+/**
+ * The Console's model page, {@link ModelPageMode}: `PUBLISHER_MODEL_PAGE`, or
+ * `explorer` when unset.
+ */
+export const getModelPageMode = (): ModelPageMode => settings.get("modelPage");
+
+/**
+ * The server's {@link VersionPromotionMode}: `PUBLISHER_VERSION_PROMOTION` when
+ * set, otherwise `versionPromotion` in publisher.config.json, otherwise
+ * `on-publish`.
+ */
+export const getVersionPromotionMode = (): VersionPromotionMode =>
+   settings.get("versionPromotion");
 
 /**
  * The entity cap for the semantic index: `retrieval.indexing.maxEntities`
@@ -1468,10 +1327,15 @@ export function mergeThemes(
    return merged;
 }
 
-export const isPublisherConfigFrozen = (serverRoot: string) => {
+/**
+ * Whether `frozenConfig` is on. A value that cannot be read (a `${VAR}` that is
+ * not set, a file that does not parse) is logged and reads as off.
+ */
+export const isPublisherConfigFrozen = (): boolean => {
+   const current = Settings.current();
    try {
-      const publisherConfig = getPublisherConfig(serverRoot);
-      return Boolean(publisherConfig.frozenConfig);
+      if (current.fileError) throw current.fileError;
+      return current.get("frozenConfig");
    } catch (error) {
       logger.error(
          `Error checking if ${PUBLISHER_CONFIG_NAME} is frozen. Defaulting to false.`,
@@ -1490,21 +1354,16 @@ export const isPublisherConfigFrozen = (serverRoot: string) => {
  * surface. Off removes it from the tool's schema, so an agent is never offered
  * it. REST's parameter of the same name is unaffected.
  */
-export const isMcpIncludeHiddenFilesAndSources = (
-   serverRoot: string,
-): boolean => {
-   try {
-      return (
-         getPublisherConfig(serverRoot).mcp?.includeHiddenFilesAndSources ===
-         true
-      );
-   } catch (error) {
+export const isMcpIncludeHiddenFilesAndSources = (): boolean => {
+   const current = Settings.current();
+   if (current.fileError) {
       logger.error(
          `Error reading "mcp" from ${PUBLISHER_CONFIG_NAME}. Defaulting to off.`,
-         { error: error instanceof Error ? error.message : String(error) },
+         { error: current.fileError.message },
       );
       return false;
    }
+   return current.get("mcp.includeHiddenFilesAndSources");
 };
 
 export const convertConnectionsToApiConnections = (
@@ -1554,10 +1413,7 @@ export const getProcessedPublisherConfig = (
       logger.warn(
          `Invalid ${PUBLISHER_CONFIG_NAME}: the "environments" field must be a JSON array. Using empty array.`,
       );
-      return {
-         frozenConfig: rawConfig.frozenConfig ?? false,
-         environments: [],
-      };
+      return { environments: [] };
    }
 
    const validEnvironments: ProcessedEnvironment[] = [];
@@ -1637,7 +1493,6 @@ export const getProcessedPublisherConfig = (
    }
 
    return {
-      frozenConfig: rawConfig.frozenConfig ?? false,
       ...(rawConfig.theme ? { theme: rawConfig.theme } : {}),
       environments: validEnvironments,
    };

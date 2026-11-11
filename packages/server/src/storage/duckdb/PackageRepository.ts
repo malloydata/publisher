@@ -1,14 +1,14 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
-import { Package } from "../DatabaseInterface";
+import { PackageRecord } from "../DatabaseInterface";
 import { DuckDBConnection } from "./DuckDBConnection";
 import { newId, Row, rowTimestamps, updateRow } from "./rows";
 
 export class PackageRepository {
    constructor(private db: DuckDBConnection) {}
 
-   async listPackages(environmentId: string): Promise<Package[]> {
+   async listPackages(environmentId: string): Promise<PackageRecord[]> {
       const rows = await this.db.all<Row>(
          "SELECT * FROM packages WHERE environment_id = ? ORDER BY name",
          [environmentId],
@@ -16,7 +16,7 @@ export class PackageRepository {
       return rows.map(mapToPackage);
    }
 
-   async getPackageById(id: string): Promise<Package | null> {
+   async getPackageById(id: string): Promise<PackageRecord | null> {
       const row = await this.db.get<Row>(
          "SELECT * FROM packages WHERE id = ?",
          [id],
@@ -27,7 +27,7 @@ export class PackageRepository {
    async getPackageByName(
       environmentId: string,
       name: string,
-   ): Promise<Package | null> {
+   ): Promise<PackageRecord | null> {
       const row = await this.db.get<Row>(
          "SELECT * FROM packages WHERE environment_id = ? AND name = ?",
          [environmentId, name],
@@ -36,8 +36,8 @@ export class PackageRepository {
    }
 
    async createPackage(
-      pkg: Omit<Package, "id" | "createdAt" | "updatedAt">,
-   ): Promise<Package> {
+      pkg: Omit<PackageRecord, "id" | "createdAt" | "updatedAt">,
+   ): Promise<PackageRecord> {
       const id = newId();
       const now = new Date();
 
@@ -59,6 +59,8 @@ export class PackageRepository {
       return {
          id,
          ...pkg,
+         // Not written above: only the version calls move the pointer.
+         latestVersion: null,
          createdAt: now,
          updatedAt: now,
       };
@@ -66,8 +68,8 @@ export class PackageRepository {
 
    async updatePackage(
       id: string,
-      updates: Partial<Package>,
-   ): Promise<Package> {
+      updates: Partial<PackageRecord>,
+   ): Promise<PackageRecord> {
       const existing = await this.getPackageById(id);
       if (!existing) {
          throw new Error(`Package with id ${id} not found`);
@@ -83,7 +85,7 @@ export class PackageRepository {
                : undefined,
       });
 
-      return this.getPackageById(id) as Promise<Package>;
+      return this.getPackageById(id) as Promise<PackageRecord>;
    }
 
    async deletePackage(id: string): Promise<void> {
@@ -95,7 +97,7 @@ export class PackageRepository {
    }
 }
 
-function mapToPackage(row: Row): Package {
+function mapToPackage(row: Row): PackageRecord {
    return {
       id: row.id as string,
       environmentId: row.environment_id as string,
@@ -104,5 +106,6 @@ function mapToPackage(row: Row): Package {
       manifestPath: row.manifest_path as string,
       metadata: row.metadata ? JSON.parse(row.metadata as string) : undefined,
       ...rowTimestamps(row),
+      latestVersion: (row.latest_version as string | null) ?? null,
    };
 }

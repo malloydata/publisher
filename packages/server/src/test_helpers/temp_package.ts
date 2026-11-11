@@ -15,6 +15,7 @@ import {
    type Connection,
 } from "@malloydata/malloy";
 import { afterAll, beforeAll } from "bun:test";
+import { randomUUID } from "crypto";
 import fs from "fs";
 import os from "os";
 import path from "path";
@@ -30,9 +31,21 @@ import { Package } from "../service/package";
  * statements) already run on it. Only this process sees the seeded tables: a
  * package-load worker opens its own DuckDB, so a package loaded through the
  * pool reads inline `duckdb.sql(...)` rows instead.
+ *
+ * Each call gets its own database. db-duckdb pools `:memory:` connections
+ * with the same config into one database for as long as any of them is open,
+ * so two specs seeding a table of the same name would read each other's.
+ * The temp directory is part of the pool's key, so a fresh one per call keeps
+ * this connection out of the pool; nothing here spills, so it is never
+ * created.
  */
 export async function seededDuckdb(seedSql = ""): Promise<DuckDBConnection> {
-   const duckdb = new DuckDBConnection("duckdb", ":memory:");
+   const duckdb = new DuckDBConnection({
+      name: "duckdb",
+      databasePath: ":memory:",
+      workingDirectory: ".",
+      tempDirectory: path.join(os.tmpdir(), `seeded-duckdb-${randomUUID()}`),
+   });
    for (const statement of seedSql.split(";")) {
       if (statement.trim()) await duckdb.runSQL(statement.trim() + ";");
    }
@@ -64,18 +77,15 @@ export interface TempPackageOptions {
 }
 
 /**
- * Write `files` (relative path → contents) plus a publisher.json into a fresh
- * temp directory. `cleanup` removes it.
+ * Write `files` (relative path → contents) plus a publisher.json into `dir`,
+ * creating it if needed: an `installPackage` staging directory, say.
  */
-export function writeTempPackage(
+export function writePackageFiles(
+   dir: string,
    files: Record<string, string>,
-   {
-      name = "pkg",
-      manifest,
-      prefix = "publisher-pkg-",
-   }: TempPackageOptions = {},
-): { dir: string; cleanup: () => void } {
-   const dir = fs.mkdtempSync(path.join(os.tmpdir(), prefix));
+   { name = "pkg", manifest }: Omit<TempPackageOptions, "prefix"> = {},
+): void {
+   fs.mkdirSync(dir, { recursive: true });
    fs.writeFileSync(
       path.join(dir, "publisher.json"),
       JSON.stringify(manifest ?? { name }),
@@ -85,6 +95,17 @@ export function writeTempPackage(
       fs.mkdirSync(path.dirname(target), { recursive: true });
       fs.writeFileSync(target, contents);
    }
+}
+
+/**
+ * {@link writePackageFiles} into a fresh temp directory. `cleanup` removes it.
+ */
+export function writeTempPackage(
+   files: Record<string, string>,
+   { prefix = "publisher-pkg-", ...options }: TempPackageOptions = {},
+): { dir: string; cleanup: () => void } {
+   const dir = fs.mkdtempSync(path.join(os.tmpdir(), prefix));
+   writePackageFiles(dir, files, options);
    return {
       dir,
       cleanup: () => fs.rmSync(dir, { recursive: true, force: true }),
@@ -112,6 +133,36 @@ export async function loadTempPackage(
    } = {},
 ): Promise<LoadedTempPackage> {
    const { dir, cleanup: removeDir } = writeTempPackage(files, options);
+   return loadPackageDir(dir, removeDir, options);
+}
+
+/**
+ * Copy the package at `sourceDir` (a committed fixture) to a fresh temp
+ * directory and load the copy with `Package.create`, so the load never writes
+ * into the source tree.
+ */
+export async function loadPackageCopy(
+   sourceDir: string,
+   options: { name?: string; environmentName?: string } = {},
+): Promise<LoadedTempPackage> {
+   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "publisher-pkg-copy-"));
+   fs.cpSync(sourceDir, dir, { recursive: true });
+   return loadPackageDir(
+      dir,
+      () => fs.rmSync(dir, { recursive: true, force: true }),
+      options,
+   );
+}
+
+async function loadPackageDir(
+   dir: string,
+   removeDir: () => void,
+   options: {
+      name?: string;
+      environmentName?: string;
+      duckdb?: DuckDBConnection;
+   },
+): Promise<LoadedTempPackage> {
    const { malloyConfig, duckdb } = duckdbMalloyConfig(options.duckdb);
    const cleanup = async () => {
       await duckdb.close();
@@ -191,20 +242,14 @@ export function usePackageLoadPool(): {
    /** Install a fresh live pool, e.g. after a test swapped in a dead one. */
    restore: () => Promise<void>;
 } {
-   const original = process.env.PACKAGE_LOAD_WORKERS;
    let pool: PackageLoadPool;
    const restore = async () => {
       pool = new PackageLoadPool(1);
       await __setPackageLoadPoolForTests(pool);
    };
-   beforeAll(async () => {
-      process.env.PACKAGE_LOAD_WORKERS = "1";
-      await restore();
-   });
+   beforeAll(restore);
    afterAll(async () => {
       await __setPackageLoadPoolForTests(null);
-      if (original === undefined) delete process.env.PACKAGE_LOAD_WORKERS;
-      else process.env.PACKAGE_LOAD_WORKERS = original;
    });
    return {
       get pool() {

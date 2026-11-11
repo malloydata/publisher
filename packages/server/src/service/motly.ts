@@ -9,6 +9,8 @@
  * reader of that contract needs the same parse. This module is that one parse.
  */
 
+import { Annotations, type LogMessage } from "@malloydata/malloy";
+import { logger } from "../logger";
 import { parseAnnotation, type Tag } from "@malloydata/malloy-tag";
 
 /**
@@ -47,21 +49,8 @@ export function motlyAnnotations(texts: readonly string[]): string[] {
  * could otherwise read a worker's connection credentials back out of the model
  * endpoint. An annotation carrying one is therefore dropped before parsing, in
  * {@link motlyAnnotations}, which every reader in this module goes through.
- *
- * That containment stops at this module's edge. `service/build_plan.ts` calls
- * `annotations.parseAsTag("@")` itself, and both of these reach a client:
- *
- * - `deriveAnnotationFields` returns top-level scalars, so
- *   `#@ persist name=@env.SNOWFLAKE_PRIVATE_KEY` comes back in the wire field
- *   `annotationFields` on `BuildPlan` (`Package.buildPlan`).
- * - `tagQueryMetadataLayer` does the same for
- *   `#@ persist queryMetadata { owner=@env.… }`.
- *
- * The `persist` keyword is load-bearing in both repros: without it a source
- * never enters `getBuildPlan().sources` and nothing is read. The braced
- * `#@ persist { name=… }` happens not to reach (`text()` on a block is
- * undefined) — not a mitigation. That path needs its own fix; this guard does
- * not cover it.
+ * Readers of the other routes (`#@` persistence, `##!` flags, a model's `##`)
+ * parse through {@link parseRouteTag}, which applies the same drop.
  *
  * Deliberately blunt: not quote-aware (`# description="see @env.md"` is dropped
  * too) and it drops the whole line, not one value — a missing control is
@@ -103,6 +92,130 @@ export const ANNOTATION_TOO_LONG = `annotation exceeds ${MAX_ANNOTATION_CHARS} c
  */
 export const ENV_REFERENCE_DROPPED =
    "annotation dropped for carrying an @env. reference";
+
+/**
+ * Annotation locations already warned about by {@link warnEnvReferenceDropped},
+ * so a source read on every query warns once, not once per query.
+ */
+const envDropsWarned = new Set<string>();
+
+/**
+ * Warn, once per location, that an annotation was dropped for carrying an
+ * `@env.` reference. Without it a dropped `#@ persist` line silently loses its
+ * `name=` and `storage=`, and the source builds somewhere its author did not say.
+ */
+export function warnEnvReferenceDropped(where: string, route: string): void {
+   const key = `${route}\u0000${where}`;
+   if (envDropsWarned.has(key)) return;
+   if (envDropsWarned.size >= 10_000) envDropsWarned.clear();
+   envDropsWarned.add(key);
+   logger.warn(
+      "Ignoring an annotation that reads the server's environment (@env.); move the value out of the model",
+      { at: where, route },
+   );
+}
+
+/**
+ * `Annotations.parseAsTag(route)`, without the server's environment.
+ *
+ * The tag parser hydrates `@env.NAME` from this process's `process.env`, and
+ * Malloy has no switch to turn that off. What a `#@ persist` line, a model's
+ * `##` tag or a `##!` flag holds reaches clients (the build plan's
+ * `annotationFields` and `queryMetadata`), warehouse query labels and build
+ * SQL, so every `parseAsTag` in the server goes through here instead, and a
+ * spec fails on a direct call.
+ *
+ * Each annotation line that carries an `@env.` reference is dropped before
+ * parsing, by the same blunt rule as {@link hasEnvReference}. Each drop is added
+ * to the returned log as {@link ENV_REFERENCE_DROPPED} and warned about once per
+ * location.
+ *
+ * On the `#@` route one such line drops the WHOLE route. Its lines are parsed as
+ * one tag, so a later line can complete an earlier one (`#@ persist name=…`,
+ * then `#@ persist.storage=lake`); dropping only the first would leave a
+ * half-applied directive that builds a table somewhere its author did not say.
+ * So a source with an `@env.` line on its `#@` route has no Publisher directive
+ * at all: no `name=`, `storage=` or `queryMetadata`. Malloy itself still sees
+ * `persist` (it reads only whether the key is present), so the eligibility gate
+ * refuses the source ({@link routeReadsEnv}) and it serves live. Other routes
+ * (a model's `##` tags, `##!` flags) drop line by line, as
+ * {@link motlyAnnotations} does. Whether a key is PRESENT, as Malloy decides
+ * it, is {@link routeHasKey}.
+ *
+ * With nothing to drop, this is `parseAsTag` itself, so a package without an
+ * `@env.` reference parses exactly as before.
+ */
+export function parseRouteTag(
+   annotations: Annotations,
+   route = "",
+): ReturnType<Annotations["parseAsTag"]> {
+   const notes = annotations.forRoute(route);
+   const kept: typeof notes = [];
+   const dropped: typeof notes = [];
+   for (const note of notes) {
+      (hasEnvReference(note.text) ? dropped : kept).push(note);
+   }
+   if (dropped.length === 0) return annotations.parseAsTag(route);
+   // Directive lines combine, so a partial read is worse than none (see above).
+   if (route === "@") kept.length = 0;
+
+   // Rebuilt from the kept notes, in the order `forRoute` walked them
+   // (inherited first), so Malloy's own parse and error mapping still apply.
+   const filtered = new Annotations({
+      notes: kept.map((note) => ({
+         text: note.text,
+         at: note.at,
+         ...(note.indentStripped !== undefined
+            ? { indentStripped: note.indentStripped }
+            : {}),
+      })),
+   } as ConstructorParameters<typeof Annotations>[0]);
+   const parsed = filtered.parseAsTag(route);
+   const drops: LogMessage[] = dropped.map((note) => {
+      warnEnvReferenceDropped(
+         `${note.at.url}:${note.at.range.start.line + 1}`,
+         route,
+      );
+      return {
+         code: "env-reference-dropped",
+         severity: "warn",
+         message: ENV_REFERENCE_DROPPED,
+         at: note.at,
+      };
+   });
+   return { tag: parsed.tag, log: [...drops, ...parsed.log] };
+}
+
+/**
+ * Whether any annotation on `route` carries an `@env.` reference, the case in
+ * which {@link parseRouteTag} drops the `#@` route whole. Reads no value.
+ */
+export function routeReadsEnv(
+   annotations: Annotations,
+   route: string,
+): boolean {
+   return annotations
+      .forRoute(route)
+      .some((note) => hasEnvReference(note.text));
+}
+
+/**
+ * Whether a route's annotations declare `path`, decided the way Malloy decides
+ * it: over every line, `@env.` references included.
+ *
+ * For a check that must agree with the compiler about presence alone, such as
+ * whether a source carries `#@ persist` or a model sets
+ * `##! experimental.persistence`. Only a boolean leaves, so no hydrated value
+ * can reach a caller. Anything that reads a VALUE goes through
+ * {@link parseRouteTag}.
+ */
+export function routeHasKey(
+   annotations: Annotations,
+   route: string,
+   ...path: string[]
+): boolean {
+   return annotations.parseAsTag(route).tag.has(...path);
+}
 
 /**
  * `parseAnnotation`, with the length bound applied and a throw caught.

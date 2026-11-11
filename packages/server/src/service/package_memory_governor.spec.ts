@@ -4,6 +4,8 @@
 import { describe, expect, it } from "bun:test";
 
 import type { MemoryGovernorConfig } from "../config";
+import { resetInstrumentsForTesting } from "../telemetry";
+import { startMetricsHarness } from "../test_helpers/metrics_harness";
 import { PackageMemoryGovernor } from "./package_memory_governor";
 
 const ONE_GB = 1024 * 1024 * 1024;
@@ -172,5 +174,29 @@ describe("PackageMemoryGovernor", () => {
       expect(status.rssBytes).toBe(0.4 * ONE_GB);
       expect(status.backpressured).toBe(false);
       expect(typeof status.lastSampledAt).toBe("number");
+   });
+
+   it("reports RSS, back-pressure and activations on a provider registered after import", async () => {
+      const harness = await startMetricsHarness();
+      resetInstrumentsForTesting();
+      try {
+         const rss = new FakeRssSampler(0.9 * ONE_GB);
+         const gov = new PackageMemoryGovernor(makeConfig(), rss.sampler);
+         gov.tick();
+         expect(await harness.collectGauge("publisher_process_rss_bytes")).toBe(
+            0.9 * ONE_GB,
+         );
+         expect(
+            await harness.collectGauge("publisher_memory_backpressure_active"),
+         ).toBe(1);
+         expect(
+            await harness.collectCounter(
+               "publisher_memory_backpressure_activations_total",
+            ),
+         ).toBe(1);
+      } finally {
+         await harness.shutdown();
+         resetInstrumentsForTesting();
+      }
    });
 });

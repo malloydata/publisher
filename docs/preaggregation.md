@@ -132,7 +132,9 @@ This rule is wider than it sounds: it disqualifies the whole source, not just th
 
 ## What does not route
 
-Three limits are worth knowing before you decide pre-aggregation will help your workload. None affects correctness — an uncovered query is answered from the base, with the answer it always had — but each means no acceleration.
+Four limits are worth knowing before you decide pre-aggregation will help your workload. None affects correctness — an uncovered query is answered from the base, with the answer it always had — but each means no acceleration.
+
+**A query with an aggregate the rollup does not store does not route.** A rollup holds one row per grain group and a stored partial for each annotated measure, so it answers a query only when every aggregate in it is one of those measures, or an expression over them (`revenue / order_count`, `revenue { where: category = 'books' }`, `all(revenue)`). An aggregate written in the query itself — `count()`, `qty.sum()`, `count(category)`, `stddev(amount)`, including one in a `nest:`, a `having:`, or a measure an inline `extend` defines — would be computed over the rollup's rows rather than the base's, so the query is answered from the base. To accelerate a count, declare it as a measure and annotate it (`#@ preaggregate grain="category"` on `order_count is count()`), and ask for `order_count`. For the same reason a `select:` or `index:` stage over the source, including one in a `nest:`, is answered from the base: a rollup has one row per grain group, not one per source row.
 
 **A query that names a `view:` does not route.** Rollups are offered to a query through a composite source, and a composite carries its members' fields but not their views, so a view defined on your source is not visible on it. Given `view: by_category is { group_by: category; aggregate: revenue }`, `run: orders -> by_category` serves live, while the same query written out — `run: orders -> { group_by: category; aggregate: revenue }` — reads the rollup. This affects the REST API's `{"queryName": …, "sourceName": …}` form and Console dashboards, since both run named views. If your traffic is mostly named views, expect little benefit today.
 
@@ -145,9 +147,11 @@ Three limits are worth knowing before you decide pre-aggregation will help your 
 Rollups appear in the package's build plan before anything is built. Each has `origin: "preaggregate"` and a `preaggregate` object naming the base source, the grain's dimensions, and the measures served at it:
 
 ```bash
-curl -s localhost:4000/api/v0/environments/examples/packages/storefront \
-  | jq '.buildPlan.sources[] | select(.origin == "preaggregate") | {name, preaggregate}'
+curl -s localhost:4000/api/v0/environments/examples/packages/storefront/build-plan \
+  | jq '.sources[] | select(.origin == "preaggregate") | {name, preaggregate}'
 ```
+
+An older server has no `build-plan` route; read `.buildPlan` off `GET …/packages/storefront` there.
 
 A rollup is declared by no file, so it reports the `modelPath` of the model whose annotations produced it — where you would go to change it.
 
@@ -266,9 +270,12 @@ extended with measures — the annotation parses, and the build refuses the whol
 `#@ persist` source that was dropped from the plan.
 
 That first case is reachable deliberately, not only by inheritance: writing `storage=` on
-both the base's `#@ persist` and the `#@ preaggregate` line hits the same wall, and the
-build reports it against the rollup. Even had it built, the base's own stored table already
-claims the name its rollups would be served under, so nothing would have read it.
+both the base's `#@ persist` and the `#@ preaggregate` line hits the same wall. Even had it
+built, the base's own stored table already claims the name its rollups would be served
+under, so nothing would have read it. So Publisher leaves such rollups out of the plan and
+every run, rather than attempting a build that cannot succeed: the base still builds and
+serves from its stored table, and the package carries a `preaggregate-over-stored-base`
+warning (`warn`, one per base). Rollups over a stored base are planned for a later release.
 
 So a rollup goes to a destination because its own line says so, which is also the
 common case: a rollup's base is usually a table extended with measures, and Malloy admits

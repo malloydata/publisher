@@ -114,10 +114,8 @@ describe("Package serving identity", () => {
                "m.malloy",
                {
                   getPath: () => "m.malloy",
-                  setDiscoveryCuration: () => {},
-                  setQueryBoundary: () => {},
-                  setSiblingModelDefResolver: () => {},
-                  setDeclaringFilesResolver: () => {},
+                  getGivens: () => [],
+                  getCompilationError: () => undefined,
                   hasEmptyDiscoverySurface: () => false,
                   getDeclaredQueryMetadata: () => [],
                   getDeclaredSourceQueryMetadata: () => [],

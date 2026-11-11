@@ -11,17 +11,18 @@
 
 import { withSpan } from "../telemetry";
 import {
-   API,
    MalloyError,
    type QueryMaterializer,
    type Result,
 } from "@malloydata/malloy";
+import type { GovernedRunnable } from "./governance/governed_runnable";
 import * as Malloy from "@malloydata/malloy-interfaces";
 import { getDefaultQueryRowLimit } from "../config";
 import { BadRequestError, databaseAccessFailure } from "../errors";
 import { logger } from "../logger";
 import { type QueryCapSource } from "../query_cap_metrics";
 import { bigIntReplacer } from "../json_utils";
+import { wrapWithCorrectDrillMetadata } from "./drill_metadata";
 import {
    assertWithinModelByteLimit,
    assertWithinModelRowLimit,
@@ -31,12 +32,13 @@ import {
    type QueryRowLimitSource,
 } from "./model_limits";
 import { type QueryMetadata } from "./query_metadata";
+import { withStatementUsage } from "./statement_usage";
 
 /**
  * The options prepare and run must agree on. Spread into both calls, so a key
  * the caller leaves out is left out of both.
  */
-export type PrepareOptions = NonNullable<
+type PrepareOptions = NonNullable<
    Parameters<QueryMaterializer["getPreparedResult"]>[0]
 >;
 
@@ -53,7 +55,8 @@ export interface PreparedRun {
  * name, which only the prepared result knows), then run.
  */
 export async function prepareAndRun(
-   runnable: QueryMaterializer,
+   /** Only a runnable governance returned runs (`./governance/governed_runnable`). */
+   runnable: GovernedRunnable,
    options: PrepareOptions,
    run: {
       abortSignal: AbortSignal | undefined;
@@ -61,6 +64,12 @@ export async function prepareAndRun(
       queryMetadata: (
          connectionName: string,
       ) => QueryMetadata | undefined | Promise<QueryMetadata | undefined>;
+      /** Emit a usage record when the executing connection is metered. */
+      usage?: {
+         metered: (connectionName: string) => boolean;
+         environment: string;
+         package?: string;
+      };
    },
 ): Promise<PreparedRun> {
    return withSpan("publisher.query.execute", {}, () =>
@@ -77,6 +86,11 @@ async function prepareAndRunUntraced(
       queryMetadata: (
          connectionName: string,
       ) => QueryMetadata | undefined | Promise<QueryMetadata | undefined>;
+      usage?: {
+         metered: (connectionName: string) => boolean;
+         environment: string;
+         package?: string;
+      };
    },
 ): Promise<PreparedRun> {
    const prepared = await runnable.getPreparedResult(options);
@@ -87,12 +101,27 @@ async function prepareAndRunUntraced(
       maxRows: run.maxRows,
    });
    const queryMetadata = await run.queryMetadata(prepared.connectionName);
-   const result = await runnable.run({
-      rowLimit,
-      ...options,
-      abortSignal: run.abortSignal,
-      queryMetadata,
-   });
+   const execute = () =>
+      runnable.run({
+         rowLimit,
+         ...options,
+         abortSignal: run.abortSignal,
+         queryMetadata,
+      });
+   const usage = run.usage;
+   const result =
+      usage && safeMetered(usage.metered, prepared.connectionName)
+         ? await withStatementUsage(
+              {
+                 environment: usage.environment,
+                 connection: prepared.connectionName,
+                 surface: "serve",
+                 package: usage.package,
+              },
+              execute,
+              (r) => r.data.rowCount,
+           )
+         : await execute();
    return { result, rowLimit, rowLimitSource, queryMetadata };
 }
 
@@ -112,7 +141,7 @@ export function serializeWithinCaps(
    },
 ): { wrapped: Malloy.Result; serialized: string } {
    assertWithinModelRowLimit(result.totalRows, caps.maxRows, caps.source);
-   const wrapped = API.util.wrapResult(result);
+   const wrapped = wrapWithCorrectDrillMetadata(result);
    const serialized = stringifyQueryResponse(
       caps.compact ? result.data.value : wrapped,
       result.totalRows,
@@ -126,7 +155,7 @@ export function serializeWithinCaps(
 
 type ErrorClass = abstract new (...args: never[]) => Error;
 
-export interface RunErrorContext {
+interface RunErrorContext {
    packageName: string;
    modelPath: string;
    /** Prefix of the generic 400's message, e.g. `Query execution failed`. */
@@ -212,4 +241,16 @@ export function isGivenBindingFailure(err: unknown): boolean {
       Array.isArray(problems) &&
       problems.some((p) => isGivenCode((p as { code?: unknown })?.code))
    );
+}
+
+/** A metering check must never fail a query. */
+function safeMetered(
+   metered: (connectionName: string) => boolean,
+   connectionName: string,
+): boolean {
+   try {
+      return metered(connectionName);
+   } catch {
+      return false;
+   }
 }

@@ -2,12 +2,9 @@
 // SPDX-License-Identifier: MIT
 
 import type { PersistSource } from "@malloydata/malloy";
-import {
-   BuildInstruction,
-   BuildPlan,
-   Materialization,
-} from "../storage/DatabaseInterface";
-import { CompiledBuildPlan } from "../service/build_plan";
+import { Materialization } from "../storage/DatabaseInterface";
+import { BuildInstruction, BuildPlan } from "../service/materialization/types";
+import { CompiledBuildPlan } from "../service/materialization/plan/build_plan";
 
 /**
  * Shared fixtures for the materialization unit specs (service, controller,
@@ -30,6 +27,7 @@ export function makeMaterialization(
       completedAt: null,
       error: null,
       metadata: null,
+      version: null,
       createdAt: new Date("2026-01-01"),
       updatedAt: new Date("2026-01-01"),
       ...overrides,
@@ -224,6 +222,8 @@ export function fakeSource(opts: {
          return opts.sql ?? "SELECT 1";
       },
       annotations: {
+         // No notes, so `parseRouteTag` drops nothing and calls `parseAsTag`.
+         forRoute: () => [],
          parseAsTag: () => ({
             tag: fakeTagFromTree(
                tagTree({
@@ -235,6 +235,7 @@ export function fakeSource(opts: {
          }),
       },
       modelAnnotations: {
+         forRoute: () => [],
          parseAsTag: () => ({
             tag: fakeTagFromTree(
                tagTree({
@@ -264,14 +265,13 @@ export function compiledWith(
    sourceGateOutcomes?: CompiledBuildPlan["sourceGateOutcomes"],
 ): CompiledBuildPlan {
    return {
-      graphs: [
+      builds: [
          {
             connectionName: "duckdb",
-            nodes: levels.map((level) =>
-               level.map((sourceID) => ({ sourceID, dependsOn: [] })),
-            ),
+            order: levels.flat(),
+            dependsOn: {},
          },
-      ] as unknown as CompiledBuildPlan["graphs"],
+      ],
       sources,
       connectionDigests: { duckdb: "dig" },
       connections,

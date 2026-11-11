@@ -80,6 +80,11 @@ function PackageRow({
    onSelectPackage: (to: string, event?: React.MouseEvent) => void;
 }) {
    const { mutable } = useServer();
+   // A package with published versions carries `versionId` and
+   // `latestVersion` (null while none is latest); one without has neither.
+   // Its versions are immutable, so it offers no edit, only delete.
+   const versioned =
+      pkg.versionId !== undefined || pkg.latestVersion !== undefined;
    const [menuAnchorEl, setMenuAnchorEl] = useState<null | HTMLElement>(null);
    const menuOpen = Boolean(menuAnchorEl);
 
@@ -122,11 +127,13 @@ function PackageRow({
                              horizontal: "right",
                           }}
                        >
-                          <EditPackageDialog
-                             package={pkg}
-                             resourceUri={packageResourceUri}
-                             onCloseDialog={handleMenuClose}
-                          />
+                          {!versioned && (
+                             <EditPackageDialog
+                                package={pkg}
+                                resourceUri={packageResourceUri}
+                                onCloseDialog={handleMenuClose}
+                             />
+                          )}
                           <DeletePackageDialog
                              resourceUri={packageResourceUri}
                              onCloseDialog={handleMenuClose}

@@ -1,0 +1,1205 @@
+{
+  "tools": [
+    {
+      "name": "execute_query",
+      "description": "Run a Malloy query against a model and return the rows. Takes either ad-hoc Malloy in query, or a named view/query via queryName (with sourceName for a view).\n\n## Contract rules\n- Check _limit_hit before reporting any total, count, or \"top N\". True means the server's default cap cut the result off and more rows exist, so what came back is a partial set, not the answer.\n- Never sum or count the returned rows to state a total when _limit_hit or _rows_truncated is set. Aggregate in the query instead.\n- _returned_rows: 0 with _rows_truncated set means one row was too large to send, NOT that nothing matched. Do not report it as an empty result.\n- Use source, view, and field names exactly as get_context returned them. sourceName/queryName take one NAME each, never Malloy code — they are quoted for you, so send even a hyphenated name bare, and put anything richer (a dotted path, a refinement, a definition) in query.\n- One run: per call. query may define sources and queries first, but more than one run: statement is refused rather than run; send each question as its own call.\n- query is RESTRICTED: no raw SQL/import/##! (see its param doc).\n\n## Response\nA JSON object, the same shape Credible's execute_query and an in-package data app receive:\n- rows: flat objects keyed by column name.\n- _meta: the Malloy metadata flat rows drop (schema with field types and render tags, annotations, connection_name, query_timezone).\n- _query_row_limit: the cap pushed into the SQL, from the query's own limit: or the server default.\n- _limit_source: \"query\" when the cap came from the query's own limit:/top:, \"server_default\" otherwise.\n- _limit_hit: the row count equals that cap AND the cap was the server default, so a query carrying its own limit:/top: never sets it and exactly that many rows is a complete answer.\n- _rows_truncated / _total_rows / _returned_rows: present only when the payload cap dropped rows.\n- _query_id: this query's id in the warehouse's own query history. Present only where enabled.\n- warning, renderLogErrors: present only when they apply.\n\nValues above 2^53 are returned as JSON strings so their digits survive.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "environmentName": {
+            "type": "string",
+            "description": "Environment name, as list_packages returns it."
+          },
+          "packageName": {
+            "type": "string",
+            "description": "Package containing the model, as list_packages returns it."
+          },
+          "modelPath": {
+            "type": "string",
+            "description": "Path to the .malloy model file"
+          },
+          "query": {
+            "type": "string",
+            "description": "Ad-hoc Malloy query code with exactly one run: statement; source: and query: definitions may come before it. Text with more than one run: is refused, so send each as its own call. Runs in restricted mode: it may not use raw SQL (duckdb.sql(...) / connection.sql(...)), direct SQL function calls (name!type(...)), the sql_* function family (sql_number, sql_string, sql_date, sql_timestamp, sql_boolean), import statements, ##! flags, or new sources from connection.table(...) — put those in a model file and reload instead."
+          },
+          "sourceName": {
+            "type": "string",
+            "description": "Source name for a view. A NAME, not Malloy code: one name exactly as get_context returned it, sent bare (the server quotes it, so a hyphen or a reserved word is fine — do not add backticks yourself). Anything richer, such as a parameterized source or an inline extension, goes in query."
+          },
+          "queryName": {
+            "type": "string",
+            "description": "Named query or view. A NAME, not Malloy code, on the same terms as sourceName: one view name as get_context returned it. A dotted path (carriers.by_name), a refinement (by_carrier + { limit: 10 }), or anything containing a newline goes in query instead."
+          },
+          "filterParams": {
+            "type": "object",
+            "additionalProperties": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                }
+              ]
+            },
+            "description": "Filter parameter values keyed by filter name. Used with sources that declare #(filter) annotations."
+          },
+          "givens": {
+            "type": "object",
+            "additionalProperties": {},
+            "description": "Per-query given values that override model defaults. Keys are given names declared in the model's given: block."
+          }
+        },
+        "required": [
+          "environmentName",
+          "packageName",
+          "modelPath"
+        ],
+        "additionalProperties": false,
+        "$schema": "http://json-schema.org/draft-07/schema#"
+      },
+      "execution": {
+        "taskSupport": "forbidden"
+      }
+    },
+    {
+      "name": "get_context",
+      "description": "Retrieve the entities in a Malloy package most relevant to a plain-English question.\n\n## Contract rules\n- Use returned names verbatim; never invent one.\n- One target per concept, not a list in one search_text. A source returns only its matched fields, not all of them.\n- No search_targets lists environments, packages, sources or fields. A search needs one package in scopes.\n- Read warnings and any error/stale field before trusting a number or calling data absent.\n- A source's joins are all listed: empty means none. In an answer, never write a join; tell the user.\n- Read a source's doc before querying: it holds grain and population rules.\n- accessFilter/authorize mean gated; a deny-all source never appears here.\n- Empty sources: nothing answered; see unresolved_targets.\n\n## Parameters\nsearch_targets: {target_type, search_text}; target_type is source|dimension|measure|view|join|dimensional_value, omitting search_text enumerates that type. dimensional_value: search_text is one value as typed, beside its dimension target; stored strings return in entities[].values (gated sources need givens, as in execute_query). Once its field is known, scope to it (source, entity_name). scopes: {environment, package} + optional model_path, source, entity_name. offset pages results. include_code or a pinned entity_name returns code.\n\n## Response\nsources[], best first; a source repeats once per model_path resolving it, query any. source_info: resource_id (environment/package/model_path/source) -> execute_query's environmentName/packageName/modelPath/sourceName; docs (… = truncated), one_line_summary, complete joins, givens, accessFilter/authorize, filter_params. entities[] nest under it: name, entity_type, description, data_type, classifications, relationship (fan-out), join_path, aliases, relevance, entity_id, values[] {value, relevance}, matched_targets[].match_reason.\nranking, returned of total_available sources, next_offset: more pages (35,000 chars each), warnings[], clusters, unresolved_targets. retrieval \"indexing\": still building, retry soon. Errors carry retrieval_reason (\"llm-stage-failed\" names retrieval_stage).",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "search_targets": {
+            "anyOf": [
+              {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "target_type": {
+                      "type": "string",
+                      "enum": [
+                        "source",
+                        "dimension",
+                        "measure",
+                        "view",
+                        "dimensional_value",
+                        "join"
+                      ],
+                      "description": "What to look for. `dimension`/`measure`/`view` match fields and the response groups them by source; `source` matches or lists sources; `join` matches a declared relationship; `dimensional_value` matches one literal value against the values stored in `#(index)` dimensions."
+                    },
+                    "search_text": {
+                      "anyOf": [
+                        {
+                          "type": "string",
+                          "maxLength": 500
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ],
+                      "description": "Plain-English description of what you need, e.g. \"the total revenue\". For a `dimensional_value` target, one value exactly as the user typed it, e.g. \"Denvr\": it is matched by spelling, typos included, and with an embedding provider by meaning, and the stored string (\"Denver\") returns in `entities[].values` on the dimension that holds it. Send each value as its own target beside the `dimension` target for its field (\"the city of the store\"), and keep it out of that target's text. Once you know the field, scope the value search to it with `scopes[].source` and `entity_name`: an unscoped value search is allowed but slower, and can return look-alike values from other fields. Omit or null to enumerate this type instead of ranking it."
+                    }
+                  },
+                  "required": [
+                    "target_type"
+                  ],
+                  "additionalProperties": false
+                },
+                "minItems": 1
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "What to find. One target per concept; several targets of different types answer one question in one call. Omit to list instead: a source in `scopes` lists its fields, a package its sources; with no `scopes`, `environment` lists that environment's packages, and nothing at all lists the environments."
+          },
+          "scopes": {
+            "anyOf": [
+              {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "environment": {
+                      "type": "string",
+                      "description": "Environment name."
+                    },
+                    "package": {
+                      "type": "string",
+                      "description": "Package name."
+                    },
+                    "version": {
+                      "type": [
+                        "string",
+                        "null"
+                      ],
+                      "description": "Package version. Omit to use the served version."
+                    },
+                    "model_path": {
+                      "type": [
+                        "string",
+                        "null"
+                      ],
+                      "description": "Model file within the package, e.g. \"model.malloy\"."
+                    },
+                    "source": {
+                      "type": [
+                        "string",
+                        "null"
+                      ],
+                      "description": "Narrow to one source within the model."
+                    },
+                    "entity_name": {
+                      "type": [
+                        "string",
+                        "null"
+                      ],
+                      "description": "Narrow to one entity within the source."
+                    }
+                  },
+                  "required": [
+                    "environment",
+                    "package"
+                  ],
+                  "additionalProperties": false
+                },
+                "minItems": 1,
+                "maxItems": 1
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Exactly one when given: the environment and package to search or list, optionally narrowed to a model, source, or entity. Omit it to find those names: the response lists environments, or `environment`'s packages. A search needs it, unless only one package is served."
+          },
+          "environment": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "With no `scopes`: list this environment's packages. A level with one choice is entered, so an environment with one package returns that package's sources (or searches it). Must match `scopes[0].environment` when both are given."
+          },
+          "filter_params": {
+            "anyOf": [
+              {
+                "type": "object",
+                "additionalProperties": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "array",
+                      "items": {
+                        "type": "string"
+                      }
+                    }
+                  ]
+                }
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Values for filters a source declares via #(filter), keyed by filter name."
+          },
+          "givens": {
+            "anyOf": [
+              {
+                "type": "object",
+                "additionalProperties": {}
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The givens in force for this caller, as the trusted tier set them, and as execute_query takes them. A source whose #(authorize) lock cannot admit the caller on the #(secure) givens supplied, or reads a secure given not supplied, is omitted, as a source locked with `false` is. A `dimensional_value` lookup on a gated source runs through the same gates as a query, so its values are withheld without the givens it needs. Plain givens and row filters hide nothing. Omit to see every published source."
+          },
+          "user_prompt": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The user's question that led to this call, verbatim on the first turn. Used for observability; does not affect matching."
+          },
+          "include_code": {
+            "type": [
+              "boolean",
+              "null"
+            ],
+            "description": "Return each entity's definition as `code`: a dimension's or measure's Malloy expression, or a view's definition as written. Off by default -- a source's #(doc) should say what a field means, and definitions are long. Turn it on to inspect what a measure actually computes. Pinning `scopes[].entity_name` turns it on by itself."
+          },
+          "limit": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 150
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Sources per page (max 150). PREFER OMITTING: ranked search defaults to 20, a pure listing to 150. Where a ranked response carries next_offset, a page also ends before 35,000 characters, and the sources past it are on the next page, not dropped."
+          },
+          "offset": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "minimum": 0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Sources to skip: a previous response's next_offset, sent with every other argument unchanged, returns the next page. Works on a pure listing, and on a ranked result whose response carried next_offset: that result is held for 10 minutes, so its pages are one result. Later, the search runs again and a warning says so. Other ranked results cannot be resumed."
+          }
+        },
+        "additionalProperties": false,
+        "$schema": "http://json-schema.org/draft-07/schema#"
+      },
+      "execution": {
+        "taskSupport": "forbidden"
+      }
+    },
+    {
+      "name": "list_packages",
+      "description": "List what this Publisher serves: every environment, and the packages in each.\n\nCall this when you do not already know an environment and package name, or to see a package that failed to load. get_context with no arguments lists the same names; never guess them.\n\nEach package reports `name`, its `description` where it has one, and two health facts that are otherwise invisible:\n- `error` with no `stale`: the package FAILED to load. It is not queryable, and it would otherwise simply be missing, which reads as \"does not exist\".\n- `error` with `stale: true`: the package IS serving and answering, but its most recent reload failed to compile, so its names and any numbers you get from it come from the model compiled BEFORE that save. Fix the model and call reload_package.\n\nAn environment carries `error` on the same terms: its packages could not be listed at all (an unreachable store, expired credentials), so its `packages` is empty because the listing FAILED, not because the environment is empty. Without that field the two are the same payload. Report the error rather than telling the user there is nothing there.\n\nTakes no arguments.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {},
+        "$schema": "http://json-schema.org/draft-07/schema#"
+      },
+      "execution": {
+        "taskSupport": "forbidden"
+      }
+    },
+    {
+      "name": "search_malloy_docs",
+      "description": "Search the Malloy documentation by keyword and return the most relevant doc pages, each with a short excerpt and a link. Use this to look up Malloy language or rendering syntax instead of guessing.\n\n## When to use\n- Before writing unfamiliar Malloy syntax (window functions, dialect-specific functions, rendering tags) or when a query fails with a syntax error you do not recognize.\n- Do NOT use it to look up field or source names in a model; use get_context for that.\n- Do NOT use it for anything about running Publisher itself — server flags, deployment, connection or embedding-provider configuration, publisher.json, packages, watch mode. This index covers the Malloy LANGUAGE docs only. Those answers live in the deployment's own docs/ directory and bundled skills, not here.\n\n## Contract rules\n- These are documentation pages, not model entities. Do not treat a doc title as a field or source name.\n- The excerpt is only a hint; open the url for the full detail.\n- Matching is keyword-based, so a result is not evidence the topic is covered. An off-topic query still returns its best keyword matches, and a title can match on a word it shares with your question while the page is about something else. Read the excerpt before trusting a hit, and treat a page-full of near-misses as \"not documented here\" rather than retrying with more keywords.\n\n## Parameters\n- query (required): keywords describing what you need.\n- limit (optional): maximum results to return; default 8.\n\n## Response\nA JSON array of matches, each with title, url (a docs.malloydata.dev link), and a short excerpt, ordered by relevance. Empty array if nothing matches; broaden the keywords and retry.\n\n## Worked example\n{ \"query\": \"window functions lag\" }",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "query": {
+            "type": "string",
+            "maxLength": 500,
+            "description": "Keywords describing what you need, e.g. \"window functions\", \"bar chart\", \"pivot\"."
+          },
+          "limit": {
+            "type": "integer",
+            "exclusiveMinimum": 0,
+            "maximum": 50,
+            "description": "Maximum number of results to return. Default 8, max 50."
+          }
+        },
+        "required": [
+          "query"
+        ],
+        "additionalProperties": false,
+        "$schema": "http://json-schema.org/draft-07/schema#"
+      },
+      "execution": {
+        "taskSupport": "forbidden"
+      }
+    },
+    {
+      "name": "compile_model",
+      "description": "Compile-check Malloy without running a query. Use this while authoring instead of a throwaway execute_query.\n\n## Scopes (the scope parameter)\n- \"append\" (default): append source to modelPath. Use for NEW definitions; existing definitions report \"Cannot redefine\". Positions refer to the concatenated file (a ## artifact document reads only your text, and no document is returned). Refused here, with a 400: import, connection.table(...), connection.sql(...), raw-SQL functions, given: declarations (reading the model's givens as $NAME is fine), ##! flags, and text that does not stand alone as top-level Malloy — a bare view:/dimension:/measure:, or anything parsing only as a continuation of the model's last statement. A ## artifact document also refuses # image, # link and @env.; plain text keeps them. Wrap a view body in a top-level query:, a field in a throwaway source: check is <source> extend { … }; use \"file\" or \"package\" for a model that declares data roots.\n- \"file\": compile source AS modelPath. Use to validate an EDIT before saving; positions match the submitted file.\n- \"package\": dry-run a reload of every .malloy/.malloynb file without serving the result, with its render-tag and report checks (no position) but not its other warnings. A source replaces modelPath so importers see the edit. Diagnostics may name hidden files; no rows or SQL are returned, and authorize gates still apply to caller text. An unmatched path is warned and treated as new. Save, then reload_package to serve it.\n\n## Parameters\n- environmentName, packageName, modelPath: required. source: required at append/file, optional at package. Caller source may not declare an access-control gate outside prose — neither #(authorize) nor #(access_filter).\n\n## Response\n{ status: \"success\"|\"error\", diagnostics: [{ severity, message, code, model, line, character, endLine, endCharacter, replacement }], sql? }. Positions are 0-based; model is the package-relative file the diagnostic points at (which can be pre-existing content, not your source). status is \"error\" only when an error-severity diagnostic exists; errors are also stated in a plain text block.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "environmentName": {
+            "type": "string",
+            "description": "Environment name, as list_packages returns it."
+          },
+          "packageName": {
+            "type": "string",
+            "description": "Package containing the model, as list_packages returns it."
+          },
+          "modelPath": {
+            "type": "string",
+            "description": "Path to the .malloy model the check targets: the namespace the source is appended to (scope append), or the file it replaces (scope file / package-with-source)."
+          },
+          "source": {
+            "type": "string",
+            "description": "The Malloy source to validate; never executed. Required at scope append/file; optional at scope package (a what-if replacement for modelPath). Text with a model-level ## artifact tag is a report, wherever it lives (never public/ or the root index.malloy); its layout is the tag's layout=grid|linear, else the deprecated kind= (dashboard is grid, notebook linear), else grid when it lists tiles or has a dashboard { … } tag, else linear."
+          },
+          "scope": {
+            "type": "string",
+            "enum": [
+              "append",
+              "file",
+              "package"
+            ],
+            "description": "What source means. \"append\" (default): append to modelPath. \"file\": compile AS modelPath to validate an edit. \"package\": dry-run a reload over all .malloy/.malloynb files without serving the result, including its render-tag and report checks; an optional source replaces modelPath."
+          },
+          "includeSql": {
+            "type": "boolean",
+            "description": "When true and the source ends in a runnable query, also return the generated SQL for inspection. The query is still not run."
+          },
+          "givens": {
+            "type": "object",
+            "additionalProperties": {},
+            "description": "Given values for the model's given: block. Also required to satisfy any authorize gate on the target model, whether or not includeSql is set."
+          }
+        },
+        "required": [
+          "environmentName",
+          "packageName",
+          "modelPath"
+        ],
+        "additionalProperties": false,
+        "$schema": "http://json-schema.org/draft-07/schema#"
+      },
+      "execution": {
+        "taskSupport": "forbidden"
+      }
+    },
+    {
+      "name": "reload_package",
+      "description": "Reload a package so edits to its model files on disk are picked up, making newly added or changed sources, views, and named queries resolvable by execute_query WITHOUT restarting the server. Publisher compiles each configured package at boot and serves that cached model, so a source or view you add afterwards is not queryable by name until the package is reloaded. Use this to close the edit -> run loop after saving a model change.\n\nReceipt: Publisher compiles a COPY under publisher_data/ unless the environment is watch-mounted, so a reload succeeds whether or not it saw your edit. sourceContentSha hashes the model, skill and agent files (and the manifest's agents), so if you edited one of those and it is unchanged, the edit never reached the server. Data, other publisher.json keys and retrieval settings are not hashed.\n\nA reload that fails to compile leaves your files on disk alone and keeps serving the previously compiled model, returning the compile errors. compile_model at scope \"package\" first is the faster way to see diagnostics. It reports the compile, render-tag and dashboard findings a reload would; every other package warning (storage, persist, materialization, explores, surface, discovery, deprecated .malloynb or #(filter), among others) appears only here.\n\n## Parameters\n- environmentName, packageName (required): the package to recompile. Use the names get_context returns.\n\n## Behavior\nRecompiles the package from its on-disk content under publisher_data/, the path every package from publisher.config.json takes. A package the server installed from a location (a publish or an update that supplied one) is re-fetched from that location instead, keeping its manifest binding, which overwrites on-disk edits.\n\n## Response\nA JSON object with status \"reloaded\", a mode, the package name, sourceContentSha and servedRevision, any render-tag warnings, and any exploresWarnings (curated-discovery entries that did not resolve to a model). Mode \"in-place\" recompiled your on-disk edits; \"reinstalled\" re-fetched over them; \"unchanged\": an immutable published version. A hard compile error returns an error payload instead.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "environmentName": {
+            "type": "string",
+            "description": "Environment name, as list_packages returns it."
+          },
+          "packageName": {
+            "type": "string",
+            "description": "Package to reload, as list_packages returns it."
+          }
+        },
+        "required": [
+          "environmentName",
+          "packageName"
+        ],
+        "additionalProperties": false,
+        "$schema": "http://json-schema.org/draft-07/schema#"
+      },
+      "execution": {
+        "taskSupport": "forbidden"
+      }
+    },
+    {
+      "name": "search_database_schema",
+      "description": "Find the tables in a database connection, by plain-English description. Use it to model a database you have not modelled yet, or to check schema, table and column names. To search an existing model, use get_context.\n\n## Drill down, one level at a time\nSupply what you know, omit the rest. No arguments lists the environments and their connections; + connectionName lists its schemas; + schemaName lists its tables (up to 80 columns each; add searchQuery to rank them); + tableName returns that one table with every column.\n\n## Contract rules\n- Use connectionName, tablePath and column names exactly as returned.\n- A connection with scope \"package\" (the \"duckdb\" sandbox) is per package: pass packageName too, from those it lists.\n- Schemas marked isHidden are system schemas; your tables are in the others.\n- malloySource is the ready-to-use `source:` line; its identifiers are already quoted, so paste it as-is.\n- Names and types only: no row value is returned. For a column's values, run execute_query against a model using this connection: `run: c.table('s.t') -> { group_by: col }`.\n- No tables for a searchQuery means nothing matched, not an empty schema. Broaden it, or list without one.\n- An empty schema may still hold data: DuckDB over CSV or Parquet addresses files by path, registering none.\n- Read warnings: they name anything omitted or ignored.\n\n## Response\nJSON: tables (connectionName, schemaName, tableName, tablePath, malloySource, columns (a record's members follow it as delivery.city), columnCount, and score on a search), plus totalAvailable and returned. A search adds matched and ranking; a listing adds nextOffset when more remain, to pass back as offset.\n\n## Worked example\nStart with no arguments and follow what it names. For connection \"warehouse\", schema \"sales\":\n{ \"environmentName\": \"examples\", \"connectionName\": \"warehouse\", \"schemaName\": \"sales\", \"searchQuery\": \"customer orders\" }\nThen paste that table's malloySource verbatim, e.g. source: `orders` is `warehouse`.table('sales.orders') extend { }",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "environmentName": {
+            "type": "string",
+            "maxLength": 256,
+            "description": "Environment to look in. Omit to list the environments and their connections."
+          },
+          "connectionName": {
+            "type": "string",
+            "maxLength": 256,
+            "description": "Connection to introspect. Omit to list the connections in the environment."
+          },
+          "packageName": {
+            "type": "string",
+            "maxLength": 256,
+            "description": "Required only for the per-package \"duckdb\" sandbox connection, which exists once per package."
+          },
+          "schemaName": {
+            "type": "string",
+            "maxLength": 256,
+            "description": "Schema (or dataset/database) to list tables from. Omit to list the connection's schemas and use one of those names verbatim: DuckDB qualifies them as \"catalog.schema\" (for example \"memory.main\"), so a bare \"main\" is rejected."
+          },
+          "tableName": {
+            "type": "string",
+            "maxLength": 256,
+            "description": "A single table to return in full, with every column. Requires schemaName."
+          },
+          "searchQuery": {
+            "type": "string",
+            "maxLength": 500,
+            "description": "Plain-English description of the data you are looking for, e.g. \"customer orders and shipping addresses\". Requires schemaName. Omit to list the schema's tables in order."
+          },
+          "limit": {
+            "type": "integer",
+            "exclusiveMinimum": 0,
+            "maximum": 100,
+            "description": "Maximum tables to return. Default 20."
+          },
+          "offset": {
+            "type": "integer",
+            "minimum": 0,
+            "description": "Tables to skip, for paging a long table listing. Pass back the nextOffset from a previous response. Ignored when searchQuery is set, because ranked results cannot be paged."
+          }
+        },
+        "additionalProperties": false,
+        "$schema": "http://json-schema.org/draft-07/schema#"
+      },
+      "execution": {
+        "taskSupport": "forbidden"
+      }
+    },
+    {
+      "name": "get_status",
+      "description": "Report the server's health: its operational state and every configured package or environment that failed to load or is serving a stale model. This is the only MCP surface where a load failure is visible, so call it before concluding a package is empty or missing, and after a model edit whose reload you did not run yourself (e.g. you rely on watch mode).\n\n## Response\nA JSON object with:\n- operationalState: \"initializing\" | \"serving\" | \"throttled\" | \"draining\".\n- initialized: whether startup finished.\n- version: this server's release version.\n- environments: each environment's name with the packages serving there, each carrying a status of {serving, loading}; a package reloading while it serves reports both. A package loading here for the first time is not listed (the REST endpoint lists it on request, with includeLoading=true).\n- emptyReason (only present when the server found no config at startup, or the --config path was missing): why environments is empty, and the path it checked. The server still reports serving in that state.\n- initError (only present when startup failed): why. The server stays at \"initializing\" and never serves; the cause is usually a server root it cannot write (publisher.db), or a ${VAR} in the config file's environments that is not set. A package or environment that failed to load is under loadErrors instead.\n- loadErrors (only present when something failed): entries of {environment, package?, message, stale?, failedAt?}. An entry WITHOUT stale means the package (or whole environment, when package is absent) did not load and is missing from environments; that includes a package add that failed on the server's side. An entry WITH stale: true means the package IS serving, but its most recent reload failed to compile, so the model answering queries is OLDER than the files on disk; the message says why. Fix the file and reload (reload_package) to clear it.\n\nNo loadErrors key means everything configured loaded and nothing is stale.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {},
+        "$schema": "http://json-schema.org/draft-07/schema#"
+      },
+      "execution": {
+        "taskSupport": "forbidden"
+      }
+    },
+    {
+      "name": "get_skill",
+      "description": "Fetch a task guide, or list the guides available. Guides are concise procedural instructions for working with Malloy and this server: query patterns, chart and rendering tags, analysis pitfalls, how to build or review a model.\n\nA package can ship guides of its OWN, describing how to use that package specifically: which source answers which question, what the business terms mean here, which conventions apply. Pass `scopes` to see them. A package guide whose name matches a built-in one REPLACES it for that package, so the package's version is what you get back; `origin` on every entry says which you are reading.\n\n## Call modes\n- No arguments: list the built-in guides (name plus a one-line description).\n- `scopes`: list the guides in force for that package, built-in and package alike.\n- `skill_name`: fetch that guide's full Markdown. Combine with `scopes` to get the package's version when it has one.\n\n## Parameters\n- skill_name (optional): a name from `availableSkills`. Omit to list.\n- scopes (optional): exactly one {environment, package}, from list_packages. Omit for the built-in set only.\n\n## Response\n- skill: the requested guide ({name, content, origin}), or null when listing or when skill_name did not match.\n- availableSkills: always present; every guide in scope with its description and origin.\n- message: only when skill_name did not match; says so and points at availableSkills.\n\n`origin` is \"package\" for a guide the package ships (including one replacing a built-in) and \"bundled\" for a built-in. Reading a guide is not the same as having it available: fetch the one that covers what you are about to do before you do it.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "skill_name": {
+            "anyOf": [
+              {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 200
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Name of the guide to fetch, as returned in availableSkills. Omit to list."
+          },
+          "scopes": {
+            "anyOf": [
+              {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "environment": {
+                      "type": "string",
+                      "description": "Environment name."
+                    },
+                    "package": {
+                      "type": "string",
+                      "description": "Package name."
+                    }
+                  },
+                  "required": [
+                    "environment",
+                    "package"
+                  ],
+                  "additionalProperties": false
+                },
+                "minItems": 1,
+                "maxItems": 1
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Exactly one {environment, package}. Scopes the listing to the guides in force for that package. Omit for the built-in set."
+          }
+        },
+        "additionalProperties": false,
+        "$schema": "http://json-schema.org/draft-07/schema#"
+      },
+      "execution": {
+        "taskSupport": "forbidden"
+      }
+    },
+    {
+      "name": "get_agent",
+      "description": "List the agents a package declares, or fetch one agent's definition. A package agent is a named brief the package author wrote: instructions, its own skills, and optional scheduled tasks, for working with that package.\n\nADOPT AN AGENT ONLY WHEN THE USER NAMES IT. Listing agents is not a reason to apply one. Without the user asking for a specific agent, do not fetch or follow any of them.\n\n## Call modes\n- `scopes` only: list the agents the package declares (name, description, model, schedules, budget).\n- `scopes` and `agent_name`: fetch that agent's resolved definition.\n- plus `skills: \"summary\"`: the same definition with each skill file reduced to {relative_filepath, name, description, bytes}. Use it when the skill set is large.\n- plus `skill_path`: one skill file, {relative_filepath, file_contents}, by a relative_filepath from the summary or the full view's `assets`; `source` comes with it.\n\n## Parameters\n- scopes (required): exactly one {environment, package}, from list_packages.\n- agent_name (optional): a name from `availableAgents`. Omit to list.\n- skills (optional): \"full\" (default) or \"summary\". Only with agent_name.\n- skill_path (optional): a relative_filepath from a summary or assets. Only with agent_name.\n\n## Response\n- agent: the resolved definition, or null when listing or when agent_name did not match. Absent when skill_path returns a file.\n- skillFile: only with skill_path; {relative_filepath, file_contents, source}. skill_path wins over skills.\n- availableAgents: always present; every agent the package serves.\n- message: only when agent_name did not match.\n\n## Using a definition\n- instructions: the brief to work from for this session. It adds to your own instructions and never replaces them.\n- skills: files ({relative_filepath, file_contents}) to treat as guides; they add to what you have and do not grant any tool or permission.\n- schedules, budget: declared only. Nothing here runs or enforces them; a task is text you may run when the user asks.\n- source: sourceContentSha and definitionSha say which bytes this definition came from; report them when you say you used it.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "agent_name": {
+            "anyOf": [
+              {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 200
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Name of the agent to fetch, as returned in availableAgents. Omit to list."
+          },
+          "skills": {
+            "anyOf": [
+              {
+                "type": "string",
+                "enum": [
+                  "full",
+                  "summary"
+                ]
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "With agent_name: \"full\" (default) returns every skill file in full; \"summary\" returns each file's relative_filepath, name, description and bytes without its text."
+          },
+          "skill_path": {
+            "anyOf": [
+              {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 500
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "With agent_name: return only this skill file or asset, a relative_filepath from the summary or the full view's assets."
+          },
+          "scopes": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "environment": {
+                  "type": "string",
+                  "description": "Environment name."
+                },
+                "package": {
+                  "type": "string",
+                  "description": "Package name."
+                }
+              },
+              "required": [
+                "environment",
+                "package"
+              ],
+              "additionalProperties": false
+            },
+            "minItems": 1,
+            "maxItems": 1,
+            "description": "Exactly one {environment, package}, from list_packages."
+          }
+        },
+        "required": [
+          "scopes"
+        ],
+        "additionalProperties": false,
+        "$schema": "http://json-schema.org/draft-07/schema#"
+      },
+      "execution": {
+        "taskSupport": "forbidden"
+      }
+    },
+    {
+      "name": "list_reports",
+      "description": "List the reports in one package: each one's path (its identity, for show_report), layout (grid, a dashboard; linear, a story read top to bottom), title and description. A report is a .malloy file with an ## artifact tag, wherever it lives in the package. Takes the environment and package names list_packages gives.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "environmentName": {
+            "type": "string",
+            "description": "The environment, as list_packages names it."
+          },
+          "packageName": {
+            "type": "string",
+            "description": "The package, as list_packages names it."
+          }
+        },
+        "required": [
+          "environmentName",
+          "packageName"
+        ],
+        "additionalProperties": false,
+        "$schema": "http://json-schema.org/draft-07/schema#"
+      },
+      "execution": {
+        "taskSupport": "forbidden"
+      }
+    },
+    {
+      "name": "show_report",
+      "title": "Show a report",
+      "description": "Show a report to the user: its tiles, charts and filter controls, drawn in a panel in the conversation by a host that supports MCP Apps (Claude Desktop and claude.ai among them), and runnable there. Use it when the user wants to see a dashboard or report, not to answer a question yourself: for numbers, run execute_query. Takes the report's path from list_reports and, optionally, starting filter values. The text result says what the report holds and gives its address in the Publisher Console, which works in any client, including one that draws no panel.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "environmentName": {
+            "type": "string",
+            "description": "The environment, as list_packages names it."
+          },
+          "packageName": {
+            "type": "string",
+            "description": "The package, as list_packages names it."
+          },
+          "path": {
+            "type": "string",
+            "description": "The report's path in the package, including `.malloy`, exactly as list_reports gives it: `sales/q3.malloy`."
+          },
+          "givens": {
+            "type": "object",
+            "additionalProperties": {
+              "type": "string"
+            },
+            "description": "Starting filter values, by given name, as the report's filter controls write them (`{\"CATEGORY\": \"Outerwear\"}`). They beat the report's own starting values. Omit to open it as its author left it."
+          }
+        },
+        "required": [
+          "environmentName",
+          "packageName",
+          "path"
+        ],
+        "additionalProperties": false,
+        "$schema": "http://json-schema.org/draft-07/schema#"
+      },
+      "annotations": {
+        "readOnlyHint": true,
+        "openWorldHint": false
+      },
+      "execution": {
+        "taskSupport": "forbidden"
+      },
+      "_meta": {
+        "ui": {
+          "resourceUri": "ui://publisher/report.html"
+        },
+        "ui/resourceUri": "ui://publisher/report.html"
+      }
+    },
+    {
+      "name": "report_api",
+      "title": "Report panel API",
+      "description": "Used by the show_report panel to load the report it shows and run its tiles. Not for agents: use execute_query.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "operation": {
+            "type": "string",
+            "enum": [
+              "status",
+              "listReports",
+              "getReport",
+              "query"
+            ],
+            "description": "Which read: status, listReports, getReport or query."
+          },
+          "environmentName": {
+            "type": "string"
+          },
+          "packageName": {
+            "type": "string"
+          },
+          "path": {
+            "type": "string",
+            "description": "getReport: the report's path. query: the model's path."
+          },
+          "versionId": {
+            "type": "string"
+          },
+          "body": {
+            "type": "object",
+            "properties": {
+              "query": {
+                "type": "string"
+              },
+              "queryName": {
+                "type": "string"
+              },
+              "sourceName": {
+                "type": "string"
+              },
+              "givens": {
+                "type": "object",
+                "additionalProperties": {}
+              },
+              "compactJson": {
+                "type": "boolean"
+              },
+              "filterParams": {
+                "type": "object",
+                "additionalProperties": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "array",
+                      "items": {
+                        "type": "string"
+                      }
+                    }
+                  ]
+                }
+              },
+              "queryMetadata": {},
+              "queryClass": {},
+              "versionId": {
+                "type": "string"
+              }
+            },
+            "additionalProperties": false,
+            "description": "query: the body POST …/models/{path}/query takes."
+          }
+        },
+        "required": [
+          "operation"
+        ],
+        "additionalProperties": false,
+        "$schema": "http://json-schema.org/draft-07/schema#"
+      },
+      "annotations": {
+        "readOnlyHint": true,
+        "openWorldHint": false
+      },
+      "execution": {
+        "taskSupport": "forbidden"
+      },
+      "_meta": {
+        "ui": {
+          "resourceUri": "ui://publisher/report.html",
+          "visibility": [
+            "app"
+          ]
+        }
+      }
+    }
+  ],
+  "prompts": [
+    {
+      "name": "eval-answer",
+      "description": "Score one analytical answer against a verified golden, and score which of the entities the golden depends on retrieval delivered to the answerer. Run the contamination checklist, re-execute the submitted query yourself, then spawn a judge subagent per skill:eval-judge. Append attempt, tool_call, score, and retrieval_score events to the file ledger (reference/ledger-schema.md). Never explain the failure (eval-diagnose) or edit the model (eval-improve). Use when asked whether an answer was correct, to score a run, or to baseline a model."
+    },
+    {
+      "name": "eval-answer/coverage-limits",
+      "description": "Coverage limits. Reference detail for the eval-answer skill."
+    },
+    {
+      "name": "eval-answer/definition-ledger",
+      "description": "The definition ledger. Reference detail for the eval-answer skill."
+    },
+    {
+      "name": "eval-answer/ledger-schema",
+      "description": "The eval ledger: files and events. Reference detail for the eval-answer skill."
+    },
+    {
+      "name": "eval-diagnose",
+      "description": "Diagnose why a scored answer failed and who owns the fix, then cluster the failures by shared root cause. Walk dataset, agent-call, get_context/model, get_context/retrieval, construction, then model-definition. Append issue events to the file ledger, linked by traceId, one per cluster. Use after eval-answer, when triaging a run, or before changing a model. Does not edit the model (eval-improve)."
+    },
+    {
+      "name": "eval-diagnose/output-contract",
+      "description": "Output contract. Reference detail for the eval-diagnose skill."
+    },
+    {
+      "name": "eval-import",
+      "description": "Turn a list of questions into an eval set, whatever shape it arrived in: a JSONL a customer sent, a CSV, a spreadsheet export, a markdown doc, an email thread, or a pull from production logs. Classify each item by what came WITH the question (a query, a number, prose criteria, or nothing), write cases.jsonl and set.json per reference/case-format.md, keep the file as it arrived, and seal each question so a later edit is detectable. Never marks a value-bearing golden verified and never invents a question. Use when questions arrive from outside and need to become a set, or before the first run against a set nobody here authored."
+    },
+    {
+      "name": "eval-import/case-format",
+      "description": "Reading an arriving question list. Reference detail for the eval-import skill."
+    },
+    {
+      "name": "eval-improve",
+      "description": "Make the smallest safe edit that closes a diagnosed gap the model repo owns: a Malloy model edit, or a package skill under skills/. Every factual claim carries a probe receipt. Use after eval-diagnose, or when asked to fix a model so an agent can discover the right answer. Never accepts its own edit; the acceptance check belongs to eval-loop. Does not decide whether an answer was wrong (eval-answer) or why (eval-diagnose)."
+    },
+    {
+      "name": "eval-improve/output-contract",
+      "description": "Output contract. Reference detail for the eval-improve skill."
+    },
+    {
+      "name": "eval-judge",
+      "description": "Decide whether ONE answer matches its golden, and say whether you believe the golden. Read this before emitting any verdict. Covers containment, column pairing, near_match, refusals, and the gold_status judgement. Use when scoring an attempt in an evaluation run; never to conduct a run (eval-loop), diagnose a failure (eval-diagnose) or edit a model (eval-improve)."
+    },
+    {
+      "name": "eval-judge/refusal",
+      "description": "Refusal. Reference detail for the eval-judge skill."
+    },
+    {
+      "name": "eval-judge/retrieval-judge",
+      "description": "Retrieval judge. Reference detail for the eval-judge skill."
+    },
+    {
+      "name": "eval-judge/suspect-goldens",
+      "description": "When the answer key looks wrong. Reference detail for the eval-judge skill."
+    },
+    {
+      "name": "eval-judge/writing-rubrics",
+      "description": "Writing a rubric the judge can execute. Reference detail for the eval-judge skill."
+    },
+    {
+      "name": "eval-loop",
+      "description": "Conduct a local Publisher evaluation loop in five steps: scrape/run, eval, diagnose, improve, checkpoint. You are the conductor: import cases into the file ledger, spawn a blind answerer, then run eval-answer, eval-diagnose, and eval-improve. Persistence is plain files: the set in the model package''s evals/ directory, runs in the set''s workdir; checkpoints are git commits of the model repo. `eval.py` runs each step from the set''s eval.toml. Use to score a model, diagnose failures, improve behind an acceptance check, or roll back a bad direction."
+    },
+    {
+      "name": "eval-loop/acceptance-check",
+      "description": "The acceptance check. Reference detail for the eval-loop skill."
+    },
+    {
+      "name": "eval-loop/auditing-an-answer-key",
+      "description": "Auditing an answer key. Reference detail for the eval-loop skill."
+    },
+    {
+      "name": "eval-loop/checking-the-judge",
+      "description": "Checking the judge. Reference detail for the eval-loop skill."
+    },
+    {
+      "name": "eval-loop/golden-side-door",
+      "description": "The golden side door. Reference detail for the eval-loop skill."
+    },
+    {
+      "name": "eval-loop/measurement",
+      "description": "Measurement. Reference detail for the eval-loop skill."
+    },
+    {
+      "name": "eval-loop/running-a-run",
+      "description": "Running a run, concretely. Reference detail for the eval-loop skill."
+    },
+    {
+      "name": "eval-loop/setting-up-a-set",
+      "description": "Setting up a set on your own model. Reference detail for the eval-loop skill."
+    },
+    {
+      "name": "eval-report",
+      "description": "Write the summary a person reads after an evaluation run: what ran, what it scored, which failures were the MODEL and which were the EVAL itself (out of turns, contaminated, unestablished golden, unreadable judge), what was learned, and what to do next. Every claim links to the artifact behind it. Use at the end of any run, before quoting a number to anyone. Never scores an answer (eval-answer) or decides who owns a failure (eval-diagnose)."
+    },
+    {
+      "name": "malloy-analysis",
+      "description": "Read before your first get_context call on any business or data question. The required workflow, not background: which source, which rows, how to verify. Skipping it causes confident wrong answers."
+    },
+    {
+      "name": "malloy-analysis-report",
+      "description": "Combine validated Malloy queries into a report (a linear report, read top to bottom). Use when the user asks to \"create a report\", \"combine these into a report\", or wants a persistent multi-query artifact."
+    },
+    {
+      "name": "malloy-charts",
+      "description": "Read before choosing a chart or adding a chart annotation. Chart types, tag syntax and scale rules, KPI cards, dashboards, sparklines, and the renderer mistakes that fail silently."
+    },
+    {
+      "name": "malloy-classify",
+      "description": "Propose #(classification) annotations for a Malloy model from an access policy''s class scheme, backed by aggregate value evidence from the served data, and show them as a diff before writing anything. Use when the user asks to \"classify the model\", \"tag PHI/PII\", \"label sensitive fields\", or adds fields to a package that a policy governs, and before running malloy-compliance-review on a model nobody has classified."
+    },
+    {
+      "name": "malloy-compliance-review",
+      "description": "Check a Malloy package and its controls against a written access policy: turn the policy''s prose into a control register, run compliance.py check against a served package (structure, access as each role, and the values themselves), judge what needs a person, and produce a report and a signable attestation. Use when the user asks whether a model \"complies with\", \"satisfies\" or \"meets\" a policy, HIPAA, SOC 2, PCI or the like, asks for a compliance review or attestation, or wants the review in CI."
+    },
+    {
+      "name": "malloy-compliance-review/checks",
+      "description": "The checks. Reference detail for the malloy-compliance-review skill."
+    },
+    {
+      "name": "malloy-compliance-review/register",
+      "description": "The control register. Reference detail for the malloy-compliance-review skill."
+    },
+    {
+      "name": "malloy-compliance-review/report",
+      "description": "Reading the report. Reference detail for the malloy-compliance-review skill."
+    },
+    {
+      "name": "malloy-dashboards",
+      "description": "Renamed to malloy-reports. A dashboard is now a report with layout=grid: a .malloy file with an ## artifact tag, written at the package root. Load malloy-reports instead when the user asks for a dashboard, a filterable view, or drill-through between views."
+    },
+    {
+      "name": "malloy-define",
+      "description": "Propose scope, a source plan and field definitions for a Malloy model. Which tables and questions, which sources at what grain, then renames, dimensions and measures, each backed by querying data."
+    },
+    {
+      "name": "malloy-define-agent",
+      "description": "Define a package agent - a named brief, with its own skills, optional schedules and a run budget, declared in a package's publisher.json. Use when the user asks to create, add, change or fix an agent in a package, or wants a recurring or unattended job. Not for adopting an agent that already exists (that is malloy-run-agent), and not for a one-off question, which you just answer."
+    },
+    {
+      "name": "malloy-discover",
+      "description": "Silent data discovery for Malloy modeling. Used at Step 1 of the modeling workflow. Scans tables, columns, distributions, and relationships without user interaction. The agent builds an internal picture before presenting anything."
+    },
+    {
+      "name": "malloy-document",
+      "description": "Add documentation with #(doc) tags to Malloy models so fields and sources are described in plain language. Use when user asks to \"add documentation\", \"add doc tags\", \"document the model\", or wants fields and sources described for natural-language search and discovery. For runtime filters, declare given: parameters (see the malloy-model skill); #(filter) is deprecated. Filters are a runtime/modeling construct (governance, latency, correctness), not a documentation tag."
+    },
+    {
+      "name": "malloy-getting-started",
+      "description": "First steps for using a Malloy Publisher deployment through its MCP tools. Use when connecting to Publisher for the first time, when you do not yet know the available environments, packages, or models, or when a user asks what data they can explore. Also use for \"malloy help\" or which Malloy skill to read. Covers verifying the server, discovering data with get_context, and running a first grounded query."
+    },
+    {
+      "name": "malloy-gotchas-modeling",
+      "description": "Malloy modeling mistakes and compile-error fixes. Read before writing sources, dimensions, measures or joins, and when a .malloy file will not compile. Reserved words, NULLs, dates, field access."
+    },
+    {
+      "name": "malloy-html-data-apps",
+      "description": "Build or modify an in-package HTML data app for a Malloy Publisher package (a public/ directory the package serves): design it, write its Publisher.query code, embed it. Hand-authored, no build step."
+    },
+    {
+      "name": "malloy-html-data-apps/archetypes",
+      "description": "The five archetypes. Reference detail for the malloy-html-data-apps skill."
+    },
+    {
+      "name": "malloy-html-data-apps/depth-patterns",
+      "description": "Depth patterns. Reference detail for the malloy-html-data-apps skill."
+    },
+    {
+      "name": "malloy-html-data-apps/design",
+      "description": "Designing a Data App. Reference detail for the malloy-html-data-apps skill."
+    },
+    {
+      "name": "malloy-html-data-apps/embedding",
+      "description": "Embedding an HTML Data App. Reference detail for the malloy-html-data-apps skill."
+    },
+    {
+      "name": "malloy-html-data-apps/lazy-load",
+      "description": "Lazy-Loading Tiles Below the Fold. Reference detail for the malloy-html-data-apps skill."
+    },
+    {
+      "name": "malloy-html-data-apps/overlays",
+      "description": "Drawers, trays and toasts in an embedded app. Reference detail for the malloy-html-data-apps skill."
+    },
+    {
+      "name": "malloy-html-data-apps/performance",
+      "description": "Performance and layout stability. Reference detail for the malloy-html-data-apps skill."
+    },
+    {
+      "name": "malloy-html-data-apps/runtime",
+      "description": "HTML Data App Runtime. Reference detail for the malloy-html-data-apps skill."
+    },
+    {
+      "name": "malloy-html-data-apps/token-contract",
+      "description": "The token contract. Reference detail for the malloy-html-data-apps skill."
+    },
+    {
+      "name": "malloy-html-data-apps/verification-harness",
+      "description": "Headless Verification Harness. Reference detail for the malloy-html-data-apps skill."
+    },
+    {
+      "name": "malloy-html-data-apps/visual-craft",
+      "description": "Visual craft. Reference detail for the malloy-html-data-apps skill."
+    },
+    {
+      "name": "malloy-lookml-review",
+      "description": "Analyze LookML files as prior art for Malloy modeling. Used during Step 1 (DISCOVER) when .lkml files are present. Coordinates reference files that extract business logic, relationships, and curation decisions. Works with or without a database connection."
+    },
+    {
+      "name": "malloy-lookml-review/_concepts",
+      "description": "LookML → Malloy Concept Mapping. Reference detail for the malloy-lookml-review skill."
+    },
+    {
+      "name": "malloy-lookml-review/build-derived-tables",
+      "description": "LookML Derived Table Conversion (Step 5). Reference detail for the malloy-lookml-review skill."
+    },
+    {
+      "name": "malloy-lookml-review/build-unnest",
+      "description": "LookML UNNEST & Struct Conversion (Step 5). Reference detail for the malloy-lookml-review skill."
+    },
+    {
+      "name": "malloy-lookml-review/curate-visibility",
+      "description": "LookML Visibility → Malloy Access Modifiers (Step 8). Reference detail for the malloy-lookml-review skill."
+    },
+    {
+      "name": "malloy-lookml-review/discover",
+      "description": "LookML Discovery (Step 1). Reference detail for the malloy-lookml-review skill."
+    },
+    {
+      "name": "malloy-lookml-review/document",
+      "description": "LookML Documentation Seeds (Step 9). Reference detail for the malloy-lookml-review skill."
+    },
+    {
+      "name": "malloy-lookml-review/propose-fields",
+      "description": "LookML Field Extraction (Step 4). Reference detail for the malloy-lookml-review skill."
+    },
+    {
+      "name": "malloy-lookml-review/review-coverage",
+      "description": "LookML Coverage Review (Step 7). Reference detail for the malloy-lookml-review skill."
+    },
+    {
+      "name": "malloy-materialization",
+      "description": "Add, confirm and debug Malloy Persistence materializations in a package - persist an expensive source so queries read a pre-built table, in the source's own warehouse or in a storage destination. Read this whenever the user wants to materialize a source, add a persist annotation, speed up a slow source, build one stored rollup over another, tune what to persist, or asks why a persist source isn't building or isn't being read."
+    },
+    {
+      "name": "malloy-materialization/access-filter",
+      "description": "Persisting a `#(access_filter)`-gated source. Reference detail for the malloy-materialization skill."
+    },
+    {
+      "name": "malloy-materialization/annotation",
+      "description": "The `#@ persist` annotation. Reference detail for the malloy-materialization skill."
+    },
+    {
+      "name": "malloy-materialization/chaining",
+      "description": "Chaining: one stored source built over another. Reference detail for the malloy-materialization skill."
+    },
+    {
+      "name": "malloy-materialization/policy",
+      "description": "The package policy: `scope`, `queryMetadata`, and where the rules are enforced. Reference detail for the malloy-materialization skill."
+    },
+    {
+      "name": "malloy-materialization/refresh",
+      "description": "Keeping a table current: freshness, schedule, incremental refresh. Reference detail for the malloy-materialization skill."
+    },
+    {
+      "name": "malloy-materialization/storage",
+      "description": "The storage tier: `storage=`, `partition=`, and how a stored table is served. Reference detail for the malloy-materialization skill."
+    },
+    {
+      "name": "malloy-materialization/tuning",
+      "description": "Tuning materializations for cost and performance. Reference detail for the malloy-materialization skill."
+    },
+    {
+      "name": "malloy-model",
+      "description": "Build Malloy semantic models with base source and joined source files. Use when creating or modifying .malloy files, user asks to \"create a malloy model\", \"add dimensions\", \"add measures\", \"create a source\", or any Malloy model authoring task."
+    },
+    {
+      "name": "malloy-model-as-you-go",
+      "description": "After answering a data question, write down what the answer assumed so the next reader can trust the number. A field with a #(doc) in the model when you can edit it, an extend in the notebook when you can only author reports, or a stated assumption plus a Malloy snippet when you can only chat. Use after every answered question that rested on a judgment call, and whenever a question is asked against tables that have no model yet."
+    },
+    {
+      "name": "malloy-model/access-modifiers",
+      "description": "Access Modifiers: Curate the Interface. Reference detail for the malloy-model skill."
+    },
+    {
+      "name": "malloy-model/analysis-to-model",
+      "description": "Starting from Analysis. Reference detail for the malloy-model skill."
+    },
+    {
+      "name": "malloy-model/bridge-tables",
+      "description": "Bridge Tables & Composite Keys. Reference detail for the malloy-model skill."
+    },
+    {
+      "name": "malloy-model/normalized-schemas",
+      "description": "Normalized Schemas (3-Stage Pattern). Reference detail for the malloy-model skill."
+    },
+    {
+      "name": "malloy-model/query-sources",
+      "description": "Query-Based Sources (Derived/Pre-Aggregated). Reference detail for the malloy-model skill."
+    },
+    {
+      "name": "malloy-modeling",
+      "description": "Build semantic models with Malloy for the Malloy Publisher. Read this skill whenever the user asks about modeling data or specifically mentions Malloy."
+    },
+    {
+      "name": "malloy-notebooks",
+      "description": "Renamed to malloy-reports. A notebook is now a report with layout=linear: a .malloy file with an ## artifact tag, written at the package root. Load malloy-reports instead when the user asks for a notebook, a data story, or a report that reads top to bottom."
+    },
+    {
+      "name": "malloy-phrase-detection",
+      "description": "How to phrase search_text on a get_context call so retrieval returns the fields you need instead of a truncated catalog. Covers target-type classification and decomposition patterns."
+    },
+    {
+      "name": "malloy-powerbi-review",
+      "description": "Move a Power BI semantic model (TMDL, PBIP, or .pbix) onto Malloy - read their model, transpile its DAX, and prove the numbers match. Use when Power BI artifacts are present, when a user wants to migrate or switch off Power BI, and whenever a specific DAX measure has to become Malloy - CALCULATE, ALL/ALLSELECTED/ALLEXCEPT, RANKX and top-N, time intelligence, USERELATIONSHIP, calculation groups, what-if parameters, or an RLS role. Carries a worked, executed transpile per construct and states what each port costs. Works with or without a database connection."
+    },
+    {
+      "name": "malloy-powerbi-review/_concepts",
+      "description": "Power BI → Malloy Concept Mapping. Reference detail for the malloy-powerbi-review skill."
+    },
+    {
+      "name": "malloy-powerbi-review/cookbook-filter-context",
+      "description": "Cookbook: Filter Context (Step 5). Reference detail for the malloy-powerbi-review skill."
+    },
+    {
+      "name": "malloy-powerbi-review/cookbook-structure",
+      "description": "Cookbook: Model Structure (Step 5). Reference detail for the malloy-powerbi-review skill."
+    },
+    {
+      "name": "malloy-powerbi-review/cookbook-time",
+      "description": "Cookbook: Time Intelligence (Step 5). Reference detail for the malloy-powerbi-review skill."
+    },
+    {
+      "name": "malloy-powerbi-review/corpus",
+      "description": "Development corpus. Reference detail for the malloy-powerbi-review skill."
+    },
+    {
+      "name": "malloy-powerbi-review/discover",
+      "description": "Power BI Discovery (Step 1). Reference detail for the malloy-powerbi-review skill."
+    },
+    {
+      "name": "malloy-powerbi-review/document",
+      "description": "Power BI Documentation Extraction (Step 9). Reference detail for the malloy-powerbi-review skill."
+    },
+    {
+      "name": "malloy-powerbi-review/limitations",
+      "description": "What the script reads, and what it does not. Reference detail for the malloy-powerbi-review skill."
+    },
+    {
+      "name": "malloy-powerbi-review/propose-fields",
+      "description": "Field Proposals from Power BI (Step 4). Reference detail for the malloy-powerbi-review skill."
+    },
+    {
+      "name": "malloy-powerbi-review/review-coverage",
+      "description": "Power BI Coverage Review (Step 7). Reference detail for the malloy-powerbi-review skill."
+    },
+    {
+      "name": "malloy-powerbi-review/rls-roles",
+      "description": "RLS Roles and Visibility (Step 8). Reference detail for the malloy-powerbi-review skill."
+    },
+    {
+      "name": "malloy-powerbi-review/translate-measures",
+      "description": "DAX Measure Translation (Step 5). Reference detail for the malloy-powerbi-review skill."
+    },
+    {
+      "name": "malloy-publish",
+      "description": "Package Malloy models for serving by Malloy Publisher. Use when user asks to \"publish\", \"package\", \"deploy\", or wants to share models with others."
+    },
+    {
+      "name": "malloy-queries",
+      "description": "Read before writing or debugging a Malloy query. Dates, aggregates vs dimensions, joins, filters, strings, window functions, chart annotations, and the compile errors a SQL habit produces."
+    },
+    {
+      "name": "malloy-reports",
+      "description": "Build or modify a Malloy Publisher report: a .malloy file with an ## artifact tag, written at the package root unless asked otherwise, laid out as a grid (a dashboard, scanned at a glance) or linear (a notebook or data story, read top to bottom), with filter controls rendered from givens and # drill click-through. Use when the user asks for a dashboard, a notebook, a report, a data story, a filterable view, or drill-through between views, and no code is wanted. Legacy .malloynb files are read, not authored."
+    },
+    {
+      "name": "malloy-reports/grid",
+      "description": "Grid layout. Reference detail for the malloy-reports skill."
+    },
+    {
+      "name": "malloy-reports/linear",
+      "description": "Linear layout. Reference detail for the malloy-reports skill."
+    },
+    {
+      "name": "malloy-review",
+      "description": "Malloy semantic-model code review. Invoke when the user asks to review, audit, or critique a `.malloy` file, a folder of Malloy models, or a GitHub PR that touches Malloy. Enforces project modeling standards and emits a navigable review file."
+    },
+    {
+      "name": "malloy-review/output-template",
+      "description": "Review Results File: Template & Assembly Rules. Reference detail for the malloy-review skill."
+    },
+    {
+      "name": "malloy-review/rubric-correctness",
+      "description": "Rubric: Correctness (Semantic Hazards Only). Reference detail for the malloy-review skill."
+    },
+    {
+      "name": "malloy-review/rubric-documentation",
+      "description": "Rubric: Documentation. Reference detail for the malloy-review skill."
+    },
+    {
+      "name": "malloy-review/rubric-governance",
+      "description": "Rubric: Governance & Access. Reference detail for the malloy-review skill."
+    },
+    {
+      "name": "malloy-review/rubric-queries",
+      "description": "Rubric: Queries & Views. Reference detail for the malloy-review skill."
+    },
+    {
+      "name": "malloy-review/rubric-rendering",
+      "description": "Rubric: Rendering. Reference detail for the malloy-review skill."
+    },
+    {
+      "name": "malloy-review/rubric-structure",
+      "description": "Rubric: Structure. Reference detail for the malloy-review skill."
+    },
+    {
+      "name": "malloy-review/rubric-style",
+      "description": "Rubric: Style & Naming. Reference detail for the malloy-review skill."
+    },
+    {
+      "name": "malloy-review/scope-resolution",
+      "description": "Scope Resolution. Reference detail for the malloy-review skill."
+    },
+    {
+      "name": "malloy-review/severity-taxonomy",
+      "description": "Severity, Confidence, Categorization. Reference detail for the malloy-review skill."
+    },
+    {
+      "name": "malloy-run-agent",
+      "description": "Adopt an agent a Malloy package declares, by name. Use only when the user names a package agent, for example \"run the analyst agent on storefront\" or \"work as the agent in this package\". Fetches the agent's definition with get_agent, works from its instructions, installs its skills, and runs one of its tasks when asked."
+    },
+    {
+      "name": "malloy-source-unreachable",
+      "description": "Work out why a source is missing from get_context, or why a query against it was refused with a 404 or a 403, and what to do next. Use when a source you expect is absent from discovery, when execute_query answers \"No queryable source\", when a query that used to work stops working, or when deciding whether a package's curation is hiding something you need."
+    }
+  ]
+}

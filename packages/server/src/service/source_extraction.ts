@@ -31,7 +31,6 @@ import {
 import {
    assertNoAuthorizeNearMisses,
    authorizeAnnotationRoute,
-   collectAuthorizeExprsForRoute,
    collectAuthorizeNearMissesAllRoutes,
    containsAuthorizeAnnotationTag,
    type AuthorizeMap,
@@ -45,11 +44,13 @@ import {
    AUTHORIZE_ROUTE,
 } from "./authorize_routes";
 import { modelInfoOf } from "./model_info";
-import { parseFilters, type FilterDefinition } from "./filter";
 import {
-   derivedStructsReachable,
-   effectiveAncestorGateExprs,
-} from "./gate_registry_walk";
+   parseFilters,
+   sourceFilterNotes,
+   type FilterDefinition,
+} from "./filter";
+import { gateExprsForRoute } from "./gate_registry_walk";
+import { derivedStructsReachable } from "./governance/ir/source_graph";
 
 /** A `#(filter)` definition enriched with the dimension's Malloy type. */
 export interface ExtractedFilter {
@@ -392,15 +393,7 @@ export function extractSourcesFromModelDef(
          const sourceName = struct.as || struct.name;
          const annotations = annotationTexts(struct.annotations);
 
-         const collected: string[][] = [];
-         let cur = struct.annotations;
-         while (cur) {
-            if (cur.blockNotes) {
-               collected.push(cur.blockNotes.map((note) => note.text));
-            }
-            cur = cur.inherits;
-         }
-         const allAnnotations = collected.reverse().flat();
+         const allAnnotations = sourceFilterNotes(struct.annotations);
 
          let filters: ExtractedFilter[] | undefined;
          if (allAnnotations.length > 0) {
@@ -430,7 +423,6 @@ export function extractSourcesFromModelDef(
 
          // Own-wins-or-inherits independently PER ROUTE: an own note on one
          // route never sheds an inherited gate on the other.
-         const ownNotes = ownLevelNoteTexts(struct.annotations);
          const ownAuthorizeNotes = ownLevelNotes(struct.annotations).filter(
             (note) => containsAuthorizeAnnotationTag([note.text]),
          );
@@ -463,18 +455,11 @@ export function extractSourcesFromModelDef(
          // Per route, so each wire field reports only its own route.
          const routeGroupsByRoute = new Map<string, string[][]>();
          for (const route of CANONICAL_AUTHORIZE_ROUTES) {
-            const ownExprsForRoute = collectAuthorizeExprsForRoute(
-               ownNotes,
+            const groupsForRoute = gateExprsForRoute(
+               struct as SourceDef,
+               modelDef,
                route,
             );
-            const groupsForRoute =
-               ownExprsForRoute.length > 0
-                  ? [ownExprsForRoute]
-                  : effectiveAncestorGateExprs(
-                       struct as SourceDef,
-                       modelDef,
-                       route,
-                    );
             for (const exprs of groupsForRoute) {
                groupsForSource.push({ route, exprs });
             }

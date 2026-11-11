@@ -13,6 +13,7 @@ import { Alert, Box, Button, type SxProps, type Theme } from "@mui/material";
 import { useEffect, useState } from "react";
 import { Navigate, useLocation } from "react-router-dom";
 import { legacyEditBase, withEdit } from "../../common/documentRoutes";
+import { withVersionSegment } from "../../common/packageRoute";
 import DashboardEditPage from "../DashboardEditPage/DashboardEditPage";
 import ReportPage from "../ReportPage/ReportPage";
 import LegacyAliasRoute from "./LegacyAliasRoute";
@@ -43,9 +44,21 @@ export default function RoutedDocument({
    edit,
    notFound,
    notFoundUntilListed = false,
+   versionId,
+   versionSegment,
+   readOnly = false,
 }: {
    environmentName: string;
    packageName: string;
+   /** The version to read, for a pinned version; absent means `latest`. */
+   versionId?: string;
+   /**
+    * The route's version segment (`latest` or an id), which a redirect keeps
+    * so the reader stays on the version the address named.
+    */
+   versionSegment?: string;
+   /** A published version: read it, never open the builder on it. */
+   readOnly?: boolean;
    /** The route's path under the package, as the URL spells it (no `?edit`). */
    routePath: string;
    /** The route carries `?edit`. */
@@ -62,6 +75,7 @@ export default function RoutedDocument({
    const { reports, settled, isFetching, isError, refetch } = useReportListing(
       environmentName,
       packageName,
+      versionId,
    );
    const { search } = useLocation();
    const path = `${routePath}.malloy`;
@@ -89,7 +103,7 @@ export default function RoutedDocument({
       environmentName,
       packageName,
       path,
-      edit && decided && !report,
+      edit && !readOnly && decided && !report,
    );
    // Drawn in the same place as the unlisted branch's `notFound` below, so a
    // listing that answers with nothing here keeps the page mounted (a data
@@ -98,6 +112,7 @@ export default function RoutedDocument({
       <LegacyAliasRoute
          environmentName={environmentName}
          packageName={packageName}
+         {...(versionSegment !== undefined ? { versionSegment } : {})}
          routePath={routePath}
          edit={edit}
          reports={reports}
@@ -145,10 +160,11 @@ export default function RoutedDocument({
          <ReadAndEdit
             environmentName={environmentName}
             packageName={packageName}
+            {...(versionId !== undefined ? { versionId } : {})}
             path={report.path}
-            editable={report.editable}
+            editable={readOnly ? false : report.editable}
             layout={report.layout}
-            edit={edit}
+            edit={edit && !readOnly}
          />
       );
 
@@ -159,18 +175,24 @@ export default function RoutedDocument({
       return (
          <Navigate
             replace
-            to={`/${environmentName}/${packageName}/${legacyEdit
-               .split("/")
-               .map(encodeURIComponent)
-               .join("/")}${withEdit(search)}`}
+            to={`${withVersionSegment(
+               `/${environmentName}/${packageName}/${legacyEdit
+                  .split("/")
+                  .map(encodeURIComponent)
+                  .join("/")}`,
+               environmentName,
+               packageName,
+               versionSegment,
+            )}${withEdit(search)}`}
          />
       );
 
    // Not listed, but asked for in the builder: a draft the host keeps, or a
    // file the package has not served yet. The editor says which, opened with
-   // the layout the draft recorded (grid when there is no draft).
+   // the layout the draft recorded (grid when there is no draft). Never on a
+   // published version, where nothing it saved could land.
    return unlisted(
-      edit ? (
+      edit && !readOnly ? (
          draft.settled ? (
             <DashboardEditPage
                environmentName={environmentName}
@@ -201,6 +223,7 @@ export default function RoutedDocument({
 function ReadAndEdit({
    environmentName,
    packageName,
+   versionId,
    path,
    editable,
    layout,
@@ -208,6 +231,7 @@ function ReadAndEdit({
 }: {
    environmentName: string;
    packageName: string;
+   versionId?: string;
    path: string;
    editable: boolean | undefined;
    layout: ReportLayout | undefined;
@@ -244,6 +268,7 @@ function ReadAndEdit({
                <ReportPage
                   environmentName={environmentName}
                   packageName={packageName}
+                  {...(versionId !== undefined ? { versionId } : {})}
                   path={path}
                   {...(editable !== undefined ? { editable } : {})}
                   onReady={() => {

@@ -9,6 +9,7 @@
  * `tests/fixtures/notebooks-malloyyo/`, whose `notebooks/` holds one report
  * written as tiles (`layout.malloy`) and many written as cells.
  */
+import { unrecordedAudit } from "./access_record";
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
 import * as fs from "fs";
 import * as os from "os";
@@ -24,7 +25,8 @@ import {
    startMetricsHarness,
    type MetricsHarness,
 } from "../test_helpers/metrics_harness";
-import { Model } from "./model";
+import { Model, ModelPolicy } from "./model";
+import { governorOf } from "../test_helpers/governor";
 import { Package } from "./package";
 import { listNotebooks } from "./legacy_report_views";
 
@@ -32,7 +34,6 @@ const FIXTURE_DIR = path.resolve(
    __dirname,
    "../../tests/fixtures/notebooks-malloyyo",
 );
-const ORIGINAL_ENV = process.env.PACKAGE_LOAD_WORKERS;
 
 const LAYOUT = "notebooks/layout.malloy";
 const SETTINGS = "notebooks/settings.malloy";
@@ -71,7 +72,6 @@ describe("served linear report cells", () => {
       harness = await startMetricsHarness();
       resetNotebookMetricsForTest();
       resetReportMetricsForTest();
-      process.env.PACKAGE_LOAD_WORKERS = "1";
       pool = new PackageLoadPool(1);
       await __setPackageLoadPoolForTests(pool);
       tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "publisher-nb-cells-"));
@@ -107,8 +107,6 @@ describe("served linear report cells", () => {
 
    afterAll(async () => {
       await __setPackageLoadPoolForTests(null);
-      if (ORIGINAL_ENV === undefined) delete process.env.PACKAGE_LOAD_WORKERS;
-      else process.env.PACKAGE_LOAD_WORKERS = ORIGINAL_ENV;
       fs.rmSync(tempDir, { recursive: true, force: true });
       resetNotebookMetricsForTest();
       resetReportMetricsForTest();
@@ -144,19 +142,19 @@ describe("served linear report cells", () => {
 
    it("runs a tile cell, and answers a definition or markdown cell with its text and kind, and no result", async () => {
       const nb = model(LAYOUT);
-      const query = await nb.executeNotebookCell(4);
+      const query = await nb.executeNotebookCell(unrecordedAudit(), 4);
       expect(query.kind).toBe("query");
       expect(rowsOf(query.result).length).toBeGreaterThan(0);
-      const definition = await nb.executeNotebookCell(0);
+      const definition = await nb.executeNotebookCell(unrecordedAudit(), 0);
       expect(definition).toMatchObject({ type: "code", kind: "definition" });
       expect(definition.result).toBeUndefined();
-      const markdown = await nb.executeNotebookCell(2);
+      const markdown = await nb.executeNotebookCell(unrecordedAudit(), 2);
       expect(markdown).toMatchObject({ type: "markdown", kind: "markdown" });
       expect(markdown.result).toBeUndefined();
    });
 
    it("grafts a tile cell against the whole compiled model", async () => {
-      const nb = model(LAYOUT) as unknown as {
+      const nb = governorOf(model(LAYOUT)) as unknown as {
          runnableNotebookCells: { runnable?: unknown }[];
          resolveNotebookCellGraftScope(
             index: number,
@@ -193,13 +191,17 @@ describe("served linear report cells", () => {
                tempDir,
                modelPath,
                config,
+               {
+                  policy: ModelPolicy.fixed({
+                     queryBoundary: {
+                        mode: "all",
+                        exploresDeclared: false,
+                        isQueryEntryPoint: true,
+                        layout: "linear",
+                     },
+                  }),
+               },
             );
-            inProcess.setQueryBoundary({
-               mode: "all",
-               exploresDeclared: false,
-               isQueryEntryPoint: true,
-               layout: "linear",
-            });
             expect(
                inProcess.attachServedNotebookCells(
                   inProcess.getCompiledSourceText()!,
@@ -224,12 +226,14 @@ describe("served linear report cells", () => {
             const givens =
                modelPath === SETTINGS ? { REGION: "EU" } : undefined;
             const a = await inProcess.executeNotebookCell(
+               unrecordedAudit(),
                queryAt,
                undefined,
                undefined,
                givens,
             );
             const b = await model(modelPath).executeNotebookCell(
+               unrecordedAudit(),
                queryAt,
                undefined,
                undefined,
@@ -309,9 +313,9 @@ describe("served linear report cells", () => {
          await expect(nb.getNotebook()).rejects.toBeInstanceOf(
             ModelCompilationError,
          );
-         await expect(nb.executeNotebookCell(0)).rejects.toBeInstanceOf(
-            ModelCompilationError,
-         );
+         await expect(
+            nb.executeNotebookCell(unrecordedAudit(), 0),
+         ).rejects.toBeInstanceOf(ModelCompilationError);
       });
 
       it("is a package finding of severity error, counted at discovery", async () => {
@@ -332,14 +336,16 @@ describe("served linear report cells", () => {
    });
 
    it("counts a cell run by format, kind and outcome", async () => {
-      await model(LAYOUT).executeNotebookCell(3);
+      await model(LAYOUT).executeNotebookCell(unrecordedAudit(), 3);
       expect(
          await harness.collectCounter(
             "publisher_notebook_cell_executions_total",
             { format: "malloy", kind: "query", outcome: "ok" },
          ),
       ).toBeGreaterThan(0);
-      await expect(model(REFUSED).executeNotebookCell(0)).rejects.toThrow();
+      await expect(
+         model(REFUSED).executeNotebookCell(unrecordedAudit(), 0),
+      ).rejects.toThrow();
       expect(
          await harness.collectCounter(
             "publisher_notebook_cell_executions_total",

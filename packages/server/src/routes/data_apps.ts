@@ -15,8 +15,14 @@ import * as path from "path";
 import { internalErrorToHttpError } from "../errors";
 import { logger } from "../logger";
 import { safeJoinUnderRoot } from "../path_safety";
-import type { EnvironmentStore } from "../service/environment_store";
+import type { PackageLookup } from "../service/environment_ports";
+import { versionRefOf } from "../route_params";
 import { apiRoute } from "./json_route";
+import {
+   parseEnvironmentName,
+   parsePackageName,
+   VersionRef,
+} from "../service/identity";
 
 /** The data-app listing route, relative to the API prefix (api-doc.yaml pins it). */
 export const DATA_APPS_ROUTE =
@@ -45,17 +51,32 @@ relative to <code>public/</code> and does not include it.</p>
 this server has.</p>`;
 
 async function serveFromPackage(
-   environmentStore: EnvironmentStore,
+   environmentStore: PackageLookup,
    req: express.Request,
    res: express.Response,
 ): Promise<void> {
    const subPathRaw = (req.params as Record<string, string>)["0"] ?? "";
    try {
       const environment = await environmentStore.getEnvironment(
-         req.params.environmentName,
+         parseEnvironmentName(req.params.environmentName),
          false,
       );
-      const pkg = await environment.getPackage(req.params.packageName, false);
+      // A page is served from the version its URL names (`?versionId=`), and
+      // from `latest` when it names none. Only a version the package has pins
+      // the page: a proxy may forward a page's query string unchanged, with a
+      // `versionId` of its own that is no version here, and that page still
+      // opens (from `latest`) rather than 404ing. The version comes from the
+      // URL only.
+      const staticVersionId = await environment
+         .getVersionService()
+         ?.pinnableVersion(req.params.packageName, req.query.versionId);
+      const pkg = await environment.getPackage(
+         parsePackageName(req.params.packageName),
+         false,
+         {
+            versionId: VersionRef.parse(staticVersionId),
+         },
+      );
       // This directory boundary is the whole access control for static files.
       const publicRoot = path.join(pkg.getPackagePath(), "public");
 
@@ -134,7 +155,7 @@ export function withRequestQuery(req: express.Request, target: string): string {
  */
 export function registerDataAppStaticRoutes(
    app: express.Express,
-   environmentStore: EnvironmentStore,
+   environmentStore: PackageLookup,
    runtimePath: string,
 ): void {
    app.get("/sdk/publisher.js", (_req, res) => {
@@ -178,23 +199,25 @@ export function registerDataAppStaticRoutes(
 export function registerDataAppListRoute(
    app: express.Express,
    apiPrefix: string,
-   environmentStore: EnvironmentStore,
+   environmentStore: PackageLookup,
 ): void {
    app.get(
       `${apiPrefix}${DATA_APPS_ROUTE}`,
       apiRoute(async (req) => {
          const environment = await environmentStore.getEnvironment(
-            req.params.environmentName,
+            parseEnvironmentName(req.params.environmentName),
             false,
          );
          const pkg = await environment.getPackage(
-            req.params.packageName,
+            parsePackageName(req.params.packageName),
             false,
+            { versionId: versionRefOf(req) },
          );
          return listPackageDataApps(
             req.params.environmentName,
             req.params.packageName,
             path.join(pkg.getPackagePath(), "public"),
+            pkg.getPackageMetadata().versionId,
          );
       }),
    );
@@ -205,6 +228,7 @@ const DATA_APPS_DEPTH_CAP = 3;
 type DataAppItem = {
    resource: string;
    packageName: string;
+   versionId?: string;
    path: string;
    title: string;
    fit?: "viewport";
@@ -232,6 +256,8 @@ async function listPackageDataApps(
    environmentName: string,
    packageName: string,
    publicRoot: string,
+   /** The published version listed from; its pages are pinned to it. */
+   versionId?: string | null,
 ): Promise<DataAppItem[]> {
    const out: DataAppItem[] = [];
 
@@ -309,8 +335,15 @@ async function listPackageDataApps(
                // The relative path stays the title.
             }
             out.push({
-               resource: `/environments/${environmentName}/packages/${packageName}/${rel}`,
+               // A published version's page keeps opening that version after
+               // `latest` moves: the static route reads the version from the URL.
+               resource:
+                  `/environments/${environmentName}/packages/${packageName}/${rel}` +
+                  (versionId
+                     ? `?versionId=${encodeURIComponent(versionId)}`
+                     : ""),
                packageName,
+               ...(versionId ? { versionId } : {}),
                path: rel,
                title,
                fit,

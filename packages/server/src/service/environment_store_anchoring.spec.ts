@@ -5,10 +5,13 @@ import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "fs";
 import * as path from "path";
 import { PUBLISHER_CONFIG_NAME, TEMP_DIR_PATH } from "../constants";
+import { installSettings } from "../test_helpers/settings_env";
 import {
    emptyRepository,
    stubStorageManager,
 } from "../test_helpers/storage_manager_stub";
+import { EnvironmentStore } from "./environment_store";
+import { startedStore } from "../test_helpers/started_store";
 
 /**
  * A relative package `location` must anchor at the directory holding the config
@@ -17,18 +20,18 @@ import {
  * coincide cannot tell the two rules apart.
  *
  * Here they are deliberately different directories, driven through the real
- * `PUBLISHER_CONFIG_PATH` that `--config` sets, so this exercises the actual
- * resolution rather than a stub of it.
+ * `--config` flag, so this exercises the actual resolution rather than a stub
+ * of it.
  */
 const serverRootPath = path.join(TEMP_DIR_PATH, "anchoring-server-root");
 const configDirPath = path.join(TEMP_DIR_PATH, "anchoring-config-dir");
 
-stubStorageManager({ getRepository: () => emptyRepository() });
-
-const { EnvironmentStore } = await import("./environment_store");
+const storageManager = stubStorageManager({
+   getRepository: () => emptyRepository(),
+});
 
 describe("relative package locations anchor at the config directory", () => {
-   const savedConfigPath = process.env.PUBLISHER_CONFIG_PATH;
+   let restoreSettings: () => void;
 
    beforeEach(() => {
       for (const dir of [serverRootPath, configDirPath]) {
@@ -37,15 +40,14 @@ describe("relative package locations anchor at the config directory", () => {
       }
       const configPath = path.join(configDirPath, PUBLISHER_CONFIG_NAME);
       writeFileSync(configPath, JSON.stringify({ environments: [] }));
-      process.env.PUBLISHER_CONFIG_PATH = configPath;
+      restoreSettings = installSettings({
+         cwd: serverRootPath,
+         argv: ["--config", configPath],
+      }).restore;
    });
 
    afterEach(() => {
-      if (savedConfigPath === undefined) {
-         delete process.env.PUBLISHER_CONFIG_PATH;
-      } else {
-         process.env.PUBLISHER_CONFIG_PATH = savedConfigPath;
-      }
+      restoreSettings();
       for (const dir of [serverRootPath, configDirPath]) {
          rmSync(dir, { recursive: true, force: true });
       }
@@ -69,7 +71,9 @@ describe("relative package locations anchor at the config directory", () => {
          JSON.stringify({ name: "decoy-from-server-root" }),
       );
 
-      const store = new EnvironmentStore(serverRootPath);
+      const store = startedStore(
+         new EnvironmentStore(serverRootPath, { storageManager }),
+      );
       await store.addEnvironment({
          name: "probe",
          packages: [{ name: "sales", location: "./sales" }],

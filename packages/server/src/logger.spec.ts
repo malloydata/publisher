@@ -1,13 +1,27 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
-import { describe, expect, it } from "bun:test";
+import { afterAll, beforeAll, describe, expect, it, spyOn } from "bun:test";
+import {
+   context,
+   ROOT_CONTEXT,
+   trace,
+   TraceFlags,
+   type Context,
+   type ContextManager,
+} from "@opentelemetry/api";
 import type { AxiosError } from "axios";
+import { EventEmitter } from "events";
+import type { Request, Response } from "express";
 import {
    SENSITIVE_KEY_NAMES,
    buildAxiosErrorLog,
+   logger,
+   loggerMiddleware,
+   MAX_LOGGED_BODY_CHARS,
    redactSensitive,
 } from "./logger";
+import { linesMentioning } from "./test_helpers/log_lines";
 
 describe("redactSensitive", () => {
    it("redacts every name in SENSITIVE_KEY_NAMES (reflective lock)", () => {
@@ -211,3 +225,189 @@ describe("buildAxiosErrorLog", () => {
       expect(JSON.stringify(meta)).not.toContain("Bearer abc");
    });
 });
+
+describe("loggerMiddleware", () => {
+   const TRACE_ID = "4bf92f3577b34da6a3ce929d0e0e4736";
+
+   /** Run one request through the middleware; the access-log metadata it wrote, if any. */
+   function accessLog(
+      url: string,
+      {
+         headers = {},
+         body,
+         response,
+      }: {
+         headers?: Record<string, string>;
+         body?: unknown;
+         response?: unknown;
+      } = {},
+   ): Record<string, unknown> | undefined {
+      const info = spyOn(logger, "info").mockImplementation(
+         (() => logger) as never,
+      );
+      try {
+         const req = {
+            method: "POST",
+            url,
+            path: url.split("?")[0],
+            headers,
+            body,
+            params: {},
+            query: {},
+         };
+         const res = Object.assign(new EventEmitter(), {
+            statusCode: 200,
+            locals: {},
+            json: (payload: unknown) => payload,
+         });
+         loggerMiddleware(
+            req as unknown as Request,
+            res as unknown as Response,
+            () => {},
+         );
+         if (response !== undefined) res.json(response);
+         res.emit("finish");
+         const [line] = linesMentioning(info, url);
+         return line?.[1] as Record<string, unknown> | undefined;
+      } finally {
+         info.mockRestore();
+      }
+   }
+
+   function atLevel<T>(level: string, fn: () => T): T {
+      const previous = logger.level;
+      logger.level = level;
+      try {
+         return fn();
+      } finally {
+         logger.level = previous;
+      }
+   }
+
+   const body = { query: "run: x", password: "hunter2" };
+
+   it("logs the status and the duration of a request", () => {
+      const meta = atLevel("info", () => accessLog("/logger-spec/a", { body }));
+      expect(meta).toMatchObject({ statusCode: 200, params: {}, query: {} });
+      expect(meta?.duration).toMatch(/^\d+\.\d\dms$/);
+      expect(typeof meta?.durationMs).toBe("number");
+      expect(meta).not.toHaveProperty("payload");
+   });
+
+   it("adds the redacted request body at debug", () => {
+      const meta = atLevel("debug", () =>
+         accessLog("/logger-spec/e", { body }),
+      );
+      expect(meta?.payload).toEqual({
+         query: "run: x",
+         password: "[REDACTED]",
+      });
+   });
+
+   it("adds the response body only at debug", () => {
+      const response = { result: "[[1]]" };
+      expect(
+         atLevel("info", () => accessLog("/logger-spec/g", { response })),
+      ).not.toHaveProperty("response");
+      expect(
+         atLevel("debug", () => accessLog("/logger-spec/h", { response }))
+            ?.response,
+      ).toEqual(response);
+   });
+
+   it("logs a large body as its length and head, not whole", () => {
+      const big = { source: "x".repeat(MAX_LOGGED_BODY_CHARS * 4) };
+      const meta = atLevel("debug", () =>
+         accessLog("/logger-spec/f", { body: big }),
+      );
+      const payload = meta?.payload as {
+         truncated: boolean;
+         length: number;
+         head: string;
+      };
+      expect(payload.truncated).toBe(true);
+      expect(payload.length).toBe(JSON.stringify(big).length);
+      expect(payload.head).toHaveLength(MAX_LOGGED_BODY_CHARS);
+      expect(payload.head.startsWith('{"source":"xxx')).toBe(true);
+   });
+
+   it("carries the trace id of an incoming traceparent", () => {
+      const meta = accessLog("/logger-spec/b", {
+         headers: { traceparent: `00-${TRACE_ID}-00f067aa0ba902b7-01` },
+      });
+      expect(meta?.traceId).toBe(TRACE_ID);
+   });
+
+   describe("inside an active span", () => {
+      const SPAN_TRACE_ID = "0af7651916cd43dd8448eb211c80319c";
+      let registered = false;
+      beforeAll(() => {
+         registered = context.setGlobalContextManager(
+            new StackContextManager(),
+         );
+      });
+      afterAll(() => {
+         if (registered) context.disable();
+      });
+
+      function inSpan<T>(fn: () => T): T {
+         const span = trace.wrapSpanContext({
+            traceId: SPAN_TRACE_ID,
+            spanId: "b7ad6b7169203331",
+            traceFlags: TraceFlags.SAMPLED,
+         });
+         return context.with(trace.setSpan(ROOT_CONTEXT, span), fn);
+      }
+
+      it("takes the trace id from the span, over the header", () => {
+         const meta = inSpan(() =>
+            accessLog("/logger-spec/c", {
+               headers: { traceparent: `00-${TRACE_ID}-00f067aa0ba902b7-01` },
+            }),
+         );
+         expect(meta?.traceId).toBe(SPAN_TRACE_ID);
+      });
+
+      it("takes it from the span when there is no header", () => {
+         expect(inSpan(() => accessLog("/logger-spec/d"))?.traceId).toBe(
+            SPAN_TRACE_ID,
+         );
+      });
+   });
+
+   it("writes nothing for a probe, query string or not", () => {
+      expect(accessLog("/health")).toBeUndefined();
+      expect(accessLog("/metrics?name[]=up")).toBeUndefined();
+   });
+});
+
+/** A synchronous context manager, enough for code that reads the active span before it awaits. */
+class StackContextManager implements ContextManager {
+   private stack: Context[] = [];
+   active(): Context {
+      return this.stack[this.stack.length - 1] ?? ROOT_CONTEXT;
+   }
+   with<A extends unknown[], F extends (...args: A) => ReturnType<F>>(
+      ctx: Context,
+      fn: F,
+      thisArg?: ThisParameterType<F>,
+      ...args: A
+   ): ReturnType<F> {
+      this.stack.push(ctx);
+      try {
+         return fn.call(thisArg, ...args);
+      } finally {
+         this.stack.pop();
+      }
+   }
+   bind<T>(_ctx: Context, target: T): T {
+      return target;
+   }
+   enable(): this {
+      return this;
+   }
+   disable(): this {
+      this.stack = [];
+      return this;
+   }
+}

@@ -70,6 +70,19 @@ export const DEFAULT_MAX_QUERY_ROWS = 100_000;
  * a non-streaming driver has already buffered the whole result.
  */
 export const DEFAULT_MAX_RESPONSE_BYTES = 50_000_000;
+/** Files one compile or query request may overlay with `files`; more is a 413. */
+export const MAX_OVERLAY_FILES = 500;
+/**
+ * Bytes of file text one compile or query request may overlay, summed over its
+ * files; more is a 413. The two routes accept a request body this much larger
+ * than the server's usual limit.
+ */
+export const MAX_OVERLAY_BYTES = 8 * 1024 * 1024;
+/**
+ * Dry-run publishes a server runs at once; more are refused with 503. Each
+ * holds a whole download and load.
+ */
+export const MAX_CONCURRENT_DRY_RUNS = 2;
 /**
  * Wall-clock timeout (ms) for one query, SQL or Malloy
  * (`PUBLISHER_QUERY_TIMEOUT_MS`; `0` disables). Kept under the 10-minute
@@ -84,11 +97,27 @@ export const DEFAULT_QUERY_TIMEOUT_MS = 300_000;
  */
 export const DEFAULT_MAX_CONCURRENT_QUERIES = 32;
 /**
- * Default cap on open database sessions for one plain (non-proxied) Postgres
+ * Default cap on open database sessions for one Postgres
  * connection in one publisher process. Override at startup via
  * `PUBLISHER_POSTGRES_POOL_MAX`. Kept small because a role's CONNECTION LIMIT
  * is shared by every pod serving the environment.
  */
 export const DEFAULT_POSTGRES_POOL_MAX = 5;
+/**
+ * Default request header the per-query access record copies as `caller`.
+ * Override at startup via `PUBLISHER_CALLER_HEADER`.
+ */
+export const DEFAULT_CALLER_HEADER = "x-publisher-caller";
 export const TEMP_DIR_PATH = os.tmpdir();
 export const PUBLISHER_DATA_DIR = "publisher_data";
+
+/**
+ * Default cosine-similarity floor for semantic retrieval. Tunable because
+ * cosine similarity is not calibrated across embedding models; deliberately
+ * permissive, preferring a weak match to a lost real one. See
+ * docs/configuration.md.
+ */
+export const DEFAULT_EMBEDDING_MIN_SIMILARITY = 0.2;
+
+/** Default for `packageLoad.schemaCacheBytes`: 16 MiB of serialized schema per worker. */
+export const DEFAULT_PACKAGE_LOAD_SCHEMA_CACHE_BYTES = 16 * 1024 * 1024;

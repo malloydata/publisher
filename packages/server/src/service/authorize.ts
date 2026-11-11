@@ -33,12 +33,13 @@
  * probe it builds is COMPILED, never RUN — the package-load worker's
  * `ProxyConnection.runSQL` deliberately throws. It bundles into that worker,
  * so keep its imports to `@malloydata/malloy`, `module`, `../errors`,
- * `./annotations` and `./authorize_routes`.
+ * `./annotations`, `./authorize_routes` and `./governance/ir`.
  */
 
-import { payloadOf, routeOf } from "@malloydata/malloy";
 import { createRequire } from "module";
+import { payloadOfNote, routeOfNote } from "./annotation_reader";
 import { BadRequestError, ModelCompilationError } from "../errors";
+import { logger } from "../logger";
 import { type AnnotationNote } from "./annotations";
 import {
    canonicalAuthorizeRoute,
@@ -46,30 +47,10 @@ import {
    ACCESS_FILTER_ROUTE,
    AUTHORIZE_ROUTE,
 } from "./authorize_routes";
-
-/**
- * Malloy's own routing for ONE note, via the public `routeOf`. Three outcomes,
- * and all three are load-bearing here:
- *
- *   a name (`"authorize"`, `"authorize-v2"`, `"doc"`)  an app's namespace
- *   `""`                                              MOTLY / render tags
- *   `undefined`                                        a malformed prefix
- *
- * Reading the compiler's answer rather than text-matching is what keeps
- * publisher from inventing its own grammar — see this module's header.
- */
-function noteRoute(text: string): string | undefined {
-   return routeOf({ value: text.trimStart() } as Parameters<typeof routeOf>[0]);
-}
-
-/** The note's payload — the part after the prefix, dedented for a block note. */
-function notePayload(text: string): string {
-   return (
-      payloadOf({ value: text.trimStart() } as Parameters<
-         typeof payloadOf
-      >[0]) ?? ""
-   );
-}
+import {
+   preparedQueryView,
+   probeFilterList,
+} from "./governance/ir/prepared_query";
 
 /**
  * A caller-text pattern for an `authorize` annotation, and deliberately a
@@ -204,9 +185,9 @@ export function malformedAuthorizeAttemptPattern(route: string): RegExp {
 function authorizeNoteContent(
    text: string,
 ): { route: string; content: string } | undefined {
-   const route = canonicalAuthorizeRoute(noteRoute(text));
+   const route = canonicalAuthorizeRoute(routeOfNote(text));
    if (route === undefined) return undefined;
-   return { route, content: notePayload(text) };
+   return { route, content: payloadOfNote(text) };
 }
 
 /** The canonical route of ONE note (`access_filter` / `authorize`), or
@@ -324,8 +305,9 @@ function lexProseRanges(text: string): [number, number][] | undefined {
       // Without the lexer every prose-bearing notebook save and query answers 400, so say why once.
       if (!warnedNoParser) {
          warnedNoParser = true;
-         console.warn(
-            "Prose-aware caller-annotation guard disabled: @malloydata/malloy ./lang/run-malloy-parser could not be loaded; falling back to whole-text matching.",
+         logger.warn(
+            "Prose-aware caller-annotation guard disabled: the Malloy parser could not be loaded; falling back to whole-text matching",
+            { module: "@malloydata/malloy/lang/run-malloy-parser" },
          );
       }
       return undefined;
@@ -392,13 +374,13 @@ function lexProseRanges(text: string): [number, number][] | undefined {
          ) {
             if (!range) return undefined;
             block = {
-               prose: PROSE_ROUTES.has(noteRoute(text.slice(...range)) ?? ""),
+               prose: PROSE_ROUTES.has(routeOfNote(text.slice(...range)) ?? ""),
                next: token.stopIndex + 1,
             };
          } else if (name === "ANNOTATION" || name === "DOC_ANNOTATION") {
             if (!range) return undefined;
             // One token to the end of the line, routed by its prefix, which cannot itself be a hit.
-            if (PROSE_ROUTES.has(noteRoute(text.slice(...range)) ?? ""))
+            if (PROSE_ROUTES.has(routeOfNote(text.slice(...range)) ?? ""))
                prose.push([range[0] + 1, range[1]]);
          }
       }
@@ -492,6 +474,29 @@ export function assertNoAuthorizeTagLike(callerText: string): void {
    refuseCallerAuthorizeAnnotation();
 }
 
+/** A superset of the spellings of `#(classification)` and `#(carries)`, matched like {@link AUTHORIZE_TAG_LIKE}. */
+const CLASSIFICATION_TAG_LIKE = new RegExp(
+   String.raw`##?\|?[ \t]*(?:[([{<][ \t]*)?(?:classification|carries)(?=[)\]}>]|[ \t]|$)`,
+   "iu",
+);
+
+/**
+ * Reject caller text that declares a `#(classification)` or `#(carries)`: the
+ * caller's query is judged by the classes the author declared, so a relabel or
+ * a raised ceiling written in the query would decide its own check. Matched
+ * anywhere in the text, so a false positive is a clear 400.
+ */
+export function assertNoCallerClassificationAnnotation(
+   callerText: string,
+): void {
+   if (!CLASSIFICATION_TAG_LIKE.test(callerText)) return;
+   throw new BadRequestError(
+      "A `classification` or `carries` annotation is not permitted in " +
+         "caller-submitted Malloy text. Classes are declared by the model " +
+         "author on the field or source; a query is checked against them.",
+   );
+}
+
 function refuseCallerAuthorizeAnnotation(): never {
    // A caller-input rejection, so 400 — not ModelCompilationError's 424, which
    // reads as "the package is broken".
@@ -556,13 +561,13 @@ export function collectAuthorizeNearMisses(
    const found: string[] = [];
    for (const text of texts) {
       const trimmed = text.trimStart();
-      const noted = noteRoute(trimmed);
+      const noted = routeOfNote(trimmed);
       if (noted === route) continue; // a real gate
       const nearMiss =
          noted === undefined
             ? malformedPattern.test(trimmed)
             : noted === ""
-              ? motlyPattern.test(notePayload(trimmed))
+              ? motlyPattern.test(payloadOfNote(trimmed))
               : nearMissNames.has(noted.toLowerCase());
       if (!nearMiss) continue;
       // The first line only — the part that decides routing — so the gate
@@ -901,11 +906,12 @@ export function buildRowLevelProbe(
  * error subject; `T` is the caller's condition type.
  */
 export function liftProbeFilterCondition<T extends CompiledGateCondition>(
-   prepared: { _query?: { structRef?: { filterList?: T[] } } },
+   /** What the probe's `getPreparedQuery()` resolved to. */
+   prepared: unknown,
    label: string,
    filterText: string,
 ): T {
-   const filterList = prepared._query?.structRef?.filterList;
+   const filterList = probeFilterList<T>(preparedQueryView(prepared));
    if (!Array.isArray(filterList) || filterList.length === 0) {
       throw new Error(`${label} carries no filter condition`);
    }
@@ -944,12 +950,10 @@ async function liftRowLevelCondition(
    exprs: string[],
 ): Promise<CompiledGateCondition> {
    const filterText = gateFilterText(exprs);
-   const prepared = (await compiler
+   const prepared = await compiler
       .loadQuery(buildRowLevelProbe(sourceName, filterText))
-      .getPreparedQuery()) as {
-      _query?: { structRef?: { filterList?: CompiledGateCondition[] } };
-   };
-   return liftProbeFilterCondition(
+      .getPreparedQuery();
+   return liftProbeFilterCondition<CompiledGateCondition>(
       prepared,
       `row-level probe for "${sourceName}"`,
       filterText,
@@ -1081,8 +1085,10 @@ const WHOLE_BODY_SINGLE_QUOTED_STRING = /^'(?:\\.|[^'\\])*'$/;
  * sub-expression (`where: ("admin" = $ROLE)` compiles), so a legal unquoted
  * gate can legitimately START with one (`#(authorize) "admin" = $ROLE`) — a
  * test that only looked at the first character would misidentify it as
- * legacy. Decides only what {@link findLegacyStringGates} reports, not how a
- * payload is parsed.
+ * legacy. Decides what {@link findLegacyStringGates} reports, and, through
+ * {@link legacyGatePayloadExpression}, how the entities extraction reads a
+ * gate: a legacy payload is decoded, anything else is read verbatim. Not how
+ * the load parses a payload, which compiles it as written.
  */
 export function isLegacyQuotedPayload(payload: string): boolean {
    const trimmed = payload.trim();
@@ -1096,6 +1102,7 @@ export function isLegacyQuotedPayload(payload: string): boolean {
  * The expression a legacy quoted-string gate MEANT: the payload's string
  * literal decoded to its contents, for {@link assertNoLegacyStringGate}'s
  * paste-ready rewrite (the verbatim payload would reproduce the refused text).
+ * Also what {@link legacyGatePayloadExpression} decodes for the entities.
  * Only called on a payload {@link isLegacyQuotedPayload} accepted.
  *
  * Decodes only the quote and backslash escapes; any other backslash sequence
@@ -1109,6 +1116,42 @@ function unquoteLegacyGatePayload(payload: string): string {
    return trimmed[0] === "'"
       ? inner.replace(SINGLE_QUOTE_ESCAPE, "$1")
       : inner.replace(DOUBLE_QUOTE_ESCAPE, "$1");
+}
+
+/**
+ * The expression a gate payload means when it is the legacy quoted-string form
+ * (the whole payload one string literal, {@link isLegacyQuotedPayload}), or
+ * undefined when it is an ordinary expression, which may itself start with a
+ * string literal (`"admin" = $ROLE`). For readers that report gates rather than
+ * enforce them (the entities extraction), so they classify a payload exactly as
+ * the load does.
+ */
+export function legacyGatePayloadExpression(
+   payload: string,
+): string | undefined {
+   return isLegacyQuotedPayload(payload)
+      ? unquoteLegacyGatePayload(payload)
+      : undefined;
+}
+
+/**
+ * A string literal in either quote, or a backtick-quoted identifier, read
+ * left to right so whichever opens first claims the text up to its close: an
+ * apostrophe inside `` `owner's region` `` is part of the name, and a backtick
+ * inside `'a`b'` is part of the string. The backtick alternative is Malloy's
+ * own `BQ_STRING` token: a backslash escapes the next character (`` \` ``
+ * included), and it does not span a line.
+ */
+const QUOTED_TOKEN_PATTERN =
+   /'(?:\\.|[^'\\])*'|"(?:\\.|[^"\\])*"|`(?:\\.|[^`\\\n])*`/g;
+
+/**
+ * True when every string quote in `expr` belongs to a complete string literal.
+ * Backtick-quoted identifiers are set aside first, so a quote character inside
+ * one (`` `owner's region` = $X ``, which the load accepts) is not a stray.
+ */
+export function quotesAreBalanced(expr: string): boolean {
+   return !/['"]/.test(expr.replace(QUOTED_TOKEN_PATTERN, ""));
 }
 
 /**

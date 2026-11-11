@@ -23,7 +23,7 @@ Malloy handles nested structures natively. The conversion depends on whether you
 1. **Keep nested**: access nested fields directly via the parent source
 2. **Flatten**: create a separate source from the unnested data
 
-Call `search_malloy_docs("nested repeated")` for current Malloy syntax for nested/repeated field handling.
+A repeated column is already an array on the Malloy source, so the UNNEST join usually needs no Malloy join at all. An array of records is read by its member path (`labels.key`, `credits.amount.sum()`); an array of plain values is read with `.each` (`group_by: label is labels.each`). Either fans out like the `one_to_many` join it replaces. Call `search_malloy_docs("nested repeated")` for anything beyond that.
 
 ## Struct Field Access
 

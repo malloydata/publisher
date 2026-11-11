@@ -1,0 +1,5 @@
+{
+  "name": "clinical-records",
+  "version": "1.0.0",
+  "description": "Synthetic clinical records (Synthea) modeled under a HIPAA-shaped access policy: classified fields, locked bases, and one gated entry point per workforce class."
+}

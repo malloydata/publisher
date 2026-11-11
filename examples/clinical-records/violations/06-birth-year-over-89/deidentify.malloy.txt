@@ -1,0 +1,88 @@
+// Seeded violation 06: see ../README.md. Swap in for deidentify.malloy.
+// Safe Harbor derivations, declared once (policy DI-01, DI-02, DI-03).
+// Every de-identified domain reads its patient and its dates through these
+// sources, so the derivation a control cites is this file, not a hand-made
+// copy on each domain:
+//
+//   - every date reduced to its year (the seeded fault below leaves the year of birth unwithheld past age 89);
+//   - age capped: 90 for every age over 89;
+//   - geography reduced to the state and a three-digit ZIP, with the
+//     small-population three-digit areas in data/ reported as '000'.
+##! experimental { access_modifiers givens }
+
+import "base.malloy"
+
+source: zip3_small is zip3_small_population include { internal: * }
+
+source: patients_deid is patients_base include { internal: * } extend {
+  primary_key: Id
+  join_one: small_zip3 is zip3_small on substr(ZIP, 1, 3)::number = small_zip3.zip3
+
+  #(doc) Year of birth.
+  #(classification) "phi.quasi_identifier"
+  // SEEDED VIOLATION (DI-01): the year of birth is published for every age, so a
+  // patient over 89 is identifiable by it.
+  dimension: birth_year is year(BIRTHDATE)
+  #(doc) Age in whole years on 2020-04-30, reported as 90 for every age over 89.
+  #(classification) "phi.quasi_identifier"
+  dimension: age is pick 90 when floor(days(BIRTHDATE to @2020-04-30) / 365.25) > 89
+    else floor(days(BIRTHDATE to @2020-04-30) / 365.25)
+  #(doc) State of residence.
+  #(classification) "none"
+  dimension: state is STATE
+  #(doc) First three digits of the ZIP code, or '000' where that area has 20,000 people or fewer.
+  #(classification) "phi.quasi_identifier"
+  dimension: zip3 is pick '000' when small_zip3.zip3 is not null
+    else substr(ZIP, 1, 3)
+  #(doc) Gender.
+  #(classification) "phi.quasi_identifier"
+  dimension: gender is GENDER
+  #(doc) Race.
+  #(classification) "phi.quasi_identifier"
+  dimension: race is RACE
+  #(doc) Ethnicity.
+  #(classification) "phi.quasi_identifier"
+  dimension: ethnicity is ETHNICITY
+  #(doc) Number of patients.
+  #(classification) "none"
+  measure: patient_count is count()
+}
+
+source: conditions_deid is conditions_base include { internal: * } extend {
+  #(doc) Year the condition was diagnosed.
+  #(classification) "phi.quasi_identifier"
+  dimension: onset_year is year(`START`)
+  #(doc) SNOMED code of the condition.
+  #(classification) "phi.clinical"
+  dimension: condition_code is CODE
+  #(doc) The condition.
+  #(classification) "phi.clinical"
+  dimension: condition is DESCRIPTION
+  #(doc) Number of diagnoses.
+  #(classification) "none"
+  measure: diagnosis_count is count()
+}
+
+source: encounters_deid is encounters_base include { internal: * } extend {
+  primary_key: Id
+  #(doc) Year the encounter began.
+  #(classification) "phi.quasi_identifier"
+  dimension: encounter_year is year(`START`)
+  #(doc) Ambulatory, emergency, inpatient, wellness and so on.
+  #(classification) "phi.clinical"
+  dimension: encounter_class is ENCOUNTERCLASS
+  #(doc) The encounter type.
+  #(classification) "phi.clinical"
+  dimension: encounter_type is DESCRIPTION
+  #(doc) Why the patient came in, as a coded description.
+  #(classification) "phi.clinical"
+  dimension: reason is REASONDESCRIPTION
+  #(doc) The encounter's billed claim cost.
+  #(classification) "phi.financial"
+  dimension: claim_cost is TOTAL_CLAIM_COST
+  #(doc) Number of encounters.
+  #(classification) "none"
+  measure: encounter_count is count()
+  #(doc) Total billed claim cost.
+  measure: total_claim_cost is claim_cost.sum()
+}

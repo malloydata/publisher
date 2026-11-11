@@ -21,6 +21,7 @@
  *    `child` names child_id 1 'north', 2 'south'.
  */
 
+import { unrecordedAudit } from "../service/access_record";
 import { DuckDBConnection } from "@malloydata/db-duckdb";
 import {
    FixedConnectionMap,
@@ -39,7 +40,9 @@ import os from "os";
 import path from "path";
 import { AccessDeniedError } from "../errors";
 import { malloyGivenToApi, type MalloyGiven } from "../service/given";
-import { Model } from "../service/model";
+import { Model, ModelPolicy, QueryPrivileges } from "../service/model";
+import { seededDuckdb as seededTempDuckdb } from "./temp_package";
+import { governorOf } from "./governor";
 
 export const AUTHORIZE_SEED_SQL = `
 CREATE OR REPLACE TABLE customers (id INTEGER, name VARCHAR, region VARCHAR);
@@ -74,12 +77,8 @@ INSERT INTO child VALUES (1, 'north'), (2, 'south');
 `;
 
 /** A fresh in-memory DuckDB carrying {@link AUTHORIZE_SEED_SQL}. */
-export async function seededDuckdb(): Promise<DuckDBConnection> {
-   const duckdb = new DuckDBConnection("duckdb", ":memory:");
-   for (const stmt of AUTHORIZE_SEED_SQL.split(";")) {
-      if (stmt.trim()) await duckdb.runSQL(stmt.trim() + ";");
-   }
-   return duckdb;
+export function seededDuckdb(): Promise<DuckDBConnection> {
+   return seededTempDuckdb(AUTHORIZE_SEED_SQL);
 }
 
 export function connectionsFor(
@@ -158,19 +157,16 @@ export function compilationErrorOf(model: Model): Error | undefined {
    return (model as unknown as { compilationError?: Error }).compilationError;
 }
 
-/** `compactResult` rows of an ad-hoc query through `getQueryResults`. */
+/** `compactResult` rows of an ad-hoc query through `runQuery`. */
 export async function queryRows(
    model: Model,
    query: string,
    givens: Record<string, unknown> = {},
 ): Promise<Array<Record<string, unknown>>> {
-   const result = await model.getQueryResults(
-      undefined,
-      undefined,
-      query,
-      {},
-      true,
-      givens as Record<string, GivenValue>,
+   const result = await model.runQuery(
+      unrecordedAudit(),
+      { query, filterParams: {}, givens: givens as Record<string, GivenValue> },
+      QueryPrivileges.of({ bypassFilters: true }),
    );
    return result.compactResult as unknown as Array<Record<string, unknown>>;
 }
@@ -250,7 +246,6 @@ const ROOT = "file:///authorize-tests/";
 /** Private `Model` members the request-time specs reach past the public
  *  surface (same idiom as `authorize_gate_walk.spec.ts`'s `GateWalker`). */
 export interface ModelInternals {
-   setGateRuntime(runtime: Runtime): void;
    authorizeAndBindRunnable(
       runnable: QueryMaterializer,
       givens: Record<string, GivenValue>,
@@ -338,26 +333,22 @@ export async function buildGatedModel(
    ) as unknown as MalloyGiven[];
    const givens =
       malloyGivens.length > 0 ? malloyGivens.map(malloyGivenToApi) : undefined;
-   const model = new Model(
-      "test-pkg",
-      entry,
-      {},
-      "model",
+   const model = new Model({
+      packageName: "test-pkg",
+      modelPath: entry,
+      dataStyles: {},
+      modelType: "model",
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      mm as any,
+      modelMaterializer: mm as any,
       modelDef,
-      undefined,
-      undefined,
-      undefined,
-      undefined,
-      undefined,
-      undefined,
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      givens as any,
-      modelDefToModelInfo(modelDef),
-   );
-   const internals = model as unknown as ModelInternals;
-   internals.setGateRuntime(runtime);
+      givens: givens as any,
+      modelInfo: modelDefToModelInfo(modelDef),
+      policy: ModelPolicy.standalone(),
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      gateRuntime: runtime as any,
+   });
+   const internals = governorOf(model) as unknown as ModelInternals;
    return { model, internals, mm, duckdb };
 }
 

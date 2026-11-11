@@ -775,14 +775,30 @@ view with its own `timezone:` is filtered in that zone.
 
 That works for any tile shape that runs one stage: `"<source> -> <view>"`, a refined view
 (`"<source> -> <view> + { where: … }"`), a tile naming a `query:`, an inline query, a view grouped by a
-joined field (`customers.name`). Two shapes offer no rows, and their values are not marked: a view of more
-than one stage (`view: v is { … } -> { … }`), whose later dimensions are an earlier stage's outputs that the
-source cannot be filtered by, and a source with parameters.
+joined field (`customers.name`), including a dimension declared in the joined source
+(`customers.signup_year`). Some rows cannot be named exactly, so their values offer no rows and are not
+marked: a pipeline of more than one stage, whether a view (`view: v is { … } -> { … }`), a nest, a named
+query or an inline query, since its later dimensions are an earlier stage's outputs that the source cannot
+be filtered by; a source with parameters; a time truncation with no name of its own inside a view or a nest
+(`group_by: created_at.month`; write `group_by: order_month is created_at.month` to drill it); a row holding a
+value a filter cannot spell (a uuid, JSON, a database-native type) or grouped by an inline expression the
+result reports no expression for; and a nested row whose levels use different time zones, since one rows
+query has one `timezone:`.
+
+Malloy's result metadata is wrong in three of those places as of Malloy 0.0.436: a pipeline's root reads
+as drillable, a dimension declared in a joined source carries code that reads the root source's fields, and
+an unnamed truncation in a view loses its truncation. Publisher's server corrects all three before it sends
+a result, so a client reading the metadata gets the right rows or none. It then adds a
+`#(malloy) drill_metadata_corrected` tag to the result's root, and the SDK offers rows only on a result
+that carries it. Against a Publisher older than the correction, the SDK offers no rows rather than wrong
+ones.
 
 **Downloading the rows.** The dialog shows the first 200 rows. Its **Download CSV** runs the same query with no
 `limit:`, so the server's own row cap (`PUBLISHER_DEFAULT_QUERY_ROW_LIMIT`, 1000 by default) is the only bound,
-and saves the result as `<source>_rows_<values>.csv`. When that cap cut the result short, the file name ends
-`_first_<N>_rows_server_limit` and the button's tooltip says `First N rows (server limit)`. A text value that a
+and saves the result as `<source>_rows_<values>.csv`. When the file reaches that cap, the file name ends
+`_first_<N>_rows_server_limit` and the button's tooltip says there may be more. The response has no
+truncation flag, so a result of exactly the cap is labelled the same way. A failed download says why
+beside the button, with the server's message, and closing the dialog cancels a download in flight. A text value that a
 spreadsheet would run as a formula (one starting `=`, `+`, `-` or `@`) is written with a leading `'`; numbers are
 written as they are.
 
@@ -973,7 +989,7 @@ report into the package and reloads it. One rule for both layouts:
 
 - **Create** (omit `expectedHash`) at any `.malloy` path in the package that does not exist yet, outside
   `public/` and never at the root `index.malloy`. Missing directories are created inside the package. The
-  text must carry an artifact tag. A file already at that path answers `409`.
+  text must carry an artifact tag. A file already at that path answers `409` with `reason` `FILE_EXISTS`.
 - **Replace** (with `expectedHash`) only a file with an artifact tag: a report the package serves, or a
   tagged file it refuses as one (a retired cell-format file, a `kind=` tag), so that file can be rewritten
   as tiles in place. The endpoint cannot overwrite a model, an untagged file, a `.malloynb` or `index.malloy`, wherever they live.
@@ -983,6 +999,11 @@ report into the package and reloads it. One rule for both layouts:
   restored if the reload does not take it or the file is not then a served report. A text that declares a
   real `#(authorize)` or `#(access_filter)` gate outside prose is refused with `400`: gates live in the model.
 - `403` under `frozenConfig`.
+- `409` with `reason` `PACKAGE_INSTALLED_FROM_LOCATION` for a package installed from a `location` (a publish
+  over the API that named one). A reload fetches such a package again and replaces its files, so a report
+  written into it would be lost. Add the report to the package's source and reload, or publish it as a version.
+  A package with published versions answers `409` with `reason` `PACKAGE_IS_VERSIONED`. Only `FILE_EXISTS`
+  means another path may be free.
 
 Two reports may share a basename in different directories; there is no name-collision `409`.
 
@@ -1276,6 +1297,35 @@ never takes a model given's name, and give the reader `<DashboardView literalRea
 tile reads by its `tile.query`, so a tile filtered that way is not marked as ignoring them. `hiddenGivens` names givens the host sets itself, which get no control, and `givens` carries their
 values. A gate whose given the request did not send denies, so a host that never sends them sees every tile on a
 gated source as restricted.
+
+## Showing one in a conversation
+
+An agent shows a report to a person with two MCP tools: `list_reports` for a package's report paths, then
+`show_report` with one of them, and optionally starting filter values:
+
+```json
+{ "environmentName": "examples", "packageName": "storefront", "path": "overview.malloy",
+  "givens": { "CATEGORY": "Outerwear" } }
+```
+
+A host that supports [MCP Apps](https://github.com/modelcontextprotocol/ext-apps) (Claude Desktop and
+claude.ai among them) draws the report in the conversation, as the Console's reader draws it: the filter row,
+every tile, the click menu with Show rows, and `# drill` click-through, where a drill to another report opens it
+in the same panel with Back to return. "Open in Publisher" takes the report and its current filter values to the
+Console. A host that draws no panel shows the tool's text, which names the report, its tiles and filters, and
+its Console address.
+
+The panel holds no credentials and fetches nothing itself. Its reads (the report, its tiles' queries, the
+filter suggestions) go back through the host as calls to `report_api`, an app-only tool that answers them
+through the same controllers as the REST routes. A report therefore runs in a panel under the same
+`#(authorize)` gates, row filters, givens and access record as in the Console, for the caller the MCP request
+carries. Its script loads from the REST server, at `MCP_APP_ORIGIN` (default `http://localhost:{port}`); set it
+to the address a host's browser reaches that server at. The panel offers no CSV download, which a sandboxed
+frame cannot start; the Console does.
+
+A host's sandbox typically refuses `eval`. Charts draw there through Vega's interpreter, chosen automatically
+when the page refuses it; scatter charts and the three maps do not yet (`@malloydata/render` compiles their
+expressions), and show an error card in the panel where the Console draws them.
 
 ## Where reports stop
 

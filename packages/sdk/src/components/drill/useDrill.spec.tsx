@@ -10,6 +10,7 @@ import {
 } from "@testing-library/react";
 import { afterEach, describe, expect, it, mock } from "bun:test";
 import type { DrillField, DrillTagReader } from "./resolveDrill";
+import { DRILL_METADATA_CORRECTED } from "./rowsTarget";
 import {
    useDrill,
    type UseDrillOptions,
@@ -72,6 +73,8 @@ const reported = (name: string, code: string): DrillField => {
                  ? "by_cat"
                  : undefined,
          array: () => undefined,
+         has: (...at: string[]) =>
+            ["drillable", DRILL_METADATA_CORRECTED].includes(at.join(".")),
       },
       fields: [] as unknown[],
    };
@@ -80,7 +83,9 @@ const reported = (name: string, code: string): DrillField => {
       tag: tag(),
       parent: root,
       isBasic: () => true,
+      isString: () => true,
       wasDimension: () => true,
+      drillStableExpression: { kind: "field_reference", name },
       metadataTag: {
          text: (...at: string[]) =>
             at.join(".") === "drill_expression.code" ? code : undefined,
@@ -275,6 +280,8 @@ describe("useDrill: every drillable click opens a menu that says what it does", 
             text: (...at: string[]) =>
                at.join(".") === "source.name" ? "orders" : undefined,
             array: () => undefined,
+            has: (...at: string[]) =>
+               ["drillable", DRILL_METADATA_CORRECTED].includes(at.join(".")),
          },
          fields: [] as unknown[],
       };
@@ -287,6 +294,7 @@ describe("useDrill: every drillable click opens a menu that says what it does", 
             tag: tag(drill),
             parent: root,
             isBasic: () => true,
+            isString: () => true,
             wasDimension: () => true,
             drillStableExpression: { kind: "field_reference", name },
             metadataTag: {

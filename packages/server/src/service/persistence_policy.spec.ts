@@ -8,6 +8,9 @@ import * as path from "path";
 
 import { Environment } from "./environment";
 import type { Package } from "./package";
+import { withSettings } from "../test_helpers/settings_env";
+import { writePackageFiles } from "../test_helpers/temp_package";
+import { parsePackageName } from "./identity";
 
 /**
  * The publish gate for the package's Malloy Persistence policy (persistence.md
@@ -35,15 +38,16 @@ describe("persistence policy gate", () => {
       manifest: Record<string, unknown> = {},
    ): Promise<Package> {
       const dir = path.join(envPath, "pkg");
-      await fs.mkdir(dir, { recursive: true });
-      await fs.writeFile(
-         path.join(dir, "publisher.json"),
-         JSON.stringify({ name: "pkg", description: "fixture", ...manifest }),
+      writePackageFiles(
+         dir,
+         {
+            "model.malloy": model,
+         },
+         { manifest: { name: "pkg", description: "fixture", ...manifest } },
       );
-      await fs.writeFile(path.join(dir, "model.malloy"), model);
       const env = await Environment.create("testEnv", envPath, []);
       await env.addPackage("pkg");
-      return env.getPackage("pkg", false);
+      return env.getPackage(parsePackageName("pkg"), false);
    }
 
    function sourceByName(pkg: Package, name: string) {
@@ -427,21 +431,16 @@ source: b is duckdb.sql("SELECT 2 as y")
       "gates the publish rejection behind PERSIST_COLLISION_ENFORCE",
       async () => {
          const pkg = await loadPackage(COLLIDING_MODEL);
-         const prev = process.env.PERSIST_COLLISION_ENFORCE;
-         try {
-            delete process.env.PERSIST_COLLISION_ENFORCE;
-            // Default: warn-only, so the publish gate string is empty.
+         // Default: warn-only, so the publish gate string is empty.
+         withSettings({}, () => {
             expect(pkg.formatPersistenceCollisionRejections()).toBe("");
-            process.env.PERSIST_COLLISION_ENFORCE = "true";
-            // Enforced: the collision becomes a publish rejection.
+         });
+         // Enforced: the collision becomes a publish rejection.
+         withSettings({ env: { PERSIST_COLLISION_ENFORCE: "true" } }, () => {
             expect(pkg.formatPersistenceCollisionRejections()).toContain(
                '"dup"',
             );
-         } finally {
-            if (prev === undefined)
-               delete process.env.PERSIST_COLLISION_ENFORCE;
-            else process.env.PERSIST_COLLISION_ENFORCE = prev;
-         }
+         });
       },
       { timeout: 30000 },
    );

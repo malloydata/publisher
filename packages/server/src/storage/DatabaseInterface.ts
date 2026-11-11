@@ -1,49 +1,155 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
-import { components } from "../api";
+import type {
+   BuildManifestResult,
+   IncrementalStrategy,
+   MaterializationStatus,
+} from "../service/materialization/types";
+
+// The materialization domain types moved to service/materialization/types.ts;
+// re-exported here so the store and its repositories keep compiling unchanged.
+export type {
+   BuildInstruction,
+   BuildManifest,
+   BuildManifestEntry,
+   BuildManifestResult,
+   BuildPlan,
+   FreshnessAwareManifestEntry,
+   FreshnessManifest,
+   IncrementalStrategy,
+   LedgerEntry,
+   ManifestEntry,
+   ManifestReference,
+   MaterializationStatus,
+   Realization,
+   RefusedSource,
+   SourceFailure,
+} from "../service/materialization/types";
+export { isLegacyFailedEntry } from "../service/materialization/types";
 
 export interface ResourceRepository {
    // Environments
-   listEnvironments(): Promise<Environment[]>;
-   getEnvironmentById(id: string): Promise<Environment | null>;
-   getEnvironmentByName(name: string): Promise<Environment | null>;
+   listEnvironments(): Promise<EnvironmentRecord[]>;
+   getEnvironmentById(id: string): Promise<EnvironmentRecord | null>;
+   getEnvironmentByName(name: string): Promise<EnvironmentRecord | null>;
    createEnvironment(
-      environment: Omit<Environment, "id" | "createdAt" | "updatedAt">,
-   ): Promise<Environment>;
+      environment: Omit<EnvironmentRecord, "id" | "createdAt" | "updatedAt">,
+   ): Promise<EnvironmentRecord>;
    updateEnvironment(
       id: string,
-      updates: Partial<Environment>,
-   ): Promise<Environment>;
+      updates: Partial<EnvironmentRecord>,
+   ): Promise<EnvironmentRecord>;
    deleteEnvironment(id: string): Promise<void>;
 
    // Packages
-   listPackages(environmentId: string): Promise<Package[]>;
-   getPackageById(id: string): Promise<Package | null>;
+   listPackages(environmentId: string): Promise<PackageRecord[]>;
+   getPackageById(id: string): Promise<PackageRecord | null>;
    getPackageByName(
       environmentId: string,
       name: string,
-   ): Promise<Package | null>;
+   ): Promise<PackageRecord | null>;
    createPackage(
-      pkg: Omit<Package, "id" | "createdAt" | "updatedAt">,
-   ): Promise<Package>;
-   updatePackage(id: string, updates: Partial<Package>): Promise<Package>;
+      pkg: Omit<PackageRecord, "id" | "createdAt" | "updatedAt">,
+   ): Promise<PackageRecord>;
+   updatePackage(
+      id: string,
+      updates: Partial<PackageRecord>,
+   ): Promise<PackageRecord>;
+   /** Deletes the package's row and everything keyed by it, versions included. */
    deletePackage(id: string): Promise<void>;
+   /**
+    * Remove only the package's own row, keeping what is keyed by its name
+    * (its runs, its incremental ledger, its versions): for undoing a row this
+    * server just created, which owns none of them.
+    */
+   deletePackageRecord(id: string): Promise<void>;
+
+   // Versions
+   listVersions(environmentId: string, packageName: string): Promise<Version[]>;
+   hasVersions(environmentId: string, packageName: string): Promise<boolean>;
+   listVersionsByEnvironment(environmentId: string): Promise<Version[]>;
+   getVersion(
+      environmentId: string,
+      packageName: string,
+      versionId: string,
+   ): Promise<Version | null>;
+   /**
+    * Record a newly published version and, when `promote` says so, make it the
+    * package's `latest`, in one transaction. `promote` is handed the current
+    * `latest` read inside that transaction. Throws PackageVersionError
+    * VERSION_CONFLICT when the version already has a row.
+    */
+   commitPublish(
+      version: NewVersion,
+      promote: PromoteRule,
+   ): Promise<{ version: Version; promoted: boolean }>;
+   /**
+    * Make an existing, unarchived version the package's `latest`, stamping its
+    * `promoted_at` and the outgoing version's `demoted_at`. With `onlyIf`, it
+    * moves only when `onlyIf(current latest)` holds. Returns whether it moved;
+    * naming the version that is already `latest` moves nothing.
+    */
+   setLatestVersion(
+      environmentId: string,
+      packageName: string,
+      versionId: string,
+      onlyIf?: PromoteRule,
+   ): Promise<boolean>;
+   /**
+    * Archive or unarchive a version. Archiving refuses the package's `latest`
+    * (VERSION_IS_LATEST) and its last unarchived version
+    * (VERSION_IS_LAST_ACTIVE), checked in the same transaction as the write.
+    */
+   setVersionArchiveStatus(
+      environmentId: string,
+      packageName: string,
+      versionId: string,
+      status: VersionArchiveStatus,
+   ): Promise<Version>;
+   setVersionManifestPath(
+      environmentId: string,
+      packageName: string,
+      versionId: string,
+      manifestPath: string | null,
+   ): Promise<Version>;
+   /**
+    * Delete a version's row. While other versions remain it refuses the
+    * package's `latest` (VERSION_IS_LATEST) and its last version in service
+    * while archived ones remain (VERSION_IS_LAST_ACTIVE), checked in the same
+    * transaction as the delete. Returns the row as it was, and whether it was
+    * the package's only version (`wasLast`); the package's own rows go
+    * separately, with deletePackageIfNoVersions.
+    */
+   deleteVersion(
+      environmentId: string,
+      packageName: string,
+      versionId: string,
+   ): Promise<{ version: Version; wasLast: boolean }>;
+   /**
+    * Delete a package left with no versions: its row, its ledger and its runs,
+    * apart from its deleted versions' own `scope: version` auto-runs, which
+    * their reclaim deletes. False, deleting nothing, when it has a version.
+    */
+   deletePackageIfNoVersions(
+      environmentId: string,
+      packageName: string,
+   ): Promise<boolean>;
 
    // Connections
-   listConnections(environmentId: string): Promise<Connection[]>;
-   getConnectionById(id: string): Promise<Connection | null>;
+   listConnections(environmentId: string): Promise<ConnectionRecord[]>;
+   getConnectionById(id: string): Promise<ConnectionRecord | null>;
    getConnectionByName(
       environmentId: string,
       name: string,
-   ): Promise<Connection | null>;
+   ): Promise<ConnectionRecord | null>;
    createConnection(
-      connection: Omit<Connection, "id" | "createdAt" | "updatedAt">,
-   ): Promise<Connection>;
+      connection: Omit<ConnectionRecord, "id" | "createdAt" | "updatedAt">,
+   ): Promise<ConnectionRecord>;
    updateConnection(
       id: string,
-      updates: Partial<Connection>,
-   ): Promise<Connection>;
+      updates: Partial<ConnectionRecord>,
+   ): Promise<ConnectionRecord>;
    deleteConnection(id: string): Promise<void>;
 
    // Storage destinations
@@ -64,22 +170,34 @@ export interface ResourceRepository {
    listMaterializations(
       environmentId: string,
       packageName: string,
-      options?: { limit?: number; offset?: number },
+      options?: MaterializationListOptions,
+   ): Promise<Materialization[]>;
+   /** Every run of an environment, across its packages, newest first. */
+   listEnvironmentMaterializations(
+      environmentId: string,
    ): Promise<Materialization[]>;
    getLatestScheduledFireAt(
       environmentId: string,
       packageName: string,
+      version?: string,
    ): Promise<Date | null>;
    getMaterializationById(id: string): Promise<Materialization | null>;
+   /**
+    * The active run holding the package's slot, or with `lockVersion` that
+    * version's slot: a run that writes only one version's own tables holds
+    * its version's slot, so versions build side by side.
+    */
    getActiveMaterialization(
       environmentId: string,
       packageName: string,
+      lockVersion?: string,
    ): Promise<Materialization | null>;
    createMaterialization(
       environmentId: string,
       packageName: string,
       status?: MaterializationStatus,
       metadata?: Record<string, unknown> | null,
+      options?: { version?: string | null; lockVersion?: string },
    ): Promise<Materialization>;
    updateMaterialization(
       id: string,
@@ -101,7 +219,7 @@ export interface ResourceRepository {
    ): Promise<void>;
 }
 
-export interface Environment {
+export interface EnvironmentRecord {
    id: string;
    name: string;
    path: string;
@@ -111,18 +229,78 @@ export interface Environment {
    metadata?: Record<string, unknown>;
 }
 
-export interface Package {
+export interface PackageRecord {
    id: string;
    environmentId: string;
    name: string;
-   description?: string;
+   /** Null when cleared; absent when never set. */
+   description?: string | null;
    manifestPath: string;
    createdAt: Date;
    updatedAt: Date;
    metadata?: Record<string, unknown>;
+   /**
+    * The package's `latest` version, or null when it has none. Moved only by
+    * the version calls (`commitPublish`, `setLatestVersion`); `createPackage`
+    * and `updatePackage` never write it.
+    */
+   latestVersion?: string | null;
 }
 
-export interface Connection {
+export type VersionArchiveStatus = "archive" | "unarchive";
+
+/**
+ * One published, immutable version of a package. Its files never change after
+ * publish; its lifecycle state, `latest` stamps and manifest binding do.
+ */
+export interface Version {
+   /** The semantic version, exactly as the version's publisher.json declared it. */
+   versionId: string;
+   environmentId: string;
+   packageName: string;
+   /** The version's folder under the package: the version with `+` as `_`. */
+   dirName: string;
+   /** SHA-256 (hex) over the version's files at publish. */
+   contentHash: string;
+   /** The location it was published from, exactly as given; re-fetched from. */
+   sourceLocation: string | null;
+   /** The build manifest the version is bound to; null serves live. */
+   manifestPath: string | null;
+   archiveStatus: VersionArchiveStatus;
+   archivedAt: Date | null;
+   /** When it last became the package's `latest`. */
+   promotedAt: Date | null;
+   /** When it last stopped being the package's `latest`. */
+   demotedAt: Date | null;
+   /** The description from the version's own publisher.json. */
+   description: string | null;
+   gitCommitSha: string | null;
+   gitRef: string | null;
+   createdAt: Date;
+   updatedAt: Date;
+}
+
+/** What a publish records; the rest of a Version is set by the registry. */
+export type NewVersion = Pick<
+   Version,
+   | "versionId"
+   | "environmentId"
+   | "packageName"
+   | "dirName"
+   | "contentHash"
+   | "sourceLocation"
+   | "manifestPath"
+   | "description"
+>;
+
+/**
+ * Decides, from the package's current `latest` (null when it has none),
+ * whether a version should become `latest`. Evaluated inside the registry
+ * transaction, so the `latest` it sees is the one the write replaces.
+ */
+export type PromoteRule = (currentLatest: string | null) => boolean;
+
+export interface ConnectionRecord {
    id: string;
    environmentId: string;
    name: string;
@@ -134,7 +312,7 @@ export interface Connection {
 
 /**
  * A warehouse materialization builds write to and materialized queries are
- * served from. Stored apart from {@link Connection} because it is not one: it is
+ * served from. Stored apart from {@link ConnectionRecord} because it is not one: it is
  * never resolvable by name from a model, and its name lives in its own namespace
  * (so a row here and a connection row may share a name and mean two different
  * warehouses). `type` is a plain string rather than a union because the set of
@@ -151,24 +329,6 @@ export interface StorageDestination {
    updatedAt: Date;
 }
 
-// Wire types for the build protocol, kept in sync with the OpenAPI spec via
-// the generated `api.ts`.
-export type MaterializationStatus =
-   components["schemas"]["MaterializationStatus"];
-export type BuildPlan = components["schemas"]["BuildPlan"];
-export type BuildManifestResult = components["schemas"]["BuildManifest"];
-export type ManifestEntry = components["schemas"]["ManifestEntry"];
-export type BuildInstruction = components["schemas"]["BuildInstruction"];
-export type ManifestReference = components["schemas"]["ManifestReference"];
-export type Realization = components["schemas"]["Realization"];
-/**
- * One incremental source's `covered_through` boundary as it travels on the
- * wire: reported on `ManifestEntry.ledger`, and returned verbatim in
- * `BuildInstructions.ledger` by a caller that owns the ledger. The store-row
- * counterpart is {@link IncrementalLedgerEntry}.
- */
-export type LedgerEntry = components["schemas"]["LedgerEntry"];
-
 export interface Materialization {
    id: string;
    environmentId: string;
@@ -180,8 +340,20 @@ export interface Materialization {
    completedAt: Date | null;
    error: string | null;
    metadata: Record<string, unknown> | null;
+   /** The package version the run built; null for a package with none. */
+   version: string | null;
    createdAt: Date;
    updatedAt: Date;
+}
+
+/** Narrows a materialization listing to one version's runs. */
+export interface MaterializationListOptions {
+   limit?: number;
+   offset?: number;
+   /** Only the runs that built this version. */
+   version?: string;
+   /** With `version`: also the runs from before any version existed. */
+   includeUnversioned?: boolean;
 }
 
 /**
@@ -259,46 +431,6 @@ export interface LedgerTableIdentity {
    physicalTableName: string;
 }
 
-/** How a delta advances the serving table. */
-export type IncrementalStrategy = "merge" | "range_replace";
-
-/**
- * One source that failed to build, reported beside `entries` rather than inside
- * one.
- *
- * A failure carries the identifying fields it was instructed with, including the
- * `physicalTableName` it was HEADED for, so a table name here is not evidence a
- * table exists. Keeping these out of `entries` is what lets a consumer that
- * resolves an entry to a real table -- serve bindings, reuse decisions, seeds for
- * a downstream build -- do so without a per-entry check.
- */
-export type SourceFailure = components["schemas"]["SourceFailure"];
-
-/**
- * One persist source a run did not attempt because the eligibility gate refused
- * it. The same shape the build plan reports under `refusedSources`; auto-run
- * records its refusals in the run's `metadata.refusedSources`, keyed by sourceID
- * because a refused source may have no content address to key it by.
- */
-export type RefusedSource = components["schemas"]["RefusedSource"];
-
-/**
- * Whether a manifest entry records a FAILED source, in the deprecated shape.
- *
- * Manifests at rest (in `publisher.db` and bound manifest files) may hold a
- * failed source INTO `entries`, and this build still mirrors failures there.
- * Its `physicalTableName` names a table the build never created; with stable
- * auto-run names (`selfAssignTableName`) that is the PREVIOUS generation's real
- * table, which would be served as though fresh.
- *
- * Applied at the READ boundaries a persisted manifest enters through:
- * `splitManifestEntries` and `getMostRecentManifestEntries`. Delete this with
- * `ManifestEntry.error`.
- */
-export function isLegacyFailedEntry(entry: { error?: string | null }): boolean {
-   return Boolean(entry?.error);
-}
-
 export interface MaterializationUpdate {
    status?: MaterializationStatus;
    manifest?: BuildManifestResult | null;
@@ -307,49 +439,3 @@ export interface MaterializationUpdate {
    error?: string | null;
    metadata?: Record<string, unknown> | null;
 }
-
-/**
- * Malloy-facing build manifest: maps a sourceEntityId to the physical table backing
- * that persist source. This is the shape the Malloy runtime consumes when
- * (re)loading models so persist references resolve to materialized tables.
- * Distinct from {@link BuildManifestResult} (the wire build output, which also
- * carries caller bookkeeping like materializedTableId and rowCount).
- */
-export interface BuildManifestEntry {
-   tableName: string;
-}
-
-export interface BuildManifest {
-   entries: Record<string, BuildManifestEntry>;
-   strict?: boolean;
-}
-
-/**
- * A wire manifest entry carrying the control-plane freshness fields alongside
- * the physical `tableName`. This is what the publisher retains at bind so the
- * serve path can re-evaluate `age vs window` per query (see
- * {@link ../service/freshness}). A `{ tableName }`-only value is structurally
- * assignable here (the freshness fields are optional), so callers that only
- * know a table name — e.g. the post-build auto-load — bind un-gated entries.
- *
- *  - `dataAsOf`   the artifact's data-as-of instant (snapshot start); the age
- *                 anchor. `age = now - dataAsOf`. Absent ⇒ never stale.
- *  - `freshnessWindowSeconds`  the version's effective window. Absent ⇒ un-gated.
- *  - `freshnessFallback`       per-version read-time policy when stale.
- */
-export interface FreshnessAwareManifestEntry {
-   tableName: string;
-   /**
-    * The connection the physical table lives on, carried from the wire
-    * manifest so the bind step can quote `tableName` for that connection's
-    * dialect (see Package.quoteBoundTableNames). Absent on entries whose
-    * producer didn't record it; those bind verbatim.
-    */
-   connectionName?: string;
-   dataAsOf?: string;
-   freshnessWindowSeconds?: number;
-   freshnessFallback?: "live" | "stale_ok" | "fail";
-}
-
-/** Full (unfiltered) manifest map keyed by sourceEntityId. */
-export type FreshnessManifest = Record<string, FreshnessAwareManifestEntry>;

@@ -74,7 +74,10 @@ export function FilterButton(props: GivenInputProps) {
             aria-haspopup="dialog"
             aria-expanded={open}
             aria-label={`${label}: ${summary}`}
-            onClick={(event) => setAnchor(event.currentTarget)}
+            onClick={(event) => {
+               setAnchor(event.currentTarget);
+               props.onOpen?.();
+            }}
             sx={(mui) => ({
                height: "100%",
                borderRadius: ui.radius.control,

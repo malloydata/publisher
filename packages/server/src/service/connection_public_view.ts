@@ -60,6 +60,7 @@ const BIGQUERY: PublicShape = {
    impersonateServiceAccount: "scalar",
    maximumBytesBilled: "scalar",
    queryTimeoutMilliseconds: "scalar",
+   dbmeta: "scalar",
 };
 
 const SNOWFLAKE: PublicShape = {
@@ -171,12 +172,15 @@ const DUCKLAKE: PublicShape = {
       postgresConnection: POSTGRES,
       metadataSchema: "scalar",
    },
+   readOnly: "scalar",
+   destinationSchema: "scalar",
 };
 
 const PUBLIC_CONNECTION: PublicShape = {
    resource: "scalar",
    name: "scalar",
    type: "scalar",
+   managed: "scalar",
    fingerprint: "scalar",
    // Opaque and writer-owned, but it must be RETURNED: a writer compares the
    // reported tag against the one it would send, so a dropped tag reads as

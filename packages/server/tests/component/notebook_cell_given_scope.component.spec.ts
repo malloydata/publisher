@@ -6,6 +6,7 @@
 // this file is about that deprecated feature.
 
 // Harness pattern from tests/component/authorize/import_hop.spec.ts.
+import { unrecordedAudit } from "../../src/service/access_record";
 import { MalloyError } from "@malloydata/malloy";
 import { describe, expect, it } from "bun:test";
 import { AccessDeniedError } from "../../src/errors";
@@ -60,6 +61,7 @@ const PLAIN = `source: plain is duckdb.table('orgtable') extend {
 /** Row-filter gate: forwarding GROUPS lets the caller scope the rows they see. */
 const GROUPS_GATE = `##! experimental.givens
 
+#(secure)
 given:
   GROUPS :: number[]
 
@@ -72,6 +74,7 @@ source: gated is duckdb.table('orgtable') extend {
 /** Lock gate: forwarding ROLE either admits or 403s. */
 const ROLE_LOCK = `##! experimental.givens
 
+#(secure)
 given:
   ROLE :: string
 
@@ -99,9 +102,15 @@ run: gated -> { aggregate: c }
          "nb.malloynb",
       );
       try {
-         const result = await model.executeNotebookCell(0, undefined, false, {
-            GROUPS: [1],
-         });
+         const result = await model.executeNotebookCell(
+            unrecordedAudit(),
+            0,
+            undefined,
+            false,
+            {
+               GROUPS: [1],
+            },
+         );
          expect(cellCount(result)).toBe(4);
       } finally {
          await cleanup();
@@ -127,6 +136,7 @@ run: gated -> { aggregate: c }
       try {
          for (const cellIndex of [0, 1]) {
             const rejection = model.executeNotebookCell(
+               unrecordedAudit(),
                cellIndex,
                undefined,
                false,
@@ -147,6 +157,7 @@ run: gated -> { aggregate: c }
          {
             "deep_base.malloy": `##! experimental.givens
 
+#(secure)
 given:
   ROLE :: string
 
@@ -168,7 +179,7 @@ run: deep_ext -> { aggregate: c }
       );
       try {
          await expect(
-            model.executeNotebookCell(0, undefined, false, {
+            model.executeNotebookCell(unrecordedAudit(), 0, undefined, false, {
                ROLE: "analyst",
             }),
          ).rejects.toBeInstanceOf(AccessDeniedError);
@@ -194,22 +205,42 @@ run: locked -> { aggregate: c }
          "nb.malloynb",
       );
       try {
-         const mine = await model.executeNotebookCell(0, undefined, false, {
-            GROUPS: [1],
-         });
+         const mine = await model.executeNotebookCell(
+            unrecordedAudit(),
+            0,
+            undefined,
+            false,
+            {
+               GROUPS: [1],
+            },
+         );
          expect(cellCount(mine)).toBe(2);
 
-         const none = await model.executeNotebookCell(0, undefined, false, {
-            GROUPS: [],
-         });
+         const none = await model.executeNotebookCell(
+            unrecordedAudit(),
+            0,
+            undefined,
+            false,
+            {
+               GROUPS: [],
+            },
+         );
          expect(cellCount(none)).toBe(0);
 
-         const admitted = await model.executeNotebookCell(1, undefined, false, {
-            ROLE: "admin",
-         });
+         const admitted = await model.executeNotebookCell(
+            unrecordedAudit(),
+            1,
+            undefined,
+            false,
+            {
+               ROLE: "admin",
+            },
+         );
          expect(cellCount(admitted)).toBe(4);
          await expect(
-            model.executeNotebookCell(1, undefined, false, { ROLE: "guest" }),
+            model.executeNotebookCell(unrecordedAudit(), 1, undefined, false, {
+               ROLE: "guest",
+            }),
          ).rejects.toBeInstanceOf(AccessDeniedError);
       } finally {
          await cleanup();
@@ -235,14 +266,26 @@ run: gated -> { aggregate: c }
          "nb.malloynb",
       );
       try {
-         const middle = await model.executeNotebookCell(1, undefined, false, {
-            GROUPS: [1],
-         });
+         const middle = await model.executeNotebookCell(
+            unrecordedAudit(),
+            1,
+            undefined,
+            false,
+            {
+               GROUPS: [1],
+            },
+         );
          expect(cellCount(middle)).toBe(4);
 
-         const last = await model.executeNotebookCell(2, undefined, false, {
-            GROUPS: [1],
-         });
+         const last = await model.executeNotebookCell(
+            unrecordedAudit(),
+            2,
+            undefined,
+            false,
+            {
+               GROUPS: [1],
+            },
+         );
          expect(cellCount(last)).toBe(2);
       } finally {
          await cleanup();
@@ -258,6 +301,7 @@ run: gated -> { aggregate: c }
          {
             "tenant_base.malloy": `##! experimental.givens
 
+#(secure)
 given:
   TENANT :: number is 1
 
@@ -272,6 +316,7 @@ source: visible_rows is rows extend {}
 `,
             "tenant_gate.malloy": `##! experimental.givens
 
+#(secure)
 given:
   TENANT :: number
 
@@ -292,15 +337,27 @@ run: gated_tenant -> { aggregate: c }
          "nb.malloynb",
       );
       try {
-         const rejection = model.executeNotebookCell(0, undefined, false, {
-            TENANT: 2,
-         });
+         const rejection = model.executeNotebookCell(
+            unrecordedAudit(),
+            0,
+            undefined,
+            false,
+            {
+               TENANT: 2,
+            },
+         );
          await expect(rejection).rejects.toBeInstanceOf(MalloyError);
          await expect(rejection).rejects.toThrow(/TENANT/);
 
-         const later = await model.executeNotebookCell(1, undefined, false, {
-            TENANT: 2,
-         });
+         const later = await model.executeNotebookCell(
+            unrecordedAudit(),
+            1,
+            undefined,
+            false,
+            {
+               TENANT: 2,
+            },
+         );
          expect(cellCount(later)).toBe(2);
       } finally {
          await cleanup();
@@ -309,6 +366,7 @@ run: gated_tenant -> { aggregate: c }
 
    const TENANT_BASE = `##! experimental.givens
 
+#(secure)
 given:
   TENANT :: number is 1
 
@@ -333,13 +391,25 @@ run: rows -> { aggregate: c }
          "nb.malloynb",
       );
       try {
-         const result = await model.executeNotebookCell(0, undefined, false, {
-            T: 2,
-         });
+         const result = await model.executeNotebookCell(
+            unrecordedAudit(),
+            0,
+            undefined,
+            false,
+            {
+               T: 2,
+            },
+         );
          expect(cellCount(result)).toBe(2);
-         const none = await model.executeNotebookCell(0, undefined, false, {
-            T: 3,
-         });
+         const none = await model.executeNotebookCell(
+            unrecordedAudit(),
+            0,
+            undefined,
+            false,
+            {
+               T: 3,
+            },
+         );
          expect(cellCount(none)).toBe(0);
       } finally {
          await cleanup();
@@ -366,9 +436,15 @@ run: visible_rows -> { aggregate: c }
          "nb.malloynb",
       );
       try {
-         const rejection = model.executeNotebookCell(0, undefined, false, {
-            T: 3,
-         });
+         const rejection = model.executeNotebookCell(
+            unrecordedAudit(),
+            0,
+            undefined,
+            false,
+            {
+               T: 3,
+            },
+         );
          await expect(rejection).rejects.toBeInstanceOf(MalloyError);
          await expect(rejection).rejects.toThrow(/'T'/);
       } finally {
@@ -389,9 +465,15 @@ run: gated -> { aggregate: c }
          "nb.malloynb",
       );
       try {
-         const result = await model.executeNotebookCell(0, undefined, false, {
-            GROUPS: [1],
-         });
+         const result = await model.executeNotebookCell(
+            unrecordedAudit(),
+            0,
+            undefined,
+            false,
+            {
+               GROUPS: [1],
+            },
+         );
          expect(cellCount(result)).toBe(2);
       } finally {
          await cleanup();
@@ -416,13 +498,13 @@ run: plain -> { aggregate: c }
       );
       try {
          await expect(
-            model.executeNotebookCell(0, undefined, false, {
+            model.executeNotebookCell(unrecordedAudit(), 0, undefined, false, {
                ROLE: "guest",
             }),
          ).rejects.toBeInstanceOf(AccessDeniedError);
-         await expect(model.executeNotebookCell(0)).rejects.toBeInstanceOf(
-            AccessDeniedError,
-         );
+         await expect(
+            model.executeNotebookCell(unrecordedAudit(), 0),
+         ).rejects.toBeInstanceOf(AccessDeniedError);
       } finally {
          await cleanup();
       }
@@ -447,10 +529,11 @@ run: gated -> { aggregate: c }
          "nb.malloynb",
       );
       try {
-         const markdown = await model.executeNotebookCell(0);
+         const markdown = await model.executeNotebookCell(unrecordedAudit(), 0);
          expect(markdown.type).toBe("markdown");
 
          const preImport = await model.executeNotebookCell(
+            unrecordedAudit(),
             1,
             undefined,
             false,
@@ -459,6 +542,7 @@ run: gated -> { aggregate: c }
          expect(cellCount(preImport)).toBe(4);
 
          const postImport = await model.executeNotebookCell(
+            unrecordedAudit(),
             2,
             undefined,
             false,
@@ -497,6 +581,7 @@ run: gated -> { aggregate: c }
       );
       try {
          const preImport = await model.executeNotebookCell(
+            unrecordedAudit(),
             0,
             undefined,
             false,
@@ -504,14 +589,26 @@ run: gated -> { aggregate: c }
          );
          expect(cellCount(preImport)).toBe(4);
 
-         const mine = await model.executeNotebookCell(1, undefined, false, {
-            GROUPS: [1],
-         });
+         const mine = await model.executeNotebookCell(
+            unrecordedAudit(),
+            1,
+            undefined,
+            false,
+            {
+               GROUPS: [1],
+            },
+         );
          expect(cellCount(mine)).toBe(2);
 
-         const none = await model.executeNotebookCell(1, undefined, false, {
-            GROUPS: [],
-         });
+         const none = await model.executeNotebookCell(
+            unrecordedAudit(),
+            1,
+            undefined,
+            false,
+            {
+               GROUPS: [],
+            },
+         );
          expect(cellCount(none)).toBe(0);
       } finally {
          await cleanup();
@@ -523,6 +620,7 @@ run: gated -> { aggregate: c }
 // reached only through the hub's `mid_gated`.
 const OG_BASE = `##! experimental.givens
 
+#(secure)
 given:
   HIDE :: string is 'none'
 
@@ -534,6 +632,7 @@ source: ungated_deep is duckdb.table('orgtable') extend {
 
 const OG_GATE = `##! experimental.givens
 
+#(secure)
 given:
   HIDE :: string
 
@@ -577,7 +676,9 @@ describe("a notebook cell that reads an off-surface gate given", () => {
       );
       try {
          const err = await model
-            .executeNotebookCell(1, undefined, false, { HIDE: "a" })
+            .executeNotebookCell(unrecordedAudit(), 1, undefined, false, {
+               HIDE: "a",
+            })
             .catch((e: unknown) => e);
          expect(err).toBeInstanceOf(MalloyError);
          expect((err as Error).message).toMatch(/unknown given 'HIDE'/);
@@ -593,7 +694,9 @@ describe("a notebook cell that reads an off-surface gate given", () => {
       );
       try {
          await expect(
-            model.executeNotebookCell(2, undefined, false, { HIDE: "a" }),
+            model.executeNotebookCell(unrecordedAudit(), 2, undefined, false, {
+               HIDE: "a",
+            }),
          ).rejects.toBeInstanceOf(AccessDeniedError);
       } finally {
          await cleanup();
@@ -606,9 +709,15 @@ describe("a notebook cell that reads an off-surface gate given", () => {
          "nb.malloynb",
       );
       try {
-         const result = await model.executeNotebookCell(0, undefined, false, {
-            HIDE: "a",
-         });
+         const result = await model.executeNotebookCell(
+            unrecordedAudit(),
+            0,
+            undefined,
+            false,
+            {
+               HIDE: "a",
+            },
+         );
          expect(cellCount(result)).toBe(4);
       } finally {
          await cleanup();

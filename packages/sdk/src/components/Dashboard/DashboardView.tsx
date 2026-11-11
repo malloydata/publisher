@@ -34,7 +34,6 @@ import { DashboardTile } from "./DashboardTile";
 import {
    RowsDialog,
    type RowsActions,
-   rowsGateFor,
    rowsRequestFor,
    type RowsRequest,
 } from "./RowsDialog";
@@ -281,9 +280,8 @@ export function DashboardView({
       destinationTitle,
    });
    // Each tile's clicks carry the tile they came from. A restricted tile
-   // never ran, so it offers no rows; otherwise the tile's shape may rule a
-   // field out (`rowsGateFor`).
-   // A tile entry's `drill { … }` is its own click actions, read once per tile.
+   // never ran, so it offers no rows. A tile entry's `drill { … }` is its own
+   // click actions, read once per tile.
    const tileBindings = useMemo(
       () =>
          new Map(
@@ -295,9 +293,7 @@ export function DashboardView({
                           tile.query,
                           bindingFor(
                              tile.query,
-                             tile.restricted === true
-                                ? false
-                                : rowsGateFor(tile.query),
+                             tile.restricted !== true,
                              tile.drill,
                           ),
                        ] as const,
@@ -308,8 +304,7 @@ export function DashboardView({
    );
    const drillFor = useCallback(
       (tile: string, restricted: boolean | undefined): DrillBinding =>
-         tileBindings.get(tile) ??
-         bindingFor(tile, restricted === true ? false : rowsGateFor(tile)),
+         tileBindings.get(tile) ?? bindingFor(tile, restricted !== true),
       [tileBindings, bindingFor],
    );
 

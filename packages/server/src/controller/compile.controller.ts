@@ -3,7 +3,7 @@
 
 import type { GivenValue } from "@malloydata/malloy";
 import { BadRequestError } from "../errors";
-import { EnvironmentStore } from "../service/environment_store";
+import type { PackageLookup } from "../service/environment_ports";
 import {
    lazyCounter,
    lazyHistogram,
@@ -12,10 +12,12 @@ import {
 } from "../telemetry";
 import type { CompiledDocument } from "../service/compile_document";
 import type { CompileScope, TaggedLogMessage } from "../service/environment";
+import { parseOverlayFiles } from "../service/request_overlay";
 import {
    withLegacyDocumentKind,
    type LegacyKind,
 } from "../service/legacy_report_views";
+import { parseEnvironmentName, VersionRef } from "../service/identity";
 
 const compiles = lazyCounter(
    "publisher_compiles_total",
@@ -28,9 +30,9 @@ const compileDuration = lazyHistogram(
 );
 
 export class CompileController {
-   private environmentStore: EnvironmentStore;
+   private environmentStore: PackageLookup;
 
-   constructor(environmentStore: EnvironmentStore) {
+   constructor(environmentStore: PackageLookup) {
       this.environmentStore = environmentStore;
    }
 
@@ -42,6 +44,9 @@ export class CompileController {
       includeSql: boolean = false,
       givens?: Record<string, GivenValue>,
       scope: CompileScope = "append",
+      versionId: VersionRef = VersionRef.LATEST,
+      /** The request's `files` overlay, unchecked (see `request_overlay.ts`). */
+      files?: unknown,
    ): Promise<{
       status: string;
       problems: TaggedLogMessage[];
@@ -63,6 +68,8 @@ export class CompileController {
                   includeSql,
                   givens,
                   scope,
+                  versionId,
+                  files,
                ),
          );
          outcome = result.status;
@@ -88,6 +95,8 @@ export class CompileController {
       includeSql: boolean,
       givens: Record<string, GivenValue> | undefined,
       scope: CompileScope,
+      versionId: VersionRef,
+      files: unknown,
    ): Promise<{
       status: string;
       problems: TaggedLogMessage[];
@@ -99,8 +108,9 @@ export class CompileController {
       if (typeof source === "string") text = source;
       else if (source !== undefined)
          throw new BadRequestError("`source` must be a string of Malloy text.");
+      const overlay = parseOverlayFiles(files);
       const environment = await this.environmentStore.getEnvironment(
-         environmentName,
+         parseEnvironmentName(environmentName),
          false,
       );
       const { problems, sql, document } = await environment.compileSource(
@@ -110,6 +120,8 @@ export class CompileController {
          includeSql,
          givens,
          scope,
+         versionId,
+         overlay,
       );
 
       const hasErrors = problems.some((p) => p.severity === "error");

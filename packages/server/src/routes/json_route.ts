@@ -5,19 +5,10 @@ import type express from "express";
 import {
    internalErrorToHttpError,
    logInternalFailure,
-   NotImplementedError,
    WriteRollbackFailedError,
    WriteRolledBackError,
 } from "../errors";
 import { logger } from "../logger";
-
-/** Answer a request that names a version, which this server does not keep. */
-export function setVersionIdError(res: express.Response): void {
-   const { json, status } = internalErrorToHttpError(
-      new NotImplementedError("Version IDs not implemented."),
-   );
-   res.status(status).json(json);
-}
 
 type RouteHandler = (
    req: express.Request,
@@ -32,21 +23,37 @@ type RouteHandler = (
  *
  * A 4xx is the caller's (a report that does not exist, an ambiguous name), so
  * it is logged once at `warn` with its message, never at `error`; a 5xx once
- * at `error` (see {@link sendRouteError}).
+ * at `error` (see {@link sendRouteError}). `errorBody` reshapes the mapped
+ * `{ code, message }` for a route whose clients expect another shape.
  */
 export function apiRoute(
    handler: RouteHandler,
-   { status = 200 }: { status?: number } = {},
+   {
+      status = 200,
+      errorBody,
+   }: { status?: number; errorBody?: ErrorBodyShape } = {},
 ): express.RequestHandler {
    return async (req, res) => {
       try {
          const result = await handler(req, res);
          if (!res.headersSent) res.status(status).json(result);
       } catch (error) {
-         sendRouteError(res, error as Error, logRefusal(req, error as Error));
+         sendRouteError(
+            res,
+            error as Error,
+            logRefusal(req, error as Error),
+            errorBody,
+         );
       }
    };
 }
+
+type ErrorBodyShape = (mapped: { code: number; message: string }) => object;
+
+/** The `{ error }` body the main API's oldest routes answer a failure with. */
+export const legacyErrorBody: ErrorBodyShape = ({ message }) => ({
+   error: message,
+});
 
 /** The `refused` callback every JSON route logs a 4xx through. */
 export function logRefusal(
@@ -62,18 +69,6 @@ export function logRefusal(
       });
 }
 
-/** {@link apiRoute} for a route that refuses a `versionId` query (501). */
-export function jsonRoute(handler: RouteHandler): express.RequestHandler {
-   const route = apiRoute(handler);
-   return (req, res, next) => {
-      if (req.query.versionId) {
-         setVersionIdError(res);
-         return;
-      }
-      return route(req, res, next);
-   };
-}
-
 /**
  * Answer a route's thrown error with its mapped status, and log it once: a 4xx
  * through `refused` (the caller's, so at `warn`), a 5xx at `error` — by the
@@ -85,6 +80,7 @@ export function sendRouteError(
    res: express.Response,
    error: Error,
    refused: (status: number) => void,
+   errorBody: ErrorBodyShape = (mapped) => mapped,
 ): void {
    let logged = false;
    const { json, status } = internalErrorToHttpError(error, {
@@ -100,7 +96,7 @@ export function sendRouteError(
    ) {
       logInternalFailure("Request failed", error);
    }
-   res.status(status).json(json);
+   res.status(status).json(errorBody(json));
 }
 
 /**
@@ -117,7 +113,32 @@ export function unhandledErrorMiddleware(
    sendRouteError(res, err, logRefusal(req, err));
 }
 
+/**
+ * A route-level handler for a query route: records what its concurrency gate
+ * refused before any controller ran, then hands the error on to be answered.
+ */
+export function recordGateRefusal(
+   record: (req: express.Request, error: Error) => Promise<void>,
+): express.ErrorRequestHandler {
+   return (error, req, _res, next) => {
+      // Answered whether or not the record was written, so a refusal never hangs.
+      void record(req, error).then(
+         () => next(error),
+         () => next(error),
+      );
+   };
+}
+
 /** Express's wildcard match, the rest of the path after the route's prefix. */
 export function wildcardParam(req: express.Request): string {
    return (req.params as Record<string, string>)["0"];
 }
+
+/**
+ * Marks a response from a main-API route the admin API now serves (the storage
+ * destinations' table routes, watch mode): `Deprecation: true`.
+ */
+export const markDeprecated: express.RequestHandler = (_req, res, next) => {
+   res.set("Deprecation", "true");
+   next();
+};

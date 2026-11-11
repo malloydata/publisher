@@ -21,6 +21,7 @@ import * as fs from "fs";
 import * as os from "os";
 import * as path from "path";
 import { NotQueryableError } from "../errors";
+import { unrecordedAudit } from "./access_record";
 import { Package } from "./package";
 
 const STOREFRONT = path.resolve(
@@ -94,11 +95,9 @@ describe("storefront's Category control works on a curated surface", () => {
          const { source, dimension } = categorySuggest(report);
          const { compactResult } = await pkg
             .getModel(report)!
-            .getQueryResults(
-               undefined,
-               undefined,
-               `run: ${source} -> { group_by: ${dimension}; limit: 50 }`,
-            );
+            .runQuery(unrecordedAudit(), {
+               query: `run: ${source} -> { group_by: ${dimension}; limit: 50 }`,
+            });
          expect((compactResult as unknown[]).length).toBeGreaterThan(0);
       });
    }
@@ -112,13 +111,9 @@ describe("storefront's Category control works on a curated surface", () => {
 
    it("would refuse the old form, a suggest over the unexported products", async () => {
       await expect(
-         pkg
-            .getModel("overview.malloy")!
-            .getQueryResults(
-               undefined,
-               undefined,
-               "run: products -> { group_by: category; limit: 50 }",
-            ),
+         pkg.getModel("overview.malloy")!.runQuery(unrecordedAudit(), {
+            query: "run: products -> { group_by: category; limit: 50 }",
+         }),
       ).rejects.toBeInstanceOf(NotQueryableError);
    });
 });

@@ -397,10 +397,12 @@ describe("a draft made before the report changed", () => {
       const last = await mountIt();
       await screen.findByText(/made before this report changed/);
       act(() => last()?.add.text?.());
+      // A boolean, not the element: a failed toBeNull() on a happy-dom element
+      // formats its whole object graph, synchronously, on every poll.
       await waitFor(() =>
          expect(
-            screen.queryByText(/made before this report changed/),
-         ).toBeNull(),
+            screen.queryByText(/made before this report changed/) === null,
+         ).toBe(true),
       );
       expect(last()?.restored).toBeUndefined();
       // What is kept now is the edit, made over the current file.

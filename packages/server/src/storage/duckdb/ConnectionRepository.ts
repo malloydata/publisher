@@ -2,14 +2,14 @@
 // SPDX-License-Identifier: MIT
 
 import { logger } from "../../logger";
-import { Connection } from "../DatabaseInterface";
+import { ConnectionRecord } from "../DatabaseInterface";
 import { DuckDBConnection } from "./DuckDBConnection";
 import { newId, Row, rowTimestamps, updateRow } from "./rows";
 
 export class ConnectionRepository {
    constructor(private db: DuckDBConnection) {}
 
-   async listConnections(environmentId: string): Promise<Connection[]> {
+   async listConnections(environmentId: string): Promise<ConnectionRecord[]> {
       try {
          const rows = await this.db.all<Row>(
             "SELECT * FROM connections WHERE environment_id = ? ORDER BY name",
@@ -23,7 +23,7 @@ export class ConnectionRepository {
       }
    }
 
-   async getConnectionById(id: string): Promise<Connection | null> {
+   async getConnectionById(id: string): Promise<ConnectionRecord | null> {
       const row = await this.db.get<Row>(
          "SELECT * FROM connections WHERE id = ?",
          [id],
@@ -34,7 +34,7 @@ export class ConnectionRepository {
    async getConnectionByName(
       environmentId: string,
       name: string,
-   ): Promise<Connection | null> {
+   ): Promise<ConnectionRecord | null> {
       const row = await this.db.get<Row>(
          "SELECT * FROM connections WHERE environment_id = ? AND name = ?",
          [environmentId, name],
@@ -43,8 +43,8 @@ export class ConnectionRepository {
    }
 
    async createConnection(
-      connection: Omit<Connection, "id" | "createdAt" | "updatedAt">,
-   ): Promise<Connection> {
+      connection: Omit<ConnectionRecord, "id" | "createdAt" | "updatedAt">,
+   ): Promise<ConnectionRecord> {
       const id = newId();
       const now = new Date();
 
@@ -78,8 +78,8 @@ export class ConnectionRepository {
 
    async updateConnection(
       id: string,
-      updates: Partial<Connection>,
-   ): Promise<Connection> {
+      updates: Partial<ConnectionRecord>,
+   ): Promise<ConnectionRecord> {
       const existing = await this.getConnectionById(id);
       if (!existing) {
          throw new Error(`Connection with id ${id} not found`);
@@ -94,7 +94,7 @@ export class ConnectionRepository {
                : undefined,
       });
 
-      return this.getConnectionById(id) as Promise<Connection>;
+      return this.getConnectionById(id) as Promise<ConnectionRecord>;
    }
 
    async deleteConnection(id: string): Promise<void> {
@@ -108,12 +108,12 @@ export class ConnectionRepository {
    }
 }
 
-function mapToConnection(row: Row): Connection {
+function mapToConnection(row: Row): ConnectionRecord {
    return {
       id: row.id as string,
       environmentId: row.environment_id as string,
       name: row.name as string,
-      type: row.type as Connection["type"],
+      type: row.type as ConnectionRecord["type"],
       config: JSON.parse(row.config as string),
       ...rowTimestamps(row),
    };

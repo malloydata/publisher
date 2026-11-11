@@ -9,8 +9,10 @@ import {
    DashboardNotFoundError,
    EnvironmentNotFoundError,
    FrozenConfigError,
+   InstalledFromLocationError,
    InvalidModelPathError,
    PackageNotFoundError,
+   PackageVersionError,
    WriteConflictError,
    WriteRollbackFailedError,
    WriteRolledBackError,
@@ -29,8 +31,17 @@ import {
    reportWritePathProblem,
 } from "../service/report";
 import { formatProblem } from "../service/query_text";
-import { EnvironmentStore } from "../service/environment_store";
+import type {
+   ConfigFreezeReader,
+   PackageLookup,
+} from "../service/environment_ports";
 import type { Package } from "../service/package";
+import { loadedPackage } from "./loaded_package";
+import {
+   parseEnvironmentName,
+   parsePackageName,
+   VersionRef,
+} from "../service/identity";
 
 type ApiReport = components["schemas"]["Report"];
 type ApiReportManifest = components["schemas"]["ReportManifest"];
@@ -82,18 +93,20 @@ function outcomeOf(error: Error): {
    if (error instanceof WriteRolledBackError)
       return { outcome: "rolled_back", reason: "reload_failed" };
    const reason: ReportWriteReason =
-      error instanceof ReportWriteRefusedError
-         ? error.reason
-         : error instanceof InvalidModelPathError
-           ? "invalid_path"
-           : error instanceof FrozenConfigError
-             ? "frozen_config"
-             : error instanceof EnvironmentNotFoundError ||
-                 error instanceof PackageNotFoundError
-               ? "not_found"
-               : error instanceof BadRequestError
-                 ? "bad_request"
-                 : "other";
+      error instanceof InstalledFromLocationError
+         ? "installed_from_location"
+         : error instanceof ReportWriteRefusedError
+           ? error.reason
+           : error instanceof InvalidModelPathError
+             ? "invalid_path"
+             : error instanceof FrozenConfigError
+               ? "frozen_config"
+               : error instanceof EnvironmentNotFoundError ||
+                   error instanceof PackageNotFoundError
+                 ? "not_found"
+                 : error instanceof BadRequestError
+                   ? "bad_request"
+                   : "other";
    return { outcome: "refused", reason };
 }
 
@@ -108,9 +121,9 @@ export const contentHashOf = (text: string): string =>
  * applies.
  */
 export class ReportController {
-   private environmentStore: EnvironmentStore;
+   private environmentStore: PackageLookup & ConfigFreezeReader;
 
-   constructor(environmentStore: EnvironmentStore) {
+   constructor(environmentStore: PackageLookup & ConfigFreezeReader) {
       this.environmentStore = environmentStore;
    }
 
@@ -118,12 +131,14 @@ export class ReportController {
    public async listReports(
       environmentName: string,
       packageName: string,
+      versionId: VersionRef = VersionRef.LATEST,
    ): Promise<ApiReport[]> {
-      const environment = await this.environmentStore.getEnvironment(
+      const p = await loadedPackage(
+         this.environmentStore,
          environmentName,
-         false,
+         packageName,
+         versionId,
       );
-      const p = await environment.getPackage(packageName, false);
       return p.listReports();
    }
 
@@ -132,12 +147,14 @@ export class ReportController {
       environmentName: string,
       packageName: string,
       reportPath: string,
+      versionId: VersionRef = VersionRef.LATEST,
    ): Promise<ApiReportManifest> {
-      const environment = await this.environmentStore.getEnvironment(
+      const p = await loadedPackage(
+         this.environmentStore,
          environmentName,
-         false,
+         packageName,
+         versionId,
       );
-      const p = await environment.getPackage(packageName, false);
       const report =
          typeof reportPath === "string" && reportPath.length > 0
             ? await p.getReport(reportPath)
@@ -167,6 +184,7 @@ export class ReportController {
       packageName: string,
       modelPath: string,
       body: ApiModelSourceWrite,
+      versionId: VersionRef = VersionRef.LATEST,
    ): Promise<ApiModelSourceWriteResult> {
       // One record per attempt, including the throws.
       const startedAt = Date.now();
@@ -187,6 +205,7 @@ export class ReportController {
             packageName,
             modelPath,
             body,
+            versionId,
          );
          recordReportWrite(
             result.created ? "created" : "replaced",
@@ -207,6 +226,7 @@ export class ReportController {
       packageName: string,
       modelPath: string,
       body: ApiModelSourceWrite,
+      versionId: VersionRef = VersionRef.LATEST,
    ): Promise<ApiModelSourceWriteResult> {
       if (this.environmentStore.publisherConfigIsFrozen) {
          throw new FrozenConfigError(
@@ -242,11 +262,35 @@ export class ReportController {
          );
       }
       const environment = await this.environmentStore.getEnvironment(
-         environmentName,
+         parseEnvironmentName(environmentName),
          false,
       );
+      // A published version is immutable, so a package that has versions takes
+      // no in-place write whatever version is named; one with none has no
+      // version to name (404).
+      const versions = environment.getVersionService();
+      if (versions && (await versions.isVersioned(packageName))) {
+         throw new PackageVersionError(
+            "PACKAGE_IS_VERSIONED",
+            `Package ${packageName} has published versions, which are immutable. Change the file in the package's source and publish a new version.`,
+         );
+      }
+      await versions?.resolve(packageName, versionId.requested());
       // Loads the package, or 404s.
-      await environment.getPackage(packageName, false);
+      const target = await environment.getPackage(
+         parsePackageName(packageName),
+         false,
+      );
+      // A package installed from a location is fetched again from it on
+      // reload, which replaces its files: a report written here would be lost.
+      // Interim, until package storage keeps API writes apart from the fetched
+      // copy (#1560).
+      const installedFrom = target.getPackageMetadata().location;
+      if (installedFrom) {
+         throw new InstalledFromLocationError(
+            `Package ${packageName} was installed from ${installedFrom}, and a reload fetches it again from there, which would discard a report written here. Add the report to the package's source and reload it, or publish it as a version.`,
+         );
+      }
 
       const { problems } = await environment.compileSource(
          packageName,
@@ -279,6 +323,7 @@ export class ReportController {
                      `\`${modelPath}\` already exists in the package, so nothing ` +
                         `was written. Choose another path, or, to replace a report, ` +
                         `send the \`expectedHash\` of the text you opened.`,
+                     "FILE_EXISTS",
                   );
                return;
             }

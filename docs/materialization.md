@@ -216,7 +216,7 @@ the joining source is withheld with it and serves live, from current grants. Wit
 field reading through the join would fail the shape compile, and the fallback that answers a failed
 compile would cost every sibling source in the model its joins, dimensions and measures.
 
-**A revoked grant stays visible until the grant table rebuilds.** Here the frozen row data *is* the
+**A revoked grant stays visible until the grant table rebuilds.** Here the frozen row data _is_ the
 access decision, so the grant table's freshness is the revocation latency — and the
 [gated-source staleness rules](#the-freshness-contract-for-a-gated-colocated-persist-source) apply to it in full:
 
@@ -262,6 +262,15 @@ resolves their assigned values, and replaces anything the request supplied. Publ
 not itself strip or resolve it. If nothing in front of Publisher implements that, marking a
 given `#(secure)` changes nothing about who can send what.
 
+A host learns which givens it must set from `GET …/packages/{pkg}/entities`: each model's
+`givens` lists every given the model surfaces, with `secure: true` on the ones declared
+`#(secure)`. It is computed when the package loads, so the host does not compile the package
+again. It covers `.malloy` models only, not `.malloynb` notebooks, and a model that failed to
+compile has an entry with `error` and no `givens`: read that model's givens as unknown, never as
+none. An older server instead lists them as `secureGivens` on the package that
+`POST …/packages` and `GET …/packages/{pkg}` return (notebooks included, absent while any file
+fails to compile), and this one still does while `PUBLISHER_PACKAGE_INLINE_FIELDS` is `on`.
+
 **A `#(secure)` given must be set-valued**, and the shape that scopes by one is therefore
 `in`, not `=`:
 
@@ -306,8 +315,8 @@ nothing checks the column's cardinality for you — a partition per caller acros
 callers is the many-small-files case, and it is your judgement to make.
 
 That asymmetry is the argument for one shared artifact over one per tenant. Both have the same read
-cost; the per-tenant arrangement also has one build, one schedule and one freshness story *per
-tenant*, all of which can drift apart.
+cost; the per-tenant arrangement also has one build, one schedule and one freshness story _per
+tenant_, all of which can drift apart.
 
 **Build memory follows the table's width times the partitions in flight, not its row count.** The
 build is DuckDB's partitioned COPY, which buffers rows per partition inside the buffer manager and
@@ -420,7 +429,7 @@ Package-level persistence policy lives at the root of `publisher.json`:
 
 `scope` at the manifest root is the original home and still works, with a deprecation warning on the package. Declare it inside `materialization` alongside the other build knobs.
 
-Whenever the server rewrites a manifest — any package PATCH, including a description-only one — it writes **both** homes with the same value, so a package edited through the API keeps loading on an older Publisher that reads only the root. An author who moved to the envelope alone will see the root key reappear after such an edit; the two never disagree, and the root form goes away with the deprecation.
+Whenever the server rewrites a manifest — any package PATCH, including a description-only one — it writes **both** homes with the same value, so a package edited through the API keeps loading on an older Publisher that reads only the root. An author who moved to the envelope alone will see the root key reappear after such an edit; the two never disagree. This dual write is deprecated too: a later release writes only `materialization.scope`, and then the root form is removed ([#1540](https://github.com/malloydata/publisher/issues/1540)). The same holds for `queryMetadata`, written both at the root (canonical) and as the deprecated `materialization.queryMetadata`.
 
 Editing a manifest by hand, change `materialization.scope` and delete the root key rather than editing the root copy. Two homes holding different values is not a warning — the package fails to load, disappears from the server, and says so only in `/status` `loadErrors`. The rejection is deliberate (guessing which one the author meant could reuse a table across versions that was never meant to be shared), but it means the reappearing root key is a copy to delete, never one to edit.
 
@@ -439,7 +448,7 @@ A materialization run compiles the package, builds every `#@ persist` source int
 
 A build ignores the package's [published surface](discovery-and-access.md). It builds every `#@ persist` source in every model, including one `index.malloy` does not export, so a hidden intermediate can be persisted and an exported source that reads it reads the built table.
 
-Each run records a **trigger** in its metadata: `ON_DEMAND` (a manual/API build) or `SCHEDULER` (a scheduled fire). Only one materialization can be active per (environment, package) at a time — a second concurrent build is rejected with HTTP 409, and the scheduler coalesces (skips) rather than stacking a second build.
+Each run records a **trigger** in its metadata: `ON_DEMAND` (a manual/API build) or `SCHEDULER` (a scheduled fire). Only one materialization can be active per (environment, package) at a time — a second concurrent build is rejected with HTTP 409, and the scheduler coalesces (skips) rather than stacking a second build. A package with published versions builds per version, under the rules in [package-versions.md](package-versions.md#materializations): a run under `scope: "version"`, or one with `buildInstructions`, holds its own version's slot instead.
 
 On demand, via the CLI:
 
@@ -552,7 +561,7 @@ PUBLISHER_MATERIALIZATION_SCHEDULER_INTERVAL_MS=60000 \
 
 See [configuration.md](configuration.md) for the env vars. Fire semantics:
 
-- **Sweeps only already-loaded packages.** It never forces a load; a not-yet-loaded package simply isn't scheduled until something else loads it.
+- **Sweeps already-loaded packages, and every published version in service.** It never forces a package's load; a not-yet-loaded package simply isn't scheduled until something else loads it. A published version's schedule is read from its `publisher.json` without loading it, and the version is loaded only when its cron comes due; archiving a version takes it out of the sweep. See [package-versions.md](package-versions.md#materializations).
 - **Arms to the next occurrence.** On first sight it computes the next cron time (strictly future), so a freshly-scheduled package does **not** fire on the arming tick.
 - **Recovers one missed occurrence across a restart.** On first arm after a (re)start it re-anchors from the newest recorded `SCHEDULER` run: if an occurrence came due while the process was down, it fires exactly one catch-up and then jumps forward, rather than skipping it. (A schedule set while the scheduler was _disabled_ has no prior run to anchor from, so it is not caught up on first enable.)
 - **Skips what it must not fire:** a control-plane-driven package (one with a `manifestLocation`), a package whose policy is invalid, or one with an unparseable cron.
@@ -596,7 +605,7 @@ The same package definition behaves differently depending on who drives material
 
 ## Attribute a build's cost
 
-`materialization.queryMetadata` (and the per-source `#@ persist queryMetadata.*`) tags every statement a build issues — the staging CTAS, the swap, the rename — and every statement a _query_ against the source issues, so the backend's own reporting can attribute both. Separating build cost from query traffic is the context layer's job, not the declaration's: publisher adds `class=materialize` plus the package, source, trigger and run id to a build, and `class=interactive` with none of those to a served query. The block is named for materialization historically; it declares what the source is, not only how it is built. See [query-metadata.md](query-metadata.md).
+`queryMetadata` at the `publisher.json` root (and the per-source `#@ persist queryMetadata.*`) tags every statement a build issues — the staging CTAS, the swap, the rename — and every statement a _query_ against the source issues, so the backend's own reporting can attribute both. Separating build cost from query traffic is the context layer's job, not the declaration's: publisher adds `class=materialize` plus the package, source, trigger and run id to a build, and `class=interactive` with none of those to a served query. It sits at the root because it declares what the source is, not only how it is built; its old home, `materialization.queryMetadata`, still works and is deprecated. See [query-metadata.md](query-metadata.md).
 
 ## Tune for cost and performance
 

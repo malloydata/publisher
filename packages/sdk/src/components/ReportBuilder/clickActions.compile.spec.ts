@@ -12,12 +12,12 @@ import {
 } from "../drill/drillClickRelay";
 import type { DrillClickPayload, EntryDrill } from "../drill/resolveDrill";
 import { useDrill, type UseDrillResult } from "../drill/useDrill";
-import { rowsGateFor } from "../Dashboard/RowsDialog";
 import {
    clickDimensions,
    clickMenuPreview,
    type ParseTags,
 } from "./clickActions";
+import { wrapWithCorrectDrillMetadata } from "../../../../server/src/service/drill_metadata";
 
 /**
  * The builder's preview of a tile's click menu against the menu itself: the
@@ -54,7 +54,7 @@ source: sales is duckdb.sql("""
 }
 `;
 
-const { SingleConnectionRuntime, API } = await import("@malloydata/malloy");
+const { SingleConnectionRuntime } = await import("@malloydata/malloy");
 const { DuckDBConnection } = await import("@malloydata/db-duckdb");
 const { MalloyRenderer } = (await import(
    `${Bun.resolveSync("@malloydata/render", import.meta.dir)}?real`
@@ -76,7 +76,10 @@ async function firstMenus(
    entries: Record<string, EntryDrill> | undefined,
 ) {
    const result = await model.loadQuery(`run: ${tile}`).run();
-   const wrapped = API.util.wrapResult(result) as MalloyInterfaces.Result;
+   // As Publisher's server sends it: drill metadata corrected and stamped.
+   const wrapped = wrapWithCorrectDrillMetadata(
+      result,
+   ) as MalloyInterfaces.Result;
    const ref = {} as { current: UseDrillResult };
    function Host() {
       ref.current = useDrill({
@@ -84,12 +87,11 @@ async function firstMenus(
          onSelf: () => {},
          canSelf: () => true,
          onNavigate: () => {},
-         selfLabel: SELF_LABEL,
       });
       return createElement(Fragment, null, ref.current.drillMenu);
    }
    const mounted = render(createElement(Host));
-   const binding = ref.current.bindingFor(tile, rowsGateFor(tile), entries);
+   const binding = ref.current.bindingFor(tile, true, entries);
    const clicked: string[] = [];
    const relay = drillClickRelay((payload: DrillClickPayload) => {
       if (payload.field) clicked.push(payload.field.name);

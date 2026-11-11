@@ -7,11 +7,14 @@ import * as path from "path";
 import { getUnresolvedPublisherConfigPath } from "../config";
 import { TEMP_DIR_PATH } from "../constants";
 import { logger } from "../logger";
+import { installSettings, withSettings } from "../test_helpers/settings_env";
 import {
    emptyRepository,
    stubStorageManager,
 } from "../test_helpers/storage_manager_stub";
+import { EnvironmentStore } from "./environment_store";
 import packageJson from "../../package.json";
+import { startedStore } from "../test_helpers/started_store";
 
 /**
  * A server that loads nothing reports `serving` with `environments=0
@@ -24,11 +27,8 @@ import packageJson from "../../package.json";
  * value is easy to get right and still reach nobody. The parser-level cases
  * live in the first describe, the boot-path ones in the second.
  *
- * `../config` is deliberately NOT mocked: environment_store.spec.ts mocks it in
- * a beforeEach and these cases need the real resolver.
- *
- * Storage is stubbed (through stubStorageManager, which removes the stub when
- * this file finishes) so the boot reads the environments below. A boot that
+ * Storage is stubbed (injected through stubStorageManager) so the boot reads
+ * the environments below. A boot that
  * failed -- a storage `initialize` that throws makes construction fail and
  * `PUBLISHER_INIT_FAILED` fire -- would never reach the success tail that
  * carries the notice, and "stays quiet" would pass for that reason rather
@@ -46,13 +46,10 @@ import packageJson from "../../package.json";
  */
 let storedEnvironments: Array<Record<string, unknown>> = [];
 
-stubStorageManager({
+const storageManager = stubStorageManager({
    getRepository: () =>
       emptyRepository({ listEnvironments: async () => storedEnvironments }),
 });
-
-// After the mock, so the binding is the mock rather than the real module.
-const { EnvironmentStore } = await import("./environment_store");
 
 const serverRootPath = path.join(TEMP_DIR_PATH, "unconfigured-spec-root");
 const missingEnvPath = path.join(serverRootPath, "publisher_data", "gone");
@@ -65,21 +62,24 @@ const resetRoot = () => {
 };
 
 describe("getUnresolvedPublisherConfigPath", () => {
-   const priorConfigPath = process.env.PUBLISHER_CONFIG_PATH;
+   let restoreSettings: () => void;
 
    beforeEach(() => {
       resetRoot();
-      delete process.env.PUBLISHER_CONFIG_PATH;
+      restoreSettings = installSettings({ cwd: serverRootPath }).restore;
    });
 
    afterEach(() => {
+      restoreSettings();
       rmSync(serverRootPath, { recursive: true, force: true });
-      if (priorConfigPath === undefined) {
-         delete process.env.PUBLISHER_CONFIG_PATH;
-      } else {
-         process.env.PUBLISHER_CONFIG_PATH = priorConfigPath;
-      }
    });
+
+   /** The unresolved path as a server started with `--config <configPath>` sees it. */
+   const unresolvedWithConfigFlag = (configPath: string) =>
+      withSettings(
+         { cwd: serverRootPath, argv: ["--config", configPath] },
+         () => getUnresolvedPublisherConfigPath(serverRootPath),
+      );
 
    it("names the path it looked for when no config is present", () => {
       expect(getUnresolvedPublisherConfigPath(serverRootPath)).toEqual({
@@ -100,8 +100,7 @@ describe("getUnresolvedPublisherConfigPath", () => {
       // A typo in the flag is the likelier way to boot empty, so it must not
       // read as "a config was found".
       const missing = path.join(serverRootPath, "nowhere.json");
-      process.env.PUBLISHER_CONFIG_PATH = missing;
-      expect(getUnresolvedPublisherConfigPath(serverRootPath)).toEqual({
+      expect(unresolvedWithConfigFlag(missing)).toEqual({
          path: missing,
          explicit: true,
       });
@@ -113,8 +112,7 @@ describe("getUnresolvedPublisherConfigPath", () => {
          present,
          JSON.stringify({ frozenConfig: false, environments: [] }),
       );
-      process.env.PUBLISHER_CONFIG_PATH = present;
-      expect(getUnresolvedPublisherConfigPath(serverRootPath)).toBeNull();
+      expect(unresolvedWithConfigFlag(present)).toBeNull();
    });
 });
 
@@ -136,9 +134,11 @@ describe("unconfigured boot notice", () => {
          ),
       ).toHaveLength(1);
 
+   let restoreSettings: () => void;
+
    beforeEach(() => {
       resetRoot();
-      delete process.env.PUBLISHER_CONFIG_PATH;
+      restoreSettings = installSettings({ cwd: serverRootPath }).restore;
       storedEnvironments = [];
       infoLines = [];
       infoSpy = spyOn(logger, "info").mockImplementation((message: unknown) => {
@@ -149,11 +149,14 @@ describe("unconfigured boot notice", () => {
 
    afterEach(() => {
       infoSpy.mockRestore();
+      restoreSettings();
       rmSync(serverRootPath, { recursive: true, force: true });
    });
 
    it("names the missing config once when nothing loaded", async () => {
-      const store = new EnvironmentStore(serverRootPath);
+      const store = startedStore(
+         new EnvironmentStore(serverRootPath, { storageManager }),
+      );
       await store.finishedInitialization;
 
       assertInitialized();
@@ -181,7 +184,9 @@ describe("unconfigured boot notice", () => {
       // `frozenConfig` defaulting to false when no config file exists, which
       // nothing else pins. If a future change made runtime creation require a
       // config file, all three would quietly become wrong.
-      const store = new EnvironmentStore(serverRootPath);
+      const store = startedStore(
+         new EnvironmentStore(serverRootPath, { storageManager }),
+      );
       await store.finishedInitialization;
       assertInitialized();
       expect(noticeLines()).toHaveLength(1);
@@ -208,7 +213,9 @@ describe("unconfigured boot notice", () => {
          { id: "env-id", name: "created-at-runtime", path: missingEnvPath },
       ];
 
-      const store = new EnvironmentStore(serverRootPath);
+      const store = startedStore(
+         new EnvironmentStore(serverRootPath, { storageManager }),
+      );
       await store.finishedInitialization;
 
       assertInitialized();
@@ -220,10 +227,15 @@ describe("unconfigured boot notice", () => {
 
    it("reports a missing --config path on /status without logging it twice", async () => {
       const missing = path.join(serverRootPath, "nowhere.json");
-      process.env.PUBLISHER_CONFIG_PATH = missing;
+      const configured = installSettings({
+         cwd: serverRootPath,
+         argv: ["--config", missing],
+      });
       const errorSpy = spyOn(logger, "error").mockImplementation(() => logger);
       try {
-         const store = new EnvironmentStore(serverRootPath);
+         const store = startedStore(
+            new EnvironmentStore(serverRootPath, { storageManager }),
+         );
          await store.finishedInitialization;
 
          assertInitialized();
@@ -242,7 +254,7 @@ describe("unconfigured boot notice", () => {
          expect(status.emptyReason).toContain("--config");
       } finally {
          errorSpy.mockRestore();
-         delete process.env.PUBLISHER_CONFIG_PATH;
+         configured.restore();
       }
    });
 
@@ -253,12 +265,19 @@ describe("unconfigured boot notice", () => {
          path.join(serverRootPath, "publisher.config.json"),
          JSON.stringify({ frozenConfig: false, environments: [] }),
       );
+      // Read again, as a server started on this root now would.
+      const configured = installSettings({ cwd: serverRootPath });
+      try {
+         const store = startedStore(
+            new EnvironmentStore(serverRootPath, { storageManager }),
+         );
+         await store.finishedInitialization;
 
-      const store = new EnvironmentStore(serverRootPath);
-      await store.finishedInitialization;
-
-      assertInitialized();
-      expect(noticeLines()).toHaveLength(0);
-      expect((await store.getStatus()).emptyReason).toBeUndefined();
+         assertInitialized();
+         expect(noticeLines()).toHaveLength(0);
+         expect((await store.getStatus()).emptyReason).toBeUndefined();
+      } finally {
+         configured.restore();
+      }
    });
 });

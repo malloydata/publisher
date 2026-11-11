@@ -1,6 +1,8 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
+import type { Result } from "@malloydata/malloy";
+import type * as Malloy from "@malloydata/malloy-interfaces";
 import { act, fireEvent, render, screen } from "@testing-library/react";
 import { createElement, Fragment } from "react";
 import { afterAll, describe, expect, it, setDefaultTimeout } from "bun:test";
@@ -18,10 +20,10 @@ import {
    rowsQuery,
    ROWS_REFUSAL,
    rowsRequestFor,
-   rowsGateFor,
    rowsTitleParts,
 } from "./RowsDialog";
 import { withPreamble } from "./textSource";
+import { wrapWithCorrectDrillMetadata } from "../../../../server/src/service/drill_metadata";
 
 /**
  * "Show the rows" end to end, with nothing standing in for Malloy: a tile's
@@ -96,7 +98,51 @@ source: sales_tiles is quarterly_sales extend {
     group_by: region
     aggregate: sale_count
   } -> { select: region, sale_count }
+  join_one: targets is duckdb.sql("""
+    select * from (values
+      ('West', 60.0, TIMESTAMP '2025-03-01 00:00:00'),
+      ('East', 1.0, TIMESTAMP '2024-07-01 00:00:00')
+    ) t(region_key, amount, sold_at)
+  """) extend {
+    dimension: target_big is amount > 50
+    dimension: target_year is sold_at.year
+  } on region = targets.region_key
+  view: by_target is { group_by: targets.target_big, targets.target_year; aggregate: sale_count }
+  view: by_month is { group_by: sold_at.month; aggregate: sale_count }
+  view: by_date is { group_by: sale_date; aggregate: sale_count }
+  view: staged_nest is {
+    group_by: region
+    aggregate: sale_count
+    nest: online is { group_by: is_online; aggregate: sale_count } -> { select: is_online }
+  }
 }
+query: online_staged is sales_tiles -> {
+  where: is_online = true
+  group_by: region
+  aggregate: sale_count
+} -> { group_by: region; aggregate: n is count() }
+source: edge_cases is duckdb.sql("""
+  select * from (values
+    (9007199254740993::BIGINT, TIMESTAMP '2026-01-15 10:30:15.250', 'East', 'line one
+line two', '00000000-0000-0000-0000-000000000001'::UUID),
+    (9007199254740992::BIGINT, TIMESTAMP '2026-01-15 10:30:15.750', 'West', 'plain', '00000000-0000-0000-0000-000000000002'::UUID),
+    (1::BIGINT, TIMESTAMP '2026-01-16 23:30:00', 'North', 'plain', '00000000-0000-0000-0000-000000000003'::UUID)
+  ) t(big_id, seen_at, region, note, uid)
+""") extend {
+  dimension: coastal is region = 'East' or region = 'West'
+  measure: sale_count is count()
+  view: by_id is { group_by: big_id; aggregate: sale_count }
+  view: by_at is { group_by: seen_at; aggregate: sale_count }
+  view: by_coastal is { group_by: coastal; aggregate: sale_count }
+  view: by_note is { group_by: note; aggregate: sale_count }
+  view: by_uid is { group_by: uid, region; aggregate: sale_count }
+  view: mixed_zone is {
+    group_by: d is seen_at.day
+    aggregate: sale_count
+    nest: tokyo is { timezone: 'Asia/Tokyo'; group_by: h is seen_at.hour; aggregate: sale_count }
+  }
+}
+source: \`edge sales\` is edge_cases
 query: online_quarters is sales_tiles -> quarter_region_table + { where: is_online = true }
 query: given_regions is sales_tiles -> by_region + { where: region ~ $REGION }
 query: inline_online is sales_tiles -> { group_by: region; aggregate: sale_count } + { where: is_online = true }
@@ -139,19 +185,26 @@ async function run(query: string) {
    return model.loadQuery(query).run();
 }
 
+/** A result as Publisher's server sends it: drill metadata corrected and stamped. */
+const served = wrapWithCorrectDrillMetadata;
+
 /**
  * Every body cell of `tile` clicked, through the same relay and the same
- * per-tile binding the dashboard uses (`bindingFor` with `rowsGateFor`), run
+ * per-tile binding the dashboard uses (`bindingFor`), run
  * after `preamble` as a text-source report runs it. Also returns the fields
  * the binding marks clickable, which is what the affordance paints.
  */
-async function clickEveryCell(tile: string, preamble = "") {
+async function clickEveryCell(
+   tile: string,
+   preamble = "",
+   wrap: (result: Result) => Malloy.Result = served,
+) {
    const result = await run(withPreamble(preamble, `run: ${tile}`));
    const requests: DrillRowsRequest[] = [];
    // Mounted with its menu: every click opens it, and the rows are what the
    // reader gets by picking "Show rows" there.
    const hook = mountDrill({ onRows: (request) => requests.push(request) });
-   const binding = hook.current.bindingFor(tile, rowsGateFor(tile));
+   const binding = hook.current.bindingFor(tile, true);
    const relay = drillClickRelay(binding.onClick);
    const viz = new MalloyRenderer({
       onClick: relay.onClick as never,
@@ -159,7 +212,7 @@ async function clickEveryCell(tile: string, preamble = "") {
       // happy-dom has no layout, so a virtualized table renders no body rows.
       tableConfig: { enableDrill: true, disableVirtualization: true },
    }).createViz();
-   viz.setResult(API.util.wrapResult(result));
+   viz.setResult(wrap(result));
    // As `RenderedResult` does for a surface with drill wired.
    reportRowsWithoutFilters(viz.getMetadata()?.getRootField() as never);
    const element = document.createElement("div");
@@ -467,6 +520,86 @@ describe("which tile shapes open the rows behind a value", () => {
       expect(requests).toEqual([]);
    });
 
+   it("marks nothing for rows on an inline pipeline of more than one stage", async () => {
+      // Its first stage's `where:` is not in the result's filters, so a rows
+      // query would drop it.
+      const { requests, marked } = await clickEveryCell(
+         "sales_tiles -> { where: is_online = true; group_by: region; aggregate: sale_count } -> { group_by: region; aggregate: n is count() }",
+      );
+      expect(marked).toEqual([]);
+      expect(requests).toEqual([]);
+   });
+
+   it("marks nothing for rows on a named query of more than one stage", async () => {
+      const { requests, marked } = await clickEveryCell("online_staged");
+      expect(marked).toEqual([]);
+      expect(requests).toEqual([]);
+   });
+
+   it("marks the outer rows of a view whose nest runs two stages, and not the nest's", async () => {
+      const { rows, requests, marked } = await clickEveryCell(
+         "sales_tiles -> staged_nest",
+      );
+      expect(marked).toEqual(["region"]);
+      await expectRowsMatch(
+         perRow(requests),
+         rows.map((r) => r.sale_count),
+      );
+   });
+
+   it("drills a computed dimension declared in a joined source by its joined name", async () => {
+      // Its code is `amount > 50`, which the root source would read as its
+      // own `amount`; the server writes `targets.target_big` instead.
+      const { outcomes, marked } = await expectEveryRowMatches(
+         "sales_tiles -> by_target",
+      );
+      expect(marked).toEqual(["target_big", "target_year"]);
+      expect(queriesOf(outcomes)).toContain(
+         "where: targets.target_big = true, targets.target_year = @2025-01-01 00:00:00;",
+      );
+   });
+
+   it("drills an unnamed truncation where the result still says which it was", async () => {
+      const own = await expectEveryRowMatches(
+         "sales_tiles -> { group_by: sold_at.month; aggregate: sale_count }",
+      );
+      expect(queriesOf(own.outcomes)).toContain(
+         "where: sold_at.month = @2026-01-01 00:00:00;",
+      );
+      const joined = await expectEveryRowMatches(
+         "sales_tiles -> { group_by: targets.sold_at.year; aggregate: sale_count }",
+      );
+      expect(queriesOf(joined.outcomes)).toContain(
+         "where: targets.sold_at.year = @2025-01-01 00:00:00;",
+      );
+   });
+
+   it("marks nothing for an unnamed truncation in a view, whose truncation the result has lost", async () => {
+      const { requests, marked } = await clickEveryCell(
+         "sales_tiles -> by_month",
+      );
+      expect(marked).toEqual([]);
+      expect(requests).toEqual([]);
+   });
+
+   it("still drills a plain date column grouped in a view", async () => {
+      const { marked } = await expectEveryRowMatches("sales_tiles -> by_date");
+      expect(marked).toEqual(["sale_date"]);
+   });
+
+   it("marks nothing for a result from a server that did not correct its metadata", async () => {
+      // An older Publisher sends Malloy's metadata as written, with no stamp.
+      const { marked } = await clickEveryCell(
+         "sales_tiles -> by_region",
+         "",
+         API.util.wrapResult,
+      );
+      expect(marked).toEqual([]);
+      expect((await clickEveryCell("sales_tiles -> by_region")).marked).toEqual(
+         ["region"],
+      );
+   });
+
    it("marks nothing for rows when the host turns rows off for the tile", async () => {
       const result = await run("run: sales_tiles -> by_region");
       const requests: DrillRowsRequest[] = [];
@@ -476,7 +609,7 @@ describe("which tile shapes open the rows behind a value", () => {
          false,
       );
       const viz = new MalloyRenderer({}).createViz();
-      viz.setResult(API.util.wrapResult(result));
+      viz.setResult(served(result));
       const element = document.createElement("div");
       document.body.appendChild(element);
       viz.render(element);
@@ -495,5 +628,72 @@ describe("which tile shapes open the rows behind a value", () => {
       hook.unmount();
       viz.remove();
       element.remove();
+   });
+});
+
+describe("values and shapes a rows query must spell exactly", () => {
+   it("writes a bigint id with its own digits, not a rounded number", async () => {
+      const { outcomes } = await expectEveryRowMatches("edge_cases -> by_id");
+      expect(queriesOf(outcomes)).toContain("big_id = 9007199254740993;");
+      expect(queriesOf(outcomes)).toContain("big_id = 9007199254740992;");
+   });
+
+   it("writes a raw timestamp to its fraction of a second", async () => {
+      const { outcomes } = await expectEveryRowMatches("edge_cases -> by_at");
+      expect(queriesOf(outcomes)).toContain(
+         "seen_at = @2026-01-15 10:30:15.25;",
+      );
+      expect(queriesOf(outcomes)).toContain(
+         "seen_at = @2026-01-15 10:30:15.75;",
+      );
+   });
+
+   it("parenthesizes a dimension whose code is an expression", async () => {
+      const { outcomes } = await expectEveryRowMatches(
+         "edge_cases -> by_coastal",
+      );
+      expect(queriesOf(outcomes)).toContain(
+         "where: (region = 'East' or region = 'West') = false;",
+      );
+   });
+
+   it("escapes a line break inside a string value", async () => {
+      const { outcomes } = await expectEveryRowMatches("edge_cases -> by_note");
+      expect(queriesOf(outcomes)).toContain("note = 'line one\\nline two';");
+   });
+
+   it("back-quotes a source name that cannot stand bare", async () => {
+      const { outcomes } = await expectEveryRowMatches("`edge sales` -> by_id");
+      expect(queriesOf(outcomes)).toContain("run: `edge sales` -> {");
+   });
+
+   it("marks no column of a row holding a value a filter cannot spell", async () => {
+      // The renderer reports no value for a uuid, so no row can be named.
+      const { requests, marked } = await clickEveryCell("edge_cases -> by_uid");
+      expect(marked).toEqual([]);
+      expect(requests).toEqual([]);
+   });
+
+   it("marks no column of a row the renderer reports no clauses for", async () => {
+      // An inline expression has no stable expression, so the renderer
+      // gives up on the whole row: its cells must not read as clickable.
+      const { requests, marked } = await clickEveryCell(
+         "sales_tiles -> { group_by: big_amt is amount > 6, region; aggregate: sale_count }",
+      );
+      expect(marked).toEqual([]);
+      expect(requests).toEqual([]);
+   });
+
+   it("marks a nested value only when its row's times share one zone", async () => {
+      const { rows, requests, marked } = await clickEveryCell(
+         "edge_cases -> mixed_zone",
+      );
+      // The outer day is in UTC and the nested hour in Tokyo: one rows query
+      // has one zone, so the nested row is not offered.
+      expect(marked).toEqual(["d"]);
+      await expectRowsMatch(
+         perRow(requests),
+         rows.map((r) => r.sale_count),
+      );
    });
 });

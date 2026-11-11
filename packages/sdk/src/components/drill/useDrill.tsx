@@ -6,13 +6,14 @@ import { useCallback, useMemo, useState, type ReactNode } from "react";
 import { drillClauseLabels } from "./drillClauses";
 import type { DrillField } from "./resolveDrill";
 import {
+   asRowsField,
    canShowRows,
    dimensionCode,
    rowDimensionsOf,
    rowsDimensions,
    rowsTargetOf,
+   rowTimezone,
    type RowsDimension,
-   type RowsField,
 } from "./rowsTarget";
 import {
    DRILL_SELF,
@@ -53,11 +54,6 @@ export interface UseDrillOptions {
     */
    canSelf?: (given: string) => boolean;
    /**
-    * What a `to=self` entry starts with, before the `Field: value` it sets.
-    * Defaults to `Filter to`.
-    */
-   selfLabel?: string;
-   /**
     * A `to=` destination's title, for its menu entry. Undefined, or no
     * function, and the entry names the destination's file name instead.
     */
@@ -94,13 +90,13 @@ export interface UseDrillResult {
    drill: DrillBinding;
    /**
     * The binding for one result on a surface with several, such as a
-    * dashboard's tiles: its clicks carry `context`, and a field opens rows
-    * only where `rowsGate` also says so. `rowsGate: false` turns rows off for
-    * that result, leaving its tag drills.
+    * dashboard's tiles: its clicks carry `context`. `rows: false` turns rows
+    * off for that result, leaving its tag drills. `entries` is the tile
+    * entry's `drill { … }`, by dimension.
     */
    bindingFor: (
       context: string | undefined,
-      rowsGate: ((field: DrillField) => boolean) | false,
+      rows: boolean,
       entries?: Readonly<Record<string, EntryDrill>>,
    ) => DrillBinding;
    /** Render anywhere in the subtree: the menu every drillable click opens. */
@@ -123,13 +119,12 @@ interface DrillMenuState {
 const MENU_ITEM_MAX_WIDTH = 360;
 
 /** A field as its column header reads: its `# label`, else its name. */
-function fieldLabel(field: DrillField | RowsField | undefined): string {
+function fieldLabel(field: DrillField | undefined): string {
    if (!field) return "";
-   const header = (field as { getLabel?: () => string }).getLabel?.();
    return (
-      header ??
-      (field as DrillField).tag?.text("label") ??
-      (field as RowsField).metadataTag?.text("label") ??
+      field.getLabel?.() ??
+      field.tag?.text("label") ??
+      asRowsField(field).metadataTag?.text("label") ??
       field.name
    );
 }
@@ -160,12 +155,12 @@ export const showRowsLabel = (values: string) => `Show rows (${values})`;
  * column header: `Region: West, Month: 2025-12`, outermost first. Without the
  * row's clauses, the clicked value alone.
  */
-function rowsValuesLabel(rows: DrillRowsRequest, field: RowsField): string {
+function rowsValuesLabel(rows: DrillRowsRequest, field: DrillField): string {
    const parts = rows.drillClauses
       ? drillClauseLabels(rows.drillClauses, rows.timezone)
       : [];
    if (parts.length === 0) return `${fieldLabel(field)}: ${rows.label}`;
-   const row = rowDimensionsOf(field);
+   const row = rowDimensionsOf(asRowsField(field));
    return parts
       .map((part) => {
          const key = JSON.stringify(part.expression);
@@ -197,7 +192,6 @@ function rowsValuesLabel(rows: DrillRowsRequest, field: RowsField): string {
 export function useDrill({
    onNavigate,
    onSelf,
-   selfLabel = "Filter to",
    destinationTitle,
    canSelf,
    onRows,
@@ -248,7 +242,7 @@ export function useDrill({
       (payload: DrillClickPayload): DrillRowsRequest | undefined => {
          if (!onRows || payload.noRows || payload.isHeader || !payload.field)
             return undefined;
-         const field = payload.field as RowsField;
+         const field = asRowsField(payload.field);
          if (!canShowRows(field)) return undefined;
          const target = rowsTargetOf(field);
          if (target === undefined) return undefined;
@@ -266,11 +260,16 @@ export function useDrill({
             if (
                code === undefined ||
                rowDimensionsOf(field).length !== 1 ||
-               drillValueToFilter(payload.value) === undefined
+               drillValueToFilter(payload.value) === undefined ||
+               // A bigint past 2^53 arrives rounded, and names another row.
+               (typeof payload.value === "number" &&
+                  Number.isInteger(payload.value) &&
+                  !Number.isSafeInteger(payload.value))
             )
                return undefined;
             rows = { code };
          }
+         const timezone = rowTimezone(field) ?? undefined;
          return {
             field: payload.field.name,
             rawValue: payload.value,
@@ -281,9 +280,10 @@ export function useDrill({
                ? {}
                : { context: payload.context }),
             ...(clauses === undefined ? {} : { drillClauses: clauses }),
-            ...(payload.timezone === undefined
-               ? {}
-               : { timezone: payload.timezone }),
+            // The row's time dimensions' zone, not the clicked field's: a
+            // string clicked in a nest with its own `timezone:` would
+            // otherwise move the outer level's day boundaries.
+            ...(timezone === undefined ? {} : { timezone }),
          };
       },
       [onRows],
@@ -311,19 +311,17 @@ export function useDrill({
             label: drillDestinationLabel(
                destination,
                value,
-               selfLabel,
+               "Filter to",
                destinationTitle?.(destination),
             ),
             run: () => {
                if (intent) go(intent, destination, payload.event);
             },
          }));
-         if (rows)
+         if (rows && payload.field)
             items.push({
                key: "rows",
-               label: showRowsLabel(
-                  rowsValuesLabel(rows, payload.field as RowsField),
-               ),
+               label: showRowsLabel(rowsValuesLabel(rows, payload.field)),
                run: () => onRows?.(rows),
             });
          if (items.length === 0) return;
@@ -333,7 +331,7 @@ export function useDrill({
             left: payload.event?.clientX ?? 0,
          });
       },
-      [go, honorable, onRows, rowsBehind, selfLabel, destinationTitle],
+      [go, honorable, onRows, rowsBehind, destinationTitle],
    );
 
    const canDrillTag = useCallback(
@@ -343,7 +341,7 @@ export function useDrill({
    );
    const canDrillRows = useCallback(
       (field: DrillField) =>
-         onRows !== undefined && canShowRows(field as RowsField),
+         onRows !== undefined && canShowRows(asRowsField(field)),
       [onRows],
    );
 
@@ -358,7 +356,7 @@ export function useDrill({
    const bindingFor = useCallback(
       (
          context: string | undefined,
-         rowsGate: ((field: DrillField) => boolean) | false,
+         rows: boolean,
          /**
           * The tile entry's `drill { … }`, by dimension: for a dimension it
           * names, it is the field's drill on this tile in place of the model's
@@ -369,8 +367,7 @@ export function useDrill({
          const read = (field: DrillField) => withEntryDrill(field, entries);
          return {
             canDrill: (field) =>
-               canDrillTag(read(field)) ||
-               (rowsGate !== false && rowsGate(field) && canDrillRows(field)),
+               canDrillTag(read(field)) || (rows && canDrillRows(field)),
             onClick: (payload) =>
                onClick({
                   ...payload,
@@ -378,10 +375,7 @@ export function useDrill({
                      ? {}
                      : { field: read(payload.field) }),
                   ...(context === undefined ? {} : { context }),
-                  ...(rowsGate === false ||
-                  (payload.field !== undefined && !rowsGate(payload.field))
-                     ? { noRows: true }
-                     : {}),
+                  ...(rows ? {} : { noRows: true }),
                }),
          };
       },

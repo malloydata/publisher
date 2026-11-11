@@ -35,6 +35,27 @@ And the setup file lives outside `src/` because `vite-plugin-dts` generates
 declarations for everything under `src/`, so a setup file in there would ship a
 stray `.d.ts` in `dist/`.
 
+That `afterEach` also fails any test that leaves something on `document.body`
+after `cleanup`, and empties the body either way. `cleanup` removes only what
+`render` mounted, and every spec file shares one `<body>`, so a node attached
+by hand answers `getByRole` in whichever spec runs next. Bun's file order is not
+fixed (two ubuntu runs of one commit ran the files in different orders), so
+that failure lands in another file on some runs and nowhere on others. A spec
+that needs an element for `closest()` or `contains()` can leave it detached.
+One that has to attach it (focus, a document-level listener) removes it in its
+own `afterEach`, which runs before this one: see
+`useBuilderShortcuts.overlay.spec.tsx`. The check runs after every test, not
+after every file, so a fixture that a `beforeAll` attaches fails the first test
+and is gone for the rest. Keep a shared fixture detached, or attach it in
+`beforeEach` and remove it in `afterEach`.
+
+It also sets the time limits every spec gets: `waitFor` and `findBy*` wait up
+to 5s rather than Testing Library's 1s, and a test may run 20s rather than
+Bun's 5s. The CI runners are several times slower than a laptop, and the
+ReportEditor specs that pass in about a second there failed with the element
+arriving just after the 1s wait gave up. Both are upper bounds, so a passing
+spec runs no slower; only a failing one takes longer to report.
+
 happy-dom rather than jsdom because `@happy-dom/global-registrator` is designed
 to install into an existing runtime, which is exactly what a Bun preload can do.
 jsdom expects to own the test environment and offers no equivalent hook, so
@@ -128,9 +149,11 @@ later spec sees, in file order. Nothing in Bun scopes it to a file. That is
 survivable only while every spec registers the same shape, which is why the
 stub lives in one place rather than being hand-rolled per file: a spec that
 inherits someone else's stub still gets `{ server, apiClients }`, and fails on
-a missing client rather than on a missing property of `undefined`. If you ever
-need a spec to see the REAL `ServerProvider`, it cannot share a process with
-these — that would need its own `bun test` invocation.
+a missing client rather than on a missing property of `undefined`. A spec that
+needs the REAL `ServerProvider` cannot share a process with these, so name it
+`*.isolated.spec.tsx` and add its `./` path to the `test:isolated` script. The
+`test` script leaves every `*.isolated.spec.*` out of the main run, so one that
+is not listed in `test:isolated` does not run at all.
 
 `serverWrapper` provides `globalQueryClient`, the same instance `ServerProvider`
 provides in production. It is not decoration: `useQueryWithApiError` passes that

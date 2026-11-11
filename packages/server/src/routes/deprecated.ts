@@ -14,62 +14,150 @@ import type { GivenValue } from "@malloydata/malloy";
 import type express from "express";
 import { LegacyReportController } from "../controller/legacy_report.controller";
 import { setFilterDeprecationHeaders } from "../filter_deprecation";
-import { queryConcurrency } from "../query_concurrency";
-import { optionalBooleanParamOr400 } from "../route_params";
-import type { EnvironmentStore } from "../service/environment_store";
-import { jsonRoute, wildcardParam } from "./json_route";
+import { BadRequestError, internalErrorToHttpError } from "../errors";
+import type { QuerySlots } from "../query_concurrency";
+import { optionalBooleanParam, versionRefOf } from "../route_params";
+import { accessIdentityOf } from "../service/access_record";
+import type { PackageLookup } from "../service/environment_ports";
+import { apiRoute, recordGateRefusal, wildcardParam } from "./json_route";
 
-/** Parse a JSON query parameter, or answer 400 naming it and return `null`. */
-function jsonParam<T>(
-   req: express.Request,
-   res: express.Response,
-   name: string,
-): T | undefined | null {
+/** A cell request refused before the controller ran, and the body it answers. */
+class CellRequestRefused extends BadRequestError {
+   constructor(
+      message: string,
+      readonly body: object = { error: message },
+   ) {
+      super(message);
+   }
+}
+
+/** Parse a JSON query parameter, refusing one that is not JSON. */
+function jsonParam<T>(req: express.Request, name: string): T | undefined {
    const raw = req.query[name];
    if (typeof raw !== "string") return undefined;
    try {
       return JSON.parse(raw) as T;
    } catch {
-      res.status(400).json({ error: `Invalid ${name}: must be valid JSON` });
-      return null;
+      throw new CellRequestRefused(`Invalid ${name}: must be valid JSON`);
    }
+}
+
+function parseCellRequest(req: express.Request, acceptGivens: boolean) {
+   const cellIndex = parseInt(req.params.cellIndex, 10);
+   if (isNaN(cellIndex)) throw new CellRequestRefused("Invalid cell index");
+   const filterParams = jsonParam<Record<string, string | string[]>>(
+      req,
+      "filter_params",
+   );
+   // Absence must stay distinguishable from an explicit `false`: the
+   // Deprecation header fires on `bypassFilters !== undefined`.
+   let bypassFilters: boolean | undefined;
+   try {
+      bypassFilters = optionalBooleanParam(req, "bypass_filters");
+   } catch (error) {
+      throw new CellRequestRefused(
+         (error as Error).message,
+         internalErrorToHttpError(error as Error).json,
+      );
+   }
+   const givens = acceptGivens
+      ? jsonParam<Record<string, GivenValue>>(req, "givens")
+      : undefined;
+   return { cellIndex, filterParams, bypassFilters, givens };
+}
+
+/**
+ * The handlers of the notebook-cell route, shared by the `/environments` route
+ * and its legacy `/projects` alias. A request refused before the controller
+ * runs is recorded, then answered 400 `{ error }` (a bad `bypass_filters`
+ * keeps `{ code, message }`). The legacy alias reads its environment from
+ * `projectName`, takes no `givens` and sets no filter Deprecation headers.
+ */
+export function notebookCellHandlers(
+   controller: LegacyReportController,
+   {
+      environmentParam,
+      legacy,
+      querySlots,
+   }: {
+      environmentParam: "environmentName" | "projectName";
+      legacy: boolean;
+      querySlots: QuerySlots;
+   },
+): (express.RequestHandler | express.ErrorRequestHandler)[] {
+   const recordCellRefusal = (req: express.Request, error: Error) =>
+      controller.recordCellRefusal(
+         req.params[environmentParam],
+         req.params.packageName,
+         wildcardParam(req),
+         accessIdentityOf(req.headers),
+         error,
+      );
+   const run = apiRoute(async (req, res) => {
+      let cell: ReturnType<typeof parseCellRequest>;
+      try {
+         cell = parseCellRequest(req, !legacy);
+      } catch (error) {
+         if (!(error instanceof CellRequestRefused)) throw error;
+         await recordCellRefusal(req, error);
+         res.status(400).json(error.body);
+         return;
+      }
+      const result = await controller.executeNotebookCell(
+         req.params[environmentParam],
+         req.params.packageName,
+         wildcardParam(req),
+         cell.cellIndex,
+         cell.filterParams,
+         cell.bypassFilters,
+         cell.givens,
+         versionRefOf(req),
+         accessIdentityOf(req.headers),
+      );
+      if (!legacy) setFilterDeprecationHeaders(res, cell);
+      return result;
+   });
+   return [querySlots.middleware, run, recordGateRefusal(recordCellRefusal)];
 }
 
 export function registerDeprecatedRoutes(
    app: express.Express,
    apiPrefix: string,
-   environmentStore: EnvironmentStore,
+   environmentStore: PackageLookup,
+   querySlots: QuerySlots,
 ): void {
    const controller = new LegacyReportController(environmentStore);
    const pkg = `${apiPrefix}/environments/:environmentName/packages/:packageName`;
-
    app.get(
       `${pkg}/dashboards`,
-      jsonRoute((req) =>
+      apiRoute((req) =>
          controller.listDashboards(
             req.params.environmentName,
             req.params.packageName,
+            versionRefOf(req),
          ),
       ),
    );
 
    app.get(
       `${pkg}/dashboards/:dashboardName`,
-      jsonRoute((req) =>
+      apiRoute((req) =>
          controller.getDashboard(
             req.params.environmentName,
             req.params.packageName,
             req.params.dashboardName,
+            versionRefOf(req),
          ),
       ),
    );
 
    app.get(
       `${pkg}/notebooks`,
-      jsonRoute((req) =>
+      apiRoute((req) =>
          controller.listNotebooks(
             req.params.environmentName,
             req.params.packageName,
+            versionRefOf(req),
          ),
       ),
    );
@@ -81,53 +169,21 @@ export function registerDeprecatedRoutes(
    // Before the notebook route, so its wildcard does not swallow `/cells/{i}`.
    app.get(
       `${pkg}/notebooks/*/cells/:cellIndex`,
-      queryConcurrency(),
-      jsonRoute(async (req, res) => {
-         const cellIndex = parseInt(req.params.cellIndex, 10);
-         if (isNaN(cellIndex)) {
-            res.status(400).json({ error: "Invalid cell index" });
-            return;
-         }
-         const filterParams = jsonParam<Record<string, string | string[]>>(
-            req,
-            res,
-            "filter_params",
-         );
-         if (filterParams === null) return;
-         // Absence must stay distinguishable from an explicit `false` here:
-         // the Deprecation header below fires on `bypassFilters !== undefined`.
-         const bypass = optionalBooleanParamOr400(req, res, "bypass_filters");
-         if (!bypass.ok) return;
-         const givens = jsonParam<Record<string, GivenValue>>(
-            req,
-            res,
-            "givens",
-         );
-         if (givens === null) return;
-         const result = await controller.executeNotebookCell(
-            req.params.environmentName,
-            req.params.packageName,
-            wildcardParam(req),
-            cellIndex,
-            filterParams,
-            bypass.value,
-            givens,
-         );
-         setFilterDeprecationHeaders(res, {
-            filterParams,
-            bypassFilters: bypass.value,
-         });
-         return result;
+      ...notebookCellHandlers(controller, {
+         environmentParam: "environmentName",
+         legacy: false,
+         querySlots,
       }),
    );
 
    app.get(
       `${pkg}/notebooks/*?`,
-      jsonRoute((req) =>
+      apiRoute((req) =>
          controller.getNotebook(
             req.params.environmentName,
             req.params.packageName,
             wildcardParam(req),
+            versionRefOf(req),
          ),
       ),
    );

@@ -44,33 +44,79 @@ export function markNotReady(): void {
  * logger and exit.
  */
 export function registerSignalHandlers(
-   server: Server,
-   mcpServer: Server,
+   server: Server | null,
+   mcpServer: Server | null,
    shutdownDrainDurationSeconds: number = 0,
    shutdownGracefulCloseTimeoutSeconds: number = 0,
+   /** Further listeners closed with the two above (the admin listener). */
+   otherServers: Server[] = [],
 ): void {
    // K8s sends SIGKILL after terminationGracePeriodSeconds if this has not exited.
    process.once("SIGTERM", async () => {
       logger.info("========== SIGTERM RECEIVED ==========");
-      markNotReady();
-      operationalState = "draining" as OperationalState;
-      logger.info(
-         `Service entering draining state for ${shutdownDrainDurationSeconds} seconds before closing servers...`,
-      );
-
-      await new Promise((resolve) =>
-         setTimeout(() => {
-            preGracefulShutdownCompleted = true;
-            resolve(true);
-         }, shutdownDrainDurationSeconds * 1000),
-      );
-
-      await performGracefulShutdownAfterDrain(
+      await drainAndShutdown(
          server,
          mcpServer,
+         shutdownDrainDurationSeconds,
          shutdownGracefulCloseTimeoutSeconds,
+         otherServers,
       );
    });
+}
+
+/**
+ * What SIGTERM runs after logging it: fail readiness, drain for
+ * `shutdownDrainDurationSeconds` while still accepting requests, then
+ * {@link performGracefulShutdownAfterDrain}. The composition root's
+ * `shutdown()` runs the same sequence.
+ */
+let shutdownInProgress: Promise<void> | undefined;
+
+export function drainAndShutdown(
+   server: Server | null,
+   mcpServer: Server | null,
+   shutdownDrainDurationSeconds: number = 0,
+   shutdownGracefulCloseTimeoutSeconds: number = 0,
+   otherServers: Server[] = [],
+): Promise<void> {
+   // SIGTERM and the root's shutdown() can both arrive; the second joins the
+   // first instead of closing the servers and the SDK again.
+   shutdownInProgress ??= drainThenClose(
+      server,
+      mcpServer,
+      shutdownDrainDurationSeconds,
+      shutdownGracefulCloseTimeoutSeconds,
+      otherServers,
+   );
+   return shutdownInProgress;
+}
+
+async function drainThenClose(
+   server: Server | null,
+   mcpServer: Server | null,
+   shutdownDrainDurationSeconds: number,
+   shutdownGracefulCloseTimeoutSeconds: number,
+   otherServers: Server[],
+): Promise<void> {
+   markNotReady();
+   operationalState = "draining" as OperationalState;
+   logger.info(
+      `Service entering draining state for ${shutdownDrainDurationSeconds} seconds before closing servers...`,
+   );
+
+   await new Promise((resolve) =>
+      setTimeout(() => {
+         preGracefulShutdownCompleted = true;
+         resolve(true);
+      }, shutdownDrainDurationSeconds * 1000),
+   );
+
+   await performGracefulShutdownAfterDrain(
+      server,
+      mcpServer,
+      shutdownGracefulCloseTimeoutSeconds,
+      otherServers,
+   );
 }
 
 /**
@@ -80,11 +126,12 @@ export function registerSignalHandlers(
  * module-level state "draining" for sibling specs.
  */
 export async function performGracefulShutdownAfterDrain(
-   server: Server,
-   mcpServer: Server,
+   server: Server | null,
+   mcpServer: Server | null,
    shutdownGracefulCloseTimeoutSeconds: number,
+   otherServers: Server[] = [],
 ): Promise<void> {
-   const closeServer = (server: Server, name: string) =>
+   const closeServer = (server: Server | null, name: string) =>
       new Promise<void>((resolve) => {
          if (server && server.listening) {
             server.close((err) => {
@@ -103,6 +150,7 @@ export async function performGracefulShutdownAfterDrain(
    await Promise.all([
       closeServer(server, "Main server"),
       closeServer(mcpServer, "MCP server"),
+      ...otherServers.map((s) => closeServer(s, "Admin server")),
    ]);
 
    try {

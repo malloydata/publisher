@@ -4,6 +4,7 @@
 import { createHash, randomUUID } from "crypto";
 import fs from "fs";
 import path from "path";
+import { compareText } from "../compare_text";
 
 /**
  * Hashed in place of an unreadable file, so it digests differently from an
@@ -16,21 +17,29 @@ const UNREADABLE = "\0<unreadable>\0";
  * path. Paths are sorted (order-independent) and hashed with their content (a
  * rename moves the digest). The caller chooses the served set, plus `extra`
  * for served text that lives in no file; anything outside it is invisible.
+ * A path in `contentShas` is hashed by its already-computed sha256 instead of
+ * being read again.
  */
 export function computeSourceContentSha(
    packagePath: string,
    contentPaths: Iterable<string>,
    extra?: string,
+   contentShas?: ReadonlyMap<string, string>,
 ): string {
    const hash = createHash("sha256");
    for (const relativePath of [...contentPaths].sort()) {
       hash.update(relativePath);
       hash.update("\0");
-      const absolute = path.join(packagePath, relativePath);
-      try {
-         hash.update(fs.readFileSync(absolute));
-      } catch {
-         hash.update(UNREADABLE);
+      const precomputed = contentShas?.get(relativePath);
+      if (precomputed !== undefined) {
+         hash.update(`\0sha256\0${precomputed}`);
+      } else {
+         const absolute = path.join(packagePath, relativePath);
+         try {
+            hash.update(fs.readFileSync(absolute));
+         } catch {
+            hash.update(UNREADABLE);
+         }
       }
       hash.update("\0");
    }
@@ -43,9 +52,7 @@ export function canonicalJson(value: unknown): string {
    return JSON.stringify(value, (_key, v: unknown) =>
       v !== null && typeof v === "object" && !Array.isArray(v)
          ? Object.fromEntries(
-              Object.entries(v).sort(([a], [b]) =>
-                 a < b ? -1 : a > b ? 1 : 0,
-              ),
+              Object.entries(v).sort(([a], [b]) => compareText(a, b)),
            )
          : v,
    );

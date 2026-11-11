@@ -2,29 +2,34 @@
 // SPDX-License-Identifier: MIT
 
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+import { registerTool } from "../register_tool";
+import {
+   BadRequestError,
+   DeclaredElsewhereError,
+   ModelNotFoundError,
+} from "../../errors";
 import { ErrorCode, McpError } from "@modelcontextprotocol/sdk/types.js";
 import { z } from "zod/v3";
 import type { GivenValue } from "@malloydata/malloy";
-import { validateRenderTags } from "@malloydata/render-validator";
-import { getQueryTimeoutMs } from "../../config";
-import { DeclaredElsewhereError } from "../../errors";
 import { logger } from "../../logger";
-import {
-   tryAcquireQuerySlot,
-   type QuerySlotHandle,
-} from "../../query_concurrency";
-import { runWithQueryTimeout } from "../../query_timeout";
-import { filterPublisherOwnedRenderLogs } from "../../service/report_manifest";
-import { EnvironmentStore } from "../../service/environment_store";
+import { accessIdentityOf } from "../../service/access_record";
+import type { Package } from "../../service/package";
+import type {
+   McpExposureReader,
+   PackageLookup,
+} from "../../service/environment_ports";
+import { QueryUseCase, type QueryTransportOptions } from "../../usecases/query";
 import { RESTRICTED_CONSTRUCTS, type ErrorDetails } from "../error_messages";
 import {
    buildMalloyUri,
    classifyToolError,
-   getModelForQuery,
+   mapQuerySetupError,
+   MCP_MODEL_RESOLUTION,
+   modelNotFoundDetails,
 } from "../handler_utils";
+import type { RequestExtra } from "../request_extra";
 import { jsonResource, jsonToolError } from "../tool_response";
 import { buildQueryEnvelope } from "../query_envelope";
-import { buildQueryMetadataInput } from "../../service/query_metadata";
 import { bigIntReplacer } from "../../json_utils";
 import { MCP_ERROR_MESSAGES } from "../mcp_constants";
 import { recordDeprecatedFilterUsage } from "../../filter_deprecation";
@@ -115,13 +120,40 @@ A JSON object, the same shape Credible's execute_query and an in-package data ap
 
 Values above 2^53 are returned as JSON strings so their digits survive.`;
 
+/**
+ * execute_query's documented differences from the REST query route. Each
+ * call adds the hooks that keep the refusal details it answers with.
+ */
+const MCP_QUERY_OPTIONS: QueryTransportOptions = {
+   // The package's `latest`; a notebook or a missing model is refused while
+   // resolving, with MCP's own 404 wording, and the model compiles eagerly.
+   ...MCP_MODEL_RESOLUTION,
+   // The envelope is built from `compactResult`, so cap that shape:
+   // measuring the wrapped result would 413 on bytes the agent never
+   // receives.
+   shape: "compact",
+   // MCP sends no #(authorize) bypass, ever.
+   honorBypassAuthorize: false,
+   // Shares the HTTP routes' slot pool so an agent loop cannot bypass
+   // PUBLISHER_MAX_CONCURRENT_QUERIES; the label separates MCP load on the
+   // dashboard. Taken after the model resolves.
+   querySlotLabel: "mcp:executeQuery",
+   // The two call modes differ only in which arguments carry the query.
+   // Ad-hoc text runs on its own: a sourceName sent beside it is not passed on.
+   adHocRunsAlone: true,
+   noLayersLogMessage:
+      "[MCP Tool executeQuery] No query-metadata layers for connection",
+};
+
 export function registerExecuteQueryTool(
    mcpServer: McpServer,
-   environmentStore: EnvironmentStore,
+   environmentStore: PackageLookup & Partial<McpExposureReader>,
+   queryUseCase: QueryUseCase,
 ): void {
    const offerHidden =
       environmentStore.mcpIncludeHiddenFilesAndSources === true;
-   mcpServer.tool(
+   registerTool(
+      mcpServer,
       "execute_query",
       EXECUTE_QUERY_DESCRIPTION,
       // Typed as the full shape so the handler can name the parameter; the
@@ -129,7 +161,7 @@ export function registerExecuteQueryTool(
       (offerHidden
          ? executeQueryShape
          : curatedShape) as typeof executeQueryShape,
-      async (params) => {
+      async (params, extra?: RequestExtra) => {
          const {
             environmentName,
             packageName,
@@ -149,131 +181,131 @@ export function registerExecuteQueryTool(
 
          const hasAdhocQuery = !!query;
          const hasNamedQuery = !!queryName;
-
-         if (!hasAdhocQuery && !hasNamedQuery) {
-            throw new McpError(
-               ErrorCode.InvalidParams,
-               MCP_ERROR_MESSAGES.MISSING_REQUIRED_PARAMS,
-            );
-         }
-         if (hasAdhocQuery && hasNamedQuery) {
-            throw new McpError(
-               ErrorCode.InvalidParams,
-               MCP_ERROR_MESSAGES.MUTUALLY_EXCLUSIVE_PARAMS,
-            );
-         }
-         const modelResult = await getModelForQuery(
-            environmentStore,
-            environmentName,
-            packageName,
-            modelPath,
-         );
-
-         if ("error" in modelResult) {
-            return jsonToolError(
-               "error://executeQuery/modelAccess",
-               modelResult.error,
-            );
-         }
-
-         const { model, environment, pkg } = modelResult;
-         // Shares the HTTP routes' slot pool so an agent loop cannot bypass
-         // PUBLISHER_MAX_CONCURRENT_QUERIES; the label separates MCP load on
-         // the dashboard. A refusal throws into the catch below.
-         let querySlot: QuerySlotHandle | null = null;
+         const argumentError =
+            !hasAdhocQuery && !hasNamedQuery
+               ? MCP_ERROR_MESSAGES.MISSING_REQUIRED_PARAMS
+               : hasAdhocQuery && hasNamedQuery
+                 ? MCP_ERROR_MESSAGES.MUTUALLY_EXCLUSIVE_PARAMS
+                 : undefined;
+         let refusal: ErrorDetails | undefined;
+         let pkg: Package | undefined;
          try {
-            querySlot = tryAcquireQuerySlot("mcp:executeQuery");
-            // Built as the HTTP controller builds it: a connection's enforced
-            // properties describe the deployment, not the transport.
-            const queryMetadataInput = buildQueryMetadataInput({
-               environmentName,
-               environment,
-               pkg,
-               noLayersLogMessage:
-                  "[MCP Tool executeQuery] No query-metadata layers for connection",
-            });
-            // The two call modes differ only in which arguments carry the
-            // query; everything after the run is identical, so they share one
-            // path rather than two copies that can drift. Ad-hoc text runs on
-            // its own: a sourceName sent beside it is not passed on.
-            const target = query
-               ? { sourceName: undefined, queryName: undefined, query }
-               : { sourceName, queryName, query: undefined };
-            const {
-               result,
-               compactResult,
-               rowLimit,
-               rowLimitSource,
-               queryCorrelationId,
-            } = await runWithQueryTimeout(
-               (abortSignal) =>
-                  model.getQueryResults(
-                     target.sourceName,
-                     target.queryName,
-                     target.query,
-                     filterParams,
-                     undefined,
-                     givens as Record<string, GivenValue> | undefined,
-                     abortSignal,
-                     queryMetadataInput,
-                     // The envelope is built from `compactResult`, so cap
-                     // that shape: measuring the wrapped result would 413 on
-                     // bytes the agent never receives.
-                     "compact",
-                     // MCP sends no #(authorize) bypass, ever.
-                     false,
-                     includeHiddenFilesAndSources,
-                  ),
-               getQueryTimeoutMs(),
-            );
-            recordDeprecatedFilterUsage({ filterParams });
-
-            // Render-tag validation reads the FULL Malloy result: the tags live
-            // in its schema annotations, which the flat rows do not carry. It
-            // runs regardless of which shape is returned.
-            const renderLogs = filterPublisherOwnedRenderLogs(
-               validateRenderTags(result),
-               pkg.getModel(modelPath)?.carriesReportTag() ?? false,
-               result,
-            );
-
-            const resultUri = buildMalloyUri(
+            return await queryUseCase.run(
                {
-                  environment: environmentName,
-                  package: packageName,
-                  resourceType: "models" as const,
-                  resourceName: modelPath,
+                  environmentName,
+                  packageName,
+                  modelPath,
+                  sourceName,
+                  queryName,
+                  query,
+                  filterParams,
+                  givens: givens as Record<string, GivenValue> | undefined,
+                  includeHiddenFilesAndSources,
+                  // A cancelled call stops the query at the driver.
+                  clientSignal: extra?.signal,
+                  identity: accessIdentityOf(extra?.requestInfo?.headers),
                },
-               "result",
+               {
+                  ...MCP_QUERY_OPTIONS,
+                  // Inside the record, so a refused call is recorded; thrown
+                  // below as the protocol error.
+                  precondition: argumentError
+                     ? new BadRequestError(argumentError)
+                     : undefined,
+                  // A setup refusal answers with the details worded here, in
+                  // the catch below.
+                  modelNotFound: (command) => {
+                     refusal = modelNotFoundDetails(command);
+                     return new ModelNotFoundError(refusal.message);
+                  },
+                  // The answering package, for the catch's reload advice.
+                  resolveModel: async (store, command) => {
+                     const resolved = await MCP_MODEL_RESOLUTION.resolveModel(
+                        store,
+                        command,
+                     );
+                     pkg = resolved.pkg;
+                     return resolved;
+                  },
+                  onSetupError: (error) => {
+                     refusal = mapQuerySetupError(error, {
+                        environmentName,
+                        packageName,
+                        modelPath,
+                     });
+                  },
+               },
+               ({
+                  result: {
+                     result,
+                     compactResult,
+                     rowLimit,
+                     rowLimitSource,
+                     queryCorrelationId,
+                     renderLogs,
+                  },
+               }) => {
+                  recordDeprecatedFilterUsage({ filterParams });
+
+                  const resultUri = buildMalloyUri(
+                     {
+                        environment: environmentName,
+                        package: packageName,
+                        resourceType: "models" as const,
+                        resourceName: modelPath,
+                     },
+                     "result",
+                  );
+
+                  const envelope = buildQueryEnvelope(
+                     compactResult,
+                     rowLimit,
+                     result,
+                     renderLogs.map((log) => log.message),
+                     undefined,
+                     rowLimitSource,
+                     queryCorrelationId,
+                  );
+
+                  // A capped or truncated result, and a broken render tag, are the
+                  // things an agent most needs to notice, so they are stated in text
+                  // rather than left for a client that parses the payload.
+                  const notes = [
+                     envelope.warning,
+                     envelope.renderLogErrors &&
+                        `Render tag problems: ${envelope.renderLogErrors.join("; ")}`,
+                  ].filter(Boolean);
+
+                  return jsonResource(resultUri, envelope, {
+                     space: 2,
+                     // BigInt reaches here: compactResult is raw driver output and
+                     // DuckDB returns count() as one.
+                     replacer: bigIntReplacer,
+                     text: notes.length > 0 ? notes.join("\n\n") : undefined,
+                  });
+               },
             );
-
-            const envelope = buildQueryEnvelope(
-               compactResult,
-               rowLimit,
-               result,
-               renderLogs.map((log) => log.message),
-               undefined,
-               rowLimitSource,
-               queryCorrelationId,
-            );
-
-            // A capped or truncated result, and a broken render tag, are the
-            // things an agent most needs to notice, so they are stated in text
-            // rather than left for a client that parses the payload.
-            const notes = [
-               envelope.warning,
-               envelope.renderLogErrors &&
-                  `Render tag problems: ${envelope.renderLogErrors.join("; ")}`,
-            ].filter(Boolean);
-
-            return jsonResource(resultUri, envelope, {
-               space: 2,
-               // BigInt reaches here: compactResult is raw driver output and
-               // DuckDB returns count() as one.
-               replacer: bigIntReplacer,
-               text: notes.length > 0 ? notes.join("\n\n") : undefined,
-            });
          } catch (queryError) {
+            if (argumentError) {
+               throw new McpError(ErrorCode.InvalidParams, argumentError);
+            }
+            if (refusal) {
+               return jsonToolError(
+                  "error://executeQuery/modelAccess",
+                  refusal,
+               );
+            }
+            if (extra?.signal?.aborted) {
+               logger.info("execute_query cancelled by the client", {
+                  environmentName,
+                  packageName,
+                  modelPath,
+               });
+               return jsonToolError("error://executeQuery/cancelled", {
+                  message: "The call was cancelled before the query finished.",
+                  suggestions: [],
+               });
+            }
             logger.error(
                `[MCP Server Error] Error executing query in ${environmentName}/${packageName}/${modelPath}:`,
                { error: queryError },
@@ -287,14 +319,18 @@ export function registerExecuteQueryTool(
             );
 
             // An undefined name is also what an author gets after saving a new
-            // source or view without reloading, so point at the reload too.
+            // source or view without reloading, so point at the reload too. A
+            // published version never changes, so reloading it does nothing:
+            // there the way to a new name is a new version.
             const suggestions = [...errorDetails.suggestions];
             if (
                !(queryError instanceof DeclaredElsewhereError) &&
                isUndefinedNameError(errorDetails.message)
             ) {
                suggestions.push(
-                  "If you added or renamed this source or view on disk after the server loaded the package, the running model is still the one compiled at boot. Call reload_package for this package, then retry.",
+                  pkg?.getVersionId() !== undefined
+                     ? "This package serves published versions, which never change, so reload_package does not pick up a source or view added or renamed on disk. Publish the change as a new version (bump `version` in publisher.json), then query it once it is the package's latest."
+                     : "If you added or renamed this source or view on disk after the server loaded the package, the running model is still the one compiled at boot. Call reload_package for this package, then retry.",
                );
             }
 
@@ -302,10 +338,6 @@ export function registerExecuteQueryTool(
                message: errorDetails.message,
                suggestions,
             });
-         } finally {
-            // `release()` is idempotent, so a double-fault cannot
-            // double-decrement.
-            querySlot?.release();
          }
       },
    );

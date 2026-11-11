@@ -16,7 +16,11 @@ import { escapeMalloyString } from "../../utils/malloyString";
  * quarter, week and minute literals (`@2026-Q1`) a filter refuses. What a
  * filter does accept for every truncation is the truncated value itself at
  * full precision, so that is what is written: a date as its day, a timestamp
- * to the second.
+ * to the second, or to its fraction when it has one.
+ *
+ * Remove these workarounds, and take `DrillData.query` as written, once a
+ * Malloy release fixes the renderer's string quoting, hour digits and
+ * truncated literals.
  */
 export type DrillClause = Malloy.DrillOperation;
 
@@ -64,6 +68,12 @@ export function literalText(
       case "string_literal":
          return `'${escapeMalloyString(value.string_value)}'`;
       case "number_literal":
+         // The renderer's own digits when it has them: a bigint above 2^53
+         // read as a JavaScript number names a different row.
+         if (value.string_value !== undefined)
+            return /^-?\d+(\.\d+)?$/.test(value.string_value)
+               ? value.string_value
+               : undefined;
          return Number.isFinite(value.number_value)
             ? String(value.number_value)
             : undefined;
@@ -75,7 +85,12 @@ export function literalText(
       }
       case "timestamp_literal": {
          const t = wallClock(value.timestamp_value, timezone);
-         return t && `@${t[0]}-${t[1]}-${t[2]} ${t[3]}:${t[4]}:${t[5]}`;
+         // With its fraction: `=` against whole seconds matches nothing for
+         // a raw timestamp at `.250`.
+         return (
+            t &&
+            `@${t[0]}-${t[1]}-${t[2]} ${t[3]}:${t[4]}:${t[5]}${fraction(value.timestamp_value)}`
+         );
       }
       default:
          return undefined;
@@ -104,7 +119,13 @@ function literalLabel(
       }
       case "timestamp_literal": {
          const t = wallClock(value.timestamp_value, timezone);
-         return t && granularLabel(t, value.granularity ?? "second");
+         return (
+            t &&
+            granularLabel(t, value.granularity ?? "second") +
+               (value.granularity === undefined
+                  ? fraction(value.timestamp_value)
+                  : "")
+         );
       }
       default:
          return literalText(value);
@@ -117,6 +138,15 @@ type WallClock = [string, string, string, string, string, string];
 function dateDigits(text: string): [string, string, string] | undefined {
    const day = /^(\d{4})-(\d{2})-(\d{2})/.exec(text);
    return day ? [day[1], day[2], day[3]] : undefined;
+}
+
+/**
+ * The fraction of a second an ISO instant carries, as `.250`, or empty. A zone
+ * moves whole minutes, so the digits are read as written.
+ */
+function fraction(iso: string): string {
+   const digits = /:\d{2}\.(\d+)/.exec(iso)?.[1]?.replace(/0+$/, "");
+   return digits ? `.${digits}` : "";
 }
 
 /** An instant's wall clock in `timezone`, UTC when unset. */

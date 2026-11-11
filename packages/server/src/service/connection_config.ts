@@ -1,15 +1,17 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
+import { externalEnv, settings } from "../settings";
+import { boolean, Mismatch } from "../settings/types";
 import { createPrivateKey } from "crypto";
 import { existsSync } from "fs";
 import path from "path";
 import { components } from "../api";
 import {
    ALLOW_DUCKDB_SETUP_SQL_ENV,
+   ConnectionOrigin,
    getExtensionFetchPolicy,
    isDuckdbSetupSqlAllowed,
-   parseBoolEnv,
 } from "../config";
 import { BadRequestError } from "../errors";
 import { logger } from "../logger";
@@ -54,7 +56,7 @@ function validatePostgresSslmode(subject: string, sslmode: string): void {
       );
    }
    if (sslmode === "verify-ca") {
-      const caBundle = process.env.NODE_EXTRA_CA_CERTS;
+      const caBundle = externalEnv("NODE_EXTRA_CA_CERTS");
       if (!caBundle || !existsSync(caBundle)) {
          throw new Error(
             `${subject} uses sslmode 'verify-ca' but no readable ` +
@@ -256,8 +258,20 @@ export function validateDuckdbApiSurface(connection: ApiConnection): void {
    }
 }
 
+/** The connection as stored and returned by the API, `dbmeta` as a boolean. */
 function cloneApiConnection(connection: ApiConnection): ApiConnection {
-   return { ...connection };
+   const clone = { ...connection };
+   const bigquery = connection.bigqueryConnection;
+   if (bigquery?.dbmeta !== undefined) {
+      clone.bigqueryConnection = {
+         ...bigquery,
+         dbmeta: configBoolean(
+            bigquery.dbmeta,
+            `dbmeta on BigQuery connection "${connection.name}"`,
+         ),
+      };
+   }
+   return clone;
 }
 
 export function getStaticConnectionAttributes(
@@ -379,7 +393,7 @@ function directSslParams(
          return {
             uselibpqcompat: "true",
             sslmode: "verify-ca",
-            sslrootcert: process.env.NODE_EXTRA_CA_CERTS ?? "",
+            sslrootcert: externalEnv("NODE_EXTRA_CA_CERTS") ?? "",
          };
    }
 }
@@ -403,14 +417,15 @@ export function buildPostgresConnectionString(
    }
 
    const params = new URLSearchParams();
+   const pgSslmode = externalEnv("PGSSLMODE");
    if (applySslmode && config.sslmode != null) {
       for (const [key, value] of Object.entries(
          directSslParams(config.sslmode),
       )) {
          params.set(key, value);
       }
-   } else if (process.env.PGSSLMODE) {
-      params.set("sslmode", process.env.PGSSLMODE);
+   } else if (pgSslmode) {
+      params.set("sslmode", pgSslmode);
    } else {
       return undefined;
    }
@@ -545,7 +560,7 @@ function validateProxyShape(
    // Config load can throw, so a misspelled opt-in (`=ture`) is caught here
    // rather than read as "off"; the connect-time check in proxy.ts falls back
    // instead (see allowUnverifiedHostKey).
-   parseBoolEnv(ALLOW_UNVERIFIED_SSH_HOST_KEY_ENV);
+   settings.get("allow.unverifiedSshHostKey");
    if (!hostKey && !allowUnverifiedHostKey()) {
       logger.warn(
          `Connection proxy on '${connection.name}' pins no SSH host key, so the tunnel will ` +
@@ -706,7 +721,10 @@ function validateMotherDuckShape(connection: ApiConnection): void {
    }
 }
 
-function validateDuckLakeShape(connection: ApiConnection): void {
+function validateDuckLakeShape(
+   connection: ApiConnection,
+   origin: ConnectionOrigin,
+): void {
    // Every field the ATTACH demands (see attachDuckLakeWithMode). A
    // destination is only attached at its first BUILD, so a field missed here
    // would surface hours after the config change that caused it.
@@ -718,11 +736,8 @@ function validateDuckLakeShape(connection: ApiConnection): void {
          `PostgreSQL connection configuration is required for DuckLake catalog: ${connection.name}`,
       );
    }
-   if (!connection.ducklakeConnection.storage?.bucketUrl) {
-      throw new Error(
-         `Storage bucketUrl is required for DuckLake: ${connection.name}`,
-      );
-   }
+   // No bucketUrl is allowed: the catalog must then exist, and its recorded
+   // data path is used (connection.ts, dataPathClauses).
    // Shape only, as in the duckdb branch: a throw here fails the ENTIRE
    // environment. The mutual-exclusion and enum guards are safe; the key-pair
    // requirement is NOT applied, because failing every other connection over
@@ -730,8 +745,19 @@ function validateDuckLakeShape(connection: ApiConnection): void {
    // validateStorageDestinations rejects one destination at a time, so it
    // applies the full check.
    const storage = connection.ducklakeConnection.storage;
-   if (storage.s3Connection) {
-      validateS3ProviderShape(storage.s3Connection, connection.name);
+   if (storage?.s3Connection) {
+      validateS3ProviderShape(storage.s3Connection, connection.name, origin);
+   }
+   // The attach applies the catalog's own sslmode (buildPgConnectionString) and
+   // throws on a value it cannot honor, at every query or build. An enum check,
+   // like the guards above. A connectionString carries its own sslmode and the
+   // field is ignored beside it, so it is not checked there.
+   const catalogPg = connection.ducklakeConnection.catalog.postgresConnection;
+   if (catalogPg.sslmode != null && !catalogPg.connectionString) {
+      validatePostgresSslmode(
+         `DuckLake catalog of connection '${connection.name}'`,
+         catalogPg.sslmode,
+      );
    }
    // metadataSchema reaches the ATTACH as a quoted string literal AND the
    // catalog-format preflight as a quoted identifier. Rather than escape one
@@ -749,6 +775,21 @@ function validateDuckLakeShape(connection: ApiConnection): void {
          throw new Error(
             `DuckLake catalog metadataSchema must be a plain identifier ` +
                `([A-Za-z_][A-Za-z0-9_]*), got '${schema}' for connection: ` +
+               `${connection.name}`,
+         );
+      }
+   }
+   // destinationSchema becomes part of every stored table's path, quoted as an
+   // identifier by quoteTablePath; a plain identifier keeps that one grammar.
+   const destinationSchema = connection.ducklakeConnection.destinationSchema;
+   if (destinationSchema !== undefined && destinationSchema !== null) {
+      if (
+         typeof destinationSchema !== "string" ||
+         !/^[A-Za-z_][A-Za-z0-9_]*$/.test(destinationSchema)
+      ) {
+         throw new Error(
+            `DuckLake destinationSchema must be a plain identifier ` +
+               `([A-Za-z_][A-Za-z0-9_]*), got '${destinationSchema}' for connection: ` +
                `${connection.name}`,
          );
       }
@@ -815,7 +856,7 @@ function validatePublisherShape(connection: ApiConnection): void {
    // hosted multi-tenant deployment, so it needs an explicit opt-in. Every
    // connection passes validateConnectionShape before it can be assembled,
    // queried, or introspected, so denying here shuts off all three.
-   if (process.env.PUBLISHER_ALLOW_PROXY_CONNECTIONS !== "true") {
+   if (!settings.get("allow.proxyConnections")) {
       throw new Error(
          `Publisher proxy connection '${connection.name}' is disabled in this deployment. ` +
             `'publisher' connections make the server issue outbound requests to a configured connectionUri, ` +
@@ -857,7 +898,10 @@ function validatePublisherShape(connection: ApiConnection): void {
  * switch rather than a lookup table, so a caller-supplied type selects only a
  * function named here.
  */
-function validateTypeShape(connection: ApiConnection): void {
+function validateTypeShape(
+   connection: ApiConnection,
+   origin: ConnectionOrigin,
+): void {
    switch (connection.type) {
       case "sqlserver":
          return validateSqlServerShape(connection);
@@ -868,7 +912,7 @@ function validateTypeShape(connection: ApiConnection): void {
       case "motherduck":
          return validateMotherDuckShape(connection);
       case "ducklake":
-         return validateDuckLakeShape(connection);
+         return validateDuckLakeShape(connection, origin);
       case "trino":
          return validateTrinoShape(connection);
       case "databricks":
@@ -880,7 +924,10 @@ function validateTypeShape(connection: ApiConnection): void {
    }
 }
 
-function validateConnectionShape(connection: ApiConnection): void {
+function validateConnectionShape(
+   connection: ApiConnection,
+   origin: ConnectionOrigin = "connection",
+): void {
    if (connection.proxy) {
       validateProxyShape(connection, connection.proxy);
    }
@@ -907,7 +954,7 @@ function validateConnectionShape(connection: ApiConnection): void {
       );
    }
 
-   validateTypeShape(connection);
+   validateTypeShape(connection, origin);
 }
 
 /**
@@ -1039,7 +1086,7 @@ export function validateStorageDestinations(
       }
 
       try {
-         validateConnectionShape(destination);
+         validateConnectionShape(destination, "storage-destination");
          // The full credential check, which validateConnectionShape cannot
          // afford (its throw fails a whole environment): a destination is only
          // attached at its first BUILD, so a missing credential would surface
@@ -1281,7 +1328,34 @@ function buildBigQueryEntry(connection: NamedConnection): CoreConnectionEntry {
       maximumBytesBilled: connection.bigqueryConnection?.maximumBytesBilled,
       timeoutMs: connection.bigqueryConnection?.queryTimeoutMilliseconds,
       billingProjectId: connection.bigqueryConnection?.billingProjectId,
+      dbmeta: configBoolean(
+         connection.bigqueryConnection?.dbmeta,
+         `dbmeta on BigQuery connection "${connection.name}"`,
+      ),
    };
+}
+
+const BOOLEAN = boolean();
+
+/**
+ * A boolean connection setting as a boolean. A string, as `${VAR}`
+ * substitution and API clients deliver it, is read the way a boolean setting
+ * is, blank as unset; anything else is refused rather than dropped.
+ */
+function configBoolean(value: unknown, name: string): boolean | undefined {
+   if (value === undefined || value === null) return undefined;
+   if (typeof value === "boolean") return value;
+   if (typeof value === "string") {
+      if (value.trim() === "") return undefined;
+      try {
+         return BOOLEAN.fromString(value);
+      } catch (error) {
+         if (!(error instanceof Mismatch)) throw error;
+      }
+   }
+   throw new Error(
+      `Invalid value for ${name}: expected ${BOOLEAN.expected}, got ${JSON.stringify(value)}`,
+   );
 }
 
 function buildSnowflakeEntry(connection: NamedConnection): CoreConnectionEntry {
@@ -1443,6 +1517,7 @@ function buildCoreEntry(
 export function assembleEnvironmentConnections(
    connections: ApiConnection[] = [],
    environmentPath = "",
+   origin: ConnectionOrigin = "connection",
 ): AssembledEnvironmentConnections {
    const pojo: CoreConnectionsPojo = { connections: {} };
    const metadata = new Map<string, EnvironmentConnectionMetadata>();
@@ -1466,7 +1541,7 @@ export function assembleEnvironmentConnections(
 
       processedConnections.add(connection.name);
       validateDuckdbApiSurface(connection);
-      validateConnectionShape(connection);
+      validateConnectionShape(connection, origin);
       warnOnConnectionQueryMetadata(connection);
 
       const apiConnection = cloneApiConnection(connection);

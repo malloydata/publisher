@@ -35,14 +35,28 @@
  */
 
 import type { EligibilityRefusalReason } from "../materialization_metrics";
-import type { BuildPlanOutcome } from "../service/build_plan";
+import type { BuildPlanOutcome } from "../service/materialization/plan/build_plan";
 import type { SQLSourceDef, TableSourceDef } from "@malloydata/malloy";
 import type {
    PackageMaterializationConfig,
    PackageScope,
 } from "../service/package_manifest";
-import type { PackageRetrievalSettings } from "../service/package_retrieval";
+import type { PackageRetrievalSettings } from "../service/package_retrieval_settings";
 import type { DeprecatedManifestKey } from "../service/deprecated/manifest_keys";
+import type { ModelEntitiesPlan } from "../service/entities/plan";
+
+/**
+ * Version of this wire protocol. The worker stamps it on every
+ * {@link LoadPackageResult}, and the pool refuses a result carrying any other
+ * value (see `checkLoadPackageResult`), so a worker bundle built from another
+ * revision fails its load loudly instead of being hydrated through a blind
+ * cast. Bump it whenever a change to these shapes would make an older or newer
+ * peer misread a message.
+ *
+ * 2: `SerializedModel.entities`, the model's entities plan
+ * (`LoadPackageRequest.withEntities`).
+ */
+export const PACKAGE_LOAD_PROTOCOL_VERSION = 2;
 
 // ──────────────────────────────────────────────────────────────────────
 // Direction: main ──▶ worker (load-package job)
@@ -87,6 +101,11 @@ export interface LoadPackageRequest {
     * touching disk.
     */
    replacement?: { modelPath: string; source: string };
+   /**
+    * More in-memory files for a package compile dry-run (a request's `files`
+    * overlay), read the same way as `replacement`.
+    */
+   overlay?: { modelPath: string; source: string }[];
    /** Include non-fatal compiler diagnostics in SerializedModel results. */
    collectProblems?: boolean;
    /**
@@ -110,6 +129,12 @@ export interface LoadPackageRequest {
     * that serve the package; a compile preview does not serve it.
     */
    withPreaggregateCompanions?: boolean;
+   /**
+    * Plan each `.malloy` model's entities for the main thread to resolve (see
+    * SerializedModel.entities). Set by the loads that compute the package's
+    * entities: a load that serves it, and the package-scope compile.
+    */
+   withEntities?: boolean;
 }
 
 // ──────────────────────────────────────────────────────────────────────
@@ -172,6 +197,14 @@ export interface SerializedModel {
     * thread compiles it.
     */
    preaggregateCompanion?: { modelDef?: unknown };
+   /**
+    * The model's entities, planned before its sources' queryability is known
+    * (`service/entities/plan.ts`); the main thread resolves it against the
+    * query route. Absent when not asked for (`withEntities`), when the model
+    * did not compile, or when the work budget ran out first: the main thread
+    * then plans it itself.
+    */
+   entities?: ModelEntitiesPlan;
 }
 
 export interface SerializedNotebookCell {
@@ -192,6 +225,8 @@ export interface SerializedNotebookCell {
 export interface LoadPackageResult {
    type: "load-package-result";
    requestId: string;
+   /** The sender's {@link PACKAGE_LOAD_PROTOCOL_VERSION}. */
+   protocolVersion: number;
    packageMetadata: {
       name?: string;
       description?: string;
@@ -233,6 +268,10 @@ export interface LoadPackageResult {
       schemaFetchCount: number;
       /** Schema requests answered from the worker's own cache. */
       schemaCacheHits?: number;
+      /** Translations the load stored for its models' imports (#1566). */
+      translationsStored?: number;
+      /** Imports answered from a translation the load had stored. */
+      translationsReused?: number;
    };
    /**
     * Present when `computeBuildPlan` was set and every model compiled and

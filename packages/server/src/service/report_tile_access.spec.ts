@@ -7,11 +7,12 @@ import { afterAll, beforeAll, describe, expect, it } from "bun:test";
 import fs from "fs/promises";
 import os from "os";
 import path from "path";
+import { unrecordedAudit } from "./access_record";
 import { Model } from "./model";
 
 /**
  * Access control on a report's tiles, through Publisher's own query path
- * (`Model.getQueryResults`, which applies `#(access_filter)` and
+ * (`Model.runQuery`, which applies `#(access_filter)` and
  * `#(authorize)`), for every form a report tile takes:
  *
  * - a tile naming a served view, `"flights_af -> by_carrier"`;
@@ -129,14 +130,10 @@ async function run(
 ): Promise<Outcome> {
    const model = await Model.create("pkg", PKG_DIR, file, connections());
    try {
-      const { compactResult } = await model.getQueryResults(
-         undefined,
-         undefined,
+      const { compactResult } = await model.runQuery(unrecordedAudit(), {
          query,
-         undefined,
-         false,
          givens,
-      );
+      });
       return { rows: compactResult };
    } catch (error) {
       return { refused: (error as Error).constructor.name };

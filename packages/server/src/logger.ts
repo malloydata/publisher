@@ -1,30 +1,21 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
+import { externalEnv, settings } from "./settings";
+import {
+   isSpanContextValid,
+   trace,
+   type SpanContext,
+} from "@opentelemetry/api";
 import { AxiosError } from "axios";
 import { RequestHandler } from "express";
 import winston from "winston";
 
-const isTelemetryEnabled = Boolean(process.env.OTEL_EXPORTER_OTLP_ENDPOINT);
-
-// LOG_LEVEL, default "debug".
-const VALID_LOG_LEVELS = ["error", "warn", "info", "verbose", "debug", "silly"];
-const getLogLevel = (): string => {
-   if (process.env.LOG_LEVEL) {
-      const logLevel = process.env.LOG_LEVEL.toLowerCase();
-      if (VALID_LOG_LEVELS.includes(logLevel)) {
-         return logLevel;
-      } else {
-         console.error(
-            `Invalid log level: ${process.env.LOG_LEVEL}. Valid log levels are: ${VALID_LOG_LEVELS.join(", ")}. Defaulting to "debug".`,
-         );
-      }
-   }
-   return "debug";
-};
+const isTelemetryEnabled = Boolean(externalEnv("OTEL_EXPORTER_OTLP_ENDPOINT"));
 
 export const logger = winston.createLogger({
-   level: getLogLevel(),
+   // An unknown level is the default, debug, with a startup warning.
+   level: settings.get("logging.level"),
    format: isTelemetryEnabled
       ? winston.format.combine(
            winston.format.uncolorize(),
@@ -61,9 +52,7 @@ function extractTraceIdFromTraceparent(
    return undefined;
 }
 
-const DISABLE_RESPONSE_LOGGING =
-   process.env.DISABLE_RESPONSE_LOGGING === "true" ||
-   process.env.DISABLE_RESPONSE_LOGGING === "1";
+const DISABLE_RESPONSE_LOGGING = !settings.get("logging.responseBodiesEnabled");
 
 /** `1234.5` -> `"1.23s"`, `12.3` -> `"12.30ms"`. */
 export function formatDuration(durationMs: number): string {
@@ -108,6 +97,32 @@ const SENSITIVE_KEYS: ReadonlySet<string> = new Set(
 
 const REDACTED = "[REDACTED]";
 
+/** Longest body, as serialized JSON, the access log carries whole. */
+export const MAX_LOGGED_BODY_CHARS = 2048;
+
+/**
+ * A body for the access log: whole when it serializes within
+ * {@link MAX_LOGGED_BODY_CHARS}, otherwise its length and that many leading
+ * characters, so one large compile overlay or result set cannot become a
+ * multi-megabyte log line.
+ */
+export function boundedForLog(value: unknown): unknown {
+   let serialized: string | undefined;
+   try {
+      serialized = JSON.stringify(value);
+   } catch {
+      return "[Unserializable]";
+   }
+   if (serialized === undefined || serialized.length <= MAX_LOGGED_BODY_CHARS) {
+      return value;
+   }
+   return {
+      truncated: true,
+      length: serialized.length,
+      head: serialized.slice(0, MAX_LOGGED_BODY_CHARS),
+   };
+}
+
 /**
  * Deep-copy `value` with every property whose key names a credential masked,
  * recursing through objects and arrays (connections arrive nested under
@@ -136,45 +151,77 @@ export function redactSensitive(
    return result;
 }
 
+/** The W3C trace id of a request, from its `traceparent` header, when it carries one. */
+export function traceIdOf(req: {
+   headers: Record<string, string | string[] | undefined>;
+}): string | undefined {
+   const traceparent = req.headers["traceparent"];
+   return extractTraceIdFromTraceparent(
+      typeof traceparent === "string" ? traceparent : undefined,
+   );
+}
+
+const PROBE_PATHS: ReadonlySet<string> = new Set([
+   "/health",
+   "/health/liveness",
+   "/health/readiness",
+   "/metrics",
+]);
+
+/** A health probe or metrics scrape: left out of the access log and request metrics, which they would drown. */
+export function isProbePath(path: string): boolean {
+   return PROBE_PATHS.has(path);
+}
+
+/**
+ * The trace a request runs in: its span's (the HTTP instrumentation's, which
+ * continues an incoming `traceparent`), else the header's own.
+ */
+function requestTraceId(
+   req: Parameters<typeof traceIdOf>[0],
+   spanContext: SpanContext | undefined,
+): string | undefined {
+   return spanContext && isSpanContextValid(spanContext)
+      ? spanContext.traceId
+      : traceIdOf(req);
+}
+
 export const loggerMiddleware: RequestHandler = (req, res, next) => {
    const startTime = performance.now();
+   // Read now: the span is active while the request is dispatched, not
+   // necessarily when `finish` fires.
+   const spanContext = trace.getActiveSpan()?.spanContext();
    const resJson = res.json;
    res.json = (body: unknown) => {
       res.locals.body = body;
       return resJson.call(res, body);
    };
    res.on("finish", () => {
-      const endTime = performance.now();
-      const durationMs = endTime - startTime;
-
-      const traceparent = req.headers["traceparent"] as string | undefined;
-      const traceId = extractTraceIdFromTraceparent(traceparent);
-
+      if (isProbePath(req.path)) return;
+      const durationMs = performance.now() - startTime;
       const logMetadata: Record<string, unknown> = {
          statusCode: res.statusCode,
+         durationMs: Math.round(durationMs * 100) / 100,
+         // The same, formatted; kept for readers of the older field.
          duration: formatDuration(durationMs),
-         payload: redactSensitive(req.body),
          params: req.params,
          query: req.query,
       };
-
-      if (!DISABLE_RESPONSE_LOGGING) {
-         logMetadata.response = redactSensitive(res.locals.body);
+      // Redaction is by key name only, so a request's query text and given
+      // values, and a response's result rows, pass through: kept to debug.
+      if (logger.isDebugEnabled()) {
+         logMetadata.payload = boundedForLog(redactSensitive(req.body));
+         if (!DISABLE_RESPONSE_LOGGING) {
+            logMetadata.response = boundedForLog(
+               redactSensitive(res.locals.body),
+            );
+         }
       }
-
+      const traceId = requestTraceId(req, spanContext);
       if (traceId) {
          logMetadata.traceId = traceId;
       }
-
-      // Probes and scrapes would drown the log.
-      if (
-         req.url !== "/metrics" &&
-         req.url !== "/health" &&
-         req.url !== "/health/liveness" &&
-         req.url !== "/health/readiness"
-      ) {
-         logger.info(`${req.method} ${req.url}`, logMetadata);
-      }
+      logger.info(`${req.method} ${req.url}`, logMetadata);
    });
    next();
 };

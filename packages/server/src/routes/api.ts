@@ -2,68 +2,54 @@
 // SPDX-License-Identifier: MIT
 
 /**
- * The `/api/v0` route table. Every JSON route goes through {@link apiRoute} or
- * {@link jsonRoute}, which map a thrown error to its status and log it once:
+ * The `/api/v0` route table. Every JSON route goes through {@link apiRoute},
+ * which maps a thrown error to its status and logs it once:
  * a 4xx at `warn`, a 5xx at `error`. Registration order matters where paths
  * overlap (the `models/*?` routes), so keep it.
  */
 
+import { recordDeprecatedUsage } from "../deprecated_usage_metrics";
 import type { GivenValue } from "@malloydata/malloy";
 import type express from "express";
 import { readBypassAuthorize } from "../authorize_bypass_header";
-import type { CompileController } from "../controller/compile.controller";
-import type { ConnectionController } from "../controller/connection.controller";
-import type { DatabaseController } from "../controller/database.controller";
-import type { MaterializationController } from "../controller/materialization.controller";
-import type { ModelController } from "../controller/model.controller";
-import type { PackageController } from "../controller/package.controller";
-import type { QueryController } from "../controller/query.controller";
-import type { ReportController } from "../controller/report.controller";
-import type { SkillController } from "../controller/skill.controller";
-import type { StorageDestinationController } from "../controller/storage_destination.controller";
-import type { ThemeController } from "../controller/theme.controller";
-import type { WatchModeController } from "../controller/watch-mode.controller";
+import type { AppServices } from "../app_services";
+import { accessIdentityOf } from "../service/access_record";
+import { setPackagePatchDeprecationHeaders } from "../controller/package.controller";
 import { BadRequestError, ServiceUnavailableError } from "../errors";
 import { setFilterDeprecationHeaders } from "../filter_deprecation";
 import { logger, redactSensitive } from "../logger";
-import { assertSafePackageName } from "../path_safety";
-import { queryConcurrency } from "../query_concurrency";
 import {
    normalizeQueryArray,
    parseNonNegativeIntParam,
 } from "../query_param_utils";
 import { timeReportRead } from "../report_metrics";
-import { booleanParamOr400, setCollectionReloadError } from "../route_params";
+import {
+   assertListingTakesNoVersionId,
+   booleanParam,
+   optionalBooleanParam,
+   queryVersionRefOf,
+   assertNoCollectionReload,
+   versionRefOf,
+} from "../route_params";
 import { processStorageDestinationsOrThrow } from "../service/connection_config";
-import type { EnvironmentStore } from "../service/environment_store";
-import type { ThemeStore } from "../service/theme_store";
 import { registerDeprecatedRoutes } from "./deprecated";
 import {
    apiRoute,
-   jsonRoute,
+   legacyErrorBody,
    logRefusal,
+   recordGateRefusal,
    sendRouteError,
-   setVersionIdError,
    wildcardParam,
+   markDeprecated,
 } from "./json_route";
+import { registerStorageDestinationRoutes } from "./storage_destinations";
 import { reportWriteRoute } from "./report_write";
-
-export interface ApiControllers {
-   environmentStore: EnvironmentStore;
-   themeStore: ThemeStore;
-   themeController: ThemeController;
-   watchModeController: WatchModeController;
-   connectionController: ConnectionController;
-   packageController: PackageController;
-   modelController: ModelController;
-   skillController: SkillController;
-   reportController: ReportController;
-   databaseController: DatabaseController;
-   queryController: QueryController;
-   compileController: CompileController;
-   materializationController: MaterializationController;
-   storageDestinationController: StorageDestinationController;
-}
+import { registerVersionRoutes } from "./versions";
+import {
+   parseEnvironmentName,
+   parsePackageRef,
+   VersionRef,
+} from "../service/identity";
 
 // Caps long-lived SSE streams so they cannot exhaust sockets or memory.
 // Generous: legitimate use is one stream per open dashboard tab.
@@ -72,7 +58,7 @@ const MAX_SSE_CONNECTIONS = 1000;
 export function registerApiRoutes(
    app: express.Express,
    apiPrefix: string,
-   c: ApiControllers,
+   c: AppServices,
 ): void {
    const env = `${apiPrefix}/environments/:environmentName`;
    const pkg = `${env}/packages/:packageName`;
@@ -83,13 +69,19 @@ export function registerApiRoutes(
    registerConnectionRoutes(app, apiPrefix, env, pkg, c);
    registerPackageRoutes(app, apiPrefix, env, pkg, c);
    registerQueryRoutes(app, pkg, c);
-   registerMaterializationRoutes(app, env, pkg, c);
+   registerMaterializationRoutes(app, pkg, c);
+   // Deprecated: the admin API's catalog resources replace them.
+   registerStorageDestinationRoutes(
+      app,
+      apiPrefix,
+      c.storageDestinationController,
+   );
 }
 
 function registerStatusAndThemeRoutes(
    app: express.Express,
    apiPrefix: string,
-   { environmentStore, themeStore, themeController }: ApiControllers,
+   { environmentStore, themeStore, themeController }: AppServices,
 ): void {
    app.get(
       `${apiPrefix}/status`,
@@ -104,7 +96,7 @@ function registerStatusAndThemeRoutes(
          // overrides. Before storage is ready (themeStore.get() throws) it
          // reports `{}` rather than 500 an endpoint the control plane polls;
          // GET /theme answers 503 in that window instead.
-         const theme = environmentStore.storageManager.isInitialized()
+         const theme = themeStore.isReady()
             ? await themeStore.get()
             : undefined;
          return { ...status, theme: theme ?? {} };
@@ -114,7 +106,7 @@ function registerStatusAndThemeRoutes(
    app.get(
       `${apiPrefix}/theme`,
       apiRoute(() => {
-         if (!environmentStore.storageManager.isInitialized()) {
+         if (!themeStore.isReady()) {
             // 503, not 200 with an empty theme, so the Theme Editor's load stays
             // in an error state and never adopts {} as the saved baseline, which
             // would let a later edit auto-save {} over the persisted theme.
@@ -139,14 +131,29 @@ function registerWatchModeRoutes(
    app: express.Express,
    apiPrefix: string,
    pkg: string,
-   { environmentStore, watchModeController }: ApiControllers,
+   { environmentStore, watchModeController }: AppServices,
 ): void {
+   // Deprecated here: the admin API serves watch mode, an operator's control.
+   // These keep their `{ error }` failure body and empty success body.
+   const watchRoute = (run: (req: express.Request) => Promise<unknown>) =>
+      apiRoute(run, { errorBody: legacyErrorBody });
    app.get(
       `${apiPrefix}/watch-mode/status`,
-      watchModeController.getWatchStatus,
+      markDeprecated,
+      watchRoute(async () => watchModeController.current()),
    );
-   app.post(`${apiPrefix}/watch-mode/start`, watchModeController.startWatching);
-   app.post(`${apiPrefix}/watch-mode/stop`, watchModeController.stopWatchMode);
+   app.post(
+      `${apiPrefix}/watch-mode/start`,
+      markDeprecated,
+      watchRoute(async (req) => {
+         await watchModeController.watch(req.body.environmentName ?? "");
+      }),
+   );
+   app.post(
+      `${apiPrefix}/watch-mode/stop`,
+      markDeprecated,
+      watchRoute(() => watchModeController.unwatch()),
+   );
 
    // Live-reload SSE for in-package HTML dashboards. It never starts watch
    // mode, so an arbitrary fetch cannot mutate global watch state; it reports
@@ -157,13 +164,19 @@ function registerWatchModeRoutes(
       const envName = req.params.environmentName;
       const pkgName = req.params.packageName;
       try {
-         assertSafePackageName(envName);
-         assertSafePackageName(pkgName);
+         const ref = parsePackageRef({
+            environmentName: envName,
+            packageName: pkgName,
+            versionId: req.query.versionId,
+         });
          const environment = await environmentStore.getEnvironment(
-            envName,
+            ref.environment,
             false,
          );
-         await environment.getPackage(pkgName, false); // 404 if missing
+         // 404 if missing; 404/410 for a version it does not serve.
+         await environment.getPackage(ref.package, false, {
+            versionId: ref.version,
+         });
       } catch (error) {
          sendRouteError(res, error as Error, logRefusal(req, error as Error));
          return;
@@ -213,18 +226,15 @@ function registerEnvironmentRoutes(
    app: express.Express,
    apiPrefix: string,
    env: string,
-   { environmentStore }: ApiControllers,
+   { environmentStore }: AppServices,
 ): void {
    app.get(
       `${apiPrefix}/environments`,
-      apiRoute((req, res) => {
-         if (req.query.reload !== undefined) {
-            setCollectionReloadError(
-               res,
-               `${apiPrefix}/environments/{environmentName}`,
-            );
-            return;
-         }
+      apiRoute((req) => {
+         assertNoCollectionReload(
+            req,
+            `${apiPrefix}/environments/{environmentName}`,
+         );
          return environmentStore.listEnvironments();
       }),
    );
@@ -247,10 +257,16 @@ function registerEnvironmentRoutes(
    app.get(
       env,
       apiRoute(async (req, res) => {
-         const reload = booleanParamOr400(req, res, "reload");
-         if (reload === undefined) return;
+         const reload = booleanParam(req, "reload");
+         if (reload) {
+            // Deprecated: re-reads the config file's environment block. No
+            // client calls it, v1 has no environment reload, and removal waits
+            // on this count reading zero (#1540).
+            res.set("Deprecation", "true");
+            recordDeprecatedUsage("environment_reload");
+         }
          const environment = await environmentStore.getEnvironment(
-            req.params.environmentName,
+            parseEnvironmentName(req.params.environmentName),
             reload,
          );
          return environment.serialize();
@@ -281,7 +297,7 @@ function registerConnectionRoutes(
    apiPrefix: string,
    env: string,
    pkg: string,
-   { connectionController }: ApiControllers,
+   { connectionController, querySlots }: AppServices,
 ): void {
    const conn = `${env}/connections/:connectionName`;
    const pkgConn = `${pkg}/connections/:connectionName`;
@@ -348,6 +364,9 @@ function registerConnectionRoutes(
    ] as const) {
       const packageName = (req: express.Request) =>
          scoped ? req.params.packageName : undefined;
+      // A package-scoped route reads the version its request names.
+      const versionId = (req: express.Request) =>
+         scoped ? versionRefOf(req) : VersionRef.LATEST;
       app.get(
          `${prefix}/schemas`,
          apiRoute((req) =>
@@ -355,6 +374,7 @@ function registerConnectionRoutes(
                req.params.environmentName,
                req.params.connectionName,
                packageName(req),
+               versionId(req),
             ),
          ),
       );
@@ -367,6 +387,7 @@ function registerConnectionRoutes(
                req.params.schemaName,
                normalizeQueryArray(req.query.tableNames),
                packageName(req),
+               versionId(req),
             ),
          ),
       );
@@ -379,6 +400,7 @@ function registerConnectionRoutes(
                req.params.schemaName,
                req.params.tablePath,
                packageName(req),
+               versionId(req),
             ),
          ),
       );
@@ -391,28 +413,32 @@ function registerConnectionRoutes(
       handler: (
          req: express.Request,
          packageName: string | undefined,
+         versionId: VersionRef,
       ) => Promise<unknown>,
    ) => {
       app.post(
          `${conn}${suffix}`,
-         queryConcurrency(),
-         apiRoute((req) => handler(req, undefined)),
+         querySlots.middleware,
+         apiRoute((req) => handler(req, undefined, VersionRef.LATEST)),
       );
       app.post(
          `${pkgConn}${suffix}`,
-         queryConcurrency(),
-         apiRoute((req) => handler(req, req.params.packageName)),
+         querySlots.middleware,
+         apiRoute((req) =>
+            handler(req, req.params.packageName, versionRefOf(req)),
+         ),
       );
    };
-   bothScopes("/sqlSource", (req, packageName) =>
+   bothScopes("/sqlSource", (req, packageName, versionId) =>
       connectionController.getConnectionSqlSource(
          req.params.environmentName,
          req.params.connectionName,
          req.body.sqlStatement as string,
          packageName,
+         versionId,
       ),
    );
-   bothScopes("/sqlQuery", (req, packageName) =>
+   bothScopes("/sqlQuery", (req, packageName, versionId) =>
       connectionController.getConnectionQueryData(
          req.params.environmentName,
          req.params.connectionName,
@@ -423,16 +449,43 @@ function registerConnectionRoutes(
             queryMetadata: req.body?.queryMetadata,
             queryClass: req.body?.queryClass,
          },
+         versionId,
+         accessIdentityOf(req.headers),
       ),
    );
-   bothScopes("/sqlTemporaryTable", (req, packageName) =>
+   bothScopes("/sqlTemporaryTable", (req, packageName, versionId) =>
       connectionController.getConnectionTemporaryTable(
          req.params.environmentName,
          req.params.connectionName,
          req.body.sqlStatement as string,
          packageName,
+         versionId,
+         accessIdentityOf(req.headers),
       ),
    );
+}
+
+/**
+ * The `givens` query parameter, a JSON object the trusted tier sets for the
+ * caller, so a model read can omit sources the caller cannot enter (see
+ * service/discovery_lock.ts). `undefined` when absent.
+ */
+function givensParam(
+   req: express.Request,
+): Record<string, GivenValue> | undefined {
+   const raw = req.query.givens;
+   if (raw === undefined) return undefined;
+   if (typeof raw === "string") {
+      try {
+         const parsed = JSON.parse(raw) as unknown;
+         if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+            return parsed as Record<string, GivenValue>;
+         }
+      } catch {
+         // fall through to the 400
+      }
+   }
+   throw new BadRequestError("givens must be one JSON object");
 }
 
 function registerPackageRoutes(
@@ -440,7 +493,7 @@ function registerPackageRoutes(
    apiPrefix: string,
    env: string,
    pkg: string,
-   c: ApiControllers,
+   c: AppServices,
 ): void {
    const {
       packageController,
@@ -448,52 +501,70 @@ function registerPackageRoutes(
       skillController,
       reportController,
       environmentStore,
+      versionController,
+      querySlots,
    } = c;
 
    app.get(
       `${env}/packages`,
-      jsonRoute((req, res) => {
-         if (req.query.reload !== undefined) {
-            setCollectionReloadError(
-               res,
-               `${apiPrefix}/environments/${req.params.environmentName}/packages/{packageName}`,
-            );
-            return;
-         }
+      apiRoute((req) => {
+         assertListingTakesNoVersionId(req.query.versionId);
+         assertNoCollectionReload(
+            req,
+            `${apiPrefix}/environments/${req.params.environmentName}/packages/{packageName}`,
+         );
          return packageController.listPackages(req.params.environmentName);
       }),
    );
    app.post(
       `${env}/packages`,
       apiRoute(async (req) => {
+         const dryRun = booleanParam(req, "dryRun");
+         if (dryRun) {
+            return packageController.dryRunPackage(
+               req.params.environmentName,
+               req.body,
+            );
+         }
          const added = await packageController.addPackage(
             req.params.environmentName,
             req.body,
          );
-         return added?.getPackageMetadata();
+         // The same metadata as before for a package with no versions; a
+         // published version also carries the package's current `latest`.
+         if (!added) return undefined;
+         const environment = await environmentStore.getEnvironment(
+            parseEnvironmentName(req.params.environmentName),
+            false,
+         );
+         return environment.describePackage(added);
       }),
    );
+   // A package's published versions, their lifecycle and its `latest`.
+   registerVersionRoutes(app, pkg, versionController);
    app.get(
       pkg,
-      jsonRoute((req, res) => {
-         const reload = booleanParamOr400(req, res, "reload");
-         if (reload === undefined) return;
+      apiRoute((req) => {
+         const reload = booleanParam(req, "reload");
          return packageController.getPackage(
             req.params.environmentName,
             req.params.packageName,
             reload,
+            versionRefOf(req),
          );
       }),
    );
+   // Deprecated (see setPackagePatchDeprecationHeaders), and kept working.
    app.patch(
       pkg,
-      apiRoute((req) =>
-         packageController.updatePackage(
+      apiRoute((req, res) => {
+         setPackagePatchDeprecationHeaders(res);
+         return packageController.updatePackage(
             req.params.environmentName,
             req.params.packageName,
             req.body,
-         ),
-      ),
+         );
+      }),
    );
    app.delete(
       pkg,
@@ -507,34 +578,35 @@ function registerPackageRoutes(
 
    app.get(
       `${pkg}/models`,
-      jsonRoute((req, res) => {
-         const includeHiddenFilesAndSources = booleanParamOr400(
+      apiRoute((req) => {
+         const includeHiddenFilesAndSources = booleanParam(
             req,
-            res,
             "includeHiddenFilesAndSources",
          );
-         if (includeHiddenFilesAndSources === undefined) return;
          return modelController.listModels(
             req.params.environmentName,
             req.params.packageName,
-            { includeHiddenFilesAndSources },
+            { includeHiddenFilesAndSources, versionId: versionRefOf(req) },
          );
       }),
    );
    app.get(
       `${pkg}/models/*?`,
-      jsonRoute((req, res) => {
-         const includeHiddenFilesAndSources = booleanParamOr400(
+      apiRoute((req) => {
+         const includeHiddenFilesAndSources = booleanParam(
             req,
-            res,
             "includeHiddenFilesAndSources",
          );
-         if (includeHiddenFilesAndSources === undefined) return;
+         const givens = givensParam(req);
          return modelController.getModel(
             req.params.environmentName,
             req.params.packageName,
             wildcardParam(req),
-            { includeHiddenFilesAndSources },
+            {
+               includeHiddenFilesAndSources,
+               versionId: versionRefOf(req),
+               ...(givens ? { givens } : {}),
+            },
          );
       }),
    );
@@ -548,6 +620,7 @@ function registerPackageRoutes(
          skillController.listSkills(
             req.params.environmentName,
             req.params.packageName,
+            versionRefOf(req),
          ),
       ),
    );
@@ -558,15 +631,70 @@ function registerPackageRoutes(
             req.params.environmentName,
             req.params.packageName,
             wildcardParam(req) ?? "",
+            versionRefOf(req),
          ),
       ),
    );
+   // A package's sub-resources, each read for the version `versionId` names.
+   const packageReads: [
+      string,
+      (
+         environmentName: string,
+         packageName: string,
+         versionId: VersionRef,
+      ) => Promise<unknown>,
+   ][] = [
+      [
+         "status",
+         (e, p, v) => packageController.getPackageServingState(e, p, v),
+      ],
+      [
+         "build-plan",
+         (e, p, v) => packageController.getPackageBuildPlan(e, p, v),
+      ],
+      [
+         "classification",
+         (e, p, v) => packageController.getPackageClassification(e, p, v),
+      ],
+      [
+         "embedding-index",
+         (e, p, v) => packageController.getPackageEmbeddingIndex(e, p, v),
+      ],
+   ];
+   app.get(
+      `${pkg}/entities`,
+      apiRoute((req) => {
+         const includeHiddenFilesAndSources = booleanParam(
+            req,
+            "includeHiddenFilesAndSources",
+         );
+         return packageController.getPackageEntities(
+            req.params.environmentName,
+            req.params.packageName,
+            versionRefOf(req),
+            includeHiddenFilesAndSources,
+         );
+      }),
+   );
+   for (const [resource, read] of packageReads) {
+      app.get(
+         `${pkg}/${resource}`,
+         apiRoute((req) =>
+            read(
+               req.params.environmentName,
+               req.params.packageName,
+               versionRefOf(req),
+            ),
+         ),
+      );
+   }
    app.get(
       `${pkg}/agents`,
       apiRoute((req) =>
          skillController.listAgents(
             req.params.environmentName,
             req.params.packageName,
+            versionRefOf(req),
          ),
       ),
    );
@@ -585,6 +713,7 @@ function registerPackageRoutes(
             req.params.packageName,
             req.params.agentName,
             skills,
+            versionRefOf(req),
          );
       }),
    );
@@ -596,6 +725,7 @@ function registerPackageRoutes(
             req.params.packageName,
             req.params.agentName,
             wildcardParam(req) ?? "",
+            versionRefOf(req),
          ),
       ),
    );
@@ -605,106 +735,137 @@ function registerPackageRoutes(
       // A save compiles and reloads under the package lock, more work than
       // one /compile. Ungated it would also convoy: slot-holding compiles on
       // the package would pile up behind a save holding the mutex.
-      queryConcurrency(),
+      querySlots.middleware,
       reportWriteRoute(reportController),
    );
    app.get(
       `${pkg}/reports`,
       timeReportRead("list"),
-      jsonRoute((req) =>
+      apiRoute((req) =>
          reportController.listReports(
             req.params.environmentName,
             req.params.packageName,
+            versionRefOf(req),
          ),
       ),
    );
    app.get(
       `${pkg}/reports/*`,
       timeReportRead("get"),
-      jsonRoute((req) =>
+      apiRoute((req) =>
          reportController.getReport(
             req.params.environmentName,
             req.params.packageName,
             wildcardParam(req),
+            versionRefOf(req),
          ),
       ),
    );
 
-   registerDeprecatedRoutes(app, apiPrefix, environmentStore);
+   registerDeprecatedRoutes(app, apiPrefix, environmentStore, querySlots);
 }
 
 function registerQueryRoutes(
    app: express.Express,
    pkg: string,
-   { queryController, databaseController, compileController }: ApiControllers,
+   {
+      queryController,
+      databaseController,
+      compileController,
+      querySlots,
+   }: AppServices,
 ): void {
-   app.post(`${pkg}/models/*?/query`, queryConcurrency(), async (req, res) => {
-      if (req.body.versionId) {
-         setVersionIdError(res);
-         return;
-      }
-      const includeHiddenFilesAndSources = booleanParamOr400(
-         req,
-         res,
-         "includeHiddenFilesAndSources",
+   const recordRefusal = (req: express.Request, error: Error) =>
+      queryController.recordRefusal(
+         req.params.environmentName,
+         req.params.packageName,
+         wildcardParam(req),
+         req.body ?? {},
+         accessIdentityOf(req.headers),
+         error,
       );
-      if (includeHiddenFilesAndSources === undefined) return;
+   app.post(
+      `${pkg}/models/*?/query`,
+      querySlots.middleware,
+      async (req: express.Request, res: express.Response) => {
+         let includeHiddenFilesAndSources: boolean;
+         try {
+            includeHiddenFilesAndSources =
+               optionalBooleanParam(req, "includeHiddenFilesAndSources") ??
+               false;
+         } catch (error) {
+            await recordRefusal(req, error as Error);
+            sendRouteError(
+               res,
+               error as Error,
+               logRefusal(req, error as Error),
+            );
+            return;
+         }
 
-      // A client that goes away (a superseded dashboard tile, a closed tab)
-      // cancels its query: the concurrency slot is released on `close`, so
-      // the query must not keep running past it.
-      const disconnected = new AbortController();
-      res.on("close", () => {
-         if (!res.writableFinished)
-            disconnected.abort(new Error("client disconnected"));
-      });
+         // A client that goes away (a superseded dashboard tile, a closed tab)
+         // cancels its query: the concurrency slot is released on `close`, so
+         // the query must not keep running past it.
+         const disconnected = new AbortController();
+         res.on("close", () => {
+            if (!res.writableFinished)
+               disconnected.abort(new Error("client disconnected"));
+         });
 
-      try {
-         const filterParams = (req.body.filterParams ??
-            req.body.sourceFilters) as
-            | Record<string, string | string[]>
-            | undefined;
-         const bypassFilters =
-            req.body.bypassFilters === true ? true : undefined;
-         const result = await queryController.getQuery(
-            req.params.environmentName,
-            req.params.packageName,
-            wildcardParam(req),
-            req.body.sourceName as string,
-            req.body.queryName as string,
-            req.body.query as string,
-            req.body.compactJson === true,
-            filterParams,
-            bypassFilters,
-            req.body.givens as Record<string, GivenValue> | undefined,
-            {
+         try {
+            const filterParams = (req.body.filterParams ??
+               req.body.sourceFilters) as
+               | Record<string, string | string[]>
+               | undefined;
+            const bypassFilters =
+               req.body.bypassFilters === true ? true : undefined;
+            const result = await queryController.getQuery({
+               environmentName: req.params.environmentName,
+               packageName: req.params.packageName,
+               modelPath: wildcardParam(req),
+               sourceName: req.body.sourceName,
+               queryName: req.body.queryName,
+               query: req.body.query,
+               compactJson: req.body.compactJson === true,
+               filterParams,
+               bypassFilters,
+               givens: req.body.givens,
                queryMetadata: req.body?.queryMetadata,
                queryClass: req.body?.queryClass,
-               versionId: req.body?.versionId as string | undefined,
-            },
-            // Disables the author's `#(authorize)` gates. From a header, never
-            // the body, and nothing here bounds who may send it: the
-            // deployment must strip it at its edge. See
-            // docs/authorize-bypass-deployment.md.
-            readBypassAuthorize(req),
-            includeHiddenFilesAndSources,
-            disconnected.signal,
-         );
-         setFilterDeprecationHeaders(res, { filterParams, bypassFilters });
-         res.status(200).json(result);
-      } catch (error) {
-         // Nobody is waiting for the answer: not worth a log line.
-         if (disconnected.signal.aborted) return;
-         sendRouteError(res, error as Error, logRefusal(req, error as Error));
-      }
-   });
+               versionId: queryVersionRefOf(req),
+               // Disables the author's `#(authorize)` gates. From a header, never
+               // the body, and nothing here bounds who may send it: the
+               // deployment must strip it at its edge. See
+               // docs/authorize-bypass-deployment.md.
+               bypassAuthorize: readBypassAuthorize(req),
+               includeHiddenFilesAndSources,
+               clientSignal: disconnected.signal,
+               // For the access record: who the gateway says is asking, and the
+               // trace this request belongs to. See docs/access-record.md.
+               identity: accessIdentityOf(req.headers),
+            });
+            setFilterDeprecationHeaders(res, { filterParams, bypassFilters });
+            res.status(200).json(result);
+         } catch (error) {
+            // Nobody is waiting for the answer: not worth a log line.
+            if (disconnected.signal.aborted) return;
+            sendRouteError(
+               res,
+               error as Error,
+               logRefusal(req, error as Error),
+            );
+         }
+      },
+      recordGateRefusal(recordRefusal),
+   );
 
    app.get(
       `${pkg}/databases`,
-      jsonRoute((req) =>
+      apiRoute((req) =>
          databaseController.listDatabases(
             req.params.environmentName,
             req.params.packageName,
+            versionRefOf(req),
          ),
       ),
    );
@@ -713,7 +874,7 @@ function registerQueryRoutes(
       `${pkg}/models/*?/compile`,
       // Compile runs real Malloy compilation (and resolves source schemas
       // against the connection), so it is admission-controlled like a query.
-      queryConcurrency(),
+      querySlots.middleware,
       apiRoute((req) =>
          compileController.compile(
             req.params.environmentName,
@@ -724,6 +885,8 @@ function registerQueryRoutes(
             req.body.givens as Record<string, GivenValue> | undefined,
             // compileSource rejects an invalid scope with a 400.
             req.body.scope ?? "append",
+            versionRefOf(req),
+            req.body.files,
          ),
       ),
    );
@@ -731,9 +894,8 @@ function registerQueryRoutes(
 
 function registerMaterializationRoutes(
    app: express.Express,
-   env: string,
    pkg: string,
-   { materializationController, storageDestinationController }: ApiControllers,
+   { materializationController }: AppServices,
 ): void {
    // Package-scoped: a materialization is a run of one package's persist
    // sources and cannot exist without a package.
@@ -761,6 +923,7 @@ function registerMaterializationRoutes(
             {
                limit: parseNonNegativeIntParam(req.query.limit),
                offset: parseNonNegativeIntParam(req.query.offset),
+               versionId: versionRefOf(req),
             },
          ),
       ),
@@ -772,6 +935,7 @@ function registerMaterializationRoutes(
             req.params.environmentName,
             req.params.packageName,
             req.params.materializationId,
+            versionRefOf(req),
          ),
       ),
    );
@@ -788,61 +952,21 @@ function registerMaterializationRoutes(
             req.params.environmentName,
             req.params.packageName,
             req.params.materializationId,
+            versionRefOf(req),
          );
       }),
    );
    app.delete(
       materialization,
       apiRoute(async (req, res) => {
-         const dropTables = booleanParamOr400(req, res, "dropTables");
-         if (dropTables === undefined) return;
+         const dropTables = booleanParam(req, "dropTables");
          await materializationController.deleteMaterialization(
             req.params.environmentName,
             req.params.packageName,
             req.params.materializationId,
-            { dropTables },
+            { dropTables, versionId: versionRefOf(req) },
          );
          res.status(204).send();
       }),
-   );
-
-   // Table lifecycle inside an environment's storage destinations, for an
-   // orchestrator that assigns its own physical table names. Destinations are
-   // never reachable through the connection routes, so these are the only way
-   // to drop, enumerate, or reclaim the storage behind a table in one.
-   const destination = `${env}/storageDestinations/:destinationName`;
-   app.get(
-      `${destination}/schemas/:schemaName/tables`,
-      apiRoute((req) =>
-         storageDestinationController.listTables(
-            req.params.environmentName,
-            req.params.destinationName,
-            req.params.schemaName,
-         ),
-      ),
-   );
-   app.delete(
-      `${destination}/schemas/:schemaName/tables/:tableName`,
-      apiRoute(async (req, res) => {
-         await storageDestinationController.dropTable(
-            req.params.environmentName,
-            req.params.destinationName,
-            req.params.schemaName,
-            req.params.tableName,
-         );
-         res.status(204).send();
-      }),
-   );
-   app.post(
-      `${destination}/fileCleanups`,
-      apiRoute(
-         (req) =>
-            storageDestinationController.createFileCleanup(
-               req.params.environmentName,
-               req.params.destinationName,
-               req.body ?? {},
-            ),
-         { status: 201 },
-      ),
    );
 }

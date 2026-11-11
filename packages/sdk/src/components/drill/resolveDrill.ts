@@ -42,6 +42,8 @@ export interface DrillTagReader {
    tag(...at: string[]): DrillTagReader | undefined;
    text(...at: string[]): string | undefined;
    textArray(...at: string[]): string[] | undefined;
+   array?(...at: string[]): DrillTagReader[] | undefined;
+   has?(...at: string[]): boolean;
 }
 
 /**
@@ -114,6 +116,8 @@ export interface DrillField {
     * carry the method; absent, the field is taken at its word.
     */
    wasDimension?: () => boolean;
+   /** The column header: the field's `# label`, else its name. */
+   getLabel?: () => string;
 }
 
 /**
@@ -148,7 +152,7 @@ export interface DrillClickPayload {
    timezone?: string;
    /**
     * Set by a host that shows no rows for this click's tile (a restricted
-    * one, or one whose shape cannot name its rows). Tag drills still apply.
+    * one). Tag drills still apply.
     */
    noRows?: boolean;
 }

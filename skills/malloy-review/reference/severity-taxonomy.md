@@ -119,6 +119,7 @@ The rubric files set the default severity per rule. Defaults (can be overridden 
 | `primary_key:` missing on a source (S-02) | `minor` | `non-blocking` |
 | Inconsistent `join_one:` style across project (Y-03) | `nit` | `non-blocking` |
 | Access modifier missing when flag is on (G-02) | `major` | `blocking` (governance) |
+| Sensitive-looking column left `internal:` (G-03) | `major` | `blocking` (governance) |
 | `public: *` used (G-01, documentation discipline) | `minor` | `non-blocking` |
 | Business-language naming suggestion (Y-02) | `nit` | `non-blocking` |
 | Inconsistent layout, or an edit that reflows lines it didn't need (Y-04) | `nit` | `non-blocking` |
