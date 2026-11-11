@@ -636,6 +636,35 @@ function walkForAuthorizeNotes(
 export interface TierGateInputs {
    preaggregatePlans?: Readonly<Record<string, unknown>>;
    sourceGateOutcomes?: Readonly<Record<string, PersistSourceGateOutcome>>;
+   /**
+    * Rollups refused for sharing a table with a different rollup, by sourceID,
+    * with the message to report (`collidingRollups` in build_plan.ts).
+    */
+   collidingRollups?: ReadonlyMap<string, string>;
+}
+
+/**
+ * Refuse a pre-aggregation rollup whose generated name, and so its table, is
+ * also another model's rollup with different content.
+ *
+ * A rollup's name folds only its base's name and grain, so two models that each
+ * declare a same-named base and pre-aggregate it at one grain produce one name.
+ * Built, the second would overwrite the first; served, one model's queries
+ * would read the other's rollup. `#@ preaggregate` has no `name=` to fix it
+ * with, so neither is built or served, and each model's queries answer from its
+ * base.
+ */
+export function assertRollupNameUnshared(
+   source: PersistSource,
+   plan: TierGateInputs | undefined,
+): void {
+   const message = plan?.collidingRollups?.get(source.sourceID);
+   if (message === undefined) return;
+   recordEligibilityRefused("rollup_name_collision");
+   throw new MaterializationEligibilityError({
+      reason: "rollup_name_collision",
+      message,
+   });
 }
 
 /**
@@ -654,6 +683,7 @@ export function assertTierEligible(
    plan: TierGateInputs | undefined,
    annotationFields: Record<string, string> = deriveAnnotationFields(source),
 ): void {
+   assertRollupNameUnshared(source, plan);
    if (storage) {
       assertMaterializationEligible(source, annotationFields);
       return;
