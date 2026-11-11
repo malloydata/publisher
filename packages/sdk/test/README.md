@@ -149,9 +149,11 @@ later spec sees, in file order. Nothing in Bun scopes it to a file. That is
 survivable only while every spec registers the same shape, which is why the
 stub lives in one place rather than being hand-rolled per file: a spec that
 inherits someone else's stub still gets `{ server, apiClients }`, and fails on
-a missing client rather than on a missing property of `undefined`. If you ever
-need a spec to see the REAL `ServerProvider`, it cannot share a process with
-these — that would need its own `bun test` invocation.
+a missing client rather than on a missing property of `undefined`. A spec that
+needs the REAL `ServerProvider` cannot share a process with these, so name it
+`*.isolated.spec.tsx` and add its `./` path to the `test:isolated` script. The
+`test` script leaves every `*.isolated.spec.*` out of the main run, so one that
+is not listed in `test:isolated` does not run at all.
 
 `serverWrapper` provides `globalQueryClient`, the same instance `ServerProvider`
 provides in production. It is not decoration: `useQueryWithApiError` passes that

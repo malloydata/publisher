@@ -52,6 +52,7 @@ const DESIGN_VARIABLES: Partial<Record<SettingKey, string>> = {
    "mcp.port": "PUBLISHER_MCP_PORT",
    "mcp.host": "PUBLISHER_MCP_HOST",
    "mcp.corsOrigins": "PUBLISHER_MCP_CORS_ORIGINS",
+   "mcp.appOrigin": "PUBLISHER_MCP_APP_ORIGIN",
    "mcp.configFileEnabled": "PUBLISHER_MCP_CONFIG_FILE_ENABLED",
    "mcp.includeHiddenFilesAndSources":
       "PUBLISHER_MCP_INCLUDE_HIDDEN_FILES_AND_SOURCES",

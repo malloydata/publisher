@@ -17,6 +17,7 @@ import { registerGetAgentTool } from "./tools/get_agent_tool";
 import { registerGetSkillTool } from "./tools/get_skill_tool";
 import { registerSearchDatabaseSchemaTool } from "./tools/search_database_schema_tool";
 import { registerGetStatusTool } from "./tools/get_status_tool";
+import { registerReportAppTools } from "./tools/report_app_tools";
 import { BUNDLED_SKILLS } from "../service/skills/package_skills";
 import { SERVER_VERSION } from "../version";
 
@@ -42,6 +43,8 @@ To build a model from a database rather than from an existing package, start wit
 
 Task-specific guidance is served two ways. As prompts you can fetch by name: malloy-getting-started to begin, malloy-modeling to build or change a model, malloy-analysis to explore and answer questions, and malloy-review to check correctness. And through get_skill, which serves the same built-in guides plus any a PACKAGE ships about itself: call it with a package scope before answering questions against a package you have not worked in, because a package can document its own conventions and can replace a built-in guide with its own version for that package, which the prompts do not reflect.
 
+To show the user a report (a dashboard or a data story the package defines), call list_reports for its path, then show_report: a host that supports MCP Apps draws it, filters and all, in the conversation, and every host gets its address in the Publisher web UI.
+
 Results and any charts render in the Publisher web UI on the REST port (4000 by default).`;
 
 /**
@@ -57,6 +60,9 @@ export function initializeMcpServer(services: McpServices): McpServer {
       packageController,
       connectionController,
       querySlots,
+      reportController,
+      queryController,
+      themeStore,
    } = services;
    const mcpServer = new McpServer(testServerInfo, {
       instructions: MCP_INSTRUCTIONS,
@@ -77,6 +83,12 @@ export function initializeMcpServer(services: McpServices): McpServer {
    registerGetStatusTool(mcpServer, environmentStore);
    registerGetSkillTool(mcpServer, environmentStore, BUNDLED_SKILLS);
    registerGetAgentTool(mcpServer, environmentStore);
+   registerReportAppTools(mcpServer, {
+      environmentStore,
+      reportController,
+      queryController,
+      themeStore,
+   });
 
    // Dual-channel: also expose each skill as an MCP prompt, so hosts that ingest
    // MCP but do not load skill files (e.g. Codex, ChatGPT, Cursor) can pull the
