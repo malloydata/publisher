@@ -51,6 +51,37 @@ class PackageVersionTests(unittest.TestCase):
         self.assertEqual(got, {"id": "1.2.0", "latest": False, "contentHash": None, "archived": None})
 
 
+class ServedPackageDirTests(unittest.TestCase):
+    """A published version lives in <package>/<version>/; latest's is the one served."""
+
+    def setUp(self):
+        import tempfile, pathlib
+        self.root = pathlib.Path(tempfile.mkdtemp())
+        (self.root / "p" / "1.0.1").mkdir(parents=True)
+        (self.root / "p" / "1.0.1" / "m.malloy").write_text("source: s is x")
+
+    def resolve(self, version_id):
+        def fake(base, path, timeout=30):
+            if path == "api/v0/projects":
+                return [{"name": "e", "location": str(self.root)}]
+            if path == "api/v0/environments/e/packages/p":
+                return {"versionId": version_id, "latestVersion": version_id}
+            raise OSError(path)
+        with unittest.mock.patch.object(publisher_rest, "get_json", side_effect=fake):
+            return (publisher_rest.served_package_dir("http://x", "e", "p"),
+                    publisher_rest.served_model_path("http://x", "e", "p", "m.malloy"))
+
+    def test_a_published_package_resolves_to_latest_s_directory(self):
+        d, m = self.resolve("1.0.1")
+        self.assertEqual(d, self.root / "p" / "1.0.1")
+        self.assertEqual(m, self.root / "p" / "1.0.1" / "m.malloy")
+
+    def test_an_unversioned_package_is_its_own_directory(self):
+        d, m = self.resolve(None)
+        self.assertEqual(d, self.root / "p")
+        self.assertIsNone(m)
+
+
 class UncellTests(unittest.TestCase):
     def test_scalars_by_value_key(self):
         self.assertEqual(uncell({"string_value": "Levi's"}), "Levi's")

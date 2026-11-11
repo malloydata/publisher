@@ -153,13 +153,22 @@ def served_package_dir(base: str, environment: str,
     """The directory the running Publisher serves this package FROM, or None.
 
     A host commonly serves a copy rather than your working tree, so this is the
-    only path whose bytes are the ones answering queries.
+    only path whose bytes are the ones answering queries. A published version
+    lives one level down, in `<package>/<version>/`, and the version answering
+    a request that names none is `latest`: that directory is the one returned.
+    Without it a versioned package's model was never found, and a run lost its
+    snapshot and its re-execution with nothing said.
     """
     try:
         for proj in get_json(base, "api/v0/projects"):
             if proj.get("name") == environment and proj.get("location"):
                 p = pathlib.Path(proj["location"]) / package
-                return p if p.is_dir() else None
+                if not p.is_dir():
+                    return None
+                vid = package_version(base, environment, package).get("id")
+                if vid and (p / vid).is_dir():
+                    return p / vid
+                return p
     except (OSError, ValueError):   # unreachable or non-JSON: absence is reported
         return None
     return None
@@ -195,13 +204,13 @@ def served_model_path(base: str, environment: str, package: str,
     judge shown the working tree may be reading a model the run never used.
     """
     try:
-        for proj in get_json(base, "api/v0/projects"):
-            if proj.get("name") == environment and proj.get("location"):
-                p = pathlib.Path(proj["location"]) / package / model_path
-                return p if p.exists() else None
+        root = served_package_dir(base, environment, package)
     except Exception:            # noqa: BLE001 - absence is reported, not fatal
         return None
-    return None
+    if root is None:
+        return None
+    p = root / model_path
+    return p if p.exists() else None
 
 
 def package_version(base: str, environment: str, package: str) -> dict[str, Any]:
