@@ -811,6 +811,38 @@ describe("BuildPlan.refusedSources", () => {
    afterEach(() => packages.cleanup());
 
    it(
+      "refuses a source whose #@ route reads the server's environment, instead of building it into the warehouse",
+      async () => {
+         // Publisher drops that source's whole `#@` route, so it reads no
+         // `storage=` while Malloy still plans the source. Built, it would land
+         // in the source warehouse; refused, it serves live.
+         const pkg = await packages.create(`##! experimental.persistence
+source: base is duckdb.sql("SELECT 1 AS amount")
+
+#@ persist name="ok"
+source: ok is base -> { aggregate: c is count() }
+
+#@ persist name="leaky" storage="dest"
+#@ queryMetadata { owner=@env.PUBLISHER_SPEC_UNSET_VAR }
+source: leaky is base -> { aggregate: c is count() }
+`);
+
+         const { plan } = await computePackageBuildPlan(pkg);
+
+         expect(Object.values(plan?.sources ?? {}).map((s) => s.name)).toEqual([
+            "ok",
+         ]);
+         const [refused] = Object.values(plan?.refusedSources ?? {});
+         expect(refused).toMatchObject({
+            name: "leaky",
+            reason: "env_reference",
+         });
+         expect(refused.message).toMatch(/@env\./);
+      },
+      { timeout: 20000 },
+   );
+
+   it(
       "reports a package where EVERY persist source is refused as a completed plan carrying refusedSources, not a thrown error",
       async () => {
          // Both sources are storage-tier (declare `storage=`) and both are

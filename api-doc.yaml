@@ -10075,6 +10075,7 @@ components:
               not_duckdb_portable,
               public_surface_unknown,
               read_only_dialect,
+              env_reference,
             ]
           description: >-
             The bounded refusal reason. Only the compile-time reasons can
@@ -10090,7 +10091,10 @@ components:
             a given, which has no read-time re-application to put the term back),
             and `read_only_dialect` (a colocated `#@ persist` on a source whose
             dialect cannot create tables; SQL Server today, whose connection
-            reports `canPersist: false`) — those being the only reasons the two
+            reports `canPersist: false`), and `env_reference` (a source with an
+            `@env.` reference on one of its `#@` lines, whose directives are all
+            ignored, so it serves live rather than build into the source
+            warehouse) — those being the only reasons the two
             compile-time eligibility asserts this collection is computed from
             produce.
 

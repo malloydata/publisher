@@ -136,10 +136,11 @@ export function warnEnvReferenceDropped(where: string, route: string): void {
  * half-applied directive that builds a table somewhere its author did not say.
  * So a source with an `@env.` line on its `#@` route has no Publisher directive
  * at all: no `name=`, `storage=` or `queryMetadata`. Malloy itself still sees
- * `persist` (it reads only whether the key is present), so the source still
- * builds, under its content address. Other routes (a model's `##` tags, `##!`
- * flags) drop line by line, as {@link motlyAnnotations} does. Whether a key is
- * PRESENT, as Malloy decides it, is {@link routeHasKey}.
+ * `persist` (it reads only whether the key is present), so the eligibility gate
+ * refuses the source ({@link routeReadsEnv}) and it serves live. Other routes
+ * (a model's `##` tags, `##!` flags) drop line by line, as
+ * {@link motlyAnnotations} does. Whether a key is PRESENT, as Malloy decides
+ * it, is {@link routeHasKey}.
  *
  * With nothing to drop, this is `parseAsTag` itself, so a package without an
  * `@env.` reference parses exactly as before.
@@ -183,6 +184,19 @@ export function parseRouteTag(
       };
    });
    return { tag: parsed.tag, log: [...drops, ...parsed.log] };
+}
+
+/**
+ * Whether any annotation on `route` carries an `@env.` reference, the case in
+ * which {@link parseRouteTag} drops the `#@` route whole. Reads no value.
+ */
+export function routeReadsEnv(
+   annotations: Annotations,
+   route: string,
+): boolean {
+   return annotations
+      .forRoute(route)
+      .some((note) => hasEnvReference(note.text));
 }
 
 /**
