@@ -21,6 +21,7 @@ import { DuckDBConnection } from "@malloydata/db-duckdb";
 import * as fs from "fs";
 import * as os from "os";
 import * as path from "path";
+import { pathToFileURL } from "url";
 import {
    FixedConnectionMap,
    InMemoryURLReader,
@@ -112,7 +113,9 @@ export async function buildScenario(scenario: R4Scenario): Promise<R4Fixture> {
    for (const [file, text] of Object.entries(scenario.files)) {
       fs.writeFileSync(path.join(dir, file), text);
    }
-   const root = `file://${dir}/`;
+   // pathToFileURL, not `file://${dir}`: on Windows `dir` is `D:\…`, and the
+   // in-memory reader's keys must match the URL Malloy normalizes to.
+   const root = `${pathToFileURL(dir).href}/`;
 
    const authorConnections = new FixedConnectionMap(
       new Map([["duckdb", duckdb]]),
