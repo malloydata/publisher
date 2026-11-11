@@ -268,6 +268,10 @@ export interface LoadPackageResult {
       schemaFetchCount: number;
       /** Schema requests answered from the worker's own cache. */
       schemaCacheHits?: number;
+      /** Translations the load stored for its models' imports (#1566). */
+      translationsStored?: number;
+      /** Imports answered from a translation the load had stored. */
+      translationsReused?: number;
    };
    /**
     * Present when `computeBuildPlan` was set and every model compiled and

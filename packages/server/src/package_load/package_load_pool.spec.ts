@@ -318,6 +318,10 @@ source: top is a extend { dimension: also_nothing is null }`,
          for (const m of outcome.models) {
             expect(m.compilationError).toBeUndefined();
          }
+         // base, a and b are imported, so stored; a and b each get base from
+         // the store, and index gets a and b.
+         expect(outcome.timings.translationsStored).toBe(3);
+         expect(outcome.timings.translationsReused).toBe(4);
          // As a Runtime of the model's own read them: its file, then its
          // imports in the order Malloy reads them, later ones winning.
          expect(byPath.get("base.malloy")!.dataStyles).toEqual({
@@ -479,6 +483,52 @@ source: top is a extend { dimension: also_nothing is null }`,
             expect(m.compilationError).toBeUndefined();
             expect(m.dataStyles).toEqual({ k: { renderer: "bar_chart" } });
          }
+      } finally {
+         await duckdb.close();
+      }
+   });
+
+   it("reports an imported non-model file's warnings from each importer, as without the cache (#1566)", async () => {
+      // `.lib/x.malloy` is not a package model (a dotfile), so only its
+      // importers report its warnings. b imports a, so it compiles after a has
+      // translated x; it must translate x itself rather than take a's.
+      writeManifest(tempDir);
+      fs.mkdirSync(path.join(tempDir, ".lib"));
+      fs.writeFileSync(
+         path.join(tempDir, ".lib", "x.malloy"),
+         `source: x is duckdb.sql("select 1 as a") extend {\n  dimension: nothing is null\n}\n`,
+      );
+      fs.writeFileSync(
+         path.join(tempDir, "a.malloy"),
+         `import ".lib/x.malloy"\nsource: a is x\n`,
+      );
+      fs.writeFileSync(
+         path.join(tempDir, "b.malloy"),
+         `import "a.malloy"\nimport ".lib/x.malloy"\nsource: b is a\n`,
+      );
+      const { malloyConfig, duckdb } = await buildConfig();
+      try {
+         const outcome = await pool.loadPackage({
+            packagePath: tempDir,
+            packageName: "pkg",
+            environmentName: "env",
+            malloyConfig,
+            defaultConnectionName: "duckdb",
+            collectProblems: true,
+         });
+         const warnedFrom = (modelPath: string) =>
+            (
+               outcome.models.find((m) => m.modelPath === modelPath)
+                  ?.problems ?? []
+            )
+               .map((p) => (p as { at?: { url?: string } }).at?.url ?? "")
+               .filter((url) => url.endsWith("/.lib/x.malloy")).length;
+         expect(outcome.models.map((m) => m.modelPath).sort()).toEqual([
+            "a.malloy",
+            "b.malloy",
+         ]);
+         expect(warnedFrom("a.malloy")).toBeGreaterThan(0);
+         expect(warnedFrom("b.malloy")).toBeGreaterThan(0);
       } finally {
          await duckdb.close();
       }
