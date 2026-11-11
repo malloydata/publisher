@@ -21,6 +21,20 @@ Give the heading a title — `## [Unreleased] — what changed`, with an em dash
 
 Two consequences worth knowing. A section merged to `main` ships in the **next** release, whenever that is, so do not write one for work that has not landed. And a heading already stamped with a version is history: a follow-up that changes that behaviour opens a **new** `[Unreleased]` section referencing the shipped version by number, rather than editing the old one.
 
+## [Unreleased] — `#@` annotation problems are coded package warnings, and an unparseable one is refused at publish
+
+Every problem Publisher finds on a `#@` annotation is now a package warning with a stable `code`, and an `error` or `warn` severity by whether the annotation can be read at all:
+
+| Code | Severity | What it is |
+| --- | --- | --- |
+| `persist-unparseable` | `error` | A `#@` line that does not parse. Malloy drops its source from the build, so it serves live; before, only a log line said so. |
+| `persist-retired-key` | `error` | `sharing=` or `schedule=` on a `#@ persist` source, with what to write instead. Publish already refused it; a load only logged it. |
+| `persist-unknown-key` | `warn` | A key Publisher does not read, such as a misspelled `merge_key=`. Now reported for every persist source, not only incremental ones, and no longer twice. |
+| `persist-not-materializable` | `warn` | A `#@ persist` source the build walk did not recognize (unchanged, now coded). |
+| `preaggregate-hidden-field` | `warn` | A `#@ preaggregate` on a private or internal field (unchanged, now coded). |
+
+**One behaviour change: a `#@` line that does not parse is refused at publish** (`POST`/`PATCH …/packages`, 400). A package already published keeps loading and serving, with the `error` warning, so nothing that runs today stops. A new metric, `publisher_annotation_findings_total{code, tier}`, counts the findings once per package load; a nonzero `tier="malformed"` count names packages published before the refusal.
+
 ## [Unreleased] — A rollup over a `storage=` base is left out instead of failing its build
 
 A `#@ preaggregate storage=` rollup on a source that is itself `#@ persist storage=` could never work: the chained storage build recovers a downstream's definition from its model file, which a synthesized rollup does not have, so the build failed with an error naming an internal mechanism; and had it built, the base's own stored table claims the name the rollup would be served under, so nothing would have read it. Such rollups are now left out of the build plan and every run, so no build is attempted, and the package carries a `preaggregate-over-stored-base` warning (`warn`, one per base). The base still builds and serves from its stored table. No wire enum changes: the rollup is absent from `BuildPlan.sources`, not added to `refusedSources`.

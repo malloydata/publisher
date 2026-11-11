@@ -386,19 +386,9 @@ export function incrementalPolicyAdvisories(
       const { declaration: d } = source;
       const at = { model: source.modelPath ?? "", subject: source.sourceName };
 
-      // Unknown keys pass through by design, so this is the ONLY guard for a
-      // misspelled `merge_key=`, which would silently degrade to range replace.
-      for (const key of d.unknownKeys) {
-         warnings.push({
-            ...at,
-            message:
-               `declares an unrecognized #@ persist key "${key}", which the ` +
-               `publisher passes through untouched. If it is a typo the intended ` +
-               `behavior is silently absent — note that a misspelled merge_key= ` +
-               `leaves an incremental source applying its delta by range replace ` +
-               `instead of by row identity.`,
-         });
-      }
+      // An unknown key (a misspelled `merge_key=`, which would silently
+      // degrade to range replace) is reported for every persist source, coded
+      // `persist-unknown-key`, by the annotation reader; not again here.
 
       if (d.incremental && d.watermark !== undefined && !d.declaredMergeKey) {
          // Per-engine cost: a warehouse prunes a range DELETE by partitioning; a

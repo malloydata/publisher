@@ -95,6 +95,7 @@ export async function compilePackageBuildPlan(
       connections,
       sourceModelPaths: parts.sourceModelPaths,
       droppedPersistSources: parts.droppedPersistSources,
+      annotationFindings: parts.annotationFindings,
       preaggregatePlans: parts.preaggregatePlans,
       sourceGateOutcomes: parts.sourceGateOutcomes,
    };

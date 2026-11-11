@@ -1885,6 +1885,7 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
          ...this.materialization.storageWarnings(),
          ...this.materialization.droppedPersistWarnings(),
          ...this.materialization.rollupsOverStoredBaseWarnings(),
+         ...this.materialization.annotationFindingWarnings(),
          ...this.materialization.persistRefusalWarnings(),
          // Not in exploresWarnings: an import-only file must not block publish.
          ...this.emptyDiscoveryWarnings(),
@@ -2169,6 +2170,11 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
    /** See {@link PackageMaterialization.formatInvalidPreaggregatePolicy}. */
    public formatInvalidPreaggregatePolicy(): string {
       return this.materialization.formatInvalidPreaggregatePolicy();
+   }
+
+   /** See {@link PackageMaterialization.annotationFindingTiers}. */
+   public annotationFindingTiers(): { code: string; tier: string }[] {
+      return this.materialization.annotationFindingTiers();
    }
 
    /** See {@link PackageMaterialization.preaggregateAccessWarnings}. */

@@ -4,7 +4,10 @@
 import { describe, expect, it } from "bun:test";
 import { Annotations } from "@malloydata/malloy";
 import {
+   findingSeverity,
    isOnRoute,
+   persistAnnotationFindings,
+   persistUnparseableFinding,
    payloadOfNote,
    payloadsOnRoute,
    PUBLISHER_ROUTES,
@@ -125,6 +128,60 @@ describe("the #@ route's keys", () => {
          ["persist-retired-key", "malformed", "schedule="],
       ]);
       expect(findings[1]?.rewrite).toContain("materialization.schedule");
+   });
+});
+
+describe("persist annotation findings", () => {
+   it("finds an unparseable tag as malformed, with the parser's reason", () => {
+      const { findings } = readRouteTag(
+         annotationsOf(['#@ persist name="unterminated']),
+         "@",
+         RECOGNIZED_PERSIST_KEYS,
+      );
+      expect(findings.map((f) => [f.code, f.tier])).toContainEqual([
+         "persist-unparseable",
+         "malformed",
+      ]);
+   });
+
+   it("checks a persist source against the persist keys, not the preaggregate ones", () => {
+      const findings = persistAnnotationFindings(
+         annotationsOf(['#@ persist name="t" grain="x"']),
+         "daily",
+         "m.malloy",
+      );
+      expect(findings).toEqual([
+         expect.objectContaining({
+            code: "persist-unknown-key",
+            tier: "unservable",
+            subject: "daily",
+            model: "m.malloy",
+         }),
+      ]);
+      expect(findingSeverity(findings[0])).toBe("warn");
+   });
+
+   it("builds the unparseable finding Malloy's build log reports, naming the line", () => {
+      const finding = persistUnparseableFinding(
+         {
+            message: "Unterminated string",
+            at: {
+               url: "file:///m.malloy",
+               range: {
+                  start: { line: 4, character: 0 },
+                  end: { line: 4, character: 9 },
+               },
+            },
+         },
+         "m.malloy",
+      );
+      expect(finding).toMatchObject({
+         code: "persist-unparseable",
+         tier: "malformed",
+         model: "m.malloy",
+      });
+      expect(finding.message).toContain("line 5");
+      expect(findingSeverity(finding)).toBe("error");
    });
 });
 

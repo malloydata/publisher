@@ -13,6 +13,11 @@ import type {
    SourceDef,
    UnbuildableSource,
 } from "@malloydata/malloy";
+import {
+   persistAnnotationFindings,
+   persistUnparseableFinding,
+   type PackageAnnotationFinding,
+} from "../../annotation_reader";
 import { parseRouteTag, routeHasKey } from "../../motly";
 import { Annotations } from "@malloydata/malloy";
 import { components } from "../../../api";
@@ -138,6 +143,8 @@ export interface CompiledBuildPlan {
     * silent no-op.
     */
    droppedPersistSources?: { name: string; modelPath: string }[];
+   /** Findings on the authored `#@` annotations (see annotation_reader). */
+   annotationFindings?: PackageAnnotationFinding[];
    /**
     * sourceID -> the rollup it was synthesized from; absent for an authored
     * `#@ persist` source. The provenance behind the wire plan's
@@ -743,6 +750,8 @@ export interface BuildPlanParts {
    droppedPersistSources: { name: string; modelPath: string }[];
    preaggregatePlans: Record<string, RollupPlan>;
    sourceGateOutcomes: Record<string, PersistSourceGateOutcome>;
+   /** Findings on the `#@` annotations of this model's sources (see annotation_reader). */
+   annotationFindings: PackageAnnotationFinding[];
 }
 
 export function emptyBuildPlanParts(): BuildPlanParts {
@@ -753,6 +762,7 @@ export function emptyBuildPlanParts(): BuildPlanParts {
       droppedPersistSources: [],
       preaggregatePlans: {},
       sourceGateOutcomes: {},
+      annotationFindings: [],
    };
 }
 
@@ -771,6 +781,7 @@ export function mergeBuildPlanParts(
    into.droppedPersistSources.push(...from.droppedPersistSources);
    Object.assign(into.preaggregatePlans, from.preaggregatePlans);
    Object.assign(into.sourceGateOutcomes, from.sourceGateOutcomes);
+   into.annotationFindings.push(...from.annotationFindings);
 }
 
 /**
@@ -888,6 +899,13 @@ export async function collectModelBuildPlan(
          message: msg.message,
          severity: msg.severity,
       });
+      // An error drops the source from the build, so it is reported as a
+      // finding too: the annotation would otherwise do nothing, unsaid.
+      if (msg.severity === "error") {
+         parts.annotationFindings.push(
+            persistUnparseableFinding(msg, modelPath),
+         );
+      }
    }
 
    // BEFORE the empty-plan `return`, so a model whose only persist source is
@@ -912,6 +930,19 @@ export async function collectModelBuildPlan(
       const sourceID = source.sourceID;
       parts.sources[sourceID] = source;
       parts.sourceModelPaths[sourceID] = modelPath;
+      // Unknown and retired keys. Malloy planned it, so its tag parsed. Never
+      // lets the reader break the plan (mirrors deriveAnnotationFields).
+      try {
+         parts.annotationFindings.push(
+            ...persistAnnotationFindings(
+               source.annotations,
+               source.name,
+               modelPath,
+            ).filter((finding) => finding.code !== "persist-unparseable"),
+         );
+      } catch {
+         // No findings for a source whose annotations cannot be read.
+      }
       if (!classificationCtx) {
          const givens = Array.from(
             malloyModel.givens.values(),
@@ -1276,6 +1307,7 @@ export interface BuildPlanOutcome {
     * sends none.
     */
    rollupsOverStoredBase?: { baseName: string; modelPath?: string }[];
+   annotationFindings: PackageAnnotationFinding[];
    sourceEligibility: SourceEligibility;
    colocatedSourceEligibility: ColocatedSourceEligibility;
    incrementalDeclarations: Record<string, IncrementalDeclaration>;
@@ -1327,6 +1359,7 @@ export function deriveBuildPlanOutcome(
       plan,
       droppedPersistSources,
       rollupsOverStoredBase: [...overStoredBase.values()],
+      annotationFindings: compiled.annotationFindings ?? [],
       sourceEligibility: collectSourceEligibility(compiled),
       colocatedSourceEligibility: collectColocatedSourceEligibility(compiled),
       incrementalDeclarations,

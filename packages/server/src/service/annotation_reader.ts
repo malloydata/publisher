@@ -207,13 +207,30 @@ export interface AnnotationFinding {
 export function readRouteTag(
    annotations: Annotations,
    route: string,
+   /** The keys to accept, when narrower than the route's (a persist source's). */
+   keys?: ReadonlySet<string>,
 ): { tag: Tag; findings: AnnotationFinding[] } {
-   const { tag } = parseRouteTag(annotations, route);
+   const { tag, log } = parseRouteTag(annotations, route);
    const spec = PUBLISHER_ROUTES[route];
+   const accepted = keys ?? spec?.keys;
    const findings: AnnotationFinding[] = [];
-   if (spec?.keys) {
+   // A tag that does not parse is read as nothing, so every directive on it is
+   // silently lost: malformed. `@env.` drops are reported by parseRouteTag.
+   const parseErrors = log.filter((entry) => entry.code === "tag-parse-error");
+   if (parseErrors.length > 0) {
+      findings.push({
+         route,
+         tier: "malformed",
+         code: `${route === "@" ? "persist" : route}-unparseable`,
+         message: `\`#${route}\` does not parse (${parseErrors
+            .map((entry) => entry.message)
+            .join("; ")}), so none of its directives are read`,
+         ...(parseErrors[0]?.at ? { at: parseErrors[0].at } : {}),
+      });
+   }
+   if (accepted) {
       for (const [key] of tag.entries()) {
-         const retired = spec.retiredKeys?.[key];
+         const retired = spec?.retiredKeys?.[key];
          if (retired !== undefined) {
             findings.push({
                route,
@@ -222,7 +239,7 @@ export function readRouteTag(
                message: `\`${key}=\` is no longer read on \`#${route}\``,
                rewrite: retired,
             });
-         } else if (!spec.keys.has(key)) {
+         } else if (!accepted.has(key)) {
             findings.push({
                route,
                tier: "unservable",
@@ -233,6 +250,59 @@ export function readRouteTag(
       }
    }
    return { tag, findings };
+}
+
+/**
+ * The findings on one persist source's `#@` route: a tag that does not parse
+ * (malformed), a retired key (malformed), an unknown key (unservable). Each
+ * names the source in `subject`, and its model in `model` when known.
+ */
+export function persistAnnotationFindings(
+   annotations: Annotations,
+   subject: string,
+   model?: string,
+): PackageAnnotationFinding[] {
+   return readRouteTag(annotations, "@", RECOGNIZED_PERSIST_KEYS).findings.map(
+      (finding) => ({
+         ...finding,
+         message: `#@ persist source "${subject}": ${finding.message}`,
+         subject,
+         ...(model ? { model } : {}),
+      }),
+   );
+}
+
+/** A finding as a package load carries it: which model it is in, when known. */
+export type PackageAnnotationFinding = AnnotationFinding & { model?: string };
+
+/**
+ * A `#@` tag Malloy's build walk could not parse. Malloy drops the source from
+ * the build entirely, so nothing else records that it was annotated: this is
+ * the only trace, and it is malformed (refused at publish).
+ */
+export function persistUnparseableFinding(
+   entry: { message: string; at?: DocumentLocation },
+   model: string,
+): PackageAnnotationFinding {
+   const line = entry.at ? ` (line ${entry.at.range.start.line + 1})` : "";
+   return {
+      route: "@",
+      tier: "malformed",
+      code: "persist-unparseable",
+      message:
+         `a #@ annotation${line} does not parse (${entry.message}), so the ` +
+         `source it is on is not materialized and is served live. Fix the ` +
+         `annotation's syntax.`,
+      model,
+      ...(entry.at ? { at: entry.at } : {}),
+   };
+}
+
+/** A package warning's severity for a finding's tier: malformed is an error. */
+export function findingSeverity(
+   finding: Pick<AnnotationFinding, "tier">,
+): "error" | "warn" {
+   return finding.tier === "malformed" ? "error" : "warn";
 }
 
 /**

@@ -2,6 +2,10 @@
 // SPDX-License-Identifier: MIT
 
 import type { MalloyConfig } from "@malloydata/malloy";
+import {
+   findingSeverity,
+   type PackageAnnotationFinding,
+} from "../annotation_reader";
 import { components } from "../../api";
 import {
    getPersistCollisionEnforce,
@@ -141,6 +145,7 @@ export class PackageMaterialization {
    private droppedPersistSources: { name: string; modelPath: string }[] = [];
    private rollupsOverStoredBase: { baseName: string; modelPath?: string }[] =
       [];
+   private annotationFindings: PackageAnnotationFinding[] = [];
    // Which sources may be served from a materialized table, decided at compile
    // where the compiled sources exist; binding does not recompile. `undefined`
    // means NOT KNOWN (the plan compute failed) and is refused like "nothing is
@@ -238,6 +243,7 @@ export class PackageMaterialization {
             plan,
             droppedPersistSources,
             rollupsOverStoredBase,
+            annotationFindings,
             sourceEligibility,
             colocatedSourceEligibility,
             incrementalDeclarations,
@@ -248,6 +254,8 @@ export class PackageMaterialization {
          this.buildPlanFailed = false;
          this.droppedPersistSources = droppedPersistSources;
          this.rollupsOverStoredBase = rollupsOverStoredBase ?? [];
+         // `?? []`: an outcome a worker built before this field existed.
+         this.annotationFindings = annotationFindings ?? [];
          this.sourceEligibility = sourceEligibility;
          this.colocatedSourceEligibility = colocatedSourceEligibility;
          this.incrementalPolicySources = Object.entries(plan?.sources ?? {})
@@ -621,6 +629,8 @@ export class PackageMaterialization {
       return this.droppedPersistSources.map((d) => ({
          model: d.modelPath,
          subject: d.name,
+         code: "persist-not-materializable",
+         severity: "warn" as const,
          message:
             `is annotated '#@ persist' but was not recognized as a ` +
             `materializable source, so nothing is materialized and it is served ` +
@@ -628,6 +638,34 @@ export class PackageMaterialization {
             `does not. Persist a query source, or invoke a parameterized source ` +
             `with a bound argument.`,
       }));
+   }
+
+   /**
+    * The findings on authored `#@` annotations, as package warnings: a
+    * malformed one (an unparseable tag, a retired key) is `error`, refused at
+    * publish; an unservable one (an unknown key) is `warn`.
+    */
+   annotationFindingWarnings(): ApiPackageWarning[] {
+      return this.annotationFindings.map((finding) => ({
+         ...(finding.model ? { model: finding.model } : {}),
+         ...(finding.subject ? { subject: finding.subject } : {}),
+         message: finding.rewrite
+            ? `${finding.message}; ${finding.rewrite}`
+            : finding.message,
+         code: finding.code,
+         severity: findingSeverity(finding),
+      }));
+   }
+
+   /** Each coded annotation finding's code and tier, for the findings metric. */
+   annotationFindingTiers(): { code: string; tier: string }[] {
+      return [
+         ...this.annotationFindings.map(({ code, tier }) => ({ code, tier })),
+         ...this.droppedPersistSources.map(() => ({
+            code: "persist-not-materializable",
+            tier: "unservable",
+         })),
+      ];
    }
 
    /**
@@ -738,6 +776,16 @@ export class PackageMaterialization {
          }
       }
 
+      // Rule 1b: a `#@` tag that does not parse. Malloy drops its source from
+      // the build, so it would serve live with nothing said; refused at publish,
+      // a warning at load so a package already published keeps loading.
+      for (const finding of this.annotationFindings) {
+         if (finding.code !== "persist-unparseable") continue;
+         warnings.push(
+            `${finding.model ? `${finding.model}: ` : ""}${finding.message}`,
+         );
+      }
+
       // Rule 2: a package-level cron is legal only with scope: version.
       if (packageSchedule && scope !== "version") {
          warnings.push(
@@ -822,6 +870,8 @@ export class PackageMaterialization {
          model: modelPath,
          subject: violation.fieldName ?? violation.sourceName,
          message: violation.message,
+         code: "preaggregate-hidden-field",
+         severity: "warn" as const,
       }));
    }
 

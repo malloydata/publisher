@@ -110,6 +110,10 @@ const sourcesCounter = lazyCounter(
    "publisher_materialization_sources_total",
    "Persist sources processed by a materialization run. Labels: outcome ('built'|'reused'|'failed'|'refused'), mode ('auto'|'orchestrated').",
 );
+const annotationFindingsCounter = lazyCounter(
+   "publisher_annotation_findings_total",
+   "Findings on authored #@ annotations, counted once per package load. Labels: code (e.g. 'persist-unknown-key', 'persist-unparseable'), tier ('malformed'|'unservable'|'deprecated').",
+);
 const incrementalStepCounter = lazyCounter(
    "publisher_materialization_incremental_step_total",
    'Refreshes of a source declared refresh="incremental". Labels: step ' +
@@ -309,6 +313,19 @@ export function recordSourcesOutcome(
 ): void {
    if (count <= 0) return;
    sourcesCounter().add(count, { outcome, mode });
+}
+
+/**
+ * Count one package load's annotation findings, one increment per finding, by
+ * code and tier. `malformed` is refused at publish, so a nonzero count there on
+ * a loaded package means it was published before the refusal existed.
+ */
+export function recordAnnotationFindings(
+   findings: ReadonlyArray<{ code: string; tier: string }>,
+): void {
+   for (const { code, tier } of findings) {
+      annotationFindingsCounter().add(1, { code, tier });
+   }
 }
 
 /**
