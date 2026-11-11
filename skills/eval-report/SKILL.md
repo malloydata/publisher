@@ -89,7 +89,9 @@ Pass `--run` more than once to put two arms side by side.
 ## Step 2: write the report
 
 Put it in the repository beside the set, as `RESULTS.md`. Not in a chat log,
-not in `~/Downloads`, both of which have lost a findings document before.
+not in `~/Downloads`, both of which have lost a findings document before. Name
+each run it reports by `runId` and package version, so a reader can find the
+run in the workdir or in shared storage. The run itself stays out of git.
 
 **Derive every number from `events.jsonl` and `run.json`, not from memory or
 from the console.** A figure retyped from scrollback is a figure nobody can
@@ -455,8 +457,10 @@ A report whose evidence cannot be opened is a report nobody checks.
 - **Move the run somewhere durable before you link it.** A run written under a
   session scratch directory (`/tmp/...`, a host's per-session sandbox) is
   deleted when the session ends, and many editors will not linkify a path there
-  even while it exists. Copy the run directory, artifacts included, next to the
-  report under the set, then link that. A report whose evidence is in a temp
+  even while it exists. Move it to the set's workdir, or export it to shared
+  storage (`eval.py export`, `reference/sharing-runs.md` in `skill:eval-loop`),
+  and link that. Never copy it into the repository: runs do not go in git, and
+  `RESULTS.md` names the `runId` instead. A report whose evidence is in a temp
   directory is a report with no evidence by next week. This was caught twice by
   a reader clicking and getting nothing.
 - Write a local path bare, as `/abs/path/to/file`, not as `[text](file:///...)`.

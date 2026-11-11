@@ -22,13 +22,16 @@ an arriving item maps to, and the four physical formats.
 Two separate rules, and "package" blurs them:
 
 - **The same git repository as the model it evaluates**, so one commit pins
-  the model and the ledger together. That is what a checkpoint is.
-- **Never inside the directory tree the answerer's package serves.** The
-  answerer can read files in the served tree, and gold there is a
-  contamination path.
+  the model and the answer key together. That is what a checkpoint is.
+- **Never inside the package directory.** Anything in it is part of the
+  package: a published version's `contentHash` covers it, so a golden fix would
+  force a new package version, and anyone who can read the version can read
+  the goldens.
 
 So the set is a SIBLING of the package under test, in its repo. A repo with
-`ecommerce/` under test gets `evals/ecommerce-questions/`, beside it.
+`ecommerce/` under test gets `evals/ecommerce-questions/`, beside it
+(`examples/storefront-evals/` in this repository is a worked one). The runs
+are neither: they live in the set's workdir, outside git.
 
 ## Step 1: keep the file as it arrived
 

@@ -47,8 +47,6 @@ export default [
       ignores: [
          "**/public/vendor/**",
          "**/examples/storefront/tests/**",
-         "**/examples/storefront/evals/*/runs/**",
-         "**/examples/storefront/evals/**/run-package-*/**",
       ],
    },
    {

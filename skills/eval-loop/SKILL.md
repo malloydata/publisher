@@ -1,6 +1,6 @@
 ---
 name: eval-loop
-description: 'Conduct a local Publisher evaluation loop in five steps: scrape/run, eval, diagnose, improve, checkpoint. You are the conductor: import cases into the file ledger, spawn a blind answerer, then run eval-answer, eval-diagnose, and eval-improve. Persistence is plain files: the set in the model package''s evals/ directory, runs in the set''s workdir; checkpoints are git commits of the model repo. `eval.py` runs each step from the set''s eval.toml. Use to score a model, diagnose failures, improve behind an acceptance check, or roll back a bad direction.'
+description: 'Conduct a local Publisher evaluation loop in five steps: scrape/run, eval, diagnose, improve, checkpoint. You are the conductor: import cases into the file ledger, spawn a blind answerer, then run eval-answer, eval-diagnose, and eval-improve. Persistence is plain files: the set beside the model package in its repository, runs in the set''s workdir, never in git; checkpoints are git commits of the model repo. `eval.py` runs each step from the set''s eval.toml. Use to score a model, diagnose failures, improve behind an acceptance check, or roll back a bad direction.'
 ---
 
 # The Evaluation Loop
@@ -47,6 +47,7 @@ all of them for every run is how a skill stops being read.
 | deciding whether an edit stays | `reference/acceptance-check.md` |
 | about to quote a number, set the band, or read a set's flips | `reference/measurement.md` |
 | measuring whether `get_context` returns the right fields, with no answerer | `reference/retrieval-replay.md` |
+| keeping runs, sharing them with a team, or comparing package versions | `reference/sharing-runs.md` |
 | the run finished and someone has to read it | `skill:eval-report` |
 | you changed judge doctrine or its inputs | `reference/checking-the-judge.md` |
 
@@ -314,24 +315,30 @@ the run measure something other than what it names:
 
 ## Before you start
 
-1. The model package under evaluation must live in a git repository, with
-   `evals/<set>/` in the package, beside the model files. Git is the checkpoint
+1. The model package under evaluation must live in a git repository, and the
+   set beside it in the SAME repository: `<repo>/<package>/` and
+   `<repo>/evals/<set>/` (`skill:eval-import`, "Where the set goes";
+   `examples/storefront-evals/` is a worked one). Git is the checkpoint
    mechanism; without it there is no rollback and no run can include improve.
 
-   Keeping the set IN the package is what stops a model edit and its answer key
-   drifting apart: they move in one commit, so fixing a measure and forgetting
-   the golden that depended on it stops being possible. It is safe -- measured
-   on a running server, a `cases.jsonl` inside a package appears in no model
-   listing, no notebook listing, no package resource, and 404s over HTTP, so an
-   MCP-only answerer has no route to it.
+   One repository is what stops a model edit and its answer key drifting
+   apart: they move in one commit, so fixing a measure and forgetting the
+   golden that depended on it stops being possible. Beside the package rather
+   than inside it, for three reasons:
+   - a package version's `contentHash` covers every file in it, so a set
+     inside would make every golden fix a new package version;
+   - a published version's files are readable by anyone who can read the
+     package, goldens included;
+   - nothing in Publisher can leave a folder out of what it serves.
 
-   What it buys differs by target. On a LOCAL Publisher it does not get you free
-   versioning -- `sourceContentSha` hashes model paths only, so the set needs
-   its own `datasetSha`. On a hosted target that publishes the whole package
-   directory as an IMMUTABLE version, the set rides inside that version and
-   `targetVersion` pins model and answer key together; nothing can be edited
-   under a published version, which is what makes it a pin. Check which you have
-   before deciding how much of this you need.
+   Version tracking does not depend on where the set lives: every run records
+   the package version that answered (`packageVersion`) and, separately, the
+   set it was scored on (`datasetVersion`, `datasetSha`), and each score the
+   `goldenRevision` it was judged against.
+
+   The default workdir is named by a hash of the set's PATH, so moving a set
+   leaves its earlier runs in the old workdir. Set `[paths] workdir` in
+   `eval.toml` before a move to keep them together.
 
    **Look for a set and for prior runs before you author either.** A minute of
    `find . -name cases.jsonl`, a glance at the set's workdir (`<workdir>/runs/`,
@@ -352,19 +359,20 @@ the run measure something other than what it names:
    calls. An id that fails either scores a retrieval miss on every run, and the
    miss reads as the model's fault.
 
-   **Commit the set before you spend money on an arm**, and keep durable
-   outputs in the repository. A findings document in `~/Downloads` is gone the
-   first time somebody tidies up; the set and the write-up belong in git
-   beside the model.
+   **Commit the set before you spend money on an arm.** A findings document in
+   `~/Downloads` is gone the first time somebody tidies up; the set and the
+   short write-up (`RESULTS.md`, `skill:eval-report`) belong in git beside the
+   model. Runs do not.
 
    **Runs go in the set's workdir, never inside the model package.** A run
    directory holds a `model.malloy` snapshot, and a built report is a Malloy
    package; inside the package under test, either puts that package into
-   `loadErrors`. The default workdir, `~/.malloy-eval/<set>-<hash>/`, is outside git,
-   which suits a measure-only run. A run that will improve and checkpoint needs
-   its ledger kept: set `[paths] workdir` in `eval.toml` to a directory in the
-   model's repository but outside the package, and gitignore its `servers/`
-   and `packages/`, which are a server's database and rebuilt reports.
+   `loadErrors`. **Runs never go in git.** A run is 100 to 300 KB per case,
+   mostly transcripts, and a repository that keeps them grows with every arm
+   while nothing in it reads them. The default workdir,
+   `~/.malloy-eval/<set>-<hash>/`, is outside git. To share runs with a team,
+   export them (`eval.py export`, `reference/sharing-runs.md`) to storage
+   built for it, not to the repository.
 
 2. The server must be up. Where your host offers retrieval tracing, turn it on
    and confirm a trace lookup answers, so a call's ranked results can be
@@ -509,9 +517,9 @@ A checkpoint is a git commit of the model repository, taken after an acceptance 
 accepts, so a bad improve direction can be rolled back. It is not a report,
 and it is not a remote publish.
 
-1. Commit the model files AND the set's ledger in one commit; put the label
-   and the closed issue ids in the message. The run's ledger is in that commit
-   only when the workdir is in the repository (Before you start, item 1).
+1. Commit the model files in one commit; put the run's label and `runId` and
+   the closed issue ids in the message. The run itself stays in the workdir
+   (and wherever you export it); the message is what ties the commit to it.
 2. Append the `checkpoint` event (`action: created`, label, `modelGitSha`
    from the commit you just made, issueIds). The event line itself rides in
    the next commit; append-only logs trail by one commit and that is fine.

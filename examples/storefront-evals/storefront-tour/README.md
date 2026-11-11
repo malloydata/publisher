@@ -107,7 +107,7 @@ From the repository root:
 ```bash
 bun install && bun run build          # once: the repo's build: builds Publisher
 EVAL=skills/eval-loop/scripts/eval.py
-SET=examples/storefront/evals/storefront-tour
+SET=examples/storefront-evals/storefront-tour
 
 python3 $EVAL check --set $SET
 ```
@@ -187,7 +187,7 @@ it does not belong in this directory.
 
 ## Running it on your own questions
 
-[`skills/eval-loop/reference/setting-up-a-set.md`](../../../../skills/eval-loop/reference/setting-up-a-set.md)
+[`skills/eval-loop/reference/setting-up-a-set.md`](../../../skills/eval-loop/reference/setting-up-a-set.md)
 is that path in order: the files a set needs, the truth package, `eval.toml`,
 and when to run `check`. `skill:eval-import` turns questions in any shape into
 cases.

@@ -10,7 +10,7 @@ from unittest import mock
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 import config  # noqa: E402
 
-TOUR = config.CLONE / "examples" / "storefront" / "evals" / "storefront-tour"
+TOUR = config.CLONE / "examples" / "storefront-evals" / "storefront-tour"
 
 
 def make_set(files: dict[str, str]) -> pathlib.Path:

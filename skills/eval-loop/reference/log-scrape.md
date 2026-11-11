@@ -105,7 +105,7 @@ Production logs hold user prompts and user identities. Two rules follow.
 
 Derive PII-free artifacts. An intent row needs the search text, the entity type,
 and your description; it does not need an email address. Keep raw pulls outside
-the model repository, and commit only the derived ledger.
+the model repository, and commit only the derived cases.
 
 Never let a raw pull reach the package the answerer queries, and never let it
 reach a commit unreviewed. A prompt is also gold-adjacent: a stored transcript

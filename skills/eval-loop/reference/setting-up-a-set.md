@@ -2,7 +2,7 @@
 
 # Setting up a set on your own model
 
-`examples/storefront/evals/storefront-tour` is a finished set. This is the path
+`examples/storefront-evals/storefront-tour` is a finished set. This is the path
 to one of your own: which files a set needs, what writes each one, and the
 order they go in. Every command is `python3 skills/eval-loop/scripts/eval.py`,
 run from the Publisher clone, unless it names another script.

@@ -1,0 +1,255 @@
+#!/usr/bin/env python3
+"""Turn one run directory into flat files, one per table, ready to load into a
+database a team can query. Stdlib only.
+
+  python3 export_run.py --run <run-dir> --set <set-dir> [--out <dir>]
+  # or: python3 eval.py export --set <set-dir> --label baseline-01
+
+Runs do not go in git. This is how a run leaves the laptop instead: five CSV
+files in `<run>/export/` (or `--out`), each row carrying `run_id`, plus a
+`manifest.json` naming each file and the table name to load it under. It calls nothing remote. Where the files go is the caller's choice:
+`reference/sharing-runs.md` lists the options, and a host can ship its own
+upload step that reads `manifest.json`.
+
+  eval_runs         one row: the run's pins and its headline score
+  eval_attempts     one row per attempt: verdict, golden revision, cost, tags
+  eval_events       one row per ledger event, the event itself as JSON text
+  eval_transcripts  one row per attempt: the answerer transcript, answer and
+                    judge write-up as text
+  eval_cases        one row per case of the set as it was run, keyed by
+                    `dataset_sha`: the question, tags, split and golden
+
+Every row of a table has the same columns, in a fixed order, and a nested value
+(a list, an object) is written as JSON text. CSV and not JSON lines, because a
+loader infers types from each file alone: a column that is null in every row of
+one run reads as JSON from a JSON-lines file, and DuckDB then refuses to union
+it with the same column holding values from another run. From CSV it reads as
+VARCHAR, which unions with anything. So a model reading several runs unions by
+name and CASTS each column it computes on (`TRY_CAST(passed AS BOOLEAN)`):
+measured on DuckDB 1.5.1.
+
+THE FILES HOLD THE ANSWER KEY. `eval_cases` carries every golden, and a
+transcript holds an answer. Load them only where the agent being evaluated
+cannot read them: a database is commonly readable from everything in its
+environment, so that means an environment of its own.
+"""
+from __future__ import annotations
+
+import argparse
+import csv
+import json
+import pathlib
+import re
+import sys
+from typing import Any
+
+HERE = pathlib.Path(__file__).resolve().parent
+sys.path.insert(0, str(HERE.parent.parent / "eval-answer" / "scripts"))
+sys.path.insert(0, str(HERE))
+
+import ledger  # noqa: E402
+from ledger import read_jsonl  # noqa: E402
+from run_index import runs as index_runs  # noqa: E402
+
+TABLES = ("eval_runs", "eval_attempts", "eval_events", "eval_transcripts", "eval_cases")
+# A table name a loader accepts: a lowercase letter or _ first, then lowercase
+# letters, digits or _, at most 63 characters. The run id is appended to keep
+# one run's tables apart from another's until the loader can append to one.
+NAME = re.compile(r"[^a-z0-9_]+")
+
+
+def table_name(table: str, run_id: str) -> str:
+    """`eval_attempts__baseline_01`: the table plus the run id, made loadable."""
+    suffix = NAME.sub("_", run_id.lower()).strip("_") or "run"
+    return f"{table}__{suffix}"[:63].rstrip("_")
+
+
+def as_text(v: Any) -> Any:
+    """Nested values as JSON text, so every run's column has one type."""
+    return json.dumps(v, ensure_ascii=False, sort_keys=True) if isinstance(v, (list, dict)) else v
+
+
+def read_text(p: pathlib.Path) -> str | None:
+    try:
+        return p.read_text()
+    except (OSError, UnicodeDecodeError):
+        return None
+
+
+def rows_runs(run: pathlib.Path, meta: dict[str, Any], index_row: dict[str, Any]) -> list[dict]:
+    pv = meta.get("packageVersion") or {}
+    sl = meta.get("slice") or {}
+    return [{
+        "run_id": run.name, "set_name": meta.get("setName"), "label": meta.get("label"),
+        "kind": "full" if index_row.get("full") else index_row.get("kind"),
+        "phase": meta.get("phase"), "status": meta.get("status"), "started": meta.get("started"),
+        "target": meta.get("target"), "environment": meta.get("environment"),
+        "package": meta.get("package"), "version_id": pv.get("id"),
+        "content_hash": pv.get("contentHash"), "base_version": pv.get("baseVersion"),
+        "dataset_version": meta.get("datasetVersion"), "dataset_sha": meta.get("datasetSha"),
+        "slice_name": sl.get("name"), "slice_qids": as_text(sl.get("qids")),
+        "answerer_model": meta.get("answererModel"), "judge_model": meta.get("judgeModel"),
+        "judge_version": meta.get("judgeVersion"), "rubric_sha": meta.get("rubricSha"),
+        "judge_prompt_sha": meta.get("judgePromptSha"),
+        "retrieval_mode": meta.get("retrievalMode"), "model_git_sha": meta.get("modelGitSha"),
+        "cases": index_row.get("cases"), "passed": index_row.get("passed"),
+        "decided": index_row.get("decided"), "recall_exact": index_row.get("recall_exact"),
+        "answerer_cost_usd": meta.get("answererCostUsd"), "judge_cost_usd": meta.get("judgeCostUsd"),
+        "run_json": as_text(meta),
+    }]
+
+
+ATTEMPT_COLUMNS = ("run_id", "qid", "sample", "phase", "question_sha", "golden_revision",
+                   "verdict", "passed", "confidence", "tags", "split", "submitted",
+                   "final_query", "n_get_context", "n_execute", "n_execute_errors",
+                   "contaminated", "answer_captured", "cost_usd", "num_turns",
+                   "wall_seconds", "recall", "recall_exact", "precision", "error")
+
+
+def rows_attempts(run: pathlib.Path, events: list[dict], cases: dict[str, dict]) -> list[dict]:
+    out = []
+    if (run / "results.jsonl").is_file():                    # a retrieval replay
+        for r in read_jsonl(run / "results.jsonl"):
+            c = cases.get(r.get("qid"), {})
+            row = {k: None for k in ATTEMPT_COLUMNS}
+            row.update(run_id=run.name, qid=r.get("qid"), phase="replay",
+                       question_sha=c.get("questionSha"), tags=as_text(c.get("tags") or []),
+                       split=c.get("split"), recall=r.get("recall"),
+                       recall_exact=r.get("recall_exact"), precision=r.get("precision"),
+                       error=r.get("error"))
+            out.append(row)
+        return out
+    scores = {(e.get("qid"), e.get("sample")): e for e in events if e.get("kind") == "score"}
+    for e in events:
+        if e.get("kind") != "attempt":
+            continue
+        s = scores.get((e.get("qid"), e.get("sample")), {})
+        c = cases.get(e.get("qid"), {})
+        v = s.get("verdict")
+        row = {k: None for k in ATTEMPT_COLUMNS}
+        row.update(
+            run_id=run.name, qid=e.get("qid"), sample=e.get("sample"), phase=e.get("phase"),
+            question_sha=e.get("question_sha"), golden_revision=s.get("golden_revision"),
+            verdict=v, passed=True if v == "match" else False if v == "no_match" else None,
+            confidence=s.get("confidence"), tags=as_text(c.get("tags") or []),
+            split=c.get("split"), submitted=e.get("submitted"),
+            final_query=e.get("final_query"), n_get_context=e.get("n_get_context"),
+            n_execute=e.get("n_execute"), n_execute_errors=e.get("n_execute_errors"),
+            contaminated=as_text(e.get("contaminated")), answer_captured=e.get("answer_captured"),
+            cost_usd=e.get("cost_usd"), num_turns=e.get("num_turns"),
+            wall_seconds=e.get("wall_seconds"), error=e.get("run_error"))
+        out.append(row)
+    return out
+
+
+def rows_events(run: pathlib.Path, events: list[dict]) -> list[dict]:
+    return [{"run_id": run.name, "seq": i, "kind": e.get("kind"), "qid": e.get("qid"),
+             "sample": e.get("sample"), "event": as_text(e)} for i, e in enumerate(events)]
+
+
+def rows_transcripts(run: pathlib.Path, events: list[dict]) -> list[dict]:
+    art = run / "artifacts"
+    qids = sorted({e["qid"] for e in events if e.get("kind") == "attempt"}
+                  | ({d.name for d in art.iterdir() if d.is_dir()} if art.is_dir() else set()))
+    out = []
+    for q in qids:
+        d = art / q
+        row = {"run_id": run.name, "qid": q,
+               "transcript": read_text(d / "answerer.jsonl"),
+               "answer": read_text(d / "answer.md"), "judge": read_text(d / "judge.md")}
+        if any(row[k] for k in ("transcript", "answer", "judge")):
+            out.append(row)
+    return out
+
+
+def rows_cases(run_id: str, dataset_sha: str | None, cases: list[dict]) -> list[dict]:
+    return [{"run_id": run_id, "dataset_sha": dataset_sha, "qid": c.get("qid"),
+             "question": c.get("question"), "question_sha": c.get("questionSha"),
+             "tags": as_text(c.get("tags") or []), "split": c.get("split"),
+             "golden_revision": c.get("goldenRevision"), "golden": as_text(c.get("golden")),
+             "case": as_text(c)} for c in cases]
+
+
+COLUMNS = {
+    "eval_runs": ("run_id", "set_name", "label", "kind", "phase", "status", "started", "target",
+                  "environment", "package", "version_id", "content_hash", "base_version",
+                  "dataset_version", "dataset_sha", "slice_name", "slice_qids", "answerer_model",
+                  "judge_model", "judge_version", "rubric_sha", "judge_prompt_sha",
+                  "retrieval_mode", "model_git_sha", "cases", "passed", "decided",
+                  "recall_exact", "answerer_cost_usd", "judge_cost_usd", "run_json"),
+    "eval_attempts": ATTEMPT_COLUMNS,
+    "eval_events": ("run_id", "seq", "kind", "qid", "sample", "event"),
+    "eval_transcripts": ("run_id", "qid", "transcript", "answer", "judge"),
+    "eval_cases": ("run_id", "dataset_sha", "qid", "question", "question_sha", "tags", "split",
+                   "golden_revision", "golden", "case"),
+}
+
+
+def write_csv(path: pathlib.Path, rows: list[dict[str, Any]], columns: tuple[str, ...]) -> None:
+    """A header, then one line per row in `columns` order. Text is quoted; a
+    number or boolean is bare; None is an empty field, which a loader reads as
+    NULL."""
+    extra = sorted({k for r in rows for k in r} - set(columns))
+    if extra:
+        raise ValueError(f"{path.name}: columns not in its schema: {', '.join(extra)}")
+    with path.open("w", newline="") as f:
+        w = csv.writer(f, quoting=csv.QUOTE_NONNUMERIC)
+        w.writerow(columns)
+        for r in rows:
+            w.writerow(["" if r.get(c) is None else as_text(r.get(c)) for c in columns])
+
+
+def export(run: pathlib.Path, set_dir: pathlib.Path, out: pathlib.Path) -> dict[str, Any]:
+    """Write the five files and manifest.json; return the manifest."""
+    meta = json.loads((run / "run.json").read_text())
+    events = read_jsonl(run / "events.jsonl") if (run / "events.jsonl").is_file() else []
+    case_list = read_jsonl(set_dir / "cases.jsonl")
+    cases = {c.get("qid"): c for c in case_list}
+    n_cases = len(case_list)
+    index_row = next((r for r in index_runs(run.parent.parent, n_cases) if r["run"] == run.name), {})
+    sha = ledger.dataset_sha(set_dir)
+    if meta.get("datasetSha") and sha != meta["datasetSha"]:
+        raise SystemExit(
+            f"the set at {set_dir} is not the one this run scored: datasetSha {sha} on disk, "
+            f"{meta['datasetSha']} in run.json. Fix: check out the set's commit the run used, "
+            f"so eval_cases holds the cases the verdicts were about.")
+    tables = {
+        "eval_runs": rows_runs(run, meta, index_row),
+        "eval_attempts": rows_attempts(run, events, cases),
+        "eval_events": rows_events(run, events),
+        "eval_transcripts": rows_transcripts(run, events),
+        "eval_cases": rows_cases(run.name, sha, case_list),
+    }
+    out.mkdir(parents=True, exist_ok=True)
+    manifest: dict[str, Any] = {"runId": run.name, "setName": meta.get("setName"),
+                                "packageVersion": meta.get("packageVersion"),
+                                "datasetSha": sha, "tables": {}}
+    for t in TABLES:
+        f = out / f"{t}.csv"
+        write_csv(f, tables[t], COLUMNS[t])
+        manifest["tables"][t] = {"file": f.name, "rows": len(tables[t]),
+                                 "name": table_name(t, run.name), "bytes": f.stat().st_size}
+    (out / "manifest.json").write_text(json.dumps(manifest, indent=1) + "\n")
+    return manifest
+
+
+def main(argv: list[str] | None = None) -> int:
+    ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
+    ap.add_argument("--run", type=pathlib.Path, required=True, help="the run directory")
+    ap.add_argument("--set", dest="set_dir", type=pathlib.Path, required=True)
+    ap.add_argument("--out", type=pathlib.Path, default=None, help="default: <run>/export")
+    a = ap.parse_args(argv)
+    if not (a.run / "run.json").is_file():
+        raise SystemExit(f"{a.run} holds no run.json. Fix: --run must be a run directory.")
+    m = export(a.run, a.set_dir, a.out or a.run / "export")
+    out = a.out or a.run / "export"
+    for t, info in m["tables"].items():
+        print(f"{info['rows']:>6} rows  {info['bytes']:>9} bytes  {out / info['file']}  -> {info['name']}")
+    print(f"manifest: {out / 'manifest.json'}")
+    print("These files hold the answer key and the transcripts. Load them only where the "
+          "agent under test cannot read them (reference/sharing-runs.md).")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

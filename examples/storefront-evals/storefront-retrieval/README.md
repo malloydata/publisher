@@ -41,8 +41,8 @@ names a value that lives in a dimension), `modelGap` and `refusal`.
 
 ```bash
 export EMBEDDING_API_KEY=...      # without it, every ranking is lexical
-python3 skills/eval-loop/scripts/eval.py serve model --set examples/storefront/evals/storefront-retrieval --warm-retrieval
-python3 skills/eval-loop/scripts/eval.py replay --set examples/storefront/evals/storefront-retrieval --label baseline-01
+python3 skills/eval-loop/scripts/eval.py serve model --set examples/storefront-evals/storefront-retrieval --warm-retrieval
+python3 skills/eval-loop/scripts/eval.py replay --set examples/storefront-evals/storefront-retrieval --label baseline-01
 ```
 
 The run lands in the set's workdir (`~/.malloy-eval/storefront-retrieval-<hash>/runs/baseline-01`),

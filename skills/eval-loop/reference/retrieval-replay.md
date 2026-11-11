@@ -55,8 +55,8 @@ The scope is the set's: `[model]` environment and package from `eval.toml`, and
 ## Running it
 
 ```bash
-python3 skills/eval-loop/scripts/eval.py serve model --set examples/storefront/evals/storefront-retrieval --warm-retrieval
-python3 skills/eval-loop/scripts/eval.py replay --set examples/storefront/evals/storefront-retrieval --label baseline-01
+python3 skills/eval-loop/scripts/eval.py serve model --set examples/storefront-evals/storefront-retrieval --warm-retrieval
+python3 skills/eval-loop/scripts/eval.py replay --set examples/storefront-evals/storefront-retrieval --label baseline-01
 ```
 
 Start the server with `EMBEDDING_API_KEY` set, or every ranking is lexical

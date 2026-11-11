@@ -46,12 +46,12 @@ evals/<set>/                # the set, in the model's repository
 ```
 
 The set directory lives in the SAME git repository as the model it evaluates,
-so a checkpoint (a git commit) pins the model and the answer key together.
-The workdir is never inside the model package: a run holds a `model.malloy`
-snapshot and a report is a Malloy package, and either one nested there puts
-the package into `loadErrors`. For a checkpoint to pin the ledger as well,
-point the workdir at a directory in the repository outside the package, and
-gitignore its `servers/` and `packages/`.
+beside the package rather than inside it, so a checkpoint (a git commit) pins
+the model and the answer key together. The workdir is never inside the model
+package (a run holds a `model.malloy` snapshot and a report is a Malloy
+package, and either one nested there puts the package into `loadErrors`), and
+never in git: a checkpoint commit names the run's `runId`, and the run is
+shared by export (`eval.py export`), not by commit.
 
 Rules that make the ledger trustworthy:
 
