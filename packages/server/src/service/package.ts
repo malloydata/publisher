@@ -2186,6 +2186,7 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
       return [
          ...this.materialization.droppedPersistWarnings(),
          ...this.materialization.annotationFindingWarnings(),
+         ...this.materialization.rollupsOverStoredBaseWarnings(),
          ...this.preaggregateAccessWarnings(),
       ].filter((warning) => warning.code !== undefined);
    }
