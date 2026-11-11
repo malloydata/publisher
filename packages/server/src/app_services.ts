@@ -64,4 +64,7 @@ export type McpServices = Pick<
    | "packageController"
    | "connectionController"
    | "querySlots"
+   | "reportController"
+   | "queryController"
+   | "themeStore"
 >;

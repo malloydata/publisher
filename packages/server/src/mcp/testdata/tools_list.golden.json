@@ -590,6 +590,178 @@
       "execution": {
         "taskSupport": "forbidden"
       }
+    },
+    {
+      "name": "list_reports",
+      "description": "List the reports in one package: each one's path (its identity, for show_report), layout (grid, a dashboard; linear, a story read top to bottom), title and description. A report is a .malloy file with an ## artifact tag, wherever it lives in the package. Takes the environment and package names list_packages gives.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "environmentName": {
+            "type": "string",
+            "description": "The environment, as list_packages names it."
+          },
+          "packageName": {
+            "type": "string",
+            "description": "The package, as list_packages names it."
+          }
+        },
+        "required": [
+          "environmentName",
+          "packageName"
+        ],
+        "additionalProperties": false,
+        "$schema": "http://json-schema.org/draft-07/schema#"
+      },
+      "execution": {
+        "taskSupport": "forbidden"
+      }
+    },
+    {
+      "name": "show_report",
+      "title": "Show a report",
+      "description": "Show a report to the user: its tiles, charts and filter controls, drawn in a panel in the conversation by a host that supports MCP Apps (Claude Desktop and claude.ai among them), and runnable there. Use it when the user wants to see a dashboard or report, not to answer a question yourself: for numbers, run execute_query. Takes the report's path from list_reports and, optionally, starting filter values. The text result says what the report holds and gives its address in the Publisher Console, which works in any client, including one that draws no panel.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "environmentName": {
+            "type": "string",
+            "description": "The environment, as list_packages names it."
+          },
+          "packageName": {
+            "type": "string",
+            "description": "The package, as list_packages names it."
+          },
+          "path": {
+            "type": "string",
+            "description": "The report's path in the package, including `.malloy`, exactly as list_reports gives it: `sales/q3.malloy`."
+          },
+          "givens": {
+            "type": "object",
+            "additionalProperties": {
+              "type": "string"
+            },
+            "description": "Starting filter values, by given name, as the report's filter controls write them (`{\"CATEGORY\": \"Outerwear\"}`). They beat the report's own starting values. Omit to open it as its author left it."
+          }
+        },
+        "required": [
+          "environmentName",
+          "packageName",
+          "path"
+        ],
+        "additionalProperties": false,
+        "$schema": "http://json-schema.org/draft-07/schema#"
+      },
+      "annotations": {
+        "readOnlyHint": true,
+        "openWorldHint": false
+      },
+      "execution": {
+        "taskSupport": "forbidden"
+      },
+      "_meta": {
+        "ui": {
+          "resourceUri": "ui://publisher/report.html"
+        },
+        "ui/resourceUri": "ui://publisher/report.html"
+      }
+    },
+    {
+      "name": "report_api",
+      "title": "Report panel API",
+      "description": "Used by the show_report panel to load the report it shows and run its tiles. Not for agents: use execute_query.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "operation": {
+            "type": "string",
+            "enum": [
+              "status",
+              "listReports",
+              "getReport",
+              "query"
+            ],
+            "description": "Which read: status, listReports, getReport or query."
+          },
+          "environmentName": {
+            "type": "string"
+          },
+          "packageName": {
+            "type": "string"
+          },
+          "path": {
+            "type": "string",
+            "description": "getReport: the report's path. query: the model's path."
+          },
+          "versionId": {
+            "type": "string"
+          },
+          "body": {
+            "type": "object",
+            "properties": {
+              "query": {
+                "type": "string"
+              },
+              "queryName": {
+                "type": "string"
+              },
+              "sourceName": {
+                "type": "string"
+              },
+              "givens": {
+                "type": "object",
+                "additionalProperties": {}
+              },
+              "compactJson": {
+                "type": "boolean"
+              },
+              "filterParams": {
+                "type": "object",
+                "additionalProperties": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "array",
+                      "items": {
+                        "type": "string"
+                      }
+                    }
+                  ]
+                }
+              },
+              "queryMetadata": {},
+              "queryClass": {},
+              "versionId": {
+                "type": "string"
+              }
+            },
+            "additionalProperties": false,
+            "description": "query: the body POST …/models/{path}/query takes."
+          }
+        },
+        "required": [
+          "operation"
+        ],
+        "additionalProperties": false,
+        "$schema": "http://json-schema.org/draft-07/schema#"
+      },
+      "annotations": {
+        "readOnlyHint": true,
+        "openWorldHint": false
+      },
+      "execution": {
+        "taskSupport": "forbidden"
+      },
+      "_meta": {
+        "ui": {
+          "resourceUri": "ui://publisher/report.html",
+          "visibility": [
+            "app"
+          ]
+        }
+      }
     }
   ],
   "prompts": [

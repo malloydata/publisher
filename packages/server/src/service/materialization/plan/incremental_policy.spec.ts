@@ -483,17 +483,15 @@ describe("incrementalPolicyRejections", () => {
 });
 
 describe("incrementalPolicyAdvisories", () => {
-   it("warns about an unrecognized key, naming the merge_key= failure mode", () => {
-      const warnings = incrementalPolicyAdvisories([
-         source({
-            declaration: declaration({ unknownKeys: ["mergekey"] }),
-         }),
-      ]);
-      expect(warnings).toHaveLength(1);
-      expect(warnings[0].subject).toBe("daily_revenue");
-      expect(warnings[0].model).toBe("revenue.malloy");
-      expect(warnings[0].message).toContain('"mergekey"');
-      expect(warnings[0].message).toContain("merge_key=");
+   it("leaves an unrecognized key to the annotation reader, so it is not reported twice", () => {
+      // `persist-unknown-key` covers every persist source, incremental or not.
+      expect(
+         incrementalPolicyAdvisories([
+            source({
+               declaration: declaration({ unknownKeys: ["mergekey"] }),
+            }),
+         ]),
+      ).toEqual([]);
    });
 
    it("states the keyless delta's cost for the engine the table lives in", () => {
@@ -566,8 +564,8 @@ describe("incrementalPolicyAdvisories", () => {
 
    it("keeps every advisory OUT of the rejections, which is what fails a load", () => {
       // The regression risk in making rejections fatal: an advisory that leaked
-      // into the rejection list would stop a legal package from serving. Both
-      // advisories are on declarations the gate must find coherent.
+      // into the rejection list would stop a legal package from serving. The
+      // advisory is on a declaration the gate must find coherent.
       const keylessDelta = {
          declaration: declaration({
             refresh: "incremental",
@@ -577,10 +575,7 @@ describe("incrementalPolicyAdvisories", () => {
             watermarkOrderable: true,
          }),
       };
-      const unknownKey = {
-         declaration: declaration({ unknownKeys: ["mergekey"] }),
-      };
-      for (const overrides of [keylessDelta, unknownKey]) {
+      for (const overrides of [keylessDelta]) {
          expect(
             incrementalPolicyAdvisories([source(overrides)]).length,
          ).toBeGreaterThan(0);
@@ -902,10 +897,15 @@ source: daily is raw -> {
          const pkg = await loadPackage(
             `${RAW}#@ persist name="t" mergekey="order_id"\n${ROLLUP}`,
          );
-         const messages = (pkg.getPackageMetadata().warnings ?? []).map(
-            (w) => w.message ?? "",
+         const unknown = (pkg.getPackageMetadata().warnings ?? []).filter(
+            (w) => w.code === "persist-unknown-key",
          );
-         expect(messages.some((m) => m.includes('"mergekey"'))).toBe(true);
+         expect(unknown).toHaveLength(1);
+         expect(unknown[0]).toMatchObject({
+            severity: "warn",
+            subject: "daily",
+         });
+         expect(unknown[0].message).toContain("mergekey=");
          expect(pkg.formatInvalidIncrementalPolicy()).toBe("");
       },
       { timeout: 30000 },

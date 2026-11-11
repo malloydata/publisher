@@ -5,6 +5,7 @@ import type {
    Connection as MalloyConnection,
    PersistSource,
 } from "@malloydata/malloy";
+import { BuildRunFailedError, combineRetryable } from "./build_failure_class";
 import { Manifest } from "@malloydata/malloy";
 import {
    BadRequestError,
@@ -25,6 +26,7 @@ import {
    deriveAnnotationFields,
    sourcesInBuildOrder,
    tierGateInputs,
+   storedBaseOfRollup,
 } from "../plan/build_plan";
 import {
    assertMaterializationEligible,
@@ -57,6 +59,19 @@ import {
    reportRetainedStorageTables,
 } from "./materialization_run_support";
 import type { SourceBuilder } from "./source_build";
+
+/** sourceID -> the sourceIDs it reads, merged across every connection's build. */
+function upstreamsBySourceID(
+   builds: CompiledBuildPlan["builds"],
+): Map<string, string[]> {
+   const out = new Map<string, string[]>();
+   for (const build of builds) {
+      for (const [sourceID, reads] of Object.entries(build.dependsOn ?? {})) {
+         out.set(sourceID, [...(out.get(sourceID) ?? []), ...reads]);
+      }
+   }
+   return out;
+}
 
 /**
  * The instructed tier: a run's build loop, shared by auto-run and orchestrated
@@ -164,6 +179,8 @@ export class InstructedBuild {
          builtThisRun: [],
          retainedThisRun: [],
          failures: {},
+         failedBySourceID: new Map(),
+         upstreamsBySourceID: upstreamsBySourceID(builds),
          failedReasons: [],
          refusals: [],
          builtSources: [],
@@ -200,12 +217,19 @@ export class InstructedBuild {
          // attached. Thrown inside the try so it takes the same cleanup path as
          // any other total failure.
          if (run.builtSources.length === 0 && run.failedReasons.length > 0) {
-            throw new Error(
+            throw new BuildRunFailedError(
                [
                   ...run.failedReasons,
                   ...run.refusals.map((e) => e.message),
                   ...priorRefusals.map((r) => r.message),
                ].join("; "),
+               // Every source's own answer (a refusal is recorded in
+               // `failures` as `false` too), plus auto-run's refusals, which
+               // never reached this loop and are deterministic.
+               combineRetryable([
+                  ...Object.values(run.failures).map((f) => f.retryable),
+                  ...priorRefusals.map(() => false),
+               ]),
             );
          }
          // Every instructed source was refused: the refusal is the answer.
@@ -407,6 +431,22 @@ export class InstructedBuild {
       // instructs a refused source, so reaching the catch means the plan and
       // this gate disagreed.
       try {
+         // A host instructing from an older plan can still name a rollup over
+         // a stored base, which can never build (storedBaseOfRollup). Refuse
+         // it with the reason, rather than fail inside the chained build.
+         // No `reason` enum value: the refusal rides `failures` as text.
+         const storedBase = storedBaseOfRollup(
+            compiled,
+            persistSource.sourceID,
+         );
+         if (storedBase) {
+            throw new MaterializationEligibilityError({
+               message:
+                  `'${persistSource.name}' is a '#@ preaggregate storage=' rollup ` +
+                  `over '${storedBase.name}', which is itself persisted with ` +
+                  `'storage=': a rollup over a stored base cannot build or serve yet`,
+            });
+         }
          // Host-supplied storage instructions are gated too, not trusted.
          // Skipped when the mode is off: the destination refusal owns that.
          const storage =
@@ -433,6 +473,11 @@ export class InstructedBuild {
          if (!run.failures[failedKey]) {
             const reason = errMessage(err);
             run.refusals.push(err);
+            run.failedBySourceID.set(persistSource.sourceID, {
+               name: persistSource.name,
+               reason,
+               retryable: false,
+            });
             logger.warn("Instructed source refused by the eligibility gate", {
                packageName: run.owner?.packageName,
                sourceName: persistSource.name,
@@ -448,6 +493,7 @@ export class InstructedBuild {
                // Marks the failure permanent, so a caller that retries
                // failures can tell it from one that may clear.
                refused: true,
+               retryable: false,
                connectionName: persistSource.connectionName,
                ...(instruction.destination
                   ? { storageDestinationName: instruction.destination }

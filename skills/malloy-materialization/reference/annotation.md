@@ -12,9 +12,11 @@ source: my_rollup is some_source -> { group_by: ...; aggregate: ... }
 
 ## What can carry it
 
-**Only `query_source` and `sql_select` sources are persistable** - a source whose definition has a `-> { ... }` pipeline or a `conn.sql("...")`, including one refined by a trailing `extend { ... }`. What is **not** persistable is a *plain* `extend` over a bare `conn.table(...)` (a filtered pass-through). A `#@ persist` on such a source is **refused, not ignored**: the package carries a warning naming the source, and any materialization run that covers it fails with `annotated '#@ persist' but were not recognized as a materializable source`, so a whole-package run builds nothing until you fix it. Persist a query source instead (`source: x is raw -> { where: ...; select: * }`), or remove the annotation.
+**Only `query_source` and `sql_select` sources are persistable** - a source whose definition has a `-> { ... }` pipeline or a `conn.sql("...")`, including one refined by a trailing `extend { ... }`. What is **not** persistable is a *plain* `extend` over a bare `conn.table(...)` (a filtered pass-through). A `#@ persist` on such a source is **refused, not ignored**: the package carries a warning naming the source (code `persist-not-materializable`), and any materialization run that covers it fails with `annotated '#@ persist' but were not recognized as a materializable source`, so a whole-package run builds nothing until you fix it. Persist a query source instead (`source: x is raw -> { where: ...; select: * }`), or remove the annotation.
 
 **A parameterized source must have its argument bound.** `#@ persist` on `high_value(min_amount is 500) -> { ... }` builds one fixed relation; on the free template `high_value -> { ... }` it is refused (`free_parameter`), since there is no single relation to store. A `given` the persisted *query* reads is refused the same way (`given_in_persisted_query`); a given in the source's own `extend` block is applied per caller at read. `reference/storage.md` says where a given may sit.
+
+**A `#@` line that does not parse persists nothing.** Malloy drops the source from the build and it serves live. The package carries an `error` warning (code `persist-unparseable`) and a publish is refused; a package already published still loads. A key Publisher does not read (`merge_keys=` for `merge_key=`) is a `warn` (code `persist-unknown-key`) and changes nothing, so read the package warnings after every edit.
 
 ## The name
 

@@ -21,6 +21,7 @@ import {
    deriveAnnotationFields,
    compilerBuildId,
 } from "../plan/build_plan";
+import { declaredStorage } from "../plan/persist_source_fields";
 import { type QueryContext, type QueryMetadata } from "../../query_metadata";
 import type { components } from "../../../api";
 import { getPersistStorageMode } from "../../../config";
@@ -448,11 +449,7 @@ export function manifestExcludingStorage(
  * `PERSIST_STORAGE_MODE`, so a `storage=` source is recognizable even when the
  * tier is off.
  */
-export function declaredStorage(
-   persistSource: PersistSource,
-): string | undefined {
-   return deriveAnnotationFields(persistSource).storage?.trim() || undefined;
-}
+export { declaredStorage };
 
 /**
  * The author model's given surface (inheritance through imports already

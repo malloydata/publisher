@@ -416,6 +416,98 @@ source: regions is duckdb.sql("""
    );
 
    it(
+      "routes a query through index.malloy's re-export to the declaring model's rollup (#7096)",
+      async () => {
+         // The recommended curation: `index.malloy` imports the file that
+         // declares the rollup and re-exports `orders`. Both models plan the
+         // rollup, under one name and one address, so it is one table, not a
+         // collision, and the curated surface routes to it.
+         const pkg = await loadPackageFiles({
+            "sub/jaffle.malloy": `##! experimental { persistence composite_sources }
+source: orders is duckdb.sql("""
+  SELECT * FROM (VALUES (10, 'A'), (20, 'A'), (30, 'B')) AS t(amount, category)
+""") extend {
+  #@ preaggregate grain="category"
+  measure: total is amount.sum()
+}
+`,
+            "index.malloy": `import "sub/jaffle.malloy"
+export { orders }
+`,
+         });
+         // One content address for both models' rollups: one table.
+         const rollupIds = [...pkg.getPreaggregateEntityIds()];
+         expect(rollupIds).toHaveLength(1);
+         // Bound to a table that does not exist, so a routed query fails
+         // naming it, and a live one would quietly answer from the base.
+         pkg.bindColocatedServeManifest(
+            Object.fromEntries(
+               rollupIds.map((id) => [
+                  id,
+                  {
+                     tableName: "no_such_rollup_table",
+                     connectionName: "duckdb",
+                  },
+               ]),
+            ),
+         );
+         const query =
+            "run: orders -> { group_by: category; aggregate: total; order_by: category }";
+         // With an index.malloy, only it is queryable: the curated surface.
+         const model = pkg.getModel("index.malloy");
+         expect(model).toBeDefined();
+         await expect(
+            model!.runQuery(unrecordedAudit(), { query }),
+         ).rejects.toThrow(/no_such_rollup_table/);
+      },
+      { timeout: 60000 },
+   );
+
+   it(
+      "routes a query through a model that imports the rollup's base without re-exporting it (#6646)",
+      async () => {
+         // No index.malloy, so every model is queryable. `report.malloy`
+         // imports `orders` but exports only its own source.
+         // Its companion used to rename-import the base from report.malloy,
+         // which hands an importer only what it exports, so the companion
+         // failed to compile and every query here ran live.
+         const pkg = await loadPackageFiles({
+            "sub/jaffle.malloy": `##! experimental { persistence composite_sources }
+source: orders is duckdb.sql("""
+  SELECT * FROM (VALUES (10, 'A'), (20, 'A'), (30, 'B')) AS t(amount, category)
+""") extend {
+  #@ preaggregate grain="category"
+  measure: total is amount.sum()
+}
+`,
+            "report.malloy": `import { orders } from "sub/jaffle.malloy"
+source: notes is duckdb.sql("SELECT 1 AS id")
+export { notes }
+`,
+         });
+         const rollupIds = [...pkg.getPreaggregateEntityIds()];
+         expect(rollupIds).toHaveLength(1);
+         pkg.bindColocatedServeManifest(
+            Object.fromEntries(
+               rollupIds.map((id) => [
+                  id,
+                  {
+                     tableName: "no_such_rollup_table",
+                     connectionName: "duckdb",
+                  },
+               ]),
+            ),
+         );
+         await expect(
+            pkg.getModel("report.malloy")!.runQuery(unrecordedAudit(), {
+               query: "run: orders -> { group_by: category; aggregate: total; order_by: category }",
+            }),
+         ).rejects.toThrow(/no_such_rollup_table/);
+      },
+      { timeout: 60000 },
+   );
+
+   it(
       "answers a given-supplying query, which cannot route",
       async () => {
          // A model-level `given:` does not cross the companion's `import`, so the

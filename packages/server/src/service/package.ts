@@ -1884,6 +1884,8 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
          })),
          ...this.materialization.storageWarnings(),
          ...this.materialization.droppedPersistWarnings(),
+         ...this.materialization.rollupsOverStoredBaseWarnings(),
+         ...this.materialization.annotationFindingWarnings(),
          ...this.materialization.persistRefusalWarnings(),
          // Not in exploresWarnings: an import-only file must not block publish.
          ...this.emptyDiscoveryWarnings(),
@@ -2168,6 +2170,25 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
    /** See {@link PackageMaterialization.formatInvalidPreaggregatePolicy}. */
    public formatInvalidPreaggregatePolicy(): string {
       return this.materialization.formatInvalidPreaggregatePolicy();
+   }
+
+   /** See {@link PackageMaterialization.formatUnparseableAnnotations}. */
+   public formatUnparseableAnnotations(): string {
+      return this.materialization.formatUnparseableAnnotations();
+   }
+
+   /**
+    * The coded `#@` annotation findings this package carries, as the warnings
+    * clients see, for the findings metric: derived from the warnings so the
+    * codes are declared once, where each warning is made.
+    */
+   public annotationFindingWarnings(): ApiPackageWarning[] {
+      return [
+         ...this.materialization.droppedPersistWarnings(),
+         ...this.materialization.annotationFindingWarnings(),
+         ...this.materialization.rollupsOverStoredBaseWarnings(),
+         ...this.preaggregateAccessWarnings(),
+      ].filter((warning) => warning.code !== undefined);
    }
 
    /** See {@link PackageMaterialization.preaggregateAccessWarnings}. */

@@ -1255,6 +1255,35 @@ tile reads by its `tile.query`, so a tile filtered that way is not marked as ign
 values. A gate whose given the request did not send denies, so a host that never sends them sees every tile on a
 gated source as restricted.
 
+## Showing one in a conversation
+
+An agent shows a report to a person with two MCP tools: `list_reports` for a package's report paths, then
+`show_report` with one of them, and optionally starting filter values:
+
+```json
+{ "environmentName": "examples", "packageName": "storefront", "path": "overview.malloy",
+  "givens": { "CATEGORY": "Outerwear" } }
+```
+
+A host that supports [MCP Apps](https://github.com/modelcontextprotocol/ext-apps) (Claude Desktop and
+claude.ai among them) draws the report in the conversation, as the Console's reader draws it: the filter row,
+every tile, the click menu with Show rows, and `# drill` click-through, where a drill to another report opens it
+in the same panel with Back to return. "Open in Publisher" takes the report and its current filter values to the
+Console. A host that draws no panel shows the tool's text, which names the report, its tiles and filters, and
+its Console address.
+
+The panel holds no credentials and fetches nothing itself. Its reads (the report, its tiles' queries, the
+filter suggestions) go back through the host as calls to `report_api`, an app-only tool that answers them
+through the same controllers as the REST routes. A report therefore runs in a panel under the same
+`#(authorize)` gates, row filters, givens and access record as in the Console, for the caller the MCP request
+carries. Its script loads from the REST server, at `MCP_APP_ORIGIN` (default `http://localhost:{port}`); set it
+to the address a host's browser reaches that server at. The panel offers no CSV download, which a sandboxed
+frame cannot start; the Console does.
+
+A host's sandbox typically refuses `eval`. Charts draw there through Vega's interpreter, chosen automatically
+when the page refuses it; scatter charts and the three maps do not yet (`@malloydata/render` compiles their
+expressions), and show an error card in the panel where the Console draws them.
+
 ## Where reports stop
 
 Whatever renderer tags can express is the ceiling. There is deliberately no code escape hatch (no custom

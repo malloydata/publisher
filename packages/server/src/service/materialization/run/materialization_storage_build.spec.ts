@@ -257,11 +257,12 @@ describe("buildOneSourceIntoStorage (chained-build fallback ladder)", () => {
       // The orchestrator meant to pin that upstream; recomputing it here would
       // rebuild a table it did not ask for. The refusal carries the upstream's
       // name so the dispatch, not the model, is what gets fixed.
-      await expect(
-         callInto({ strict: true, stackOnParent: "missing" }),
-      ).rejects.toThrow(
+      const call = callInto({ strict: true, stackOnParent: "missing" });
+      await expect(call).rejects.toThrow(
          /strict upstreams forbid.*persisted upstream 'daily'/is,
       );
+      // Typed, so the run can attribute it to an upstream that failed.
+      await expect(call).rejects.toBeInstanceOf(ChainedUpstreamMissingError);
    });
 
    it("strict + a downstream that reaches the warehouse falls through to recompute-from-raw", async () => {
@@ -280,11 +281,12 @@ describe("buildOneSourceIntoStorage (chained-build fallback ladder)", () => {
       // Every upstream was handed to the build; recomputing them would rebuild
       // pinned tables because of a limit in the carrying, which is not the
       // source's doing and not a licence strict grants.
-      await expect(
-         callInto({ strict: true, stackOnParent: "uncarried" }),
-      ).rejects.toThrow(
+      const call = callInto({ strict: true, stackOnParent: "uncarried" });
+      await expect(call).rejects.toThrow(
          /strict upstreams forbid.*could not be built over them/is,
       );
+      // Typed, so the run classifies it deterministic.
+      await expect(call).rejects.toBeInstanceOf(ChainedShapeNotCarriedError);
    });
 
    it("non-strict + a persisted upstream the build cannot see, or an uncarried shape, falls through to recompute-from-raw", async () => {

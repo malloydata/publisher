@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 import { QueryClientProvider, useQuery } from "@tanstack/react-query";
-import axios from "axios";
+import axios, { type AxiosAdapter } from "axios";
 import React, {
    createContext,
    ReactNode,
@@ -143,11 +143,27 @@ export interface ServerProviderProps {
     * what tokens do not reach.
     */
    ui?: ReportUiOverrides;
+   /**
+    * Carry the SDK's API calls some other way than HTTP to `baseURL`: an
+    * axios adapter that receives each request (method, URL under `baseURL`,
+    * body) and answers it. For a host whose page cannot reach the server
+    * directly, such as an MCP App panel, which sends each call through the
+    * MCP host as a tool call. Omit for plain HTTP.
+    */
+   adapter?: AxiosAdapter;
+   /**
+    * Light or dark, decided by the host. When set, the viewer's own choice
+    * and the operating system's preference are not consulted, and nothing is
+    * stored. For a host with its own theme switch, such as an MCP host that
+    * tells its panels which theme it is in. Omit to let the viewer choose.
+    */
+   mode?: ThemeMode;
 }
 
 const getApiClients = (
    baseURL?: string,
    accessToken?: () => Promise<string>,
+   adapter?: AxiosAdapter,
 ) => {
    const basePath = `${window.location.protocol}//${window.location.host}/api/v0`;
 
@@ -156,6 +172,7 @@ const getApiClients = (
       baseURL: baseURL || basePath,
       withCredentials: true,
       timeout: 600000,
+      ...(adapter ? { adapter } : {}),
    });
 
    axiosInstance.interceptors.request.use(async (config) => {
@@ -210,10 +227,12 @@ const ServerProviderInner: React.FC<ServerProviderProps> = ({
    mutable: mutableProp,
    theme: themeProp,
    ui,
+   adapter,
+   mode: modeProp,
 }) => {
    const apiClients = useMemo(
-      () => getApiClients(baseURL, getAccessToken),
-      [baseURL, getAccessToken],
+      () => getApiClients(baseURL, getAccessToken, adapter),
+      [baseURL, getAccessToken, adapter],
    );
 
    const server =
@@ -300,12 +319,13 @@ const ServerProviderInner: React.FC<ServerProviderProps> = ({
    const effectiveUserChoice = allowUserToggle ? userChoice : undefined;
    const mode: ThemeMode = useMemo(
       () =>
+         modeProp ??
          resolveMode(
             instanceTheme?.defaultMode,
             effectiveUserChoice,
             prefersDark,
          ),
-      [instanceTheme?.defaultMode, effectiveUserChoice, prefersDark],
+      [modeProp, instanceTheme?.defaultMode, effectiveUserChoice, prefersDark],
    );
 
    const value: ServerContextValue = {
@@ -325,7 +345,7 @@ const ServerProviderInner: React.FC<ServerProviderProps> = ({
             mode={mode}
             userChoice={effectiveUserChoice}
             setMode={setMode}
-            allowUserToggle={allowUserToggle}
+            allowUserToggle={allowUserToggle && modeProp === undefined}
             {...(ui ? { ui } : {})}
          >
             {children}

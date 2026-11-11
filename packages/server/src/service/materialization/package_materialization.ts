@@ -2,6 +2,10 @@
 // SPDX-License-Identifier: MIT
 
 import type { MalloyConfig } from "@malloydata/malloy";
+import {
+   findingSeverity,
+   type PackageAnnotationFinding,
+} from "../annotation_reader";
 import { components } from "../../api";
 import {
    getPersistCollisionEnforce,
@@ -139,6 +143,9 @@ export class PackageMaterialization {
    // `#@ persist` sources Malloy's build walk did not plan, which
    // would silently serve live. Warned, and refused at build.
    private droppedPersistSources: { name: string; modelPath: string }[] = [];
+   private rollupsOverStoredBase: { baseName: string; modelPath?: string }[] =
+      [];
+   private annotationFindings: PackageAnnotationFinding[] = [];
    // Which sources may be served from a materialized table, decided at compile
    // where the compiled sources exist; binding does not recompile. `undefined`
    // means NOT KNOWN (the plan compute failed) and is refused like "nothing is
@@ -235,6 +242,8 @@ export class PackageMaterialization {
          const {
             plan,
             droppedPersistSources,
+            rollupsOverStoredBase,
+            annotationFindings,
             sourceEligibility,
             colocatedSourceEligibility,
             incrementalDeclarations,
@@ -244,6 +253,9 @@ export class PackageMaterialization {
          this.buildPlan = plan;
          this.buildPlanFailed = false;
          this.droppedPersistSources = droppedPersistSources;
+         this.rollupsOverStoredBase = rollupsOverStoredBase ?? [];
+         // `?? []`: an outcome a worker built before this field existed.
+         this.annotationFindings = annotationFindings ?? [];
          this.sourceEligibility = sourceEligibility;
          this.colocatedSourceEligibility = colocatedSourceEligibility;
          this.incrementalPolicySources = Object.entries(plan?.sources ?? {})
@@ -266,6 +278,8 @@ export class PackageMaterialization {
          return performance.now() - buildPlanPhaseStart;
       } catch (err) {
          this.buildPlanFailed = true;
+         // Nothing from the previous load describes this one.
+         this.rollupsOverStoredBase = [];
          recordBuildPlanComputeFailed();
          logger.warn(
             `Failed to compute build plan for package ${this.owner.packageName()}`,
@@ -583,6 +597,29 @@ export class PackageMaterialization {
    }
 
    /**
+    * One warning per `storage=` base whose `#@ preaggregate storage=` rollups
+    * were left out: they can neither build nor serve over a stored base yet
+    * (#6293), so the base serves from its stored table and the rollups do not
+    * exist.
+    */
+   rollupsOverStoredBaseWarnings(): ApiPackageWarning[] {
+      // With the storage tier off the base itself serves live, which
+      // storageWarnings already says; "reads the stored table" would be false.
+      if (getPersistStorageMode() === "off") return [];
+      return this.rollupsOverStoredBase.map((r) => ({
+         ...(r.modelPath ? { model: r.modelPath } : {}),
+         subject: r.baseName,
+         code: "preaggregate-over-stored-base",
+         severity: "warn" as const,
+         message:
+            `declares '#@ preaggregate storage=' rollups, but is itself ` +
+            `persisted with 'storage=', so the rollups are not built: a rollup ` +
+            `over a stored base cannot build or serve yet, and queries read the ` +
+            `base's stored table instead.`,
+      }));
+   }
+
+   /**
     * Warnings for `#@ persist` sources Malloy's build walk did not plan (e.g.
     * a filtered pass-through), which would otherwise silently serve
     * live. Independent of {@link buildPlan}: a package whose only persist
@@ -592,12 +629,31 @@ export class PackageMaterialization {
       return this.droppedPersistSources.map((d) => ({
          model: d.modelPath,
          subject: d.name,
+         code: "persist-not-materializable",
+         severity: "warn" as const,
          message:
             `is annotated '#@ persist' but was not recognized as a ` +
             `materializable source, so nothing is materialized and it is served ` +
             `live. Only query/aggregate sources build; a filtered pass-through ` +
             `does not. Persist a query source, or invoke a parameterized source ` +
             `with a bound argument.`,
+      }));
+   }
+
+   /**
+    * The findings on authored `#@` annotations, as package warnings: a
+    * malformed one (an unparseable tag, a retired key) is `error`, refused at
+    * publish; an unservable one (an unknown key) is `warn`.
+    */
+   annotationFindingWarnings(): ApiPackageWarning[] {
+      return this.annotationFindings.map((finding) => ({
+         ...(finding.model ? { model: finding.model } : {}),
+         ...(finding.subject ? { subject: finding.subject } : {}),
+         message: finding.rewrite
+            ? `${finding.message}; ${finding.rewrite}`
+            : finding.message,
+         code: finding.code,
+         severity: findingSeverity(finding),
       }));
    }
 
@@ -749,6 +805,24 @@ export class PackageMaterialization {
       return warnings;
    }
 
+   /**
+    * The publish refusal for `#@` lines that do not parse, one per line, or ""
+    * when none. Publish only: a load warns (the finding rides
+    * `Package.warnings`), so a package already published keeps loading and its
+    * schedule keeps running, and a metadata PATCH is not refused for it. Kept
+    * out of {@link persistencePolicyWarnings}, which the scheduler and the
+    * metadata PATCH both read.
+    */
+   formatUnparseableAnnotations(): string {
+      return this.annotationFindings
+         .filter((finding) => finding.code === "persist-unparseable")
+         .map(
+            (finding) =>
+               `${finding.model ? `${finding.model}: ` : ""}${finding.message}`,
+         )
+         .join("\n");
+   }
+
    /** The {@link persistencePolicyWarnings}, one per line, or "" if valid. */
    formatInvalidPersistencePolicy(): string {
       return this.persistencePolicyWarnings().join("\n");
@@ -793,6 +867,8 @@ export class PackageMaterialization {
          model: modelPath,
          subject: violation.fieldName ?? violation.sourceName,
          message: violation.message,
+         code: "preaggregate-hidden-field",
+         severity: "warn" as const,
       }));
    }
 
