@@ -1,0 +1,5 @@
+{
+    "name": "speed-run",
+    "version": "1.0.0",
+    "description": "One or more query replays as a semantic model: per-query timings, where each query was served from, and each later replay compared with the first. Built by skills/eval-loop/scripts/build_speed_package.py."
+}

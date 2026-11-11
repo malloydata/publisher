@@ -11,7 +11,7 @@
  * query was wrong or a right query was read wrongly; the sequence can, and
  * every earlier viewer flattened it into one blob of prose.
  *
- * Aggregate tables live in notebooks/eval_run.malloy, which Publisher renders. This
+ * Aggregate tables live in run_report.malloy, which Publisher renders. This
  * file holds no scoring logic; everything comes from eval_run.malloy. That
  * includes classifying a verdict: the `outcome` column is decided once, in
  * flip_table.outcome, and travels through the CSV. This file used to keep its
@@ -878,5 +878,11 @@ async function main() {
   let rt; addEventListener('resize', () => { clearTimeout(rt); rt = setTimeout(renderStrip, 150); });
   document.getElementById('scrim').addEventListener('click', closeDrawer);
 }
+
+// The report opens in the Console, whose route is /<env>/<pkg>/<file>, not
+// under this page's /environments/<env>/packages/<pkg>/ prefix.
+const reportLink = document.getElementById('nblink');
+const served = location.pathname.match(/\/environments\/([^/]+)\/packages\/([^/]+)\//);
+if (reportLink && served) reportLink.href = `/${served[1]}/${served[2]}/run_report`;
 
 main();

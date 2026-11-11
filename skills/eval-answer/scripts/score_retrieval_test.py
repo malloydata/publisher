@@ -602,14 +602,8 @@ class LabelsMatchTheRunPackage(unittest.TestCase):
             return fh.read()
 
     def notebook_text(self):
-        """The notebook, at its `.malloy` path or the legacy `.malloynb` one that
-        run packages built before the switch still carry."""
-        for parts in (("notebooks", "eval_run.malloy"), ("eval_run.malloynb",)):
-            try:
-                return self.package_file(*parts)
-            except FileNotFoundError:
-                continue
-        raise FileNotFoundError("eval-run-package has no notebook")
+        """The run package's report."""
+        return self.package_file("run_report.malloy")
 
     def emitted(self):
         from score_retrieval import (DELIVERED, MODEL, NEVER_ASKED,

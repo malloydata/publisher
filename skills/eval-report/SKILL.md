@@ -73,18 +73,25 @@ It gives you two things to link:
 | Artifact | What it is | URL |
 |---|---|---|
 | The case matrix app | Every question, its verdict, which needed entities retrieval delivered, and a drawer per case holding the reference answer, the judge's reasoning, the re-executed rows and every query the answerer ran | `<publisher>/environments/<env>/packages/eval-<label>/` |
-| `notebooks/eval_run.malloy` | The aggregate tables: pass rate, effort, cost, most-missed entities, the backlog | `<publisher>/<env>/eval-<label>/notebooks/eval_run` |
+| `run_report.malloy` | The aggregate tables: pass rate, effort, cost, most-missed entities, the backlog | `<publisher>/<env>/eval-<label>/run_report` |
 
 **Those two URLs are in different path spaces, and guessing costs a 404.** The
 app is served by the in-package `public/` handler, which owns
-`/environments/<env>/packages/<pkg>/<file>`. The notebook is a MODEL, rendered
+`/environments/<env>/packages/<pkg>/<file>`. The report is a MODEL, rendered
 by the Console, whose routes are `/<env>/<package>/<model path>` with no
-`environments` or `packages` segment at all. Putting the notebook under the
+`environments` or `packages` segment at all. Putting the report under the
 app's prefix 404s, because the public-file handler answers there and the
-notebook is not in `public/`. Verified both, on a real package, by opening
+report is not in `public/`. Verified both, on a real package, by opening
 them.
 
 Pass `--run` more than once to put two arms side by side.
+
+A query replay (`eval.py query-replay`) packages the same way, into
+`speed-<label>`: `speed_report.malloy` for the timings per replay and per source,
+and an app showing each query's time before and after, with any query whose
+rows changed listed first. Give the baseline replay first:
+`eval.py package --set <set> --run <runs>/perf-01 --run <runs>/perf-02`. Answer
+runs and replays do not mix in one package.
 
 ## Step 2: write the report
 
@@ -448,7 +455,7 @@ A report whose evidence cannot be opened is a report nobody checks.
 
 - **Absolute paths**, never relative ones. A reader is not in your working
   directory, and a terminal only makes an absolute path clickable.
-- **The served URL** for the app and the notebook, with the real host and port
+- **The served URL** for the app and the report, with the real host and port
   the run used, not a placeholder.
 - Per case, link the FILES, not the directory: `artifacts/<qid>/answer.md`,
   `artifacts/<qid>/judge.md`, `artifacts/<qid>/answerer.jsonl`. A `file://`

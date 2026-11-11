@@ -167,7 +167,7 @@ python3 $EVAL diagnose --set $SET --label baseline-01 --verdicts no_match,near_m
 
 **5. Build the report.** It refuses a run that has not been diagnosed, then
 builds the report, registers it on the truth server, and prints its two links:
-the case matrix, and the notebook of aggregate tables.
+the case matrix, and the report of aggregate tables.
 
 ```bash
 python3 $EVAL package --set $SET --label baseline-01

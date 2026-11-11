@@ -55,6 +55,14 @@ WORKING_COPY = "working copy"
 UNPUBLISHED = "(unpublished)"
 
 
+def version_label(meta: dict[str, Any]) -> str | None:
+    """The version a run measured: its published id, else the publisher.json
+    version of the working copy it ran on (`1.2.0 (unpublished)`), else None."""
+    pv = meta.get("packageVersion") or {}
+    return ((pv.get("id") if pv else meta.get("targetVersion"))
+            or (f"{pv['baseVersion']} {UNPUBLISHED}" if pv.get("baseVersion") else None))
+
+
 def version_key(v: str) -> tuple:
     """Semver order for display, highest first after reverse. A pre-release
     sorts below its release; anything unparseable sorts last."""
@@ -89,8 +97,7 @@ def runs(workdir: pathlib.Path, n_cases: int | None = None) -> list[dict[str, An
             "slice": (meta.get("slice") or {}).get("name")
             or ("tags " + ",".join((meta.get("slice") or {}).get("tags") or [])
                 if meta.get("slice") else None),
-            "version": (pv.get("id") if pv else meta.get("targetVersion"))
-            or (f"{pv['baseVersion']} {UNPUBLISHED}" if pv.get("baseVersion") else None),
+            "version": version_label(meta),
             "contentHash": pv.get("contentHash"),
             "baseVersion": pv.get("baseVersion"),
             "datasetVersion": meta.get("datasetVersion"),

@@ -115,6 +115,12 @@ find is unchanged, and no fresh answer run is needed. An edit that also renames
 a field or changes a doc is two edits: make them separately, and the second
 takes the ordinary acceptance check.
 
+To read it, or hand it to someone, package the replays, baseline first:
+`eval.py package --set <set> --run <runs>/perf-01 --run <runs>/perf-02`. That
+builds `speed-perf-02` on the truth server: a report of the timings per replay
+and per source, and an app with each query's time before and after, any query
+whose rows changed listed first.
+
 Checkpoint as for any edit: a commit naming the replay's run id. Publishing it
 as a new package version puts the speedup in `eval.py versions`.
 

@@ -492,7 +492,7 @@ the run measure something other than what it names:
 A run directory is JSONL. It is a record, not a result, and the console summary
 scrolls away. **Every run ends by producing something a person can open**, and
 that job is `skill:eval-report`: it builds the servable run package (the case
-matrix app and the aggregate notebook) and gives the template for the write-up.
+matrix app and the aggregate report) and gives the template for the write-up.
 
 Read it at the end of every run, including a run that failed. The standing
 complaint about this loop is that "a bunch of stuff happens and it is hard to

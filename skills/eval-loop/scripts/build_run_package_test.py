@@ -97,9 +97,11 @@ class SourcesMatchTheCsvs(unittest.TestCase):
         self.assertTrue(found, "no duckdb.table sources parsed from the model")
         return found
 
-    def test_the_package_carries_the_notebook_at_its_malloy_path(self):
-        self.assertTrue((self.out / "notebooks" / "eval_run.malloy").exists())
-        self.assertFalse((self.out / "eval_run.malloynb").exists())
+    def test_the_package_carries_a_malloy_report_and_no_notebook(self):
+        report = self.out / "run_report.malloy"
+        self.assertTrue(report.exists())
+        self.assertIn("##| artifact", report.read_text())
+        self.assertEqual(list(self.out.rglob("*.malloynb")), [])
 
     def test_every_declared_column_is_actually_written(self):
         for name, stem, block in self.sources():
@@ -256,8 +258,8 @@ class RefusalsAndServing(unittest.TestCase):
         out = self.tmp / "pkg"
         p = self.build("--out", str(out), "--no-register")
         self.assertEqual(p.returncode, 0, p.stderr)
-        want = ["# case matrix: http://localhost:4881/environments/truth/packages/pkg/",
-                "# notebook:    http://localhost:4881/truth/pkg/notebooks/eval_run"]
+        want = ["# data app:    http://localhost:4881/environments/truth/packages/pkg/",
+                "# report:      http://localhost:4881/truth/pkg/run_report"]
         for line in want:
             self.assertIn(line, p.stdout)
             self.assertIn(line, (out / "README.md").read_text())
