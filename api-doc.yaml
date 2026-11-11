@@ -9339,10 +9339,41 @@ components:
           type: string
           description: Table source as a JSON string.
         columns:
-          description: Table fields
+          description: |
+            The table's columns. A record column (a BigQuery RECORD, a DuckDB
+            STRUCT, a Trino ROW, a Databricks STRUCT) is followed by its members, named by their
+            dotted path (`delivery.city`, `delivery.address.zip`). A member
+            that follows an `array` column belongs to a repeated record: it
+            has one value per element of the array, not one per row. A member
+            whose name is not a plain identifier (`a.b`, `two words`) is not
+            listed, nor anything under it.
+
+            Types: a member always has Malloy's type name (`string`,
+            `number`, `record`, `array`). A top-level column has the type the
+            database reports in a schema listing on a dialect read through
+            INFORMATION_SCHEMA (DuckDB, Trino, Postgres and others; on
+            Databricks a STRUCT or ARRAY column reports its full_data_type,
+            `struct<city:string>`), and
+            Malloy's type name in a BigQuery listing and from the single-table
+            route.
           type: array
           items:
             $ref: "#/components/schemas/Column"
+        membersUnread:
+          type: boolean
+          description: >-
+            Present, and true, when the table has a record column (a DuckDB
+            STRUCT, a Trino ROW, a Databricks STRUCT) whose members this
+            listing did not add to `columns`: the table's schema read failed,
+            or had not finished within the listing's time limit. Either can
+            clear on a later listing. `columns` then holds the database's
+            top-level columns only, so a missing member is not a removed one.
+            Absent when every record's members are listed, and when they are
+            never listed: a column type that declares none (a plain array,
+            a Snowflake OBJECT), or a table name that needs quoting.
+            Never set on BigQuery, whose listing reads each table's whole
+            schema: a table whose read failed there is listed with no
+            columns.
 
     TemporaryTable:
       type: object
