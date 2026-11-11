@@ -302,6 +302,47 @@ October's in parentheses where comparable.
 | gen        | query_cheap  |     17.7 |           66.0 (169) |  3.7× (12.2) |
 | gen        | report_get   |      1.5 |                 65.0 |        42.9× |
 
+### Router
+
+`bun run perf:router --sources N`: what today's routing decision (`Model.runQueryResults`) costs per
+query, in process, on the [R4 harness](../packages/server/tests/component/r4/harness.ts)'s real
+build-and-bind path. It has no HTTP, so it isolates the routing from transport. Materialization v2
+replaces this chain with a variant router, and its phase 1 is held to these numbers.
+
+The workload is a 200,000-row fact table with a `join_one` to an unstored dimension table. `--sources
+N` declares N persisted sources over the fact table, all bound. Queries read the first, so the stored
+table holds the same rows as its source and served minus live is roughly the routing overhead.
+`cheap` is one aggregate, and `grouped` a group-by. `miss` goes through the unstored join, which the
+serve shape cannot carry, so the storage variant fails to compile and the query runs live. *Warm*
+keeps the bindings, so the serve shape stays memoized. *Cold* re-sets them before each query, so each
+query compiles the shape.
+
+Recorded on 2026-11-11, same machine as above, 30 iterations after 5 warm-up each. Each cell is
+`median · p95` ms, with served minus the live median in parentheses. Differences under ~0.5 ms are
+within the run-to-run noise.
+
+| sources | query   | live        | served, warm         | served, cold         |
+| ------: | ------- | ----------- | -------------------- | -------------------- |
+|       1 | cheap   | 1.65 · 2.18 | 1.98 · 2.54 (+0.33)  | 3.42 · 4.03 (+1.77)  |
+|       1 | grouped | 2.37 · 2.85 | 2.94 · 3.48 (+0.57)  | 3.76 · 4.28 (+1.39)  |
+|       1 | miss    | 2.45 · 2.74 | 2.43 · 4.07 (−0.02)  | 3.43 · 4.67 (+0.98)  |
+|       8 | cheap   | 1.19 · 1.60 | 1.65 · 2.77 (+0.46)  | 3.66 · 8.65 (+2.48)  |
+|       8 | grouped | 2.22 · 2.45 | 2.34 · 2.85 (+0.12)  | 4.49 · 5.79 (+2.27)  |
+|       8 | miss    | 2.12 · 2.63 | 2.21 · 2.69 (+0.10)  | 4.01 · 4.62 (+1.89)  |
+|      32 | cheap   | 1.07 · 1.38 | 1.24 · 1.66 (+0.18)  | 7.23 · 9.43 (+6.17)  |
+|      32 | grouped | 1.98 · 2.32 | 2.17 · 2.29 (+0.19)  | 6.78 · 8.85 (+4.80)  |
+|      32 | miss    | 2.05 · 2.23 | 3.04 · 4.50 (+1.00)  | 7.51 · 8.97 (+5.46)  |
+
+- **The warm decision is cheap:** under a millisecond at every size.
+- **Compiling the serve shape grows with the package**, because it is compiled over every binding:
+  about 1.5 ms of overhead at 1 source, 2.4 ms at 8, and 5 to 6 ms at 32.
+- **A miss pays for the failed variant compile**, and that also grows: about 1 ms warm at 32
+  sources. A router that compiles several variants per query pays this once per variant it rules
+  out.
+
+Not covered yet: colocated routing (the manifest tier) and pre-aggregation rollups. They need a
+package directory and the rollup companion model, so they come with the variant router itself.
+
 ### What the baseline shows
 
 - **Loads got faster, and they no longer stall the server.** A medium load is ~25 % faster, a large
