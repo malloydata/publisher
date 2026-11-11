@@ -23,7 +23,6 @@ import os from "os";
 import path from "path";
 import { pathToFileURL } from "url";
 import { RestE2EEnv, startRestE2E } from "../../harness/rest_e2e";
-import { versioningOnForSuite } from "../../harness/versioning";
 
 const ENV_NAME = "manifest-location-env";
 const PKG = "persist-test";
@@ -120,8 +119,6 @@ async function expectLive(): Promise<void> {
 }
 
 describe("a version bound to a manifest on this server's disk", () => {
-   versioningOnForSuite();
-
    let sourceEntityId = "";
 
    beforeAll(async () => {

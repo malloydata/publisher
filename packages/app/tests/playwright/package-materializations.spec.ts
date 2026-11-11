@@ -30,12 +30,10 @@ test.describe("package-materializations: read", () => {
       await expect(
          page.getByRole("heading", { name: "Materializations", level: 6 }),
       ).toBeVisible({ timeout: 60_000 });
-      // What is in force, and the three controls that change it.
+      // What is in force, and a new build. Scope and schedule come from the
+      // published version's publisher.json, so they are shown, not edited.
       await expect(page.getByText(/scope: (package|version)/)).toBeVisible();
-      await expect(page.getByRole("button", { name: /^Scope/ })).toBeVisible();
-      await expect(
-         page.getByRole("button", { name: /schedule/i }),
-      ).toBeVisible();
+      await expect(page.getByRole("button", { name: /^Scope/ })).toHaveCount(0);
       await expect(
          page.getByRole("button", { name: "Add materialization" }),
       ).toBeVisible();

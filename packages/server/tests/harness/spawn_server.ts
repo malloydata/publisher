@@ -66,8 +66,9 @@ export function tempDir(prefix: string): { dir: string; cleanup: () => void } {
 }
 
 /**
- * A package source directory: `publisher.json` naming `name`, plus `files`
- * (relative path → contents). Defaults to one DuckDB model, `first.malloy`.
+ * A package source directory: `publisher.json` naming `name` and version
+ * 1.0.0, plus `files` (relative path → contents). Defaults to one DuckDB
+ * model, `first.malloy`.
  */
 export function writeSourcePackage(
    name: string,
@@ -78,7 +79,7 @@ export function writeSourcePackage(
    const pkg = tempDir("spawned-src-");
    fs.writeFileSync(
       path.join(pkg.dir, "publisher.json"),
-      JSON.stringify({ name }),
+      JSON.stringify({ name, version: "1.0.0" }),
    );
    for (const [relative, contents] of Object.entries(files)) {
       fs.writeFileSync(path.join(pkg.dir, relative), contents);
