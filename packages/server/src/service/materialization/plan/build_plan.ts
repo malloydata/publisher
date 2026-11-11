@@ -808,7 +808,10 @@ function addAnnotationFinding(
 
 /** Whether a parse error at `at` falls on `note`, a `#@` line of a source. */
 function noteCovers(
-   note: { text: string; at: { url: string; range: { start: { line: number } } } },
+   note: {
+      text: string;
+      at: { url: string; range: { start: { line: number } } };
+   },
    at: { url: string; range: { start: { line: number } } },
 ): boolean {
    if (note.at.url !== at.url) return false;
@@ -839,7 +842,9 @@ function declaringModelPath(
    if (!url?.startsWith("file:")) return fallback;
    try {
       const relative = path.relative(packagePath, fileURLToPath(url));
-      return relative && !relative.startsWith("..") && !path.isAbsolute(relative)
+      return relative &&
+         !relative.startsWith("..") &&
+         !path.isAbsolute(relative)
          ? relative.split(path.sep).join("/")
          : fallback;
    } catch {

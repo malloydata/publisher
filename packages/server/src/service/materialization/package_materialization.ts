@@ -657,7 +657,6 @@ export class PackageMaterialization {
       }));
    }
 
-
    /**
     * Warnings for the `#@ persist` sources the compile-time gates refused,
     * carrying the gate's message verbatim so there is one wording to maintain.
