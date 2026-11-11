@@ -52,6 +52,7 @@
  */
 
 import { Annotations } from "@malloydata/malloy";
+import { parseRouteTag } from "../../motly";
 import { isSpliceableNamespace } from "./preaggregation_namespace";
 import type { LogMessage } from "@malloydata/malloy";
 
@@ -211,10 +212,13 @@ export function readPreaggregateAnnotation(
 
       let tag;
       try {
-         const parsed = new Annotations(
-            // eslint-disable-next-line @typescript-eslint/no-explicit-any
-            { notes: [note.raw] } as any,
-         ).parseAsTag("@");
+         const parsed = parseRouteTag(
+            new Annotations(
+               // eslint-disable-next-line @typescript-eslint/no-explicit-any
+               { notes: [note.raw] } as any,
+            ),
+            "@",
+         );
          tag = parsed.tag;
          parseLog.push(...parsed.log);
       } catch {

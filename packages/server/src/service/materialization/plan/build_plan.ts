@@ -13,6 +13,7 @@ import type {
    SourceDef,
    UnbuildableSource,
 } from "@malloydata/malloy";
+import { parseRouteTag, routeHasKey } from "../../motly";
 import { Annotations } from "@malloydata/malloy";
 import { components } from "../../../api";
 import { MaterializationEligibilityError } from "../../../errors";
@@ -314,7 +315,7 @@ function packageFreshnessLayer(
 /** The source's `#@` tag, or undefined if it fails to parse (degrade to unset). */
 function safeSourceTag(source: PersistSource): ReadableTag | undefined {
    try {
-      return source.annotations.parseAsTag("@").tag as ReadableTag;
+      return parseRouteTag(source.annotations, "@").tag as ReadableTag;
    } catch {
       return undefined;
    }
@@ -327,7 +328,7 @@ function safeSourceTag(source: PersistSource): ReadableTag | undefined {
  */
 function safeModelTag(source: PersistSource): ReadableTag | undefined {
    try {
-      return source.modelAnnotations.parseAsTag().tag as ReadableTag;
+      return parseRouteTag(source.modelAnnotations).tag as ReadableTag;
    } catch {
       return undefined;
    }
@@ -648,9 +649,13 @@ function detectDroppedPersistSources(
          if (!def || !def.annotations) continue;
          let isPersist = false;
          try {
-            isPersist = new Annotations(def.annotations)
-               .parseAsTag("@")
-               .tag.has("persist");
+            // Presence only, read over every line as Malloy reads it, so a
+            // `#@ persist` line carrying an `@env.` reference is still caught.
+            isPersist = routeHasKey(
+               new Annotations(def.annotations),
+               "@",
+               "persist",
+            );
          } catch {
             continue;
          }
@@ -863,8 +868,17 @@ export async function collectModelBuildPlan(
    // getBuildTargets() THROWS on a model without `##! experimental.persistence`,
    // which would abort the whole package's plan. Such a model cannot carry a
    // persist source anyway, so skip it, mirroring Malloy's own guard.
-   const modelTag = malloyModel.modelAnnotations.parseAsTag("!").tag;
-   if (!modelTag.has("experimental", "persistence")) return;
+   // Presence only, decided as Malloy decides it.
+   if (
+      !routeHasKey(
+         malloyModel.modelAnnotations,
+         "!",
+         "experimental",
+         "persistence",
+      )
+   ) {
+      return;
+   }
 
    const targets = await runtime.getBuildTargets(malloyModel);
    for (const msg of targets.tagParseLog) {

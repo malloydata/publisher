@@ -114,6 +114,7 @@ import { filterPublisherOwnedRenderLogs } from "./report_manifest";
 import {
    docCommentTitleAndDescription,
    motlyTag,
+   parseRouteTag,
    readAutorun,
    readStartingGivens,
    tagText,
@@ -3567,8 +3568,9 @@ export class Model {
    private safeModelFileTag(): ReadableTag | undefined {
       if (!this.modelDef) return undefined;
       try {
-         return new Annotations(ownModelAnnotations(this.modelDef)).parseAsTag()
-            .tag as ReadableTag;
+         return parseRouteTag(
+            new Annotations(ownModelAnnotations(this.modelDef)),
+         ).tag as ReadableTag;
       } catch {
          return undefined;
       }
@@ -3593,7 +3595,7 @@ export class Model {
          if (!entry || !isSourceDef(entry)) return undefined;
          const def = entry as unknown as { annotations?: unknown };
          if (!def.annotations) return undefined;
-         return new Annotations(def.annotations).parseAsTag("@")
+         return parseRouteTag(new Annotations(def.annotations), "@")
             .tag as ReadableTag;
       } catch {
          return undefined;

@@ -156,6 +156,35 @@ source: open is base -> { group_by: category }
 });
 
 describe("detectDroppedPersistSources under getBuildTargets", () => {
+   it("still reports a dropped source whose #@ persist line carries an @env. reference", async () => {
+      // Malloy decides `persist` over every line; the backstop must agree, or
+      // the annotation becomes a silent no-op.
+      const { duckdb, connections } = duckdbTestConnections();
+      await duckdb.runSQL("CREATE OR REPLACE TABLE t_env AS SELECT 1 AS a");
+      const { runtime, materializer } = loadTestRuntime(
+         connections,
+         `##! experimental.persistence
+#@ persist name=@env.PUBLISHER_SPEC_UNSET_VAR
+source: filtered is duckdb.table('t_env') extend { where: a > 0 }
+`,
+      );
+      const parts = emptyBuildPlanParts();
+      await collectModelBuildPlan(parts, {
+         modelPath: "m.malloy",
+         packagePath: "/test",
+         materializer,
+         malloyModel: await materializer.getModel(),
+         runtime,
+         getRuntime: () => {
+            throw new Error("no pre-aggregation in this model");
+         },
+         synthesized: null,
+      });
+      expect(parts.droppedPersistSources).toEqual([
+         { name: "filtered", modelPath: "m.malloy" },
+      ]);
+   });
+
    it("reports a persisted filtered pass-through of a table, which the walk does not plan", async () => {
       const { duckdb, connections } = duckdbTestConnections();
       await duckdb.runSQL("CREATE TABLE t AS SELECT 1 AS a");
@@ -194,6 +223,7 @@ describe("deriveAnnotationFields", () => {
    it("returns all key=value fields of the #@ persist annotation", () => {
       const source = {
          annotations: {
+            forRoute: () => [],
             parseAsTag: () => ({
                tag: {
                   *entries() {
@@ -214,6 +244,7 @@ describe("deriveAnnotationFields", () => {
    it("degrades to {} when the annotation is absent or unparseable", () => {
       const source = {
          annotations: {
+            forRoute: () => [],
             parseAsTag: () => {
                throw new Error("no @ annotation");
             },
@@ -221,6 +252,49 @@ describe("deriveAnnotationFields", () => {
       } as unknown as PersistSource;
 
       expect(deriveAnnotationFields(source)).toEqual({});
+   });
+});
+
+describe("#@ annotations never read the server's environment", () => {
+   // The tag parser hydrates `@env.NAME` from `process.env`, and both of these
+   // reach a client: `annotationFields` on the build plan, and the metadata
+   // attached to every build statement.
+   const SECRET_VAR = "PUBLISHER_SPEC_ENV_SECRET";
+   const SECRET = "s3cr3t-from-the-server-environment";
+   const model = `##! experimental.persistence
+source: raw is duckdb.sql("""SELECT 1 AS x""")
+#@ persist name=@env.${SECRET_VAR}
+source: leaky_name is raw -> { select: * }
+#@ persist name="kept"
+#@ queryMetadata { owner=@env.${SECRET_VAR} }
+source: leaky_metadata is raw -> { select: * }
+`;
+
+   afterEach(() => {
+      delete process.env[SECRET_VAR];
+   });
+
+   it("drops the #@ route of a source with an @env. line, and the source still plans", async () => {
+      process.env[SECRET_VAR] = SECRET;
+      const { connections } = duckdbTestConnections();
+      const { sources } = await compilePersistSources(connections, model);
+
+      // Malloy still plans both: it reads only whether `persist` is present.
+      expect(Object.keys(sources).sort()).toEqual([
+         "leaky_metadata",
+         "leaky_name",
+      ]);
+      expect(deriveAnnotationFields(sources.leaky_name)).toEqual({});
+      // One `@env.` line drops the source's whole `#@` route, `name=` included.
+      expect(deriveAnnotationFields(sources.leaky_metadata)).toEqual({});
+      for (const source of Object.values(sources)) {
+         const read = JSON.stringify([
+            deriveAnnotationFields(source),
+            resolveQueryMetadata(source, null),
+            resolveFreshness(source, null),
+         ]);
+         expect(read).not.toContain(SECRET);
+      }
    });
 });
 
@@ -735,6 +809,38 @@ describe("deriveBuildPlan freshness", () => {
 describe("BuildPlan.refusedSources", () => {
    const packages = tempBuildPlanPackages();
    afterEach(() => packages.cleanup());
+
+   it(
+      "refuses a source whose #@ route reads the server's environment, instead of building it into the warehouse",
+      async () => {
+         // Publisher drops that source's whole `#@` route, so it reads no
+         // `storage=` while Malloy still plans the source. Built, it would land
+         // in the source warehouse; refused, it serves live.
+         const pkg = await packages.create(`##! experimental.persistence
+source: base is duckdb.sql("SELECT 1 AS amount")
+
+#@ persist name="ok"
+source: ok is base -> { aggregate: c is count() }
+
+#@ persist name="leaky" storage="dest"
+#@ queryMetadata { owner=@env.PUBLISHER_SPEC_UNSET_VAR }
+source: leaky is base -> { aggregate: c is count() }
+`);
+
+         const { plan } = await computePackageBuildPlan(pkg);
+
+         expect(Object.values(plan?.sources ?? {}).map((s) => s.name)).toEqual([
+            "ok",
+         ]);
+         const [refused] = Object.values(plan?.refusedSources ?? {});
+         expect(refused).toMatchObject({
+            name: "leaky",
+            reason: "env_reference",
+         });
+         expect(refused.message).toMatch(/@env\./);
+      },
+      { timeout: 20000 },
+   );
 
    it(
       "reports a package where EVERY persist source is refused as a completed plan carrying refusedSources, not a thrown error",

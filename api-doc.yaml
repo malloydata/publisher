@@ -10075,6 +10075,7 @@ components:
               not_duckdb_portable,
               public_surface_unknown,
               read_only_dialect,
+              env_reference,
               rollup_name_collision,
             ]
           description: >-
@@ -10089,9 +10090,12 @@ components:
             cannot be expressed over the stored table's own columns),
             `preaggregate_over_dynamic_source` (a rollup whose base is scoped by
             a given, which has no read-time re-application to put the term back),
-            and `read_only_dialect` (a colocated `#@ persist` on a source whose
+            `read_only_dialect` (a colocated `#@ persist` on a source whose
             dialect cannot create tables; SQL Server today, whose connection
-            reports `canPersist: false`), and `rollup_name_collision` (a
+            reports `canPersist: false`), `env_reference` (a source with an
+            `@env.` reference on one of its `#@` lines, whose directives are all
+            ignored, so it serves live rather than build into the source
+            warehouse), and `rollup_name_collision` (a
             pre-aggregation rollup whose generated name, and so its table, is
             also another model's rollup with different content; neither builds
             or serves, and each model answers from its base) — those being the
