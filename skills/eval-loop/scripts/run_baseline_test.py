@@ -880,6 +880,21 @@ class AnUnreadableVerdictIsNotLost(unittest.TestCase):
                       mcp=None)
         self.assertIs(run.call_args.kwargs["retry_when"], rb.no_events)
 
+    def test_builtins_become_the_only_cli_tools_and_lose_read_without_skills(self):
+        def argv(**kw):
+            with mock.patch.object(rb, "run_cli",
+                                   return_value=([], "", "", 1, 0.0)) as run:
+                rb.claude("q", str(pathlib.Path(__file__).parent), "sonnet",
+                          mcp=None, **kw)
+            cmd = run.call_args.args[0]
+            return cmd[cmd.index("--tools") + 1:] if "--tools" in cmd else None
+        self.assertIsNone(argv())
+        got = argv(builtins=("Read", "Skill"))
+        self.assertEqual(got[:2], ["Read", "Skill"])
+        got = argv(builtins=("Read", "Skill"), skills=False)
+        self.assertEqual(got[0], "Skill")
+        self.assertNotIn("Read", got[:1])
+
     def test_unparseable_prose_is_retried(self):
         self.assertTrue(rb.judge_unusable([{"type": "assistant"}],
                                           "The answer looks right to me."))

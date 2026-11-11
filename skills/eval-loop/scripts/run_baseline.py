@@ -713,6 +713,7 @@ def _raw_result_text(block: dict[str, Any]) -> str:
 
 def claude(prompt: str, cwd: str, model: str, *, mcp: str | None,
            tools: tuple[str, ...] = (), denied: tuple[str, ...] = (),
+           builtins: tuple[str, ...] | None = None,
            turns: int = 30,
            effort: str | None = None, timeout: int = 900,
            skills: bool = True, retry: int = 2,
@@ -737,6 +738,16 @@ def claude(prompt: str, cwd: str, model: str, *, mcp: str | None,
     # only add: there is no path here that widens the fence.
     blocked = tuple(dict.fromkeys((*blocked, *denied)))
     cmd += ["--disallowedTools", *blocked]
+    # `builtins` names the CLI's own tools the session may hold, and no others
+    # exist in it. The deny-list above can only name tools that were known when
+    # it was written, and the CLI keeps adding them: `Artifact`, the Task*
+    # family and `PublishPlugin` each arrived later and, unlisted, flagged
+    # every attempt of a run contaminated (`PublishPlugin` all 12 of a
+    # storefront run on CLI 2.1.322). An allowlist does not go stale that way.
+    # MCP tools are not built-ins, so this leaves them to `tools`.
+    if builtins is not None:
+        names = [b for b in builtins if skills or b != "Read"]
+        cmd += ["--tools", *(names or [""])]
     if effort:
         cmd += ["--effort", effort]
     # Unconditional, for the reason spelled out in `agent_harness.spawn_agent`:
@@ -2284,6 +2295,7 @@ def capture_answerer(case: dict[str, Any], a: argparse.Namespace,
             # arm is covered by `isolation_breaches`, which RECORDS whatever it
             # was granted rather than pretending to have denied it.
             denied=answer_denied(a),
+            builtins=tuple(sorted(ANSWERER_ALLOWED)),
             turns=a.max_turns, effort=a.effort, timeout=a.timeout,
             skills=bool(a.answerer_skills))
         elapsed = round(time.time() - t0, 1)
