@@ -1001,6 +1001,43 @@ source: orders is duckdb.sql("""SELECT * FROM (VALUES (${amount}, 'A')) AS t(amo
    );
 
    it(
+      "plans one rollup for a source index.malloy re-exports, and refuses neither (#7096)",
+      async () => {
+         // The recommended curation: the source's own file declares the
+         // rollup, and `index.malloy` imports and re-exports the source. Both
+         // models see it, so each synthesizes the rollup, under one name. One
+         // content, so one table: a collision only when contents differ.
+         const pkg = await packages.create({
+            "jaffle.malloy": `##! experimental { persistence composite_sources }
+source: orders is duckdb.sql("""SELECT * FROM (VALUES (10, 'A'), (5, 'B')) AS t(amount, category)""") extend {
+  #@ preaggregate grain="category"
+  measure: total is amount.sum()
+}
+`,
+            "index.malloy": `import "jaffle.malloy"
+export { orders }
+`,
+         });
+
+         const { plan } = await computePackageBuildPlan(pkg);
+
+         expect(Object.values(plan?.refusedSources ?? {})).toEqual([]);
+         const rollups = Object.values(plan?.sources ?? {}).filter(
+            (s) => s.origin === "preaggregate",
+         );
+         // Each model declares it, so both companions plan it (the build
+         // writes the table once: same target, same address).
+         expect(rollups.map((r) => r.modelPath).sort()).toEqual([
+            "index.malloy",
+            "jaffle.malloy",
+         ]);
+         expect(new Set(rollups.map((r) => r.sourceEntityId)).size).toBe(1);
+         expect(new Set(rollups.map((r) => r.name)).size).toBe(1);
+      },
+      { timeout: 20000 },
+   );
+
+   it(
       "still plans a rollup that only one model generates",
       async () => {
          const pkg = await packages.create({

@@ -697,6 +697,45 @@ describe("the emitted model", () => {
       expect(text).toContain("#@ persist");
    });
 
+   it("imports a base from the file that declares it, under its declared name (#6646)", async () => {
+      const plans = (await planFor(BODY)).map((plan) => ({
+         ...plan,
+         baseSourceName: "o",
+         baseSourceID: "orders@file:///pkg/sub/jaffle.malloy",
+      }));
+      const text = synthesizePreaggregationModel(
+         plans,
+         "report.malloy",
+         undefined,
+         (url) =>
+            url === "file:///pkg/sub/jaffle.malloy"
+               ? "sub/jaffle.malloy"
+               : undefined,
+      ) as string;
+      // The importer renamed it `o`; its own file calls it `orders`.
+      expect(text).toContain(
+         `import { ${baseAlias("o")} is orders } from "sub/jaffle.malloy"`,
+      );
+      expect(text).not.toContain("report.malloy");
+   });
+
+   it("imports from the model itself when the resolver gives no path", async () => {
+      const plans = (await planFor(BODY)).map((plan) => ({
+         ...plan,
+         baseSourceID: "orders@https://example.com/orders.malloy",
+      }));
+      expect(
+         synthesizePreaggregationModel(
+            plans,
+            "orders.malloy",
+            undefined,
+            () => undefined,
+         ),
+      ).toContain(
+         `import { ${baseAlias("orders")} is orders } from "orders.malloy"`,
+      );
+   });
+
    it("stores partials and re-declares each measure under its ORIGINAL name", async () => {
       const text = synthesizePreaggregationModel(
          await planFor(BODY),

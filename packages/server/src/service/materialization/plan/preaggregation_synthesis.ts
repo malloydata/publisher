@@ -110,6 +110,13 @@ export interface RollupPlan {
    grainDimensions: string[];
    /** The measures served here, sorted by name. */
    measures: RollupMeasure[];
+   /**
+    * The base's Malloy `sourceID`, `<declared name>@<declaring file URL>`. A
+    * model that only imports the base (an `index.malloy` re-export) cannot
+    * rename-import it from itself, so the companion imports it from the file
+    * that declares it (#6646). Absent when the compiler gave none.
+    */
+   baseSourceID?: string;
 }
 
 /**
@@ -358,8 +365,23 @@ export function planModelPreaggregation(
       .sort(([a], [b]) => a.localeCompare(b))
       .flatMap(([name, object]) => {
          if (!object || typeof object !== "object") return [];
-         return planSourcePreaggregation(name, object as ValidatableSource);
+         const sourceID = (object as { sourceID?: unknown }).sourceID;
+         return planSourcePreaggregation(name, object as ValidatableSource).map(
+            (plan) =>
+               typeof sourceID === "string"
+                  ? { ...plan, baseSourceID: sourceID }
+                  : plan,
+         );
       });
+}
+
+/** A Malloy `sourceID`'s declared name and declaring file, or undefined. */
+function splitSourceID(
+   sourceID: string | undefined,
+): { name: string; url: string } | undefined {
+   const at = sourceID?.indexOf("@") ?? -1;
+   if (!sourceID || at <= 0) return undefined;
+   return { name: sourceID.slice(0, at), url: sourceID.slice(at + 1) };
 }
 
 /** One rollup's `#@ persist source: …` declaration. */
@@ -416,16 +438,29 @@ export function synthesizePreaggregationModel(
    plans: RollupPlan[],
    importPath: string,
    experimentalFlags = "persistence composite_sources",
+   /**
+    * Where to import a base from, given its declaring file's URL: a path the
+    * synthesized model resolves. Returning undefined, or no resolver, imports
+    * from `importPath`, which is right only for a base the model declares.
+    */
+   importPathForFile?: (declaringURL: string) => string | undefined,
 ): string | undefined {
    if (plans.length === 0) return undefined;
 
    // One import line per base, even when it has several grains.
    const bases = [...new Set(plans.map((p) => p.baseSourceName))].sort();
    const imports = bases
-      .map(
-         (base) =>
-            `import { ${baseAlias(base)} is ${base} } from ${JSON.stringify(importPath)}`,
-      )
+      .map((base) => {
+         const declared = splitSourceID(
+            plans.find((p) => p.baseSourceName === base)?.baseSourceID,
+         );
+         const fromDeclaring = declared && importPathForFile?.(declared.url);
+         // A re-exported base is imported under the name its own file gives
+         // it, which an `index.malloy` rename (`o is orders`) does not change.
+         return fromDeclaring
+            ? `import { ${baseAlias(base)} is ${declared.name} } from ${JSON.stringify(fromDeclaring)}`
+            : `import { ${baseAlias(base)} is ${base} } from ${JSON.stringify(importPath)}`;
+      })
       .join("\n");
 
    // The base LAST in every compose(), so it is the fallback member: the resolver

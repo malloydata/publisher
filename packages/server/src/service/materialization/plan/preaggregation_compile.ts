@@ -19,6 +19,7 @@ import type {
    ModelMaterializer,
    Runtime,
 } from "@malloydata/malloy";
+import { fileURLToPath } from "url";
 import * as path from "path";
 import { logger } from "../../../logger";
 import {
@@ -88,9 +89,18 @@ async function compileSynthesizedPreaggregation(args: {
 
    // The import is by basename: the synthesized model sits beside the author's,
    // so a bare filename resolves however the package is nested.
+   const modelDir = path.dirname(path.join(args.packagePath, args.modelPath));
    const text = synthesizePreaggregationModel(
       plans,
       path.basename(args.modelPath),
+      undefined,
+      // Each base from the file that declares it, relative to this companion,
+      // which sits beside the author's model (#6646).
+      (declaringURL) => {
+         if (!declaringURL.startsWith("file://")) return undefined;
+         const relative = path.relative(modelDir, fileURLToPath(declaringURL));
+         return relative.split(path.sep).join("/");
+      },
    );
    if (!text) return undefined;
 
