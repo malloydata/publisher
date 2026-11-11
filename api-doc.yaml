@@ -9979,13 +9979,19 @@ components:
           description: Error message if the materialization failed
         metadata:
           type: ["object", "null"]
-          description:
+          description: >-
             Materialization metadata including build options, source counts,
             and durations. Free-form object — fields such as `trigger`
             (ON_DEMAND | SCHEDULER) live here deliberately, so a strict-schema
             client does not need to know them. Promoting any such field to a
             top-level `Materialization` property is a breaking schema change
             that orchestrated clients must adopt first; do not do it casually.
+            `errorRetryable` (boolean) is set on a FAILED run that built
+            nothing, which commits no manifest and so reports no per-source
+            `failures`: `false` when every source failed deterministically or
+            was refused, `true` when any failure was transient, with the same
+            rules as `SourceFailure.retryable`. Absent when unclassified, for a
+            cancelled run, and from a Publisher that predates it.
         createdAt:
           type: string
           format: date-time
@@ -10921,9 +10927,46 @@ components:
             True when the materialization-eligibility gate refused this source,
             so the build was never attempted and `reason` is the gate's message.
             A refusal is a property of the model, not of the run: retrying
-            returns the same answer until the model changes, unlike a warehouse
-            or compile failure, which may clear on its own. Absent for every
-            other failure.
+            returns the same answer until the model changes. Absent for every
+            other failure; see `retryable` for how those are classified.
+        retryable:
+          type: boolean
+          description: >-
+            Whether rebuilding this source unchanged could succeed, so an
+            orchestrator that retries failed builds can stop spending attempts
+            on one that cannot.
+
+
+            `false` is a deterministic failure: the same model, instructions
+            and bounds fail the same way on every attempt. It is reported for an
+            eligibility refusal (always, beside `refused`), a Malloy or SQL
+            compile defect (a syntax or parser error), a rejected credential or
+            missing grant (permission or access denied), and a source refused under
+            `strictUpstreams` because a persisted upstream it reads failed
+            deterministically earlier in the same run. That last source
+            inherits its upstream's classification (`true` when any such
+            upstream's failure is transient) and its `reason` names the
+            upstream's own failure.
+
+
+            `true` is a transient failure, not a property of the inputs: the
+            database could not be reached or reset the connection, a timeout,
+            a rate limit, the build session running out of memory (`Out of
+            Memory Error`, `could not allocate block`, `failed to pin block`:
+            a worker's builds share its memory, so a build that ran out beside
+            others can fit alone, and the consumer's retry cap bounds one that
+            never fits), or a cancellation.
+
+
+            Absent when Publisher does not recognize the error, and from
+            every Publisher that predates the field. A consumer treats absence
+            exactly as it did before this field existed. Deliberately absent: a
+            missing table or column (a binder error, an unrecognized name),
+            because a referenced upstream reclaimed mid-build reads the same as
+            a model defect; and a persisted upstream no manifest holds, on its
+            own, because it may be materialized in another destination or left
+            out of instructions an orchestrator fixed, so retrying the same
+            instructions would not supply it.
 
     ManifestEntry:
       type: object
