@@ -5,6 +5,7 @@ import type {
    Connection as MalloyConnection,
    PersistSource,
 } from "@malloydata/malloy";
+import { BuildRunFailedError, combineRetryable } from "./build_failure_class";
 import { Manifest } from "@malloydata/malloy";
 import {
    BadRequestError,
@@ -216,12 +217,18 @@ export class InstructedBuild {
          // attached. Thrown inside the try so it takes the same cleanup path as
          // any other total failure.
          if (run.builtSources.length === 0 && run.failedReasons.length > 0) {
-            throw new Error(
+            throw new BuildRunFailedError(
                [
                   ...run.failedReasons,
                   ...run.refusals.map((e) => e.message),
                   ...priorRefusals.map((r) => r.message),
                ].join("; "),
+               // Every source's own answer; a refusal is deterministic.
+               combineRetryable([
+                  ...Object.values(run.failures).map((f) => f.retryable),
+                  ...run.refusals.map(() => false),
+                  ...priorRefusals.map(() => false),
+               ]),
             );
          }
          // Every instructed source was refused: the refusal is the answer.

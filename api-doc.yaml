@@ -9986,6 +9986,12 @@ components:
             client does not need to know them. Promoting any such field to a
             top-level `Materialization` property is a breaking schema change
             that orchestrated clients must adopt first; do not do it casually.
+            `errorRetryable` (boolean) is set on a FAILED run that built
+            nothing, which commits no manifest and so reports no per-source
+            `failures`: `false` when every source failed deterministically or
+            was refused, `true` when any failure was transient, with the same
+            rules as `SourceFailure.retryable`. Absent when unclassified, for a
+            cancelled run, and from a Publisher that predates it.
         createdAt:
           type: string
           format: date-time
@@ -10935,9 +10941,7 @@ components:
             and bounds fail the same way on every attempt. It is reported for an
             eligibility refusal (always, beside `refused`), a Malloy or SQL
             compile defect (a syntax, parser or binder error, an unrecognized
-            name), a missing grant (permission or access denied), the build
-            session's DuckDB memory bound (`Out of Memory Error`, `could not
-            allocate block`, `failed to pin block`), and a source refused under
+            name), a missing grant (permission or access denied), and a source refused under
             `strictUpstreams` because a persisted upstream it reads failed
             deterministically earlier in the same run. That last source
             inherits its upstream's classification (`true` when any such
@@ -10947,7 +10951,11 @@ components:
 
             `true` is a transient failure, not a property of the inputs: the
             database could not be reached or reset the connection, a timeout,
-            a rate limit, a cancellation, or a persisted upstream that was
+            a rate limit, the build session running out of memory (`Out of
+            Memory Error`, `could not allocate block`, `failed to pin block`:
+            a worker's builds share its memory, so a build that ran out beside
+            others can fit alone, and the consumer's retry cap bounds one that
+            never fits), a cancellation, or a persisted upstream that was
             merely absent from the instructions (neither built in this run nor
             supplied by reference), which the next plan can supply.
 

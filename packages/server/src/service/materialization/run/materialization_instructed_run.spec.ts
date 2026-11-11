@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 import type { Connection as MalloyConnection } from "@malloydata/malloy";
+import { BuildRunFailedError } from "./build_failure_class";
 import { Manifest } from "@malloydata/malloy";
 import { beforeEach, describe, expect, it } from "bun:test";
 import * as sinon from "sinon";
@@ -404,6 +405,48 @@ describe("executeInstructedBuild", () => {
          const failures = await runChain("connect ECONNREFUSED 10.0.0.1:5432");
          expect(failures["bupupupupupupupu"].retryable).toBe(true);
          expect(failures["bdowndowndowndow"].retryable).toBe(true);
+      });
+
+      // #6847's shape: a package whose only source fails builds nothing, so
+      // the run throws instead of committing a manifest with `failures`.
+      async function runOnly(error: string): Promise<unknown> {
+         const runSQL = sinon.stub().callsFake(async () => {
+            throw new Error(error);
+         });
+         const only = fakeSource({
+            name: "only",
+            sourceEntityId: "b0n0n0n0n0n0n0n0",
+         });
+         return callExecute(
+            {
+               builds: [
+                  { connectionName: "duckdb", order: ["only"], dependsOn: {} },
+               ],
+               sources: { only },
+               connectionDigests: { duckdb: "dig" },
+               connections: new Map([
+                  ["duckdb", { runSQL } as unknown as MalloyConnection],
+               ]),
+            },
+            [instruction("b0n0n0n0n0n0n0n0", "only_v1")],
+            {},
+         ).then(
+            () => undefined,
+            (err: unknown) => err,
+         );
+      }
+
+      it("carries the run's answer on the error when every source failed", async () => {
+         const deterministic = await runOnly("Unrecognized name: order_tot");
+         expect(deterministic).toBeInstanceOf(BuildRunFailedError);
+         expect((deterministic as BuildRunFailedError).retryable).toBe(false);
+         expect((deterministic as Error).message).toContain("order_tot");
+         const memory = await runOnly(
+            "Out of Memory Error: could not allocate block of size 256.0 KiB",
+         );
+         expect((memory as BuildRunFailedError).retryable).toBe(true);
+         const odd = await runOnly("something odd happened");
+         expect((odd as BuildRunFailedError).retryable).toBeUndefined();
       });
 
       it("omits the field when the failure is not recognized", async () => {

@@ -22,11 +22,11 @@ import { strictMissSourceId } from "./materialization_run_support";
  *
  * - `false`: deterministic. The same model, instructions and bounds fail the
  *   same way on every attempt (a compile or SQL defect, an eligibility
- *   refusal, the build session's DuckDB memory bound, an upstream that failed
- *   deterministically in this run). Retrying spends the build again.
+ *   refusal, an upstream that failed deterministically in this run). Retrying
+ *   spends the build again.
  * - `true`: transient. The failure is not a property of the inputs (a network
- *   or connection fault, a timeout, a cancellation), so a later attempt can
- *   succeed.
+ *   or connection fault, a timeout, the build session running out of memory, a
+ *   cancellation), so a later attempt can succeed.
  * - `undefined`: not recognized. The field is omitted and the consumer keeps
  *   its own judgment, exactly as for a Publisher that predates the field.
  *
@@ -40,11 +40,6 @@ export type BuildRetryable = boolean | undefined;
 // Checked before the transient markers, so a defect whose message echoes SQL
 // mentioning, say, a `timeout` column is still read as the defect it is.
 const DETERMINISTIC_MARKERS: readonly string[] = [
-   // The build session's DuckDB memory bound. The input and the bound are the
-   // same on every attempt, so the build fails identically until one changes.
-   "out of memory error",
-   "could not allocate block",
-   "failed to pin block",
    // Malloy and SQL compile defects.
    "failed to compile",
    "compilation error",
@@ -59,6 +54,12 @@ const DETERMINISTIC_MARKERS: readonly string[] = [
 
 // Lower-cased substrings of a message that mark a failure as transient.
 const TRANSIENT_MARKERS: readonly string[] = [
+   // The build session's DuckDB memory bound. Retryable: a worker's builds
+   // share its memory, so a build that ran out beside others can fit alone,
+   // and the consumer's retry cap bounds one that never fits.
+   "out of memory error",
+   "could not allocate block",
+   "failed to pin block",
    "build cancelled",
    "operation was aborted",
    "timed out",
@@ -179,13 +180,7 @@ export function classifySourceFailure(
    if (!isUpstreamMissingError(err) || failedUpstreams.length === 0) {
       return { retryable: classifyBuildError(err) };
    }
-   const retryable: BuildRetryable = failedUpstreams.some(
-      (u) => u.retryable === true,
-   )
-      ? true
-      : failedUpstreams.every((u) => u.retryable === false)
-        ? false
-        : undefined;
+   const retryable = combineRetryable(failedUpstreams.map((u) => u.retryable));
    const upstreamDetail = failedUpstreams
       .map((u) => `upstream '${u.name}' failed in this run: ${u.reason}`)
       .join("; ");
@@ -215,4 +210,40 @@ export function failedUpstreamsOf(
       if (ids.has(id) || missedNames.has(failed.name)) out.push(failed);
    }
    return out;
+}
+
+/**
+ * One answer for several failures: deterministic only when every one is,
+ * transient when any is (retrying could clear that one), unclassified
+ * otherwise, including when there are none.
+ */
+export function combineRetryable(
+   values: readonly BuildRetryable[],
+): BuildRetryable {
+   if (values.some((v) => v === true)) return true;
+   if (values.length > 0 && values.every((v) => v === false)) return false;
+   return undefined;
+}
+
+/**
+ * The run that built nothing: every source failed or was refused. Thrown in
+ * place of the joined message so the run's record can say whether retrying
+ * the run could help (`metadata.errorRetryable`), since a run that commits no
+ * manifest reports no per-source `failures`.
+ */
+export class BuildRunFailedError extends Error {
+   readonly retryable: BuildRetryable;
+
+   constructor(message: string, retryable: BuildRetryable) {
+      super(message);
+      this.name = "BuildRunFailedError";
+      this.retryable = retryable;
+   }
+}
+
+/** Whether retrying a whole run that threw `err` could succeed. */
+export function classifyRunFailure(err: unknown): BuildRetryable {
+   return err instanceof BuildRunFailedError
+      ? err.retryable
+      : classifyBuildError(err);
 }

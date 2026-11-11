@@ -6,6 +6,7 @@ import {
    MaterializationConflictError,
    MaterializationNotFoundError,
 } from "../../../errors";
+import { classifyRunFailure } from "./build_failure_class";
 import { logger } from "../../../logger";
 import {
    MaterializationMode,
@@ -150,10 +151,27 @@ export class RunLifecycle {
                });
             }
             try {
+               // Whether retrying the run could help, for a consumer that
+               // decides on retries: a failed run commits no manifest, so no
+               // per-source `failures` carry it. Omitted when unclassified,
+               // and for a cancel, which was asked for.
+               const retryable = cancelled
+                  ? undefined
+                  : classifyRunFailure(err);
+               const metadata =
+                  retryable === undefined
+                     ? undefined
+                     : {
+                          ...((
+                             await this.repository().getMaterializationById(id)
+                          )?.metadata ?? {}),
+                          errorRetryable: retryable,
+                       };
                await this.repository().updateMaterialization(id, {
                   status: next,
                   completedAt: new Date(),
                   error: cancelled ? "Cancelled" : message,
+                  ...(metadata ? { metadata } : {}),
                });
             } catch (transitionErr) {
                logger.error("Failed to record materialization failure", {

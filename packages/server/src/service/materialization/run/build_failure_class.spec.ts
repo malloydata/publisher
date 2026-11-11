@@ -17,6 +17,9 @@ import {
    classifySourceFailure,
    failedUpstreamsOf,
    type FailedUpstream,
+   BuildRunFailedError,
+   classifyRunFailure,
+   combineRetryable,
 } from "./build_failure_class";
 
 function strictMiss(sourceID: string): Error {
@@ -28,14 +31,6 @@ function strictMiss(sourceID: string): Error {
 
 describe("classifyBuildError", () => {
    it.each([
-      [
-         "the chained build's DuckDB memory bound",
-         "Failed to materialize chained source 'pairs' into storage destination 'lake': Out of Memory Error: could not allocate block of size 256.0 KiB (732.4 MiB/732.4 MiB used)",
-      ],
-      [
-         "a partitioned write that cannot pin a block",
-         "Out of Memory Error: failed to pin block of size 256.0 KiB",
-      ],
       ["a SQL syntax error", 'Parser Error: syntax error at or near "FORM"'],
       [
          "a DuckDB binder error",
@@ -61,6 +56,16 @@ describe("classifyBuildError", () => {
          "Exceeded rate limits: too many table update operations",
       ],
       ["a cancellation", "Build cancelled"],
+      // A worker's builds share its memory, so one that ran out beside
+      // others can fit alone; the consumer's retry cap bounds the rest.
+      [
+         "the chained build's DuckDB memory bound",
+         "Failed to materialize chained source 'pairs' into storage destination 'lake': Out of Memory Error: could not allocate block of size 256.0 KiB (732.4 MiB/732.4 MiB used)",
+      ],
+      [
+         "a partitioned write that cannot pin a block",
+         "Out of Memory Error: failed to pin block of size 256.0 KiB",
+      ],
    ])("reads %s as transient", (_label, message) => {
       expect(classifyBuildError(new Error(message))).toBe(true);
    });
@@ -223,5 +228,24 @@ describe("failedUpstreamsOf", () => {
             (u) => u.name,
          ),
       ).toEqual(["c"]);
+   });
+});
+
+describe("the run-level answer", () => {
+   it("combines sources: deterministic only when all are, transient when any is", () => {
+      expect(combineRetryable([false, false])).toBe(false);
+      expect(combineRetryable([false, true])).toBe(true);
+      expect(combineRetryable([false, undefined])).toBeUndefined();
+      expect(combineRetryable([])).toBeUndefined();
+   });
+
+   it("reads a run that built nothing from the answer it carries, and anything else as one error", () => {
+      expect(classifyRunFailure(new BuildRunFailedError("a; b", false))).toBe(
+         false,
+      );
+      expect(classifyRunFailure(new BuildRunFailedError("a", undefined))).toBe(
+         undefined,
+      );
+      expect(classifyRunFailure(new Error("socket hang up"))).toBe(true);
    });
 });
