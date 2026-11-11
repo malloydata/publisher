@@ -7,7 +7,9 @@ import {
    Runtime,
 } from "@malloydata/malloy";
 import { beforeAll, describe, expect, it } from "bun:test";
+import * as path from "path";
 import * as sinon from "sinon";
+import { pathToFileURL } from "url";
 import { logger } from "../../../logger";
 import { duckdbTestConnections } from "../../../test_helpers/incremental_test_harness";
 import { plannedSources } from "./build_plan";
@@ -21,9 +23,11 @@ import {
  * compiles a model's rollups, for both the build plan and the serve path.
  */
 
-const PACKAGE = "/pkg";
+// A native absolute path (`D:\pkg` on Windows), with its URLs built the way
+// the code under test builds them, so the overlay keys match on every OS.
+const PACKAGE = path.resolve("/pkg");
 const MODEL_PATH = "orders.malloy";
-const MODEL_URL = `file://${PACKAGE}/${MODEL_PATH}`;
+const MODEL_URL = pathToFileURL(path.join(PACKAGE, MODEL_PATH)).href;
 
 const WITH_PREAGGREGATE = `##! experimental { persistence composite_sources }
 source: orders is duckdb.sql("select 1 as id, 10 as amount, 'A' as category") extend {
@@ -61,7 +65,7 @@ function runtimeFactory(authorText: string): {
                urlReader: new InMemoryURLReader(files),
                connections,
             }),
-            importBaseURL: new URL(`file://${PACKAGE}/`),
+            importBaseURL: pathToFileURL(PACKAGE + path.sep),
          };
       },
    };
