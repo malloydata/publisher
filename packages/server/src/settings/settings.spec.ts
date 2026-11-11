@@ -247,7 +247,17 @@ describe("the registry", () => {
          Settings.install(
             Settings.load({ env, cwd: "/nonexistent", registry: stripped }),
          );
-      const previous = install({ NODE_ENV: "test" });
+      // The baseline is this process's own variables without today's names,
+      // so the comparison isolates them: a derived name the runner sets for
+      // every suite (bunfig.toml preloads PUBLISHER_PACKAGE_VERSIONING=on) is
+      // in both loads.
+      const previous = install(
+         Object.fromEntries(
+            Object.entries(process.env).filter(
+               ([name]) => !variables.includes(name),
+            ),
+         ),
+      );
       try {
          const quiet = observe();
          for (const name of variables) process.env[name] = "1";
