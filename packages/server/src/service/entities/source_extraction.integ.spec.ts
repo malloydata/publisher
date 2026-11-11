@@ -319,4 +319,120 @@ describe("extractEntitiesFromExplores (integration)", () => {
          "expected nested entities prefixed `a_extend.` under source `events` (nested-index recursion)",
       );
    }, 60_000);
+
+   test("record and repeated-record members are indexed through their record, never through a same-named source", async () => {
+      // `lines` is both a top-level source and a repeated-record column of
+      // `orders`. The record's members exist only through the column, so
+      // they must be walked and reported nested, with no joined source.
+      const entryModel = [
+         `source: lines is duckdb.table('child.csv')`,
+         ``,
+         `source: orders is duckdb.sql("""`,
+         `  SELECT 1 AS id,`,
+         `    {'city': 'Boston', 'address': {'zip': '02110'}} AS delivery,`,
+         `    [{'sku': 'a', 'qty': 1, 'discount': {'pct': 0.1}}] AS lines,`,
+         `    ['red', 'blue'] AS tags`,
+         `""")`,
+         ``,
+      ].join("\n");
+      await writeFile(
+         path.join(workspace, "entry.malloy"),
+         entryModel,
+         "utf-8",
+      );
+      const { model, docString } = await compileModel(
+         workspace,
+         "entry.malloy",
+      );
+
+      const entities = sourceExtraction.extractEntitiesFromExplores(
+         model.explores,
+         "entry.malloy",
+         workspace,
+         docString,
+      );
+      const ofOrders = new Map(
+         entities
+            .filter(
+               (e) => e.source === "orders" || e.source?.startsWith("orders."),
+            )
+            .map((e) => [`${e.source}::${e.name}`, e]),
+      );
+
+      for (const [record, relationship] of [
+         ["delivery", "one"],
+         ["orders.delivery::address", "one"],
+         ["lines", "many"],
+         ["orders.lines::discount", "one"],
+         ["tags", "many"],
+      ] as const) {
+         const key = record.includes("::") ? record : `orders::${record}`;
+         const join = ofOrders.get(key)?.join_source_metadata;
+         assert.deepStrictEqual(
+            join,
+            {
+               original_source_name: null,
+               original_source_path: null,
+               is_nested_index: true,
+               relationship,
+            },
+            `${key} should be a nested record with relationship ${relationship}`,
+         );
+      }
+
+      for (const [member, type] of [
+         ["delivery.city", "string"],
+         ["delivery.address.zip", "string"],
+         ["lines.sku", "string"],
+         ["lines.qty", "number"],
+         ["lines.discount.pct", "number"],
+         ["tags.each", "string"],
+      ]) {
+         assert.strictEqual(
+            ofOrders.get(`orders::${member}`)?.field_data_type,
+            type,
+            `orders::${member} should be indexed as ${type}`,
+         );
+      }
+   }, 60_000);
+
+   test("every join reports its relationship from the compiled join", async () => {
+      const entryModel = [
+         `source: parent_t is duckdb.table('parent.csv') extend {`,
+         `  primary_key: id`,
+         `}`,
+         ``,
+         `source: events is duckdb.table('child.csv') extend {`,
+         `  join_one: p_one is parent_t on parent_id = p_one.id`,
+         `  join_many: p_many is parent_t on parent_id = p_many.id`,
+         `  join_cross: p_cross is parent_t`,
+         `  join_one: p_direct is duckdb.table('parent.csv') on parent_id = p_direct.id`,
+         `}`,
+         ``,
+      ].join("\n");
+      await writeFile(
+         path.join(workspace, "entry.malloy"),
+         entryModel,
+         "utf-8",
+      );
+      const { model, docString } = await compileModel(
+         workspace,
+         "entry.malloy",
+      );
+
+      const entities = sourceExtraction.extractEntitiesFromExplores(
+         model.explores,
+         "entry.malloy",
+         workspace,
+         docString,
+      );
+      const relationshipOf = (name: string) =>
+         entities.find((e) => e.source === "events" && e.name === name)
+            ?.join_source_metadata?.relationship;
+
+      assert.strictEqual(relationshipOf("p_one"), "one");
+      assert.strictEqual(relationshipOf("p_many"), "many");
+      assert.strictEqual(relationshipOf("p_cross"), "cross");
+      assert.strictEqual(relationshipOf("p_direct"), "one");
+   }, 60_000);
 });
