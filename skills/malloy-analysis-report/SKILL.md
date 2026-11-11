@@ -10,7 +10,7 @@ SPDX-License-Identifier: MIT
 
 # Creating Reports
 
-An ad-hoc report is a Publisher **report** with `layout=linear`: a `.malloy` file at the package root, `<slug>.malloy` (unless the user asks for another location), that combines markdown narrative with live Malloy queries, as text tiles and query tiles read top to bottom. Load `skill:malloy-reports` for the full format and authoring rules; this skill covers when to build one and how to design good report content (tiles, chart annotations, narrative structure). Never write a new `.malloynb`, never write a report as bare `run:` statements (that older form is no longer read), and do not create a `notebooks/` or `dashboards/` directory for it.
+An ad-hoc report is a Publisher **report** with `layout=linear`: a `.malloy` file at the package root, `<slug>.malloy` (unless the user asks for another location), that combines markdown narrative with live Malloy queries, as text tiles and query tiles read top to bottom. Load `skill:malloy-reports` for the full format and authoring rules; this skill covers when to build one and how to design good report content (tiles, chart annotations, narrative structure). Never write a report as bare `run:` statements (that older form is no longer read), and do not create a `notebooks/` or `dashboards/` directory for it.
 
 ## Before building a report
 
@@ -187,7 +187,7 @@ Key rendering rules to keep in mind when shaping a tile:
 
 ## Editing an existing report
 
-For small targeted changes (fix one view, insert one tile), edit that view or text block in place and add its entry to `tiles=[…]`, rather than recreating the whole report. For structural rewrites (reordering many tiles, changing the narrative arc), rewrite the report file. An existing `.malloynb` is read, not edited: to change its story, write a `.malloy` report. A tag that sets `kind=notebook` is no longer read, so the file is not a report (`report-kind-removed`): replace it with `layout=linear` and list the tiles. A linear file with no `tiles=[…]`, written as bare `run:` statements, is no longer a report: rewrite it as tiles (`skill:malloy-reports`, `reference/linear.md`).
+For small targeted changes (fix one view, insert one tile), edit that view or text block in place and add its entry to `tiles=[…]`, rather than recreating the whole report. For structural rewrites (reordering many tiles, changing the narrative arc), rewrite the report file. A tag that sets `kind=notebook` is no longer read, so the file is not a report (`report-kind-removed`): replace it with `layout=linear` and list the tiles. A linear file with no `tiles=[…]`, written as bare `run:` statements, is no longer a report: rewrite it as tiles (`skill:malloy-reports`, `reference/linear.md`).
 
 ## IMPORTANT
 
