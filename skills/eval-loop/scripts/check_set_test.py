@@ -78,7 +78,9 @@ class Report(unittest.TestCase):
         pkg = d.parent / "pkg"
         (pkg / "data").mkdir()
         (pkg / "data" / "u.parquet").write_text("")
-        (pkg / "m.malloy").write_text("source: u is duckdb.table('data/u.parquet')\n")
+        (pkg / "data" / "v-01.parquet").write_text("")
+        (pkg / "m.malloy").write_text("source: u is duckdb.table('data/u.parquet')\n"
+                                      "source: v is duckdb.table('data/v-*.parquet')\n")
         with mock.patch("builtins.print"):
             check_set.init_truth_package.main(
                 ["--package", str(pkg), "--out", str(d.parent / "truth"), "--name", "t"])

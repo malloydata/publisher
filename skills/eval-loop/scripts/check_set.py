@@ -117,7 +117,11 @@ def check_truth(cfg: config.Config) -> tuple[list[str], list[str]]:
         # By path, not by resolved target: init_truth_package links the model's
         # data directory in, and a link whose target is outside the package is
         # what makes the ref resolve once served.
-        if ".." in pathlib.PurePath(ref).parts or not (src.parent / ref).exists():
+        # A glob (DuckDB reads `data/trips-*.parquet` as every match) exists
+        # when anything matches it, not when a file of that literal name does.
+        found = (any(src.parent.glob(ref)) if any(c in ref for c in "*?[")
+                 else (src.parent / ref).exists())
+        if ".." in pathlib.PurePath(ref).parts or not found:
             problems.append(
                 f"{src.name}: {conn}.table('{ref}') resolves to nothing once "
                 f"served: Publisher serves a copy of the package, so a "
