@@ -27,7 +27,10 @@ run, so it costs server time only. Per query it records:
 
 `--from` can also name an earlier query replay, which re-runs exactly that
 replay's queries. Use that for every later replay, so two replays time the same
-work even after the answer run has been superseded.
+work even after the answer run has been superseded: fresh answers word their
+queries differently, and a replay of a new run's queries compared only 5 of 18
+with the record it followed. `eval.py routine` replays the last record
+replay's queries for this reason, and `--baseline record` names that replay.
 
 `--target-version 1.1.0` pins a published version on every request. REST can pin
 a version, unlike the MCP tools, so nothing has to be promoted to `latest`.
@@ -35,9 +38,9 @@ a version, unlike the MCP tools, so nothing has to be promoted to `latest`.
 
 `run.json` records the package's `materialization` state at the start: the
 persist sources the build plan makes and refuses, whether their tables are
-bound, and the newest build. **A reload unbinds them.** After any edit, run a
-build (`malloy-pub materialize --environment <env> --package <pkg> --wait`)
-before timing anything, or every persisted source computes live. The replay
+bound, and the newest build. **A reload unbinds them.** After any edit,
+`eval.py publish` publishes the package and runs the build, and waits for it;
+time nothing before that, or every persisted source computes live. The replay
 warns when a persisted source has no bound table.
 
 `servedFrom` reports only the `storage=` tier. A query answered from a table
@@ -103,8 +106,8 @@ storage and rebuild time, and that trade is theirs.
 
 Acceptance for a speed edit (`acceptance-check.md`):
 
-1. Compile, save, reload. Then build, and confirm the build made the source and
-   did not refuse it.
+1. Compile, save, `eval.py publish` (or `eval.py experiment start <name>`), and
+   confirm the build it reports made the source and did not refuse it.
 2. Query replay, `--from` the stored replay, over **every** stored query that
    reads the changed source, not only the slow ones. Every row stays the same.
 3. The targeted queries are faster than the band. No other query is slower than

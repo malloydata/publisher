@@ -771,6 +771,38 @@ class Promotion(unittest.TestCase):
         self.assertIsNone(promotion_blocker(self.case(**self.SECOND), s))
 
 
+    def test_a_verify_query_is_run_and_recorded_and_promotes_when_it_agrees(self):
+        case = self.case(verification={"primaryAxis": "a", "variesAxis": "b",
+                                       "verifyQuery": "run: t -> other_route"})
+        with unittest.mock.patch.object(verify_goldens, "try_query",
+                                        return_value=([{"x": 42.0000000001, "id": 7}], None)):
+            r, stored = self.run_promote(case)
+        self.assertEqual(r["promoted"], ["q1"])
+        gold = json.loads((self.tmp / "gold" / "q1.json").read_text())
+        self.assertEqual((gold["agreement"]["agree"], gold["verifyRows"][0]["id"]), (True, 7))
+
+    def test_a_verify_query_that_disagrees_blocks_promotion(self):
+        case = self.case(verification={"primaryAxis": "a", "variesAxis": "b",
+                                       "verifyQuery": "run: t -> other_route"})
+        with unittest.mock.patch.object(verify_goldens, "try_query",
+                                        return_value=([{"x": 40}], None)):
+            r, stored = self.run_promote(case)
+        self.assertEqual(r["promoted"], [])
+        self.assertEqual(stored["golden"]["status"], "provisional")
+        self.assertIn("disagree", r["promotionNotes"][0])
+
+
+class RowsAgree(unittest.TestCase):
+    def test_only_shared_columns_are_compared(self):
+        ok, note = verify_goldens.rows_agree([{"zone": "JFK", "rev": 1.0}],
+                                             [{"loc": 132, "rev": 1.0}])
+        self.assertTrue(ok)
+        self.assertIn("rev", note)
+
+    def test_no_shared_column_and_a_row_count_mismatch_do_not_agree(self):
+        self.assertFalse(verify_goldens.rows_agree([{"a": 1}], [{"b": 1}])[0])
+        self.assertFalse(verify_goldens.rows_agree([{"a": 1}], [{"a": 1}, {"a": 2}])[0])
+
 
 class RequiredAndAcceptableOverlap(unittest.TestCase):
     def test_an_id_in_both_lists_is_reviewed_once(self):

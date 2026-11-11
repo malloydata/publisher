@@ -87,6 +87,21 @@ class Report(unittest.TestCase):
         problems, _ = self.report(d)
         self.assertEqual(problems, [])
 
+    def test_no_clone_is_a_note_naming_the_release_npx_will_run(self):
+        d = a_set(MODEL + '[paths]\npublisher_version = "0.12.5"\n', [CASE])
+        with mock.patch.object(check_set.config.Config, "publisher_dir", return_value=None):
+            problems, notes = self.report(d)
+        self.assertEqual(problems, [])
+        self.assertTrue(any("@malloy-publisher/server@0.12.5" in n for n in notes))
+
+    def test_a_store_inside_the_model_repo_is_a_problem(self):
+        d = a_set(MODEL, [CASE])
+        with mock.patch.object(check_set, "git_toplevel", return_value=d.parent):
+            (d / "eval.toml").write_text((d / "eval.toml").read_text()
+                                         + f'[store]\npath = "{d.parent / "runs-here"}"\n')
+            problems, _ = self.report(d)
+        self.assertTrue(any("never go in git" in p for p in problems), problems)
+
     def test_eval_toml_and_set_json_naming_two_packages_is_a_problem(self):
         d = a_set(MODEL, [CASE])
         meta = json.loads((d / "set.json").read_text())

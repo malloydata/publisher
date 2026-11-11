@@ -1,0 +1,5 @@
+{
+    "name": "eval-history",
+    "version": "1.0.0",
+    "description": "Every run of one eval set: score and speed per package version, pass rate per tag over time, and the experiments beside the main line. Built by skills/eval-loop/scripts/build_history.py."
+}

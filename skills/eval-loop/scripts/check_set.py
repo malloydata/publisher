@@ -176,15 +176,36 @@ def report(set_dir: pathlib.Path) -> tuple[list[str], list[str]]:
     p, n = check_ports(cfg)
     problems += p
     notes += n
+    store = cfg.get("store", "path")
+    repo = cfg.get("model", "repo")
+    if store and repo:
+        top = git_toplevel(pathlib.Path(repo))
+        if top and config.within(pathlib.Path(store), top):
+            problems.append(f"[store] path {store} is inside the model's git repository "
+                            f"{top}. Runs hold the answer key and grow with every run, so "
+                            f"they never go in git. Fix: a folder outside {top}")
     old = cfg.set_dir / "runs"
     if old.is_dir() and any(old.iterdir()):
         notes.append(f"{old} holds runs from before runs moved to the workdir; "
                      f"nothing reads them now. Move them to "
                      f"{cfg.workdir() / 'runs'} to compare against them")
     if cfg.publisher_dir() is None:
-        problems.append("no built Publisher in this clone. Fix: `bun install "
-                        "&& bun run build`, or set [paths] publisher_dir")
+        version = cfg.get("paths", "publisher_version")
+        pin = ("" if version else ". Pin it with [paths] publisher_version, so "
+               "every run of this set is answered by the same server")
+        notes.append(f"no built Publisher clone: `serve` runs the published "
+                     f"server, npx @malloy-publisher/server@{version or 'latest'}{pin}")
     return problems, notes
+
+
+def git_toplevel(path: pathlib.Path) -> pathlib.Path | None:
+    import subprocess
+    try:
+        out = subprocess.run(["git", "-C", str(path), "rev-parse", "--show-toplevel"],
+                             capture_output=True, text=True, check=True).stdout.strip()
+        return pathlib.Path(out) if out else None
+    except (subprocess.CalledProcessError, FileNotFoundError):
+        return None
 
 
 def main(argv: list[str] | None = None) -> int:

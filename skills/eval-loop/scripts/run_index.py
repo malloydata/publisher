@@ -81,7 +81,17 @@ def score_of(run: pathlib.Path) -> tuple[int, int]:
     return sum(1 for r in decided if r["passed"]), len(decided)
 
 
-def runs(workdir: pathlib.Path, n_cases: int | None = None) -> list[dict[str, Any]]:
+def experiment_of(package: str | None, main: str | None) -> str | None:
+    """The experiment a run measured: None for the set's own package. An
+    experiment is served as `<package>.<name>` (experiment.py); any other
+    package than the set's is reported by its whole name."""
+    if not package or not main or package == main:
+        return None
+    return package[len(main) + 1:] if package.startswith(main + ".") else package
+
+
+def runs(workdir: pathlib.Path, n_cases: int | None = None,
+         main_package: str | None = None) -> list[dict[str, Any]]:
     """One row per run directory that holds a run.json, oldest first."""
     out = []
     for rj in sorted((workdir / "runs").glob("*/run.json")):
@@ -100,6 +110,8 @@ def runs(workdir: pathlib.Path, n_cases: int | None = None) -> list[dict[str, An
             "version": version_label(meta),
             "contentHash": pv.get("contentHash"),
             "baseVersion": pv.get("baseVersion"),
+            "package": meta.get("package"),
+            "experiment": experiment_of(meta.get("package"), main_package),
             "datasetVersion": meta.get("datasetVersion"),
             "datasetSha": meta.get("datasetSha"),
             "answererModel": meta.get("answererModel"),
@@ -138,6 +150,26 @@ def runs(workdir: pathlib.Path, n_cases: int | None = None) -> list[dict[str, An
     return out
 
 
+def set_runs(cfg: config.Config) -> list[dict[str, Any]]:
+    """Every run in the set's workdir, with `full` decided against the set's cases."""
+    cases = cfg.set_dir / "cases.jsonl"
+    return runs(cfg.workdir(), len(read_jsonl(cases)) if cases.is_file() else None,
+                cfg.get("model", "package") or cfg.set_meta.get("targetPackage"))
+
+
+def record(rows: list[dict[str, Any]], kind: str = "run") -> dict[str, Any] | None:
+    """The run `--baseline record` names: the newest complete run of the main
+    line (no experiment), full for an answer run. `kind` is "run" or "perf".
+
+    Not matched on datasetSha: a set edit that touched no case (a convention,
+    a description) changes the sha, and a comparison already sets aside each
+    case whose question or key changed.
+    """
+    fits = [r for r in rows if r.get("status") == "complete" and not r.get("experiment")
+            and r["kind"] == kind and (kind != "run" or r.get("full"))]
+    return max(fits, key=lambda r: (r.get("started") or "", r["run"]), default=None)
+
+
 def flips(a: pathlib.Path, b: pathlib.Path) -> dict[str, int]:
     """Pass/fail flips from run `a` to run `b` over the cases both can be compared on."""
     A, B = verdicts(a), verdicts(b)
@@ -152,6 +184,8 @@ def versions(rows: list[dict[str, Any]],
              served: list[dict[str, Any]] | None = None) -> list[dict[str, Any]]:
     """One row per package version with an answer run, highest first."""
     state = {v.get("id"): v for v in served or [] if isinstance(v, dict)}
+    # An experiment is served beside the package, not as one of its versions.
+    rows = [r for r in rows if not r.get("experiment")]
     answer_runs = [r for r in rows if r["kind"] == "run" and r.get("status") == "complete"]
     perf: dict[str, dict[str, Any]] = {}
     for r in rows:                  # oldest first, so the newest replay wins
@@ -276,9 +310,7 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--json", action="store_true")
     a = ap.parse_args(argv)
     cfg = config.load(a.set_dir)
-    cases = a.set_dir / "cases.jsonl"
-    n_cases = len(read_jsonl(cases)) if cases.is_file() else None
-    rows = runs(cfg.workdir(), n_cases)
+    rows = set_runs(cfg)
     if a.view == "runs":
         print(json.dumps(rows, indent=1) if a.json else "\n".join(fmt_runs(rows)))
         return 0

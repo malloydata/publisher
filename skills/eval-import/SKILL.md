@@ -108,6 +108,11 @@ are the ones already stated rather than new ones:
   you are not that agent, and the gap is the point.
 - Record the query as `canonicalQuery`. A number with no query is somebody's
   guess, which is the row above it in the table.
+- Record a second query that reaches the same number by another route as
+  `golden.verification.verifyQuery`, with `primaryAxis` and `variesAxis`
+  saying how the two differ. `verify --promote` runs it, records both, and
+  promotes the key only when they agree (`eval-loop`'s
+  `reference/setting-up-a-set.md`, step 6).
 - Record the entities you used to get there as `expectedEntities.required`, in
   the `kind:source:name` form: the measures, dimensions and views the answer
   cannot be produced without. `reference/case-format.md` says to leave this

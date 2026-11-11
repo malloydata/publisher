@@ -20,10 +20,17 @@ replay beside them for speed:
    tags. Work it like a unit test: watch the targeted cases fail first, make
    the fix, watch them pass. This is how the acceptance check
    (`reference/acceptance-check.md`) picks its cases, under its existing rules.
+   Serve the fix as an experiment (`eval.py experiment start <name>`, then
+   `--experiment <name>` on the run) so the main package and its record stay
+   as they are, and `eval.py accept` checks the rules.
 3. **Full run**: the whole set. Nightly, or when a package version is
    published. It is the record of how that version scored, and the stored
-   baseline a targeted run is compared against. Batch several targeted fixes
-   into one full run rather than running the set after each.
+   baseline a targeted run is compared against (`--baseline record`). Batch
+   several targeted fixes into one full run rather than running the set after
+   each. `eval.py routine` is the full run with everything around it: check,
+   verify, run, diagnose, package, query replay and history, stopping at the
+   first step that fails. `reference/team-workflow.md` is the day-to-day
+   version of this section.
 
 **Query replay** (`eval.py query-replay --from <run>`,
 `reference/query-performance.md`). No agent and no judge: the queries behind a

@@ -878,6 +878,10 @@
       "description": "Sharing runs. Reference detail for the eval-loop skill."
     },
     {
+      "name": "eval-loop/team-workflow",
+      "description": "Working the loop, alone or as a team. Reference detail for the eval-loop skill."
+    },
+    {
       "name": "eval-report",
       "description": "Write the summary a person reads after an evaluation run: what ran, what it scored, which failures were the MODEL and which were the EVAL itself (out of turns, contaminated, unestablished golden, unreadable judge), what was learned, and what to do next. Every claim links to the artifact behind it. Use at the end of any run, before quoting a number to anyone. Never scores an answer (eval-answer) or decides who owns a failure (eval-diagnose)."
     },

@@ -15,9 +15,10 @@ ready when it prints `ready: nothing blocks a run`.
 
 - A Malloy package with a `publisher.json`, in a git repository. Git is how a
   run pins the model it measured and how an improve step is rolled back.
-- A built Publisher clone (`bun install && bun run build`; Bun is needed only
-  to build, the scripts run it with Node), Python 3.11+, and a Java runtime for
-  the SDK build.
+- Python 3.11+ and Node.js 20+. With no built Publisher clone, `serve` runs
+  the published server through npx, at the release `[paths] publisher_version`
+  pins (pin it, so every run of the set is answered by the same server). A
+  built clone (`bun install && bun run build`) is used when there is one.
 - `EMBEDDING_API_KEY` exported, for semantic retrieval. Without it the model
   server ranks lexically and says so on start.
 
@@ -96,12 +97,27 @@ repo        = "<path to the model package>"   # relative to this file
 port        = 4811
 mcp_port    = 4812
 
+versioning  = true     # publish edits as package versions (recommended)
+
 [truth]                  # only with a truth package; an empty [truth] takes 4881/4882
 environment = "truth"
 package_dir = "<path to the truth package>"
 port        = 4881
 mcp_port    = 4882
+
+[paths]
+publisher_version = "0.12.6"   # the server npx runs when there is no built clone
+
+[store]                  # optional: where a team shares finished runs
+path = "<a shared folder outside the repository>"
 ```
+
+`versioning = true` publishes the package as the immutable version its
+`publisher.json` names, so every run records the real version it measured and
+`eval.py versions` lines runs up by it. An edit is then a version bump and
+`eval.py publish`. Without it the package is installed in place and runs record
+the `publisher.json` version as "unpublished". `[store]` is in
+`sharing-runs.md`.
 
 `package` here and `targetPackage` in `set.json` must name the same package.
 Where both are set, `eval.toml` wins, and `check` refuses the set until they
@@ -128,10 +144,23 @@ never as a pass.
 
 An imported value is `provisional`, and a provisional golden takes no verdict.
 `--promote` marks one `verified` only when it re-derived cleanly through the
-truth package AND a second, differently shaped derivation exists: a
-`golden.verification` block, or `gold/<qid>.json` holding `verifyRows`
-(`reference/ledger-schema.md`, the `golden` row, says what the second one must
-vary).
+truth package AND a second, differently shaped derivation agrees with it.
+
+Write the second derivation into the case, and `--promote` does the rest:
+
+```json
+"verification": {"primaryAxis": "group by zone name through the join",
+                 "variesAxis": "group by raw location id, no join",
+                 "verifyQuery": "run: t_trips -> { group_by: PULocationID; aggregate: revenue is total_amount.sum(); ... }"}
+```
+
+It runs `verifyQuery` on the truth server, writes both queries and their rows
+to `gold/<qid>.json`, and promotes only when the two agree on every column they
+share, row by row (numbers within a millionth). Name the checked column the
+same in both; give each query its own route to it (`reference/ledger-schema.md`,
+the `golden` row, says what the second one must vary). A `golden.verification`
+block with no query, or a `gold/<qid>.json` written by hand, still counts, as
+it did before.
 
 ```bash
 eval.py verify --set <set> --promote
@@ -146,10 +175,11 @@ on the golden, so a reader sees a person stood behind it rather than a query.
 
 ```bash
 eval.py run --set <set> --label smoke --only <qid>[,<qid>...] --max-turns 40   # a case or two first
-eval.py run --set <set> --label baseline-01 --max-turns 40
-eval.py diagnose --set <set> --label baseline-01
-eval.py package --set <set> --label baseline-01
+eval.py routine --set <set> --label baseline-01   # run, diagnose, package, replay, history
 ```
+
+That first full run is the set's first record. From here, `team-workflow.md`
+is the day-to-day loop.
 
 Then `reference/running-a-run.md` for what the run prints and how to read it,
 and `skill:eval-report` for the write-up.

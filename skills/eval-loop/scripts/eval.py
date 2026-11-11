@@ -4,12 +4,19 @@
   python3 eval.py check    --set <set-dir>         # every gap in the set, before anything starts
   python3 eval.py serve model --set <set-dir>      # the server the answerer queries
   python3 eval.py serve truth --set <set-dir>      # the answer key's server
+  python3 eval.py publish  --set <set-dir>         # an edit, served and built
+  python3 eval.py experiment start tip-fix --set <set-dir>   # a variant beside it
   python3 eval.py verify   --set <set-dir>         # goldens still re-derive
   python3 eval.py run      --set <set-dir> --label baseline-01
   python3 eval.py replay   --set <set-dir> --label replay-01   # retrieval only, no answerer
   python3 eval.py query-replay --set <set-dir> --from baseline-01 --label perf-01   # time passing queries
+  python3 eval.py accept   --set <set-dir> --run fix-01 --run fix-02   # the acceptance rules
   python3 eval.py diagnose --set <set-dir> --label baseline-01
   python3 eval.py package  --set <set-dir> --label baseline-01
+  python3 eval.py history  --set <set-dir>         # every run as one servable page
+  python3 eval.py routine  --set <set-dir>         # check, verify, run, diagnose, package, replay, history
+  python3 eval.py push     --set <set-dir> --label baseline-01   # share a run ([store])
+  python3 eval.py pull     --set <set-dir>         # every shared run missing here
   python3 eval.py runs     --set <set-dir>         # every run of the set, by kind and version
   python3 eval.py versions --set <set-dir>         # how each package version scored
   python3 eval.py export   --set <set-dir> --label baseline-01   # a run as CSV tables to share
@@ -36,8 +43,9 @@ for d in ("eval-answer", "eval-loop", "eval-diagnose"):
 
 import config  # noqa: E402
 
-VERBS = ("check", "serve", "verify", "run", "replay", "query-replay", "diagnose",
-         "package", "runs", "versions", "export")
+VERBS = ("check", "serve", "publish", "experiment", "verify", "run", "replay",
+         "query-replay", "accept", "diagnose", "package", "history", "push", "pull",
+         "routine", "runs", "versions", "export")
 
 
 def flag_value(args: list[str], flag: str) -> str | None:
@@ -88,6 +96,60 @@ def run_dir_from_label(args: list[str]) -> list[str]:
     return [*out, "--run", str(cfg.workdir() / "runs" / label)]
 
 
+def drop_flag(args: list[str], flag: str) -> list[str]:
+    """`args` without `flag` and its value, in either spelling."""
+    out, skip = [], False
+    for x in args:
+        if skip:
+            skip = False
+        elif x == flag:
+            skip = True
+        elif not x.startswith(flag + "="):
+            out.append(x)
+    return out
+
+
+def with_experiment(verb: str, args: list[str]) -> list[str]:
+    """`--experiment <name>` becomes the flags that point a verb at it."""
+    name = flag_value(args, "--experiment")
+    if name is None:
+        return args
+    import experiment
+    cfg = config.load(pathlib.Path(flag_value(args, "--set")))
+    return [*drop_flag(args, "--experiment"), *experiment.run_flags(cfg, name, verb)]
+
+
+def record_baseline(args: list[str], kind: str) -> list[str]:
+    """`--baseline record` becomes the newest record run's directory, after
+    pulling anything new from the store."""
+    if flag_value(args, "--baseline") != "record":
+        return args
+    import run_index
+    import run_store
+    cfg = config.load(pathlib.Path(flag_value(args, "--set")))
+    run_store.sync(cfg)
+    r = run_index.record(run_index.set_runs(cfg), kind)
+    if r is None:
+        raise SystemExit(f"--baseline record: no complete main-line {kind} run in "
+                         f"{cfg.workdir() / 'runs'} or the store. Fix: run the whole set once")
+    print(f"baseline: {r['run']} (the newest record)")
+    return [*drop_flag(args, "--baseline"), "--baseline", r["path"]]
+
+
+def run_then_share(verb: str, args: list[str], main) -> int:
+    """Run an answer run or a query replay, then share it if it is a record."""
+    share = "--share" in args
+    args = [x for x in args if x != "--share"]
+    code = main(args)
+    label, out = flag_value(args, "--label"), flag_value(args, "--out")
+    if code == 0 and (label or out):
+        import run_store
+        cfg = config.load(pathlib.Path(flag_value(args, "--set")))
+        run_store.after_run(cfg, pathlib.Path(out) if out else cfg.workdir() / "runs" / label,
+                            share)
+    return code
+
+
 CANNOT_RUN = 3
 
 
@@ -125,18 +187,45 @@ def dispatch(argv: list[str]) -> int:
     if verb == "serve":
         import serve
         return serve.main(rest)
+    if verb == "publish":
+        import publish
+        return publish.main(rest)
+    if verb == "experiment":
+        import experiment
+        return experiment.main(rest)
+    if verb == "accept":
+        import accept
+        return accept.main(rest)
+    if verb == "history":
+        import build_history
+        return build_history.main(rest)
+    if verb == "routine":
+        import routine
+        return routine.main(rest)
+    if verb in ("run", "replay", "query-replay"):
+        rest = with_experiment(verb, rest)
     if verb == "verify":
         import verify_goldens
         return verify_goldens.main(rest)
     if verb == "run":
         import run_baseline
-        return run_baseline.main(rest)
+        return run_then_share(verb, rest, run_baseline.main)
     if verb == "replay":
         import retrieval_replay
         return retrieval_replay.main(rest)
     if verb == "query-replay":
         import query_replay
-        return query_replay.main(rest)
+        return run_then_share(verb, record_baseline(rest, "perf"), query_replay.main)
+    if verb in ("push", "pull"):
+        import run_store
+        return run_store.main([verb, *run_dir_from_label(rest)])
+    if verb == "runs" and "--store" in rest:
+        import run_store
+        cfg = config.load(pathlib.Path(flag_value(rest, "--set")))
+        held = run_store.listed(cfg)
+        print("\n".join(held) if held else f"the store holds no runs of {cfg.set_name}"
+              if run_store.kind(cfg) else f"no [store] in {cfg.file_hint}")
+        return 0
     if verb == "export":
         import export_run
         return export_run.main(run_dir_from_label(rest))

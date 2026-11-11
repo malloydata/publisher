@@ -577,6 +577,67 @@ def has_second_derivation(case: dict[str, Any], set_dir: pathlib.Path) -> bool:
                          and "verifyRows" in json.loads(side.read_text()))
 
 
+def rows_agree(truth: list[dict[str, Any]], second: list[dict[str, Any]],
+               rel: float = 1e-6) -> tuple[bool, str]:
+    """Do two derivations agree on every column they share, row by row?
+
+    The second query names the columns it checks the same as the truth query
+    does; columns only one of them has (a zone name against a location id) are
+    how the two take different routes, and are not compared. Numbers agree
+    within `rel` of the larger, which absorbs float summation order.
+    """
+    if len(truth) != len(second):
+        return False, f"{len(truth)} rows against {len(second)}"
+    if not truth:
+        return True, "both empty"
+    shared = [k for k in truth[0] if k in second[0]]
+    if not shared:
+        return False, ("no column in common, so nothing to compare. Fix: name the "
+                       "checked column the same in both queries")
+    for i, (t, v) in enumerate(zip(truth, second)):
+        for k in shared:
+            a, b = t.get(k), v.get(k)
+            num = (isinstance(a, (int, float)) and isinstance(b, (int, float))
+                   and not isinstance(a, bool) and not isinstance(b, bool))
+            if num and abs(a - b) <= rel * max(abs(a), abs(b), 1e-12):
+                continue
+            if not num and a == b:
+                continue
+            return False, f"row {i + 1} `{k}`: {a!r} against {b!r}"
+    return True, f"agree on {', '.join(shared)}"
+
+
+def second_derivation(case: dict[str, Any], a: argparse.Namespace,
+                      truth_rows: list[dict[str, Any]] | None,
+                      set_dir: pathlib.Path) -> str | None:
+    """Run `golden.verification.verifyQuery`, record both, and say why not to promote.
+
+    None when the case carries no verifyQuery (the older forms still count)
+    or when the two agree. The record goes to gold/<qid>.json either way, so a
+    disagreement can be read rather than re-run.
+    """
+    ver = (case.get("golden") or {}).get("verification") or {}
+    q = ver.get("verifyQuery")
+    if not q or truth_rows is None:
+        return None
+    if getattr(a, "hosted", None):
+        rows, err = hosted_truth_query(a.hosted, a.truth_package, a.truth_model, q)
+    else:
+        rows, err = try_query(a.publisher, a.environment, a.truth_package, a.truth_model, q)
+    if err:
+        return f"the second derivation (verifyQuery) failed: {err[:160]}"
+    ok, note = rows_agree(truth_rows, rows)
+    gold = set_dir / "gold"
+    gold.mkdir(exist_ok=True)
+    (gold / f"{case['qid']}.json").write_text(json.dumps({
+        "qid": case["qid"], "truthQuery": (case.get("golden") or {}).get("canonicalQuery"),
+        "verifyQuery": q, "truthRows": truth_rows, "verifyRows": rows,
+        "agreement": {"agree": ok, "note": note},
+        "derivedAt": datetime.date.today().isoformat(),
+        "truthPackage": a.truth_package}, indent=1, default=str) + "\n")
+    return None if ok else f"the two derivations disagree: {note}"
+
+
 PROMOTED_BY = "verify_goldens.py --promote"
 
 
@@ -1399,7 +1460,8 @@ def verify(set_dir: pathlib.Path, publisher: str, environment: str,
                 promotion_notes.append(
                     f"{c['qid']}: not promoted, value check says {status}")
             else:
-                why = promotion_blocker(c, set_dir)
+                why = (second_derivation(c, a, rows, set_dir)
+                       or promotion_blocker(c, set_dir))
                 if why and attest and why.startswith("no second derivation"):
                     # The human path the doctrine already grants `invalid` and
                     # `ambiguous`: a person vouches, and the record says so

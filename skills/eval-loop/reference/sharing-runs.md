@@ -1,4 +1,4 @@
-<!-- Where runs live, why not in git, and how to share them with a team. Read before keeping or publishing a run. -->
+<!-- Where runs live, why not in git, how a team shares them through a store, and how to load them into a warehouse. Read before keeping or publishing a run. -->
 
 # Sharing runs
 
@@ -9,14 +9,72 @@ keeps runs grows with every arm, and nothing in it reads them back. So:
 
 - **On your machine**, a run stays in the set's workdir
   (`~/.malloy-eval/<set>-<hash>/runs/<label>/` unless `eval.toml` sets
-  `[paths] workdir`). `eval.py runs --set <set>` lists them, and
-  `eval.py versions --set <set>` shows how each package version scored.
-- **In git**, a checkpoint commit names the run's `runId` in its message, and
-  `RESULTS.md` (`skill:eval-report`) names the runs it reports. Neither copies
-  the run.
-- **For a team**, export the run and load it into storage everyone can query.
+  `[paths] workdir`). `eval.py runs --set <set>` lists them,
+  `eval.py versions --set <set>` shows how each package version scored, and
+  `eval.py history --set <set>` builds both as a page.
+- **For a team**, a store: a place every finished record goes, and every
+  experiment can be compared against (below).
+- **In git**, a checkpoint commit names the run's id in its message
+  (`eval.py accept` prints it), and `RESULTS.md` (`skill:eval-report`) names the
+  runs it reports. Neither copies the run.
 
-## Export
+## The store
+
+One section of `eval.toml`. Leave it out and nothing is shared.
+
+```toml
+[store]
+path = "/Volumes/team/evals"     # a shared drive, a synced folder, a mounted bucket
+```
+
+or, for anything a folder cannot reach, three commands the shell runs, with
+`{run}`, `{run_id}`, `{dest}` and `{set}` filled in:
+
+```toml
+[store]
+push = "aws s3 sync {run} s3://team-evals/{set}/runs/{run_id}"
+pull = "aws s3 sync s3://team-evals/{set}/runs/{run_id} {dest}"
+list = "aws s3 ls s3://team-evals/{set}/runs/ | awk '{print $2}' | tr -d /"
+```
+
+```bash
+eval.py push --set <set> --label tip-01     # share one run
+eval.py pull --set <set>                    # every shared run missing here
+eval.py runs --set <set> --store            # what the store holds
+```
+
+What it stores is the run directory itself: `run.json`, `events.jsonl`, the
+transcripts. Pages and tables are built from it, so nothing is lost on the way
+and a pulled run is the run, byte for byte.
+
+The rules, whichever store it is:
+
+- **A run is shared whole, once, and never changes after.** Pushing a run the
+  store already holds with the same content does nothing; with other content it
+  is refused. Two runs are two directories, so nothing ever appends to
+  anything, and two people pushing at once cannot collide.
+- **Records share themselves.** With a store set, a full answer run of the main
+  line, and a query replay of it, push when they finish. A slice, an experiment
+  or a partial run stays local unless run with `--share` or pushed by hand. An
+  experiment is yours; a record is the team's.
+- **`--baseline record` reaches the store.** It pulls whatever the store holds
+  that you do not, then takes the newest full main-line run, so an experiment is
+  compared against the team's record, not against whatever happens to be on
+  your disk.
+- **Never in the model's repository.** `check` refuses a store inside it.
+
+### The store holds the answer key
+
+The verdicts carry the goldens and the transcripts carry answers, so the agent
+under test must never be able to read the store. On a host where a database is
+a connection every model in its environment can read, that means an
+environment of its own, holding nothing the agent under test is scoped to. A
+run package or the history page registers on the truth server for the same
+reason.
+
+## Tables for a warehouse
+
+To query runs in a warehouse of your own:
 
 ```bash
 python3 skills/eval-loop/scripts/eval.py export --set <set> --label baseline-01
@@ -39,32 +97,19 @@ row carries `run_id`.
 from the run's, because `eval_cases` must hold the cases the verdicts were
 about: check out the set's commit first.
 
-CSV, not JSON lines: a loader infers each file's column types on its own, and
-from JSON lines a column that is null in every row of one run reads as JSON,
-which then refuses to union with the same column holding values from another
-run. From CSV it reads as VARCHAR, which unions with anything.
+CSV, not JSON lines, because a loader infers each file's column types on its
+own: from JSON lines, a column null in every row of one run reads as JSON and
+then refuses to union with the same column from another run. From CSV it reads
+as text, which unions with anything. The run itself stays JSON lines; CSV is
+only how it is loaded.
 
-## Load it where the agent under test cannot read it
-
-**The export holds the answer key.** `eval_cases` carries every golden, and a
-transcript carries an answer. An answerer that can query them is contaminated.
-On a host where a database is a connection every model in its environment can
-read, that means an environment of its own, holding nothing the agent under
-test is scoped to.
-
-## Read many runs as one table
-
-Until the loader can append to an existing table, each run loads as its own
-tables. Read them together by naming them, matching columns by name and casting
-what you compute on. In DuckDB:
+A loader that cannot append loads each run as its own tables. Read them
+together by naming them. In DuckDB:
 
 ```sql
 SELECT run_id, qid, verdict, TRY_CAST(passed AS BOOLEAN) AS passed
 FROM query_table(['eval_attempts__baseline_01', 'eval_attempts__baseline_02'], true)
 ```
-
-`query_table` takes a literal list. It cannot be given a query that finds the
-tables, so the list is written out, and it grows by one name per run.
 
 A host may ship a skill that does the upload for its own storage: look for one
 before writing the commands by hand.

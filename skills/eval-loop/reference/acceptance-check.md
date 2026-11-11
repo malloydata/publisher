@@ -20,7 +20,9 @@ Cheap and deterministic, every edit:
 
 1. A compile check (scope `file` for an edit, `package` if importers must
    survive).
-2. Save, then reload the package. Confirm it is not serving a stale model.
+2. Save, then `eval.py publish` (or `eval.py experiment start <name>` to serve
+   it beside the main package). It publishes, confirms the package is not
+   serving a stale model, and builds anything persisted.
 3. Replay stored final queries from previously-passing cases. They must still
    execute, and a judge must still call them a match. `eval.py query-replay
    --from <stored replay> --baseline <stored replay>` does it: a query whose
@@ -32,7 +34,12 @@ Cheap and deterministic, every edit:
    discoverable, not merely possible. The improver writing the query it
    already knows proves only that the edit exists.
 
-Acceptance rules (replacing any vague "results improve"):
+Acceptance rules (replacing any vague "results improve"). `eval.py accept --run
+<a> --run <b>` checks the ones a script can decide (twice, no regression, the
+targets fixed in every run, both splits, nothing but the model changed, and a
+query replay's rows when given `--replay`), against `--baseline record` by
+default, and prints the checkpoint message. The rest stay yours: the judge's
+doubts about a key, and whether the flips clear the bar for their size.
 
 - **Per-case, not aggregate.** No previously-passing case may regress: diff the
   new run's verdicts against the baseline, case by case (`jq` over the two
@@ -48,7 +55,10 @@ Acceptance rules (replacing any vague "results improve"):
   cluster), and pass `--slice` to `run_baseline.py` and `flip_table.py`, so
   the cases are fixed in writing before any verdict exists.
 - **Against the stored baseline.** The affected cases need not be re-run
-  before the edit when a full run of the parent model already scored them:
+  before the edit when a full run of the parent model already scored them
+  (`--baseline record`, the newest, pulled from the team's store when there is
+  one). A set edit since then does not void it: the changed cases are set
+  aside and the rest compare:
   `flip_table.py --a <full-run> --b <post-edit> --set <set> --slice <name>`.
   A case whose question or key changed since is set aside, not compared.
 - **Twice.** An improvement must survive a second independent run with fresh

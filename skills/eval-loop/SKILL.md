@@ -38,6 +38,7 @@ all of them for every run is how a skill stops being read.
 
 | When | Read |
 |---|---|
+| deciding what to run next: an experiment on a slice, or a record of the whole set | `reference/team-workflow.md` |
 | the set does not exist yet, or has never run | `reference/setting-up-a-set.md` |
 | about to run one | `reference/running-a-run.md` |
 | scraping cases out of production traffic | `reference/log-scrape.md` |
@@ -47,7 +48,7 @@ all of them for every run is how a skill stops being read.
 | deciding whether an edit stays | `reference/acceptance-check.md` |
 | about to quote a number, set the band, or read a set's flips | `reference/measurement.md` |
 | measuring whether `get_context` returns the right fields, with no answerer | `reference/retrieval-replay.md` |
-| keeping runs, sharing them with a team, or comparing package versions | `reference/sharing-runs.md` |
+| keeping runs, sharing them with a team through a store, or comparing package versions | `reference/sharing-runs.md` |
 | timing queries, or making them faster with a persist or preaggregate | `reference/query-performance.md` |
 | the run finished and someone has to read it | `skill:eval-report` |
 | you changed judge doctrine or its inputs | `reference/checking-the-judge.md` |
@@ -519,7 +520,7 @@ accepts, so a bad improve direction can be rolled back. It is not a report,
 and it is not a remote publish.
 
 1. Commit the model files in one commit; put the run's label and `runId` and
-   the closed issue ids in the message. The run itself stays in the workdir
+   the closed issue ids in the message (`eval.py accept` prints one). The run itself stays in the workdir
    (and wherever you export it); the message is what ties the commit to it.
 2. Append the `checkpoint` event (`action: created`, label, `modelGitSha`
    from the commit you just made, issueIds). The event line itself rides in
@@ -527,7 +528,8 @@ and it is not a remote publish.
 3. Confirm `git status` is clean for the model files.
 
 **Restore**: `git checkout <sha> -- <model files>` (or `git revert` the
-checkpoint commits), then reload the package, then append a `checkpoint`
+checkpoint commits), then `eval.py publish` (with versioning on, bump the
+version first: a published version never changes), then append a `checkpoint`
 event with `action: restored` and the sha. Readers return to the model that
 existed before the bad direction.
 

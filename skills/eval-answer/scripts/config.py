@@ -63,10 +63,20 @@ CLONE = pathlib.Path(__file__).resolve().parents[3]
 # the file's directory.
 SCHEMA: dict[str, dict[str, Any]] = {
     "model": {"environment": str, "package": str, "repo": "path",
-              "port": int, "mcp_port": int, "publisher": str, "mcp_url": str},
+              "port": int, "mcp_port": int, "publisher": str, "mcp_url": str,
+              # Serve the package as immutable published versions
+              # (PUBLISHER_PACKAGE_VERSIONING=on); `eval.py publish` then
+              # publishes the version publisher.json names.
+              "versioning": bool},
     "truth": {"environment": str, "port": int, "mcp_port": int,
               "publisher": str, "package_dir": "path"},
-    "paths": {"publisher_dir": "path", "skills_root": "path", "workdir": "path"},
+    # `publisher_version`: the npm release `eval.py serve` runs through npx
+    # when there is no built clone. Pin it: a run records which server answered.
+    "paths": {"publisher_dir": "path", "skills_root": "path", "workdir": "path",
+              "publisher_version": str},
+    # Where finished runs are shared (eval-loop's run_store.py): a folder, or
+    # commands for anything else. Unset, runs stay in the workdir.
+    "store": {"path": "path", "push": str, "pull": str, "list": str},
     # How a query replay times queries (eval-loop's query_replay.py).
     # `budget_ms` marks a query slow; unset, a replay only reports times.
     "performance": {"budget_ms": "count", "repeats": "count", "latency_band": "fraction"},
@@ -235,6 +245,9 @@ class Config:
         here = CLONE / "packages" / "server"
         return here if (here / "dist" / "server.mjs").exists() else None
 
+    def versioned(self) -> bool:
+        return bool(self.get("model", "versioning"))
+
     def summary(self) -> dict[str, Any]:
         """What run.json records: the file read, and what it said."""
         return {"path": str(self.path) if self.path else None,
@@ -313,6 +326,11 @@ def _check(path: pathlib.Path, raw: dict[str, Any]) -> dict[str, dict[str, Any]]
                                       f"expected a fraction between 0 and 1, such as 0.2, "
                                       f"got {value!r}.")
                 out[section][key] = float(value)
+            elif kind is bool:
+                if not isinstance(value, bool):
+                    raise ConfigError(f"Invalid {path} on '{section}.{key}': "
+                                      f"expected true or false, got {value!r}.")
+                out[section][key] = value
             elif kind is int:
                 if isinstance(value, bool) or not isinstance(value, int):
                     raise ConfigError(f"Invalid {path} on '{section}.{key}': "

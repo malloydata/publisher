@@ -209,6 +209,11 @@ COMPARABLE = ("datasetVersion", "datasetSha", "judgeVersion", "rubricSha",
 # version bump that ships it moves the version with it: that is one change,
 # the edit under test, not two.
 MODEL_PINS = ("modelGitSha", "targetVersion", "packageVersion")
+# The set's own pins. A set edit is compared case by case instead: a case whose
+# question or key changed is set aside (`incomparable`), and the rest still
+# compare. Counting it as a second change forced a new full baseline after
+# every set edit, which is the cost slices exist to avoid.
+SET_PINS = ("datasetSha", "datasetVersion")
 
 
 def pin_report(ca: dict, cb: dict) -> list[str]:
@@ -218,16 +223,20 @@ def pin_report(ca: dict, cb: dict) -> list[str]:
         return []
     out = [f"\nthe arms differ in {len(differing)} pin(s): {', '.join(differing)}"]
     out += [f"    {k:<20} {ca.get(k)}  ->  {cb.get(k)}" for k in differing]
-    other = [k for k in differing if k not in MODEL_PINS]
-    changes = len(other) + (len(other) < len(differing))
+    other = [k for k in differing if k not in MODEL_PINS + SET_PINS]
+    model_moved = any(k in MODEL_PINS for k in differing)
+    changes = len(other) + model_moved
     if changes > 1:
         out.append("  More than one thing changed between the arms, so the "
                    "flips cannot be put down to any one of them.")
     elif other:
         out.append(f"  Only {other[0]} changed: the flips measure that change.")
-    else:
+    elif model_moved:
         out.append("  Only the model changed (its git sha, and the version "
                    "that ships it): the flips measure that edit.")
+    if any(k in SET_PINS for k in differing):
+        out.append("  The set changed too: a case whose question or key changed is "
+                   "set aside, and the rest compare as before.")
     return out
 
 

@@ -452,5 +452,12 @@ class PinReport(unittest.TestCase):
                                         {"modelGitSha": "b", "judgeModel": "opus"}))
         self.assertIn("More than one thing changed", text)
 
+    def test_a_set_edit_is_compared_case_by_case_not_a_second_change(self):
+        text = "\n".join(ft.pin_report({"modelGitSha": "a", "datasetSha": "s1"},
+                                        {"modelGitSha": "b", "datasetSha": "s2"}))
+        self.assertIn("Only the model changed", text)
+        self.assertIn("set aside", text)
+        self.assertNotIn("More than one", text)
+
     def test_identical_arms_say_nothing(self):
         self.assertEqual(ft.pin_report({"modelGitSha": "a"}, {"modelGitSha": "a"}), [])
