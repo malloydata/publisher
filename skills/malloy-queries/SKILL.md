@@ -132,6 +132,29 @@ Grouping by a `many` field gives one group per distinct element value, and a row
 - A row whose array is empty lands in a `null` group.
 - Two arrays in one query pair every element of one with every element of the other.
 
+A path into an array (`hits.type`, `hits.count()`) unnests it: the query sees one row per element, as through a `join_many`. Measures stay correct (`session_count` still counts each session once), but a filter acts on elements, not on the parent rows:
+
+| Write | Sessions kept | Their hits |
+|---|---|---|
+| `where: hits.action = '6'` | those with a matching hit | **only the matching hits**, so `hits.count()` counts those |
+| `aggregate: buyers is count() { where: hits.action = '6' }` | all (the filter is on the measure) | all |
+
+To count sessions where something happened, put the condition on the measure. Use `where:` on an array path only when the question is about the matching elements.
+
+A fact about each parent row (pages per session) used as a dimension takes two stages: one row per parent, then group those rows.
+
+```malloy
+run: ga_sessions -> {
+  group_by: session_id
+  aggregate: page_views is hits.count() { where: hits.type = 'PAGE' }
+} -> {
+  group_by: page_views
+  aggregate: session_count is count()
+}
+```
+
+Group the first stage by a unique key of the parent. A key that is not unique merges parents and returns wrong counts with no error. Check it first: `aggregate: n is count(), keys is count(session_id)` must give the same two numbers.
+
 ## Dates and Time
 
 ### Comparisons need `@` literals
