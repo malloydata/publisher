@@ -573,7 +573,9 @@ See [configuration.md](configuration.md) for the env vars. Fire semantics:
 ## Manage it with the CLI
 
 ```bash
-# View / set / clear a package's schedule (set also sets scope: version)
+# View / set / clear a package's schedule (set also sets scope: version). set and clear edit the
+# package, which a published version refuses with 409 PACKAGE_IS_VERSIONED: set the schedule in
+# its publisher.json and publish a new version instead.
 malloy-pub schedule view  --environment <env> --package <pkg>
 malloy-pub schedule set "0 6 * * *" --environment <env> --package <pkg>
 malloy-pub schedule clear --environment <env> --package <pkg>

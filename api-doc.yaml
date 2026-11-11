@@ -1513,7 +1513,7 @@ paths:
 
         ## Versioned publish
 
-        Package versioning is a server setting, `PUBLISHER_PACKAGE_VERSIONING` (`off` by
+        Package versioning is a server setting, `PUBLISHER_PACKAGE_VERSIONING` (`on` by
         default; `ServerStatus.packageVersioning` reports it), and a transition: a later release
         removes the setting and always publishes versions.
 
@@ -1811,8 +1811,8 @@ paths:
         Lists every version published to the package, highest version first, including archived
         ones (marked by `archiveStatus`). The entry marked `latest` is the version served when a
         request names no `versionId`. An unversioned package (one registered from a directory,
-        or loaded from `publisher.config.json` or published with versioning off) has no versions
-        and returns an empty list.
+        mounted in a watched environment, or loaded or published with versioning off) has no
+        versions and returns an empty list.
       parameters:
         - $ref: "#/components/parameters/environmentName"
         - $ref: "#/components/parameters/packageName"
@@ -4689,8 +4689,9 @@ components:
           readOnly: true
           description: >-
             "on" when a publish from a location publishes an immutable
-            version (`PUBLISHER_PACKAGE_VERSIONING=on`); "off" when it installs
-            the package in place, as before versions. Reads and the versions
+            version (`PUBLISHER_PACKAGE_VERSIONING=on`, the default); "off" when
+            it installs the package in place, as before versions
+            (`PUBLISHER_PACKAGE_VERSIONING=off`). Reads and the versions
             routes answer in both. Absent from a server that predates
             versions, which reads as "off": how an orchestrator talking to
             servers mid-rollout tells which ones publish native versions.

@@ -68,8 +68,9 @@ The fields the server reads:
 Unknown top-level keys are ignored and preserved. Inside `retrieval` they are not: an unknown key fails the
 package load with a message naming the valid ones. `version` is read when the package is published
 from a location (`POST …/packages` with a `location`): it numbers the immutable version that publish
-creates, and a publish without one is refused. A package loaded from `publisher.config.json` ignores
-it. See [package-versions.md](package-versions.md). (One more field, `manifestLocation`, exists for orchestrated
+creates, and a publish without one is refused. A package in `publisher.config.json` is published
+the same way, unless its environment is watched (`--watch-env`), which mounts it in place and
+ignores it. See [package-versions.md](package-versions.md). (One more field, `manifestLocation`, exists for orchestrated
 control-plane deployments; a locally authored package never needs it. It is deprecated and goes
 away with the package `PATCH` that writes it: bind a version's build manifest with
 `PUT …/versions/{v}/manifest` instead. See [#1540](https://github.com/malloydata/publisher/issues/1540).)
@@ -175,28 +176,28 @@ There is no directory scan: a package on disk serves only once it is registered.
   the rest of the API this endpoint is unauthenticated, so keep the server on localhost or behind
   a gateway.
 
-## Lifecycle: the served copy
+## Lifecycle: what is served
 
-When an environment is first created, Publisher copies each configured package into its own
-storage at `publisher_data/<env>/<pkg>/` (in the server root: the directory the server was
-launched from, unless `--server_root` set another) and compiles it, then serves that copy.
-Consequences:
+When an environment is first created, Publisher publishes each configured package as the version
+its `publisher.json` declares, into its own storage at `publisher_data/<env>/<pkg>/<version>/` (in
+the server root: the directory the server was launched from, unless `--server_root` set another),
+compiles it, and serves it. A package that declares no `version` fails to load. Consequences:
 
-- Editing your original source directory afterwards changes nothing, unless the environment runs
-  in watch mode (`--watch-env <env>`), which mounts local packages in place as symlinks instead of
-  copying them.
-- After editing the served copy, reload the package to recompile it:
-  `GET /api/v0/environments/{env}/packages/{pkg}?reload=true` over REST, or the
-  `reload_package` MCP tool. The reload is in place for a package that came from
-  `publisher.config.json`; a package the server installed from a location (below) is re-fetched
-  from it instead, which overwrites local edits. A reload that fails to compile leaves the files
-  alone and keeps serving the previous model.
-- `--init` deletes `publisher_data/` and re-copies everything from the configured locations. Keep
-  your source of truth outside `publisher_data/`.
+- A published version is immutable. Editing your original source directory afterwards changes
+  nothing, and neither does a reload: `GET …/packages/{pkg}?reload=true` or `reload_package`
+  answers the version unchanged. To ship an edit, bump `version` in `publisher.json` and publish
+  again. See [package-versions.md](package-versions.md).
+- In watch mode (`--watch-env <env>`), the environment's local packages are mounted in place as
+  symlinks instead, with no versions, and an edit is read: reload the package to recompile it,
+  `GET /api/v0/environments/{env}/packages/{pkg}?reload=true` over REST or the `reload_package`
+  MCP tool. A reload that fails to compile leaves the files alone and keeps serving the previous
+  model.
+- `--init` deletes `publisher_data/` and publishes everything again from the configured
+  locations. Keep your source of truth outside `publisher_data/`.
 
-### Installed packages
+### Installed packages (versioning off)
 
-A package can also arrive through the API: a `POST` to an environment's `packages` with a
+With `PUBLISHER_PACKAGE_VERSIONING=off`, a package can also arrive through the API: a `POST` to an environment's `packages` with a
 `location`, or a `PATCH` on a package that names one. The server downloads it, compiles the new
 copy beside the one that is serving (if any), and swaps it in; the previous copy answers queries
 until the swap. Four things follow from how that is recorded:

@@ -152,7 +152,7 @@ export type PublisherConfig = {
 };
 
 /**
- * `PUBLISHER_PACKAGE_VERSIONING`: `on` or `off` (the default). A TRANSITION
+ * `PUBLISHER_PACKAGE_VERSIONING`: `on` (the default) or `off`. A TRANSITION
  * flag, read from the environment only, and checked in one place: the publish
  * from a location. Off, that publish installs the package in place as before
  * versions; on, it publishes the version its publisher.json declares and
@@ -1161,7 +1161,7 @@ export const isPackageInlineFieldsEnabled = (): boolean =>
 
 /**
  * Whether a publish from a location publishes versions
- * (`PUBLISHER_PACKAGE_VERSIONING=on`; off when unset).
+ * (`PUBLISHER_PACKAGE_VERSIONING`, on unless set to `off`).
  */
 export const isVersioningEnabled = (): boolean =>
    settings.get("packageVersioning") === "on";

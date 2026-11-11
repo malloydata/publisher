@@ -28,7 +28,9 @@ Five flags decide whether the rest of this file is true:
 - `--port` and `--mcp_port` are absent from a command that uses the defaults above,
   which is the usual case. Where either one is present, it moves every URL here.
 - `--watch-env` is not a default, so watch mode is on only if you can see it. Without
-  it, an edit on disk is not picked up at all until you reload the package.
+  it, each package is published at boot as the immutable version its `publisher.json`
+  declares, and an edit on disk is never picked up, reload or not: to ship one, bump
+  that `version` and publish the package again.
 - `--server_root` and `--config` say which workspace is being served. Pointing either
   one outside this directory serves a different workspace entirely, and then nothing
   below describes what you are talking to.
