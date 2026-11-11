@@ -114,9 +114,11 @@ describe("a dropped line is warned about once per location", () => {
          parseRouteTag(annotations, "@");
          const calls = warn
             .getCalls()
-            .filter((call) => String(call.args[0]).includes("@env."));
+            // winston's overloads type `args` as a one-element tuple.
+            .map((call) => call.args as unknown[])
+            .filter((args) => String(args[0]).includes("@env."));
          expect(calls).toHaveLength(1);
-         expect(calls[0].args[1]).toMatchObject({
+         expect(calls[0][1]).toMatchObject({
             at: "file:///m.malloy:2",
             route: "@",
          });
