@@ -122,7 +122,12 @@ describe("the admin listener", () => {
             putTable: async (_c, _s, _t, _b, absent) => {
                ifAbsent = absent;
                return {
-                  table: { schema: "main", name: "t", columns: [] },
+                  table: {
+                     schema: "main",
+                     name: "t",
+                     columns: [],
+                     partitionedBy: [],
+                  },
                   created,
                };
             },
