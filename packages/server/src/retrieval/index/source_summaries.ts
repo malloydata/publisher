@@ -172,6 +172,7 @@ type SummaryEntity = Pick<
    | "joinTarget"
    | "joinTargetModelPath"
    | "joinPath"
+   | "recordPath"
 >;
 
 /**
@@ -244,8 +245,11 @@ function renderGroups(
    const groups = GROUPS.filter((g) => includeJoins || g.kind !== "join").map(
       (g) => ({
          title: g.title,
+         // A record's members after the group's other fields, so a wide
+         // record cannot use up the cap before them.
          lines: fields
             .filter((f) => f.kind === g.kind)
+            .sort((a, b) => Number(!!a.recordPath) - Number(!!b.recordPath))
             .map((f) => fieldLine(f, resolve)),
       }),
    );
