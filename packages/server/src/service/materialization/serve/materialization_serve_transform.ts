@@ -173,21 +173,28 @@ export interface ServeBinding {
  *
  * When no plan source has the entry's content address (an instructed build on
  * an unversioned package stamps the caller's address, which this server may not
- * compute), every plan source of that name is returned. That still keeps a
- * same-named source the plan never built from being served, which is the case
- * that returns wrong rows.
+ * compute), the one plan source of that name is returned. When the plan holds
+ * several, none is: an empty list matches no model's source, so every source of
+ * that name serves live rather than one being served from another's table.
  */
 export function planSourceIds(
    planSources: Record<string, { name?: string; sourceEntityId?: string }>,
 ): (sourceName: string, sourceEntityId: string) => string[] {
+   const byName = new Map<string, { sourceID: string; address?: string }[]>();
+   for (const [sourceID, source] of Object.entries(planSources)) {
+      if (!source.name) continue;
+      const named = byName.get(source.name) ?? [];
+      named.push({ sourceID, address: source.sourceEntityId });
+      byName.set(source.name, named);
+   }
    return (sourceName, sourceEntityId) => {
-      const named = Object.entries(planSources).filter(
-         ([, source]) => source.name === sourceName,
-      );
-      const exact = named.filter(
-         ([, source]) => source.sourceEntityId === sourceEntityId,
-      );
-      return (exact.length > 0 ? exact : named).map(([sourceID]) => sourceID);
+      const named = byName.get(sourceName) ?? [];
+      const exact = named.filter((s) => s.address === sourceEntityId);
+      if (exact.length > 0) return exact.map((s) => s.sourceID);
+      // No address matches: trust the name only when one plan source has it.
+      // Two would be two different tables' sources, and picking both serves one
+      // from the other's table, so neither is named and both serve live.
+      return named.length === 1 ? [named[0].sourceID] : [];
    };
 }
 
@@ -308,11 +315,12 @@ export function deriveServeBindings(
          ),
       ].filter((name, i, all) => all.indexOf(name) === i);
       for (const sourceName of names) {
-         const sourceIDs =
-            sourceIDsFor?.(sourceName, entry.sourceEntityId) ?? [];
+         // Set whenever there is a plan to read, even empty: an empty list
+         // names no source, so the binding serves nothing (see planSourceIds).
+         const sourceIDs = sourceIDsFor?.(sourceName, entry.sourceEntityId);
          bindings.push({
             sourceName,
-            ...(sourceIDs.length > 0 ? { sourceIDs } : {}),
+            ...(sourceIDs !== undefined ? { sourceIDs } : {}),
             // Carried, not inferred: a manifest travels without its build plan.
             origin:
                entry.origin === "preaggregate" ? "preaggregate" : "persist",

@@ -397,6 +397,32 @@ describe("storage= serve bindings match on source identity", () => {
       expect(await runTotal(model)).toBe(0);
    });
 
+   it("serves live a same-named source the model reaches only through an import", async () => {
+      setStorageMode("on");
+      // `report.malloy` imports only `weekly`, so `X` (other.malloy's own, not
+      // the persisted one) is a hidden dependency: in `sourceRegistry`, not in
+      // `contents`. The serve shape rebinds hidden dependencies too.
+      const model = await buildModel({
+         files: {
+            "other.malloy": `source: X is duckdb.sql("SELECT 0 AS total, 1 AS extra")
+source: weekly is X -> { aggregate: total is total.sum() }`,
+            "report.malloy": `import { weekly } from "other.malloy"`,
+         },
+         entry: "report.malloy",
+      });
+      model.setServeBindings([{ ...BINDING, sourceIDs: [OWN] }]);
+      const res = await model.runQuery(
+         unrecordedAudit(),
+         {
+            query: "run: weekly -> { aggregate: t is total.sum() }",
+            filterParams: {},
+         },
+         QueryPrivileges.of({ bypassFilters: true }),
+      );
+      const rows = res.compactResult as unknown as { t: number }[];
+      expect(Number(rows[0].t)).toBe(0);
+   });
+
    it("without sourceIDs, that same-named source is served from the wrong table (the defect)", async () => {
       setStorageMode("on");
       const model = await buildModel({

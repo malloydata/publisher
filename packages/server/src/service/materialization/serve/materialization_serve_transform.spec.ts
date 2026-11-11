@@ -2504,12 +2504,30 @@ describe("serve binding source identity", () => {
       expect(ids("nope", "addr_a")).toEqual([]);
    });
 
-   it("planSourceIds falls back to every plan source of the name when no address matches", () => {
+   it("planSourceIds trusts the name when no address matches only if one plan source has it", () => {
       // An instructed build stamps the caller's address.
-      expect(planSourceIds(plan)("daily", "caller_addr").sort()).toEqual([
-         "daily@file:///p/a.malloy",
-         "daily@file:///p/b.malloy",
+      expect(planSourceIds(plan)("daily_ext", "caller_addr")).toEqual([
+         "daily_ext@file:///p/a.malloy",
       ]);
+      // Two `daily`s are two tables' sources: naming both would serve one from
+      // the other's table, so neither is named.
+      expect(planSourceIds(plan)("daily", "caller_addr")).toEqual([]);
+   });
+
+   it("an empty sourceIDs list serves no model's source of that name", () => {
+      const binding: ServeBinding = {
+         sourceName: "daily",
+         sourceIDs: [],
+         destinationName: "lake",
+         virtualHandle: "caller_addr",
+         tablePath: "lake.daily_g1",
+         schema: [{ name: "n", type: "BIGINT" }],
+      };
+      expect(
+         bindingServesModelSource(binding, {
+            daily: { sourceID: "daily@file:///p/a.malloy" },
+         }),
+      ).toBe(false);
    });
 
    it("deriveServeBindings stamps the builder and its aliases with their own sourceIDs", () => {
