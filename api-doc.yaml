@@ -10689,6 +10689,16 @@ components:
             A row bound to check each estimate against, such as what the build
             worker's DuckDB can hold. An estimate whose band's `high` is above
             it carries `exceedsMaxRows: true`. Omitted, nothing is checked.
+        maxSources:
+          type: integer
+          minimum: 1
+          maximum: 25
+          description: >-
+            The most sources this request counts, at most 25 (the default).
+            A request is also bounded in time by one query timeout for all its
+            counts. A source past either bound is not attempted: it answers
+            `status: refused` with `reason` `limit` or `deadline`, so a client
+            names it in `sources` in another request.
 
     BuildPlanEstimates:
       type: object
@@ -10783,7 +10793,12 @@ components:
             materialization gate refuses), `caller_scoped` (the build strips
             a caller-scoped term, so its table holds every caller's rows) and
             `not_examined` (the plan's eligibility was not computed, so nothing
-            proves the source ungated).
+            proves the source ungated), `dialect` (its dialect cannot count its
+            build query as a derived table; today SQL Server, which forbids a
+            `WITH` or an `ORDER BY` there), `limit` (past the request's
+            `maxSources`) and `deadline` (past the request's time budget, one
+            query timeout). A rollup the authorize gate refuses keeps its plan
+            entry and is `gated`, not `not_buildable`.
         message:
           type: string
           description: A refusal's or a failure's explanation.
@@ -10796,6 +10811,12 @@ components:
           description: >-
             Whether `band.high` is above the request's `maxRows`. Absent when
             the request set no bound or the source has no estimate.
+        rowsRounded:
+          type: boolean
+          description: >-
+            Present and true when the count exceeds 2^53, so `rows` (and the
+            band) is the nearest number JSON can carry rather than the exact
+            count.
 
     RowCountBand:
       type: object

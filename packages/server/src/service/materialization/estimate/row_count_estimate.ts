@@ -5,11 +5,12 @@ import { randomUUID } from "crypto";
 import type { Connection as MalloyConnection } from "@malloydata/malloy";
 import { components } from "../../../api";
 import { getQueryTimeoutMs } from "../../../config";
-import { BadRequestError, BuildPlanUnavailableError } from "../../../errors";
+import { BadRequestError } from "../../../errors";
 import { logger } from "../../../logger";
 import { runWithQueryTimeout } from "../../../query_timeout";
 import { errMessage } from "../../../utils";
 import { mergeQueryMetadata, type QueryMetadata } from "../../query_metadata";
+import { withStatementUsage } from "../../statement_usage";
 import type { SourceEligibility } from "../plan/build_plan";
 
 type BuildPlan = components["schemas"]["BuildPlan"];
@@ -43,7 +44,27 @@ export type EstimateRefusalReason =
    | "not_buildable"
    | "gated"
    | "caller_scoped"
-   | "not_examined";
+   | "not_examined"
+   /** Its dialect cannot run the count over its build query as written. */
+   | "dialect"
+   /** Past the request's source cap, so not attempted. */
+   | "limit"
+   /** Past the request's time budget, so not attempted. */
+   | "deadline";
+
+/**
+ * The most sources one request counts. Each count costs what its build's read
+ * costs and the request holds one query slot throughout, so a request is
+ * bounded twice: by this cap, and by one query timeout for all its counts.
+ */
+export const MAX_SOURCES_PER_REQUEST = 25;
+
+/**
+ * Dialects whose build query cannot be counted as a derived table: SQL Server
+ * forbids a `WITH` inside one and an `ORDER BY` without `TOP`, both of which
+ * Malloy's build SQL carries. Refused with a reason rather than sent to fail.
+ */
+const UNCOUNTABLE_DIALECTS: ReadonlySet<string> = new Set(["sqlserver"]);
 
 /** The alias the count's subquery takes; also how a test finds the statement. */
 export const ROW_ESTIMATE_ALIAS = "publisher_row_estimate";
@@ -65,7 +86,11 @@ export function rowCountSQL(buildSQL: string): string {
  *
  * @throws {Error} when the row holds no non-negative integer count.
  */
-export function readRowCount(rows: readonly unknown[]): number {
+export function readRowCount(rows: readonly unknown[]): {
+   rows: number;
+   /** The count exceeds 2^53, so `rows` is the nearest double, not exact. */
+   rounded: boolean;
+} {
    const row = rows[0];
    if (row === null || typeof row !== "object") {
       throw new Error("the count statement returned no row");
@@ -74,18 +99,27 @@ export function readRowCount(rows: readonly unknown[]): number {
       ([key]) => key.toLowerCase() === "row_count",
    );
    const raw = entry?.[1];
-   const value =
-      typeof raw === "bigint"
-         ? Number(raw)
-         : typeof raw === "string"
-           ? Number(raw)
-           : raw;
-   if (typeof value !== "number" || !Number.isSafeInteger(value) || value < 0) {
-      throw new Error(
+   const notACount = () =>
+      new Error(
          `the count statement returned ${JSON.stringify(String(raw))}, not a row count`,
       );
+   // Read as a BigInt first, so a count past 2^53 is still recognized as one;
+   // an empty or whitespace string is not a count (Number("") is 0).
+   let count: bigint;
+   if (typeof raw === "bigint") {
+      count = raw;
+   } else if (typeof raw === "number" && Number.isInteger(raw)) {
+      count = BigInt(raw);
+   } else if (typeof raw === "string" && /^\s*\d+\s*$/.test(raw)) {
+      count = BigInt(raw.trim());
+   } else {
+      throw notACount();
    }
-   return value;
+   if (count < 0n) throw notACount();
+   return {
+      rows: Number(count),
+      rounded: count > BigInt(Number.MAX_SAFE_INTEGER),
+   };
 }
 
 /**
@@ -113,6 +147,14 @@ export function estimateRefusal(
    eligibility: SourceEligibility | undefined,
 ): { reason: EstimateRefusalReason; message: string } | undefined {
    const name = source?.name ?? refused?.name ?? sourceID;
+   // In both `sources` and `refusedSources`: a rollup the authorize gate
+   // refuses keeps its plan entry, so its table exists but is gated.
+   if (refused && source) {
+      return {
+         reason: "gated",
+         message: `'${name}' is not counted: the build plan refuses it (${refused.reason}): ${refused.message}`,
+      };
+   }
    if (refused || !source) {
       return {
          reason: "not_buildable",
@@ -128,14 +170,25 @@ export function estimateRefusal(
          message: `The package's materialization eligibility was not computed, so nothing proves '${name}' is ungated. Reload the package.`,
       };
    }
-   if (!eligibility.eligible.includes(name) || name in eligibility.refused) {
-      const why = eligibility.refused[name];
+   if (
+      !eligibility.eligible.includes(name) ||
+      Object.hasOwn(eligibility.refused, name)
+   ) {
+      const why = Object.hasOwn(eligibility.refused, name)
+         ? eligibility.refused[name]
+         : undefined;
       return {
          reason: "gated",
          message:
             `'${name}' is not counted: a count over its build query reads every caller's rows, and the strictest materialization gate does not admit it` +
             (why ? ` (${why})` : "") +
             ".",
+      };
+   }
+   if (source.dialect && UNCOUNTABLE_DIALECTS.has(source.dialect)) {
+      return {
+         reason: "dialect",
+         message: `'${name}' is not counted: its dialect (${source.dialect}) cannot count its build query as a derived table.`,
       };
    }
    if (
@@ -158,7 +211,7 @@ export function selectSources(
    const all = [
       ...Object.keys(plan.sources),
       ...Object.keys(plan.refusedSources ?? {}).filter(
-         (id) => !(id in plan.sources),
+         (id) => !Object.hasOwn(plan.sources, id),
       ),
    ];
    if (selection === undefined) return all;
@@ -182,7 +235,7 @@ export function parseEstimateRequest(body: unknown): BuildPlanEstimateRequest {
    if (typeof body !== "object" || Array.isArray(body)) {
       throw new BadRequestError("The estimate request body must be an object.");
    }
-   const { sources, maxRows } = body as Record<string, unknown>;
+   const { sources, maxRows, maxSources } = body as Record<string, unknown>;
    const request: BuildPlanEstimateRequest = {};
    if (sources !== undefined) {
       if (
@@ -205,13 +258,30 @@ export function parseEstimateRequest(body: unknown): BuildPlanEstimateRequest {
       }
       request.maxRows = maxRows;
    }
+   if (maxSources !== undefined) {
+      if (
+         typeof maxSources !== "number" ||
+         !Number.isSafeInteger(maxSources) ||
+         maxSources < 1 ||
+         maxSources > MAX_SOURCES_PER_REQUEST
+      ) {
+         throw new BadRequestError(
+            `\`maxSources\` must be an integer from 1 to ${MAX_SOURCES_PER_REQUEST}.`,
+         );
+      }
+      request.maxSources = maxSources;
+   }
    return request;
 }
 
-/** Runs one count for one planned source and returns its rows. */
+/**
+ * Runs one count for one planned source and returns its rows, within
+ * `budgetMs` (the request's remaining time, never more than a query timeout).
+ */
 export type CountRunner = (
    source: PersistSourcePlan,
    sql: string,
+   budgetMs: number,
 ) => Promise<readonly unknown[]>;
 
 /**
@@ -226,6 +296,8 @@ export async function estimateRowCounts(args: {
    countRows: CountRunner;
    now?: () => Date;
    clock?: () => number;
+   /** The whole request's time budget; defaults to one query timeout. */
+   budgetMs?: number;
    /** Aborted when the client goes away; no further statement is issued. */
    signal?: AbortSignal;
 }): Promise<BuildPlanEstimates> {
@@ -234,6 +306,14 @@ export async function estimateRowCounts(args: {
    const clock = args.clock ?? (() => performance.now());
    const measuredAt = now().toISOString();
    const estimates: Record<string, RowCountEstimate> = {};
+   const cap = request.maxSources ?? MAX_SOURCES_PER_REQUEST;
+   // A timeout of zero or less is no timeout, so no budget: the cap alone
+   // bounds the request then.
+   const timeoutMs = getQueryTimeoutMs();
+   const budgetMs =
+      args.budgetMs ?? (timeoutMs > 0 ? timeoutMs : Number.POSITIVE_INFINITY);
+   const deadline = clock() + budgetMs;
+   let counted = 0;
 
    for (const sourceID of selectSources(plan, request.sources)) {
       const source = plan.sources[sourceID];
@@ -254,10 +334,28 @@ export async function estimateRowCounts(args: {
          continue;
       }
       args.signal?.throwIfAborted();
+      if (counted >= cap) {
+         estimates[sourceID] = {
+            ...base,
+            reason: "limit",
+            message: `Not attempted: the request counts at most ${cap} sources. Name the rest in \`sources\` in another request.`,
+         };
+         continue;
+      }
+      const remaining = deadline - clock();
+      if (remaining <= 0) {
+         estimates[sourceID] = {
+            ...base,
+            reason: "deadline",
+            message: `Not attempted: the request's time budget (one query timeout, ${budgetMs} ms) ran out. Name it in \`sources\` in another request.`,
+         };
+         continue;
+      }
+      counted++;
       const started = clock();
       try {
-         const rows = readRowCount(
-            await countRows(source, rowCountSQL(source.sql)),
+         const { rows, rounded } = readRowCount(
+            await countRows(source, rowCountSQL(source.sql), remaining),
          );
          const estimate: RowCountEstimate = {
             ...base,
@@ -270,6 +368,7 @@ export async function estimateRowCounts(args: {
                   ? "Exact COUNT(*) over the rollup's build query, which groups by its grain, so the count is the number of distinct grain tuples."
                   : "Exact COUNT(*) over the source's build query, on its own connection.",
             elapsedMs: Math.round(clock() - started),
+            ...(rounded ? { rowsRounded: true } : {}),
          };
          if (request.maxRows !== undefined) {
             estimate.exceedsMaxRows = rows > request.maxRows;
@@ -282,6 +381,9 @@ export async function estimateRowCounts(args: {
          }
          estimates[sourceID] = estimate;
       } catch (err) {
+         // A client that went away is not a failed estimate: stop, and let
+         // the route answer the aborted request as it answers any other.
+         if (args.signal?.aborted) throw err;
          estimates[sourceID] = {
             ...base,
             status: "failed",
@@ -315,25 +417,39 @@ function describeSource(
    };
 }
 
+/**
+ * One count's timeout: the query timeout, cut to the request's remaining
+ * budget. Zero (no timeout) when the server sets none.
+ */
+export function countTimeoutMs(
+   queryTimeoutMs: number,
+   budgetMs: number,
+): number {
+   if (queryTimeoutMs <= 0) return 0;
+   return Math.max(1, Math.min(queryTimeoutMs, Math.ceil(budgetMs)));
+}
+
 /** What the estimate needs from a loaded package. */
 export interface EstimatablePackage {
    getPackageName(): string;
-   getBuildPlan(): BuildPlan | null;
-   isBuildPlanUnavailable(): boolean;
+   getVersionId(): string | undefined;
    getSourceEligibility(): SourceEligibility | undefined;
    getMalloyConnection(connectionName: string): Promise<MalloyConnection>;
 }
 
 /**
  * Estimate a loaded package's plan, running each count on the source's own
- * connection under the server's query timeout and tagged like a build of that
- * source (`class` materialize, `trigger` estimate, one `run_id` per request).
+ * connection, tagged like a build of that source (`class` materialize,
+ * `trigger` estimate, one `run_id` per request) and metered like one.
  *
- * @throws {BuildPlanUnavailableError} when the plan could not be derived at load.
+ * `plan` is the package's build plan as `GET …/build-plan` answers it, so the
+ * plan-unavailable rule is that route's, in one place.
+ *
  * @throws {BadRequestError} for a malformed request or an unknown source.
  */
 export async function estimatePackageRowCounts(args: {
    pkg: EstimatablePackage;
+   plan: BuildPlan;
    environmentName: string;
    body: unknown;
    /** The connection's default and enforced query-metadata layers. */
@@ -341,29 +457,26 @@ export async function estimatePackageRowCounts(args: {
       default?: QueryMetadata | null;
       enforced?: QueryMetadata | null;
    } | null;
+   /** Whether a statement on this connection is metered (see statement_usage). */
+   meteredConnection?: (connectionName: string) => boolean;
    /** Aborted when the client goes away. */
    signal?: AbortSignal;
 }): Promise<BuildPlanEstimates> {
-   const { pkg, environmentName } = args;
+   const { pkg, plan, environmentName } = args;
    const request = parseEstimateRequest(args.body);
-   if (pkg.isBuildPlanUnavailable()) {
-      throw new BuildPlanUnavailableError(
-         `The build plan of package ${pkg.getPackageName()} could not be derived at load, so nothing can be estimated. Reload the package to derive it again.`,
-      );
-   }
-   const plan = pkg.getBuildPlan() ?? { graphs: [], sources: {} };
    const runId = randomUUID();
+   const version = pkg.getVersionId();
    return estimateRowCounts({
       plan,
       eligibility: pkg.getSourceEligibility(),
       request,
       signal: args.signal,
-      countRows: async (source, sql) => {
+      countRows: async (source, sql, budgetMs) => {
          const connection = await pkg.getMalloyConnection(
             source.connectionName,
          );
          const layers = args.connectionMetadata?.(source.connectionName);
-         const { metadata } = mergeQueryMetadata({
+         const { metadata, drops } = mergeQueryMetadata({
             connection: layers?.default,
             enforced: layers?.enforced,
             model: source.queryMetadata,
@@ -371,20 +484,48 @@ export async function estimatePackageRowCounts(args: {
                queryClass: "materialize",
                environment: environmentName,
                package: pkg.getPackageName(),
+               ...(version ? { version } : {}),
                source: source.name,
                trigger: "estimate",
                runId,
             },
          });
-         const result = await runWithQueryTimeout(
-            (abortSignal) =>
-               connection.runSQL(sql, {
-                  ...(metadata ? { queryMetadata: metadata } : {}),
-                  abortSignal,
-               }),
-            getQueryTimeoutMs(),
-            args.signal,
-         );
+         if (drops.length > 0) {
+            logger.warn("Dropped query-metadata properties for an estimate", {
+               sourceName: source.name,
+               drops,
+            });
+         }
+         const run = () =>
+            runWithQueryTimeout(
+               (abortSignal) =>
+                  connection.runSQL(sql, {
+                     ...(metadata ? { queryMetadata: metadata } : {}),
+                     abortSignal,
+                  }),
+               countTimeoutMs(getQueryTimeoutMs(), budgetMs),
+               args.signal,
+            );
+         let metered = false;
+         try {
+            metered = args.meteredConnection?.(source.connectionName) ?? false;
+         } catch {
+            // A metering check never fails a statement.
+         }
+         const result = metered
+            ? await withStatementUsage(
+                 {
+                    environment: environmentName,
+                    connection: source.connectionName,
+                    surface: "build",
+                    package: pkg.getPackageName(),
+                 },
+                 run,
+                 // The count's own one row, not the table's; a scan's cost is
+                 // its duration.
+                 (r) => r.rows.length,
+              )
+            : await run();
          return result.rows;
       },
    });

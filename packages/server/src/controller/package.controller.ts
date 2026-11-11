@@ -5,6 +5,8 @@ import {
    recordPackageReload,
    type ReloadTrigger,
 } from "../package_state_metrics";
+import { buildQueryMetadataInput } from "../service/query_metadata";
+import { connectionMetadataLayers } from "../service/materialization/run/materialization_run_support";
 import { components } from "../api";
 import { normalizeModelPath } from "../constants";
 import {
@@ -337,23 +339,28 @@ export class PackageController {
          packageName,
          versionId,
       );
+      // The plan as GET …/build-plan answers it, 503 rule included.
+      const plan = await this.getPackageBuildPlan(
+         environmentName,
+         packageName,
+         versionId,
+      );
       const environment = await this.environment(environmentName);
       return estimatePackageRowCounts({
          pkg,
+         plan,
          environmentName,
          body,
-         connectionMetadata: (connectionName) => {
-            try {
-               const connection = environment.getApiConnection(connectionName);
-               return {
-                  default: connection.queryMetadata,
-                  enforced: connection.queryMetadataEnforced,
-               };
-            } catch {
-               // Fails open, as a build's tags do: a tag never fails a statement.
-               return null;
-            }
-         },
+         // A build's own reader: fails open, and logs a lost enforced layer.
+         connectionMetadata: (connectionName) =>
+            connectionMetadataLayers(environment, connectionName),
+         // The same rule a served query meters by.
+         meteredConnection: buildQueryMetadataInput({
+            environmentName,
+            environment,
+            pkg,
+            noLayersLogMessage: "No query-metadata layers for an estimate",
+         }).meteredConnection,
          signal,
       });
    }

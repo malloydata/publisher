@@ -1,12 +1,15 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
-import { describe, expect, it } from "bun:test";
+import { describe, expect, it, spyOn } from "bun:test";
+import { logger } from "../../../logger";
 import { components } from "../../../api";
-import { BadRequestError, BuildPlanUnavailableError } from "../../../errors";
+import { BadRequestError } from "../../../errors";
 import { installSettings } from "../../../test_helpers/settings_env";
 import {
    COUNT_QUERY_METHOD,
+   countTimeoutMs,
+   MAX_SOURCES_PER_REQUEST,
    estimatePackageRowCounts,
    estimateRefusal,
    estimateRowCounts,
@@ -57,16 +60,31 @@ describe("rowCountSQL", () => {
 
 describe("readRowCount", () => {
    it("reads a number, a bigint or a numeric string, under any case", () => {
-      expect(readRowCount([{ row_count: 3 }])).toBe(3);
-      expect(readRowCount([{ ROW_COUNT: 7n }])).toBe(7);
-      expect(readRowCount([{ Row_Count: "12" }])).toBe(12);
+      expect(readRowCount([{ row_count: 3 }]).rows).toBe(3);
+      expect(readRowCount([{ ROW_COUNT: 7n }]).rows).toBe(7);
+      expect(readRowCount([{ Row_Count: " 12 " }]).rows).toBe(12);
    });
 
-   it("refuses an answer that is not a row count", () => {
+   it("refuses an answer that is not a row count, including an empty string", () => {
       expect(() => readRowCount([])).toThrow("no row");
       expect(() => readRowCount([{ other: 1 }])).toThrow("not a row count");
       expect(() => readRowCount([{ row_count: -1 }])).toThrow();
       expect(() => readRowCount([{ row_count: 1.5 }])).toThrow();
+      expect(() => readRowCount([{ row_count: "" }])).toThrow(
+         "not a row count",
+      );
+      expect(() => readRowCount([{ row_count: "  " }])).toThrow(
+         "not a row count",
+      );
+   });
+
+   it("accepts a count past 2^53, marked rounded", () => {
+      const big = readRowCount([{ row_count: 9007199254740993n }]);
+      expect(big).toEqual({ rows: 9007199254740992, rounded: true });
+      expect(
+         readRowCount([{ row_count: "18000000000000000000" }]).rounded,
+      ).toBe(true);
+      expect(readRowCount([{ row_count: 5 }]).rounded).toBe(false);
    });
 });
 
@@ -84,7 +102,7 @@ describe("estimateRefusal", () => {
       ).toBeUndefined();
    });
 
-   it("refuses a source the plan refuses, even one that keeps a plan entry", () => {
+   it("reports a plan refusal that keeps its plan entry (an authorize-refused rollup) as gated", () => {
       const refusal = estimateRefusal(
          open.sourceID,
          open,
@@ -97,7 +115,7 @@ describe("estimateRefusal", () => {
          },
          ALL_ELIGIBLE(["open"]),
       );
-      expect(refusal?.reason).toBe("not_buildable");
+      expect(refusal?.reason).toBe("gated");
       expect(refusal?.message).toContain("gated base");
    });
 
@@ -330,8 +348,7 @@ describe("estimatePackageRowCounts", () => {
    ): EstimatablePackage {
       return {
          getPackageName: () => "pkg",
-         getBuildPlan: () => null,
-         isBuildPlanUnavailable: () => false,
+         getVersionId: () => undefined,
          getSourceEligibility: () => ({ eligible: [], refused: {} }),
          getMalloyConnection: async () => {
             throw new Error("no statement may run");
@@ -343,20 +360,11 @@ describe("estimatePackageRowCounts", () => {
    it("answers an empty map for a package with no plan", async () => {
       const result = await estimatePackageRowCounts({
          pkg: fakePackage(),
+         plan: { graphs: [], sources: {} },
          environmentName: "env",
          body: {},
       });
       expect(result.estimates).toEqual({});
-   });
-
-   it("refuses with BUILD_PLAN_UNAVAILABLE when the plan was not derived", async () => {
-      await expect(
-         estimatePackageRowCounts({
-            pkg: fakePackage({ isBuildPlanUnavailable: () => true }),
-            environmentName: "env",
-            body: {},
-         }),
-      ).rejects.toThrow(BuildPlanUnavailableError);
    });
 
    it("tags each count like a build of the source, with trigger estimate", async () => {
@@ -370,7 +378,7 @@ describe("estimatePackageRowCounts", () => {
       const seen: { sql: string; options: unknown }[] = [];
       const result = await estimatePackageRowCounts({
          pkg: fakePackage({
-            getBuildPlan: () => planOf(source),
+            getVersionId: () => "1.2.0",
             getSourceEligibility: () => ALL_ELIGIBLE(["orders_flat"]),
             getMalloyConnection: async () =>
                ({
@@ -380,6 +388,7 @@ describe("estimatePackageRowCounts", () => {
                   },
                }) as never,
          }),
+         plan: planOf(source),
          environmentName: "env",
          body: {},
          connectionMetadata: () => ({ enforced: { tenant: "t1" } }),
@@ -398,10 +407,182 @@ describe("estimatePackageRowCounts", () => {
          environment: "env",
          package: "pkg",
          source: "orders_flat",
+         version: "1.2.0",
          team: "growth",
          tenant: "t1",
       });
       expect(options.queryMetadata?.run_id).toBeDefined();
       restore();
+   });
+
+   const countingPackage = (seen: string[]) =>
+      fakePackage({
+         getSourceEligibility: () => ALL_ELIGIBLE(["orders_flat"]),
+         getMalloyConnection: async () =>
+            ({
+               runSQL: async (sql: string) => {
+                  seen.push(sql);
+                  return { rows: [{ row_count: 4 }], totalRows: 1 };
+               },
+            }) as never,
+      });
+
+   it("meters a count on a metered connection, and not on another", async () => {
+      const spy = spyOn(logger, "info");
+      try {
+         const source = planSource("orders_flat");
+         const usage = () =>
+            (spy.mock.calls as unknown as [unknown, Record<string, unknown>][])
+               .filter((c) => c[0] === "statement_usage")
+               .map((c) => c[1]);
+         await estimatePackageRowCounts({
+            pkg: countingPackage([]),
+            plan: planOf(source),
+            environmentName: "env",
+            body: {},
+            meteredConnection: () => true,
+         });
+         expect(usage()).toMatchObject([
+            {
+               event: "statement_usage",
+               environment: "env",
+               connection: "duckdb",
+               surface: "build",
+               package: "pkg",
+               status: "ok",
+            },
+         ]);
+         spy.mockClear();
+         await estimatePackageRowCounts({
+            pkg: countingPackage([]),
+            plan: planOf(source),
+            environmentName: "env",
+            body: {},
+            meteredConnection: () => false,
+         });
+         expect(usage()).toEqual([]);
+      } finally {
+         spy.mockRestore();
+      }
+   });
+});
+
+describe("the review's edge cases", () => {
+   it("refuses a SQL Server source with reason dialect, issuing no statement", () => {
+      const source = planSource("mssql_orders", {
+         dialect: "sqlserver",
+         sql: "WITH __stage0 AS (SELECT 1 AS a) SELECT a FROM __stage0 ORDER BY 1",
+      });
+      expect(
+         estimateRefusal(
+            source.sourceID,
+            source,
+            undefined,
+            ALL_ELIGIBLE(["mssql_orders"]),
+         ),
+      ).toMatchObject({ reason: "dialect" });
+   });
+
+   it("reads a refusal for a source named constructor by own key only", () => {
+      const source = planSource("constructor");
+      expect(
+         estimateRefusal(
+            source.sourceID,
+            source,
+            undefined,
+            ALL_ELIGIBLE(["constructor"]),
+         ),
+      ).toBeUndefined();
+   });
+
+   it("reports an authorize-refused rollup that keeps its plan entry as gated", () => {
+      const rollup = planSource("orders__preagg", { origin: "preaggregate" });
+      expect(
+         estimateRefusal(
+            rollup.sourceID,
+            rollup,
+            {
+               name: "orders__preagg",
+               sourceID: rollup.sourceID,
+               tier: "preaggregate",
+               reason: "authorize",
+               message: "the base is gated",
+            },
+            ALL_ELIGIBLE(["orders__preagg"]),
+         ),
+      ).toMatchObject({ reason: "gated" });
+   });
+
+   it("counts at most maxSources, and reports the rest as not attempted", async () => {
+      const names = ["a", "b", "c"];
+      let ran = 0;
+      const result = await estimateRowCounts({
+         plan: planOf(...names.map((n) => planSource(n))),
+         eligibility: ALL_ELIGIBLE(names),
+         request: parseEstimateRequest({ maxSources: 2 }),
+         countRows: async () => {
+            ran++;
+            return [{ row_count: 1 }];
+         },
+      });
+      expect(ran).toBe(2);
+      expect(
+         Object.values(result.estimates).map((e) => e.reason ?? e.status),
+      ).toEqual(["estimated", "estimated", "limit"]);
+      expect(() => parseEstimateRequest({ maxSources: 0 })).toThrow(
+         BadRequestError,
+      );
+      expect(() =>
+         parseEstimateRequest({ maxSources: MAX_SOURCES_PER_REQUEST + 1 }),
+      ).toThrow(BadRequestError);
+   });
+
+   it("stops counting when the request's time budget runs out", async () => {
+      let t = 0;
+      let ran = 0;
+      const result = await estimateRowCounts({
+         plan: planOf(planSource("a"), planSource("b")),
+         eligibility: ALL_ELIGIBLE(["a", "b"]),
+         request: {},
+         budgetMs: 100,
+         clock: () => t,
+         countRows: async () => {
+            ran++;
+            t += 150; // the first count uses the whole budget
+            return [{ row_count: 1 }];
+         },
+      });
+      expect(ran).toBe(1);
+      expect(
+         Object.values(result.estimates).map((e) => e.reason ?? e.status),
+      ).toEqual(["estimated", "deadline"]);
+   });
+
+   it("cuts each count's timeout to the remaining budget, and keeps no timeout as none", () => {
+      expect(countTimeoutMs(60_000, 1_500.2)).toBe(1_501);
+      expect(countTimeoutMs(1_000, 60_000)).toBe(1_000);
+      expect(countTimeoutMs(0, 60_000)).toBe(0);
+   });
+
+   it("rethrows a client disconnect during a count instead of recording a failure", async () => {
+      const controller = new AbortController();
+      const warn = spyOn(logger, "warn");
+      try {
+         await expect(
+            estimateRowCounts({
+               plan: planOf(planSource("a")),
+               eligibility: ALL_ELIGIBLE(["a"]),
+               request: { maxRows: 0 },
+               signal: controller.signal,
+               countRows: async () => {
+                  controller.abort(new Error("client disconnected"));
+                  throw new Error("client disconnected");
+               },
+            }),
+         ).rejects.toThrow("client disconnected");
+         expect(warn).not.toHaveBeenCalled();
+      } finally {
+         warn.mockRestore();
+      }
    });
 });

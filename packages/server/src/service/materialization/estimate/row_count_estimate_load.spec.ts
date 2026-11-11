@@ -146,6 +146,7 @@ describe("row-count estimates over DuckDB", () => {
 
          await estimatePackageRowCounts({
             pkg,
+            plan: pkg.getBuildPlan() ?? { graphs: [], sources: {} },
             environmentName: "testEnv",
             body: {},
          });
@@ -161,6 +162,7 @@ describe("row-count estimates over DuckDB", () => {
          const pkg = await loadPackage({ "model.malloy": MODEL });
          const result = await estimatePackageRowCounts({
             pkg,
+            plan: pkg.getBuildPlan() ?? { graphs: [], sources: {} },
             environmentName: "testEnv",
             body: { maxRows: 4 },
          });
@@ -202,6 +204,7 @@ describe("row-count estimates over DuckDB", () => {
          const pkg = await loadPackage({ "model.malloy": MODEL });
          const result = await estimatePackageRowCounts({
             pkg,
+            plan: pkg.getBuildPlan() ?? { graphs: [], sources: {} },
             environmentName: "testEnv",
             body: { sources: ["order_lines"] },
          });
@@ -222,6 +225,7 @@ describe("row-count estimates over DuckDB", () => {
          });
          const result = await estimatePackageRowCounts({
             pkg,
+            plan: pkg.getBuildPlan() ?? { graphs: [], sources: {} },
             environmentName: "testEnv",
             body: {},
          });
@@ -235,9 +239,11 @@ describe("row-count estimates over DuckDB", () => {
          const rollup = Object.values(result.estimates).find(
             (e) => e.origin === "preaggregate",
          );
+         // The plan refuses it (authorize) but keeps its entry: its table
+         // exists and is gated.
          expect(rollup).toMatchObject({
             status: "refused",
-            reason: "not_buildable",
+            reason: "gated",
             baseSourceName: "secured",
          });
          expect(rollup?.rows).toBeUndefined();
