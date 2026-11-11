@@ -152,8 +152,7 @@ curl -s .../api/v0/environments/<env>/packages/<pkg>/notebooks   # lists the not
 `models` returns a 424 with the full compiler error when the Malloy is broken,
 which is the fastest way to see a compile failure. Notebooks are listed by
 `notebooks` and are **not** in the `models` list. A `.malloy` notebook still compiles
-as a model, so `models/notebooks/eval_run.malloy` shows its compile errors; only a
-legacy `.malloynb` returns `404 "<file> is a notebook"` there. A notebook fetched from `notebooks/<file>` reports
+as a model, so `models/notebooks/eval_run.malloy` shows its compile errors. A notebook fetched from `notebooks/<file>` reports
 its cells' compiled schemas under `modelInfo`, but only the cells it treats as
 anonymous queries -- do not read a low count there as cells failing to compile. To
 verify every cell, run each named query through `execute_query`.

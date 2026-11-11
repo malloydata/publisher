@@ -1,6 +1,6 @@
 ---
 name: malloy-reports
-description: "Build or modify a Malloy Publisher report: a .malloy file with an ## artifact tag, written at the package root unless asked otherwise, laid out as a grid (a dashboard, scanned at a glance) or linear (a notebook or data story, read top to bottom), with filter controls rendered from givens and # drill click-through. Use when the user asks for a dashboard, a notebook, a report, a data story, a filterable view, or drill-through between views, and no code is wanted. Legacy .malloynb files are read, not authored."
+description: "Build or modify a Malloy Publisher report: a .malloy file with an ## artifact tag, written at the package root unless asked otherwise, laid out as a grid (a dashboard, scanned at a glance) or linear (a notebook or data story, read top to bottom), with filter controls rendered from givens and # drill click-through. Use when the user asks for a dashboard, a notebook, a report, a data story, a filterable view, or drill-through between views, and no code is wanted."
 ---
 
 <!--
@@ -299,6 +299,6 @@ A person can open any report in the Console's builder (**Edit** on the report pa
 ## Reference
 
 - `reference/grid.md`: the grid recipe, its traps, and one query as the whole page.
-- `reference/linear.md`: linear reports, rewriting a retired `run:`-cell file, legacy `.malloynb`, style, and common mistakes.
+- `reference/linear.md`: linear reports, rewriting a retired `run:`-cell file or a `.malloynb`, style, and common mistakes.
 - `docs/reports.md`: the full guide this skill condenses.
 - `docs/givens.md`: the givens the controls are generated from.

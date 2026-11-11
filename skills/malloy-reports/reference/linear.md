@@ -86,7 +86,7 @@ One query per tile, and remember a chart renders only the **first** aggregate in
 
 ## Existing `.malloynb` files
 
-A `.malloynb` (cells delimited by `>>>markdown` and `>>>malloy`) is a deprecated format, served read-only as a linear report. **Do not create one.** When maintaining one: its compile errors show only when cells run, so test queries in the model first; imports belong in a setup cell at the top, never inside a `run:` cell; and it reads `## autorun=false` and `## givens { … }` as file-level lines, where a `.malloy` report takes them inside its artifact tag.
+A `.malloynb` (cells delimited by `>>>markdown` and `>>>malloy`) is a deprecated format. **Do not create one.** To change one, rewrite it as a `.malloy` linear report beside it: each query cell a query tile, each markdown cell a text tile.
 
 ## Common mistakes
 
