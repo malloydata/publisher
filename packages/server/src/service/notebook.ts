@@ -4,10 +4,10 @@
 import {
    MalloyTranslator,
    payloadOf,
-   routeOf,
    type LogMessage,
    type ModelDef,
 } from "@malloydata/malloy";
+import { routeOfNote } from "./annotation_reader";
 import { type AnnotationNote } from "./annotations";
 import { docCommentText } from "./motly";
 
@@ -74,10 +74,8 @@ const ARTIFACT_NOTE = {
 /** The note route whose payload is markdown: a floating cell at `##`, a cell's own prose at `#`. */
 export const MARKDOWN_ROUTE = "markdown";
 
-/** Malloy's own routing for one note: its route, empty for a plain tag, `undefined` when the prefix is malformed. */
-export function routeOfNote(text: string): string | undefined {
-   return routeOf({ value: text.trimStart() } as Parameters<typeof routeOf>[0]);
-}
+/** Malloy's own routing for one note (see annotation_reader.ts). */
+export { routeOfNote };
 
 /** Whether a note is on the `(markdown)` route, at either level and in either form. */
 export function isMarkdownNote(text: string): boolean {
@@ -156,8 +154,7 @@ export function modelNotesOfParse(
       const child = root.getChild(i);
       if (!isRuleNode(child)) continue;
       const group = callAccessor(child, "docAnnotations") as
-         | ParseNode
-         | undefined;
+         ParseNode | undefined;
       if (!group) continue;
       for (const note of (callAccessor(group, "docAnnotation") ??
          []) as ParseNode[]) {
@@ -370,7 +367,7 @@ function normalizeNewlines(text: string): string {
 export function codePointMap(text: string): Int32Array {
    const map = new Int32Array([...text].length + 1);
    let cp = 0;
-   for (let i = 0; i < text.length; ) {
+   for (let i = 0; i < text.length;) {
       map[cp++] = i;
       i += (text.codePointAt(i) as number) > 0xffff ? 2 : 1;
    }

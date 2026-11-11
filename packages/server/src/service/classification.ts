@@ -6,7 +6,7 @@
  * source: what a field is and what an entry point may expose, both in the
  * words of the package's access policy. Values are
  * quoted and lists are bracketed and comma-separated, read by Malloy's tag
- * parser (`readTagList`). Publisher reads the shape and never
+ * parser (`readRouteList`, in annotation_reader.ts). Publisher reads the shape and never
  * the vocabulary: `phi.direct_identifier`, `confidential` and `pci.pan` are
  * all just text to it, and which values a
  * package may use is the policy's to say and a review's to check. What
@@ -54,7 +54,7 @@
  */
 
 import type { ModelDef, SourceDef } from "@malloydata/malloy";
-import { parseAnnotation } from "@malloydata/malloy-tag";
+import { readRouteList } from "./annotation_reader";
 import type { components } from "../api";
 import { annotationTexts, type AnnotationsDef } from "./annotations";
 import {
@@ -103,60 +103,6 @@ function tokenSet(tokens: Iterable<string>): string[] {
    return Array.from(new Set(tokens)).sort(byCodepoint);
 }
 
-/**
- * Read an annotation's content as a tag value: a quoted string (`"x"`) or a
- * quoted, comma-separated list (`["x", "y"]`), the form every list-valued
- * annotation in Publisher uses (`tiles=[…]`, `# drill { to=[…] }`). Parsed by
- * Malloy's own tag parser, so a malformed list is a parse error with its
- * reason, never a silent split. `values` is a sorted set; `malformed` says
- * what is wrong in the words the load uses.
- */
-export function readTagList(
-   route: string,
-   content: string,
-   { list }: { list: "required" | "optional" },
-): { values: string[]; malformed?: string } {
-   const trimmed = content.trim();
-   const example =
-      route === "carries"
-         ? '["phi.clinical", "none"]'
-         : '"phi.direct_identifier" or ["phi.direct_identifier", "gdpr.personal"]';
-   const fault = (why: string) => ({
-      values: [] as string[],
-      malformed: `has a #(${route}) annotation that ${why}; write ${list === "required" ? "a quoted, comma-separated list" : "a quoted string or a quoted, comma-separated list"}, such as #(${route}) ${example}`,
-   });
-   if (trimmed === "") return fault("names nothing");
-   // An environment reference would be hydrated from the server's own
-   // environment by the tag parser; never read one here.
-   if (/@env\./.test(trimmed)) return fault("reads the environment");
-   const isList = trimmed.startsWith("[");
-   if (!isList && !trimmed.startsWith('"')) {
-      return fault(`is not quoted ("${trimmed}")`);
-   }
-   if (!isList && list === "required") return fault("is not a list");
-   let parsed: ReturnType<typeof parseAnnotation>;
-   try {
-      parsed = parseAnnotation(`# v=${trimmed}`);
-   } catch (error) {
-      return fault(
-         `does not parse (${error instanceof Error ? error.message : String(error)})`,
-      );
-   }
-   if (parsed.log.length > 0) {
-      return fault(`does not parse (${parsed.log[0].message})`);
-   }
-   const items = isList
-      ? parsed.tag.array("v")?.map((item) => item.text())
-      : [parsed.tag.text("v")];
-   if (!items || items.some((item) => typeof item !== "string")) {
-      return fault("holds something other than quoted text");
-   }
-   const values = tokenSet((items as string[]).map((v) => v.trim()));
-   if (values.length === 0) return fault("names nothing");
-   if (values.some((v) => v === "")) return fault("names an empty value");
-   return { values };
-}
-
 /** The content after a route, from every note on that route. */
 function routeContents(
    texts: ReadonlyArray<string>,
@@ -192,7 +138,7 @@ export function readClassification(
             `#(classification) ["phi.direct_identifier", "gdpr.personal"]`,
       };
    }
-   return readTagList("classification", contents[0], { list: "optional" });
+   return readRouteList("classification", contents[0], { list: "optional" });
 }
 
 const MAX_CARRIES_HOPS = 64;
@@ -223,7 +169,9 @@ export function readCarries(annotations: AnnotationsDef | undefined): {
       if (contents.length > 0) {
          const classes = new Set<string>();
          for (const content of contents) {
-            const read = readTagList("carries", content, { list: "required" });
+            const read = readRouteList("carries", content, {
+               list: "required",
+            });
             if (read.malformed) {
                return {
                   declared: true,
@@ -765,13 +713,11 @@ export function structCeilings(
          }
          const asStruct = node as unknown as SourceDef;
          const resolved = resolveCompositeResolvedBase(asStruct) as
-            | IrField
-            | undefined;
+            IrField | undefined;
          if (resolved) climb(resolved, resolved.as ?? resolved.name ?? label);
          if (!node.query?.structRef) return;
          const base = resolveQuerySourceBase(asStruct, modelDef) as
-            | IrField
-            | undefined;
+            IrField | undefined;
          if (!base) {
             unresolved = true;
             return;

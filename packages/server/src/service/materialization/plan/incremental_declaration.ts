@@ -35,24 +35,11 @@ const REFRESH_MODES = ["full", "incremental"] as const;
 
 /**
  * Persist-tag keys the publisher knows about; anything else is a load-time
- * WARNING, never a rejection, so a new directive needs no publisher change.
- * `sharing` and `schedule` are RETIRED and rejected by name in the
- * persistence-policy gate; listing them avoids a second, vaguer "unknown" message.
+ * WARNING, never a rejection. Declared once, in the annotation reader's
+ * registry.
  */
-export const RECOGNIZED_PERSIST_KEYS: ReadonlySet<string> = new Set([
-   "persist",
-   "name",
-   "storage",
-   "realization",
-   "refresh",
-   "watermark",
-   "merge_key",
-   "freshness",
-   "queryMetadata",
-   "partition",
-   "sharing",
-   "schedule",
-]);
+import { RECOGNIZED_PERSIST_KEYS } from "../../annotation_reader";
+export { RECOGNIZED_PERSIST_KEYS };
 
 /**
  * Malloy types a `<`/`>=` range can be built over. Struct/array columns never
