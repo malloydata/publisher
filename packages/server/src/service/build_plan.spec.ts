@@ -958,6 +958,74 @@ source: gated is base -> { select: org_id } extend {}
    );
 
    it(
+      "refuses two models' rollups that share a generated name but not content, so neither builds or serves",
+      async () => {
+         // A rollup's name folds only its base's name and grain, so `orders`
+         // pre-aggregated by `category` in two models is one table name. Built,
+         // the second would overwrite the first; served, one model would read
+         // the other's rollup.
+         const rollup = (
+            amount: string,
+         ) => `##! experimental { persistence composite_sources }
+source: orders is duckdb.sql("""SELECT * FROM (VALUES (${amount}, 'A')) AS t(amount, category)""") extend {
+  #@ preaggregate grain="category"
+  measure: total is amount.sum()
+}
+`;
+         const pkg = await packages.create({
+            "a.malloy": rollup("10"),
+            "b.malloy": rollup("99"),
+         });
+
+         const { plan, sourceEligibility } = await computePackageBuildPlan(pkg);
+
+         expect(
+            Object.values(plan?.sources ?? {}).filter(
+               (s) => s.origin === "preaggregate",
+            ),
+         ).toEqual([]);
+         const refused = Object.values(plan?.refusedSources ?? {});
+         expect(refused).toHaveLength(2);
+         for (const r of refused) {
+            expect(r).toMatchObject({
+               tier: "preaggregate",
+               reason: "rollup_name_collision",
+            });
+            expect(r.message).toContain("a.malloy");
+            expect(r.message).toContain("b.malloy");
+         }
+         // The storage serve side refuses the shared name too.
+         expect(sourceEligibility.eligible).not.toContain(refused[0].name);
+      },
+      { timeout: 20000 },
+   );
+
+   it(
+      "still plans a rollup that only one model generates",
+      async () => {
+         const pkg = await packages.create({
+            "a.malloy": `##! experimental { persistence composite_sources }
+source: orders is duckdb.sql("""SELECT * FROM (VALUES (10, 'A')) AS t(amount, category)""") extend {
+  #@ preaggregate grain="category"
+  measure: total is amount.sum()
+}
+`,
+            "b.malloy": `source: other is duckdb.sql("SELECT 1 AS x")`,
+         });
+
+         const { plan } = await computePackageBuildPlan(pkg);
+
+         expect(
+            Object.values(plan?.sources ?? {}).filter(
+               (s) => s.origin === "preaggregate",
+            ),
+         ).toHaveLength(1);
+         expect(plan?.refusedSources ?? {}).toEqual({});
+      },
+      { timeout: 20000 },
+   );
+
+   it(
       "reports a gated preaggregate rollup as BOTH synthesized (sources) and refused (refusedSources, tier preaggregate)",
       async () => {
          // Rollups group away the gate column, so unlike colocated there is no

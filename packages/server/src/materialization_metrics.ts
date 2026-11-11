@@ -70,7 +70,8 @@ export type EligibilityRefusalReason =
    | "not_duckdb_portable"
    | "public_surface_unknown"
    | "read_only_dialect"
-   | "env_reference";
+   | "env_reference"
+   | "rollup_name_collision";
 /**
  * How a chained `storage=` source (one that reads a storage-materialized
  * upstream) was built: `parent_reuse` = built by reading the upstream's stored
