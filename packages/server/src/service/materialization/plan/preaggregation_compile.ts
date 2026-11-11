@@ -19,7 +19,7 @@ import type {
    ModelMaterializer,
    Runtime,
 } from "@malloydata/malloy";
-import { fileURLToPath } from "url";
+import { fileURLToPath, pathToFileURL } from "url";
 import * as path from "path";
 import { logger } from "../../../logger";
 import {
@@ -55,8 +55,10 @@ export interface SynthesizedPreaggregation {
 
 /** Where the synthesized companion for `modelPath` lives, as an absolute URL. */
 function synthesizedModelURL(packagePath: string, modelPath: string): URL {
-   return new URL(
-      `file://${path.join(packagePath, modelPath)}${SYNTHESIZED_SUFFIX}`,
+   // pathToFileURL, not `file://${path}`: on Windows the path is `D:\…`,
+   // and the overlay key must match the URL Malloy normalizes to.
+   return pathToFileURL(
+      `${path.join(packagePath, modelPath)}${SYNTHESIZED_SUFFIX}`,
    );
 }
 
@@ -87,19 +89,30 @@ async function compileSynthesizedPreaggregation(args: {
    const plans = planModelPreaggregation(args.contents);
    if (plans.length === 0) return undefined;
 
-   // The import is by basename: the synthesized model sits beside the author's,
-   // so a bare filename resolves however the package is nested.
-   const modelDir = path.dirname(path.join(args.packagePath, args.modelPath));
+   // The companion sits beside the author's model, so a base the model
+   // declares is imported by its basename, and a base declared in another
+   // file by that file's path relative to this one (#6646).
+   const modelFile = path.join(args.packagePath, args.modelPath);
    const text = synthesizePreaggregationModel(
       plans,
       path.basename(args.modelPath),
-      undefined,
-      // Each base from the file that declares it, relative to this companion,
-      // which sits beside the author's model (#6646).
-      (declaringURL) => {
-         if (!declaringURL.startsWith("file://")) return undefined;
-         const relative = path.relative(modelDir, fileURLToPath(declaringURL));
-         return relative.split(path.sep).join("/");
+      {
+         importPathForFile: (declaringURL) => {
+            let declaringFile: string;
+            try {
+               declaringFile = fileURLToPath(declaringURL);
+            } catch {
+               // Not a local file URL (a host, another scheme): as before.
+               return undefined;
+            }
+            if (path.resolve(declaringFile) === path.resolve(modelFile)) {
+               return undefined;
+            }
+            return path
+               .relative(path.dirname(modelFile), declaringFile)
+               .split(path.sep)
+               .join("/");
+         },
       },
    );
    if (!text) return undefined;

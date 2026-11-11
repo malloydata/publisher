@@ -366,11 +366,24 @@ export function planModelPreaggregation(
       .flatMap(([name, object]) => {
          if (!object || typeof object !== "object") return [];
          const sourceID = (object as { sourceID?: unknown }).sourceID;
+         if (typeof sourceID !== "string") {
+            return planSourcePreaggregation(name, object as ValidatableSource);
+         }
+         // Named by the base's DECLARED name, not the name this model gives
+         // it: a model that imports `o is orders` plans the same rollup as the
+         // declaring model (one target, one address, one table), and a base
+         // imported under a name another model declares does not collide
+         // with that model's rollup.
+         const declaredName = splitSourceID(sourceID)?.name ?? name;
          return planSourcePreaggregation(name, object as ValidatableSource).map(
-            (plan) =>
-               typeof sourceID === "string"
-                  ? { ...plan, baseSourceID: sourceID }
-                  : plan,
+            (plan) => ({
+               ...plan,
+               rollupSourceName: rollupSourceName(
+                  declaredName,
+                  plan.grainDimensions,
+               ),
+               baseSourceID: sourceID,
+            }),
          );
       });
 }
@@ -379,9 +392,14 @@ export function planModelPreaggregation(
 function splitSourceID(
    sourceID: string | undefined,
 ): { name: string; url: string } | undefined {
-   const at = sourceID?.indexOf("@") ?? -1;
-   if (!sourceID || at <= 0) return undefined;
-   return { name: sourceID.slice(0, at), url: sourceID.slice(at + 1) };
+   // The '@' before the URL's scheme: a backtick name may contain '@'.
+   const match = /^(.+)@([a-z][a-z0-9+.-]*:.*)$/i.exec(sourceID ?? "");
+   return match ? { name: match[1], url: match[2] } : undefined;
+}
+
+/** An identifier as Malloy text: backticked unless it is a plain name. */
+function malloyIdentifier(name: string): string {
+   return /^[A-Za-z_][A-Za-z0-9_]*$/.test(name) ? name : `\`${name}\``;
 }
 
 /** One rollup's `#@ persist source: …` declaration. */
@@ -437,13 +455,19 @@ ${merged}
 export function synthesizePreaggregationModel(
    plans: RollupPlan[],
    importPath: string,
-   experimentalFlags = "persistence composite_sources",
-   /**
-    * Where to import a base from, given its declaring file's URL: a path the
-    * synthesized model resolves. Returning undefined, or no resolver, imports
-    * from `importPath`, which is right only for a base the model declares.
-    */
-   importPathForFile?: (declaringURL: string) => string | undefined,
+   {
+      experimentalFlags = "persistence composite_sources",
+      importPathForFile,
+   }: {
+      experimentalFlags?: string;
+      /**
+       * Where to import a base declared in ANOTHER file, given that file's
+       * URL: a path the synthesized model resolves. Returning undefined, or
+       * no resolver, imports from `importPath`, which is right only for a
+       * base the model declares.
+       */
+      importPathForFile?: (declaringURL: string) => string | undefined;
+   } = {},
 ): string | undefined {
    if (plans.length === 0) return undefined;
 
@@ -458,7 +482,7 @@ export function synthesizePreaggregationModel(
          // A re-exported base is imported under the name its own file gives
          // it, which an `index.malloy` rename (`o is orders`) does not change.
          return fromDeclaring
-            ? `import { ${baseAlias(base)} is ${declared.name} } from ${JSON.stringify(fromDeclaring)}`
+            ? `import { ${baseAlias(base)} is ${malloyIdentifier(declared.name)} } from ${JSON.stringify(fromDeclaring)}`
             : `import { ${baseAlias(base)} is ${base} } from ${JSON.stringify(importPath)}`;
       })
       .join("\n");

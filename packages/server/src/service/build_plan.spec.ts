@@ -1038,6 +1038,64 @@ export { orders }
    );
 
    it(
+      "plans a renamed import's rollup as the declaring model's, so it is one table",
+      async () => {
+         const pkg = await packages.create({
+            "jaffle.malloy": `##! experimental { persistence composite_sources }
+source: orders is duckdb.sql("""SELECT * FROM (VALUES (10, 'A')) AS t(amount, category)""") extend {
+  #@ preaggregate grain="category"
+  measure: total is amount.sum()
+}
+`,
+            "report.malloy": `import { o is orders } from "jaffle.malloy"
+source: notes is duckdb.sql("SELECT 1 AS id")
+export { notes }
+`,
+         });
+
+         const { plan } = await computePackageBuildPlan(pkg);
+
+         expect(Object.values(plan?.refusedSources ?? {})).toEqual([]);
+         const rollups = Object.values(plan?.sources ?? {}).filter(
+            (s) => s.origin === "preaggregate",
+         );
+         expect(rollups.length).toBe(2);
+         // Named for `orders`, not the alias `o`: one target, one table.
+         expect(new Set(rollups.map((r) => r.name)).size).toBe(1);
+         expect(new Set(rollups.map((r) => r.sourceEntityId)).size).toBe(1);
+      },
+      { timeout: 20000 },
+   );
+
+   it(
+      "does not let an import aliased to another model's source name collide with that model's rollup",
+      async () => {
+         const rollupOver = (
+            table: string,
+         ) => `##! experimental { persistence composite_sources }
+source: SRC is duckdb.sql("""SELECT * FROM (VALUES (${table}, 'A')) AS t(amount, category)""") extend {
+  #@ preaggregate grain="category"
+  measure: total is amount.sum()
+}
+`;
+         const pkg = await packages.create({
+            "a.malloy": rollupOver("10").replace("SRC", "orders"),
+            "crm.malloy": rollupOver("99").replace("SRC", "customers"),
+            // `orders` here is crm's `customers`, not a.malloy's `orders`.
+            "report.malloy": `import { orders is customers } from "crm.malloy"
+source: notes is duckdb.sql("SELECT 1 AS id")
+export { notes }
+`,
+         });
+
+         const { plan } = await computePackageBuildPlan(pkg);
+
+         expect(Object.values(plan?.refusedSources ?? {})).toEqual([]);
+      },
+      { timeout: 20000 },
+   );
+
+   it(
       "still plans a rollup that only one model generates",
       async () => {
          const pkg = await packages.create({

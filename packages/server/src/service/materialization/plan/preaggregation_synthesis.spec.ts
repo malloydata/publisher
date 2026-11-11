@@ -703,15 +703,12 @@ describe("the emitted model", () => {
          baseSourceName: "o",
          baseSourceID: "orders@file:///pkg/sub/jaffle.malloy",
       }));
-      const text = synthesizePreaggregationModel(
-         plans,
-         "report.malloy",
-         undefined,
-         (url) =>
+      const text = synthesizePreaggregationModel(plans, "report.malloy", {
+         importPathForFile: (url) =>
             url === "file:///pkg/sub/jaffle.malloy"
                ? "sub/jaffle.malloy"
                : undefined,
-      ) as string;
+      }) as string;
       // The importer renamed it `o`; its own file calls it `orders`.
       expect(text).toContain(
          `import { ${baseAlias("o")} is orders } from "sub/jaffle.malloy"`,
@@ -725,14 +722,25 @@ describe("the emitted model", () => {
          baseSourceID: "orders@https://example.com/orders.malloy",
       }));
       expect(
-         synthesizePreaggregationModel(
-            plans,
-            "orders.malloy",
-            undefined,
-            () => undefined,
-         ),
+         synthesizePreaggregationModel(plans, "orders.malloy", {
+            importPathForFile: () => undefined,
+         }),
       ).toContain(
          `import { ${baseAlias("orders")} is orders } from "orders.malloy"`,
+      );
+   });
+
+   it("backticks a declared name that is not a plain identifier, even one holding '@'", async () => {
+      const plans = (await planFor(BODY)).map((plan) => ({
+         ...plan,
+         baseSourceID: "order items@v2@file:///pkg/jaffle.malloy",
+      }));
+      expect(
+         synthesizePreaggregationModel(plans, "report.malloy", {
+            importPathForFile: () => "jaffle.malloy",
+         }),
+      ).toContain(
+         `import { ${baseAlias("orders")} is \`order items@v2\` } from "jaffle.malloy"`,
       );
    });
 
