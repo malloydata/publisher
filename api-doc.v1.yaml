@@ -7583,14 +7583,16 @@ components:
         - CROSS_CONNECTION
         - COUNT_SEMANTICS
         - STALE
+        - RUN_FAILED
       description: Why a table could not answer a query. `NOT_BUILT`, it has not been built; `WARNED`, its annotation carries
         a publish warning and serves live; `MISSING_FIELD`, the query reads a field the table lacks; `CONTRACT`,
         answering from it would bypass an access control on the queried source; `GRAIN_TOO_COARSE`, a rollup's grain
         does not cover the query's groups or filters; `TIME_ZONE`, it was built in another time zone than the query's;
         `CROSS_CONNECTION`, the query needs a join the table's connection cannot reach; `COUNT_SEMANTICS`, a count the
-        table cannot reproduce as the live query computes it; `STALE`, it is past its freshness window. Like every
-        `reason` in this API, a code from a closed list; new codes may be added, so a client treats an unknown one as a
-        skip it cannot explain.
+        table cannot reproduce as the live query computes it; `STALE`, it is past its freshness window; `RUN_FAILED`, it
+        was chosen but reading it failed at run time, and its freshness fallback allowed live. Like every `reason` in
+        this API, a code from a closed list; new codes may be added, so a client treats an unknown one as a skip it
+        cannot explain.
 
     SlotScope:
       type: string
