@@ -60,23 +60,23 @@ class Labels(unittest.TestCase):
                                               "acceptable": [MARGIN]})
 
     def test_problems_name_the_case_the_target_and_the_fix(self):
+        """The targets go through import_cases' validator, the one check for searchTargets."""
         case = {"qid": "q9", "searchTargets": [
             {"target_type": "metric", "search_text": "x"},
             {"target_type": "measure", "search_text": " "},
             {"target_type": "measure", "search_text": "x", "expectedEntities": {"requiredAnyOf": [SALES]}}]}
         got = rr.case_problems(case)
         self.assertEqual(len(got), 3)
-        self.assertIn("q9: searchTargets[0]: invalid target_type 'metric'", got[0])
-        self.assertIn('Fix: "target_type": "measure"', got[0])
-        self.assertIn("q9: searchTargets[1]: search_text must be a non-empty string", got[1])
-        self.assertIn("q9: searchTargets[2].expectedEntities.requiredAnyOf: expected a list of "
-                      "non-empty lists", got[2])
+        self.assertIn("q9: searchTargets[1]: `target_type` is 'metric'", got[0])
+        self.assertIn("q9: searchTargets[2]: `search_text` must be a non-empty string, or absent",
+                      got[1])
+        self.assertIn("q9: searchTargets[3]: a `requiredAnyOf` group is str", got[2])
         self.assertEqual(rr.case_problems({"qid": "q", "searchTargets": []})[0],
                          'q: searchTargets must be a non-empty list of {"target_type", "search_text"} objects')
 
-    def test_target_types_are_the_ones_get_context_accepts(self):
-        self.assertEqual(set(rr.TARGET_TYPES),
-                         {"source", "dimension", "measure", "view", "join", "dimensional_value"})
+    def test_a_target_with_no_text_is_valid(self):
+        case = {"qid": "q", "searchTargets": [{"target_type": "source"}]}
+        self.assertEqual(rr.case_problems(case), [])
 
 
 class Request(unittest.TestCase):
@@ -90,6 +90,13 @@ class Request(unittest.TestCase):
                                {"target_type": "dimension", "search_text": "category"}],
             "scopes": [{"environment": "e", "package": "p", "model_path": "m.malloy"}],
             "user_prompt": "Which category sells most?"})
+
+    def test_a_target_with_no_text_is_sent_with_none(self):
+        case = {"qid": "q", "searchTargets": [{"target_type": "source"},
+                                              {"target_type": "measure", "search_text": "revenue"}]}
+        got = rr.request_for(case, {"environment": "e", "package": "p"})
+        self.assertEqual(got["search_targets"], [{"target_type": "source"},
+                                                 {"target_type": "measure", "search_text": "revenue"}])
 
     def test_no_question_sends_no_user_prompt(self):
         case = a_case()
@@ -136,6 +143,22 @@ class Score(unittest.TestCase):
         row = scored(a_case(required=[SALES]), payload())
         self.assertEqual((row["recall"], row["recall_exact"], row["precision"], row["n_returned"]),
                          (0.0, 0.0, None, 0))
+
+    def test_each_target_is_scored_against_its_own_key(self):
+        """Two targets, attributed hits: the measure target returned total_sales, the
+        dimension target returned brand but not category."""
+        case = {"qid": "q", "tags": [], "searchTargets": [
+            {"target_type": "measure", "search_text": "revenue",
+             "expectedEntities": {"required": [SALES]}},
+            {"target_type": "dimension", "search_text": "category",
+             "expectedEntities": {"required": [CAT]}}]}
+        body = {"sources": [{"source_info": {"resource_id": {"source": "order_items"}}, "entities": [
+            {"entity_id": SALES, "matched_targets": [{"search_text": "revenue"}]},
+            {"entity_id": BRAND, "matched_targets": [{"search_text": "category"}]}]}]}
+        row = scored(case, body)
+        self.assertEqual([(t["search_text"], t["recall"], t["missing"]) for t in row["targets"]],
+                         [("revenue", 1.0, []), ("category", 0.0, [CAT])])
+        self.assertEqual(rr.summarize([row], skipped=0)["target_recall"], 0.5)
 
     def test_pooled_and_per_tag_means(self):
         rows = [scored(a_case("a", ("x",), required=[SALES], requiredAnyOf=[[CAT, PCAT]], acceptable=[MARGIN]),
@@ -194,7 +217,9 @@ class EndToEnd(unittest.TestCase):
             f'[paths]\nworkdir = "{self.d / "work"}"\n')
         (self.d / "set.json").write_text(json.dumps({"name": "demo", "datasetVersion": 4,
                                                      "targetModelPath": "storefront.malloy"}))
-        cases = [a_case("q1", required=[SALES]), a_case("q2", requiredAnyOf=[[CAT, PCAT]]),
+        q2 = a_case("q2", requiredAnyOf=[[CAT, PCAT]])
+        q2["searchTargets"][0].update(target_type="dimension", search_text="category")
+        cases = [a_case("q1", required=[SALES]), q2,
                  {"qid": "q3", "question": "answer-run only"}]
         (self.d / "cases.jsonl").write_text("".join(json.dumps(c) + "\n" for c in cases))
         self.manifest = self.d / "manifest.json"

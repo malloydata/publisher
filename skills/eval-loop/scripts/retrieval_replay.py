@@ -48,19 +48,19 @@ from typing import Any
 
 HERE = pathlib.Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE.parent.parent / "eval-answer" / "scripts"))
+sys.path.insert(0, str(HERE.parent.parent / "eval-import" / "scripts"))
 sys.path.insert(0, str(HERE))
 
 import config  # noqa: E402
 import ledger  # noqa: E402
 import run_baseline as rb  # noqa: E402
+from import_cases import search_target_findings  # noqa: E402
 from mcp_payload import (doc_tokens, entity_hits, entity_ids,  # noqa: E402
-                         search_terms, target_shapes)
-from score_retrieval import KINDS_BY_TARGET, groups, score_case  # noqa: E402
+                         search_targets, search_terms, target_shapes)
+from score_retrieval import groups, score_case  # noqa: E402
+from score_targets import score_attempt  # noqa: E402
 
 PHASE = "replay"
-# The values get_context accepts for `target_type`. score_retrieval's table is
-# pinned against the server's own by its test, so this list stays in step.
-TARGET_TYPES = tuple(KINDS_BY_TARGET)
 LABEL_KEYS = ("required", "requiredAnyOf", "acceptable")
 
 
@@ -76,27 +76,19 @@ def parse_header(text: str) -> tuple[str, str]:
 
 
 def case_problems(case: dict[str, Any]) -> list[str]:
-    """Every reason one case cannot be replayed, phrased so the fix is plain."""
+    """Every reason one case cannot be replayed, phrased so the fix is plain.
+
+    The targets are checked by `import_cases.search_target_findings`, the one
+    validator for `searchTargets`, so a set that imports cleanly replays. A
+    target with no `search_text` is valid: it lists every entity of its type,
+    and is sent that way.
+    """
     qid = case.get("qid") or "<no qid>"
     targets = case.get("searchTargets")
     if not isinstance(targets, list) or not targets:
         return [f"{qid}: searchTargets must be a non-empty list of "
                 '{"target_type", "search_text"} objects']
-    out = []
-    for i, t in enumerate(targets):
-        where = f"{qid}: searchTargets[{i}]"
-        if not isinstance(t, dict):
-            out.append(f"{where}: expected an object, got {json.dumps(t)}")
-            continue
-        if t.get("target_type") not in TARGET_TYPES:
-            out.append(f"{where}: invalid target_type {t.get('target_type')!r}: expected one of "
-                       f"{', '.join(TARGET_TYPES)}. Fix: \"target_type\": \"measure\"")
-        text = t.get("search_text")
-        if not isinstance(text, str) or not text.strip():
-            out.append(f"{where}: search_text must be a non-empty string; a target with "
-                       "none lists every entity of its type instead of searching. "
-                       "Fix: \"search_text\": \"total revenue\"")
-        out += label_problems(t.get("expectedEntities"), f"{where}.expectedEntities")
+    out = search_target_findings(case, "cases.jsonl", qid)
     out += label_problems(case.get("expectedEntities"), f"{qid}: expectedEntities")
     return out
 
@@ -163,11 +155,13 @@ def labels_of(case: dict[str, Any]) -> dict[str, Any]:
 def request_for(case: dict[str, Any], scope: dict[str, str]) -> dict[str, Any]:
     """The get_context arguments for one case. The question goes along as
     `user_prompt`, which the server records and does not match on."""
-    args: dict[str, Any] = {
-        "search_targets": [{"target_type": t["target_type"], "search_text": t["search_text"]}
-                           for t in case["searchTargets"]],
-        "scopes": [scope],
-    }
+    sent = []
+    for t in case["searchTargets"]:
+        target = {"target_type": t["target_type"]}
+        if t.get("search_text"):
+            target["search_text"] = t["search_text"]
+        sent.append(target)
+    args: dict[str, Any] = {"search_targets": sent, "scopes": [scope]}
     if isinstance(case.get("question"), str) and case["question"].strip():
         args["user_prompt"] = case["question"]
     return args
@@ -185,6 +179,7 @@ def call_event(qid: str, args: dict[str, Any], payload: Any, error: str | None) 
     mode = payload.get("retrieval") if isinstance(payload, dict) else None
     return ledger.event("tool_call", qid=qid, sample=None, phase=PHASE, tool="get_context",
                         targets=search_terms(args), target_shapes=target_shapes(args),
+                        search_targets=search_targets(args),
                         scopes=args["scopes"], retrieval_mode=mode, rankedSummary=ranked,
                         error=error)
 
@@ -211,6 +206,13 @@ def score(case: dict[str, Any], event: dict[str, Any]) -> dict[str, Any]:
     out = {**base, "error": None, **{k: row[k] for k in keep}}
     out["recall_exact"] = None if row["recall"] is None else recall_exact(labels, row["delivery"])
     out["returned"] = event["rankedSummary"]["entityIds"]
+    # Per target: what each search returned against that target's own key.
+    # Every target is sent as written, so each one is asked; a target with no
+    # key of its own has no recall here and still counts in the case's labels.
+    per = score_attempt(case, [event], (qid, None, PHASE), None)["targets"]
+    out["targets"] = [{k: t[k] for k in ("index", "target_type", "search_text", "recall",
+                                          "precision", "missing", "n_returned", "attribution")}
+                      for t in per]
     out["retrieval_mode"] = event.get("retrieval_mode")
     return out
 
@@ -233,6 +235,7 @@ def pooled(rows: list[dict[str, Any]]) -> dict[str, Any]:
         "recall": mean([r["recall"] for r in scored]),
         "precision": mean([r["precision"] for r in scored]),
         "complete": sum(1 for r in scored if r["recall_exact"] == 1.0),
+        "target_recall": mean([t["recall"] for r in scored for t in r.get("targets") or []]),
         "empty_responses": sum(1 for r in scored if r["n_returned"] == 0),
         "mean_returned": mean([r["n_returned"] for r in scored]),
     }

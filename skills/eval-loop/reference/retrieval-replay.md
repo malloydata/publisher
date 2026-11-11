@@ -30,9 +30,12 @@ serve both kinds of run.
                                             "dimension:products:category"]]}}]}
 ```
 
-- `target_type` and `search_text` are sent as written. `search_text` is
-  required: a target without one lists every entity of its type instead of
-  searching.
+- The targets are the same `searchTargets` an answer run scores the agent
+  against (`skill:eval-answer`'s `reference/ledger-schema.md`), checked by the
+  same validator, `import_cases.py`. `target_type` and `search_text` are sent
+  as written. A target with no `search_text` is sent with none, and lists every
+  entity of its type. `example_values` is not sent: Publisher's request has no
+  such field.
 - The case's labels are its own `expectedEntities` plus every target's,
   merged. `required`, `requiredAnyOf` and `acceptable` mean what they mean in
   `skill:eval-answer`'s `reference/ledger-schema.md`. A need named twice counts
@@ -81,6 +84,7 @@ weighs the same), in `summary.json` and on the console:
 | `recall` | `score_retrieval.py`'s recall, which also credits the same field name under another source, or a name in a returned source's docs. When it is above `recall_exact`, the field reached the result only by that weaker route |
 | `precision` | returned ids that are required, in an any-of group, or acceptable, over every returned id, source cards included. None when nothing came back, so the pooled mean leaves that case out and `empty_responses` counts it |
 | `missing`, `noise` | the needs that did not come back, and the returned ids that are not labelled |
+| `targets` | per target: the recall and precision of what THAT search returned against the target's own `expectedEntities`, scored by `score_targets.py` (`skill:eval-answer`). Shows which search of a case missed. Pooled as `target_recall` |
 
 `by_tag` repeats the pooled numbers for each tag. `events.jsonl` holds one
 `tool_call` event per case, in the shape an answer run writes, with every
