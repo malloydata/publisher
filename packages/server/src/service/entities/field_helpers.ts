@@ -4,6 +4,7 @@
 import type { Entity, JoinSourceMetadata } from "./internal_types";
 import { AccessModifierEnum, EntityTypeEnum } from "./internal_types";
 import { extractCodeFromEntity } from "./model_text";
+import { motlyTag } from "../motly";
 import type {
    AtomicField,
    Explore,
@@ -414,7 +415,11 @@ export function getDescriptionFromTags(tags: string[]): string | undefined {
 
 export function isFieldHidden(field: Field): boolean {
    const { name, parentExplore } = field;
-   const { tag } = parentExplore.tagParse();
+   // Through motlyTag, which drops a line that reads the server's environment:
+   // `tagParse()` would hydrate `# hidden.pattern=@env.X` into a RegExp, and
+   // which fields come back hidden would then tell a caller about the secret.
+   const tag = motlyTag(parentExplore.getTaglines() ?? []);
+   if (!tag) return false;
    const strings =
       tag
          .array("hidden")

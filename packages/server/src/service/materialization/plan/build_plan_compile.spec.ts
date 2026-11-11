@@ -168,6 +168,7 @@ describe("compilePackageBuildPlan", () => {
          hasFlag,
          sourceIDs,
          modelAnnotations: {
+            forRoute: () => [],
             parseAsTag: () => ({ tag: { has: () => hasFlag } }),
          },
          givens: new Map(),
