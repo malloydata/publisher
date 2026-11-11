@@ -29,7 +29,11 @@
 
 import { logger } from "../../src/logger";
 import { installSettings } from "../../src/test_helpers/settings_env";
-import { buildScenario, type R4Fixture } from "../component/r4/harness";
+import {
+   buildScenario,
+   disposeScenarios,
+   type R4Fixture,
+} from "../component/r4/harness";
 
 /** Stop with a usage error, before any logger or fixture exists. */
 function usage(message: string): never {
@@ -189,6 +193,8 @@ async function main() {
       console.log("| --- | --- | --- | --- | --- | --- |");
       for (const r of rows) console.log(r);
    } finally {
+      // Close the scenarios' DuckDB files and remove their directories.
+      await disposeScenarios();
       logger.level = level;
       restore();
    }
