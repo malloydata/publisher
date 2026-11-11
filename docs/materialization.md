@@ -413,6 +413,30 @@ serves live and the package's warnings carry the refusal. A `storage=` destinati
 question — it reads from the source and writes elsewhere — and the storage build names the source
 types it can read.
 
+### Stored column types follow the model, not the warehouse
+
+A `storage=` table holds what the warehouse returned, and the warehouse's type for a column is not
+always the type Malloy declares for the field. Date arithmetic is the common case: Postgres answers
+a month truncation, and DuckDB answers `order_date + 1 month`, with a timestamp, though Malloy types
+the field as a date. A `sql_boolean` over a 0/1 integer, or a `sql_number` over text, keeps the
+warehouse's type too. Served as the stored type, such a column changes answers: a date compared
+with a date column no longer compiles, and a boolean groups as `0` and `1`.
+
+A storage build therefore casts each `string`, `boolean` and `date` column to its declared type
+(`VARCHAR`, `BOOLEAN`, `DATE`) in the destination, around the warehouse's result; the warehouse
+runs exactly the build SQL it ran before. Numbers and timestamps are not cast: every DuckDB numeric
+type serves a Malloy `number`, and either DuckDB timestamp type serves a `timestamp` or
+`timestamptz`, since builds and queries both run in UTC.
+
+A column whose stored type still does not serve as its declared type (a `number` the warehouse
+returned as text, or any column of a table built before this cast) is left off the serve shape: a
+query that reads it is answered live, and every other query still reads the table. The package
+reports each such column as a warning with code `storage-column-type-mismatch`, naming the source,
+the column, its stored type and its declared type. Rebuilding clears the castable ones. For the
+rest, give the field a native cast in the model so the warehouse returns the declared type, for
+example `amount_text::"double"`: a cast to a type Malloy already believes the field has, such as
+`::number` here, emits no SQL.
+
 ## The persistence policy (the publish gate)
 
 Package-level persistence policy lives at the root of `publisher.json`:

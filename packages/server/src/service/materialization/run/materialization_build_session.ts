@@ -26,6 +26,11 @@ import { logger } from "../../../logger";
 import { getPartitionedWriteFlushThreshold } from "../../../config";
 import { errMessage } from "../../../utils";
 import { quoteIdentifier, quoteManifestTablePath } from "../../quoting";
+import {
+   castToDeclaredTypes,
+   persistSourceDeclaredColumns,
+   type DeclaredColumn,
+} from "../stored_column_types";
 import { plannedSources, projectToPublicColumns } from "../plan/build_plan";
 import {
    bigQueryQueryLabelValue,
@@ -746,6 +751,12 @@ export async function buildSourceIntoStorage(params: {
     * single-statement CTAS.
     */
    partitionColumns?: string[];
+   /**
+    * The source's public columns as Malloy declares them; the CTAS casts the
+    * ones with a single faithful DuckDB type to it ({@link castToDeclaredTypes}).
+    * Absent or empty stores whatever the warehouse returned.
+    */
+   declaredColumns?: readonly DeclaredColumn[];
    environmentPath: string;
    /**
     * Per-query metadata for the warehouse read, already resolved. Applied here
@@ -913,7 +924,12 @@ export async function buildSourceIntoStorage(params: {
       const schema = await createTableAndDescribe(
          session,
          target,
-         passthrough.selectSQL,
+         // Cast in DuckDB, around the passthrough: the warehouse runs exactly
+         // the build SQL, and only the stored types change.
+         castToDeclaredTypes(
+            passthrough.selectSQL,
+            params.declaredColumns ?? [],
+         ),
          params.partitionColumns ?? [],
          { sourceType },
       );
@@ -985,6 +1001,7 @@ async function buildSameCatalogIntoStorage(params: {
    sourceCarriesAuthorSql?: boolean;
    physicalTableName: string;
    partitionColumns?: string[];
+   declaredColumns?: readonly DeclaredColumn[];
    environmentPath: string;
 }): Promise<StorageBuildResult> {
    const { destinationName, destinationConnection, physicalTableName } = params;
@@ -1029,7 +1046,7 @@ async function buildSameCatalogIntoStorage(params: {
       const schema = await createTableAndDescribe(
          session,
          target,
-         params.buildSQL,
+         castToDeclaredTypes(params.buildSQL, params.declaredColumns ?? []),
          params.partitionColumns ?? [],
       );
       // Reads no warehouse, as a chained build does: nothing was charged.
@@ -1198,7 +1215,8 @@ export async function buildDownstreamIntoStorage(params: {
       const schema = await createTableAndDescribe(
          session,
          target,
-         sql,
+         // The downstream's own declared types, as for a recompute.
+         castToDeclaredTypes(sql, persistSourceDeclaredColumns(downstream)),
          params.partitionColumns ?? [],
       );
 

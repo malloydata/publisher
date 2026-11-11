@@ -1069,6 +1069,32 @@ describe("buildSourceIntoStorage (happy path, real DuckDB file destination)", ()
       }
    });
 
+   // ms2data/service#6642: the warehouse's types, cast in DuckDB around the
+   // passthrough, so the warehouse still runs exactly the build SQL.
+   it("stores each column as the type Malloy declares where one DuckDB type is faithful", async () => {
+      const lake = fileLakeBuild(
+         "SELECT TIMESTAMP '2026-02-01 00:00:00' AS order_month, 1 AS is_open, 2.5 AS amount",
+      );
+      try {
+         const result = await buildSourceIntoStorage({
+            ...lake.params,
+            declaredColumns: [
+               { name: "order_month", type: "date" },
+               { name: "is_open", type: "boolean" },
+               { name: "amount", type: "number" },
+            ],
+         });
+         expect(lake.reads).toEqual(["SELECT * FROM orders"]);
+         expect(result.schema).toEqual([
+            { name: "order_month", type: "DATE" },
+            { name: "is_open", type: "BOOLEAN" },
+            { name: "amount", type: "DECIMAL(2,1)" },
+         ]);
+      } finally {
+         lake.cleanup();
+      }
+   });
+
    it("returns the plan's in-place refresh, with the table's schema, and issues no full read", async () => {
       const lake = fileLakeBuild(SELECT);
       let afterSeedRan = false;

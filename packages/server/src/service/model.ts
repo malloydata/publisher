@@ -193,7 +193,10 @@ import {
    runStatementCount,
 } from "./model_query_compile";
 import { runReadsPublished, scrubHiddenIds } from "./model_projection";
-import { StorageServeShape } from "./materialization/serve/model_serve_shape";
+import {
+   StorageServeShape,
+   type SourceTypeMismatches,
+} from "./materialization/serve/model_serve_shape";
 
 export type { ModelConnectionInput, ModelType } from "./model_runtime";
 export type {
@@ -2612,6 +2615,11 @@ export class Model {
    /** See {@link StorageServeShape.setServeBindings}. */
    public setServeBindings(bindings: ServeBinding[]): void {
       this.storageServe.setServeBindings(bindings);
+   }
+
+   /** See {@link StorageServeShape.storedColumnTypeMismatches}. */
+   public storedColumnTypeMismatches(): readonly SourceTypeMismatches[] {
+      return this.storageServe.storedColumnTypeMismatches();
    }
 
    /**

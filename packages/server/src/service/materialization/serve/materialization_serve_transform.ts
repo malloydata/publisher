@@ -344,42 +344,33 @@ export function deriveServeBindings(
 }
 
 /**
- * Map a DuckDB column type (as reported by `DESCRIBE`) to a Malloy basic type
- * for the serve-shape `type:` declaration.
- *
- * Only Malloy's basic scalar types are legal in `type:`, so every DuckDB type
- * collapses onto one. Anything unrecognized falls back to `json`, a lossy
- * carrier so an exotic column never breaks the whole serve shape, and is logged.
+ * The Malloy basic type a DuckDB column type (as reported by `DESCRIBE`) maps
+ * onto, or `undefined` for a type with no faithful mapping: a collection
+ * (`array`) or anything unrecognized (nested, struct, enum, blob). Pure; see
+ * {@link duckdbTypeToMalloy} for the serve shape's lossy fallback.
  */
-export function duckdbTypeToMalloy(duckdbType: string): string {
+export function duckdbTypeToMalloyType(
+   duckdbType: string,
+): { type: string } | { unmapped: "array" | "unrecognized" } {
    const raw = duckdbType.trim();
-   if (/\[\s*\]/.test(raw)) {
-      recordServeShapeTypeFallback("array");
-      logger.warn(
-         "Mapping DuckDB array/collection type to json for serve shape",
-         {
-            duckdbType: raw,
-         },
-      );
-      return "json";
-   }
+   if (/\[\s*\]/.test(raw)) return { unmapped: "array" };
    // DECIMAL(18,2) -> DECIMAL
    const base = raw
       .replace(/\(.*\)/, "")
       .trim()
       .toUpperCase();
 
-   if (base === "DATE") return "date";
+   if (base === "DATE") return { type: "date" };
    if (
       base.startsWith("TIMESTAMP") ||
       base === "DATETIME" ||
       base === "TIMESTAMPTZ"
    ) {
-      return "timestamp";
+      return { type: "timestamp" };
    }
    if (base === "TIME") {
       // Malloy has no time-of-day scalar; carry as string to preserve the value.
-      return "string";
+      return { type: "string" };
    }
 
    switch (base) {
@@ -403,27 +394,41 @@ export function duckdbTypeToMalloy(duckdbType: string): string {
       case "REAL":
       case "DECIMAL":
       case "NUMERIC":
-         return "number";
+         return { type: "number" };
       case "VARCHAR":
       case "TEXT":
       case "CHAR":
       case "BPCHAR":
       case "STRING":
       case "UUID":
-         return "string";
+         return { type: "string" };
       case "BOOLEAN":
       case "BOOL":
-         return "boolean";
+         return { type: "boolean" };
       default:
-         recordServeShapeTypeFallback("unrecognized");
-         logger.warn(
-            "Unrecognized DuckDB type; mapping to json for serve shape",
-            {
-               duckdbType: raw,
-            },
-         );
-         return "json";
+         return { unmapped: "unrecognized" };
    }
+}
+
+/**
+ * Map a DuckDB column type (as reported by `DESCRIBE`) to a Malloy basic type
+ * for the serve-shape `type:` declaration.
+ *
+ * Only Malloy's basic scalar types are legal in `type:`, so every DuckDB type
+ * collapses onto one. Anything unrecognized falls back to `json`, a lossy
+ * carrier so an exotic column never breaks the whole serve shape, and is logged.
+ */
+export function duckdbTypeToMalloy(duckdbType: string): string {
+   const mapped = duckdbTypeToMalloyType(duckdbType);
+   if ("type" in mapped) return mapped.type;
+   recordServeShapeTypeFallback(mapped.unmapped);
+   logger.warn(
+      mapped.unmapped === "array"
+         ? "Mapping DuckDB array/collection type to json for serve shape"
+         : "Unrecognized DuckDB type; mapping to json for serve shape",
+      { duckdbType: duckdbType.trim() },
+   );
+   return "json";
 }
 
 /** A Malloy identifier that needs no quoting. */

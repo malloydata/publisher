@@ -256,6 +256,13 @@ const serveShapeTypeFallbackCounter = lazyCounter(
    "Captured DuckDB column types mapped to json in the serve shape (type " +
       "fidelity loss). Label: kind ('array'|'unrecognized').",
 );
+const storedColumnTypeMismatchCounter = lazyCounter(
+   "publisher_storage_column_type_mismatch_total",
+   "Stored columns whose DuckDB type does not serve as the type Malloy " +
+      "declares for them (ms2data/service#6642). Labels: stage ('build' = " +
+      "found after a storage build; 'serve' = left off a serve shape, so " +
+      "queries reading it are answered live), declared (the Malloy type).",
+);
 const chainedStorageBuildCounter = lazyCounter(
    "publisher_storage_chained_build_total",
    "Chained storage= source builds (a source reading a storage-materialized " +
@@ -552,6 +559,18 @@ export function recordServeShapeTypeFallback(
    kind: "array" | "unrecognized",
 ): void {
    serveShapeTypeFallbackCounter().add(1, { kind });
+}
+
+/**
+ * Record a stored column whose type does not serve as its declared Malloy type:
+ * at `build`, found in the landed table's schema; at `serve`, left off the
+ * serve shape (queries reading it are answered live).
+ */
+export function recordStoredColumnTypeMismatch(
+   stage: "build" | "serve",
+   declared: string,
+): void {
+   storedColumnTypeMismatchCounter().add(1, { stage, declared });
 }
 
 /**

@@ -5768,6 +5768,12 @@ components:
                   with a stricter gate, which the join does not carry (one per
                   join, or one for a walk cut short at the join bound; always
                   a `warn`, never a load refusal; see docs/authorize.md).
+                  `storage-column-type-mismatch`: a `storage=` table stores a
+                  column as a type that does not serve as the type Malloy
+                  declares for it, so queries reading that column are answered
+                  live (one per source and column, `model` the first model
+                  binding it, `subject` the source, the message naming the
+                  column and both types; `warn`; see docs/materialization.md).
                   `entities-…` (`entities-not-a-dimension`,
                   `entities-parameterized-source`,
                   `entities-multiple-required-filters`,

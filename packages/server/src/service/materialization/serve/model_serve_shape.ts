@@ -16,7 +16,10 @@ import { readFileSync } from "fs";
 import { fileURLToPath } from "url";
 import { components } from "../../../api";
 import { logger } from "../../../logger";
-import { recordServeShapeTierDrop } from "../../../materialization_metrics";
+import {
+   recordServeShapeTierDrop,
+   recordStoredColumnTypeMismatch,
+} from "../../../materialization_metrics";
 import { restrictMalloyConfigToConnections } from "../../connection";
 import { evaluateManifestFreshness } from "../run/freshness";
 import {
@@ -44,6 +47,12 @@ import {
    rollupMeasuresByMember,
 } from "../plan/preaggregation_coverage";
 import { rollupServeBindings } from "./preaggregation_serve_bindings";
+import {
+   declaredColumnsOf,
+   STORED_COLUMN_TYPE_MISMATCH_CODE,
+   storedColumnTypeMismatches,
+   type StoredColumnTypeMismatch,
+} from "../stored_column_types";
 import { type RollupPlan } from "../plan/preaggregation_synthesis";
 
 const staleBindingsWithheld = lazyCounter(
@@ -52,6 +61,12 @@ const staleBindingsWithheld = lazyCounter(
 );
 
 type ApiGiven = components["schemas"]["Given"];
+
+/** One bound source's stored columns that do not serve as their declared type. */
+export interface SourceTypeMismatches {
+   sourceName: string;
+   mismatches: StoredColumnTypeMismatch[];
+}
 
 /** What the storage serve shape reads from the model it serves. */
 export interface ServeShapeHost {
@@ -82,6 +97,10 @@ export class StorageServeShape {
     * ⇒ no serve routing (the common case).
     */
    serveBindings: ServeBinding[] = [];
+   /** See {@link storedColumnTypeMismatches}. */
+   private typeMismatches: SourceTypeMismatches[] = [];
+   /** Tables already reported for a stored column type mismatch. */
+   private readonly typeMismatchesLogged = new Set<string>();
    /** Sources already reported as served live for a name clash. */
    private readonly shadowedSourcesLogged = new Set<string>();
    /** Memoized serve-shape materializer, keyed by the bound source set. */
@@ -141,6 +160,63 @@ export class StorageServeShape {
       }
       this.serveBindings = kept;
       this.serveShapeCache = undefined;
+      try {
+         this.typeMismatches = this.findTypeMismatches(kept);
+      } catch (err) {
+         // Reporting only: the shape leaves such columns off on its own.
+         this.typeMismatches = [];
+         logger.debug("Could not check stored column types", {
+            modelPath: this.host.modelPath?.(),
+            error: err instanceof Error ? err.message : String(err),
+         });
+      }
+   }
+
+   /**
+    * The stored columns of this model's bindings whose type does not serve as
+    * the type the source declares, found when the bindings are set so the
+    * package can report them before any query runs. Each is left off the serve
+    * shape (see {@link serveBindingsWithRefinements}).
+    */
+   public storedColumnTypeMismatches(): readonly SourceTypeMismatches[] {
+      return this.typeMismatches;
+   }
+
+   private findTypeMismatches(
+      bindings: readonly ServeBinding[],
+   ): SourceTypeMismatches[] {
+      // A rollup's name resolves to nothing in the author's model, and its
+      // columns are measures the planner typed, so it is not checked here.
+      const ordinary = bindings.filter((b) => b.origin !== "preaggregate");
+      if (ordinary.length === 0) return [];
+      const { contents } = this.authorModelLift();
+      const out: SourceTypeMismatches[] = [];
+      for (const binding of ordinary) {
+         const fields = contents?.[binding.sourceName]?.fields;
+         const mismatches = storedColumnTypeMismatches(
+            narrowSchemaToPublic(binding.schema, fields),
+            declaredColumnsOf(fields),
+         );
+         if (mismatches.length === 0) continue;
+         out.push({ sourceName: binding.sourceName, mismatches });
+         const key = `${binding.sourceName}\u0000${binding.virtualHandle}`;
+         if (this.typeMismatchesLogged.has(key)) continue;
+         // Once per table per model: bindings are re-pushed on every bind.
+         this.typeMismatchesLogged.add(key);
+         for (const m of mismatches) {
+            recordStoredColumnTypeMismatch("serve", m.declaredType);
+         }
+         logger.warn(
+            "Serving columns live: their stored type does not serve as the declared Malloy type",
+            {
+               code: STORED_COLUMN_TYPE_MISMATCH_CODE,
+               modelPath: this.host.modelPath(),
+               source: binding.sourceName,
+               columns: mismatches,
+            },
+         );
+      }
+      return out;
    }
 
    /**
@@ -660,14 +736,25 @@ export class StorageServeShape {
       //
       // Done FIRST: everything below decides against the set of sources that
       // will actually be on the shape.
+      //
+      // A column whose stored type does not serve as its declared type is left
+      // off too (ms2data/service#6642): a query reading it fails the shape and
+      // is answered live, and every other query still reads the table.
       const onShape = bindings
-         .map((b) => ({
-            ...b,
-            schema: narrowSchemaToPublic(
-               b.schema,
-               contents?.[b.sourceName]?.fields,
-            ),
-         }))
+         .map((b) => {
+            const fields = contents?.[b.sourceName]?.fields;
+            const schema = narrowSchemaToPublic(b.schema, fields);
+            const mistyped = new Set(
+               storedColumnTypeMismatches(
+                  schema,
+                  declaredColumnsOf(fields),
+               ).map((m) => m.column),
+            );
+            return {
+               ...b,
+               schema: schema.filter((c) => !mistyped.has(c.name)),
+            };
+         })
          .filter((b) => b.schema.length > 0);
       const { kept, withheld } = withholdUnreproducibleCallerScopedJoins(
          onShape,
