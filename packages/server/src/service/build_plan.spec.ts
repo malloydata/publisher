@@ -274,7 +274,7 @@ source: leaky_metadata is raw -> { select: * }
       delete process.env[SECRET_VAR];
    });
 
-   it("drops an annotation line that carries an @env. reference, and keeps the others", async () => {
+   it("drops the #@ route of a source with an @env. line, and the source still plans", async () => {
       process.env[SECRET_VAR] = SECRET;
       const { connections } = duckdbTestConnections();
       const { sources } = await compilePersistSources(connections, model);
@@ -285,9 +285,8 @@ source: leaky_metadata is raw -> { select: * }
          "leaky_name",
       ]);
       expect(deriveAnnotationFields(sources.leaky_name)).toEqual({});
-      expect(deriveAnnotationFields(sources.leaky_metadata)).toEqual({
-         name: "kept",
-      });
+      // One `@env.` line drops the source's whole `#@` route, `name=` included.
+      expect(deriveAnnotationFields(sources.leaky_metadata)).toEqual({});
       for (const source of Object.values(sources)) {
          const read = JSON.stringify([
             deriveAnnotationFields(source),

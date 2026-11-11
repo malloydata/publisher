@@ -46,7 +46,7 @@ describe("parseRouteTag", () => {
       expect(ours.tag.text("name")).toBe("orders");
    });
 
-   it("drops each line that reads the environment, keeps the rest, and logs the drop", () => {
+   it("drops the whole #@ route when a line reads the environment, and logs each such line", () => {
       process.env[SECRET_VAR] = SECRET;
       const annotations = annotationsOf([
          `#@ persist name=@env.${SECRET_VAR}`,
@@ -61,7 +61,8 @@ describe("parseRouteTag", () => {
       const { tag, log } = parseRouteTag(annotations, "@");
       expect(JSON.stringify(tag.toJSON())).not.toContain(SECRET);
       expect(tag.has("persist")).toBe(false);
-      expect(tag.text("storage")).toBe("lake");
+      // On `#@` one such line drops the whole route: lines there combine.
+      expect(tag.text("storage")).toBeUndefined();
       expect(
          log.filter((entry) => entry.message === ENV_REFERENCE_DROPPED),
       ).toHaveLength(2);
@@ -90,6 +91,26 @@ describe("parseRouteTag", () => {
       );
       expect(tag.has("persist")).toBe(false);
       expect(log.map((entry) => entry.code)).toEqual(["env-reference-dropped"]);
+   });
+});
+
+describe("the #@ route is never half-applied", () => {
+   it("does not let a later line complete a directive whose first line was dropped", () => {
+      process.env[SECRET_VAR] = SECRET;
+      try {
+         const { tag } = parseRouteTag(
+            annotationsOf([
+               `#@ persist name=@env.${SECRET_VAR}`,
+               "#@ persist.storage=lake",
+            ]),
+            "@",
+         );
+         // Per line, this would read as a persist with storage=lake and no name.
+         expect(tag.has("persist")).toBe(false);
+         expect(tag.text("persist", "storage")).toBeUndefined();
+      } finally {
+         delete process.env[SECRET_VAR];
+      }
    });
 });
 

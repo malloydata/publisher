@@ -25,7 +25,7 @@ Two consequences worth knowing. A section merged to `main` ships in the **next**
 
 An annotation can no longer read the server's environment through a `#@`, `##` or `##!` line, or through `#(dbmeta)`. The tag parser fills `@env.NAME` from the server's own environment, and Publisher already dropped any MOTLY (`#`) line that carried one. Now every annotation route it parses applies the same rule: the line is dropped before parsing, and the drop is logged.
 
-What changes for a model: a `#@ persist` line that carries an `@env.` reference contributes no directive (no `name=`, `storage=` or `queryMetadata`). Malloy still plans the source, so it builds under its content address. Move a value the server should not see out of the annotation; a connection's credentials belong in its connection settings.
+What changes for a model: a source with an `@env.` reference on any of its `#@` lines gets none of its `#@` directives (no `name=`, `storage=` or `queryMetadata`), because those lines combine and a partial read would build the table somewhere its author did not say. Malloy still plans the source, so it builds under its content address. A model's `##` tags and `##!` flags drop only the offending line. Move a value the server should not see out of the annotation; a connection's credentials belong in its connection settings.
 
 ## [Unreleased] — The admin API's table copy keeps the source's partitioning, and reports it
 

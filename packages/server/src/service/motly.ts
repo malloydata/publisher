@@ -128,11 +128,18 @@ export function warnEnvReferenceDropped(where: string, route: string): void {
  * Each annotation line that carries an `@env.` reference is dropped before
  * parsing, by the same blunt rule as {@link hasEnvReference}. Each drop is added
  * to the returned log as {@link ENV_REFERENCE_DROPPED} and warned about once per
- * location. A dropped `#@ persist` line means Publisher reads no directive from
- * that line: no `name=`, no `queryMetadata`, no `storage=`. Malloy itself still
- * sees `persist` (it reads only whether the key is present), so the source still
- * builds, under its content address. Whether a key is PRESENT, as Malloy
- * decides it, is {@link routeHasKey}.
+ * location.
+ *
+ * On the `#@` route one such line drops the WHOLE route. Its lines are parsed as
+ * one tag, so a later line can complete an earlier one (`#@ persist name=…`,
+ * then `#@ persist.storage=lake`); dropping only the first would leave a
+ * half-applied directive that builds a table somewhere its author did not say.
+ * So a source with an `@env.` line on its `#@` route has no Publisher directive
+ * at all: no `name=`, `storage=` or `queryMetadata`. Malloy itself still sees
+ * `persist` (it reads only whether the key is present), so the source still
+ * builds, under its content address. Other routes (a model's `##` tags, `##!`
+ * flags) drop line by line, as {@link motlyAnnotations} does. Whether a key is
+ * PRESENT, as Malloy decides it, is {@link routeHasKey}.
  *
  * With nothing to drop, this is `parseAsTag` itself, so a package without an
  * `@env.` reference parses exactly as before.
@@ -148,6 +155,8 @@ export function parseRouteTag(
       (hasEnvReference(note.text) ? dropped : kept).push(note);
    }
    if (dropped.length === 0) return annotations.parseAsTag(route);
+   // Directive lines combine, so a partial read is worse than none (see above).
+   if (route === "@") kept.length = 0;
 
    // Rebuilt from the kept notes, in the order `forRoute` walked them
    // (inherited first), so Malloy's own parse and error mapping still apply.
