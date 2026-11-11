@@ -85,6 +85,14 @@ export interface R4Run {
 export interface R4Fixture {
    bindings: ServeBinding[];
    run(query: R4Query): Promise<R4Run>;
+   /**
+    * Point the model at `bindings` (`[]` for live), clearing the memoized
+    * serve shape, so the next served query compiles it again. Kept apart from
+    * {@link runAsIs} so a benchmark can do it outside its stopwatch.
+    */
+   setBindings(bindings: ServeBinding[]): void;
+   /** One query under the bindings already set, with nothing around it. */
+   runAsIs(malloy: string): Promise<{ rows: Row[]; servedFrom: string | null }>;
 }
 
 /**
@@ -227,6 +235,10 @@ export async function buildScenario(scenario: R4Scenario): Promise<R4Fixture> {
 
    return {
       bindings,
+      setBindings(next) {
+         model.setServeBindings(next);
+      },
+      runAsIs: runOnce,
       async run(query: R4Query): Promise<R4Run> {
          model.setServeBindings([]);
          const live = await runOnce(query.malloy);
