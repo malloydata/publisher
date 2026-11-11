@@ -2,7 +2,6 @@
 // SPDX-License-Identifier: MIT
 
 import { MalloyError } from "@malloydata/malloy";
-import { recordAnnotationFindings } from "../materialization_metrics";
 import {
    BadRequestError,
    ModelCompilationError,
@@ -38,7 +37,6 @@ export interface LoadGatedPackage {
    formatCarriesCeilingLeaks(prepared: PreparedCeilingQueries): string;
    preaggregateAccessWarnings(): ApiPackageWarning[];
    persistenceCollisionWarnings(): string[];
-   annotationFindingTiers(): { code: string; tier: string }[];
 }
 
 /**
@@ -177,15 +175,6 @@ function judgeLoadGates(
    // formatInvalidPreaggregatePolicy), except the access-modifier pair, which
    // only warns.
    const accessWarnings = pkg.preaggregateAccessWarnings();
-   // Counted here, once per load: every coded annotation finding, the
-   // pre-aggregation access pair included.
-   recordAnnotationFindings([
-      ...pkg.annotationFindingTiers(),
-      ...accessWarnings.map(() => ({
-         code: "preaggregate-hidden-field",
-         tier: "unservable",
-      })),
-   ]);
    if (accessWarnings.length > 0) {
       logger.warn(
          `Package ${packageName} pre-aggregates a field the source hides`,

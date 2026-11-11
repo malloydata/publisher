@@ -27,13 +27,13 @@ Every problem Publisher finds on a `#@` annotation is now a package warning with
 
 | Code | Severity | What it is |
 | --- | --- | --- |
-| `persist-unparseable` | `error` | A `#@` line that does not parse. Malloy drops its source from the build, so it serves live; before, only a log line said so. |
+| `persist-unparseable` | `error` | A `#@` line that does not parse. When it is the source's only `#@` line, Malloy drops the source from the build and it serves live; when another line parses, the source is still built, without the broken line's directives, and the warning names the line. Before, only a log line said either. |
 | `persist-retired-key` | `error` | `sharing=` or `schedule=` on a `#@ persist` source, with what to write instead. Publish already refused it; a load only logged it. |
-| `persist-unknown-key` | `warn` | A key Publisher does not read, such as a misspelled `merge_key=`. Now reported for every persist source, not only incremental ones, and no longer twice. |
+| `persist-unknown-key` | `warn` | A key Publisher does not read, such as a misspelled `merge_key=`, with the recognized key it is a near miss of (`did you mean merge_key=?`) and, on an incremental source, that its delta is then applied by range replace instead of by row identity. Now reported for every persist source, not only incremental ones, once per source even when other models import it, in the model that declares it. |
 | `persist-not-materializable` | `warn` | A `#@ persist` source the build walk did not recognize (unchanged, now coded). |
 | `preaggregate-hidden-field` | `warn` | A `#@ preaggregate` on a private or internal field (unchanged, now coded). |
 
-**One behaviour change: a `#@` line that does not parse is refused at publish** (`POST`/`PATCH …/packages`, 400). A package already published keeps loading and serving, with the `error` warning, so nothing that runs today stops. A new metric, `publisher_annotation_findings_total{code, tier}`, counts the findings once per package load; a nonzero `tier="malformed"` count names packages published before the refusal.
+**One behaviour change: a `#@` line that does not parse is refused at publish** (`POST …/packages`, or a `PATCH` that installs new content, 400). A package already published keeps loading and serving with the `error` warning, its `materialization.schedule` keeps running, and a metadata `PATCH` is not refused for it, so nothing that runs today stops. A new metric, `publisher_annotation_findings_total{code, tier}`, counts the coded findings each time a package is loaded and accepted for serving (boot, add, publish, reload; a refused publish counts nothing); a nonzero `tier="malformed"` count can only come from a package published before the refusal.
 
 ## [Unreleased] — A rollup over a `storage=` base is left out instead of failing its build
 

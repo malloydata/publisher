@@ -2172,9 +2172,22 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
       return this.materialization.formatInvalidPreaggregatePolicy();
    }
 
-   /** See {@link PackageMaterialization.annotationFindingTiers}. */
-   public annotationFindingTiers(): { code: string; tier: string }[] {
-      return this.materialization.annotationFindingTiers();
+   /** See {@link PackageMaterialization.formatUnparseableAnnotations}. */
+   public formatUnparseableAnnotations(): string {
+      return this.materialization.formatUnparseableAnnotations();
+   }
+
+   /**
+    * The coded `#@` annotation findings this package carries, as the warnings
+    * clients see, for the findings metric: derived from the warnings so the
+    * codes are declared once, where each warning is made.
+    */
+   public annotationFindingWarnings(): ApiPackageWarning[] {
+      return [
+         ...this.materialization.droppedPersistWarnings(),
+         ...this.materialization.annotationFindingWarnings(),
+         ...this.preaggregateAccessWarnings(),
+      ].filter((warning) => warning.code !== undefined);
    }
 
    /** See {@link PackageMaterialization.preaggregateAccessWarnings}. */

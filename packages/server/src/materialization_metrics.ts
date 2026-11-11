@@ -112,7 +112,7 @@ const sourcesCounter = lazyCounter(
 );
 const annotationFindingsCounter = lazyCounter(
    "publisher_annotation_findings_total",
-   "Findings on authored #@ annotations, counted once per package load. Labels: code (e.g. 'persist-unknown-key', 'persist-unparseable'), tier ('malformed'|'unservable'|'deprecated').",
+   "Coded findings on authored #@ annotations, counted once each time a package is loaded and accepted for serving (boot, add, publish, reload; a refused publish and a gate re-run count nothing). Labels: code (e.g. 'persist-unknown-key', 'persist-unparseable'), tier ('malformed' for an error-severity finding, 'unservable' for a warning).",
 );
 const incrementalStepCounter = lazyCounter(
    "publisher_materialization_incremental_step_total",
@@ -316,15 +316,21 @@ export function recordSourcesOutcome(
 }
 
 /**
- * Count one package load's annotation findings, one increment per finding, by
- * code and tier. `malformed` is refused at publish, so a nonzero count there on
- * a loaded package means it was published before the refusal existed.
+ * Count the coded annotation findings of one package accepted for serving,
+ * one increment per finding: `code` is the warning's code, `tier` its
+ * severity (`error` is malformed, `warn` unservable). A `malformed` count can
+ * only come from a package published before its refusal existed, since
+ * publish refuses a malformed finding before the package is served.
  */
 export function recordAnnotationFindings(
-   findings: ReadonlyArray<{ code: string; tier: string }>,
+   warnings: ReadonlyArray<{ code?: string; severity?: string }>,
 ): void {
-   for (const { code, tier } of findings) {
-      annotationFindingsCounter().add(1, { code, tier });
+   for (const { code, severity } of warnings) {
+      if (!code) continue;
+      annotationFindingsCounter().add(1, {
+         code,
+         tier: severity === "error" ? "malformed" : "unservable",
+      });
    }
 }
 

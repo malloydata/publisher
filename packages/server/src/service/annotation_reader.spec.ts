@@ -7,9 +7,9 @@ import {
    findingSeverity,
    isOnRoute,
    persistAnnotationFindings,
-   persistUnparseableFinding,
    payloadOfNote,
    payloadsOnRoute,
+   persistUnparseableFinding,
    PUBLISHER_ROUTES,
    readRouteList,
    readRouteTag,
@@ -132,16 +132,45 @@ describe("the #@ route's keys", () => {
 });
 
 describe("persist annotation findings", () => {
-   it("finds an unparseable tag as malformed, with the parser's reason", () => {
-      const { findings } = readRouteTag(
-         annotationsOf(['#@ persist name="unterminated']),
-         "@",
-         RECOGNIZED_PERSIST_KEYS,
+   it("suggests the key an unknown one is a near miss of", () => {
+      const [finding] = persistAnnotationFindings(
+         annotationsOf(['#@ persist name="t" mergekey="id"']),
+         "daily",
       );
-      expect(findings.map((f) => [f.code, f.tier])).toContainEqual([
-         "persist-unparseable",
-         "malformed",
-      ]);
+      expect(finding?.message).toContain("did you mean `merge_key=`?");
+      // Nothing near: no suggestion.
+      const [far] = persistAnnotationFindings(
+         annotationsOf(['#@ persist name="t" colour="red"']),
+         "daily",
+      );
+      expect(far?.message).not.toContain("did you mean");
+   });
+
+   it("says what an unknown key costs on an incremental source", () => {
+      const [finding] = persistAnnotationFindings(
+         annotationsOf(['#@ persist name="t" mergekey="id"']),
+         "daily",
+         "m.malloy",
+         { incremental: true },
+      );
+      expect(finding?.message).toContain("range replace");
+      expect(finding?.message).toContain("row identity");
+   });
+
+   it("names the recovered source when a broken #@ line sits beside a good one", () => {
+      const planned = persistUnparseableFinding(
+         { message: "unterminated string" },
+         "m.malloy",
+         { subject: "daily", line: '#@ refresh="incremental" watermark="x' },
+      );
+      expect(planned.message).toContain("built from its other #@ lines");
+      expect(planned.message).not.toContain("served live");
+      expect(planned.subject).toBe("daily");
+      const dropped = persistUnparseableFinding(
+         { message: "unterminated string" },
+         "m.malloy",
+      );
+      expect(dropped.message).toContain("served live");
    });
 
    it("checks a persist source against the persist keys, not the preaggregate ones", () => {

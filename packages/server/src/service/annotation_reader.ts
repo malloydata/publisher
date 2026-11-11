@@ -210,24 +210,10 @@ export function readRouteTag(
    /** The keys to accept, when narrower than the route's (a persist source's). */
    keys?: ReadonlySet<string>,
 ): { tag: Tag; findings: AnnotationFinding[] } {
-   const { tag, log } = parseRouteTag(annotations, route);
+   const { tag } = parseRouteTag(annotations, route);
    const spec = PUBLISHER_ROUTES[route];
    const accepted = keys ?? spec?.keys;
    const findings: AnnotationFinding[] = [];
-   // A tag that does not parse is read as nothing, so every directive on it is
-   // silently lost: malformed. `@env.` drops are reported by parseRouteTag.
-   const parseErrors = log.filter((entry) => entry.code === "tag-parse-error");
-   if (parseErrors.length > 0) {
-      findings.push({
-         route,
-         tier: "malformed",
-         code: `${route === "@" ? "persist" : route}-unparseable`,
-         message: `\`#${route}\` does not parse (${parseErrors
-            .map((entry) => entry.message)
-            .join("; ")}), so none of its directives are read`,
-         ...(parseErrors[0]?.at ? { at: parseErrors[0].at } : {}),
-      });
-   }
    if (accepted) {
       for (const [key] of tag.entries()) {
          const retired = spec?.retiredKeys?.[key];
@@ -240,11 +226,12 @@ export function readRouteTag(
                rewrite: retired,
             });
          } else if (!accepted.has(key)) {
+            const near = nearestKey(key, accepted);
             findings.push({
                route,
                tier: "unservable",
                code: `${route === "@" ? "persist" : route}-unknown-key`,
-               message: `\`${key}=\` is not a key \`#${route}\` reads, so it does nothing`,
+               message: `\`${key}=\` is not a key \`#${route}\` reads, so it does nothing${near ? ` (did you mean \`${near}=\`?)` : ""}`,
             });
          }
       }
@@ -253,23 +240,68 @@ export function readRouteTag(
 }
 
 /**
- * The findings on one persist source's `#@` route: a tag that does not parse
- * (malformed), a retired key (malformed), an unknown key (unservable). Each
+ * The findings on one persist source's `#@` route: a retired key
+ * (malformed) and an unknown key (unservable). A line that does not parse is
+ * reported from Malloy's build log ({@link persistUnparseableFinding}). Each
  * names the source in `subject`, and its model in `model` when known.
  */
 export function persistAnnotationFindings(
    annotations: Annotations,
    subject: string,
    model?: string,
+   { incremental = false }: { incremental?: boolean } = {},
 ): PackageAnnotationFinding[] {
    return readRouteTag(annotations, "@", RECOGNIZED_PERSIST_KEYS).findings.map(
-      (finding) => ({
-         ...finding,
-         message: `#@ persist source "${subject}": ${finding.message}`,
-         subject,
-         ...(model ? { model } : {}),
-      }),
+      (finding) => {
+         // On an incremental source a typo'd `merge_key=` has a quiet cost:
+         // the delta is applied by range replace instead of by row identity.
+         const consequence =
+            incremental && finding.code === "persist-unknown-key"
+               ? "; on this incremental source a misspelled merge_key= leaves its delta applied by range replace instead of by row identity"
+               : "";
+         return {
+            ...finding,
+            message: `#@ persist source "${subject}": ${finding.message}${consequence}`,
+            subject,
+            ...(model ? { model } : {}),
+         };
+      },
    );
+}
+
+/**
+ * The accepted key within edit distance 2 of `key`, closest first, or
+ * undefined: the likely intended spelling of an unknown key.
+ */
+function nearestKey(
+   key: string,
+   accepted: ReadonlySet<string>,
+): string | undefined {
+   let best: { key: string; distance: number } | undefined;
+   for (const candidate of [...accepted].sort(byCodepoint)) {
+      const distance = editDistance(key.toLowerCase(), candidate.toLowerCase());
+      if (distance <= 2 && (!best || distance < best.distance)) {
+         best = { key: candidate, distance };
+      }
+   }
+   return best?.key;
+}
+
+/** Levenshtein distance between two short strings. */
+function editDistance(a: string, b: string): number {
+   let previous = Array.from({ length: b.length + 1 }, (_, j) => j);
+   for (let i = 1; i <= a.length; i++) {
+      const current = [i];
+      for (let j = 1; j <= b.length; j++) {
+         current[j] = Math.min(
+            (previous[j] ?? 0) + 1,
+            (current[j - 1] ?? 0) + 1,
+            (previous[j - 1] ?? 0) + (a[i - 1] === b[j - 1] ? 0 : 1),
+         );
+      }
+      previous = current;
+   }
+   return previous[b.length] ?? 0;
 }
 
 /** A finding as a package load carries it: which model it is in, when known. */
@@ -283,17 +315,28 @@ export type PackageAnnotationFinding = AnnotationFinding & { model?: string };
 export function persistUnparseableFinding(
    entry: { message: string; at?: DocumentLocation },
    model: string,
+   /**
+    * The planned source the broken line is on, when Malloy still planned it
+    * from its other `#@` lines; absent when the source was dropped.
+    */
+   planned?: { subject: string; line: string },
 ): PackageAnnotationFinding {
-   const line = entry.at ? ` (line ${entry.at.range.start.line + 1})` : "";
+   const where = entry.at ? ` (line ${entry.at.range.start.line + 1})` : "";
+   const message = planned
+      ? `#@ persist source "${planned.subject}": the #@ line${where} ` +
+        `\`${planned.line.trim()}\` does not parse (${entry.message}), so its ` +
+        `directives are not read: the source is built from its other #@ ` +
+        `lines without them. Fix the line's syntax.`
+      : `a #@ annotation${where} does not parse (${entry.message}), so the ` +
+        `source it is on is not materialized and is served live. Fix the ` +
+        `annotation's syntax.`;
    return {
       route: "@",
       tier: "malformed",
       code: "persist-unparseable",
-      message:
-         `a #@ annotation${line} does not parse (${entry.message}), so the ` +
-         `source it is on is not materialized and is served live. Fix the ` +
-         `annotation's syntax.`,
+      message,
       model,
+      ...(planned ? { subject: planned.subject } : {}),
       ...(entry.at ? { at: entry.at } : {}),
    };
 }

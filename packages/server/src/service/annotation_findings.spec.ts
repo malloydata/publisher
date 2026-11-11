@@ -91,6 +91,79 @@ describe("annotation findings on a loaded package", () => {
    );
 
    it(
+      "builds a source whose other #@ line parses, and says the broken line's directives are missing",
+      async () => {
+         const pkg = await loadPackage(
+            `${RAW}#@ persist name="t"\n#@ refresh="full" queryMetadata="x\n${ROLLUP}\n`,
+         );
+         const [warning] = coded(pkg, "persist-unparseable");
+         expect(warning).toMatchObject({ severity: "error", subject: "daily" });
+         expect(warning.message).toContain("built from its other #@ lines");
+         expect(warning.message).not.toContain("served live");
+         expect(
+            Object.values(pkg.getBuildPlan()?.sources ?? {}).map((s) => s.name),
+         ).toEqual(["daily"]);
+      },
+      { timeout: 30000 },
+   );
+
+   it(
+      "refuses an unparseable #@ only at publish: the scheduler keeps it, and a policy PATCH is not refused",
+      async () => {
+         writePackageFiles(
+            path.join(envPath, "pkg"),
+            { "model.malloy": `${RAW}#@ persist name="t\n${ROLLUP}\n` },
+            {
+               manifest: {
+                  name: "pkg",
+                  description: "fixture",
+                  materialization: { scope: "version", schedule: "0 * * * *" },
+               },
+            },
+         );
+         const env = await Environment.create("testEnv", envPath, []);
+         await env.addPackage("pkg");
+         const pkg = await env.getPackage(parsePackageName("pkg"), false);
+         expect(formatPublishRejections(pkg)).toContain("does not parse");
+         // The scheduler disarms a package on any persistence-policy warning.
+         expect(pkg.persistencePolicyWarnings()).toEqual([]);
+         // A metadata PATCH that edits the policy judges the same list.
+         const patched = await env.updatePackage("pkg", {
+            name: "pkg",
+            materialization: { schedule: "30 * * * *" },
+         });
+         expect(
+            (patched as { materialization?: { schedule?: string } })
+               .materialization?.schedule,
+         ).toBe("30 * * * *");
+      },
+      { timeout: 30000 },
+   );
+
+   it(
+      "reports a finding on an imported persist source once, in the model that declares it",
+      async () => {
+         writePackageFiles(
+            path.join(envPath, "pkg"),
+            {
+               "model.malloy": `${RAW}#@ persist name="t" merge_keys="category"\n${ROLLUP}\n`,
+               "other.malloy": `##! experimental { persistence composite_sources }\nimport "model.malloy"\nsource: more is daily extend {}\n`,
+            },
+            { manifest: { name: "pkg", description: "fixture" } },
+         );
+         const env = await Environment.create("testEnv", envPath, []);
+         await env.addPackage("pkg");
+         const pkg = await env.getPackage(parsePackageName("pkg"), false);
+         const unknown = coded(pkg, "persist-unknown-key").filter(
+            (w) => w.subject === "daily",
+         );
+         expect(unknown).toHaveLength(1);
+         expect(unknown[0]?.model).toBe("model.malloy");
+      },
+      { timeout: 30000 },
+   );
+
+   it(
       "reports a retired key as an error with its rewrite",
       async () => {
          const pkg = await loadPackage(

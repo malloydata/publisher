@@ -657,16 +657,6 @@ export class PackageMaterialization {
       }));
    }
 
-   /** Each coded annotation finding's code and tier, for the findings metric. */
-   annotationFindingTiers(): { code: string; tier: string }[] {
-      return [
-         ...this.annotationFindings.map(({ code, tier }) => ({ code, tier })),
-         ...this.droppedPersistSources.map(() => ({
-            code: "persist-not-materializable",
-            tier: "unservable",
-         })),
-      ];
-   }
 
    /**
     * Warnings for the `#@ persist` sources the compile-time gates refused,
@@ -776,16 +766,6 @@ export class PackageMaterialization {
          }
       }
 
-      // Rule 1b: a `#@` tag that does not parse. Malloy drops its source from
-      // the build, so it would serve live with nothing said; refused at publish,
-      // a warning at load so a package already published keeps loading.
-      for (const finding of this.annotationFindings) {
-         if (finding.code !== "persist-unparseable") continue;
-         warnings.push(
-            `${finding.model ? `${finding.model}: ` : ""}${finding.message}`,
-         );
-      }
-
       // Rule 2: a package-level cron is legal only with scope: version.
       if (packageSchedule && scope !== "version") {
          warnings.push(
@@ -824,6 +804,24 @@ export class PackageMaterialization {
       }
 
       return warnings;
+   }
+
+   /**
+    * The publish refusal for `#@` lines that do not parse, one per line, or ""
+    * when none. Publish only: a load warns (the finding rides
+    * `Package.warnings`), so a package already published keeps loading and its
+    * schedule keeps running, and a metadata PATCH is not refused for it. Kept
+    * out of {@link persistencePolicyWarnings}, which the scheduler and the
+    * metadata PATCH both read.
+    */
+   formatUnparseableAnnotations(): string {
+      return this.annotationFindings
+         .filter((finding) => finding.code === "persist-unparseable")
+         .map(
+            (finding) =>
+               `${finding.model ? `${finding.model}: ` : ""}${finding.message}`,
+         )
+         .join("\n");
    }
 
    /** The {@link persistencePolicyWarnings}, one per line, or "" if valid. */
