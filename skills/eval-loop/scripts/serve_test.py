@@ -12,6 +12,8 @@ It cannot just be dropped: `--init` is also what makes the server read
 `publisher.config.json` rather than the database, so a config edit does not
 take without it. Both halves are pinned here.
 """
+import io
+import contextlib
 import json
 import pathlib
 import sys
@@ -290,6 +292,13 @@ class ServerCmd(unittest.TestCase):
                 self.assertEqual(cmd[cmd.index("--port") + 1], "4811")
                 self.assertEqual(cmd[cmd.index("--mcp_port") + 1], "4040")
 
+    def test_without_a_clone_the_pinned_release_runs_through_npx(self):
+        cmd = serve.server_cmd(serve.npx_launch("0.12.5"), pathlib.Path("/root"),
+                               4811, 4040, seed=False)
+        self.assertEqual(cmd[:3], ["npx", "-y", "@malloy-publisher/server@0.12.5"])
+        self.assertIn("--no-mcp-config", cmd)
+        self.assertEqual(serve.npx_launch(None)[2], "@malloy-publisher/server@latest")
+
     def test_a_second_server_gets_its_own_mcp_port(self):
         # Two Publishers on one machine (the model under test and the truth
         # server) collide on the default MCP port otherwise.
@@ -447,6 +456,27 @@ class Roles(unittest.TestCase):
                             "--publisher-dir", "no/such/server"])
         self.assertIn(str(pathlib.Path("no/such/server").resolve()),
                       str(e.exception))
+
+    def test_a_server_that_reports_init_failed_is_a_failed_start(self):
+        """Its port can answer while storage failed; its own signal decides."""
+        d = a_set(TOML)
+        root = pathlib.Path(tempfile.mkdtemp(prefix="serve-root-"))
+        (root / "publisher.log").write_text("PUBLISHER_INIT_FAILED from an earlier start\n")
+        pub = pathlib.Path(tempfile.mkdtemp(prefix="serve-pub-"))
+        (pub / "dist").mkdir()
+        (pub / "dist" / "server.mjs").write_text("")
+        says = [sys.executable, "-c",
+                "import time; print('PUBLISHER_INIT_FAILED error=lock', flush=True); time.sleep(30)"]
+        out = io.StringIO()
+        with mock.patch.object(serve, "listening", return_value=False), \
+             mock.patch.object(serve, "alive", return_value=True), \
+             mock.patch.object(serve, "server_cmd", return_value=says), \
+             contextlib.redirect_stdout(out):
+            code = serve.main(["--role", "model", "--set", str(d), "--server-root", str(root),
+                               "--publisher-dir", str(pub), "--wait", "5",
+                               "--no-warm-retrieval"])
+        self.assertEqual(code, 1, out.getvalue())
+        self.assertIn("failed to initialise", out.getvalue())
 
     def test_a_start_that_never_answers_is_stopped_and_the_config_restored(self):
         """A timeout ends like a crash: nothing left running, the old config back."""
