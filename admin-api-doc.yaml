@@ -626,8 +626,9 @@ components:
           type: string
         transform:
           type: string
-          pattern: '^(identity|year|month|day|hour|bucket\(\d+\))$'
-          description: DuckLake's transform for the column
+          description: >-
+            DuckLake's transform for the column: one of `identity`, `year`,
+            `month`, `day`, `hour` or `bucket(N)`
 
     TableWrite:
       type: object
