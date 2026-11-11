@@ -1001,6 +1001,101 @@ source: orders is duckdb.sql("""SELECT * FROM (VALUES (${amount}, 'A')) AS t(amo
    );
 
    it(
+      "plans one rollup for a source index.malloy re-exports, and refuses neither (#7096)",
+      async () => {
+         // The recommended curation: the source's own file declares the
+         // rollup, and `index.malloy` imports and re-exports the source. Both
+         // models see it, so each synthesizes the rollup, under one name. One
+         // content, so one table: a collision only when contents differ.
+         const pkg = await packages.create({
+            "jaffle.malloy": `##! experimental { persistence composite_sources }
+source: orders is duckdb.sql("""SELECT * FROM (VALUES (10, 'A'), (5, 'B')) AS t(amount, category)""") extend {
+  #@ preaggregate grain="category"
+  measure: total is amount.sum()
+}
+`,
+            "index.malloy": `import "jaffle.malloy"
+export { orders }
+`,
+         });
+
+         const { plan } = await computePackageBuildPlan(pkg);
+
+         expect(Object.values(plan?.refusedSources ?? {})).toEqual([]);
+         const rollups = Object.values(plan?.sources ?? {}).filter(
+            (s) => s.origin === "preaggregate",
+         );
+         // Each model declares it, so both companions plan it (the build
+         // writes the table once: same target, same address).
+         expect(rollups.map((r) => r.modelPath).sort()).toEqual([
+            "index.malloy",
+            "jaffle.malloy",
+         ]);
+         expect(new Set(rollups.map((r) => r.sourceEntityId)).size).toBe(1);
+         expect(new Set(rollups.map((r) => r.name)).size).toBe(1);
+      },
+      { timeout: 20000 },
+   );
+
+   it(
+      "plans a renamed import's rollup as the declaring model's, so it is one table",
+      async () => {
+         const pkg = await packages.create({
+            "jaffle.malloy": `##! experimental { persistence composite_sources }
+source: orders is duckdb.sql("""SELECT * FROM (VALUES (10, 'A')) AS t(amount, category)""") extend {
+  #@ preaggregate grain="category"
+  measure: total is amount.sum()
+}
+`,
+            "report.malloy": `import { o is orders } from "jaffle.malloy"
+source: notes is duckdb.sql("SELECT 1 AS id")
+export { notes }
+`,
+         });
+
+         const { plan } = await computePackageBuildPlan(pkg);
+
+         expect(Object.values(plan?.refusedSources ?? {})).toEqual([]);
+         const rollups = Object.values(plan?.sources ?? {}).filter(
+            (s) => s.origin === "preaggregate",
+         );
+         expect(rollups.length).toBe(2);
+         // Named for `orders`, not the alias `o`: one target, one table.
+         expect(new Set(rollups.map((r) => r.name)).size).toBe(1);
+         expect(new Set(rollups.map((r) => r.sourceEntityId)).size).toBe(1);
+      },
+      { timeout: 20000 },
+   );
+
+   it(
+      "does not let an import aliased to another model's source name collide with that model's rollup",
+      async () => {
+         const rollupOver = (
+            table: string,
+         ) => `##! experimental { persistence composite_sources }
+source: SRC is duckdb.sql("""SELECT * FROM (VALUES (${table}, 'A')) AS t(amount, category)""") extend {
+  #@ preaggregate grain="category"
+  measure: total is amount.sum()
+}
+`;
+         const pkg = await packages.create({
+            "a.malloy": rollupOver("10").replace("SRC", "orders"),
+            "crm.malloy": rollupOver("99").replace("SRC", "customers"),
+            // `orders` here is crm's `customers`, not a.malloy's `orders`.
+            "report.malloy": `import { orders is customers } from "crm.malloy"
+source: notes is duckdb.sql("SELECT 1 AS id")
+export { notes }
+`,
+         });
+
+         const { plan } = await computePackageBuildPlan(pkg);
+
+         expect(Object.values(plan?.refusedSources ?? {})).toEqual([]);
+      },
+      { timeout: 20000 },
+   );
+
+   it(
       "still plans a rollup that only one model generates",
       async () => {
          const pkg = await packages.create({

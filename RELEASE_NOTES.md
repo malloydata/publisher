@@ -21,6 +21,12 @@ Give the heading a title — `## [Unreleased] — what changed`, with an em dash
 
 Two consequences worth knowing. A section merged to `main` ships in the **next** release, whenever that is, so do not write one for work that has not landed. And a heading already stamped with a version is history: a follow-up that changes that behaviour opens a **new** `[Unreleased]` section referencing the shipped version by number, rather than editing the old one.
 
+## [Unreleased] — Pre-aggregation routes through a model that imports the rollup's base
+
+A model that imports a `#@ preaggregate` source without re-exporting it (`import { orders } from "orders.malloy"` in a model whose `export { … }` names only its own sources) got no rollup routing: its synthesized companion imported the base from the importing model, which hands an importer only what it exports, so the companion failed to compile, an error was logged on every load, and every query through that model ran live. The companion now imports each base from the file that declares it, under the name that file gives it, so such a model routes to the same rollup as the declaring model. A base the model declares itself is imported exactly as before. A rollup is named for its base's declared name, not the name an importing model gives it, so `import { o is orders }` shares the declaring model's table rather than building a second copy, and a base imported under another model's source name does not collide with that model's rollup. The companion's own file URL is built with `pathToFileURL`, so it also resolves on Windows.
+
+The recommended curation, an `index.malloy` that imports the declaring file and re-exports the source, already routed, and is now pinned by a test: both models plan the rollup under one name and one content address, so it is one table (built once), not a `rollup_name_collision`.
+
 ## [Unreleased] — Two models' rollups that would share one table are refused, not overwritten
 
 A pre-aggregation rollup's name folds only its base source's name and grain, and that name is its table. So two models that each declare a source of the same name, and pre-aggregate it at the same grain, produced one table: the second build overwrote the first, and one model's queries could be answered from the other's rollup. `#@ preaggregate` has no `name=` to tell them apart.
