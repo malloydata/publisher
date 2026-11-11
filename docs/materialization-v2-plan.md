@@ -480,7 +480,7 @@ The plan accounts for all 60 open issues under [ms2data/service#6647](https://gi
 | #5595 | P3 | Supported DuckLake catalog-version range | A product decision, outside v2 | — |
 | #5691 | P3 | Reconcile the query-metadata and DuckLake config substrate | `queryMetadata` carries over unchanged | — |
 
-**Control-plane only.** Seven feed the consistency design pass in phase 5: #5967 (P0, reuse reporting fresh), #5706 (a shared refresh advances every binder), #5704, #6308, #5683, #5705 (lineage after a `name=` change), and #7153 (a build verdict per version, the control plane's half of D2). The rest are outside v2: #6985, #7088, #5763, #6075, #5748, #6307, #6649, #5904, #6093, #5658, #6092, and two that share content with phase 5: #6987 (the `credible-materialization` skill) and #7091 (runs and build plans on the Credible MCP, the managed counterpart of T7).
+**Control-plane only.** Seven feed the consistency design pass in phase 5: #5967 (P0, reuse reporting fresh), #5706 (a shared refresh advances every binder), #5704, #6308, #5683, #5705 (lineage after a `name=` change), and #7153 (a build verdict per version, the control plane's half of D2). The rest are outside v2: #6985, #7088, #5763, #6075, #5748, #6307, #6649, #5904, #6093, #5658, #6092, and two that share content with phase 6: #6987 (the `credible-materialization` skill) and #7091 (runs and build plans on the Credible MCP, the managed counterpart of T7).
 
 ### Review coverage (the Nov 5 design review)
 
