@@ -58,6 +58,12 @@ look complete.
    transcript with nothing in it. That is a fetch problem and it is not an
    agent that did nothing; scoring it records the second when the truth is
    the first.
+5. **Optional: keep the request, change retrieval.** `targets_from_run.py
+   --run <runDir> --set <set> --write` (in `skill:eval-import`) copies each
+   case's logged `get_context` searches onto it as `searchTargets`. Then
+   `eval.py replay` resends exactly those searches after a retrieval or
+   documentation change, in minutes, with no agent
+   (`reference/retrieval-replay.md`).
 
 ## A case is a turn, not a session
 

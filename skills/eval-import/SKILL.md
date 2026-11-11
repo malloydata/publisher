@@ -242,6 +242,14 @@ returned them.
 - **Do not add a target for a concept the answer does not need.** An extra
   golden target scores every agent that skipped it as a decomposition miss.
 
+**From real traffic.** A run rebuilt from a host's request logs holds the
+searches a real agent sent. `targets_from_run.py --run <run> --set <set>`
+prints them per case, and `--write` copies them onto cases that have none.
+That is the request to hold fixed while retrieval changes
+(`reference/retrieval-replay.md` in `skill:eval-loop`). It is what one agent
+asked, not what a good agent asks, so the copied targets carry no key: key
+each one as above before `score_targets.py` grades an agent against it.
+
 Then verify both halves against the served model:
 
 ```
