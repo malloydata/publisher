@@ -41,6 +41,21 @@ describe("routeOfNote and payloadOfNote", () => {
       expect(routeOfNote('#(classification "x")')).toBeUndefined();
    });
 
+   // The callers that moved off a regex (`#(secure)` on a given, `#(index)` on
+   // a dimension) compare the route; these are the spellings where the regex
+   // and Malloy disagreed.
+   it("routes the spellings where the replaced regexes disagreed with Malloy", () => {
+      // A prefix glued to its payload is malformed: it declares nothing now,
+      // where `/^#\(secure\)/` and `/^\s*#\(index\b/` counted it.
+      expect(routeOfNote("#(secure)x")).toBeUndefined();
+      expect(routeOfNote("#(index)x")).toBeUndefined();
+      // The legacy `#(index_values)` stays its own route, as the `\b` kept it.
+      expect(routeOfNote("#(index_values)")).toBe("index_values");
+      // Well-formed spellings agree.
+      expect(routeOfNote("#(secure)")).toBe("secure");
+      expect(routeOfNote("  #(index) values=all")).toBe("index");
+   });
+
    it("reads a block note's payload like a line note's", () => {
       expect(payloadOfNote("#(doc) One line").trim()).toBe("One line");
       // A compiled block note, as annotations carry it: dedented, no closer.

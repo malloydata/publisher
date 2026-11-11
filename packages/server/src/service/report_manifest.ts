@@ -24,6 +24,7 @@
  */
 
 import { isJoined, isSourceDef } from "@malloydata/malloy";
+import { routeOfNote } from "./annotation_reader";
 import type {
    ModelDef,
    NamedModelObject,
@@ -961,7 +962,9 @@ function givenSpec(
       annotations: declaration.annotations.filter(
          (text) => /^##?\(/.test(text) && !isMarkdownNote(text),
       ),
-      ...(declaration.annotations.some((text) => /^#\(secure\)/.test(text)) && {
+      ...(declaration.annotations.some(
+         (text) => routeOfNote(text) === "secure",
+      ) && {
          secure: true,
       }),
       ...control,

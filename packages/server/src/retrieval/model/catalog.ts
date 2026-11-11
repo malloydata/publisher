@@ -21,6 +21,7 @@
  */
 
 import type { ModelDef } from "@malloydata/malloy";
+import { routeOfNote } from "../../service/annotation_reader";
 import type { Relationship } from "@malloydata/malloy-interfaces";
 import { compareText as comparePaths } from "../../compare_text";
 import { splitSourceId } from "../../service/source_id";
@@ -805,8 +806,8 @@ export function referencedPaths(e: unknown): string[][] {
 function hasIndexTag(field: {
    annotations?: Array<string | { value: string }>;
 }): boolean {
-   return (field.annotations ?? []).some((a) =>
-      /^\s*#\(index\b/.test(typeof a === "string" ? a : a.value),
+   return (field.annotations ?? []).some(
+      (a) => routeOfNote(typeof a === "string" ? a : a.value) === "index",
    );
 }
 
