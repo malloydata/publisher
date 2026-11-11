@@ -68,6 +68,7 @@ describe("routeQuery", () => {
             outcome: "skipped",
             reason: "does_not_answer",
             detail: "storage cannot answer",
+            errorName: "Error",
          },
          { kind: "rollup", outcome: "used" },
       ]);
@@ -106,12 +107,18 @@ describe("routeQuery", () => {
       ]);
    });
 
-   it("asks about the gate once when a candidate exists, even an inapplicable one, and never when none does", async () => {
+   it("asks about the gate once when a candidate applies, and never when none does", async () => {
       let asked = 0;
       const gate = async () => {
          asked++;
          return false;
       };
+      await routeQuery(
+         [variant("storage", "misses", []), variant("rollup", "answers", [])],
+         gate,
+      );
+      expect(asked).toBe(1);
+      // An inapplicable candidate cannot route, so the gate's answer is moot.
       await routeQuery([variant("rollup", "inapplicable", [])], gate);
       expect(asked).toBe(1);
       const none = await routeQuery<string>([], gate);

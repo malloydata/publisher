@@ -17,6 +17,7 @@
  */
 
 import type { SiblingModelDefResolver } from "./filter_binding_guard";
+import type { MaterializedTableCatalog } from "./materialization/serve/query_path";
 import type { BuildManifest } from "./materialization/types";
 import type { ReportLayout } from "./report";
 
@@ -75,6 +76,12 @@ export interface ModelPolicy {
    /** The `sourceEntityId`s pre-aggregation synthesized, stripped from the
     *  author model's manifest. Undefined or empty strips nothing. */
    preaggregateEntityIds(): ReadonlySet<string> | undefined;
+   /**
+    * The package's materialized tables (its build plan and bound colocated
+    * manifest), for the path report. Undefined outside a package, or before
+    * the package wires it; the report then names no colocated table.
+    */
+   materializedTables(): MaterializedTableCatalog | undefined;
 }
 
 /**
@@ -124,6 +131,7 @@ function fixedPolicy(
       siblingModelDefResolver: () => sibling,
       freshBuildManifestEntries: () => undefined,
       preaggregateEntityIds: () => undefined,
+      materializedTables: () => undefined,
    });
 }
 
@@ -166,6 +174,7 @@ export class PackageModelPolicy {
       | {
            manifest: () => BuildManifest["entries"] | undefined;
            preaggregateEntityIds: () => ReadonlySet<string>;
+           materializedTables?: () => MaterializedTableCatalog | undefined;
         }
       | undefined;
 
@@ -180,6 +189,7 @@ export class PackageModelPolicy {
          siblingModelDefResolver: () => this.siblingResolver,
          freshBuildManifestEntries: () => this.freshness?.manifest(),
          preaggregateEntityIds: () => this.freshness?.preaggregateEntityIds(),
+         materializedTables: () => this.freshness?.materializedTables?.(),
       });
    }
 
@@ -207,6 +217,7 @@ export class PackageModelPolicy {
    public setFreshnessResolvers(resolvers: {
       manifest: () => BuildManifest["entries"] | undefined;
       preaggregateEntityIds: () => ReadonlySet<string>;
+      materializedTables?: () => MaterializedTableCatalog | undefined;
    }): void {
       this.freshness = resolvers;
    }

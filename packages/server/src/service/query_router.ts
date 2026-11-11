@@ -70,6 +70,11 @@ export interface ConsideredVariant {
    reason?: RouterSkipReason;
    /** The compile or coverage error's message, for a `does_not_answer` skip. */
    detail?: string;
+   /**
+    * The error's `name` (e.g. `RollupCoverageError`), for a `does_not_answer`
+    * skip, so the path report can tell a coverage refusal from a compile error.
+    */
+   errorName?: string;
 }
 
 /** The router's decision for one query. */
@@ -85,16 +90,17 @@ export type RouteDecision<Extra> =
 
 /**
  * Route one query over `variants`, in order. `blockedByGate` is asked at most
- * once, and only when there is a candidate at all (it can cost an entry-point
- * walk and a probe compile); the caller lists a candidate only when its
- * variant exists for this model, and marks it inapplicable for this request.
+ * once, and only when some candidate applies to this request (it can cost an
+ * entry-point walk and a probe compile); the caller lists a candidate only when
+ * its variant exists for this model, and marks it inapplicable for this request.
  */
 export async function routeQuery<Extra>(
    variants: ReadonlyArray<Variant<Extra>>,
    blockedByGate: () => Promise<boolean>,
 ): Promise<RouteDecision<Extra>> {
    const considered: ConsideredVariant[] = [];
-   const blocked = variants.length > 0 && (await blockedByGate());
+   const blocked =
+      variants.some((v) => v.applicable) && (await blockedByGate());
    for (const variant of variants) {
       if (!variant.applicable) {
          considered.push({
@@ -128,6 +134,7 @@ export async function routeQuery<Extra>(
             outcome: "skipped",
             reason: "does_not_answer",
             detail: error instanceof Error ? error.message : String(error),
+            ...(error instanceof Error ? { errorName: error.name } : {}),
          });
          variant.onSkip?.(error);
       }

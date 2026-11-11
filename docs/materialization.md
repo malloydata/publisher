@@ -630,6 +630,31 @@ The `schedule` commands share the server's publish-gate validation: an invalid c
 
 > **`--drop-tables` drops the physical tables in that run's manifest, except any that a still-ready run also names.** Auto-run assigns stable table names and carries unchanged sources forward, so an old run's manifest names tables a newer manifest still serves, and those survive the delete. Deleting a run also re-derives the package's serve bindings from the latest remaining ready run (or clears them, so queries compute live), so a delete does not break queries — it can leave a table behind. To remove a persisted source, delete its annotation, `materialize --wait`, then delete the old runs that name its table; a table no ready run names is dropped.
 
+## Which table answered a query: the path report
+
+Every query result carries `path`, the path report. It says which materialized table answered the query, or that it ran live, and why every other table that could have answered did not. Unlike `servedFrom`, which reports the `storage=` tier only, it covers colocated `#@ persist` tables and pre-aggregation rollups too.
+
+```json
+"path": {
+  "query": { "sourceName": "daily", "groupedBy": ["region"], "filteredBy": [], "measures": ["total"] },
+  "servedBy": { "kind": "materialized", "tableId": "9f1c…", "dataAsOf": "2026-11-01T00:00:00.000Z" },
+  "considered": [
+    { "tableId": "4ab0…", "kind": "rollup", "outcome": "skipped", "reason": "COUNT_SEMANTICS", "detail": "…" },
+    { "tableId": "9f1c…", "kind": "materialized", "outcome": "used" }
+  ],
+  "notConsidered": [
+    { "tableId": "77de…", "kind": "materialized", "sourceName": "by_region", "relationship": "sibling", "built": true }
+  ]
+}
+```
+
+- `tableId` is the table's `sourceEntityId`, the content address the build plan and manifest key on. Sources that build the same SQL share one table, so they share one id.
+- `considered` lists the tables on the queried source's chain (the source, what it extends or renames, and the source its query reads from) and the rollups of a source on it, in the order they are tried: `storage=` tables, then colocated rollups, then colocated tables nearest first. A table that was not tried because an earlier one answered is left out.
+- `reason` is one of `NOT_BUILT` (not bound to this package), `STALE` (past its freshness window), `CONTRACT` (the entry point has a row-level gate, which stored data cannot keep yet), `MISSING_FIELD` (the query does not compile against the stored form, with the compiler's message in `detail`), `COUNT_SEMANTICS` (a rollup cannot reproduce an aggregate the query computes), `GRAIN_TOO_COARSE` (a rollup's grain does not hold the query's groups) or `RUN_FAILED` (the stored read failed and the freshness fallback answered live). The list is closed, and codes may be added.
+- `notConsidered` names up to ten tables near the queried source that the query cannot use: on a source that extends it (`below`) or that shares an ancestor with it (`sibling`). Querying that source instead, or moving an annotation, would let one answer.
+
+The report is assembled after the query runs and never changes which table answers. It is absent only if it could not be assembled.
+
 ## Standalone vs. hosted (control-plane) deployments
 
 The same package definition behaves differently depending on who drives materialization. Honest divergences to be aware of:

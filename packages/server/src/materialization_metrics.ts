@@ -574,10 +574,11 @@ export function recordStoredColumnTypeMismatch(
 }
 
 /**
- * Record a `storage=` serve-routing decision: `storage` = the query was served
- * from the materialized table via the virtual-source transform; `live_fallback`
- * = the transform was ineligible for this query (a refinement it can't
- * reproduce, an unbound source, mode not `on`) so it was served live;
+ * Record a `storage=` serve-routing decision, once per query, from the router's
+ * decision: `storage` = the query was served from the materialized table via
+ * the virtual-source transform; `live_fallback` = the transform was ineligible
+ * for this query (a refinement it can't reproduce, a stale or unbound source),
+ * so the next candidate (a colocated rollup) or the live warehouse answered;
  * `runtime_live_fallback` = the query DID route to storage and the store then
  * failed underneath it, and every binding's `freshnessFallback=live` allowed it
  * to degrade. That last one is the operationally interesting label: it means the

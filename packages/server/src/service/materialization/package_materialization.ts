@@ -42,6 +42,11 @@ import type {
 } from "./plan/preaggregation_validation";
 import { CronEvaluator } from "./run/cron_evaluator";
 import { filterFreshManifest } from "./run/freshness";
+import type {
+   BoundTable,
+   MaterializedTableCatalog,
+   PlannedTable,
+} from "./serve/query_path";
 import {
    deriveServeBindings,
    groupAliasesByName,
@@ -140,6 +145,14 @@ export class PackageMaterialization {
    // Keyed on the plan it came from, so a reload recomputes it.
    private preaggregateEntityIdCache:
       | { plan: BuildPlan | null; ids: ReadonlySet<string> }
+      | undefined;
+   // Keyed on the plan and the bound entries it came from.
+   private tableCatalogCache:
+      | {
+           plan: BuildPlan | null;
+           bound: FreshnessManifest | undefined;
+           catalog: MaterializedTableCatalog;
+        }
       | undefined;
    // `#@ persist` sources Malloy's build walk did not plan, which
    // would silently serve live. Warned, and refused at build.
@@ -346,7 +359,53 @@ export class PackageMaterialization {
       this.owner.modelPolicy().setFreshnessResolvers({
          manifest: () => this.getFreshBuildManifest(),
          preaggregateEntityIds: () => this.getPreaggregateEntityIds(),
+         materializedTables: () => this.materializedTableCatalog(),
       });
+   }
+
+   /**
+    * The package's materialized tables as the path report reads them: every
+    * planned source by `sourceID`, and the colocated tables bound now.
+    * Memoized on the plan and the bound entries, both replaced wholesale.
+    */
+   materializedTableCatalog(): MaterializedTableCatalog {
+      const cached = this.tableCatalogCache;
+      if (
+         cached &&
+         cached.plan === this.buildPlan &&
+         cached.bound === this.freshnessEntries
+      ) {
+         return cached.catalog;
+      }
+      const planned = new Map<string, PlannedTable>();
+      for (const [sourceID, source] of Object.entries(
+         this.buildPlan?.sources ?? {},
+      )) {
+         if (!source.sourceEntityId) continue;
+         planned.set(sourceID, {
+            sourceID,
+            name: source.name,
+            sourceEntityId: source.sourceEntityId,
+            origin:
+               source.origin === "preaggregate" ? "preaggregate" : "persist",
+         });
+      }
+      const bound: Record<string, BoundTable> = {};
+      for (const [sourceEntityId, entry] of Object.entries(
+         this.freshnessEntries ?? {},
+      )) {
+         bound[sourceEntityId] = {
+            tableName: entry.tableName,
+            ...(entry.dataAsOf ? { dataAsOf: entry.dataAsOf } : {}),
+         };
+      }
+      const catalog = { planned, bound };
+      this.tableCatalogCache = {
+         plan: this.buildPlan,
+         bound: this.freshnessEntries,
+         catalog,
+      };
+      return catalog;
    }
 
    /**

@@ -103,7 +103,11 @@ export interface R4Fixture {
     */
    setBindings(bindings: ServeBinding[]): void;
    /** One query under the bindings already set, with nothing around it. */
-   runAsIs(malloy: string): Promise<{ rows: Row[]; servedFrom: string | null }>;
+   runAsIs(malloy: string): Promise<{
+      rows: Row[];
+      servedFrom: string | null;
+      path: Awaited<ReturnType<Model["runQuery"]>>["path"];
+   }>;
    /** The bound columns the serve side leaves off for their stored type. */
    typeMismatches(): ReturnType<Model["storedColumnTypeMismatches"]>;
 }
@@ -249,6 +253,7 @@ export async function buildScenario(scenario: R4Scenario): Promise<R4Fixture> {
       return {
          rows: result.compactResult as unknown as Row[],
          servedFrom: result.servedFrom,
+         path: result.path,
       };
    };
 
