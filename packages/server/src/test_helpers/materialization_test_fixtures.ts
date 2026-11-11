@@ -222,6 +222,8 @@ export function fakeSource(opts: {
          return opts.sql ?? "SELECT 1";
       },
       annotations: {
+         // No notes, so `parseRouteTag` drops nothing and calls `parseAsTag`.
+         forRoute: () => [],
          parseAsTag: () => ({
             tag: fakeTagFromTree(
                tagTree({
@@ -233,6 +235,7 @@ export function fakeSource(opts: {
          }),
       },
       modelAnnotations: {
+         forRoute: () => [],
          parseAsTag: () => ({
             tag: fakeTagFromTree(
                tagTree({

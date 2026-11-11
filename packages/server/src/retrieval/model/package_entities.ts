@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 import { isUnconditionalDenyAuthorize } from "../../service/entities/access_gates";
+import { hasEnvReference, warnEnvReferenceDropped } from "../../service/motly";
 import path from "path";
 import { fileURLToPath } from "url";
 import { parseAnnotation } from "@malloydata/malloy-tag";
@@ -75,6 +76,12 @@ function authoredDoc(lines: string[]): string {
 function dbmetaDescription(lines: string[]): string {
    for (const line of lines) {
       if (!/^#\(dbmeta\)\s/.test(line)) continue;
+      // The tag parser hydrates `@env.` from the server's environment, and this
+      // description is served to clients as the entity's doc.
+      if (hasEnvReference(line)) {
+         warnEnvReferenceDropped(line.slice(0, 80), "dbmeta");
+         continue;
+      }
       const { tag, log } = parseAnnotation(line);
       if (log.length > 0) continue;
       const description = tag.text("description")?.trim();

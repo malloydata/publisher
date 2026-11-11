@@ -49,6 +49,7 @@
  */
 
 import { Annotations } from "@malloydata/malloy";
+import { parseRouteTag } from "../../motly";
 import { createHash } from "node:crypto";
 import {
    readPreaggregateAnnotation,
@@ -233,8 +234,9 @@ export function compareRollupBreadth(a: RollupPlan, b: RollupPlan): number {
 function basePersistNamespace(source: ValidatableSource): string | undefined {
    if (!source.annotations) return undefined;
    try {
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      const tag = new Annotations(source.annotations as any).parseAsTag(
+      const tag = parseRouteTag(
+         // eslint-disable-next-line @typescript-eslint/no-explicit-any
+         new Annotations(source.annotations as any),
          "@",
       ).tag;
       if (!tag.has("persist")) return undefined;
