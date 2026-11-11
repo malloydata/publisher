@@ -21,6 +21,12 @@ Give the heading a title — `## [Unreleased] — what changed`, with an em dash
 
 Two consequences worth knowing. A section merged to `main` ships in the **next** release, whenever that is, so do not write one for work that has not landed. And a heading already stamped with a version is history: a follow-up that changes that behaviour opens a **new** `[Unreleased]` section referencing the shipped version by number, rather than editing the old one.
 
+## [Unreleased] — Package entities list a record column's members, and every join says how many rows it meets
+
+The package entities (`ModelEntities.fields`) walked a record or repeated-record column (a BigQuery RECORD, a DuckDB STRUCT or STRUCT[]) as if it were a join to a source of the same name. When the model also had a top-level source with that name, the column's members (`lines.sku`, `lines.qty`) were never listed, and the column's `join` named that unrelated source. A record column is now always `nested`, with no `sourceName`, and its members are always listed under dotted names.
+
+`EntityJoin` gains an optional `relationship`: `one`, `many` or `cross`, from Malloy's compiled join. A record column is `one` and a repeated record or array column is `many`, the same as `join_one:` and `join_many:`, so a reader can tell that a field reached through it fans out.
+
 ## [Unreleased] — a materialization refusal names the annotation it is about
 
 **[fix] Three refusal messages name the annotation the author wrote.** Codes and reasons are unchanged; only the wording moved. A `#@ persist` on a source Malloy cannot materialize (`persist-not-materializable`) now suggests marking a table-shaped source `#(materialize)` instead, which stores a table-shaped source as well as a query-shaped one, when materialization v2 is on. A build instructed with no storage destination for a source that declares `storage=` named every source as declaring `#@ persist storage=…`; it now names `#(materialize)` and the author's source for a `#(materialize)` source, `#(rollup)` (or v1's `#@ preaggregate`) with the base and grain for a rollup, and the view or named query for a persisted one.
