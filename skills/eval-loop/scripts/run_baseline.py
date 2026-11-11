@@ -195,7 +195,8 @@ from mcp_payload import (doc_tokens, entity_hits,  # noqa: E402
                          entity_ids, search_targets, search_terms,
                          target_shapes)
 from publisher_rest import (package_identity, package_skill_names,  # noqa: E402
-                            served_model_path, served_package_dir, try_query)
+                            package_version, served_model_path,
+                            served_package_dir, try_query)
 from score_retrieval import (  # noqa: E402
     cascade, coverage_report_summary, load_coverage_report, score_case,
     summarise)
@@ -2820,6 +2821,73 @@ def prior_judge_cost(out: pathlib.Path) -> float | None:
     return prior_run_json(out).get("judgeCostUsd")
 
 
+def base_version(package_dir: pathlib.Path | None) -> str | None:
+    """`version` from the served package's publisher.json, or None."""
+    try:
+        v = json.loads((package_dir / "publisher.json").read_text()).get("version")
+    except (TypeError, OSError, ValueError, AttributeError):
+        return None
+    return v if isinstance(v, str) and v else None
+
+
+def version_pin(a: argparse.Namespace) -> dict[str, Any] | None:
+    """The `packageVersion` block for run.json: which package version answered.
+
+    The same shape for both targets, so runs on a laptop and runs on a host
+    line up by version. On a local Publisher it is read from the server
+    (`publisher_rest.package_version`), and `--target-version` must name the
+    version serving `latest`, because the local MCP tools cannot pin one: the
+    answerer gets `latest` whatever the run asks for. An unversioned package
+    records `id: null` and the `baseVersion` its publisher.json names, which is
+    a working copy, not a published version.
+    """
+    if a.target == "platform":
+        return ({"id": a.target_version, "served": "platform"}
+                if a.target_version else None)
+    pv = package_version(a.publisher, a.environment, a.package)
+    if not pv:
+        if a.target_version:
+            raise SystemExit(
+                f"--target-version {a.target_version}: could not read the package's "
+                f"versions from {a.publisher}. Fix: check the server is up, or "
+                f"drop --target-version to score the working copy.")
+        return None
+    if a.target_version and pv.get("id") is None:
+        raise SystemExit(
+            f"Invalid --target-version on '{a.package}': expected a published "
+            f"version, got a package with none. Fix: start the server with "
+            f"PUBLISHER_PACKAGE_VERSIONING=on and publish the package "
+            f"(POST /api/v0/environments/{a.environment}/packages with its "
+            f"location), or drop --target-version to score the working copy.")
+    if a.target_version and pv["id"] != a.target_version:
+        raise SystemExit(
+            f"Invalid --target-version on '{a.package}': expected the version "
+            f"serving latest, got {a.target_version} while latest is {pv['id']}. "
+            f"The local MCP tools cannot pin a version, so this run would score "
+            f"{pv['id']}. Fix: PUT /api/v0/environments/{a.environment}/packages/"
+            f"{a.package}/latest {{\"version\": \"{a.target_version}\"}}, or pass "
+            f"--target-version {pv['id']}.")
+    block = {"id": pv.get("id"), "contentHash": pv.get("contentHash"),
+             "latest": pv.get("latest"), "served": "publisher"}
+    base = base_version(served_package_dir(a.publisher, a.environment, a.package))
+    if base:
+        block["baseVersion"] = base
+    return block
+
+
+def version_moved(a: argparse.Namespace, pin: dict[str, Any] | None) -> str | None:
+    """The version now serving `latest`, when it is not the one the run started on.
+
+    Checked after the answers, because the answerer reaches whatever is
+    `latest` at each call: a publish or a promotion mid-run splits one arm
+    across two versions, and nothing in the attempts would show it.
+    """
+    if a.target == "platform" or not pin or not pin.get("id"):
+        return None
+    now = package_version(a.publisher, a.environment, a.package).get("id")
+    return now if now and now != pin["id"] else None
+
+
 def prior_run_json(out: pathlib.Path) -> dict[str, Any]:
     """The run.json already in this directory, or {} when absent or unreadable."""
     try:
@@ -3535,9 +3603,10 @@ def main(argv: list[str] | None = None) -> int:
                          "hosted server exposes; the server prefix is added. "
                          f"Default: {','.join(HOSTED_TOOLS_DEFAULT)}")
     ap.add_argument("--target-version", default=None,
-                    help="platform only: the published package version the "
-                         "workspace serves. Required, because a platform run "
-                         "pins the version it queried, not a local snapshot")
+                    help="the published package version under test. Required "
+                         "on a platform target. On a local Publisher it must be "
+                         "the version serving latest (the local MCP cannot pin "
+                         "one), and the run is refused if latest moves")
     ap.add_argument("--scope", default=None, metavar="ENV/PACKAGE[@VERSION]",
                     help="platform only: the one package the answerer is told "
                          "to scope every call to, as environment/package, and "
@@ -3939,6 +4008,10 @@ def main(argv: list[str] | None = None) -> int:
               "stand")
 
     served_identity = package_identity(a.publisher, a.environment, a.package)
+    if a.target != "platform" and a.target_version:
+        a.target_version, notes = _strip_v(a.target_version, "--target-version")
+        for n in notes:
+            print(f"  ! {n}")
     resolve_package_skills(
         a, prior_run_json(a.from_run or a.out) if answers_exist else None)
     set_meta = {}
@@ -4105,11 +4178,17 @@ def main(argv: list[str] | None = None) -> int:
     # and spends nothing on judging, and `run_config` does not carry the
     # previous judging spend forward. Read at the end, this is already gone.
     prior_judge = prior_judge_cost(a.out)
+    # Which version answered. A re-score did not answer anything now, so it
+    # keeps the version its answers came from rather than reading today's.
+    version_block = ((prior_run_json(a.from_run or a.out).get("packageVersion")
+                      if answers_exist else None)
+                     or (None if answers_exist else version_pin(a)))
     (a.out / "run.json").write_text(json.dumps(ledger.run_config(
         retrievalGate=retrieval_gate,
         coverageReport=coverage_report,
         runId=a.out.name, label=label, target=a.target,
         targetVersion=a.target_version,
+        packageVersion=version_block,
         scope=a.scope if a.target == "platform" else None,
         answererModel=a.model, judgeModel=a.judge_model,
         effort=a.effort, phase=a.phase, slice=a.slice_used,
@@ -4486,8 +4565,14 @@ def main(argv: list[str] | None = None) -> int:
     # the pin would claim one model version answered sessions that, measured,
     # ran on three different packages; the attempts carry what each one used.
     if source == "logs":
-        ledger.update_run(a.out, targetVersion=None,
+        ledger.update_run(a.out, targetVersion=None, packageVersion=None,
                           queriedPackages=sorted(queried))
+    moved = None if answers_exist else version_moved(a, version_block)
+    if moved:
+        print(f"\n! latest moved from {version_block['id']} to {moved} during "
+              f"this run. Its answers came from two package versions, so its "
+              f"scores belong to neither. Re-run with nothing publishing.")
+        ledger.update_run(a.out, packageVersionMovedTo=moved)
     ledger.update_run(a.out, source=source, sourceTier=tier,
                       answererCostUsd=round(cost, 4),
                       answererCostCopiedFrom=copied_from,
@@ -4509,11 +4594,13 @@ def main(argv: list[str] | None = None) -> int:
                       # `contaminated` off this file to name which cases one
                       # arm left unscored that the other scored.
                       status=("aborted" if aborted
-                              else "incomplete" if (truncated or contaminated)
+                              else "incomplete" if (truncated or contaminated
+                                                    or moved)
                               else "complete"))
     # An aborted arm wrote a partial ledger and said so in run.json; it did not
-    # do what was asked, and a caller reading 0 would treat it as an arm.
-    return 1 if aborted else 0
+    # do what was asked, and a caller reading 0 would treat it as an arm. A run
+    # split across two package versions is refused the same way.
+    return 1 if (aborted or moved) else 0
 
 
 if __name__ == "__main__":

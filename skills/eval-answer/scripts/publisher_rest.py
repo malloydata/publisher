@@ -204,6 +204,50 @@ def served_model_path(base: str, environment: str, package: str,
     return None
 
 
+def package_version(base: str, environment: str, package: str) -> dict[str, Any]:
+    """The published version answering a request that names none, i.e. `latest`.
+
+    `{"id", "latest", "contentHash", "archived"}`, read from `GET …/packages/{pkg}`
+    (`versionId`, `latestVersion`) and `GET …/versions/{id}` (`contentHash`).
+    `{"id": None}` for a package with no published versions, which is every
+    package unless the server runs with `PUBLISHER_PACKAGE_VERSIONING=on` and
+    the package was published. `{}` when the server cannot be read.
+
+    `contentHash` covers every file in the version except `.git`, so it is the
+    version's identity; `id` is the name a person uses for it.
+    """
+    pkg_path = (f"api/v0/environments/{urllib.parse.quote(environment)}"
+                f"/packages/{urllib.parse.quote(package)}")
+    try:
+        d = get_json(base, pkg_path)
+    except Exception:                                   # noqa: BLE001
+        return {}
+    vid = d.get("versionId") if isinstance(d, dict) else None
+    if not isinstance(vid, str) or not vid:
+        return {"id": None}
+    out: dict[str, Any] = {"id": vid, "latest": vid == d.get("latestVersion"),
+                           "contentHash": None, "archived": None}
+    try:
+        v = get_json(base, f"{pkg_path}/versions/{urllib.parse.quote(vid)}")
+        out["contentHash"] = v.get("contentHash")
+        out["latest"] = bool(v.get("latest", out["latest"]))
+        out["archived"] = v.get("archiveStatus") == "archive"
+    except Exception:                                   # noqa: BLE001
+        pass
+    return out
+
+
+def package_versions(base: str, environment: str, package: str) -> list[dict[str, Any]]:
+    """Every version the package holds, highest first, archived ones included
+    (`GET …/packages/{pkg}/versions`). [] when unversioned or unreachable."""
+    try:
+        rows = get_json(base, f"api/v0/environments/{urllib.parse.quote(environment)}"
+                              f"/packages/{urllib.parse.quote(package)}/versions")
+    except Exception:                                   # noqa: BLE001
+        return []
+    return [r for r in rows if isinstance(r, dict)] if isinstance(rows, list) else []
+
+
 def package_identity(base: str, environment: str, package: str) -> dict[str, str]:
     """What the server says it is serving: `sourceContentSha`, `servedRevision`,
     read from the package's serving state (`GET …/packages/{pkg}/status`).
@@ -216,8 +260,9 @@ def package_identity(base: str, environment: str, package: str) -> dict[str, str
 
     Measured on a live server: bumping `version` in publisher.json does not move
     `sourceContentSha`, and neither does adding a non-model file to the package
-    directory. So `publisher.json` version pins nothing (nothing reads it) and a
-    set of goldens living inside the package needs its own hash.
+    directory. On an unversioned package `publisher.json`'s version pins
+    nothing; on a published one, `package_version` reads the version and its
+    `contentHash`, which covers every file.
     """
     keys = ("sourceContentSha", "servedRevision")
     pkg_path = (f"api/v0/environments/{urllib.parse.quote(environment)}"

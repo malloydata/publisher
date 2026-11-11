@@ -19,6 +19,38 @@ def record(*cells):
     return {"kind": "record_cell", "record_value": list(cells)}
 
 
+class PackageVersionTests(unittest.TestCase):
+    """Read off GET package (versionId, latestVersion) and GET versions/{id}."""
+
+    def read(self, responses):
+        def fake(base, path, timeout=30):
+            r = responses.get(path)
+            if isinstance(r, Exception):
+                raise r
+            return r
+        with unittest.mock.patch.object(publisher_rest, "get_json", side_effect=fake):
+            return publisher_rest.package_version("http://x", "e", "p")
+
+    def test_published_latest_with_its_hash(self):
+        got = self.read({
+            "api/v0/environments/e/packages/p": {"versionId": "1.2.0", "latestVersion": "1.2.0"},
+            "api/v0/environments/e/packages/p/versions/1.2.0":
+                {"id": "1.2.0", "latest": True, "contentHash": "h", "archiveStatus": "unarchive"}})
+        self.assertEqual(got, {"id": "1.2.0", "latest": True, "contentHash": "h", "archived": False})
+
+    def test_unversioned_package_has_no_id(self):
+        self.assertEqual(self.read({"api/v0/environments/e/packages/p": {"name": "p"}}), {"id": None})
+
+    def test_unreachable_server_is_empty(self):
+        self.assertEqual(self.read({"api/v0/environments/e/packages/p": OSError("refused")}), {})
+
+    def test_a_failed_version_read_keeps_the_id(self):
+        got = self.read({
+            "api/v0/environments/e/packages/p": {"versionId": "1.2.0", "latestVersion": "1.3.0"},
+            "api/v0/environments/e/packages/p/versions/1.2.0": OSError("404")})
+        self.assertEqual(got, {"id": "1.2.0", "latest": False, "contentHash": None, "archived": None})
+
+
 class UncellTests(unittest.TestCase):
     def test_scalars_by_value_key(self):
         self.assertEqual(uncell({"string_value": "Levi's"}), "Levi's")

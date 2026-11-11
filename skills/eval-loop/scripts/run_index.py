@@ -1,0 +1,224 @@
+#!/usr/bin/env python3
+"""The runs a set has, and how each package version scored. Stdlib only.
+
+  python3 run_index.py runs     --set <set-dir> [--json]
+  python3 run_index.py versions --set <set-dir> [--publisher URL] [--json]
+  # or: python3 eval.py runs --set <set-dir>;  python3 eval.py versions --set <set-dir>
+
+Read straight from the run directories under the set's workdir
+(`<workdir>/runs/*/run.json` and `events.jsonl`), never from a separate index:
+a second record of the same facts would drift from the runs it describes.
+
+`runs` lists one row per run: its label, kind, slice, package version, set
+version, and score. A run's KIND is:
+
+  replay   a retrieval replay (no answerer); its score is exact recall
+  slice    an answer run limited with --slice or --tag
+  run      any other answer run; `full` when it scored every case of the set
+
+`versions` lists one row per package version that has a scored answer run,
+highest version first. Per version: whether it is `latest` or archived (from
+the server's `GET …/packages/{pkg}/versions` when `--publisher` reaches it),
+its most recent full run, that run's pass count and set version, and the
+flips against the previous version's most recent full run. Flips are counted
+only over cases both runs scored with the same `question_sha` and
+`golden_revision`, the rule `flip_table.py` uses. A run with no published
+version (`packageVersion.id` null) is a working copy and appears as one row,
+`working copy`.
+"""
+from __future__ import annotations
+
+import argparse
+import json
+import pathlib
+import sys
+from typing import Any
+
+HERE = pathlib.Path(__file__).resolve().parent
+sys.path.insert(0, str(HERE.parent.parent / "eval-answer" / "scripts"))
+sys.path.insert(0, str(HERE))
+
+import config  # noqa: E402
+from flip_table import incomparable, verdicts  # noqa: E402
+from ledger import read_jsonl  # noqa: E402
+from publisher_rest import package_versions  # noqa: E402
+
+WORKING_COPY = "working copy"
+
+
+def version_key(v: str) -> tuple:
+    """Semver order for display, highest first after reverse. A pre-release
+    sorts below its release; anything unparseable sorts last."""
+    core, _, pre = v.partition("-")
+    try:
+        nums = tuple(int(x) for x in core.split("+")[0].split("."))
+    except ValueError:
+        return ((-1,), 0, v)
+    return (nums, 0 if pre else 1, pre)
+
+
+def score_of(run: pathlib.Path) -> tuple[int, int]:
+    """(passed, decided) over the run's verdicts, as `flip_table` reads them."""
+    v = verdicts(run) if (run / "events.jsonl").is_file() else {}
+    decided = [r for r in v.values() if r["passed"] is not None]
+    return sum(1 for r in decided if r["passed"]), len(decided)
+
+
+def runs(workdir: pathlib.Path, n_cases: int | None = None) -> list[dict[str, Any]]:
+    """One row per run directory that holds a run.json, oldest first."""
+    out = []
+    for rj in sorted((workdir / "runs").glob("*/run.json")):
+        try:
+            meta = json.loads(rj.read_text())
+        except (OSError, ValueError):
+            continue
+        run = rj.parent
+        pv = meta.get("packageVersion") or {}
+        row: dict[str, Any] = {
+            "run": run.name, "path": str(run), "started": meta.get("started"),
+            "status": meta.get("status"), "phase": meta.get("phase"),
+            "slice": (meta.get("slice") or {}).get("name")
+            or ("tags " + ",".join((meta.get("slice") or {}).get("tags") or [])
+                if meta.get("slice") else None),
+            "version": pv.get("id") if pv else meta.get("targetVersion"),
+            "contentHash": pv.get("contentHash"),
+            "baseVersion": pv.get("baseVersion"),
+            "datasetVersion": meta.get("datasetVersion"),
+            "datasetSha": meta.get("datasetSha"),
+            "answererModel": meta.get("answererModel"),
+            "judgeModel": meta.get("judgeModel"),
+        }
+        if meta.get("phase") == "replay" or meta.get("mode") == "retrieval":
+            row["kind"] = "replay"
+            summary = {}
+            try:
+                summary = json.loads((run / "summary.json").read_text())
+            except (OSError, ValueError):
+                pass
+            row["recall_exact"] = summary.get("recall_exact")
+            row["cases"] = summary.get("cases")
+        else:
+            row["kind"] = "slice" if meta.get("slice") else "run"
+            row["passed"], row["decided"] = score_of(run)
+            attempted = {e["qid"] for e in read_jsonl(run / "events.jsonl")
+                         if e.get("kind") == "attempt"} if (run / "events.jsonl").is_file() else set()
+            row["cases"] = len(attempted)
+            row["full"] = bool(n_cases) and row["kind"] == "run" and len(attempted) == n_cases
+        out.append(row)
+    out.sort(key=lambda r: (r.get("started") or "", r["run"]))
+    return out
+
+
+def flips(a: pathlib.Path, b: pathlib.Path) -> dict[str, int]:
+    """Pass/fail flips from run `a` to run `b` over the cases both can be compared on."""
+    A, B = verdicts(a), verdicts(b)
+    moved = incomparable(A, B)
+    shared = [q for q in A if q in B and q not in moved]
+    fixed = sum(1 for q in shared if A[q]["passed"] is False and B[q]["passed"])
+    broke = sum(1 for q in shared if A[q]["passed"] and B[q]["passed"] is False)
+    return {"compared": len(shared), "fixed": fixed, "broke": broke, "set_aside": len(moved)}
+
+
+def versions(rows: list[dict[str, Any]],
+             served: list[dict[str, Any]] | None = None) -> list[dict[str, Any]]:
+    """One row per package version with an answer run, highest first."""
+    state = {v.get("id"): v for v in served or [] if isinstance(v, dict)}
+    answer_runs = [r for r in rows if r["kind"] == "run" and r.get("status") == "complete"]
+    by_version: dict[str, list[dict[str, Any]]] = {}
+    for r in answer_runs:
+        by_version.setdefault(r["version"] or WORKING_COPY, []).append(r)
+    names = sorted((v for v in by_version if v != WORKING_COPY), key=version_key, reverse=True)
+    names += [v for v in state if v not in by_version and v]
+    names = sorted(set(names), key=version_key, reverse=True)
+    if WORKING_COPY in by_version:
+        names.append(WORKING_COPY)
+    out = []
+    for v in names:
+        rs = by_version.get(v, [])
+        # Prefer a full run; else the largest. Newest wins a tie.
+        best = max(rs, key=lambda r: (r.get("full", False), r.get("cases") or 0,
+                                      r.get("started") or ""), default=None)
+        s = state.get(v, {})
+        out.append({
+            "version": v,
+            "latest": s.get("latest"),
+            "archived": s.get("archiveStatus") == "archive" if s else None,
+            "run": best["run"] if best else None,
+            "path": best["path"] if best else None,
+            "full": best.get("full") if best else None,
+            "passed": best.get("passed") if best else None,
+            "decided": best.get("decided") if best else None,
+            "datasetVersion": best.get("datasetVersion") if best else None,
+            "runs": len(rs),
+        })
+    published = [r for r in out if r["version"] != WORKING_COPY and r["path"]]
+    for newer, older in zip(published, published[1:]):
+        newer["vs"] = older["version"]
+        newer["flips"] = flips(pathlib.Path(older["path"]), pathlib.Path(newer["path"]))
+    return out
+
+
+def fmt_runs(rows: list[dict[str, Any]]) -> list[str]:
+    lines = [f"{'run':<34} {'kind':<7} {'version':<14} {'set':>4}  score"]
+    for r in rows:
+        kind = "full" if r.get("full") else r["kind"]
+        if r["kind"] == "replay":
+            rec = r.get("recall_exact")
+            score = f"recall {rec:.2f}" if isinstance(rec, (int, float)) else "recall -"
+        else:
+            score = f"{r.get('passed')}/{r.get('decided')} passed"
+        if r.get("status") not in (None, "complete"):
+            score += f" ({r['status']})"
+        if r.get("slice"):
+            score += f"  slice {r['slice']}"
+        lines.append(f"{r['run'][:34]:<34} {kind:<7} {str(r['version'] or WORKING_COPY)[:14]:<14} "
+                     f"{str(r.get('datasetVersion') or '-'):>4}  {score}")
+    return lines
+
+
+def fmt_versions(rows: list[dict[str, Any]]) -> list[str]:
+    lines = [f"{'version':<14} {'state':<9} {'run':<30} {'set':>4}  score / flips"]
+    for r in rows:
+        state = ("latest" if r["latest"] else "archived" if r["archived"]
+                 else "" if r["latest"] is None else "-")
+        if not r["run"]:
+            lines.append(f"{r['version'][:14]:<14} {state:<9} {'(no answer run)':<30}")
+            continue
+        score = f"{r['passed']}/{r['decided']} passed" + ("" if r["full"] else " (not full)")
+        if r.get("flips"):
+            f = r["flips"]
+            score += (f"; vs {r['vs']}: {f['fixed']} fixed, {f['broke']} broke"
+                      f" over {f['compared']}"
+                      + (f", {f['set_aside']} set aside" if f["set_aside"] else ""))
+        lines.append(f"{r['version'][:14]:<14} {state:<9} {r['run'][:30]:<30} "
+                     f"{str(r.get('datasetVersion') or '-'):>4}  {score}")
+    return lines
+
+
+def main(argv: list[str] | None = None) -> int:
+    ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
+    ap.add_argument("view", choices=("runs", "versions"))
+    ap.add_argument("--set", dest="set_dir", type=pathlib.Path, required=True)
+    ap.add_argument("--publisher", default=None,
+                    help="REST URL to read each version's latest/archived state from; "
+                         "default: [model] in eval.toml")
+    ap.add_argument("--json", action="store_true")
+    a = ap.parse_args(argv)
+    cfg = config.load(a.set_dir)
+    cases = a.set_dir / "cases.jsonl"
+    n_cases = len(read_jsonl(cases)) if cases.is_file() else None
+    rows = runs(cfg.workdir(), n_cases)
+    if a.view == "runs":
+        print(json.dumps(rows, indent=1) if a.json else "\n".join(fmt_runs(rows)))
+        return 0
+    served = []
+    env, pkg = cfg.get("model", "environment"), cfg.get("model", "package")
+    if env and pkg:
+        served = package_versions(a.publisher or cfg.model_publisher(), env, pkg)
+    vrows = versions(rows, served)
+    print(json.dumps(vrows, indent=1) if a.json else "\n".join(fmt_versions(vrows)))
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

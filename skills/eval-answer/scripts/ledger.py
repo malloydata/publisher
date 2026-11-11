@@ -234,6 +234,12 @@ RUN_OPTIONAL = {"label", "effort", "environment", "package", "modelPath",
                 # name, its tags, and the qids it resolved to on the day, so a
                 # later edit to slices.json cannot change what this run meant.
                 "slice",
+                # Which package version answered, the same shape for a local
+                # Publisher and a host: {id, contentHash, latest, served,
+                # baseVersion}. `id` null is an unpublished working copy.
+                # `packageVersionMovedTo` names the version that took over as
+                # latest mid-run, which leaves the run `incomplete`.
+                "packageVersion", "packageVersionMovedTo",
                 "callBudget", "status", "answererSkills",
                 "answererCostUsd", "judgeCostUsd", "goldenCheck",
                 # The run whose attempts this run's answerer cost was COPIED

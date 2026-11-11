@@ -304,6 +304,7 @@ def resolve(a: argparse.Namespace) -> config.Config:
         a.environment = cfg.need(a.environment, "model", "environment", "--environment")
         a.package = cfg.need(a.package, "model", "package", "--package")
         a.mcp_url = a.mcp_url or cfg.model_mcp_url()
+        a.publisher = a.publisher or cfg.model_publisher()
     a.set_meta = cfg.set_meta
     a.model_path = a.model_path or a.set_meta.get("targetModelPath")
     if a.out is None:
@@ -329,6 +330,9 @@ def replay(a: argparse.Namespace, cfg: config.Config) -> int:
     if held:
         raise SystemExit(f"{a.out} already holds a run ({', '.join(held)}). "
                          "Fix: pass a new --label or --out.")
+    # Which package version answers, read before anything is written so a
+    # wrong --target-version is refused with nothing spent.
+    version = rb.version_pin(a)
     a.out.mkdir(parents=True, exist_ok=True)
     scope = {"environment": a.environment, "package": a.package}
     if a.model_path:
@@ -366,11 +370,14 @@ def replay(a: argparse.Namespace, cfg: config.Config) -> int:
         if i % 10 == 0 or i == len(cases):
             print(f"[{a.label}] {i}/{len(cases)}", flush=True)
 
+    moved = rb.version_moved(a, version)
     mode, calls = rb.retrieval_summary([{"calls": events}])
     summary = summarize(rows, skipped)
     pins: dict[str, Any] = {
         "runId": a.out.name, "label": a.label, "target": a.target, "answererModel": None,
-        "phase": PHASE, "mode": "retrieval", "started": started, "status": "complete",
+        "phase": PHASE, "mode": "retrieval", "started": started,
+        "status": "incomplete" if moved else "complete",
+        "packageVersion": version, "targetVersion": a.target_version,
         "setName": a.set_meta.get("name") or cfg.set_name,
         "datasetVersion": a.set_meta.get("datasetVersion"),
         "datasetSha": ledger.dataset_sha(a.set_dir),
@@ -381,6 +388,8 @@ def replay(a: argparse.Namespace, cfg: config.Config) -> int:
     }
     if picked:
         pins["slice"] = picked
+    if moved:
+        pins["packageVersionMovedTo"] = moved
     if a.set_version:
         pins["setVersion"] = a.set_version
     if a.set_manifest:
@@ -389,10 +398,15 @@ def replay(a: argparse.Namespace, cfg: config.Config) -> int:
     ledger.write_events(a.out / "events.jsonl", events)
     ledger.write_events(a.out / "results.jsonl", rows)
     summary["run"] = {k: pins.get(k) for k in ("label", "setName", "datasetVersion", "datasetSha",
-                                               "setVersion", "setManifestSha256", "retrievalMode")}
+                                               "setVersion", "setManifestSha256", "retrievalMode",
+                                               "packageVersion", "slice")}
     (a.out / "summary.json").write_text(json.dumps(summary, indent=1) + "\n")
     print_report(rows, summary, mode)
     print(f"\nrun directory: {a.out}")
+    if moved:
+        print(f"\n! latest moved from {version['id']} to {moved} during this replay, so its "
+              "results mix two package versions. Re-run with nothing publishing.")
+        return 1
     if mode in ("mixed", "unavailable"):
         print(f"WARNING: retrieval was {mode} during this run ({calls}); its means mix "
               "results from different retrievers and should not be compared.")
@@ -411,6 +425,11 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--mcp-url", default=None, help="default: the [model] server in eval.toml")
     ap.add_argument("--environment", default=None)
     ap.add_argument("--package", default=None)
+    ap.add_argument("--publisher", default=None,
+                    help="the REST URL the package version is read from; default: [model] in eval.toml")
+    ap.add_argument("--target-version", default=None,
+                    help="the published version under test. Locally it must be the one serving "
+                         "latest; the replay is refused if latest moves")
     ap.add_argument("--model-path", default=None, help="default: set.json targetModelPath; omit for the whole package")
     ap.add_argument("--mcp-header", action="append", default=[], metavar="'NAME: VALUE'",
                     help="an extra header on every MCP request, such as auth. Repeatable. "

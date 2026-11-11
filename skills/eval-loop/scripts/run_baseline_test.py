@@ -2684,5 +2684,64 @@ class RowsGoldenInAFile(unittest.TestCase):
         self.assertTrue(rb.renders_goldens(ns(rebuild=True, rejudge=True)))
 
 
+
+class VersionPin(unittest.TestCase):
+    """Which package version answered, and the refusals that keep that true."""
+
+    def ns(self, **kw):
+        base = dict(target="publisher", target_version=None, publisher="http://x",
+                    environment="e", package="p")
+        base.update(kw)
+        return argparse.Namespace(**base)
+
+    def pin(self, pv, base=None, **kw):
+        tmp = pathlib.Path(tempfile.mkdtemp())
+        if base:
+            (tmp / "publisher.json").write_text(json.dumps({"version": base}))
+        with mock.patch.object(rb, "package_version", return_value=pv), \
+                mock.patch.object(rb, "served_package_dir", return_value=tmp):
+            return rb.version_pin(self.ns(**kw))
+
+    def test_a_working_copy_records_no_id_and_its_base_version(self):
+        self.assertEqual(self.pin({"id": None}, base="1.4.0"),
+                         {"id": None, "contentHash": None, "latest": None,
+                          "served": "publisher", "baseVersion": "1.4.0"})
+
+    def test_a_published_latest_is_recorded_with_its_hash(self):
+        got = self.pin({"id": "1.4.0", "latest": True, "contentHash": "abc"},
+                       target_version="1.4.0")
+        self.assertEqual((got["id"], got["contentHash"], got["latest"]), ("1.4.0", "abc", True))
+
+    def test_a_version_that_is_not_latest_is_refused_with_the_fix(self):
+        with self.assertRaises(SystemExit) as e:
+            self.pin({"id": "1.4.0", "latest": True}, target_version="1.3.0")
+        msg = str(e.exception)
+        self.assertIn("got 1.3.0 while latest is 1.4.0", msg)
+        self.assertIn('packages/p/latest {"version": "1.3.0"}', msg)
+
+    def test_a_version_on_an_unversioned_package_is_refused(self):
+        with self.assertRaises(SystemExit) as e:
+            self.pin({"id": None}, target_version="1.0.0")
+        self.assertIn("PUBLISHER_PACKAGE_VERSIONING=on", str(e.exception))
+
+    def test_an_unreadable_server_records_nothing_unless_a_version_was_asked_for(self):
+        self.assertIsNone(self.pin({}))
+        with self.assertRaises(SystemExit):
+            self.pin({}, target_version="1.0.0")
+
+    def test_a_platform_run_records_its_target_version(self):
+        self.assertEqual(rb.version_pin(self.ns(target="platform", target_version="0.0.58")),
+                         {"id": "0.0.58", "served": "platform"})
+
+    def test_latest_moving_mid_run_is_named(self):
+        a = self.ns()
+        with mock.patch.object(rb, "package_version", return_value={"id": "1.5.0"}):
+            self.assertEqual(rb.version_moved(a, {"id": "1.4.0"}), "1.5.0")
+        with mock.patch.object(rb, "package_version", return_value={"id": "1.4.0"}):
+            self.assertIsNone(rb.version_moved(a, {"id": "1.4.0"}))
+        # A working copy has no published version to move away from.
+        self.assertIsNone(rb.version_moved(a, {"id": None}))
+
+
 if __name__ == "__main__":
     unittest.main()

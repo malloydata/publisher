@@ -220,6 +220,17 @@ nonsense rather than an error:
   A local target pins a commit; a platform target pins the published version.
   Recording a local commit for a run that queried a published model is a pin
   that means nothing.
+- **Every run records which package version answered**, as `packageVersion` in
+  `run.json`, the same shape on a laptop and on a host, so scores line up by
+  version (`eval.py versions`). A local package is a working copy unless the
+  server runs with `PUBLISHER_PACKAGE_VERSIONING=on` and the package was
+  published. A working copy records `id: null` and its publisher.json
+  `baseVersion`: that is the normal case for a replay or a targeted run while
+  you edit. To score a published version locally, publish it, then pass
+  `--target-version <v>`. Locally that must be the version serving `latest`,
+  because the local MCP tools cannot pin one, and a run during which `latest`
+  moves is left `incomplete` and exits 1. A full run is the one to pin to a
+  version: it is the record of how that version scored.
 
 Which target for which job:
 

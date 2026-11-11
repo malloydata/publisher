@@ -38,6 +38,11 @@ python3 skills/eval-loop/scripts/flip_table.py --a <full-run> --b <targeted-run>
 
 Without `--slice`, two runs over different cases are refused.
 
+`eval.py runs --set <set>` lists every run of the set with its kind, package
+version and score. `eval.py versions --set <set>` gives one row per package
+version: whether it is `latest` or archived, its most recent full run, and what
+that run fixed and broke against the previous version's.
+
 ## Running one, concretely
 
 `scripts/run_baseline.py` does steps 3 and 7 and the whole of **Per question**:

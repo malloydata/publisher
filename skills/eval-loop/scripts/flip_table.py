@@ -196,7 +196,7 @@ def config(run: Path) -> dict[str, Any]:
 # two nulls compare equal, so an older pair is unaffected.
 COMPARABLE = ("datasetVersion", "datasetSha", "judgeVersion", "rubricSha",
               "answererModel", "judgeModel", "answererManifest",
-              "retrievalMode", "modelGitSha", "targetVersion")
+              "retrievalMode", "modelGitSha", "targetVersion", "packageVersion")
 
 
 def completeness_note(ca: dict, cb: dict, la: str, lb: str,

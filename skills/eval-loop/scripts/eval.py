@@ -9,6 +9,8 @@
   python3 eval.py replay   --set <set-dir> --label replay-01   # retrieval only, no answerer
   python3 eval.py diagnose --set <set-dir> --label baseline-01
   python3 eval.py package  --set <set-dir> --label baseline-01
+  python3 eval.py runs     --set <set-dir>         # every run of the set, by kind and version
+  python3 eval.py versions --set <set-dir>         # how each package version scored
 
 Each verb runs one script's `main` with the arguments given, after `--set`
 has picked up the set's eval.toml (skills/eval-answer/scripts/config.py). Any
@@ -32,7 +34,8 @@ for d in ("eval-answer", "eval-loop", "eval-diagnose"):
 
 import config  # noqa: E402
 
-VERBS = ("check", "serve", "verify", "run", "replay", "diagnose", "package")
+VERBS = ("check", "serve", "verify", "run", "replay", "diagnose", "package",
+         "runs", "versions")
 
 
 def flag_value(args: list[str], flag: str) -> str | None:
@@ -129,6 +132,9 @@ def dispatch(argv: list[str]) -> int:
     if verb == "replay":
         import retrieval_replay
         return retrieval_replay.main(rest)
+    if verb in ("runs", "versions"):
+        import run_index
+        return run_index.main([verb, *rest])
     if verb == "diagnose":
         import diagnose
         return diagnose.main(run_dir_from_label(rest))

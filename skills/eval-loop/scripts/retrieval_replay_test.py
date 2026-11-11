@@ -10,6 +10,7 @@ import sys
 import tempfile
 import threading
 import unittest
+import unittest.mock
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 import retrieval_replay as rr  # noqa: E402
@@ -289,6 +290,25 @@ class EndToEnd(unittest.TestCase):
         with self.assertRaises(SystemExit) as e:
             self.run_main("--slice", "one", "--only", "q1")
         self.assertIn("pass one of them", str(e.exception))
+
+    def test_the_version_that_answered_is_pinned(self):
+        pv = {"id": "1.2.0", "latest": True, "contentHash": "h", "archived": False}
+        with unittest.mock.patch.object(rr.rb, "package_version", return_value=pv), \
+                unittest.mock.patch.object(rr.rb, "served_package_dir", return_value=None):
+            self.assertEqual(self.run_main("--target-version", "1.2.0"), 0)
+        run = json.loads((self.d / "work" / "runs" / "r1" / "run.json").read_text())
+        self.assertEqual(run["packageVersion"], {"id": "1.2.0", "contentHash": "h", "latest": True,
+                                                 "served": "publisher"})
+        self.assertEqual((run["targetVersion"], run["status"]), ("1.2.0", "complete"))
+
+    def test_latest_moving_mid_replay_leaves_it_incomplete(self):
+        first = {"id": "1.2.0", "latest": True, "contentHash": "h"}
+        with unittest.mock.patch.object(rr.rb, "package_version",
+                                        side_effect=[first, {"id": "1.3.0"}]), \
+                unittest.mock.patch.object(rr.rb, "served_package_dir", return_value=None):
+            self.assertEqual(self.run_main(), 1)
+        run = json.loads((self.d / "work" / "runs" / "r1" / "run.json").read_text())
+        self.assertEqual((run["status"], run["packageVersionMovedTo"]), ("incomplete", "1.3.0"))
 
     def test_an_existing_run_is_not_overwritten(self):
         self.assertEqual(self.run_main(), 0)
