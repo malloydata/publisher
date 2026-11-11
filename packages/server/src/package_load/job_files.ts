@@ -210,12 +210,8 @@ export function modelFileTexts(
    for (const url of [modelUrl, ...importReadOrder(dependencies)]) {
       const key = urlKey(url);
       const text = files.texts.get(key);
-      if (text === undefined || !key.startsWith("file:")) continue;
-      try {
+      if (text !== undefined && key.startsWith("file:")) {
          byPath.set(fileURLToPath(key), text);
-      } catch {
-         // Not a path this platform can name; the entity plan reads the file
-         // from disk if it needs it, so a missing text never fails the model.
       }
    }
    return byPath;
