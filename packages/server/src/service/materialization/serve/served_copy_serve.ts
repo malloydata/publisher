@@ -302,6 +302,16 @@ export class ServedCopyServe {
       this.inFlight = undefined;
    }
 
+   /**
+    * The author `sourceID`s the compiled copy re-rooted on a stored table,
+    * which are the sources it answers from storage; undefined before the
+    * first compile.
+    */
+   rerootedSourceIDs(): ReadonlySet<string> | undefined {
+      if (!this.compiled) return undefined;
+      return new Set(this.compiled.rerooted.flatMap((b) => b.sourceIDs ?? []));
+   }
+
    /** Why the last compile left sources unserved; empty before the first. */
    problems(): readonly ServedCopyProblem[] {
       return this.compiled?.problems ?? [];

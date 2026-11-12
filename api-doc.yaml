@@ -5138,7 +5138,11 @@ components:
             table is bound, but every model's source of that name is another
             source), `destination_missing` (`storage=` names a destination the
             environment does not configure), `connection_cannot_hold_table`
-            (colocated, on a connection whose type creates no tables).
+            (colocated, on a connection whose type creates no tables),
+            `served_copy` (a `#(materialize)` source, which only the served copy
+            reads: the served copy is off, no model's served copy reads its
+            table, or it is colocated, which the served copy does not serve
+            yet). An open set.
         message:
           type: string
           description: What the verdict means for this source, in a sentence.
@@ -8636,8 +8640,10 @@ components:
             the server's PERSIST_STORAGE_MODE routes no query to it),
             `unreachable` (no published source reaches it), `row_level_gate`
             (every published entry point over it carries a gate it cannot keep
-            yet), `refused` (the package refuses to serve it) or `shadowed` (its
-            storage table is bound to another source of the same name). An open
+            yet), `refused` (the package refuses to serve it), `shadowed` (its
+            storage table is bound to another source of the same name) or
+            `served_copy` (only the served copy reads it, and it does not answer
+            from it). An open
             set: treat a code you do not know as a warning like any other.
         tableId:
           type: string
@@ -8734,8 +8740,8 @@ components:
           type: string
           description: >-
             For a `WARNED` skip, the serve verdict's reason the table answers no
-            query: `storage_mode`, `unreachable`, `row_level_gate`, `refused` or
-            `shadowed` (see `QueryPathWarning`); or, for a table only the served
+            query: `storage_mode`, `unreachable`, `row_level_gate`, `refused`,
+            `shadowed` or `served_copy` (see `QueryPathWarning`); or, for a table only the served
             copy reads, `served-copy-not-served` (the package warning of that
             code) or `persist-opt-out` (the queried source opts out with
             `#@ -persist`). An open set. Absent on any

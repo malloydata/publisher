@@ -1594,9 +1594,9 @@ describe("PERSIST_COLLISION_ENFORCE", () => {
    const enforce = (value?: string) =>
       readWith("PERSIST_COLLISION_ENFORCE", value, getPersistCollisionEnforce);
 
-   it("defaults to warn-only when unset or empty", () => {
-      expect(enforce()).toBe(false);
-      expect(enforce("   ")).toBe(false);
+   it("enforces by default, when unset or empty", () => {
+      expect(enforce()).toBe(true);
+      expect(enforce("   ")).toBe(true);
    });
 
    it("enforces for every spelling of true an operator might use", () => {
