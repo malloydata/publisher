@@ -237,6 +237,34 @@ export class PackageMaterialization {
    // the compiled schema, which the wire plan lacks. Empty when the plan compute
    // failed; safe, as the build only dispatches a delta it can read.
    incrementalPolicySources: IncrementalPolicySource[] = [];
+   /**
+    * Every connection a persist source builds on, from the last derived plan
+    * (including skipped and refused sources), so a connection edit that
+    * creates or fixes one re-derives the plan (see planConnectionNames).
+    */
+   private buildConnectionNames: ReadonlySet<string> = new Set();
+   /**
+    * The last good plan, kept only for binding while a failed re-derivation
+    * leaves {@link buildPlan} null (see refreshBuildPlan): a host's rebind then
+    * matches its entries as it did before the edit. Never handed out by
+    * getBuildPlan, so no route or run validates against it. Cleared when a
+    * plan is derived.
+    */
+   private servingPlanWhileUnavailable: BuildPlan | null = null;
+   /**
+    * Connections edited since the plan was last derived (see
+    * markBuildPlanStale). A failed re-derivation keeps colocated eligibility
+    * only for sources on connections outside this set: a colocated table lives
+    * in, and is read through, its connection, so one the edit changed may now
+    * be a different warehouse. Cleared when a plan is derived.
+    */
+   private connectionsChangedSinceDerived = new Set<string>();
+   /**
+    * Whether the last failed refresh failed in the load pool (a worker timeout
+    * or crash), which a retry can clear, rather than in the plan compute, which
+    * fails the same way until the model or a connection changes.
+    */
+   private lastRefreshFailedTransiently = false;
 
    constructor(private readonly owner: PackageMaterializationOwner) {}
 
@@ -325,17 +353,21 @@ export class PackageMaterialization {
             sourceEligibility,
             colocatedSourceEligibility,
             incrementalDeclarations,
+            buildConnectionNames,
          } = workerPlan
             ? workerPlan.outcome
             : await computePackageBuildPlan(this.owner.buildPlanPackage);
          this.buildPlan = plan;
          this.buildPlanFailed = false;
+         this.servingPlanWhileUnavailable = null;
          this.droppedPersistSources = droppedPersistSources;
          this.rollupsOverStoredBase = rollupsOverStoredBase ?? [];
          // `?? []`: an outcome a worker built before this field existed.
          this.annotationFindings = annotationFindings ?? [];
          this.sourceEligibility = sourceEligibility;
          this.colocatedSourceEligibility = colocatedSourceEligibility;
+         // `?? []`: an outcome a worker built before this field existed.
+         this.buildConnectionNames = new Set(buildConnectionNames ?? []);
          this.incrementalPolicySources = Object.entries(plan?.sources ?? {})
             .filter(([sourceID]) => incrementalDeclarations[sourceID])
             .map(([sourceID, source]) => ({
@@ -668,13 +700,14 @@ export class PackageMaterialization {
     * live. (The colocated tier is keyed by content address already.)
     */
    bindStorageServeBindings(entries: Record<string, ManifestEntry>): void {
+      const plan = this.buildPlan ?? this.servingPlanWhileUnavailable;
       const derived = deriveServeBindings(
          this.owner.versionId() === undefined
             ? entries
             : this.ownEntries(entries),
-         groupAliasesByName(Object.values(this.buildPlan?.sources ?? {})),
+         groupAliasesByName(Object.values(plan?.sources ?? {})),
          this.serveDestinationSchema,
-         planSourceIds(this.buildPlan?.sources ?? {}),
+         planSourceIds(plan?.sources ?? {}),
       );
       const eligibility = this.sourceEligibility;
       // Keyed by NAME: a rollup passes only because `collectSourceEligibility`
@@ -714,8 +747,9 @@ export class PackageMaterialization {
    private ownEntries(
       entries: Record<string, ManifestEntry>,
    ): Record<string, ManifestEntry> {
+      const plan = this.buildPlan ?? this.servingPlanWhileUnavailable;
       const own = new Set(
-         Object.values(this.buildPlan?.sources ?? {}).map(
+         Object.values(plan?.sources ?? {}).map(
             (source) => `${source.name}\u0000${source.sourceEntityId}`,
          ),
       );
@@ -806,13 +840,21 @@ export class PackageMaterialization {
     * own compile would refuse them as "measured under a different definition"
     * (ms2data/service#6145).
     */
-   markBuildPlanStale(): void {
+   markBuildPlanStale(changedConnections: Iterable<string> = []): void {
+      for (const name of changedConnections) {
+         this.connectionsChangedSinceDerived.add(name);
+      }
       this.buildPlanStaleSeq++;
       if (!this.buildPlanStale) {
          let resolve!: () => void;
          const promise = new Promise<void>((r) => (resolve = r));
          this.buildPlanStale = { promise, resolve };
       }
+   }
+
+   /** See {@link lastRefreshFailedTransiently}. */
+   lastBuildPlanRefreshFailedTransiently(): boolean {
+      return this.lastRefreshFailedTransiently;
    }
 
    /** Whether a connection edit has made the plan stale and it is not re-derived yet. */
@@ -832,14 +874,36 @@ export class PackageMaterialization {
     */
    refreshBuildPlan(
       derive: () => Promise<LoadPackageOutcome["buildPlan"]>,
+      { retryFailed = false }: { retryFailed?: boolean } = {},
    ): Promise<boolean> {
       const run = this.buildPlanRefreshChain.then(async () => {
-         if (!this.buildPlanStale) return !this.buildPlanFailed;
+         // A retry of a failed re-derivation runs while the plan is
+         // unavailable but not stale (readers get 409, not a wait).
+         const retrying = retryFailed && this.buildPlanFailed;
+         if (!this.buildPlanStale && !retrying) return !this.buildPlanFailed;
          const seq = this.buildPlanStaleSeq;
+         // What serving reads from the last good plan. A failed re-derivation
+         // keeps it (below): storage eligibility is keyed by name and does not
+         // move with connection config, and colocated eligibility only admits
+         // addresses the last good plan computed, which is what was serving.
+         // So bindings in force, and a host's rebind while the plan is
+         // unavailable, keep serving instead of dropping the package to live.
+         // Only run creation is refused (409) until a retry succeeds.
+         const lastGoodPlan =
+            this.buildPlan ?? this.servingPlanWhileUnavailable;
+         const lastGood = {
+            sourceEligibility: this.sourceEligibility,
+            colocatedSourceEligibility: this.colocatedSourceEligibility,
+            incrementalPolicySources: this.incrementalPolicySources,
+            rollupsOverStoredBase: this.rollupsOverStoredBase,
+            buildConnectionNames: this.buildConnectionNames,
+         };
          let workerPlan: LoadPackageOutcome["buildPlan"];
+         let poolFailed = false;
          try {
             workerPlan = await derive();
          } catch (err) {
+            poolFailed = true;
             workerPlan = {
                ok: false,
                error: errMessage(err),
@@ -850,6 +914,18 @@ export class PackageMaterialization {
          }
          const derived =
             (await this.applyLoadBuildPlan(workerPlan)) !== undefined;
+         this.lastRefreshFailedTransiently = !derived && poolFailed;
+         if (derived) {
+            this.connectionsChangedSinceDerived.clear();
+         } else if (lastGood.sourceEligibility !== undefined) {
+            Object.assign(this, lastGood);
+            this.colocatedSourceEligibility = withoutChangedConnections(
+               lastGood.colocatedSourceEligibility,
+               lastGoodPlan,
+               this.connectionsChangedSinceDerived,
+            );
+            this.servingPlanWhileUnavailable = lastGoodPlan;
+         }
          if (seq === this.buildPlanStaleSeq && this.buildPlanStale) {
             this.buildPlanStale.resolve();
             this.buildPlanStale = undefined;
@@ -899,11 +975,14 @@ export class PackageMaterialization {
     */
    planConnectionNames(): ReadonlySet<string> | null {
       if (this.buildPlanFailed) return null;
-      return new Set(
-         Object.values(this.buildPlan?.sources ?? {}).map(
+      return new Set([
+         ...Object.values(this.buildPlan?.sources ?? {}).map(
             (source) => source.connectionName,
          ),
-      );
+         // Sources the plan skipped (their connection did not resolve) or
+         // refused: creating or fixing that connection must re-derive.
+         ...this.buildConnectionNames,
+      ]);
    }
 
    /**
@@ -1672,3 +1751,36 @@ const PREVIEW_STORED_TYPES: Readonly<Record<string, string>> = {
    timestamp: "TIMESTAMP",
    timestamptz: "TIMESTAMP WITH TIME ZONE",
 };
+
+/**
+ * Colocated eligibility from the last good plan, less every address a source on
+ * a changed connection builds: those tables were built through the connection
+ * as it was, and are read through it as it is now. Refused with a reason, so
+ * the bind's log says why they serve live until the plan is re-derived.
+ */
+function withoutChangedConnections(
+   eligibility: ColocatedSourceEligibility | undefined,
+   plan: BuildPlan | null,
+   changed: ReadonlySet<string>,
+): ColocatedSourceEligibility | undefined {
+   if (!eligibility || changed.size === 0) return eligibility;
+   const dropped = new Set<string>();
+   for (const source of Object.values(plan?.sources ?? {})) {
+      if (changed.has(source.connectionName))
+         dropped.add(source.sourceEntityId);
+   }
+   if (dropped.size === 0) return eligibility;
+   const refused = { ...eligibility.refused };
+   for (const address of dropped) {
+      if (eligibility.eligibleEntityIds.has(address)) {
+         refused[address] =
+            "its connection changed and the build plan could not be re-derived yet";
+      }
+   }
+   return {
+      eligibleEntityIds: new Set(
+         [...eligibility.eligibleEntityIds].filter((a) => !dropped.has(a)),
+      ),
+      refused,
+   };
+}

@@ -1553,6 +1553,13 @@ export interface BuildPlanOutcome {
    sourceEligibility: SourceEligibility;
    colocatedSourceEligibility: ColocatedSourceEligibility;
    incrementalDeclarations: Record<string, IncrementalDeclaration>;
+   /**
+    * Every connection a persist source builds on, including sources the plan
+    * skipped (a connection that did not resolve) or refused, so a connection
+    * edit that creates or fixes one re-derives the plan. Optional: a worker
+    * that predates it sends none.
+    */
+   buildConnectionNames?: string[];
 }
 
 /**
@@ -1605,6 +1612,9 @@ export function deriveBuildPlanOutcome(
       sourceEligibility: collectSourceEligibility(compiled),
       colocatedSourceEligibility: collectColocatedSourceEligibility(compiled),
       incrementalDeclarations,
+      buildConnectionNames: [
+         ...new Set(compiled.builds.map((b) => b.connectionName)),
+      ].sort(),
    };
 }
 

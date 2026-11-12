@@ -2047,8 +2047,13 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
    }
 
    /** See {@link PackageMaterialization.markBuildPlanStale}. */
-   public markBuildPlanStale(): void {
-      this.materialization.markBuildPlanStale();
+   public markBuildPlanStale(changedConnections: Iterable<string> = []): void {
+      this.materialization.markBuildPlanStale(changedConnections);
+   }
+
+   /** See {@link PackageMaterialization.lastBuildPlanRefreshFailedTransiently}. */
+   public lastBuildPlanRefreshFailedTransiently(): boolean {
+      return this.materialization.lastBuildPlanRefreshFailedTransiently();
    }
 
    /** See {@link PackageMaterialization.isBuildPlanStale}. */
@@ -2064,9 +2069,13 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
    /**
     * Re-derive a stale build plan (see {@link PackageMaterialization.refreshBuildPlan})
     * in the load worker pool, as a load derives it, so a connection edit's
-    * recompile stays off the main thread. Resolves true when it was derived.
+    * recompile stays off the main thread, at background priority.
+    * `retryFailed` re-derives a plan a failed re-derivation left unavailable.
+    * Resolves true when it was derived.
     */
-   public refreshBuildPlan(): Promise<boolean> {
+   public refreshBuildPlan(
+      options: { retryFailed?: boolean } = {},
+   ): Promise<boolean> {
       return this.materialization.refreshBuildPlan(async () => {
          const outcome = await loadOutcomeOrThrow(
             getPackageLoadPool().loadPackage({
@@ -2076,10 +2085,14 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
                malloyConfig: this.malloyConfig,
                defaultConnectionName: "duckdb",
                computeBuildPlan: true,
+               // Behind publishes, reloads and compiles: a connection edit's
+               // re-derivations never hold a user's load up for more than
+               // the one already running.
+               background: true,
             }),
          );
          return outcome.buildPlan;
-      });
+      }, options);
    }
 
    /** See {@link PackageMaterialization.whenBuildPlanCurrent}. */
