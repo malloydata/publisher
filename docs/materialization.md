@@ -33,6 +33,8 @@ A misspelled `#@ persist` persists nothing and the source serves live: `#@persis
 
 `name=` may also name the container the table goes in — `name="analytics.order_summary"` writes `order_summary` into the `analytics` schema/dataset rather than the connection's default one. The container must already exist; Publisher does not create it. On BigQuery a dataset is required, since a table cannot live outside one.
 
+The name is a plain identifier path: dot-separated segments of letters, digits, `_` and `-`. Publisher quotes each segment for the target warehouse itself, so case is preserved (`name="OrdersDaily"` creates `OrdersDaily`) and a reserved word works (`name="order"`). Don't quote inside the value: a name holding quotes, spaces, backticks or semicolons, such as `name="\"Orders Daily\""`, is refused when the model loads, because the name is written into the build's DDL.
+
 ### Opting a reader out: `#@ -persist`
 
 A source that `extend`s a persisted source reads the persisted table too — the extension adds computed fields on top of the stored rows rather than recomputing them. Annotate the extension with `#@ -persist` when you want it recomputed live instead:
