@@ -24,13 +24,21 @@ const REPO = path.resolve(__dirname, "../../../..");
 const FIXTURES = path.join(REPO, "packages/server/tests/fixtures");
 const HAMMER = path.join(REPO, "hammer/scenarios");
 
+// Shared by every spec file that loads the corpus: one test run keeps one
+// module instance, so a spec's close must leave the helper usable by the next.
 const opened: DuckDBConnection[] = [];
-const scratch = fs.mkdtempSync(path.join(os.tmpdir(), "persist-corpus-"));
+let scratch: string | undefined;
+
+function scratchDir(): string {
+   scratch ??= fs.mkdtempSync(path.join(os.tmpdir(), "persist-corpus-"));
+   return scratch;
+}
 
 /** Close every connection the corpus opened and remove its scratch files. */
 export async function closeCorpus(): Promise<void> {
-   for (const c of opened) await c.close().catch(() => {});
-   fs.rmSync(scratch, { recursive: true, force: true });
+   for (const c of opened.splice(0)) await c.close().catch(() => {});
+   if (scratch) fs.rmSync(scratch, { recursive: true, force: true });
+   scratch = undefined;
 }
 
 /** One model to plan: its files, entry file, and connections. */
@@ -43,7 +51,7 @@ export interface CorpusModel {
 
 function connection(name: string, workingDirectory?: string): DuckDBConnection {
    const dbPath = path.join(
-      scratch,
+      scratchDir(),
       `${name}-${opened.length}-${Math.random().toString(36).slice(2)}.db`,
    );
    const c = workingDirectory

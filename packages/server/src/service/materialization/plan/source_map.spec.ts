@@ -11,6 +11,9 @@ import {
    type SourceDef,
 } from "@malloydata/malloy";
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
+import * as fs from "fs";
+import * as os from "os";
+import * as path from "path";
 import { structsReachedFrom } from "../../governance/ir/source_graph";
 import {
    closeCorpus,
@@ -19,7 +22,10 @@ import {
 } from "../../../test_helpers/persist_corpus";
 import { reachableSourceIDs, SourceMap, sourceChain } from "./source_map";
 
-const duckdb = new DuckDBConnection("duckdb");
+// File-backed: db-duckdb's in-memory database is shared across spec files in
+// one run, so a fixed table name would collide.
+const dbDir = fs.mkdtempSync(path.join(os.tmpdir(), "source-map-spec-"));
+const duckdb = new DuckDBConnection("duckdb", path.join(dbDir, "db.duckdb"));
 
 async function compile(
    files: Record<string, string>,
@@ -57,6 +63,7 @@ beforeAll(async () => {
 afterAll(async () => {
    await duckdb.close();
    await closeCorpus();
+   fs.rmSync(dbDir, { recursive: true, force: true });
 });
 
 const MODEL = `##! experimental.persistence
