@@ -29,6 +29,7 @@ import { registerDeprecatedRoutes } from "./routes/deprecated";
 import { QuerySlots } from "./query_concurrency";
 import { registerLegacyRoutes, type LegacyControllerSet } from "./server-old";
 import { recordDeprecatedFormatUsage } from "./service/deprecated/lints";
+import type { DeprecatedPersistAnnotation } from "./service/deprecated/persist_annotations";
 import {
    declaredDeprecatedManifestKeys,
    recordDeprecatedManifestKeys,
@@ -398,18 +399,39 @@ describe("publisher_deprecated_usage_total", () => {
       expect(await used("queryable_sources")).toBe(1);
    });
 
-   it("counts each .malloynb file and each source declaring #(filter)", async () => {
-      const model = (filtered: string[]) =>
-         ({ declaredFilterSourceNames: () => filtered }) as unknown as Model;
+   it("counts each .malloynb file, each source declaring #(filter) or #@ -persist, and each measure declaring #@ preaggregate", async () => {
+      const model = (
+         filtered: string[],
+         persist: DeprecatedPersistAnnotation[] = [],
+      ) =>
+         ({
+            declaredFilterSourceNames: () => filtered,
+            declaredDeprecatedPersistAnnotations: () => persist,
+         }) as unknown as Model;
+      // Counted with materialization v2 off (the default), where the two
+      // persist warnings are not shown: the count is the evidence for when to
+      // show them.
       recordDeprecatedFormatUsage(
          new Map([
             ["a.malloynb", model([])],
             ["b.malloynb", model([])],
-            ["base.malloy", model(["orders", "items"])],
+            [
+               "base.malloy",
+               model(
+                  ["orders", "items"],
+                  [
+                     { kind: "persist_opt_out", source: "fresh" },
+                     { kind: "preaggregate", source: "orders", measure: "a" },
+                     { kind: "preaggregate", source: "orders", measure: "b" },
+                  ],
+               ),
+            ],
             ["other.malloy", model([])],
          ]),
       );
       expect(await used("malloynb")).toBe(2);
       expect(await used("filter_annotation")).toBe(2);
+      expect(await used("persist_opt_out")).toBe(1);
+      expect(await used("preaggregate_annotation")).toBe(2);
    });
 });

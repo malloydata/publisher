@@ -417,4 +417,50 @@ describe("reachableSourceIDs", () => {
          "fact@a",
       ]);
    });
+
+   it("judges a #(materialize) source by the served copy, not the serve shape", () => {
+      const bound = {
+         boundStorageNames: new Set(["orders"]),
+         // The serve shape never keeps a #(materialize) binding.
+         servedStorageNames: new Set<string>(),
+      };
+      const verdictWith = (
+         state: "serves" | "off" | "not_served",
+         extra: Partial<PersistSourcePlan> = STORAGE,
+      ) =>
+         computeServeVerdicts(
+            facts([plan("orders", extra)], {
+               ...bound,
+               materialize: () => state,
+            }),
+         )[0];
+      expect(verdictWith("serves")).toMatchObject({ verdict: "serves" });
+      expect(verdictWith("serves").message).toContain("served copy");
+      expect(verdictWith("not_served")).toMatchObject({
+         verdict: "live",
+         reason: "served_copy",
+      });
+      expect(verdictWith("off")).toMatchObject({
+         verdict: "live",
+         reason: "served_copy",
+      });
+      // Colocated #(materialize) is built but not served yet.
+      expect(
+         computeServeVerdicts(
+            facts([plan("orders")], {
+               boundEntityIds: new Set(["entity-orders"]),
+               materialize: () => "serves",
+            }),
+         )[0],
+      ).toMatchObject({ verdict: "live", reason: "served_copy" });
+      // A #@ persist source keeps today's serve-shape rule.
+      expect(
+         computeServeVerdicts(
+            facts([plan("orders", STORAGE)], {
+               ...bound,
+               materialize: () => undefined,
+            }),
+         )[0],
+      ).toMatchObject({ verdict: "live", reason: "shadowed" });
+   });
 });

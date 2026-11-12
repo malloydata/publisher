@@ -148,6 +148,14 @@ export async function loadFixture(files: Record<string, string>): Promise<{
       () => new FixedConnectionMap(new Map([[LAKE, lake]]), LAKE),
    );
    pkg.setServeDestinationConfig(() => lakeConfig);
+   // The environment configures no destinations of its own (the lake is wired
+   // straight to the package above), so its deployment facts would call `lake`
+   // unconfigured and every unbuilt `storage=` source `destination_missing`
+   // (P13). Report what this fixture actually wires.
+   pkg.setDeploymentFacts({
+      destinationNames: () => [LAKE],
+      connectionCanHoldTable: () => undefined,
+   });
 
    const run: LoadedFixture["run"] = async (modelPath, query, givens) => {
       const model = pkg.getModel(modelPath);

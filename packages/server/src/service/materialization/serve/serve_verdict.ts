@@ -75,7 +75,14 @@ export type ServeVerdictReason =
    /** `storage=` names a destination the environment does not configure (P13). */
    | "destination_missing"
    /** Colocated, on a connection whose type creates no tables (P13). */
-   | "connection_cannot_hold_table";
+   | "connection_cannot_hold_table"
+   /**
+    * A `#(materialize)` source, which only the served copy reads: the served
+    * copy is off (PUBLISHER_MATERIALIZE or PERSIST_STORAGE_MODE), or no
+    * model's served copy re-roots it (see the `served-copy-not-served`
+    * warning), or it is colocated, which the served copy does not serve yet.
+    */
+   | "served_copy";
 
 /** Whether one named view of a stored source compiles against its serve shape (#7090). */
 export interface ViewServeVerdict {
@@ -158,6 +165,14 @@ export interface ServeVerdictFacts {
    servedStorageNames: ReadonlySet<string>;
    /** Storage: the bound source names still fresh. Absent: every bound one is. */
    freshStorageNames?: ReadonlySet<string>;
+   /**
+    * The plan's `#(materialize)` sources, by sourceID, and whether the served
+    * copy answers each from its table: `serves` when some model's compiled
+    * served copy re-roots it (or a served copy has yet to compile), `off` when
+    * the served copy is off, `not_served` otherwise. Absent: no source is a
+    * `#(materialize)` source.
+    */
+   materialize?(sourceID: string): "serves" | "off" | "not_served" | undefined;
    /** Rollups over a stored base (#6293), left out of the plan. */
    rollupsOverStoredBase?: readonly { baseName: string; modelPath?: string }[];
    /** Per stored source's plan sourceID, its views' verdicts (a preview). */
@@ -373,6 +388,31 @@ function verdictFor(
       );
    }
 
+   // `#(materialize)` is served by the served copy alone (never the serve
+   // shape, which drops its bindings, nor the colocated manifest, which Malloy
+   // never substitutes for it), so the served copy decides its verdict.
+   const materialized = facts.materialize?.(sourceID);
+   if (materialized !== undefined && tier === "colocated") {
+      return live(
+         "served_copy",
+         `${subject} is materialized with #(materialize) into its own ` +
+            `warehouse, which is built but not served yet, so its queries are ` +
+            `answered live.`,
+         [
+            "Give #(materialize) a storage= destination, which the served copy serves from (PUBLISHER_MATERIALIZE and PERSIST_STORAGE_MODE=on).",
+         ],
+      );
+   }
+   if (materialized === "off") {
+      return live(
+         "served_copy",
+         `${subject} is materialized with #(materialize), which only the ` +
+            `served copy reads, and the served copy is off, so its queries are ` +
+            `answered live.`,
+         ["Set PUBLISHER_MATERIALIZE=true and PERSIST_STORAGE_MODE=on."],
+      );
+   }
+
    const stale = (): ServeVerdict =>
       live(
          "stale",
@@ -394,7 +434,25 @@ function verdictFor(
             message: `${subject} will serve from storage once a build binds its table.`,
          };
       }
-      if (origin === "persist" && !facts.servedStorageNames.has(source.name)) {
+      if (materialized === "not_served") {
+         return live(
+            "served_copy",
+            `${subject}'s table is bound, but no model's served copy reads ` +
+               `it, so no query is answered from it: the served copy reads a ` +
+               `source it is built on from that source's table instead, or ` +
+               `leaves it as written for the reason a served-copy-not-served ` +
+               `warning gives.`,
+            [
+               "Fix what the served-copy-not-served warning names, if there is one.",
+               "Or drop #(materialize) from it if a source it is built on already answers its queries.",
+            ],
+         );
+      }
+      if (
+         materialized === undefined &&
+         origin === "persist" &&
+         !facts.servedStorageNames.has(source.name)
+      ) {
          return live(
             "shadowed",
             `${subject}'s table is bound, but every model's source of that name ` +
@@ -414,7 +472,10 @@ function verdictFor(
          ...base,
          ...withViews,
          verdict: "serves",
-         message: `${subject} serves from storage.`,
+         message:
+            materialized === "serves"
+               ? `${subject} serves from storage, through its served copy.`
+               : `${subject} serves from storage.`,
       };
    }
 

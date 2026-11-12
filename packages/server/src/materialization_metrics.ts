@@ -175,9 +175,9 @@ const tableCollisionCounter = lazyCounter(
       "physical table. Each build overwrites the other's rows while both " +
       "addresses resolve to the table at serve time, so a query is answered " +
       "from another source's data. A wrong answer, not wasted work — page on " +
-      "this one. Refused instead of counted-and-continued when " +
-      "PERSIST_COLLISION_ENFORCE is set, so a non-zero rate here is also the " +
-      "measure of what flipping that flag would start refusing.",
+      "this one. Counted, then refused before any write, unless " +
+      "PERSIST_COLLISION_ENFORCE=false opts out, in which case the build " +
+      "continues.",
 );
 const sourceBuildDuration = lazyHistogram(
    "publisher_materialization_source_build_duration_ms",
