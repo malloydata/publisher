@@ -68,11 +68,11 @@ import {
    computeServeVerdicts,
    MATERIALIZATION_UNREACHABLE_CODE,
    type ServeVerdict,
-   sourceIDsReachedFrom,
    type ViewServeVerdict,
 } from "./serve/serve_verdict";
 import { storageTablePath } from "./run/storage_table_path";
 import { structsReachedFrom } from "../governance/ir/source_graph";
+import { reachableSourceIDs } from "./plan/source_map";
 import type {
    BuildManifest,
    BuildPlan,
@@ -1481,7 +1481,10 @@ export class PackageMaterialization {
             if (!entry || !isSourceDef(entry)) return;
             roots.push({
                gated,
-               ids: sourceIDsReachedFrom(structsReachedFrom([entry], modelDef)),
+               ids: reachableSourceIDs(
+                  structsReachedFrom([entry], modelDef),
+                  modelDef,
+               ),
             });
          };
          for (const name of names) sourceRoot(name, gatedSources.has(name));
@@ -1497,10 +1500,11 @@ export class PackageMaterialization {
                typeof ref === "string"
                   ? modelDef.contents?.[ref]
                   : (ref as SourceDef | undefined);
-            const ids = sourceIDsReachedFrom([query]);
+            const ids = reachableSourceIDs([query], modelDef);
             if (base && isSourceDef(base)) {
-               for (const id of sourceIDsReachedFrom(
+               for (const id of reachableSourceIDs(
                   structsReachedFrom([base], modelDef),
+                  modelDef,
                )) {
                   ids.add(id);
                }

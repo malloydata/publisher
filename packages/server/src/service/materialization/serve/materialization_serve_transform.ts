@@ -17,6 +17,7 @@ import {
 import type { ManifestEntry } from "../types";
 import { quoteManifestTablePath } from "../../quoting";
 import { storageTablePath } from "../run/storage_table_path";
+import { pipelineReferences, structRefSourceId } from "../plan/source_map";
 
 /**
  * A dimension or measure from the author's source, re-declared on the serve
@@ -779,18 +780,6 @@ function inlineExtendJoins(structRef: unknown): unknown[] {
 }
 
 /**
- * The sourceID a `structRef` names: the reference itself, or the `sourceID` of
- * an embedded definition. Undefined for an inline source.
- */
-function structRefSourceId(structRef: unknown): string | undefined {
-   if (typeof structRef === "string") return structRef;
-   const sourceID = (structRef as { sourceID?: unknown } | null)?.sourceID;
-   return typeof sourceID === "string" && sourceID.length > 0
-      ? sourceID
-      : undefined;
-}
-
-/**
  * Carry a query-derived source (`X is base -> { … } [extend { … }]`) as the
  * author's declaration, verbatim.
  *
@@ -1148,189 +1137,6 @@ export function buildChainedStorageBuildModel(params: {
    );
 }
 
-/** What {@link reachedPersistedSources} found on the paths out of a source. */
-interface ReachedSources {
-   /**
-    * The persist sources the walk stopped at. Names are neither tables (several
-    * share one) nor package-unique, so the caller resolves each to its content
-    * address by `sourceID`.
-    */
-   persisted: { name: string; sourceID: string }[];
-   /**
-    * Some path ends at a source with no stored table behind it (a table or SQL
-    * source, or a reference with no in-model identity).
-    */
-   raw: boolean;
-   /** The sources those paths ended at (`regions`), for the reason text. */
-   rawLeaves: string[];
-   /** The non-persisted sources that reach them (`daily_regional`). */
-   rawVia: string[];
-   /**
-    * Every named source the walk passed through or stopped at, root excluded:
-    * exactly the sources a build over the stored parents needs declared.
-    */
-   visited: string[];
-}
-
-/**
- * What a source reaches, walking the author model from `name` through the
- * sources it is built from and stopping at each persist source, as
- * `isPersisted` (answered from the build plan) says.
- *
- * The plan, not the annotation, decides: `#@ persist` is inherited, so an
- * `extend` or rename of a persisted source shares its table, and nothing on a
- * definition says which name "declared" it. The walk records names; the caller
- * resolves each to its address group.
- *
- * An extension's own joins are NOT in its table: `daily_regional is daily
- * extend { join_one: r is regions … }` computes the join at read time, so the
- * walk still follows the joins a persisted extension adds, and nothing else.
- *
- * An embedded definition (inline extension, join written in place) is walked
- * as itself; only a reference with no identity, or to a name the model lacks,
- * is raw.
- *
- * A chained build's refusal turns on this: a stored table not bound is an
- * upstream `strictUpstreams` refuses; a raw path can only be recomputed from
- * the warehouse; a source reaching neither that still cannot be carried is a
- * carrying limit, which strict must not treat as licence to recompute.
- */
-export function reachedPersistedSources(
-   ctx: Pick<DerivedLiftContext, "contents" | "sourceNameById">,
-   name: string,
-   isPersisted: (sourceName: string, sourceID: string) => boolean,
-): ReachedSources {
-   const persisted = new Map<string, { name: string; sourceID: string }>();
-   const rawLeaves = new Set<string>();
-   const rawVia = new Set<string>();
-   const visited = new Set<string>();
-   const seen = new Set<unknown>();
-   const defName = (def: DerivedSourceDef): string | undefined => {
-      const id = (def as { sourceID?: unknown }).sourceID;
-      return typeof id === "string" ? ctx.sourceNameById.get(id) : undefined;
-   };
-   const reachRaw = (leaf: string, via: string): void => {
-      rawLeaves.add(leaf);
-      rawVia.add(via);
-   };
-   // A `sourceID` is `name@<model URL>`; only the name may appear in a reason,
-   // since the URL is the server's file path.
-   const nameOf = (sourceID: string): string => sourceID.split("@")[0];
-   // A reference is a sourceID, an embedded definition, or nothing usable.
-   const follow = (ref: unknown, via: string): void => {
-      if (typeof ref === "string") {
-         const next = ctx.sourceNameById.get(ref);
-         if (next !== undefined) {
-            visit(ctx.contents[next], next, false, via);
-            return;
-         }
-         // Not in this model's view (e.g. via an import) but known to the plan
-         // as a persist source: a stop, never raw.
-         const name = nameOf(ref);
-         if (isPersisted(name, ref)) {
-            visited.add(name);
-            persisted.set(ref, { name, sourceID: ref });
-            return;
-         }
-         reachRaw(name, via);
-         return;
-      }
-      if (ref !== null && typeof ref === "object") {
-         const def = ref as DerivedSourceDef;
-         visit(def, defName(def), false, via);
-         return;
-      }
-      reachRaw("(unnamed)", via);
-   };
-   const followJoins = (
-      fields: unknown[] | undefined,
-      sourceName: string,
-   ): void => {
-      for (const field of fields ?? []) {
-         const f = field as { join?: unknown; sourceID?: unknown };
-         if (typeof f.join !== "string") continue;
-         follow(
-            typeof f.sourceID === "string" ? f.sourceID : field,
-            sourceName,
-         );
-      }
-   };
-   // The joins an extension adds: its join fields minus the ones its base
-   // already carries, matched by the name a shape refers to them by.
-   const ownJoins = (def: DerivedSourceDef): unknown[] => {
-      const baseName =
-         typeof def.extends === "string"
-            ? ctx.sourceNameById.get(def.extends)
-            : undefined;
-      const baseFields = new Set(
-         (baseName ? (ctx.contents[baseName]?.fields ?? []) : []).map(fieldKey),
-      );
-      return (def.fields ?? []).filter((f) => !baseFields.has(fieldKey(f)));
-   };
-   // `sourceName` is undefined for an embedded definition. `via` is the source
-   // that referenced this one, which the reason names alongside the leaf.
-   const visit = (
-      def: DerivedSourceDef | undefined,
-      sourceName: string | undefined,
-      root: boolean,
-      via: string,
-   ): void => {
-      const label = sourceName ?? via;
-      if (!def) {
-         reachRaw(label, via);
-         return;
-      }
-      if (seen.has(def)) return;
-      seen.add(def);
-      if (!root && sourceName !== undefined) visited.add(sourceName);
-      // The root is the source being built; only its descendants stop the walk.
-      const sourceID = (def as { sourceID?: unknown }).sourceID;
-      if (
-         !root &&
-         sourceName !== undefined &&
-         typeof sourceID === "string" &&
-         isPersisted(sourceName, sourceID)
-      ) {
-         persisted.set(sourceID, { name: sourceName, sourceID });
-         // Its table is its base's; only what it adds is computed over it.
-         if (typeof def.extends === "string") {
-            followJoins(ownJoins(def), sourceName);
-         }
-         return;
-      }
-      const base =
-         typeof def.extends === "string"
-            ? def.extends
-            : def.type === "query_source"
-              ? def.query?.structRef
-              : undefined;
-      if (base === undefined) {
-         // A table or a SQL source: nothing stored stands behind it.
-         reachRaw(label, via);
-         return;
-      }
-      follow(base, label);
-      // An extension's `query` is its base's, copied; the base is walked above.
-      if (typeof def.extends !== "string") {
-         const refs = pipelineReferences(def.query?.pipeline);
-         // A pipeline too deep to walk may reach anything, so it counts as
-         // reaching a leaf with no identity: raw, never "nothing".
-         for (const { ref } of refs ?? [{ ref: undefined }]) {
-            follow(ref, label);
-         }
-      }
-      followJoins(def.fields, label);
-   };
-   visit(ctx.contents[name], name, true, name);
-   return {
-      persisted: [...persisted.values()],
-      raw: rawLeaves.size > 0,
-      rawLeaves: [...rawLeaves],
-      rawVia: [...rawVia],
-      visited: [...visited],
-   };
-}
-
 /**
  * Which stored tables a walk's `persisted` names stand for, and whether each is
  * available to a build: the names sharing a table (`aliasesBySourceName`, from
@@ -1348,67 +1154,6 @@ export function missingPersistedTables(
             bound.has(alias),
          ),
    );
-}
-
-/** Past this nesting a pipeline is refused rather than walked. */
-const MAX_PIPELINE_DEPTH = 200;
-
-/**
- * One reference a query pipeline makes. `sourceID` is the referenced source's
- * id when it is named; `ref` is what a walk follows: the sourceID of a named
- * join, else the join or stage `structRef` as written (an id or an embedded
- * definition).
- */
-interface PipelineReference {
-   sourceID: string | undefined;
-   ref: unknown;
-}
-
-/**
- * Every reference a query pipeline makes: each stage's `structRef` and each
- * join. Named sources are not descended into; the caller looks them up.
- *
- * Undefined when the pipeline nests past {@link MAX_PIPELINE_DEPTH}, which a
- * caller must treat as an unknown reference. Returning rather than throwing
- * keeps one refused source from escaping lift selection and costing every
- * other lift.
- */
-function pipelineReferences(
-   pipeline: unknown,
-): PipelineReference[] | undefined {
-   const out: PipelineReference[] = [];
-   let tooDeep = false;
-   const walk = (node: unknown, depth: number): void => {
-      if (tooDeep) return;
-      if (depth > MAX_PIPELINE_DEPTH) {
-         tooDeep = true;
-         return;
-      }
-      if (node === null || typeof node !== "object") return;
-      if (Array.isArray(node)) {
-         for (const item of node) walk(item, depth + 1);
-         return;
-      }
-      const record = node as Record<string, unknown>;
-      if (typeof record.join === "string") {
-         const sourceID =
-            typeof record.sourceID === "string" ? record.sourceID : undefined;
-         out.push({ sourceID, ref: sourceID ?? node });
-         return;
-      }
-      if (record.structRef !== undefined) {
-         out.push({
-            sourceID: structRefSourceId(record.structRef),
-            ref: record.structRef,
-         });
-      }
-      for (const [key, value] of Object.entries(record)) {
-         if (key === "structRef") continue;
-         walk(value, depth + 1);
-      }
-   };
-   walk(pipeline, 0);
-   return tooDeep ? undefined : out;
 }
 
 /**

@@ -19,9 +19,9 @@ import {
    type PlannedTable,
    type QueryPathInput,
    queryShapeOf,
-   sourceChainOf,
    type StorageTable,
 } from "./query_path";
+import { sourceChain } from "../plan/source_map";
 
 const shape = {
    sourceName: "daily",
@@ -920,7 +920,7 @@ describe("buildQueryPath, reading the serve verdicts", () => {
    });
 });
 
-describe("sourceChainOf", () => {
+describe("sourceChain", () => {
    it("follows an extend, a rename and a query source's base, nearest first", () => {
       const orders = { type: "table", sourceID: "orders@m" };
       const daily = {
@@ -952,7 +952,7 @@ describe("sourceChainOf", () => {
             },
          },
       };
-      expect(sourceChainOf(renamed, modelDef)).toEqual([
+      expect(sourceChain(renamed, modelDef)).toEqual([
          "renamed@m",
          "ext@m",
          "daily@m",
@@ -970,12 +970,9 @@ describe("sourceChainOf", () => {
             "b@m": { entry: { type: "source_registry_reference", name: "b" } },
          },
       };
-      expect(sourceChainOf(a, modelDef)).toEqual(["a@m", "b@m"]);
+      expect(sourceChain(a, modelDef)).toEqual(["a@m", "b@m"]);
       expect(
-         sourceChainOf(
-            { sourceID: "x@m", extends: "gone@m" },
-            { contents: {} },
-         ),
+         sourceChain({ sourceID: "x@m", extends: "gone@m" }, { contents: {} }),
       ).toEqual(["x@m", "gone@m"]);
    });
 });

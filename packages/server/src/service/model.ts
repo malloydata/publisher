@@ -213,9 +213,9 @@ import {
    type ApiQueryPath,
    buildQueryPath,
    queryShapeOf,
-   sourceChainOf,
    type StorageTable,
 } from "./materialization/serve/query_path";
+import { sourceChain } from "./materialization/plan/source_map";
 import {
    readPreparedQuery,
    resolveStructRefSource,
@@ -3688,7 +3688,7 @@ export class Model {
          return buildQueryPath({
             shape,
             modelPath: this.modelPath,
-            chain: sourceChainOf(struct, modelDef),
+            chain: sourceChain(struct, modelDef),
             catalog,
             freshColocated: args.freshManifest
                ? new Set(Object.keys(args.freshManifest.entries))
@@ -3740,7 +3740,7 @@ export class Model {
       const chains = new Map<string, readonly string[]>();
       for (const entry of Object.values(modelDef?.contents ?? {})) {
          if (!isSourceDef(entry)) continue;
-         const chain = sourceChainOf(entry, modelDef);
+         const chain = sourceChain(entry, modelDef);
          if (chain[0] && !chains.has(chain[0])) chains.set(chain[0], chain);
       }
       this.sourceChainCache = { modelDef, chains };

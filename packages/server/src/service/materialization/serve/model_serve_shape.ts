@@ -33,7 +33,6 @@ import {
    liftDerivedSources,
    bindingServesModelSource,
    narrowSchemaToPublic,
-   reachedPersistedSources,
    withholdUnreproducibleCallerScopedJoins,
    type DerivedSourceDef,
    type DerivedSourceLift,
@@ -42,6 +41,7 @@ import {
    type ServeShapeGiven,
    type SourceLocation,
 } from "./materialization_serve_transform";
+import { reachPersisted } from "../plan/source_map";
 import {
    RollupCoverageError,
    rollupCoverageViolation,
@@ -1009,7 +1009,7 @@ export class StorageServeShape {
       );
       const candidateNames = new Set(namespace);
       for (const name of namespace) {
-         for (const reached of reachedPersistedSources(lift, name, () => false)
+         for (const reached of reachPersisted(lift, name, () => false)
             .visited) {
             candidateNames.add(reached);
          }

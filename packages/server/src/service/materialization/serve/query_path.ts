@@ -164,7 +164,7 @@ export interface QueryPathInput {
    shape: ApiQueryShape;
    /** The model the query ran in, to match a rollup to its plan. */
    modelPath?: string;
-   /** The queried source's `sourceID`s, nearest first (see {@link sourceChainOf}). */
+   /** The queried source's `sourceID`s, nearest first (see `sourceChain` in plan/source_map). */
    chain: readonly string[];
    catalog: MaterializedTableCatalog | undefined;
    /**
@@ -849,76 +849,6 @@ interface IrStage {
    queryFields?: readonly IrField[];
    filterList?: readonly { e?: unknown }[];
    queryTimezone?: unknown;
-}
-
-interface IrModel {
-   contents?: Record<string, unknown>;
-   sourceRegistry?: Record<
-      string,
-      { entry?: { type?: string; name?: string } & IrSource }
-   >;
-}
-
-/**
- * The `sourceID`s a source derives from, itself first: through `extends` (an
- * `extend`), `referenceID` (a rename) and a query source's base. Persistence is
- * inherited along exactly these hops, so a table on any of them can answer a
- * query on the source.
- */
-export function sourceChainOf(struct: unknown, modelDef: unknown): string[] {
-   const model = modelDef as IrModel | undefined;
-   const out: string[] = [];
-   const seen = new Set<unknown>();
-   const byId = (id: string): IrSource | undefined => {
-      const entry = model?.sourceRegistry?.[id]?.entry;
-      if (!entry) return undefined;
-      if (entry.type === "source_registry_reference" && entry.name) {
-         return model?.contents?.[entry.name] as IrSource | undefined;
-      }
-      return entry;
-   };
-   let current = struct as IrSource | undefined;
-   for (let hops = 0; current && hops < 64; hops++) {
-      if (seen.has(current)) break;
-      seen.add(current);
-      const id = current.sourceID;
-      if (typeof id === "string" && !out.includes(id)) out.push(id);
-      const next: IrSource | undefined =
-         (typeof current.extends === "string"
-            ? byId(current.extends)
-            : undefined) ??
-         (typeof current.referenceID === "string" && current.referenceID !== id
-            ? byId(current.referenceID)
-            : undefined) ??
-         querySourceBase(current, model);
-      // A hop that resolves to nothing still names the source it points at.
-      if (!next) {
-         for (const ref of [current.extends, current.referenceID]) {
-            if (typeof ref === "string" && !out.includes(ref)) out.push(ref);
-         }
-      }
-      current = next;
-   }
-   return out;
-}
-
-function querySourceBase(
-   struct: IrSource,
-   model: IrModel | undefined,
-): IrSource | undefined {
-   if (struct.type !== "query_source") return undefined;
-   const ref = struct.query?.structRef;
-   if (typeof ref !== "string") {
-      return ref && typeof ref === "object" ? (ref as IrSource) : undefined;
-   }
-   // A name in the model, or a `sourceID` in its registry.
-   const byName = model?.contents?.[ref] as IrSource | undefined;
-   if (byName && typeof byName === "object") return byName;
-   const entry = model?.sourceRegistry?.[ref]?.entry;
-   if (entry?.type === "source_registry_reference" && entry.name) {
-      return model?.contents?.[entry.name] as IrSource | undefined;
-   }
-   return entry;
 }
 
 /**
