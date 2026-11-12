@@ -1,7 +1,7 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
-import { publisherMeter } from "../telemetry";
+import { lazyCounter, lazyInstrument, publisherMeter } from "../telemetry";
 
 import type { MemoryGovernorConfig } from "../config";
 import { logger } from "../logger";
@@ -22,6 +22,12 @@ export type RssSampler = () => number;
 
 const DEFAULT_RSS_SAMPLER: RssSampler = () => process.memoryUsage().rss;
 
+/** Counts false → true transitions, for alerting on a flapping pod. */
+const backpressureActivations = lazyCounter(
+   "publisher_memory_backpressure_activations_total",
+   "Number of times the memory governor has activated back-pressure",
+);
+
 /**
  * Polls process RSS and toggles `backpressured` with a hysteresis band: on at
  * highWater, off at lowWater, unchanged in between. Paths that would load a
@@ -40,9 +46,60 @@ export class PackageMemoryGovernor {
    private backpressured = false;
    private lastSampledRss = 0;
    private lastSampledAt: number | null = null;
-   private readonly backpressureActivationsCounter: ReturnType<
-      ReturnType<typeof publisherMeter>["createCounter"]
-   >;
+   /** The governor the gauges read: the one constructed last. */
+   private static observed: PackageMemoryGovernor | null = null;
+   private static gauges = lazyInstrument(() => {
+      const meter = publisherMeter();
+      const governor = () => PackageMemoryGovernor.observed;
+      const gauge = (
+         name: string,
+         description: string,
+         read: (g: PackageMemoryGovernor) => number,
+         unit?: string,
+      ) => {
+         const instrument = meter.createObservableGauge(name, {
+            description,
+            ...(unit ? { unit } : {}),
+         });
+         instrument.addCallback((observation) => {
+            const g = governor();
+            if (g) observation.observe(read(g));
+         });
+         return instrument;
+      };
+      return [
+         gauge(
+            "publisher_process_rss_bytes",
+            "Current resident set size of the publisher process in bytes",
+            (g) => g.rssSampler(),
+            "By",
+         ),
+         gauge(
+            "publisher_memory_backpressure_active",
+            "1 when the publisher is rejecting new package loads to stay under PUBLISHER_MAX_MEMORY_BYTES; 0 otherwise",
+            (g) => (g.backpressured ? 1 : 0),
+         ),
+         // The band itself, so dashboards can draw it alongside RSS.
+         gauge(
+            "publisher_memory_max_bytes",
+            "Configured PUBLISHER_MAX_MEMORY_BYTES",
+            (g) => g.config.maxMemoryBytes,
+            "By",
+         ),
+         gauge(
+            "publisher_memory_high_water_bytes",
+            "RSS threshold at which back-pressure activates",
+            (g) => g.highWaterBytes,
+            "By",
+         ),
+         gauge(
+            "publisher_memory_low_water_bytes",
+            "RSS threshold at which back-pressure clears",
+            (g) => g.lowWaterBytes,
+            "By",
+         ),
+      ];
+   });
 
    constructor(config: MemoryGovernorConfig, rssSampler?: RssSampler) {
       this.config = config;
@@ -54,59 +111,8 @@ export class PackageMemoryGovernor {
          config.maxMemoryBytes * config.lowWaterFraction,
       );
 
-      const meter = publisherMeter();
-
-      meter
-         .createObservableGauge("publisher_process_rss_bytes", {
-            description:
-               "Current resident set size of the publisher process in bytes",
-            unit: "By",
-         })
-         .addCallback((observation) => {
-            observation.observe(this.rssSampler());
-         });
-
-      meter
-         .createObservableGauge("publisher_memory_backpressure_active", {
-            description:
-               "1 when the publisher is rejecting new package loads to stay under PUBLISHER_MAX_MEMORY_BYTES; 0 otherwise",
-         })
-         .addCallback((observation) => {
-            observation.observe(this.backpressured ? 1 : 0);
-         });
-
-      // Counts false → true transitions, for alerting on a flapping pod.
-      this.backpressureActivationsCounter = meter.createCounter(
-         "publisher_memory_backpressure_activations_total",
-         {
-            description:
-               "Number of times the memory governor has activated back-pressure",
-         },
-      );
-
-      // The band itself, so dashboards can draw it alongside RSS.
-      meter
-         .createObservableGauge("publisher_memory_max_bytes", {
-            description: "Configured PUBLISHER_MAX_MEMORY_BYTES",
-            unit: "By",
-         })
-         .addCallback((observation) =>
-            observation.observe(this.config.maxMemoryBytes),
-         );
-      meter
-         .createObservableGauge("publisher_memory_high_water_bytes", {
-            description: "RSS threshold at which back-pressure activates",
-            unit: "By",
-         })
-         .addCallback((observation) =>
-            observation.observe(this.highWaterBytes),
-         );
-      meter
-         .createObservableGauge("publisher_memory_low_water_bytes", {
-            description: "RSS threshold at which back-pressure clears",
-            unit: "By",
-         })
-         .addCallback((observation) => observation.observe(this.lowWaterBytes));
+      PackageMemoryGovernor.observed = this;
+      PackageMemoryGovernor.gauges();
    }
 
    /**
@@ -165,7 +171,7 @@ export class PackageMemoryGovernor {
 
       if (rss >= this.highWaterBytes && !this.backpressured) {
          this.backpressured = true;
-         this.backpressureActivationsCounter.add(1);
+         backpressureActivations().add(1);
          logger.warn(
             `PackageMemoryGovernor: activating back-pressure (rss=${rss}B >= high=${this.highWaterBytes}B). New package loads will be rejected with HTTP 503 until rss <= ${this.lowWaterBytes}B.`,
          );

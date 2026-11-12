@@ -54,23 +54,26 @@ no-configuration way to curate a package, and it stays entirely optional. See
 
 The fields the server reads:
 
-| Field              | Purpose                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                             |
-| ------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `name`             | Conventionally the package's name, but the server never surfaces it: the registered name (config entry or API call) wins in API URLs and responses.                                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
-| `description`      | Shown in the Publisher UI and in API responses.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                     |
-| `explores`         | **Deprecated, still honored.** Names the files whose exports are the surface; those files are listed and queryable. A tagged report listed here reads the surface and adds nothing to it. Every use gets a load warning: an `index.malloy` that imports those files replaces it. Reports never need to be listed. See [discovery-and-access.md](discovery-and-access.md).                                                                                                                                                                                                                                           |
-| `queryableSources` | `"declared"` (the default) or `"all"`. Deprecated. `"declared"` does nothing, and writing it gets a warning. `"all"` still works with no warning, because nothing replaces it: the surface then decides listings only, and every source stays queryable by name. Use it to hide an `#(authorize)`-gated source from listings while authorized callers still query it. See [discovery-and-access.md](discovery-and-access.md).                                                                                                                                                                                       |
-| `materialization`  | Persisted-source build policy (`schedule`, `freshness`). Package root only. See [materialization.md](materialization.md).                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           |
-| `scope`            | `"package"` (the default) or `"version"`. Any other value fails the package load.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   |
-| `agents`           | Named agents the package declares, keyed by agent name. See [Agents](#agents).                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      |
-| `retrieval`        | How `get_context` searches and indexes this package: `representation` (`single` or `facets`), `keyphrases` (`auto`, `never`, `always`), `refine`, `rerank`, `sourceMatch` and `sourceSummary` (each `{ "enabled": "auto" \| true \| false }`, with `minLevel` on `refine` and `topSources` on `rerank`), and `prompts` (a file path inside the package for each of `keyphrase`, `refine`, `rerank`, `sourceMatch`, `sourceSummary`). Any other key under `retrieval`, or an invalid value, fails the package load. See [get-context-pipeline.md](get-context-pipeline.md) and [configuration.md](configuration.md). |
+| Field              | Purpose                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       |
+| ------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `name`             | Conventionally the package's name, but the server never surfaces it: the registered name (config entry or API call) wins in API URLs and responses.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           |
+| `description`      | Shown in the Publisher UI and in API responses.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                               |
+| `explores`         | **Deprecated, still honored.** Names the files whose exports are the surface; those files are listed and queryable. A tagged report listed here reads the surface and adds nothing to it. Every use gets a load warning: an `index.malloy` that imports those files replaces it. Reports never need to be listed. See [discovery-and-access.md](discovery-and-access.md).                                                                                                                                                                                                                                                                                                                                     |
+| `queryableSources` | `"declared"` (the default) or `"all"`. Deprecated. `"declared"` does nothing, and writing it gets a warning. `"all"` still works with no warning, because nothing replaces it: the surface then decides listings only, and every source stays queryable by name. Use it to hide an `#(authorize)`-gated source from listings while authorized callers still query it. See [discovery-and-access.md](discovery-and-access.md).                                                                                                                                                                                                                                                                                 |
+| `materialization`  | Persisted-source build policy (`schedule`, `freshness`, `scope`). Package root only. Its `queryMetadata` is deprecated; declare `queryMetadata` at the root. See [materialization.md](materialization.md).                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    |
+| `scope`            | Deprecated at the root: declare it as `materialization.scope`. `"package"` (the default) or `"version"`. Any other value fails the package load.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                              |
+| `agents`           | Named agents the package declares, keyed by agent name. See [Agents](#agents).                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                |
+| `retrieval`        | How `get_context` searches and indexes this package: `fcj` (the engine's settings, such as `perTarget` and `judge`), `sourceSummary` (`{ "enabled": "auto" \| true \| false }`), and `prompts` (a file path inside the package for each of `judge`, `docParts`, `questions`, `sourceSummary`). Any other key under `retrieval`, or an invalid value, fails the package load, except `engine`, `representation`, `keyphrases`, `refine`, `rerank`, `sourceMatch` and the prompts `keyphrase`, `refine`, `rerank` and `sourceMatch`: those no longer do anything, are ignored, and are named in the package's `warnings`. See [configuration.md](configuration.md#package-settings-retrieval-in-publisherjson). |
 
 Unknown top-level keys are ignored and preserved. Inside `retrieval` they are not: an unknown key fails the
 package load with a message naming the valid ones. `version` is read when the package is published
 from a location (`POST …/packages` with a `location`): it numbers the immutable version that publish
-creates, and a publish without one is refused. A package loaded from `publisher.config.json` ignores
-it. See [package-versions.md](package-versions.md). (One more field, `manifestLocation`, exists for orchestrated
-control-plane deployments; a locally authored package never needs it.)
+creates, and a publish without one is refused. A package in `publisher.config.json` is published
+the same way, unless its environment is watched (`--watch-env`), which mounts it in place and
+ignores it. See [package-versions.md](package-versions.md). (One more field, `manifestLocation`, exists for orchestrated
+control-plane deployments; a locally authored package never needs it. It is deprecated and goes
+away with the package `PATCH` that writes it: bind a version's build manifest with
+`PUT …/versions/{v}/manifest` instead. See [#1540](https://github.com/malloydata/publisher/issues/1540).)
 
 ## Skills
 
@@ -120,7 +123,26 @@ The agent's name is its key: 1 to 64 characters of lowercase letters, digits and
 
 **A broken agent never fails the package.** An agent that fails validation (a bad name, a missing file, a path that escapes the package or resolves outside it through a link, a nested `publisher.json` under an agent path, an over-cap file, a bad cron, a bad `budget`) is left out and reported in the package's load warnings with a `Fix:` line. The model and the other agents keep serving. An agent skill with no `description`, a `reference/` that cannot be read, or a skills directory with no skills is not a failure: the agent is served and the finding appears in its `warnings`. A package with no `agents` key is unchanged, and an older Publisher serves a package that has one as before, without the agents.
 
-Two hashes say which bytes a definition came from. `sourceContentSha` on the package covers the models, the package skill files, the `agents` object and every file an agent reads; a `version` bump or another manifest key does not move it. `definitionSha` on the resolved agent covers only that agent's configuration, instructions, skills and task files, so editing one agent or a model leaves another agent's `definitionSha` alone. `GET …/agents/{name}` returns both under `source`, with `servedRevision`.
+### Skill assets
+
+A skill an agent serves may ship `<skill>/assets/**`: text files the agent copies into an app it builds and never reads. Publisher validates them, lists them without their contents in the agent definition (`assets`, with `asset_roots` for each skill's package-relative directory; the summary view carries only `asset_counts`), and serves one on request through the same skill-file route (`GET …/agents/{name}/skills/<skill>/assets/…`, MCP `skill_path`). Assets never count against the 256 KB Markdown cap. Only a skill an agent names under `skills` ships assets: a package's own `skills/<x>/assets/` is ignored.
+
+| Limit                                                                                                                             | Why                                                                                                     |
+| --------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------- |
+| Markdown: 256 KB per file and per agent                                                                                           | The context budget: the agent reads these.                                                              |
+| One asset under 1 MiB (a file of 1,048,576 bytes is out)                                                                          | The draft store refuses a file of 1 MiB or more, so a larger asset could never be written back.         |
+| 4 MiB and 200 files per agent                                                                                                     | Keeps copying every asset inside one agent turn's write-back.                                           |
+| 8 MiB per package, each package path counted once                                                                                 | Bounds load-time hashing. Agents are charged in manifest order, so a path two agents share counts once. |
+| Path segments `[A-Za-z0-9_][A-Za-z0-9._-]*`, listed path at most 200 characters, depth at most 8, at most 1,000 entries per agent | Names that survive any filesystem and any URL, and a walk that cannot be made to run long.              |
+| UTF-8 text only, no NUL byte                                                                                                      | The route returns JSON text. Ship images as SVG.                                                        |
+
+Names ending `.malloy` or `.malloynb`, and files named `publisher.json` or `SKILL.md` (any case), are refused. The `.malloy` refusal is a warning, not a protection: the package loader compiles a `.malloy` file anywhere in the package, an asset included.
+
+Problems fall in two classes. **Security** problems drop the whole agent, with a `Package agent '<name>' is not served:` warning naming the file and the fix: a symlink anywhere under `assets/`, an `assets/` that is itself a link or resolves outside the skill, a nested `publisher.json` or `SKILL.md`, `..` in a name, or two paths that differ only by case. **Everything else** skips that one file, leaves it out of the listing and warns naming the limit: not UTF-8 or holds a NUL, 1 MiB or more, over the per-agent or per-package budget, a bad segment name or a path over 200 characters, a Malloy extension, or a walk past the depth or entry limit. An agent that ships a PNG or a very large `assets/` is still served. The caps bound what is listed, not every byte examined: a file under the size cap is read to check it, though a NUL in its first 8 KiB (a binary) rejects it without the full read, and each file is read and hashed at most once per load however many agents share its skill; a skipped file is never charged to a budget. Dotfiles are ignored, and an empty `assets/` is no assets.
+
+**Trust.** An asset is copied into an app unread and runs with the viewing user's data authority wherever that app opens, previews while it is being built included. Review assets as code before adopting an agent that ships them.
+
+Two hashes say which bytes a definition came from. `sourceContentSha`, in the package's serving state (`GET …/packages/{pkg}/status`), covers the models, the package skill files, the `agents` object and every file an agent reads, assets included; a `version` bump or another manifest key does not move it. `definitionSha` on the resolved agent covers only that agent's configuration, instructions, skills, asset listing (paths and sha256s) and task files, so editing one agent or a model leaves another agent's `definitionSha` alone. `GET …/agents/{name}` returns both under `source`, with `servedRevision`.
 
 ## Where the data comes from
 
@@ -154,28 +176,57 @@ There is no directory scan: a package on disk serves only once it is registered.
   the rest of the API this endpoint is unauthenticated, so keep the server on localhost or behind
   a gateway.
 
-## Lifecycle: the served copy
+### Annotations that do nothing
 
-When an environment is first created, Publisher copies each configured package into its own
-storage at `publisher_data/<env>/<pkg>/` (in the server root: the directory the server was
-launched from, unless `--server_root` set another) and compiles it, then serves that copy.
-Consequences:
+Malloy decides which reader sees an annotation by its prefix, so a small slip makes one silently do
+nothing: `#(clasification) "phi"`, `# (doc) …` with a space before the bracket, `#@persist` with no
+space, `# persist` or `#(persist)` for `#@ persist`, or `#@ persits`. Each loaded model reports these
+in the package's `warnings`, at severity `warn`, with the line and the spelling it meant:
 
-- Editing your original source directory afterwards changes nothing, unless the environment runs
-  in watch mode (`--watch-env <env>`), which mounts local packages in place as symlinks instead of
-  copying them.
-- After editing the served copy, reload the package to recompile it:
-  `GET /api/v0/environments/{env}/packages/{pkg}?reload=true` over REST, or the
-  `reload_package` MCP tool. The reload is in place for a package that came from
-  `publisher.config.json`; a package the server installed from a location (below) is re-fetched
-  from it instead, which overwrites local edits. A reload that fails to compile leaves the files
-  alone and keeps serving the previous model.
-- `--init` deletes `publisher_data/` and re-copies everything from the configured locations. Keep
-  your source of truth outside `publisher_data/`.
+- `annotation-near-miss`: an annotation that reads as an attempt at a route Publisher reads
+  (`#(doc)`, `#(markdown)`, `#(classification)`, `#(carries)`, `#(secure)`, `#(index)`,
+  `#(dbmeta)`, `#(authorize)`, `#(access_filter)`, `#@ persist`, `#@ preaggregate`) but does not
+  reach it.
+- `annotation-malformed-route`: a prefix Malloy cannot route at all, such as `#percent` (write
+  `# percent` for a tag, or `#(name)` for an app route). Malloy warns about these when it compiles,
+  and the package now carries the warning.
 
-### Installed packages
+They are warnings, not refusals: a route that only looks like one of these may belong to another
+application, and a publish still succeeds. Gates are the exception, because a gate loaded inert
+leaves the source open. The spellings Publisher already refused (`#(AUTHORIZE)`, `# (authorize)`,
+`#(access-filter)` and the like, see [authorize.md](authorize.md)) still fail the load, and so now
+does a misspelled gate: `#(authorise)`, `#(autorize)`, `#(acess_filter)`, any route word within two
+edits of `authorize` or `access_filter`, on a source, a field or a named query. A word that contains
+a gate's name, such as `#(authorized)` or `#(reauthorize)`, reads as another application's route and
+only warns. Each model reports only the annotations in its own file, so a file several models import
+is reported once. `compile_model` at `file` scope returns the near misses as `warn` diagnostics at
+their line, and a misspelled gate as an `error` (code `annotation-gate-near-miss`), so an editor sees
+the refusal before a save. A capitalized directive (`#@ Persist`, `# Persist`) is a near miss too:
+Malloy reads only the lower-case `persist`. They are
+counted in `publisher_annotation_findings_total` with the other annotation findings.
 
-A package can also arrive through the API: a `POST` to an environment's `packages` with a
+## Lifecycle: what is served
+
+When an environment is first created, Publisher publishes each configured package as the version
+its `publisher.json` declares, into its own storage at `publisher_data/<env>/<pkg>/<version>/` (in
+the server root: the directory the server was launched from, unless `--server_root` set another),
+compiles it, and serves it. A package that declares no `version` fails to load. Consequences:
+
+- A published version is immutable. Editing your original source directory afterwards changes
+  nothing, and neither does a reload: `GET …/packages/{pkg}?reload=true` or `reload_package`
+  answers the version unchanged. To ship an edit, bump `version` in `publisher.json` and publish
+  again. See [package-versions.md](package-versions.md).
+- In watch mode (`--watch-env <env>`), the environment's local packages are mounted in place as
+  symlinks instead, with no versions, and an edit is read: reload the package to recompile it,
+  `GET /api/v0/environments/{env}/packages/{pkg}?reload=true` over REST or the `reload_package`
+  MCP tool. A reload that fails to compile leaves the files alone and keeps serving the previous
+  model.
+- `--init` deletes `publisher_data/` and publishes everything again from the configured
+  locations. Keep your source of truth outside `publisher_data/`.
+
+### Installed packages (versioning off)
+
+With `PUBLISHER_PACKAGE_VERSIONING=off`, a package can also arrive through the API: a `POST` to an environment's `packages` with a
 `location`, or a `PATCH` on a package that names one. The server downloads it, compiles the new
 copy beside the one that is serving (if any), and swaps it in; the previous copy answers queries
 until the swap. Four things follow from how that is recorded:
@@ -196,7 +247,8 @@ until the swap. Four things follow from how that is recorded:
   manifest binding it had. Everything else, the description, `explores`, policy, is what the
   re-fetched `publisher.json` declares.
 
-While a package is loading, reinstalling or recompiling, its `status` reports `loading: true`
+While a package is loading, reinstalling or recompiling, the `status` on its entry in
+`GET /api/v0/status` reports `loading: true`
 alongside `serving`, which stays true for as long as a previous copy answers queries. A package
 loading for the first time is listed only by `GET /api/v0/status?includeLoading=true`; every other
 listing shows packages that can serve. See [api-overview.md](api-overview.md).

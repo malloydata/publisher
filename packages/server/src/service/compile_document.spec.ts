@@ -25,6 +25,7 @@ import {
 import type { NotebookCellSpan } from "./notebook";
 import type { ReportQueryTileSpec } from "./report_manifest";
 import { Environment, resetAdmissionTelemetryForTesting } from "./environment";
+import { writePackageFiles } from "../test_helpers/temp_package";
 
 const manifestOf = (result: { document?: CompiledDocument }) => {
    if (!result.document?.manifest) throw new Error("no manifest");
@@ -44,9 +45,9 @@ const MODEL = `##! experimental.givens
 ## base note, which a document must never inherit
 ## artifact { layout=grid title="Base" }
 
-given:
-  ROLE :: string
-  REGION :: filter<string> is f''
+#(secure)
+given: ROLE :: string
+given: REGION :: filter<string> is f''
 
 #(secure)
 given: TENANT :: string is 'w'
@@ -78,16 +79,11 @@ describe("compile of a document (compileSource)", () => {
       files: Record<string, string>,
       manifest: Record<string, unknown> = {},
    ) {
-      await env.installPackage("pkg", async (stagingPath) => {
-         await fs.mkdir(stagingPath, { recursive: true });
-         await fs.writeFile(
-            path.join(stagingPath, "publisher.json"),
-            JSON.stringify({ name: "pkg", description: "doc", ...manifest }),
-         );
-         for (const [name, text] of Object.entries(files)) {
-            await fs.writeFile(path.join(stagingPath, name), text);
-         }
-      });
+      await env.installPackage("pkg", async (stagingPath) =>
+         writePackageFiles(stagingPath, files, {
+            manifest: { name: "pkg", description: "doc", ...manifest },
+         }),
+      );
    }
 
    beforeEach(async () => {
@@ -279,6 +275,7 @@ source: derived is gated extend { measure: n is count() }
       beforeEach(async () => {
          await install({
             "model.malloy": `##! experimental.givens
+#(secure)
 given:
   TENANTS :: string[]
 #(access_filter) tenant in $TENANTS
@@ -608,6 +605,7 @@ source: secured is duckdb.sql("SELECT 'acme' AS tenant, 1 AS x") extend {
       beforeEach(async () => {
          await install({
             "index.malloy": `##! experimental.givens
+#(secure)
 given:
   ROLE :: string
 source: customers is duckdb.sql("select 1 as id") extend {

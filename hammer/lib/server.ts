@@ -9,7 +9,8 @@
 import path from "path";
 import { existsSync, readdirSync, statSync } from "fs";
 import type { Subprocess } from "bun";
-import { log, run, runOrThrow, sleep, waitFor } from "./util";
+import { log, runOrThrow, sleep, waitFor } from "./util";
+import { HOST, PortInUseError, portsTakenAtExit } from "./ports";
 
 /** Newest mtime under `dir`, or 0 if it does not exist. Skips build output. */
 function newestMtimeMs(dir: string): number {
@@ -98,8 +99,8 @@ export interface ServerHandle {
 
 export async function startServer(opts: ServerOptions): Promise<ServerHandle> {
    const serverDir = path.join(opts.repoRoot, "packages", "server");
-   const baseUrl = `http://127.0.0.1:${opts.port}`;
-   const mcpUrl = `http://127.0.0.1:${opts.mcpPort}/mcp`;
+   const baseUrl = `http://${HOST}:${opts.port}`;
+   const mcpUrl = `http://${HOST}:${opts.mcpPort}/mcp`;
 
    const args = [
       "bun",
@@ -121,13 +122,20 @@ export async function startServer(opts: ServerOptions): Promise<ServerHandle> {
    );
 
    const logSink = opts.logFile ? Bun.file(opts.logFile).writer() : null;
+   // Every listener goes on HOST, the interface the port allocator probes; an
+   // inherited MCP_HOST would move MCP elsewhere. An inherited admin port would
+   // be the same fixed port for every publisher, the collision this harness
+   // allocates ports to avoid, so only a scenario's own env can turn it on.
+   const inherited: Record<string, string | undefined> = { ...process.env };
+   delete inherited.PUBLISHER_ADMIN_PORT;
    const proc: Subprocess = Bun.spawn(args, {
       cwd: serverDir,
       env: {
-         ...process.env,
+         ...inherited,
          NODE_ENV: "production",
          PERSIST_STORAGE_MODE: opts.mode,
-         PUBLISHER_HOST: "127.0.0.1",
+         PUBLISHER_HOST: HOST,
+         MCP_HOST: HOST,
          ...opts.extraEnv,
       },
       stdout: opts.inheritStdio ? "inherit" : "pipe",
@@ -146,8 +154,9 @@ export async function startServer(opts: ServerOptions): Promise<ServerHandle> {
    });
 
    // Drain captured output to the log file so a hang/crash is diagnosable.
+   let tail = "";
+   const pumps: Promise<void>[] = [];
    if (!opts.inheritStdio && logSink) {
-      let tail = "";
       const pump = async (stream: ReadableStream): Promise<void> => {
          for await (const chunk of stream as unknown as AsyncIterable<Uint8Array>) {
             logSink.write(chunk);
@@ -162,8 +171,8 @@ export async function startServer(opts: ServerOptions): Promise<ServerHandle> {
             }
          }
       };
-      if (proc.stdout instanceof ReadableStream) void pump(proc.stdout);
-      if (proc.stderr instanceof ReadableStream) void pump(proc.stderr);
+      if (proc.stdout instanceof ReadableStream) pumps.push(pump(proc.stdout));
+      if (proc.stderr instanceof ReadableStream) pumps.push(pump(proc.stderr));
    }
 
    let exited = false;
@@ -183,6 +192,9 @@ export async function startServer(opts: ServerOptions): Promise<ServerHandle> {
       await logSink?.end();
    };
 
+   // Ends the poll once the wait is decided either way, so a server that never
+   // came up does not leave a poll running against its dead port.
+   const pollDone = new AbortController();
    // The poll is the backstop: it covers inheritStdio (nothing to watch) and any
    // build predating the ready line. Whichever resolves first wins.
    const poll = waitFor(
@@ -192,21 +204,42 @@ export async function startServer(opts: ServerOptions): Promise<ServerHandle> {
             throw new Error(
                `server process exited early (see ${opts.logFile ?? "stdio"})`,
             );
-         const res = await fetch(`${baseUrl}/api/v0/status`);
+         const res = await fetch(`${baseUrl}/api/v0/status`, {
+            signal: pollDone.signal,
+         });
          if (!res.ok) return false;
          const body = (await res.json()) as { operationalState?: string };
          return body.operationalState === "serving";
       },
-      { timeoutMs: 180_000, intervalMs: 750 },
+      { timeoutMs: 180_000, intervalMs: 750, signal: pollDone.signal },
    );
+   // An exit before `serving` ends the wait at once. When it was a port taken
+   // between allocation and bind (another run, or any process, got there first),
+   // say so with a PortInUseError, so the caller can retry on fresh ports.
+   let ready = false;
+   const exitedEarly = proc.exited.then(async () => {
+      if (ready) return;
+      await Promise.race([Promise.allSettled(pumps), sleep(2000)]);
+      const taken = await portsTakenAtExit(tail, [opts.port, opts.mcpPort]);
+      const where = opts.logFile ?? "stdio";
+      if (taken.length > 0) {
+         throw new PortInUseError(
+            `server could not bind port(s) ${taken.join(", ")}: in use (see ${where})`,
+            taken,
+         );
+      }
+      throw new Error(`server process exited early (see ${where})`);
+   });
    try {
-      await Promise.race([readySignal, poll]);
+      await Promise.race([readySignal, poll, exitedEarly]);
+      ready = true;
    } catch (e) {
       await stop();
       throw e;
+   } finally {
+      pollDone.abort();
    }
-   // Keep the loser from surfacing as an unhandled rejection after we've moved on.
-   void poll.catch(() => undefined);
+   // The race subscribed to every loser, so a later rejection is handled.
 
    log.ok(`server serving (mode=${opts.mode})`);
    return { baseUrl, mcpUrl, mode: opts.mode, stop };

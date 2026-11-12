@@ -1,6 +1,7 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
+import { unrecordedAudit } from "./access_record";
 import { afterEach, beforeEach, describe, expect, it, spyOn } from "bun:test";
 import fs from "fs/promises";
 import os from "os";
@@ -16,6 +17,8 @@ import { Environment } from "./environment";
 // true coordinates; scope "package" is a dry-run with reload's reach (imports
 // across files) and none of its effects on the served model.
 import { listDashboards } from "./legacy_report_views";
+import { writePackageFiles } from "../test_helpers/temp_package";
+import { parsePackageName } from "./identity";
 
 const BASE_MODEL = `source: base_source is duckdb.sql("select 1 as id, 5 as n") extend {
   measure: c is count()
@@ -36,18 +39,12 @@ describe("compile scopes (compileSource)", () => {
       const envPath = path.join(rootDir, "env");
       await fs.mkdir(envPath, { recursive: true });
       env = await Environment.create("testEnv", envPath, []);
-      await env.installPackage("pkg", async (stagingPath) => {
-         await fs.mkdir(stagingPath, { recursive: true });
-         await fs.writeFile(
-            path.join(stagingPath, "publisher.json"),
-            '{"name":"pkg"}',
-         );
-         await fs.writeFile(path.join(stagingPath, "base.malloy"), BASE_MODEL);
-         await fs.writeFile(
-            path.join(stagingPath, "tracks.malloy"),
-            TRACKS_MODEL,
-         );
-      });
+      await env.installPackage("pkg", async (stagingPath) =>
+         writePackageFiles(stagingPath, {
+            "base.malloy": BASE_MODEL,
+            "tracks.malloy": TRACKS_MODEL,
+         }),
+      );
    });
 
    afterEach(async () => {
@@ -80,6 +77,49 @@ describe("compile scopes (compileSource)", () => {
       // At file scope the submitted text IS the file, so the edit just checks.
       const { problems } = await compile("tracks.malloy", edited, "file");
       expect(problems.filter((p) => p.severity === "error")).toEqual([]);
+   });
+
+   it("file: warns on an annotation reaching for a Publisher route, at its line", async () => {
+      const edited = TRACKS_MODEL.replace(
+         "  measure: total is n.sum()",
+         '  #(clasification) "none"\n  measure: total is n.sum()',
+      );
+      const { problems } = await compile("tracks.malloy", edited, "file");
+      const nearMiss = problems.filter(
+         (p) => p.code === "annotation-near-miss",
+      );
+      expect(nearMiss).toHaveLength(1);
+      expect(nearMiss[0]).toMatchObject({ severity: "warn" });
+      expect(nearMiss[0]?.message).toContain("`#(classification)`");
+      expect(nearMiss[0]?.at?.range.start.line).toBe(2);
+      // Append text is not scanned: its positions are in the joined file.
+      const appended = await compile(
+         "tracks.malloy",
+         `#(clasification) "none"\nsource: t2 is tracks`,
+         "append",
+      );
+      expect(
+         appended.problems.filter((p) => p.code === "annotation-near-miss"),
+      ).toEqual([]);
+   });
+
+   it("file: reports a misspelled gate as an error, since the load refuses it", async () => {
+      const edited = TRACKS_MODEL.replace(
+         "source: tracks is",
+         "#(authorise) 'finance' = 'finance'\nsource: tracks is",
+      );
+      const { problems } = await compile("tracks.malloy", edited, "file");
+      const gate = problems.filter(
+         (p) => p.code === "annotation-gate-near-miss",
+      );
+      expect(gate).toHaveLength(1);
+      expect(gate[0]).toMatchObject({ severity: "error" });
+      expect(gate[0]?.message).toContain("never enforced");
+      expect(gate[0]?.message).toContain("(meant `#(authorize)`?)");
+      // Not also reported as an ordinary near-miss warning.
+      expect(problems.filter((p) => p.code === "annotation-near-miss")).toEqual(
+         [],
+      );
    });
 
    it("file: diagnostics land at true coordinates in the submitted text", async () => {
@@ -174,6 +214,7 @@ source: tracks is base_source extend {
          path.join(rootDir, "env", "pkg", "broken.malloynb"),
          `>>>malloy
 ##! experimental.givens
+#(secure)
 given:
   ROLE :: string is 'x'
 
@@ -206,7 +247,7 @@ source: broken is duckdb.sql("select 1 as id") extend {
       // The whole point vs. reload: after a dry-run over a broken what-if, the
       // served model still answers, and no reload happened (the package would
       // otherwise be marked stale by a failing one).
-      const pkg = await env.getPackage("pkg");
+      const pkg = await env.getPackage(parsePackageName("pkg"));
       const servedBefore = pkg.getModel("tracks.malloy");
       await compile(
          "base.malloy",
@@ -216,7 +257,7 @@ source: broken is duckdb.sql("select 1 as id") extend {
       expect(pkg.getModel("tracks.malloy")).toBe(servedBefore);
       const { result } = await pkg
          .getModel("tracks.malloy")!
-         .getQueryResults("tracks", "v");
+         .runQuery(unrecordedAudit(), { sourceName: "tracks", queryName: "v" });
       expect(result.data).toBeDefined();
       expect(env.getFailedPackages().size).toBe(0);
    });
@@ -305,7 +346,7 @@ query: x is sales -> by_n
    const expectSameAsReload = async (
       problems: { severity?: string; message: string }[],
    ) => {
-      const reloaded = await env.getPackage("pkg", true);
+      const reloaded = await env.getPackage(parsePackageName("pkg"), true);
       // A compile finding has no subject field, so it leads the message.
       const served = (reloaded.getPackageMetadata().warnings ?? []).map(
          (w) =>
@@ -387,7 +428,7 @@ query: x is sales -> by_n
       );
       const result = await compilePackage();
       expect(unparsedOf(result.problems).length).toBe(1);
-      const reloaded = await env.getPackage("pkg", true);
+      const reloaded = await env.getPackage(parsePackageName("pkg"), true);
       expect(
          (reloaded.getPackageMetadata().warnings ?? []).filter(
             (w) =>
@@ -442,7 +483,7 @@ query: x is sales -> by_n
 
    it("package: the dashboard lint leaves the served package untouched", async () => {
       await writeDashboard(CLEAN_DASHBOARD);
-      const pkg = await env.getPackage("pkg", true);
+      const pkg = await env.getPackage(parsePackageName("pkg"), true);
       const before = pkg.getPackageMetadata().warnings;
       const servedModel = pkg.getModel("dashboards/x.malloy");
       expect(listDashboards(pkg, "env").map((d) => d.name)).toEqual(["x"]);
@@ -455,7 +496,7 @@ query: x is sales -> by_n
          "package",
       );
       expect(reloadFindings(problems).length).toBe(3);
-      expect(await env.getPackage("pkg")).toBe(pkg);
+      expect(await env.getPackage(parsePackageName("pkg"))).toBe(pkg);
       expect(pkg.getModel("dashboards/x.malloy")).toBe(servedModel);
       expect(pkg.getPackageMetadata().warnings).toEqual(before);
       expect(listDashboards(pkg, "env").map((d) => d.name)).toEqual(["x"]);

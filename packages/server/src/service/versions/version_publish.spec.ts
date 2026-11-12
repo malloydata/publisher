@@ -18,6 +18,7 @@ import type { ResourceRepository } from "../../storage/DatabaseInterface";
 import { initializeSchema } from "../../storage/duckdb/schema";
 import { VersionHost, VersionService } from "./version_service";
 import { VersionStore } from "./version_store";
+import { writePackageFiles } from "../../test_helpers/temp_package";
 
 const ENV_ID = "env-1";
 const PKG = "sales";
@@ -112,9 +113,13 @@ function source(
    model = "source: s is x",
 ): string {
    const dir = path.join(sourcesPath, name);
-   fs.mkdirSync(dir, { recursive: true });
-   fs.writeFileSync(path.join(dir, "publisher.json"), JSON.stringify(manifest));
-   fs.writeFileSync(path.join(dir, "model.malloy"), model);
+   writePackageFiles(
+      dir,
+      {
+         "model.malloy": model,
+      },
+      { manifest },
+   );
    return dir;
 }
 

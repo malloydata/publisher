@@ -24,6 +24,8 @@ import fs from "fs";
 import os from "os";
 import path from "path";
 import { RestE2EEnv, startRestE2E } from "../../harness/rest_e2e";
+import { installVariables } from "../../../src/test_helpers/settings_env";
+import { writePackageFiles } from "../../../src/test_helpers/temp_package";
 
 const ENV_NAME = "versions-api-contract-env";
 const FLAG = "PUBLISHER_PACKAGE_VERSIONING";
@@ -33,7 +35,6 @@ const TERMINAL = ["MANIFEST_FILE_READY", "FAILED", "CANCELLED"];
 let env: (RestE2EEnv & { stop(): Promise<void> }) | undefined;
 let baseUrl = "";
 let root = "";
-const saved = { flag: process.env[FLAG], promotion: process.env[PROMOTION] };
 
 /** The properties api-doc.yaml declares on a Materialization. */
 const MATERIALIZATION_PROPERTIES = new Set(
@@ -53,9 +54,15 @@ const MATERIALIZATION_PROPERTIES = new Set(
    ),
 );
 
+/** The variables this suite sets, installed over the process's own settings. */
+const variables: Record<string, string | undefined> = {};
+let restoreSettings: (() => void) | undefined;
+
+/** Give the in-process server `name` at `value`, or unset, as a restart with it would. */
 function setEnv(name: string, value: string | undefined): void {
-   if (value === undefined) delete process.env[name];
-   else process.env[name] = value;
+   variables[name] = value;
+   restoreSettings?.();
+   restoreSettings = installVariables(variables);
 }
 
 /**
@@ -68,22 +75,21 @@ function writePackage(
    answer: number,
 ): string {
    const dir = path.join(root, folder);
-   fs.mkdirSync(dir, { recursive: true });
-   fs.writeFileSync(path.join(dir, "publisher.json"), JSON.stringify(manifest));
-   fs.writeFileSync(
-      path.join(dir, "model.malloy"),
-      [
-         "##! experimental.persistence",
-         `source: base is duckdb.sql("SELECT ${answer} AS answer")`,
-         '#@ persist name="summary"',
-         "source: summary is base -> { group_by: answer }",
-         "",
-      ].join("\n"),
-   );
-   fs.writeFileSync(
-      path.join(dir, "report.malloy"),
-      '## artifact { layout=grid title="Report" tiles=["summary -> { select: answer }"] }\n' +
-         "import { summary } from 'model.malloy'\n",
+   writePackageFiles(
+      dir,
+      {
+         "model.malloy": [
+            "##! experimental.persistence",
+            `source: base is duckdb.sql("SELECT ${answer} AS answer")`,
+            '#@ persist name="summary"',
+            "source: summary is base -> { group_by: answer }",
+            "",
+         ].join("\n"),
+         "report.malloy":
+            '## artifact { layout=grid title="Report" tiles=["summary -> { select: answer }"] }\n' +
+            "import { summary } from 'model.malloy'\n",
+      },
+      { manifest },
    );
    return dir;
 }
@@ -176,7 +182,7 @@ async function everyRunResponse(
 
 describe("the versions contract a generated client sees", () => {
    beforeAll(async () => {
-      setEnv(FLAG, undefined);
+      setEnv(FLAG, "off");
       setEnv(PROMOTION, undefined);
       root = fs.realpathSync(
          fs.mkdtempSync(path.join(os.tmpdir(), "versions-api-contract-")),
@@ -209,11 +215,11 @@ describe("the versions contract a generated client sees", () => {
          200,
          "1.0.0",
       ]);
-      setEnv(FLAG, undefined);
+      setEnv(FLAG, "off");
    }, 180_000);
 
    afterEach(() => {
-      setEnv(FLAG, undefined);
+      setEnv(FLAG, "off");
       setEnv(PROMOTION, undefined);
    });
 
@@ -223,8 +229,7 @@ describe("the versions contract a generated client sees", () => {
       }).catch(() => undefined);
       await env?.stop();
       fs.rmSync(root, { recursive: true, force: true });
-      setEnv(FLAG, saved.flag);
-      setEnv(PROMOTION, saved.promotion);
+      restoreSettings?.();
    });
 
    it(
@@ -365,7 +370,7 @@ describe("the versions contract a generated client sees", () => {
 
    it("answers a malformed versionId 400 VERSION_ID_INVALID on the sampled routes, versioning off and on", async () => {
       for (const [flag, name] of [
-         [undefined, "plain"],
+         ["off", "plain"],
          ["on", "ver"],
       ] as const) {
          setEnv(FLAG, flag);

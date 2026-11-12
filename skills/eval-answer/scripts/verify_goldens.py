@@ -25,7 +25,7 @@ WHAT IT CHECKS, AND WHAT EACH CATCHES
 
 2. rubric numbers -- every figure the rubric's ACCEPTING clause quotes appears
                  in the golden rows or their column sums. Would have caught the
-                 authoring defect that cost an arm on the VideoAmp set: a rubric
+                 authoring defect that cost an arm on a warehouse-backed set: a rubric
                  that said "122,935,709.72 (group 31681)" while its own executed
                  rows held a different number, so the judge -- correctly --
                  reported the golden as suspect. Reported as REVIEW items, not

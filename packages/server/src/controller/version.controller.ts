@@ -5,7 +5,6 @@ import {
    isManifestLocation,
    MANIFEST_LOCATION_FORMS,
 } from "./manifest_location";
-import type express from "express";
 import { components } from "../api";
 import { API_PREFIX } from "../constants";
 import {
@@ -13,12 +12,14 @@ import {
    FrozenConfigError,
    PackageNotFoundError,
 } from "../errors";
-import { assertSafePackageName } from "../path_safety";
-import { apiRoute } from "../routes/json_route";
-import type { EnvironmentStore } from "../service/environment_store";
+import type {
+   ConfigFreezeReader,
+   PackageLookup,
+} from "../service/environment_ports";
 import type { Package } from "../service/package";
 import type { VersionService } from "../service/versions/version_service";
 import type { Version } from "../storage/DatabaseInterface";
+import { parseEnvironmentName } from "../service/identity";
 
 type ApiPackageVersion = components["schemas"]["PackageVersion"];
 type ApiPackage = components["schemas"]["Package"];
@@ -29,7 +30,9 @@ type ApiPackage = components["schemas"]["Package"];
  * live in the environment's VersionService; this is their HTTP shape.
  */
 export class VersionController {
-   constructor(private readonly environmentStore: EnvironmentStore) {}
+   constructor(
+      private readonly environmentStore: PackageLookup & ConfigFreezeReader,
+   ) {}
 
    async listVersions(
       environmentName: string,
@@ -111,21 +114,17 @@ export class VersionController {
       packageName: string,
       version: unknown,
       body: unknown,
+      request: {
+         /** A legacy combined-name PATCH rewritten to this PUT. */
+         legacyPatch?: boolean;
+         /** Whether the request was sent as JSON. Absent: assumed JSON. */
+         json?: boolean;
+      } = {},
    ): Promise<ApiPackage> {
       this.assertWritable();
-      const fields = (body ?? {}) as { manifestLocation?: unknown };
-      const location = fields.manifestLocation;
-      // A location the manifest loader reads (see isManifestLocation), or
-      // null to clear the binding.
-      if (
-         !("manifestLocation" in fields) ||
-         (location !== null &&
-            (typeof location !== "string" || !isManifestLocation(location)))
-      ) {
-         throw new BadRequestError(
-            `\`manifestLocation\` must be ${MANIFEST_LOCATION_FORMS}, or null to serve live.`,
-         );
-      }
+      const location = request.legacyPatch
+         ? legacyPatchLocation(body)
+         : putLocation(body, request.json ?? true);
       const { versions, environment } = await this.service(environmentName);
       const loaded: Package = await versions.setManifest(
          packageName,
@@ -155,10 +154,10 @@ export class VersionController {
 
    private async service(environmentName: string): Promise<{
       versions: VersionService<Package>;
-      environment: Awaited<ReturnType<EnvironmentStore["getEnvironment"]>>;
+      environment: Awaited<ReturnType<PackageLookup["getEnvironment"]>>;
    }> {
       const environment = await this.environmentStore.getEnvironment(
-         environmentName,
+         parseEnvironmentName(environmentName),
          false,
       );
       const versions = environment.getVersionService();
@@ -197,80 +196,67 @@ function toApiVersion(
 }
 
 /**
- * The versions routes, registered on the app's route table like every other
- * `/api/v0` route: each answers through {@link apiRoute}, so a refusal is
- * logged once at `warn` and a failure once at `error`.
+ * The location a native `PUT …/manifest` body names. Its only field is
+ * `manifestLocation`, so any other key is refused (a typo such as
+ * `manifestUri` must not read as a clear). A missing or null field clears the
+ * binding: generated clients drop a null field from the JSON they send, so
+ * `{}` is how they say null. A request not sent as JSON is refused, because
+ * its body never reaches here and would otherwise read as `{}`.
  */
-export function registerVersionRoutes(
-   app: express.Express,
-   pkg: string,
-   controller: VersionController,
-): void {
-   const route = (run: (req: express.Request) => Promise<unknown>) =>
-      apiRoute((req) => {
-         assertSafePackageName(req.params.packageName);
-         return run(req);
-      });
+function putLocation(body: unknown, json: boolean): string | null {
+   if (!json) {
+      throw new BadRequestError(
+         'Send the body as `application/json`: `{"manifestLocation": "…"}` ' +
+            "to bind, or `{}` (or a null `manifestLocation`) to serve live.",
+      );
+   }
+   if (
+      body !== undefined &&
+      body !== null &&
+      (typeof body !== "object" || Array.isArray(body))
+   ) {
+      throw new BadRequestError(
+         "The body must be an object with an optional `manifestLocation`.",
+      );
+   }
+   const fields = (body ?? {}) as Record<string, unknown>;
+   const unknownKeys = Object.keys(fields).filter(
+      (key) => key !== "manifestLocation",
+   );
+   if (unknownKeys.length > 0) {
+      throw new BadRequestError(
+         `Unknown field${unknownKeys.length > 1 ? "s" : ""} ` +
+            `${unknownKeys.map((k) => `\`${k}\``).join(", ")}: the body takes ` +
+            "only `manifestLocation`.",
+      );
+   }
+   return checkedLocation(fields.manifestLocation ?? null, "(or absent) ");
+}
 
-   app.get(
-      `${pkg}/versions`,
-      route((req) =>
-         controller.listVersions(
-            req.params.environmentName,
-            req.params.packageName,
-         ),
-      ),
-   );
-   app.get(
-      `${pkg}/versions/:version`,
-      route((req) =>
-         controller.getVersion(
-            req.params.environmentName,
-            req.params.packageName,
-            req.params.version,
-         ),
-      ),
-   );
-   app.patch(
-      `${pkg}/versions/:version`,
-      route((req) =>
-         controller.updateVersion(
-            req.params.environmentName,
-            req.params.packageName,
-            req.params.version,
-            req.body,
-         ),
-      ),
-   );
-   app.delete(
-      `${pkg}/versions/:version`,
-      route((req) =>
-         controller.deleteVersion(
-            req.params.environmentName,
-            req.params.packageName,
-            req.params.version,
-         ),
-      ),
-   );
-   app.put(
-      `${pkg}/versions/:version/manifest`,
-      route((req) =>
-         controller.setManifest(
-            req.params.environmentName,
-            req.params.packageName,
-            req.params.version,
-            req.body,
-         ),
-      ),
-   );
-   app.put(
-      `${pkg}/latest`,
-      route((req) =>
-         controller.setLatest(
-            req.params.environmentName,
-            req.params.packageName,
-            req.body,
-         ),
-      ),
-   );
+/**
+ * The location a legacy combined-name PATCH names. Its body is the old
+ * package-update body, so only `manifestLocation` is read and the other
+ * fields (including the `versionId` the legacy middleware adds) are ignored,
+ * as before; the field must be present, string or null, as it always had to.
+ */
+function legacyPatchLocation(body: unknown): string | null {
+   const fields = (
+      body && typeof body === "object" && !Array.isArray(body) ? body : {}
+   ) as Record<string, unknown>;
+   if (!("manifestLocation" in fields)) {
+      throw new BadRequestError(
+         `\`manifestLocation\` must be ${MANIFEST_LOCATION_FORMS}, or null to serve live.`,
+      );
+   }
+   return checkedLocation(fields.manifestLocation, "");
+}
+
+function checkedLocation(location: unknown, absentNote: string): string | null {
+   if (location === null) return null;
+   if (typeof location !== "string" || !isManifestLocation(location)) {
+      throw new BadRequestError(
+         `\`manifestLocation\` must be ${MANIFEST_LOCATION_FORMS}, or null ${absentNote}to serve live.`,
+      );
+   }
+   return location;
 }

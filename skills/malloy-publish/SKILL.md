@@ -29,7 +29,7 @@ A package backed by data files (CSV/Parquet/XLSX/JSON) needs **no `connections` 
 Two more facts about how a Publisher server sees the package, both easy to get wrong:
 
 - **A package `location` is treated as local only when it starts with `./`, `../`, `~/`, or `/`.** A bare name like `"spotify"` is silently not local; write `"./spotify"`.
-- **Local authoring means `--watch-env`.** Without `--watch-env <env>`, Publisher **copies** each local package into `publisher_data/` at boot and serves the copy; edits to your source directory are never read, however many times you save. Start the server with `--watch-env <env>` (mounts the package in place and live-reloads), the same command `skill:malloy-html-data-apps` uses:
+- **Local authoring means `--watch-env`.** Without `--watch-env <env>`, Publisher **publishes** each local package at boot as the immutable version its `publisher.json` declares and serves that; edits to your source directory are never read, however many times you save or reload. Start the server with `--watch-env <env>` (mounts the package in place and live-reloads), the same command `skill:malloy-html-data-apps` uses:
 
   ```sh
   npx @malloy-publisher/server --server_root . --port 4000 --watch-env <env>
@@ -37,7 +37,7 @@ Two more facts about how a Publisher server sees the package, both easy to get w
 
 ## Step 1: Verify publisher.json
 
-Check if `publisher.json` exists in the package root. If it does, proceed to Step 2.
+Check if `publisher.json` exists in the package root. If it does and declares a `version`, proceed to Step 2. If it has no `version`, add one (`0.0.1` for a first publish, as below): a publish without one is refused with 400 `MANIFEST_VERSION_MISSING`, and outside watch mode a configured package without one fails to load.
 
 If it doesn't exist, create one. Suggest a package name based on the model content, write a brief description, and default to version `0.0.1`.
 

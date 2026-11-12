@@ -6,27 +6,20 @@
 // this file is about that deprecated feature.
 
 import { expect, test } from "@playwright/test";
-import fs from "fs/promises";
-import path from "path";
-import { fileURLToPath } from "url";
-import { DEFAULT_ENV, PACKAGES } from "./helpers/fixtures";
-import { gotoHome, openEnvironment, openPackage } from "./helpers/navigation";
+import { PACKAGES } from "./helpers/fixtures";
+import {
+   exampleFixture,
+   publishPackageEnv,
+   type PackageEnv,
+} from "./helpers/packageEnv";
 
 /**
  * `.malloynb` is deprecated and the example packages no longer ship one, so
- * this suite writes the notebook it reads about and removes it afterwards. The
- * viewer stays supported, so the coverage stays.
+ * this suite adds the notebook it reads about to a throwaway copy of each
+ * package. The viewer stays supported, so the coverage stays.
  */
 const FIXTURE_NOTEBOOK = "test_package_notebook.malloynb";
-const PKG_DIR = path.resolve(
-   path.dirname(fileURLToPath(import.meta.url)),
-   "../../../server/publisher_data/examples/storefront",
-);
 const GOVERNED_NOTEBOOK = "test_governed_notebook.malloynb";
-const GOVERNED_DIR = path.resolve(
-   path.dirname(fileURLToPath(import.meta.url)),
-   "../../../server/publisher_data/examples/governed-analytics",
-);
 const GOVERNED_SOURCE = `>>>markdown
 # Governed notebook
 
@@ -54,41 +47,36 @@ run: order_items -> top_customers
 run: order_items -> category_performance
 `;
 
-async function reloadPackage(
-   baseURL: string,
-   pkg: string = PACKAGES.storefront,
-): Promise<void> {
-   const url = `${baseURL}/api/v0/environments/${DEFAULT_ENV}/packages/${pkg}?reload=true`;
-   const res = await fetch(url);
-   if (!res.ok) throw new Error(`Package reload failed: ${res.status}`);
-}
+let storefront: PackageEnv;
+let governed: PackageEnv;
 
 test.describe("package-notebooks", () => {
-   test.beforeAll(async ({ baseURL }) => {
-      await fs.writeFile(path.join(PKG_DIR, FIXTURE_NOTEBOOK), NOTEBOOK_SOURCE);
-      await fs.writeFile(
-         path.join(GOVERNED_DIR, GOVERNED_NOTEBOOK),
-         GOVERNED_SOURCE,
+   // eslint-disable-next-line no-empty-pattern
+   test.beforeAll(async ({}, testInfo) => {
+      const baseURL = testInfo.project.use.baseURL ?? "http://localhost:4000";
+      storefront = await publishPackageEnv(
+         baseURL,
+         "pkgnb",
+         exampleFixture(PACKAGES.storefront),
+         PACKAGES.storefront,
+         { [FIXTURE_NOTEBOOK]: NOTEBOOK_SOURCE },
       );
-      await reloadPackage(baseURL!);
-      await reloadPackage(baseURL!, PACKAGES.governed);
+      governed = await publishPackageEnv(
+         baseURL,
+         "pkgnbgov",
+         exampleFixture(PACKAGES.governed),
+         PACKAGES.governed,
+         { [GOVERNED_NOTEBOOK]: GOVERNED_SOURCE },
+      );
    });
 
-   test.afterAll(async ({ baseURL }) => {
-      await fs
-         .unlink(path.join(PKG_DIR, FIXTURE_NOTEBOOK))
-         .catch(() => undefined);
-      await fs
-         .unlink(path.join(GOVERNED_DIR, GOVERNED_NOTEBOOK))
-         .catch(() => undefined);
-      await reloadPackage(baseURL!).catch(() => undefined);
-      await reloadPackage(baseURL!, PACKAGES.governed).catch(() => undefined);
+   test.afterAll(async () => {
+      await storefront?.dispose();
+      await governed?.dispose();
    });
 
    test("Reports section lists .malloynb files", async ({ page }) => {
-      await gotoHome(page);
-      await openEnvironment(page, DEFAULT_ENV);
-      await openPackage(page, DEFAULT_ENV, PACKAGES.storefront);
+      await page.goto(`/${storefront.path}`);
 
       // The section label is the only user-visible string the Pages/Console
       // rename changes, and no other test reads it, so a relabel that misses a
@@ -110,23 +98,17 @@ test.describe("package-notebooks", () => {
    test("opening a notebook routes into the notebook view", async ({
       page,
    }) => {
-      await gotoHome(page);
-      await openEnvironment(page, DEFAULT_ENV);
-      await openPackage(page, DEFAULT_ENV, PACKAGES.storefront);
+      await page.goto(`/${storefront.path}`);
 
       await page.getByText(FIXTURE_NOTEBOOK, { exact: true }).click();
 
       // The notebook opens on its own route; assert we navigated off the package route.
-      await expect(page).not.toHaveURL(
-         new RegExp(`/${DEFAULT_ENV}/${PACKAGES.storefront}/?$`),
-      );
+      await expect(page).not.toHaveURL(new RegExp(`/${storefront.path}/?$`));
       await expect(page).toHaveURL(/test_package_notebook\.malloynb/);
    });
 
    test("the notebook view renders authored content", async ({ page }) => {
-      await gotoHome(page);
-      await openEnvironment(page, DEFAULT_ENV);
-      await openPackage(page, DEFAULT_ENV, PACKAGES.storefront);
+      await page.goto(`/${storefront.path}`);
       await page.getByText(FIXTURE_NOTEBOOK, { exact: true }).click();
       // The fixture's own H1: its presence confirms the Notebook mounted and
       // ran the cells.
@@ -138,19 +120,15 @@ test.describe("package-notebooks", () => {
    test("clicking a notebook row keeps the package segment in the URL", async ({
       page,
    }) => {
-      await gotoHome(page);
-      await openEnvironment(page, DEFAULT_ENV);
-      await openPackage(page, DEFAULT_ENV, PACKAGES.governed);
+      await page.goto(`/${governed.path}`);
 
       // The fixture's name shares nothing with its package, so a dropped
-      // package segment lands on /examples/<file> and 404s. The storefront
+      // package segment lands on /<env>/<file> and 404s. The storefront
       // case above cannot catch that: its URL matches either way.
       await page.getByText(GOVERNED_NOTEBOOK, { exact: true }).click();
 
       await expect(page).toHaveURL(
-         new RegExp(
-            `/${DEFAULT_ENV}/${PACKAGES.governed}/${GOVERNED_NOTEBOOK}$`,
-         ),
+         new RegExp(`/${governed.path}/${GOVERNED_NOTEBOOK}$`),
       );
       await expect(page.getByText(/does not exist/i)).toHaveCount(0);
    });
@@ -158,9 +136,7 @@ test.describe("package-notebooks", () => {
    test("a table cell is as tall as its table, not as tall as the cell cap", async ({
       page,
    }) => {
-      await page.goto(
-         `/${DEFAULT_ENV}/${PACKAGES.storefront}/test_package_notebook.malloynb`,
-      );
+      await page.goto(`/${storefront.path}/test_package_notebook.malloynb`);
 
       // Every notebook table, measured against the box the cell gives it: a
       // cell must end up as tall as its table, not as tall as the 700px cap.

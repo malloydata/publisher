@@ -2,17 +2,22 @@
 // SPDX-License-Identifier: MIT
 
 import { describe, expect, it } from "bun:test";
-import { registerReloadPackageTool } from "./reload_package_tool";
+import {
+   registerReloadPackageTool,
+   VERSION_RELOAD_UNCHANGED,
+} from "./reload_package_tool";
 import type { EnvironmentStore } from "../../service/environment_store";
 import {
    EnvironmentNotFoundError,
    PackageNotFoundError,
    ServiceUnavailableError,
 } from "../../errors";
+import { PackageController } from "../../controller/package.controller";
+import { testRetrieval } from "../../test_helpers/test_retrieval";
 
-// Capture the handler registerReloadPackageTool passes to McpServer.tool, so it
-// can be exercised against a mocked EnvironmentStore. The tool builds a
-// PackageController internally, which calls environment.getPackage(pkg, reload),
+// Capture the handler registerReloadPackageTool passes to McpServer.registerTool, so it
+// can be exercised against a mocked EnvironmentStore. The tool calls the
+// PackageController it is handed, which calls environment.getPackage(pkg, reload),
 // so the mock only needs getEnvironment -> { getPackage }.
 type Handler = (params: Record<string, unknown>) => Promise<{
    isError?: boolean;
@@ -22,11 +27,17 @@ type Handler = (params: Record<string, unknown>) => Promise<{
 function captureHandler(store: Partial<EnvironmentStore>): Handler {
    let handler: Handler | undefined;
    const fakeServer = {
-      tool: (_name: string, _desc: string, _shape: unknown, h: Handler) => {
+      registerTool: (_name: string, _config: unknown, h: Handler) => {
          handler = h;
       },
    };
-   registerReloadPackageTool(fakeServer as never, store as EnvironmentStore);
+   registerReloadPackageTool(
+      fakeServer as never,
+      new PackageController(
+         store as EnvironmentStore,
+         testRetrieval(store as EnvironmentStore),
+      ),
+   );
    if (!handler) throw new Error("handler was not registered");
    return handler;
 }
@@ -38,6 +49,15 @@ function parse(result: { content: Array<{ resource: { text: string } }> }) {
 // A store whose package reload returns `metadata`. `location` is left undefined
 // so PackageController takes the in-place-reload branch (no re-download). The
 // optional `calls` array records the `reload` flag of every getPackage call.
+// The reload receipt (`servedRevision`, `sourceContentSha`) is the package's
+// serving state, so the stub serves it from the same record.
+function operationalOf(metadata: Record<string, unknown>) {
+   return {
+      servedRevision: metadata.servedRevision,
+      sourceContentSha: metadata.sourceContentSha,
+   };
+}
+
 function storeReturning(
    metadata: Record<string, unknown>,
    calls?: boolean[],
@@ -49,7 +69,10 @@ function storeReturning(
             getVersionService: () => null,
             getPackage: async (_pkg: string, reload: boolean) => {
                calls?.push(reload);
-               return { getPackageMetadata: () => metadata } as never;
+               return {
+                  getPackageMetadata: () => metadata,
+                  getOperationalFields: () => operationalOf(metadata),
+               } as never;
             },
          }) as never,
    };
@@ -79,7 +102,10 @@ function storeWithInstallLocation(installed: Record<string, unknown>): {
                   }) as never,
                installPackage: async (pkg: string) => {
                   installCalls.push(pkg);
-                  return { getPackageMetadata: () => installed } as never;
+                  return {
+                     getPackageMetadata: () => installed,
+                     getOperationalFields: () => operationalOf(installed),
+                  } as never;
                },
             }) as never,
       },
@@ -251,6 +277,34 @@ describe("reload_package tool", () => {
       expect(result.isError).toBe(false);
       expect(installCalls).toEqual(["ecommerce"]);
       expect(parse(result).mode).toBe("reinstalled");
+   });
+
+   it("tells the caller a published version took no edit", async () => {
+      // A version is immutable, so a reload answers it as it is, and still as
+      // a success: the message is the only thing that tells an agent its
+      // saved edit went nowhere. (The in-place cases above pin its absence.)
+      const handler = captureHandler({
+         getEnvironment: async () =>
+            ({
+               getVersionService: () => ({
+                  resolve: async () => ({ versionId: "1.0.0" }),
+               }),
+               getPackage: async () =>
+                  ({ getOperationalFields: () => ({}) }) as never,
+               describePackage: async () => ({
+                  name: "ecommerce",
+                  versionId: "1.0.0",
+               }),
+            }) as never,
+      });
+      const result = await handler(args);
+      expect(result.isError).toBe(false);
+      expect(parse(result)).toEqual({
+         status: "reloaded",
+         mode: "unchanged",
+         message: VERSION_RELOAD_UNCHANGED,
+         name: "ecommerce",
+      });
    });
 
    it("never echoes the package location back to the caller", async () => {

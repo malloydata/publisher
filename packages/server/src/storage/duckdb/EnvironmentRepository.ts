@@ -2,21 +2,21 @@
 // SPDX-License-Identifier: MIT
 
 import { logger } from "../../logger";
-import { Environment } from "../DatabaseInterface";
+import { EnvironmentRecord } from "../DatabaseInterface";
 import { DuckDBConnection } from "./DuckDBConnection";
 import { newId, Row, rowTimestamps, updateRow } from "./rows";
 
 export class EnvironmentRepository {
    constructor(private db: DuckDBConnection) {}
 
-   async listEnvironments(): Promise<Environment[]> {
+   async listEnvironments(): Promise<EnvironmentRecord[]> {
       const rows = await this.db.all<Row>(
          "SELECT * FROM environments ORDER BY name",
       );
       return rows.map(mapToEnvironment);
    }
 
-   async getEnvironmentById(id: string): Promise<Environment | null> {
+   async getEnvironmentById(id: string): Promise<EnvironmentRecord | null> {
       const row = await this.db.get<Row>(
          "SELECT * FROM environments WHERE id = ?",
          [id],
@@ -24,7 +24,7 @@ export class EnvironmentRepository {
       return row ? mapToEnvironment(row) : null;
    }
 
-   async getEnvironmentByName(name: string): Promise<Environment | null> {
+   async getEnvironmentByName(name: string): Promise<EnvironmentRecord | null> {
       const row = await this.db.get<Row>(
          "SELECT * FROM environments WHERE name = ?",
          [name],
@@ -33,8 +33,8 @@ export class EnvironmentRepository {
    }
 
    async createEnvironment(
-      environment: Omit<Environment, "id" | "createdAt" | "updatedAt">,
-   ): Promise<Environment> {
+      environment: Omit<EnvironmentRecord, "id" | "createdAt" | "updatedAt">,
+   ): Promise<EnvironmentRecord> {
       const id = newId();
       const now = new Date();
 
@@ -80,8 +80,8 @@ export class EnvironmentRepository {
 
    async updateEnvironment(
       id: string,
-      updates: Partial<Environment>,
-   ): Promise<Environment> {
+      updates: Partial<EnvironmentRecord>,
+   ): Promise<EnvironmentRecord> {
       const existing = await this.getEnvironmentById(id);
       if (!existing) {
          throw new Error(`Environment with id ${id} not found`);
@@ -97,7 +97,7 @@ export class EnvironmentRepository {
                : undefined,
       });
 
-      return this.getEnvironmentById(id) as Promise<Environment>;
+      return this.getEnvironmentById(id) as Promise<EnvironmentRecord>;
    }
 
    async deleteEnvironment(id: string): Promise<void> {
@@ -105,7 +105,7 @@ export class EnvironmentRepository {
    }
 }
 
-function mapToEnvironment(row: Row): Environment {
+function mapToEnvironment(row: Row): EnvironmentRecord {
    return {
       id: row.id as string,
       name: row.name as string,

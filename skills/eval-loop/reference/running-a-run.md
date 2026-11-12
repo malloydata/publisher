@@ -155,7 +155,7 @@ Three layers, in this order, and the order is what makes it readable:
 Order of magnitude for planning, **calibrated on ecommerce over local duckdb**:
 a Sonnet arm over a few dozen cases costs single-digit dollars and finishes in
 minutes, at roughly a dime and a handful of turns per case. A proxied warehouse
-is a different regime: the VideoAmp set ran at $0.33 per case on Sonnet and
+is a different regime: a proxied-warehouse set ran at $0.33 per case on Sonnet and
 $0.57–0.71 on Opus, ~100 s per case, driven by warehouse latency and query
 errors -- budget 4x when the data is not local. Budget **five** such arms for a
 defensible claim -- a baseline, two for the A/A, and two post-edit -- plus the

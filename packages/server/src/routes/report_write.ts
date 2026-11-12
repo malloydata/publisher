@@ -4,6 +4,7 @@
 import type express from "express";
 import type { ReportController } from "../controller/report.controller";
 import { logger } from "../logger";
+import { versionRefOf } from "../route_params";
 import { sendRouteError, wildcardParam } from "./json_route";
 
 /**
@@ -26,7 +27,7 @@ export function reportWriteRoute(
             req.params.packageName,
             wildcardParam(req),
             req.body,
-            req.query.versionId,
+            versionRefOf(req),
          );
          res.status(result.created ? 201 : 200).json(result);
       } catch (error) {

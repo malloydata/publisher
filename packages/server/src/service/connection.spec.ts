@@ -39,7 +39,7 @@ import {
    resolveCloudStorageCredentials,
 } from "./gcs_s3_utils";
 import { assembleEnvironmentConnections } from "./connection_config";
-import { listStorageTables } from "./materialization_build_session";
+import { listStorageTables } from "./materialization/run/materialization_build_session";
 import {
    ConnectionPoolExhaustedError,
    internalErrorToHttpError,
@@ -61,7 +61,10 @@ import {
    startClosingListener,
    type ClosingListener,
 } from "../test_helpers/closing_listener";
+import { installSettings } from "../test_helpers/settings_env";
 import { EnvironmentStore } from "./environment_store";
+import { parseEnvironmentName, parsePackageName } from "./identity";
+import { startedStore } from "../test_helpers/started_store";
 
 type ApiConnection = components["schemas"]["Connection"];
 type AttachedDatabase = components["schemas"]["AttachedDatabase"];
@@ -911,11 +914,15 @@ describe("connection integration tests", () => {
                // DO NOT copy this pattern into a test that points
                // EnvironmentStore at a non-empty or shared serverRoot
                // — it will delete state.
-               const previousInitializeStorage = process.env.INITIALIZE_STORAGE;
-               process.env.INITIALIZE_STORAGE = "true";
+               const { restore } = installSettings({
+                  env: { INITIALIZE_STORAGE: "true" },
+                  cwd: tempServerRoot,
+               });
 
                try {
-                  const envStore = new EnvironmentStore(tempServerRoot);
+                  const envStore = startedStore(
+                     new EnvironmentStore(tempServerRoot),
+                  );
                   await envStore.finishedInitialization;
 
                   // initialize() swallows top-level errors and just calls
@@ -929,7 +936,9 @@ describe("connection integration tests", () => {
                   expect(status.operationalState).toBe("serving");
                   expect(status.loadErrors).toBeUndefined();
 
-                  const env = await envStore.getEnvironment("malloy-samples");
+                  const env = await envStore.getEnvironment(
+                     parseEnvironmentName("malloy-samples"),
+                  );
                   const apiPackages = await env.listPackages();
                   expect(apiPackages.map((p) => p.name)).toContain(
                      "bigquery-hackernews",
@@ -947,7 +956,9 @@ describe("connection integration tests", () => {
                   // if every BQ schema introspection failed. Filter for
                   // models that compiled cleanly: at least one is the
                   // real proof that BQ-on-behalf-of-a-package works.
-                  const pkg = await env.getPackage("bigquery-hackernews");
+                  const pkg = await env.getPackage(
+                     parsePackageName("bigquery-hackernews"),
+                  );
                   const models = await pkg.listModels();
                   const okModels = models.filter((m) => !m.error);
                   if (okModels.length === 0) {
@@ -958,11 +969,7 @@ describe("connection integration tests", () => {
                   }
                   expect(okModels.length).toBeGreaterThan(0);
                } finally {
-                  if (previousInitializeStorage === undefined) {
-                     delete process.env.INITIALIZE_STORAGE;
-                  } else {
-                     process.env.INITIALIZE_STORAGE = previousInitializeStorage;
-                  }
+                  restore();
                }
             },
             { timeout: 180000 },
@@ -2203,8 +2210,9 @@ describe("connection integration tests", () => {
                   );
                   return;
                }
-               const previous = process.env.PUBLISHER_POSTGRES_POOL_MAX;
-               process.env.PUBLISHER_POSTGRES_POOL_MAX = "3";
+               const { restore } = installSettings({
+                  env: { PUBLISHER_POSTGRES_POOL_MAX: "3" },
+               });
                const config = buildPlainPostgresConfig();
                try {
                   const connection =
@@ -2217,11 +2225,7 @@ describe("connection integration tests", () => {
                   expect(pool.options.max).toBe(3);
                } finally {
                   await config.releaseConnections();
-                  if (previous === undefined) {
-                     delete process.env.PUBLISHER_POSTGRES_POOL_MAX;
-                  } else {
-                     process.env.PUBLISHER_POSTGRES_POOL_MAX = previous;
-                  }
+                  restore();
                }
             },
             { timeout: 30000 },
@@ -2798,7 +2802,7 @@ describe("connection integration tests", () => {
       // where an unscreened setupSQL would run first. The marker file is the
       // proof: setupSQL either ran (file present) or it did not.
       describe("DuckDB setupSQL opt-in", () => {
-         const originalAllow = process.env.PUBLISHER_ALLOW_DUCKDB_SETUP_SQL;
+         let restoreSettings: (() => void) | undefined;
          let dir: string;
 
          beforeEach(async () => {
@@ -2806,11 +2810,8 @@ describe("connection integration tests", () => {
          });
 
          afterEach(async () => {
-            if (originalAllow === undefined) {
-               delete process.env.PUBLISHER_ALLOW_DUCKDB_SETUP_SQL;
-            } else {
-               process.env.PUBLISHER_ALLOW_DUCKDB_SETUP_SQL = originalAllow;
-            }
+            restoreSettings?.();
+            restoreSettings = undefined;
             await fs.rm(dir, { recursive: true, force: true });
          });
 
@@ -2829,7 +2830,7 @@ describe("connection integration tests", () => {
             );
 
          it("refuses setupSQL without running it when the opt-in is unset", async () => {
-            delete process.env.PUBLISHER_ALLOW_DUCKDB_SETUP_SQL;
+            restoreSettings = installSettings({ env: {} }).restore;
             const marker = path.join(dir, "ran.csv");
 
             const result = await testConnectionConfig(markerConfig(marker));
@@ -2842,7 +2843,9 @@ describe("connection integration tests", () => {
          });
 
          it("runs setupSQL when the opt-in is set", async () => {
-            process.env.PUBLISHER_ALLOW_DUCKDB_SETUP_SQL = "true";
+            restoreSettings = installSettings({
+               env: { PUBLISHER_ALLOW_DUCKDB_SETUP_SQL: "true" },
+            }).restore;
             const marker = path.join(dir, "ran.csv");
 
             const result = await testConnectionConfig(markerConfig(marker));
@@ -4210,31 +4213,74 @@ describe("buildPgConnectionString", () => {
       else process.env.PGSSLMODE = previousPgSslMode;
    });
 
-   it("builds a DuckLake catalog's string exactly as before, whatever the new fields say", () => {
-      const withFields = buildPgConnectionString(
-         {
-            ...fields,
-            sslmode: "verify-full",
-            statementTimeoutMilliseconds: 5000,
-         },
-         { name: "lake", applyConnectionOptions: false },
-      );
-      expect(withFields).toBe(
-         "host=db.example.com port=5432 dbname=lake user=u password=p",
-      );
-      process.env.PGSSLMODE = "require";
+   it("builds a DuckLake catalog's string without its statement timeout, and with no sslmode when neither it nor PGSSLMODE sets one", () => {
       expect(
          buildPgConnectionString(
-            {
-               ...fields,
-               sslmode: "disable",
-               statementTimeoutMilliseconds: 5000,
-            },
+            { ...fields, statementTimeoutMilliseconds: 5000 },
             { name: "lake", applyConnectionOptions: false },
          ),
-      ).toBe(
-         "host=db.example.com port=5432 dbname=lake user=u password=p sslmode=require",
-      );
+      ).toBe("host=db.example.com port=5432 dbname=lake user=u password=p");
+   });
+
+   describe("a DuckLake catalog given as fields", () => {
+      // The worker's PGSSLMODE=allow makes libpq try plaintext first; a server
+      // that requires TLS refuses and logs each refusal.
+      beforeEach(() => {
+         process.env.PGSSLMODE = "allow";
+      });
+
+      it("takes its own sslmode over the deployment PGSSLMODE", () => {
+         expect(
+            buildPgConnectionString(
+               { ...fields, sslmode: "no-verify" },
+               { name: "lake", applyConnectionOptions: false },
+            ),
+         ).toBe(
+            "host=db.example.com port=5432 dbname=lake user=u password=p sslmode=require",
+         );
+         const verifyFull = buildPgConnectionString(
+            { ...fields, sslmode: "verify-full" },
+            { name: "lake", applyConnectionOptions: false },
+         );
+         expect(verifyFull).toContain("sslmode=verify-full");
+         expect(verifyFull).toContain("sslrootcert=");
+         expect(verifyFull).not.toContain("sslmode=allow");
+      });
+
+      it("gets no statement timeout, whatever the connection sets", () => {
+         expect(
+            buildPgConnectionString(
+               {
+                  ...fields,
+                  sslmode: "no-verify",
+                  statementTimeoutMilliseconds: 5000,
+               },
+               { name: "lake", applyConnectionOptions: false },
+            ),
+         ).not.toContain("statement_timeout");
+      });
+
+      it("takes its own disable over the deployment PGSSLMODE", () => {
+         expect(
+            buildPgConnectionString(
+               { ...fields, sslmode: "disable" },
+               { name: "lake", applyConnectionOptions: false },
+            ),
+         ).toBe(
+            "host=db.example.com port=5432 dbname=lake user=u password=p sslmode=disable",
+         );
+      });
+
+      it("falls back to the deployment PGSSLMODE when it sets no sslmode", () => {
+         expect(
+            buildPgConnectionString(fields, {
+               name: "lake",
+               applyConnectionOptions: false,
+            }),
+         ).toBe(
+            "host=db.example.com port=5432 dbname=lake user=u password=p sslmode=allow",
+         );
+      });
    });
 
    it("gives an attached database its statement timeout and its own sslmode", () => {

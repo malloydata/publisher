@@ -20,8 +20,9 @@
  *   (`PackageController.updatePackage`) so the environment and project paths
  *   count alike.
  * - A package load or reload: per package that sets `explores` or
- *   `queryableSources` in publisher.json, per `.malloynb` file, and per source
- *   that declares `#(filter)` annotations (`service/deprecated/*`).
+ *   `queryableSources` in publisher.json, per `.malloynb` file, per source
+ *   that declares `#(filter)` annotations or `#@ -persist`, and per measure
+ *   that declares `#@ preaggregate` (`service/deprecated/*`).
  *
  * Lazily created for the same reason as {@link ./query_cap_metrics}.
  */
@@ -39,9 +40,12 @@ export type DeprecatedFeature =
    | "explores"
    | "queryable_sources"
    | "filter_annotation"
+   | "persist_opt_out"
+   | "preaggregate_annotation"
    | "filter_params"
    | "bypass_filters"
-   | "package_patch";
+   | "package_patch"
+   | "environment_reload";
 
 const counter = lazyCounter(
    "publisher_deprecated_usage_total",

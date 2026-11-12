@@ -150,7 +150,17 @@ is a Console convenience.
   that cannot store, or on a pinned version of a package. Below 600px wide the Console hides **Edit**
   and **+ Report**, and an editor opened by URL asks for **Edit anyway** first.
 - **Explore, no code** — open a source in the [Explorer](explorer.md), the visual query builder;
-  every action generates valid Malloy, and you can view the Malloy and SQL behind any result.
+  every action generates Malloy, and you can view the Malloy and SQL behind any result. The
+  Explorer writes a drilled value into that Malloy unescaped, so a value holding a double quote
+  rewrites its query.
+- **Browse a model** — on a server started with `PUBLISHER_MODEL_PAGE=viewer` (see
+  [configuration](configuration.md)), the model page is the model viewer instead, which builds no
+  query: open a `.malloy` file to see one source at a time, picked from its "N sources" pill: the
+  givens it reads, its views and the model's named queries (each runs when you open it), its
+  measures, calculations, dimensions and joins, each opening to its Malloy. A dimension tagged
+  `#(index)` lists its most common values. Nothing runs until you open a row or a given's picker.
+  The source and the given values are in the address (`?source=`, `?REGION=…`), so a link, and Copy
+  link, opens on them.
 - **Read a legacy notebook** — a `.malloynb` in a package renders as a linear report: its markdown,
   and its query cells run inline, including `# dashboard` views (KPI tiles + nested charts). The
   format is deprecated and the bundled examples no longer ship one, but the viewer stays for packages

@@ -4,6 +4,7 @@
 import { describe, expect, it } from "bun:test";
 import { derivationTerminals } from "./caller_joins";
 import {
+   extractRunViewCall,
    buildDerivationBaseMap,
    buildIsEdgeMap,
    buildJoinBaseMap,
@@ -686,59 +687,50 @@ describe("service/query_text", () => {
       });
 
       it("is linear on a 1MB adversarial body", () => {
-         const dashes = "a -- ".repeat(100_000);
-         const hashes = "a # ".repeat(125_000);
-         const text = `run: plain extend { join_one: e is plain extend {} on id = e.id } -> { where: name = '${dashes}'; group_by: e.id }\n# ${hashes}\n`;
-         expect(text.length).toBeGreaterThan(1_000_000);
-         expect(
-            fastestMs(() => {
-               stripMalloyCommentsAndLiterals(text);
-               buildDerivationBaseMap(text);
-               buildJoinBaseMap(text);
-               buildIsEdgeMap(text);
-            }),
-         ).toBeLessThan(500);
+         const body = (scale: number) =>
+            `run: plain extend { join_one: e is plain extend {} on id = e.id } -> { where: name = '${"a -- ".repeat(50_000 * scale)}'; group_by: e.id }\n# ${"a # ".repeat(62_500 * scale)}\n`;
+         expect(body(2).length).toBeGreaterThan(1_000_000);
+         expectLinear(body, (text) => {
+            stripMalloyCommentsAndLiterals(text);
+            buildDerivationBaseMap(text);
+            buildJoinBaseMap(text);
+            buildIsEdgeMap(text);
+         });
       });
 
       it("is linear on one 1MB statement", () => {
-         const items = Array.from(
-            { length: 70_000 },
-            (_, i) => `a${i} is plain`,
-         ).join(", ");
-         const joins = `run: plain extend { join_one: ${items} } -> { group_by: a1.id }`;
-         const chain = Array.from({ length: 125_000 }, (_, i) => `x${i}`).join(
-            " is ",
-         );
-         expect(joins.length).toBeGreaterThan(1_000_000);
-         expect(chain.length).toBeGreaterThan(1_000_000);
-         for (const [text, read] of [
-            [joins, buildJoinBaseMap],
-            [chain, buildIsEdgeMap],
-         ] as const) {
-            expect(fastestMs(() => read(text))).toBeLessThan(1000);
-         }
+         const joins = (scale: number) =>
+            `run: plain extend { join_one: ${Array.from(
+               { length: 35_000 * scale },
+               (_, i) => `a${i} is plain`,
+            ).join(", ")} } -> { group_by: a1.id }`;
+         const chain = (scale: number) =>
+            Array.from({ length: 62_500 * scale }, (_, i) => `x${i}`).join(
+               " is ",
+            );
+         expect(joins(2).length).toBeGreaterThan(1_000_000);
+         expect(chain(2).length).toBeGreaterThan(1_000_000);
+         expectLinear(joins, (text) => buildJoinBaseMap(text));
+         expectLinear(chain, (text) => buildIsEdgeMap(text));
       });
 
       it("is linear on 1MB of block annotations, SQL blocks and unterminated literals", () => {
-         for (const text of [
-            "#| a\n".repeat(250_000),
-            "  #| a\n |#\n".repeat(100_000),
-            'x """ y %{ z } '.repeat(70_000),
-            "f''' ".repeat(250_000),
-            "s = 'a\n".repeat(150_000),
-            "`a\n".repeat(400_000),
-            "\n".repeat(1_000_000) + "x -> y",
-         ]) {
-            expect(text.length).toBeGreaterThan(1_000_000);
-            expect(
-               fastestMs(() => {
-                  stripMalloyCommentsAndLiterals(text);
-                  buildDerivationBaseMap(text);
-                  collectIdentifierNames(text);
-                  extractRunTargetSourceName(text);
-               }),
-            ).toBeLessThan(1000);
+         for (const [unit, count] of [
+            ["#| a\n", 250_000],
+            ["  #| a\n |#\n", 100_000],
+            ['x """ y %{ z } ', 70_000],
+            ["f''' ", 250_000],
+            ["s = 'a\n", 150_000],
+            ["`a\n", 400_000],
+         ] as const) {
+            const text = (scale: number) => unit.repeat((count / 2) * scale);
+            expect(text(2).length).toBeGreaterThan(1_000_000);
+            expectLinear(text, readAll);
          }
+         const blankLines = (scale: number) =>
+            "\n".repeat(500_000 * scale) + "x -> y";
+         expect(blankLines(2).length).toBeGreaterThan(1_000_000);
+         expectLinear(blankLines, readAll);
       });
    });
 
@@ -874,6 +866,41 @@ describe("service/query_text", () => {
 });
 
 /** The best of a few runs, each after a full GC, so the suite's leftover heap and a busy machine do not read as super-linearity. */
+/** Every text reader the 1MB cases feed. */
+function readAll(text: string): void {
+   stripMalloyCommentsAndLiterals(text);
+   buildDerivationBaseMap(text);
+   collectIdentifierNames(text);
+   extractRunTargetSourceName(text);
+}
+
+/**
+ * Doubling the input about doubles the time when `read` is linear, and about
+ * quadruples it when it is quadratic, whatever the machine's speed; a fixed
+ * millisecond budget instead fails on a slow CI runner. The smaller time is
+ * floored so that two very fast runs are not read as a ratio of noise, the
+ * best of up to three ratios is judged, and a generous ceiling still catches a
+ * pathological case outright.
+ */
+function expectLinear(
+   build: (scale: number) => string,
+   read: (text: string) => void,
+): void {
+   const half = build(1);
+   const full = build(2);
+   // A noisy runner can push one linear measurement just past 3, so take the
+   // best of three; a quadratic reader stays near 4 on every attempt.
+   let ratio = Infinity;
+   let fullMs = 0;
+   for (let attempt = 0; attempt < 3 && ratio >= 3; attempt++) {
+      const halfMs = fastestMs(() => read(half));
+      fullMs = fastestMs(() => read(full));
+      ratio = Math.min(ratio, fullMs / Math.max(halfMs, 5));
+   }
+   expect(ratio).toBeLessThan(3);
+   expect(fullMs).toBeLessThan(10_000);
+}
+
 function fastestMs(run: () => void, runs = 5): number {
    let best = Infinity;
    for (let i = 0; i < runs; i++) {
@@ -884,3 +911,72 @@ function fastestMs(run: () => void, runs = 5): number {
    }
    return best;
 }
+
+describe("extractRunViewCall", () => {
+   it("reads an exact call of a view", () => {
+      expect(extractRunViewCall("run: ops -> by_carrier")).toEqual({
+         source: "ops",
+         view: "by_carrier",
+         refined: false,
+         laterStages: 0,
+      });
+   });
+
+   it("reads a query that starts from a view, with later stages", () => {
+      expect(
+         extractRunViewCall(
+            "run: ops -> by_carrier -> { select: * } -> top_one",
+         ),
+      ).toEqual({
+         source: "ops",
+         view: "by_carrier",
+         refined: false,
+         laterStages: 2,
+      });
+   });
+
+   it("reads a refinement of the view", () => {
+      expect(
+         extractRunViewCall(
+            "run: ops -> by_carrier + { limit: 3 } -> { select: * }",
+         ),
+      ).toEqual({
+         source: "ops",
+         view: "by_carrier",
+         refined: true,
+         laterStages: 1,
+      });
+   });
+
+   it("reads the bare form, backticked names, and the last run statement", () => {
+      expect(extractRunViewCall("`my ops` -> `by carrier`")).toMatchObject({
+         source: "my ops",
+         view: "by carrier",
+      });
+      expect(
+         extractRunViewCall("run: a -> v1\nrun: b -> v2 -> { select: * }"),
+      ).toMatchObject({ source: "b", view: "v2", laterStages: 1 });
+   });
+
+   it("ignores comments and strings", () => {
+      expect(
+         extractRunViewCall(
+            "// run: x -> y\nrun: ops -> by_carrier -> { where: name = 'a -> b' }",
+         ),
+      ).toMatchObject({ source: "ops", view: "by_carrier", laterStages: 1 });
+   });
+
+   it("reads nothing from a query whose first stage is not a view name", () => {
+      for (const text of [
+         "run: ops -> { group_by: carrier }",
+         "run: ops extend { dimension: x is 1 } -> by_carrier",
+         "run: ops(p is 1) -> by_carrier",
+         "run: ops -> by_carrier extend { dimension: x is 1 }",
+         "run: ops -> by_carrier + 3",
+         "run: ops",
+         "",
+      ]) {
+         expect(extractRunViewCall(text)).toBeUndefined();
+      }
+   });
+});

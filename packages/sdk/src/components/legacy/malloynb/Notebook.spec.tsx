@@ -102,10 +102,15 @@ mock.module("../../Model/ModelExplorerDialog", () => ({
    },
 }));
 
-mockServerProvider({
-   notebooks: { getNotebook, executeNotebookCell },
-   models: { executeQueryModel },
-});
+// The server's /status answer: the model page a test switches to `viewer`.
+const serverContext: { modelPage?: string; isLoadingStatus?: boolean } = {};
+mockServerProvider(
+   {
+      notebooks: { getNotebook, executeNotebookCell },
+      models: { executeQueryModel },
+   },
+   serverContext,
+);
 
 const { default: Notebook } = await import("./Notebook");
 
@@ -161,6 +166,35 @@ it("opens a cell's 'Data sources' dialog with the notebook's current values", as
    expect(lastCall?.data?.givens?.map((given) => given.name)).toContain(
       "TENANT",
    );
+});
+
+// A server with PUBLISHER_MODEL_PAGE=viewer takes the Explorer out of the
+// Console, and the "Data sources" dialog is the Explorer.
+it("offers no 'Data sources' dialog on a server whose model page is the viewer", async () => {
+   serverContext.modelPage = "viewer";
+   try {
+      render(<Notebook resourceUri={URI} />, { wrapper: serverWrapper });
+      await waitFor(() => expect(executeQueryModel).toHaveBeenCalled());
+      expect(screen.queryByLabelText("Data sources")).toBeNull();
+      expect(dataSourcesDialogProps).not.toHaveBeenCalledWith(
+         expect.objectContaining({ open: true }),
+      );
+   } finally {
+      delete serverContext.modelPage;
+   }
+});
+
+// Nor while /status loads: until the server has said which page it shows, a
+// viewer server must not offer the Explorer even briefly.
+it("offers no 'Data sources' dialog while /status loads", async () => {
+   serverContext.isLoadingStatus = true;
+   try {
+      render(<Notebook resourceUri={URI} />, { wrapper: serverWrapper });
+      await waitFor(() => expect(executeQueryModel).toHaveBeenCalled());
+      expect(screen.queryByLabelText("Data sources")).toBeNull();
+   } finally {
+      delete serverContext.isLoadingStatus;
+   }
 });
 
 // DEPRECATED FEATURE COVERAGE — delete together with

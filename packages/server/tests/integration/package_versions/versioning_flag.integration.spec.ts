@@ -6,7 +6,7 @@
 /**
  * `PUBLISHER_PACKAGE_VERSIONING`, the transition flag, over HTTP.
  *
- * - Off (unset, the default): a publish from a location does what it did
+ * - Off: a publish from a location does what it did
  *   before versions, whatever the tree's publisher.json says. Each publish
  *   answers 200 and replaces the package in place; the package has no
  *   versions.
@@ -23,6 +23,8 @@ import fs from "fs";
 import os from "os";
 import path from "path";
 import { RestE2EEnv, startRestE2E } from "../../harness/rest_e2e";
+import { installVariables } from "../../../src/test_helpers/settings_env";
+import { writePackageFiles } from "../../../src/test_helpers/temp_package";
 
 const ENV_NAME = "versioning-flag-env";
 const FLAG = "PUBLISHER_PACKAGE_VERSIONING";
@@ -30,11 +32,19 @@ const FLAG = "PUBLISHER_PACKAGE_VERSIONING";
 let env: (RestE2EEnv & { stop(): Promise<void> }) | undefined;
 let baseUrl = "";
 let root = "";
-const savedFlag = process.env[FLAG];
+/** The variables this suite sets, installed over the process's own settings. */
+const variables: Record<string, string | undefined> = {};
+let restoreSettings: (() => void) | undefined;
+
+/** Give the in-process server `name` at `value`, or unset, as a restart with it would. */
+function setVariable(name: string, value: string | undefined): void {
+   variables[name] = value;
+   restoreSettings?.();
+   restoreSettings = installVariables(variables);
+}
 
 function versioning(value: "on" | "off" | undefined): void {
-   if (value === undefined) delete process.env[FLAG];
-   else process.env[FLAG] = value;
+   setVariable(FLAG, value);
 }
 
 /** A package folder answering `answer`, with `manifest` as publisher.json. */
@@ -44,12 +54,14 @@ function writePackage(
    answer: number,
 ): string {
    const dir = path.join(root, folder);
-   fs.mkdirSync(dir, { recursive: true });
-   fs.writeFileSync(path.join(dir, "publisher.json"), JSON.stringify(manifest));
-   fs.writeFileSync(
-      path.join(dir, "model.malloy"),
-      `source: numbers is duckdb.sql("SELECT ${answer} AS answer") extend {\n` +
-         `  view: which is { select: answer }\n}\n`,
+   writePackageFiles(
+      dir,
+      {
+         "model.malloy":
+            `source: numbers is duckdb.sql("SELECT ${answer} AS answer") extend {\n` +
+            `  view: which is { select: answer }\n}\n`,
+      },
+      { manifest },
    );
    return dir;
 }
@@ -95,7 +107,7 @@ async function packageVersioning(): Promise<unknown> {
 
 describe("PUBLISHER_PACKAGE_VERSIONING", () => {
    beforeAll(async () => {
-      versioning(undefined);
+      versioning("off");
       root = fs.realpathSync(
          fs.mkdtempSync(path.join(os.tmpdir(), "versioning-flag-")),
       );
@@ -114,7 +126,7 @@ describe("PUBLISHER_PACKAGE_VERSIONING", () => {
    }, 180_000);
 
    afterEach(() => {
-      versioning(undefined);
+      versioning("off");
    });
 
    afterAll(async () => {
@@ -123,8 +135,7 @@ describe("PUBLISHER_PACKAGE_VERSIONING", () => {
       }).catch(() => undefined);
       await env?.stop();
       fs.rmSync(root, { recursive: true, force: true });
-      if (savedFlag === undefined) delete process.env[FLAG];
-      else process.env[FLAG] = savedFlag;
+      restoreSettings?.();
    });
 
    it("/status reports the setting", async () => {
@@ -133,7 +144,7 @@ describe("PUBLISHER_PACKAGE_VERSIONING", () => {
       expect(await packageVersioning()).toBe("on");
    });
 
-   describe("off, the default", () => {
+   describe("off", () => {
       it("answers 200 every time and replaces the package, as before versions", async () => {
          const first = writePackage("plain-1", { name: "plain" }, 1);
          const published = await publish("plain", first);

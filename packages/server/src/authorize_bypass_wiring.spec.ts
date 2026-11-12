@@ -24,9 +24,7 @@ import request from "supertest";
 
 import { BYPASS_AUTHORIZE_SECRET_ENV } from "./authorize_bypass_header";
 import { buildRouteApp } from "./test_helpers/route_app";
-
-/** Positional index of `bypassAuthorize` in `QueryController.getQuery`. */
-const BYPASS_ARGUMENT = 11;
+import { installSettings, withSettings } from "./test_helpers/settings_env";
 
 function buildApp() {
    const getQuery = sinon.stub().resolves({ result: "{}", resource: "r" });
@@ -43,26 +41,22 @@ const post = (headers: Record<string, string>, body: object) => {
    }
    return pending.then((response) => ({
       response,
-      bypass: getQuery.firstCall?.args[BYPASS_ARGUMENT],
+      bypass: getQuery.firstCall?.args[0].bypassAuthorize,
    }));
 };
 
 const SECRET = "s3cret-bypass-value";
 
 describe("authorize bypass wiring, over HTTP", () => {
-   const saved = process.env[BYPASS_AUTHORIZE_SECRET_ENV];
+   let restore: () => void;
 
    beforeAll(() => {
-      process.env[BYPASS_AUTHORIZE_SECRET_ENV] = SECRET;
+      restore = installSettings({
+         env: { [BYPASS_AUTHORIZE_SECRET_ENV]: SECRET },
+      }).restore;
    });
 
-   afterAll(() => {
-      if (saved === undefined) {
-         delete process.env[BYPASS_AUTHORIZE_SECRET_ENV];
-      } else {
-         process.env[BYPASS_AUTHORIZE_SECRET_ENV] = saved;
-      }
-   });
+   afterAll(() => restore());
 
    it("passes the bypass through when the header presents the secret", async () => {
       const { response, bypass } = await post(
@@ -154,7 +148,7 @@ describe("authorize bypass wiring, over HTTP", () => {
             req.end(body);
          });
          expect(status).toBe(200);
-         expect(getQuery.firstCall?.args[BYPASS_ARGUMENT]).toBeUndefined();
+         expect(getQuery.firstCall?.args[0].bypassAuthorize).toBeUndefined();
       } finally {
          server.close();
       }
@@ -186,19 +180,13 @@ describe("authorize bypass wiring, over HTTP", () => {
  * deployment runs in, and the one the old presence-only reader left wide open.
  */
 describe("authorize bypass with no secret configured, over HTTP", () => {
-   const saved = process.env[BYPASS_AUTHORIZE_SECRET_ENV];
+   let restore: () => void;
 
    beforeAll(() => {
-      delete process.env[BYPASS_AUTHORIZE_SECRET_ENV];
+      restore = installSettings({}).restore;
    });
 
-   afterAll(() => {
-      if (saved === undefined) {
-         delete process.env[BYPASS_AUTHORIZE_SECRET_ENV];
-      } else {
-         process.env[BYPASS_AUTHORIZE_SECRET_ENV] = saved;
-      }
-   });
+   afterAll(() => restore());
 
    it.each([["true"], [SECRET]])(
       "refuses the bypass for header value %p",
@@ -222,23 +210,18 @@ describe("authorize bypass with no secret configured, over HTTP", () => {
  */
 describe("the legacy /projects alias accepts no bypass", () => {
    it("passes no bypass argument to getQuery, even with the secret header", async () => {
-      const saved = process.env[BYPASS_AUTHORIZE_SECRET_ENV];
-      process.env[BYPASS_AUTHORIZE_SECRET_ENV] = SECRET;
-      try {
-         const { app, getQuery } = buildApp();
-         const response = await request(app)
-            .post("/api/v0/projects/env/packages/pkg/models/m.malloy/query")
-            .set("x-publisher-bypass-authorize", SECRET)
-            .send({ query: "run: orders -> { aggregate: c is count() }" });
-         expect(response.status).toBe(200);
-         expect(getQuery.calledOnce).toBe(true);
-         expect(getQuery.firstCall.args.length).toBeLessThanOrEqual(
-            BYPASS_ARGUMENT,
-         );
-      } finally {
-         if (saved === undefined)
-            delete process.env[BYPASS_AUTHORIZE_SECRET_ENV];
-         else process.env[BYPASS_AUTHORIZE_SECRET_ENV] = saved;
-      }
+      await withSettings(
+         { env: { [BYPASS_AUTHORIZE_SECRET_ENV]: SECRET } },
+         async () => {
+            const { app, getQuery } = buildApp();
+            const response = await request(app)
+               .post("/api/v0/projects/env/packages/pkg/models/m.malloy/query")
+               .set("x-publisher-bypass-authorize", SECRET)
+               .send({ query: "run: orders -> { aggregate: c is count() }" });
+            expect(response.status).toBe(200);
+            expect(getQuery.calledOnce).toBe(true);
+            expect(getQuery.firstCall.args[0].bypassAuthorize).toBeUndefined();
+         },
+      );
    });
 });

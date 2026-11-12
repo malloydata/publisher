@@ -11,12 +11,12 @@ on:
       - "packages/server/src/service/connection.spec.ts"
       - "packages/server/src/service/proxy.ts"
       - "packages/server/src/test_helpers/ssh_tunnel_harness.ts"
-      - "packages/server/src/service/materialization_build_session.ts"
-      - "packages/server/src/service/build_read_cost.ts"
-      - "packages/server/src/service/build_query_tag.ts"
+      - "packages/server/src/service/materialization/run/materialization_build_session.ts"
+      - "packages/server/src/service/materialization/run/build_read_cost.ts"
+      - "packages/server/src/service/materialization/run/build_query_tag.ts"
       - "packages/server/tests/component/storage_build_bigquery.component.spec.ts"
       # Produces the value the manifest assertion pins.
-      - "packages/server/src/service/materialization_service.ts"
+      - "packages/server/src/service/materialization/run/**"
       # The metadata bag's own contract, and the dialect-aware escaper the
       # Snowflake lookup builds its literal with.
       - "packages/server/src/service/query_metadata.ts"
@@ -24,7 +24,7 @@ on:
       # The admin API's catalog routes, whose tests (tests/integration/admin_catalogs)
       # run against this job's Postgres.
       - "packages/server/src/service/catalog_admin.ts"
-      - "packages/server/src/service/storage_table_load.ts"
+      - "packages/server/src/service/materialization/run/storage_table_load.ts"
       - "packages/server/src/service/statement_usage.ts"
       - "packages/server/tests/integration/admin_catalogs/**"
       # The passthrough surfaces this job exists to catch are provided by the
@@ -40,12 +40,12 @@ on:
       - "packages/server/src/service/connection.spec.ts"
       - "packages/server/src/service/proxy.ts"
       - "packages/server/src/test_helpers/ssh_tunnel_harness.ts"
-      - "packages/server/src/service/materialization_build_session.ts"
-      - "packages/server/src/service/build_read_cost.ts"
-      - "packages/server/src/service/build_query_tag.ts"
+      - "packages/server/src/service/materialization/run/materialization_build_session.ts"
+      - "packages/server/src/service/materialization/run/build_read_cost.ts"
+      - "packages/server/src/service/materialization/run/build_query_tag.ts"
       - "packages/server/tests/component/storage_build_bigquery.component.spec.ts"
       # Produces the value the manifest assertion pins.
-      - "packages/server/src/service/materialization_service.ts"
+      - "packages/server/src/service/materialization/run/**"
       # The metadata bag's own contract, and the dialect-aware escaper the
       # Snowflake lookup builds its literal with.
       - "packages/server/src/service/query_metadata.ts"
@@ -53,7 +53,7 @@ on:
       # The admin API's catalog routes, whose tests (tests/integration/admin_catalogs)
       # run against this job's Postgres.
       - "packages/server/src/service/catalog_admin.ts"
-      - "packages/server/src/service/storage_table_load.ts"
+      - "packages/server/src/service/materialization/run/storage_table_load.ts"
       - "packages/server/src/service/statement_usage.ts"
       - "packages/server/tests/integration/admin_catalogs/**"
       # The passthrough surfaces this job exists to catch are provided by the

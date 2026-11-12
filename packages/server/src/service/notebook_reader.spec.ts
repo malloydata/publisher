@@ -3,15 +3,18 @@
 
 /**
  * The served-notebook cell reader over every fixture in
- * `tests/fixtures/notebooks-malloyyo/notebooks/`, each compiled through
- * `Model.create` so the reader sees the text and IR a real load does.
+ * `tests/fixtures/notebooks-malloyyo/notebooks/`, each loaded through the
+ * package-load worker so the reader sees the text and IR a real load does.
  */
-import { DuckDBConnection } from "@malloydata/db-duckdb";
-import type { Connection, ModelDef } from "@malloydata/malloy";
+import type { ModelDef } from "@malloydata/malloy";
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
 import * as fs from "fs";
 import * as path from "path";
-import { Model } from "./model";
+import {
+   loadPackageCopy,
+   usePackageLoadPool,
+   type LoadedTempPackage,
+} from "../test_helpers/temp_package";
 import { motlyTag } from "./motly";
 import {
    isNotebookReaderError,
@@ -311,7 +314,8 @@ const EXPECTED: Record<string, { cells: unknown[]; annotations: string[] }> = {
 };
 
 describe("readNotebookCells over the fixture notebooks", () => {
-   let duckdb: DuckDBConnection;
+   usePackageLoadPool();
+   let loaded: LoadedTempPackage;
    const compiled = new Map<string, { modelDef: ModelDef; text: string }>();
 
    const read = (modelPath: string): NotebookReadResult => {
@@ -323,17 +327,15 @@ describe("readNotebookCells over the fixture notebooks", () => {
    };
 
    beforeAll(async () => {
-      duckdb = new DuckDBConnection("duckdb", ":memory:", FIXTURE_DIR);
+      loaded = await loadPackageCopy(FIXTURE_DIR, {
+         name: "notebooks-malloyyo",
+      });
       const paths = fs
          .readdirSync(path.join(FIXTURE_DIR, "notebooks"))
          .map((file) => `notebooks/${file}`);
       for (const modelPath of paths) {
-         const model = await Model.create(
-            "notebooks-malloyyo",
-            FIXTURE_DIR,
-            modelPath,
-            new Map<string, Connection>([["duckdb", duckdb]]),
-         );
+         const model = loaded.pkg.getModel(modelPath);
+         if (!model) throw new Error(`${modelPath} did not load`);
          const modelDef = model.getModelDef();
          const text = model.getCompiledSourceText();
          if (!modelDef || text === undefined) {
@@ -348,7 +350,7 @@ describe("readNotebookCells over the fixture notebooks", () => {
    });
 
    afterAll(async () => {
-      await duckdb.close();
+      await loaded.cleanup();
    });
 
    it("has an expectation for every fixture notebook but the refused one", () => {

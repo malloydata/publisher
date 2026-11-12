@@ -11,6 +11,8 @@ Queries do not change. They name the source they always named, ask for the measu
 
 This is the same machinery as [materialization](materialization.md) with a different trigger. `#@ persist` stores a source you wrote; `#@ preaggregate` stores a rollup Publisher derives from a measure you annotated. Both build through the same plan, manifest, and scheduler.
 
+Materialization v2 renames `#@ preaggregate` to `#(preaggregate)`. The new spelling is not read yet, so keep writing `#@ preaggregate`; it keeps working through 0.x. See [materialization-migration.md](materialization-migration.md#preaggregate).
+
 ## Declare a rollup
 
 Annotate a **measure** with the grain to store it at:
@@ -147,9 +149,11 @@ Four limits are worth knowing before you decide pre-aggregation will help your w
 Rollups appear in the package's build plan before anything is built. Each has `origin: "preaggregate"` and a `preaggregate` object naming the base source, the grain's dimensions, and the measures served at it:
 
 ```bash
-curl -s localhost:4000/api/v0/environments/examples/packages/storefront \
-  | jq '.buildPlan.sources[] | select(.origin == "preaggregate") | {name, preaggregate}'
+curl -s localhost:4000/api/v0/environments/examples/packages/storefront/build-plan \
+  | jq '.sources[] | select(.origin == "preaggregate") | {name, preaggregate}'
 ```
+
+An older server has no `build-plan` route; read `.buildPlan` off `GET …/packages/storefront` there.
 
 A rollup is declared by no file, so it reports the `modelPath` of the model whose annotations produced it — where you would go to change it.
 
@@ -268,9 +272,12 @@ extended with measures — the annotation parses, and the build refuses the whol
 `#@ persist` source that was dropped from the plan.
 
 That first case is reachable deliberately, not only by inheritance: writing `storage=` on
-both the base's `#@ persist` and the `#@ preaggregate` line hits the same wall, and the
-build reports it against the rollup. Even had it built, the base's own stored table already
-claims the name its rollups would be served under, so nothing would have read it.
+both the base's `#@ persist` and the `#@ preaggregate` line hits the same wall. Even had it
+built, the base's own stored table already claims the name its rollups would be served
+under, so nothing would have read it. So Publisher leaves such rollups out of the plan and
+every run, rather than attempting a build that cannot succeed: the base still builds and
+serves from its stored table, and the package carries a `preaggregate-over-stored-base`
+warning (`warn`, one per base). Rollups over a stored base are planned for a later release.
 
 So a rollup goes to a destination because its own line says so, which is also the
 common case: a rollup's base is usually a table extended with measures, and Malloy admits

@@ -1,7 +1,7 @@
 ##! experimental.givens
 
-given:
-  GROUPS :: number[]
+#(secure)
+given: GROUPS :: number[]
 
 // A row-level gate, grafted onto whatever runs over this source.
 #(access_filter) id in $GROUPS

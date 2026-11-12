@@ -5,6 +5,7 @@ import { useQueries } from "@tanstack/react-query";
 import { useMemo, useRef } from "react";
 import type { Given } from "../client";
 import { withPreamble } from "../components/Dashboard/textSource";
+import { malloyIdentifier } from "../components/ModelViewer/malloyRunText";
 import {
    givensToRequest,
    withHostGivens,
@@ -64,11 +65,61 @@ export interface OptionSearch {
  * products.category` is refused outright ("order_by takes the name of a field in
  * the query output, not a path"), while `group_by: products.category` names its
  * column `category`. A joined dimension is the ordinary case for a `suggest`, so
- * getting this wrong would have failed the option query for most of them.
+ * getting this wrong would have failed the option query for most of them. A
+ * segment the author quoted is the name inside its backticks: `` `a.b` ``
+ * names its column `a.b`.
  */
 function outputFieldName(dimension: string): string {
-   const segments = dimension.split(".");
-   return segments[segments.length - 1];
+   const last = pathSegments(dimension).at(-1) ?? dimension;
+   return /^`.*`$/.test(last)
+      ? last.slice(1, -1).replace(/\\(.)/g, "$1")
+      : last;
+}
+
+/**
+ * A field path's segments, split only on the dots outside backticks. One pass
+ * over the text, not a regular expression: the path is the author's, and an
+ * alternation over quoted runs backtracks without bound on one that never
+ * closes.
+ */
+function pathSegments(path: string): string[] {
+   const segments: string[] = [];
+   let current = "";
+   let quoted = false;
+   for (let i = 0; i < path.length; i++) {
+      const char = path[i];
+      if (quoted && char === "\\" && i + 1 < path.length) {
+         current += char + path[++i];
+         continue;
+      }
+      if (char === "`") quoted = !quoted;
+      if (char === "." && !quoted) {
+         segments.push(current);
+         current = "";
+         continue;
+      }
+      current += char;
+   }
+   segments.push(current);
+   return segments;
+}
+
+/**
+ * A name as the query writes it: backtick-quoted, so a reserved word (`year`,
+ * `source`) or a name with a space is still read as a name. One the author
+ * already quoted is kept as written.
+ */
+function quotedName(name: string): string {
+   return /^`.*`$/.test(name) ? name : malloyIdentifier(name);
+}
+
+/**
+ * A field path with each of its segments quoted ({@link quotedName}). Split
+ * only on the dots outside backticks, so a name the author quoted because it
+ * holds a dot (`` `a.b` ``) stays one segment.
+ */
+function quotedPath(path: string): string {
+   return pathSegments(path).map(quotedName).join(".");
 }
 
 /**
@@ -84,20 +135,40 @@ export function buildSuggestQuery(
    dimension: string,
    /** Text the values must contain, ignoring case: a search of a truncated list. */
    search?: string,
+   options: SuggestQueryOptions = {},
 ): string {
    // One row past the limit, so a list that was cut off says so.
    const limit =
       (search === undefined ? SUGGEST_OPTION_LIMIT : SUGGEST_SEARCH_LIMIT) + 1;
+   const quoted = options.quoteNames === true;
+   const name = quoted ? quotedName : (text: string) => text;
+   const field = quoted ? quotedPath(dimension) : dimension;
+   const orderBy = quoted
+      ? quotedName(outputFieldName(dimension))
+      : (dimension.split(".").at(-1) ?? dimension);
    return (
-      `run: ${source} -> {\n` +
-      `  group_by: ${dimension}\n` +
+      `run: ${name(source)} -> {\n` +
+      `  group_by: ${field}\n` +
       (search === undefined
          ? ""
-         : `  where: ${containsCondition(dimension, search)}\n`) +
-      `  order_by: ${outputFieldName(dimension)} asc\n` +
+         : `  where: ${containsCondition(field, search)}\n`) +
+      `  order_by: ${orderBy} asc\n` +
       `  limit: ${limit}\n` +
       `}`
    );
+}
+
+/** How {@link buildSuggestQuery} writes its names. */
+export interface SuggestQueryOptions {
+   /**
+    * Backtick-quote every name (the source, each segment of the dimension's
+    * path, the output column), so a reserved word (`year`, `source`) or a name
+    * with a space is still read as a name. Off, the names are written as the
+    * `suggest` gave them, as before; a keyword then fails the query. On for a
+    * server whose `PUBLISHER_MODEL_PAGE` is `viewer`, and always in the model
+    * viewer.
+    */
+   quoteNames?: boolean;
 }
 
 /**
@@ -111,8 +182,8 @@ export function buildSuggestQuery(
  * Cast to string so a numeric or date dimension searches its text too. The text
  * is lowercased here, where it is known, and the column in SQL.
  */
-function containsCondition(dimension: string, search: string): string {
-   return `strpos(lower(${dimension}::string), ${malloyStringLiteral(search.toLowerCase())}) > 0`;
+function containsCondition(field: string, search: string): string {
+   return `strpos(lower(${field}::string), ${malloyStringLiteral(search.toLowerCase())}) > 0`;
 }
 
 /**
@@ -216,6 +287,18 @@ export function useSuggestOptions(
     * the viewer's own text. Absent, a suggest runs by name or by view as before.
     */
    preamble?: string,
+   /**
+    * Only these givens' options are fetched, for a page that loads a picker's
+    * list when it is opened rather than on render (the model viewer, where
+    * nothing runs until the reader asks). Absent, every picker's list is.
+    */
+   only?: ReadonlySet<string>,
+   /**
+    * Quote every name in a generated suggest query (see
+    * {@link SuggestQueryOptions}). Absent, the server's model page decides:
+    * quoted on a `viewer` server, written as given otherwise.
+    */
+   quoteNames?: boolean,
 ): {
    options: Map<string, string[]>;
    isLoading: boolean;
@@ -237,7 +320,8 @@ export function useSuggestOptions(
    /** Server search, per given, for a truncated suggest over a dimension. */
    search: Map<string, OptionSearch>;
 } {
-   const { apiClients } = useServer();
+   const { apiClients, modelPage } = useServer();
+   const quoteSuggestNames = quoteNames ?? modelPage === "viewer";
 
    // Only a picker needs options; a text box or a slider would just be issuing
    // a query whose answer it never shows.
@@ -274,6 +358,9 @@ export function useSuggestOptions(
          givens === undefined ? null : JSON.stringify(givens),
          // Only a text source keys on its definitions, so no other key changes shape.
          ...(preamble === undefined ? [] : [preamble]),
+         // Quoted names are a different query: a list fetched before /status
+         // said viewer is asked again, quoted. The default key is unchanged.
+         ...(quoteSuggestNames ? ["quoteNames"] : []),
       ];
       const run = async (
          search: string | undefined,
@@ -300,6 +387,7 @@ export function useSuggestOptions(
                                suggest.source as string,
                                suggest.dimension as string,
                                search,
+                               { quoteNames: quoteSuggestNames },
                             ),
                     ),
                     compactJson: true,
@@ -331,10 +419,12 @@ export function useSuggestOptions(
    });
 
    const results = useQueries({
-      queries: suggests.map(({ identity, run }) => {
+      queries: suggests.map(({ spec, identity, run }) => {
          return {
             queryKey: ["givenSuggest", ...identity],
-            enabled: modelPath !== undefined,
+            enabled:
+               modelPath !== undefined &&
+               (only === undefined || only.has(spec.name as string)),
             // Option lists change with the data, not with the filters, so they
             // are cached well past a single control interaction.
             staleTime: 5 * 60 * 1000,

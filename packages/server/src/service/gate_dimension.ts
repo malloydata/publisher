@@ -109,13 +109,19 @@ export function expandRefSummaryGivenIds(
    return { ok: true, givenIds: ids };
 }
 
+/** Deepest boolean nesting {@link negatedMembershipScan} walks. */
+const NEGATION_SCAN_DEPTH = 64;
+
 /**
  * Whether a compiled boolean expression contains a negated membership test
  * (`not (x in $Y)`), W2's shape: an empty given then matches every row
  * rather than none. Scans only `and`/`or`/`not`/`()`/`inGiven` nodes.
+ * `"too_deep"` when the nesting exceeds the scan's bound, so a caller can
+ * warn rather than read an unscanned expression as clean.
  */
-export function containsNegatedMembership(node: unknown, depth = 0): boolean {
-   if (depth > 64 || node === null || typeof node !== "object") return false;
+function negatedMembershipScan(node: unknown, depth = 0): boolean | "too_deep" {
+   if (depth > NEGATION_SCAN_DEPTH) return "too_deep";
+   if (node === null || typeof node !== "object") return false;
    const n = node as {
       node?: unknown;
       not?: unknown;
@@ -130,17 +136,26 @@ export function containsNegatedMembership(node: unknown, depth = 0): boolean {
          inner = inner.e as { node?: unknown; e?: unknown } | null | undefined;
       }
       if (inner && inner.node === "inGiven") return true;
-      return containsNegatedMembership(n.e, depth + 1);
+      return negatedMembershipScan(n.e, depth + 1);
    }
    if (n.node === "and" || n.node === "or") {
       const kids = n.kids as { left?: unknown; right?: unknown } | undefined;
-      return (
-         containsNegatedMembership(kids?.left, depth + 1) ||
-         containsNegatedMembership(kids?.right, depth + 1)
-      );
+      const left = negatedMembershipScan(kids?.left, depth + 1);
+      if (left === true) return true;
+      const right = negatedMembershipScan(kids?.right, depth + 1);
+      if (right === true) return true;
+      return left === "too_deep" || right === "too_deep" ? "too_deep" : false;
    }
-   if (n.node === "()") return containsNegatedMembership(n.e, depth + 1);
+   if (n.node === "()") return negatedMembershipScan(n.e, depth + 1);
    return false;
+}
+
+/**
+ * Whether a compiled boolean expression may contain a negated membership
+ * test: true when it does, and when it nests too deeply to tell.
+ */
+export function containsNegatedMembership(node: unknown): boolean {
+   return negatedMembershipScan(node) !== false;
 }
 
 /** Non-fatal {@link validateSourceLineGateGivenUsage} findings, reported on
@@ -210,11 +225,19 @@ export function validateSourceLineGateGivenUsage(
             `a fixed predicate, not an access rule keyed on the caller`,
       );
    }
-   if (containsNegatedMembership(conditionExpr)) {
+   const negated = negatedMembershipScan(conditionExpr);
+   if (negated === true) {
       onWarning?.(
          "source_line_gate_negated_membership",
          `The ${gate} on source "${sourceName}" negates a membership test; ` +
             `an empty given then matches everything instead of nothing`,
+      );
+   } else if (negated === "too_deep") {
+      onWarning?.(
+         "source_line_gate_negated_membership",
+         `The ${gate} on source "${sourceName}" nests too deeply to check ` +
+            `for a negated membership test, which would match everything ` +
+            `when its given is empty; simplify the condition`,
       );
    }
 }

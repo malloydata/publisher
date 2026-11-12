@@ -16,7 +16,7 @@ import {
 import {
    withholdUnreproducibleCallerScopedJoins,
    type ServeBinding,
-} from "./materialization_serve_transform";
+} from "./materialization/serve/materialization_serve_transform";
 
 let connections: FixedConnectionMap;
 

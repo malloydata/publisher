@@ -4,7 +4,7 @@
 import { describe, expect, it } from "bun:test";
 import * as sinon from "sinon";
 import { BadRequestError } from "../errors";
-import type { MaterializationService } from "../service/materialization_service";
+import type { MaterializationService } from "../service/materialization/run/materialization_service";
 import { MaterializationController } from "./materialization.controller";
 
 /**
@@ -378,6 +378,55 @@ describe("MaterializationController.createMaterialization validation", () => {
             },
          }),
       ).rejects.toThrow(BadRequestError);
+   });
+
+   // ms2data/service#6756.
+   describe("warehouseReach", () => {
+      const SOURCE = {
+         sourceEntityId: "b2",
+         materializedTableId: "mt-2",
+         physicalTableName: "downstream_v1",
+         realization: "COPY",
+      };
+
+      it("passes recompute and refuse through", async () => {
+         for (const warehouseReach of ["recompute", "refuse"]) {
+            const parsed = await parse({
+               buildInstructions: {
+                  sources: [SOURCE],
+                  strictUpstreams: true,
+                  warehouseReach,
+               },
+            });
+            expect(parsed).toMatchObject({
+               strictUpstreams: true,
+               warehouseReach,
+            });
+         }
+      });
+
+      it("reads null and absent alike, as the default", async () => {
+         for (const buildInstructions of [
+            { sources: [SOURCE], warehouseReach: null },
+            { sources: [SOURCE] },
+         ]) {
+            const parsed = await parse({ buildInstructions });
+            expect("warehouseReach" in parsed).toBe(false);
+         }
+      });
+
+      it("rejects any other value with a 400 naming the accepted ones", async () => {
+         for (const warehouseReach of ["REFUSE", "skip", 1, true]) {
+            const { controller } = build();
+            await expect(
+               controller.createMaterialization("env", "pkg", {
+                  buildInstructions: { sources: [SOURCE], warehouseReach },
+               }),
+            ).rejects.toThrow(
+               /warehouseReach must be one of recompute \| refuse/,
+            );
+         }
+      });
    });
 
    it("rejects a non-boolean strictUpstreams", async () => {

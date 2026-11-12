@@ -1,7 +1,7 @@
 {
    "name": "@malloy-publisher/sdk",
    "description": "Malloy Publisher SDK",
-   "version": "0.11.2",
+   "version": "0.12.6",
    "type": "module",
    "main": "dist/index.cjs.js",
    "module": "dist/index.es.js",
@@ -74,8 +74,9 @@
    "scripts": {
       "build": "bun generate-api-types && bunx vite build",
       "postbuild": "cp ../../node_modules/@malloydata/malloy-explorer/dist/malloy-explorer.css ./dist/malloy-explorer.css && echo '/* SDK Styles */\n@import \"./malloy-explorer.css\";' > ./dist/styles.css",
-      "test": "bun test",
-      "test:tz": "bun test ./src/components/given/GivenInput.spec.tsx ./src/components/given/filterSummary.spec.ts ./src/components/given/paramCodec.spec.ts ./src/utils/malloyLiteral.spec.ts ./src/components/drill/resolveDrill.spec.ts ./src/components/ReportBuilder/preview.spec.ts ./src/components/Materializations/cron.spec.ts ./src/components/Materializations/utils.spec.ts",
+      "test": "bun test --path-ignore-patterns '**/*.isolated.spec.*' && bun run test:isolated",
+      "test:isolated": "bun test ./src/components/ServerProvider.host.isolated.spec.tsx",
+      "test:tz": "bun test ./src/components/given/GivenInput.spec.tsx ./src/components/given/filterSummary.spec.ts ./src/components/given/paramCodec.spec.ts ./src/utils/malloyLiteral.spec.ts ./src/utils/filterCondition.spec.ts ./src/hooks/useDimensionalFilterRangeData.spec.ts ./src/components/drill/resolveDrill.spec.ts ./src/components/ReportBuilder/preview.spec.ts ./src/components/Materializations/cron.spec.ts ./src/components/Materializations/utils.spec.ts",
       "lint": "bunx eslint ./src ./test --fix",
       "format": "bunx prettier --write --parser typescript '**/*.{ts,tsx}'",
       "analyze": "bunx vite-bundle-visualizer",

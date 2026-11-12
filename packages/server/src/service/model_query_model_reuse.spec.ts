@@ -1,6 +1,7 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
+import { unrecordedAudit } from "./access_record";
 import { DuckDBConnection } from "@malloydata/db-duckdb";
 import {
    type Connection,
@@ -31,6 +32,28 @@ import { logger } from "../logger";
 import { Environment } from "./environment";
 import { Model } from "./model";
 import type { Package } from "./package";
+import { installSettings } from "../test_helpers/settings_env";
+import { parsePackageName } from "./identity";
+import { QueryPrivileges } from "./model_query_request";
+
+/** Puts back the settings the current test installed. */
+let restoreSettings: (() => void) | undefined;
+
+/**
+ * Install PERSIST_STORAGE_MODE=`mode` for this test, before its model is built;
+ * every other setting is at its default.
+ */
+function setStorageMode(mode: string): void {
+   restoreSettings?.();
+   restoreSettings = installSettings({
+      env: { PERSIST_STORAGE_MODE: mode },
+   }).restore;
+}
+
+afterEach(() => {
+   restoreSettings?.();
+   restoreSettings = undefined;
+});
 
 /**
  * A hydrated Model builds its Malloy `QueryModel` once and every render-tag
@@ -128,7 +151,7 @@ describe("one QueryModel per hydrated model", () => {
       await fs.writeFile(path.join(dir, "m.malloy"), MODEL);
       const env = await Environment.create("testEnv", envPath, []);
       await env.addPackage("pkg");
-      return env.getPackage("pkg", false);
+      return env.getPackage(parsePackageName("pkg"), false);
    }
 
    async function answers(model: Model) {
@@ -144,7 +167,11 @@ describe("one QueryModel per hydrated model", () => {
             "run: nums -> { group_by: two; aggregate: total_one }",
          ],
       ] as const) {
-         const r = await model.getQueryResults(source, view, query);
+         const r = await model.runQuery(unrecordedAudit(), {
+            sourceName: source,
+            queryName: view,
+            query,
+         });
          out.push({ sql: r.result.sql, data: r.compactResult });
       }
       return out;
@@ -222,10 +249,6 @@ describe("one QueryModel per materializer a query compiles against", () => {
       failNextBuild = false;
    });
 
-   afterEach(() => {
-      delete process.env.PERSIST_STORAGE_MODE;
-   });
-
    afterAll(async () => {
       for (const d of dirs) {
          await fs.rm(d, { recursive: true, force: true }).catch(() => {});
@@ -253,13 +276,10 @@ describe("one QueryModel per materializer a query compiles against", () => {
       query: string,
       givens?: Record<string, unknown>,
    ): Promise<unknown> {
-      const r = await model.getQueryResults(
-         undefined,
-         undefined,
-         query,
-         {},
-         true,
-         givens as never,
+      const r = await model.runQuery(
+         unrecordedAudit(),
+         { query, filterParams: {}, givens: givens as never },
+         QueryPrivileges.of({ bypassFilters: true }),
       );
       return r.compactResult;
    }
@@ -269,6 +289,7 @@ describe("one QueryModel per materializer a query compiles against", () => {
       async () => {
          const { model, duckdb } = await createModel(`##! experimental.givens
 
+#(secure)
 given:
   ROLE :: string
 
@@ -304,6 +325,7 @@ source: secrets is duckdb.sql("SELECT 1 AS one") extend {}
       async () => {
          const { model, duckdb } = await createModel(`##! experimental.givens
 
+#(secure)
 given:
   GROUPS :: string[]
 
@@ -334,7 +356,7 @@ source: X is duckdb.sql("SELECT 'org1' AS org_id, 1 AS id UNION ALL SELECT 'org2
    it(
       "builds the storage serve shape's QueryModel once, not per query",
       async () => {
-         process.env.PERSIST_STORAGE_MODE = "on";
+         setStorageMode("on");
          const text = `source: qm_orders is duckdb.sql("SELECT 10 AS amount") extend {
   measure: total is amount.sum()
 }
@@ -361,22 +383,15 @@ source: X is duckdb.sql("SELECT 'org1' AS org_id, 1 AS id UNION ALL SELECT 'org2
             const modelDef = (
                (await mm.getModel()) as unknown as { _modelDef: never }
             )._modelDef;
-            const model = new Model(
-               "pkg",
-               "m.malloy",
-               {},
-               "model",
-               mm as never,
+            const model = new Model({
+               packageName: "pkg",
+               modelPath: "m.malloy",
+               dataStyles: {},
+               modelType: "model",
+               modelMaterializer: mm as never,
                modelDef,
-               undefined,
-               undefined,
-               undefined,
-               undefined,
-               undefined,
-               undefined,
-               undefined,
-               modelDefToModelInfo(modelDef),
-            );
+               modelInfo: modelDefToModelInfo(modelDef),
+            });
             const serveConfig = new MalloyConfig({ connections: {} });
             serveConfig.wrapConnections(
                () => new FixedConnectionMap(connMap, "duckdb"),

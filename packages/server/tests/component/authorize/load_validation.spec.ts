@@ -850,6 +850,38 @@ describe("a near miss of the lock's spelling fails the load", () => {
       expect(err.message).toContain("(meant `#(authorize)`?)");
    });
 
+   it.each([
+      ["#(authorise)", "#(authorize)"],
+      ["#(autorize)", "#(authorize)"],
+      ["# (authorise)", "#(authorize)"],
+      ["#(acess_filter)", "#(access_filter)"],
+   ])("refuses the misspelled gate %s", async (tag, meant) => {
+      const err = await expectLoadError(
+         `##! experimental.givens\n\ngiven:\n  ROLE :: string[]\n\n${tag} 'finance' in $ROLE\nsource: near_locked is duckdb.table('customers') extend {}\n`,
+      );
+      expect(err).not.toBeInstanceOf(AuthorizeGrammarError);
+      expect(err.message).toMatch(/never enforced/i);
+      expect(err.message).toContain(tag);
+      expect(err.message).toContain(`(meant \`${meant}\`?)`);
+   });
+
+   it("refuses a misspelled gate on a named query, which the load used to skip", async () => {
+      const err = await expectLoadError(
+         `source: plain is duckdb.table('customers') extend {}\n\n#(acess_filter) region = 'x'\nquery: q is plain -> { select: * }\n`,
+      );
+      expect(err.message).toMatch(/never enforced/i);
+      expect(err.message).toContain("(meant `#(access_filter)`?)");
+   });
+
+   it.each(["#(reauthorize)", "#(unauthorize)", "#(noaccessfilter)"])(
+      "loads %s, a word containing a gate's name, as another app's route",
+      async (tag) => {
+         await expectLoadsClean(
+            `${tag} "not a gate"\nsource: other_app is duckdb.table('customers') extend {}\n`,
+         );
+      },
+   );
+
    it("refuses a near miss reached only through a derivation hop", async () => {
       // `near_layer` imports `near_qs` alone, so the misspelled base is only
       // the inline struct on `near_qs`'s query.structRef; the sweep must
@@ -1082,12 +1114,16 @@ describe("an inheriting derivation's unexpressible gate scopes to that entry poi
       warnSpy.mockClear();
       await withAuthorizeModel(GATED_PARENT, async ({ error }) => {
          expect(error).toBeUndefined();
-         expect(
-            warnSpy.mock.calls.filter(
-               (c) =>
-                  String(c[0]) === "Row-level #(access_filter) gate warning",
-            ),
-         ).toEqual([]);
+         // Both row-level gate warnings model_load_checks can log: an
+         // unexpressible inherited gate, and a W1/W2 given-usage warning.
+         const gateWarnings = warnSpy.mock.calls
+            .map((c) => String(c[0]))
+            .filter(
+               (m) =>
+                  m.startsWith("Row-level #(access_filter) gate ") ||
+                  /^#\(\w+\) gate warning on /.test(m),
+            );
+         expect(gateWarnings).toEqual([]);
       });
    });
 });

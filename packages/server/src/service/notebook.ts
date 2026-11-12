@@ -3,14 +3,12 @@
 
 import {
    MalloyTranslator,
-   payloadOf,
-   routeOf,
    type LogMessage,
    type ModelDef,
 } from "@malloydata/malloy";
-import { ownModelNoteObjects, type AnnotationNote } from "./annotations";
+import { payloadOfNote, routeOfNote } from "./annotation_reader";
+import { type AnnotationNote } from "./annotations";
 import { docCommentText } from "./motly";
-import { isReportEligiblePath, readReportTag } from "./report";
 
 /**
  * A `##` note or `##|` block that sets `artifact` as a top-level property,
@@ -75,10 +73,8 @@ const ARTIFACT_NOTE = {
 /** The note route whose payload is markdown: a floating cell at `##`, a cell's own prose at `#`. */
 export const MARKDOWN_ROUTE = "markdown";
 
-/** Malloy's own routing for one note: its route, empty for a plain tag, `undefined` when the prefix is malformed. */
-export function routeOfNote(text: string): string | undefined {
-   return routeOf({ value: text.trimStart() } as Parameters<typeof routeOf>[0]);
-}
+/** Malloy's own routing for one note (see annotation_reader.ts). */
+export { routeOfNote };
 
 /** Whether a note is on the `(markdown)` route, at either level and in either form. */
 export function isMarkdownNote(text: string): boolean {
@@ -414,9 +410,7 @@ type ReaderItem =
 
 /** A `(markdown)` block's body: text on its opener line is prose too, except a lone bare word, which names it. */
 function markdownBlockBody(opener: string, bodyLines: string[]): string {
-   const rest = payloadOf({ value: opener } as Parameters<
-      typeof payloadOf
-   >[0]).trim();
+   const rest = payloadOfNote(opener).trim();
    // Only a `(markdown)` or `(text)` opener names its block; a `"` opener's text is always prose.
    const onOpener =
       routeOfNote(opener) !== '"' && TEXT_BLOCK_NAME.test(rest) ? "" : rest;
@@ -427,9 +421,7 @@ function markdownBlockBody(opener: string, bodyLines: string[]): string {
 
 /** A `(markdown)` line note's prose: what follows the route and its one separator. */
 function markdownLineBody(noteText: string): string {
-   return normalizeNewlines(
-      payloadOf({ value: noteText } as Parameters<typeof payloadOf>[0]),
-   ).replace(/\n$/, "");
+   return normalizeNewlines(payloadOfNote(noteText)).replace(/\n$/, "");
 }
 
 /**
@@ -869,9 +861,7 @@ export function parseMarkdownOpener(
    const route = routeOfNote(line);
    if (route !== MARKDOWN_ROUTE && !(sigil[1] === "##" && route === "text"))
       return undefined;
-   const rest = payloadOf({ value: line } as Parameters<
-      typeof payloadOf
-   >[0]).trim();
+   const rest = payloadOfNote(line).trim();
    return {
       level: sigil[1].length as 1 | 2,
       route,
@@ -961,28 +951,4 @@ export function cellsUnreadableProblem(
          },
       },
    };
-}
-
-/**
- * The compile problem for a linear report the reader would refuse, so a
- * compile check (an agent's, or the builder's save gate) fails on a report
- * that would not open. Undefined for anything that is not a linear report
- * (`report.ts`), wherever the file lives.
- */
-export function notebookReaderProblem(
-   modelPath: string,
-   text: string,
-   modelDef: ModelDef,
-   url: string,
-): LogMessage | undefined {
-   if (!isReportEligiblePath(modelPath)) return undefined;
-   const tag = readReportTag(
-      ownModelNoteObjects(modelDef).map((note) => note.text),
-   );
-   if (tag.status !== "report" || tag.layout !== "linear") return undefined;
-   const parse = parseNotebookText(text);
-   const error = isNotebookReaderError(parse)
-      ? parse
-      : readNotebookCells(parse, modelDef, text).error;
-   return error && cellsUnreadableProblem(error, url);
 }

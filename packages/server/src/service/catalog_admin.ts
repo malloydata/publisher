@@ -16,6 +16,7 @@
  * owned by the role that owns the catalog and its grants keep applying.
  */
 
+import { settings } from "../settings";
 import type { DuckDBConnection } from "@malloydata/db-duckdb";
 import type { components } from "../api";
 import { BadRequestError, ConflictError } from "../errors";
@@ -26,12 +27,14 @@ import {
    attachDuckLakeReadOnly,
    attachDuckLakeReadWrite,
    escapeSQL,
+   tablePartitionKeys,
+   type PartitionKey,
 } from "./connection";
 import {
    cleanupStorageFiles,
    createIsolatedBuildSession,
    dropStorageTable,
-} from "./materialization_build_session";
+} from "./materialization/run/materialization_build_session";
 import { parseS3Endpoint } from "./gcs_s3_utils";
 import { redactPgSecrets } from "../pg_helpers";
 import { quoteIdentifier } from "./quoting";
@@ -41,7 +44,7 @@ import {
    type LoadOptions,
    copyStorageTable,
    loadStorageTable,
-} from "./storage_table_load";
+} from "./materialization/run/storage_table_load";
 
 type ApiConnection = components["schemas"]["Connection"];
 type DucklakeStorage = NonNullable<
@@ -84,15 +87,13 @@ export interface CatalogAdminConfig {
 }
 
 /**
- * Reads the listener's configuration. Null when no catalog database is set: the
- * routes then answer 503, so a listener started for nothing else still serves
- * its health endpoints. A storage setting that cannot be used throws, so a typo
- * fails startup.
+ * Reads the listener's configuration (the `admin.*` settings). Null when no
+ * catalog database is set: the routes then answer 503, so a listener started
+ * for nothing else still serves its health endpoints. A storage setting that
+ * cannot be used throws, so a typo fails startup.
  */
-export function catalogAdminConfigFromEnv(
-   env: NodeJS.ProcessEnv,
-): CatalogAdminConfig | null {
-   const catalogDatabase = env.PUBLISHER_ADMIN_CATALOG_DATABASE?.trim();
+export function catalogAdminConfig(): CatalogAdminConfig | null {
+   const catalogDatabase = settings.get("admin.catalogDatabase");
    if (!catalogDatabase) return null;
    // A session acts as each catalog's owner through libpq `options`, which would
    // silently replace options given here; refuse them rather than drop them.
@@ -101,12 +102,14 @@ export function catalogAdminConfigFromEnv(
          "PUBLISHER_ADMIN_CATALOG_DATABASE must not set `options`: the admin API sets the session role per catalog. Set server parameters on the role or database instead (ALTER ROLE … SET).",
       );
    }
-   const provider = env.PUBLISHER_ADMIN_STORAGE_PROVIDER?.trim() ?? "";
-   const keyId = env.PUBLISHER_ADMIN_STORAGE_KEY_ID;
-   const secret = env.PUBLISHER_ADMIN_STORAGE_SECRET;
+   const provider = settings.get("admin.storage.provider");
+   const keyId = settings.get("admin.storage.keyId");
+   const secret = settings.get("admin.storage.secret");
+   const region = settings.get("admin.storage.region");
+   const endpoint = settings.get("admin.storage.endpoint");
    let storage: CatalogAdminConfig["storage"];
    switch (provider) {
-      case "":
+      case undefined:
          storage = undefined;
          break;
       case "s3":
@@ -115,9 +118,9 @@ export function catalogAdminConfigFromEnv(
                "PUBLISHER_ADMIN_STORAGE_PROVIDER=s3 needs PUBLISHER_ADMIN_STORAGE_KEY_ID and PUBLISHER_ADMIN_STORAGE_SECRET.",
             );
          }
-         if (env.PUBLISHER_ADMIN_STORAGE_ENDPOINT) {
+         if (endpoint) {
             try {
-               parseS3Endpoint(env.PUBLISHER_ADMIN_STORAGE_ENDPOINT);
+               parseS3Endpoint(endpoint);
             } catch (error) {
                throw new Error(
                   `PUBLISHER_ADMIN_STORAGE_ENDPOINT: ${(error as Error).message}`,
@@ -129,8 +132,8 @@ export function catalogAdminConfigFromEnv(
                provider: "config",
                accessKeyId: keyId,
                secretAccessKey: secret,
-               region: env.PUBLISHER_ADMIN_STORAGE_REGION,
-               endpoint: env.PUBLISHER_ADMIN_STORAGE_ENDPOINT,
+               region,
+               endpoint,
             },
          };
          break;
@@ -138,7 +141,7 @@ export function catalogAdminConfigFromEnv(
          storage = {
             s3Connection: {
                provider: "credential_chain",
-               region: env.PUBLISHER_ADMIN_STORAGE_REGION,
+               region,
             },
          };
          break;
@@ -150,10 +153,6 @@ export function catalogAdminConfigFromEnv(
          }
          storage = { gcsConnection: { keyId, secret } };
          break;
-      default:
-         throw new Error(
-            `PUBLISHER_ADMIN_STORAGE_PROVIDER must be s3, s3_credential_chain or gcs, got '${provider}'.`,
-         );
    }
    return { catalogDatabase, storage };
 }
@@ -181,6 +180,8 @@ export interface CatalogTable {
    name: string;
    columns: { name: string; type: string }[];
    rowCount?: number;
+   /** The partition spec in key order; empty when the table is not partitioned. */
+   partitionedBy: PartitionKey[];
 }
 
 export interface CatalogSnapshot {
@@ -403,11 +404,21 @@ export class CatalogAdmin {
             }[]
          ).map((c) => ({ name: c.column_name, type: c.column_type }));
          const estimate = found[0].estimated_size;
+         // Every catalog this API manages keeps its metadata in the schema
+         // named after it (see `ducklake`).
+         const partitionedBy = await tablePartitionKeys(
+            s,
+            name,
+            name,
+            schema,
+            table,
+         );
          return {
             schema,
             name: table,
             columns,
             ...(estimate == null ? {} : { rowCount: Number(estimate) }),
+            partitionedBy,
          };
       });
    }

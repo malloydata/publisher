@@ -3,10 +3,10 @@
 
 import { createHash } from "crypto";
 import type {
-   ManifestEntry,
    Materialization,
    ResourceRepository,
 } from "../../storage/DatabaseInterface";
+import type { ManifestEntry } from "../materialization/types";
 
 /**
  * Who owns the tables a published version's materializations build, decided

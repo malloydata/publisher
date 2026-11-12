@@ -199,7 +199,11 @@ MALLOY
 # compiles; the destination is resolved at build and serve time, not at compile.
 curl -s -X POST http://localhost:4000/api/v0/environments/examples/packages \
   -H 'content-type: application/json' -d '{"name":"persist-tutorial"}' \
-  | jq '{name, sources: (.buildPlan.sources|keys|map(split("@")[0])), warnings}'
+  | jq '{name, warnings}'
+
+# The persist plan the load derived.
+curl -s http://localhost:4000/api/v0/environments/examples/packages/persist-tutorial/build-plan \
+  | jq '{sources: (.sources|keys|map(split("@")[0]))}'
 ```
 
 Because the server is in `off` mode, the persist plan compiles but the
@@ -208,7 +212,6 @@ Because the server is in `off` mode, the persist plan compiles but the
 ```json
 {
   "name": "persist-tutorial",
-  "sources": ["daily_orders"],
   "warnings": [
     {
       "model": "orders.malloy",
@@ -217,6 +220,10 @@ Because the server is in `off` mode, the persist plan compiles but the
     }
   ]
 }
+```
+
+```json
+{ "sources": ["daily_orders"] }
 ```
 
 That's the kill switch working: with the feature off the package loads and
@@ -355,15 +362,19 @@ curl -s -X POST http://localhost:4000/api/v0/environments/examples/packages/pers
 # (wait for MANIFEST_FILE_READY as in step 5)
 ```
 
-Confirm the source is bound for storage serve — the warning is gone and
-`storageServeBindings` shows the routing:
+Confirm the source is bound for storage serve — the warning is gone from the
+package, and its serving state (`GET …/packages/{pkg}/status`) shows the routing
+in `storageServeBindings`:
 
 ```bash
 curl -s http://localhost:4000/api/v0/environments/examples/packages/persist-tutorial \
-  | jq '{storageServeBindings, warnings}'
+  | jq '{warnings}'
+curl -s http://localhost:4000/api/v0/environments/examples/packages/persist-tutorial/status \
+  | jq '{storageServeBindings}'
 ```
 
 ```json
+{ "warnings": null }
 {
   "storageServeBindings": [
     {
@@ -371,8 +382,7 @@ curl -s http://localhost:4000/api/v0/environments/examples/packages/persist-tuto
       "storageDestinationName": "lake",
       "tablePath": "lake.daily_orders"
     }
-  ],
-  "warnings": null
+  ]
 }
 ```
 
@@ -633,7 +643,9 @@ downstream's build query). That still produces a correct table, but two
 independently-timed builds can then drift; rebuild the whole package together
 (`forceRefresh`) to keep them aligned. Under `strictUpstreams` (orchestrated
 builds) only the first kind is recomputed, because no build over the stored
-tables exists for a source that reaches the warehouse; everything else strict
+tables exists for a source that reaches the warehouse (an orchestrator that
+must never read the warehouse sets `warehouseReach: refuse` in its build
+instructions, and the source fails instead, not retryable); everything else strict
 refuses, since recomputing it would rebuild a table the orchestrator meant to
 pin — an upstream the build neither materialized nor was handed by reference,
 one whose table lives in a _different_ destination, or a shape over stored
@@ -793,13 +805,15 @@ concern as the `#(access_filter)` note above.
 
 Everything you need is on the package status and the logs:
 
-- `GET …/packages/{pkg}` →
-  - `storageServeBindings`: the sources bound to serve from a `storage=` store,
-    with their destination connection and table. Present once a build has bound
-    them.
-  - `warnings`: a `{model, subject, message}` entry for any `storage=` source not
-    served from storage — mode `off` (ignored) or `write-only` (built, served
-    live). Empty when everything routes.
+- `GET /api/v0/status` → the package's entry carries `storageServeBindings`: the
+  sources bound to serve from a `storage=` store, with their destination
+  connection and table. Present once a build has bound them. (An older server,
+  and this one while `PUBLISHER_PACKAGE_INLINE_FIELDS` is `on`, also carries it
+  on `GET …/packages/{pkg}`.)
+- `GET …/packages/{pkg}` → `warnings`: a `{model, subject, message}` entry for
+  any `storage=` source not served from storage — mode `off` (ignored) or
+  `write-only` (built, served live). Empty when everything routes.
+- `GET …/packages/{pkg}/build-plan` → the persist sources the load planned.
 - `GET …/materializations/{id}` → run status and, on success, the manifest entry
   with `storageDestinationName` and the captured `schema`.
 - Server logs → `info` when a query serves from storage, and `info` when it
@@ -826,7 +840,8 @@ Everything you need is on the package status and the logs:
     (`parent_reuse`) or fell back to recompute-from-raw (`inline_fallback`
     non-strict, `strict_shape_fallback` under `strictUpstreams`, where only a
     shape the destination cannot express is recomputed). `strict_refused` is an
-    upstream strict would not recompute. `infra_failure` is a destination that
+    upstream strict would not recompute, or a warehouse recompute that
+    `warehouseReach: refuse` refused. `infra_failure` is a destination that
     was unreachable, kept distinct from the shape limits so a store outage is not
     read as an un-carriable query.
   - `malloy_model_query_duration` tags a routed query with

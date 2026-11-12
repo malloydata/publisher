@@ -2,7 +2,10 @@
 // SPDX-License-Identifier: MIT
 
 import { afterEach, describe, expect, it } from "bun:test";
-import { StorageManager } from "./StorageManager";
+import * as fs from "fs";
+import * as os from "os";
+import * as path from "path";
+import { INTERRUPTED_RUN_ERROR, StorageManager } from "./StorageManager";
 import { ResourceRepository } from "./DatabaseInterface";
 import { DuckDBConnection } from "./duckdb/DuckDBConnection";
 import { initializeSchema } from "./duckdb/schema";
@@ -87,6 +90,102 @@ describe("StorageManager", () => {
       await expect(sm.initialize()).rejects.toThrow(
          "Unsupported storage type: sqlite",
       );
+   });
+});
+
+describe("StorageManager settles the runs a previous process left unsettled", () => {
+   let dir: string;
+
+   afterEach(() => {
+      if (dir) fs.rmSync(dir, { recursive: true, force: true });
+   });
+
+   /** A store on disk, so a second StorageManager is a restart over it. */
+   async function open(file: string): Promise<StorageManager> {
+      const sm = new StorageManager({ type: "duckdb", duckdb: { path: file } });
+      managers.push(sm);
+      await sm.initialize();
+      return sm;
+   }
+
+   it("marks every PENDING and MANIFEST_ROWS_READY run FAILED, frees its slot, and leaves settled runs alone", async () => {
+      dir = fs.mkdtempSync(path.join(os.tmpdir(), "storage-interrupted-"));
+      const file = path.join(dir, "publisher.db");
+
+      // The process that dies mid-build.
+      const first = await open(file);
+      const before = first.getRepository();
+      const env = await before.createEnvironment({ name: "e", path: "/e" });
+      const pending = await before.createMaterialization(
+         env.id,
+         "pkg",
+         "PENDING",
+         { mode: "auto" },
+      );
+      const rowsReady = await before.createMaterialization(
+         env.id,
+         "pkg",
+         "PENDING",
+         { mode: "auto", scope: "version", writesTables: ["summary_v1"] },
+         { version: "1.0.0", lockVersion: "1.0.0" },
+      );
+      await before.updateMaterialization(rowsReady.id, {
+         status: "MANIFEST_ROWS_READY",
+      });
+      const committed = await before.createMaterialization(
+         env.id,
+         "pkg",
+         "MANIFEST_FILE_READY",
+      );
+      // Both slots are held, so a new run of either is refused.
+      await expect(
+         before.createMaterialization(env.id, "pkg", "PENDING"),
+      ).rejects.toThrow("Active materialization already exists");
+      await first.close();
+      managers.splice(managers.indexOf(first), 1);
+
+      // The restart.
+      const second = await open(file);
+      const repo = second.getRepository();
+      for (const id of [pending.id, rowsReady.id]) {
+         const m = (await repo.getMaterializationById(id))!;
+         expect(m.status).toBe("FAILED");
+         expect(m.error).toBe(INTERRUPTED_RUN_ERROR);
+         expect(m.completedAt).toBeInstanceOf(Date);
+         // What it claimed is kept on the record, as on any failed run.
+         expect(m.metadata).toEqual(
+            id === pending.id
+               ? { mode: "auto" }
+               : {
+                    mode: "auto",
+                    scope: "version",
+                    writesTables: ["summary_v1"],
+                 },
+         );
+      }
+      expect((await repo.getMaterializationById(committed.id))!.status).toBe(
+         "MANIFEST_FILE_READY",
+      );
+      const keys = await second.getDuckDbConnection().all<{
+         active_key: string | null;
+      }>("SELECT active_key FROM materializations");
+      expect(keys.every((k) => k.active_key === null)).toBe(true);
+
+      // Neither slot is held: a new run of each starts.
+      expect(await repo.getActiveMaterialization(env.id, "pkg")).toBeNull();
+      expect(
+         await repo.getActiveMaterialization(env.id, "pkg", "1.0.0"),
+      ).toBeNull();
+      const next = await repo.createMaterialization(env.id, "pkg", "PENDING");
+      const nextVersion = await repo.createMaterialization(
+         env.id,
+         "pkg",
+         "PENDING",
+         null,
+         { version: "1.0.0", lockVersion: "1.0.0" },
+      );
+      expect(next.status).toBe("PENDING");
+      expect(nextVersion.status).toBe("PENDING");
    });
 });
 

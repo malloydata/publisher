@@ -26,13 +26,16 @@ import {
 } from "./lib/config";
 import { writePackage } from "./lib/packages";
 import { runLakeSql } from "./lib/ducklake";
-import { startPostgres } from "./lib/postgres";
+import { reapStaleContainers, startPostgres } from "./lib/postgres";
+import { installSignalTeardown } from "./lib/signals";
+
 import {
    buildServerIfNeeded,
    startServer,
    type PersistStorageMode,
    type ServerHandle,
 } from "./lib/server";
+import { PortAllocator, PortInUseError } from "./lib/ports";
 import { Rest } from "./lib/rest";
 import { log, setQuiet } from "./lib/util";
 import {
@@ -52,9 +55,17 @@ interface Args {
    rebuild: boolean;
    reusePg: boolean;
    quiet: boolean;
-   pgPort: number;
-   port: number;
-   mcpPort: number;
+   /** Unset: Docker assigns a free host port. */
+   pgPort?: number;
+   /** Unset: one name per run (see defaultContainerName). */
+   pgContainer?: string;
+   /**
+    * Unset: every publisher gets REST and MCP ports the OS reports free, so
+    * concurrent runs never collide. Set: ports are the free ones walking upward
+    * from here (MCP from `mcpPort`, or from here too when that is unset).
+    */
+   port?: number;
+   mcpPort?: number;
    /**
     * Scenarios to run concurrently. Each worker owns its own publishers and a
     * config holding only its own scenarios' environments — see parseArgs for the
@@ -63,15 +74,22 @@ interface Args {
    workers: number;
 }
 
+/** A `--port`-style value, refused here rather than at the first boot. */
+function portArg(flag: string, value: string | undefined): number {
+   const n = Number(value);
+   if (!Number.isInteger(n) || n < 1 || n > 65535) {
+      console.error(`${flag} takes a port from 1 to 65535, not "${value}"`);
+      process.exit(2);
+   }
+   return n;
+}
+
 function parseArgs(argv: string[]): Args {
    const a: Args = {
       keep: false,
       rebuild: false,
       reusePg: false,
       quiet: false,
-      pgPort: 55432,
-      port: 14000,
-      mcpPort: 14040,
       // 6 measured fastest on a 10-core laptop: ~51s, against ~57s at 4 and flat at
       // ~51-54s for 8, 10 and 12. The run is CPU-SATURATED — not memory- or
       // IO-bound, verified by re-running the whole sweep with 61% of RAM free and
@@ -106,12 +124,13 @@ function parseArgs(argv: string[]): Args {
       else if (arg === "--reuse-pg") a.reusePg = true;
       else if (arg === "--quiet") a.quiet = true;
       else if (arg === "--pg-port") a.pgPort = Number(next());
-      else if (arg === "--port") a.port = Number(next());
-      else if (arg === "--mcp-port") a.mcpPort = Number(next());
+      else if (arg === "--pg-container") a.pgContainer = next();
+      else if (arg === "--port") a.port = portArg(arg, next());
+      else if (arg === "--mcp-port") a.mcpPort = portArg(arg, next());
       else if (arg === "--workers") a.workers = Math.max(1, Number(next()));
       else if (arg === "--help" || arg === "-h") {
          console.log(
-            "Usage: bun hammer/run.ts [--scenarios a,b] [--tags security,orchestration] [--attention-older-than DAYS] [--keep] [--rebuild] [--reuse-pg] [--pg-port N] [--port N] [--mcp-port N] [--workers N] [--quiet]",
+            "Usage: bun hammer/run.ts [--scenarios a,b] [--tags security,orchestration] [--attention-older-than DAYS] [--keep] [--rebuild] [--reuse-pg] [--pg-port N] [--pg-container NAME] [--port N] [--mcp-port N] [--workers N] [--quiet]",
          );
          process.exit(0);
       }
@@ -162,7 +181,6 @@ class PublisherCluster {
       }
    >();
    private ports = new Map<string, { port: number; mcpPort: number }>();
-   private nextIdx = 0;
    /** Every server root this cluster created, so teardown can remove them. */
    private roots: string[] = [];
 
@@ -172,8 +190,11 @@ class PublisherCluster {
          workdir: string;
          configPath: string;
          env: string;
-         basePort: number;
-         baseMcpPort: number;
+         /** The run's allocator, shared by every cluster so no port repeats. */
+         ports: PortAllocator;
+         /** `--port` / `--mcp-port`: walk upward from these instead of asking the OS. */
+         basePort?: number;
+         baseMcpPort?: number;
          /**
           * Prefix for this cluster's server roots and log files. Scenarios run
           * concurrently and each owns its own publishers, so a shared root would
@@ -184,22 +205,33 @@ class PublisherCluster {
    ) {}
 
    /**
-    * Stable, distinct ports per publisher name (assigned on first sighting).
-    * The per-index stride (100) must exceed the base REST↔MCP gap so the two
-    * ranges never overlap: with a stride of 10 and bases 40 apart, the 5th
-    * publisher's REST port lands on the 1st publisher's MCP port — and since
-    * publishers stay running across the whole suite, that collision makes the new
-    * server exit early ("port in use"). A wide stride keeps every REST/MCP port
-    * distinct no matter how many named publishers a run accumulates.
+    * Stable ports per publisher name, allocated on first sighting and kept
+    * across restarts: a step can hold a publisher's Rest from before a
+    * `## Restart` (an `## Await` on a build it started), so a restarted
+    * publisher comes back where it was. Only a failed bind moves it.
     */
-   private portsFor(name: string): { port: number; mcpPort: number } {
+   private async portsFor(
+      name: string,
+      fresh = false,
+   ): Promise<{ port: number; mcpPort: number }> {
       let p = this.ports.get(name);
+      if (p && fresh) {
+         this.cfg.ports.release([p.port, p.mcpPort]);
+         p = undefined;
+      }
       if (!p) {
-         const i = this.nextIdx++;
-         p = {
-            port: this.cfg.basePort + i * 100,
-            mcpPort: this.cfg.baseMcpPort + i * 100,
-         };
+         const { basePort, baseMcpPort } = this.cfg;
+         if (basePort === undefined && baseMcpPort === undefined) {
+            const [port, mcpPort] = await this.cfg.ports.allocate(2);
+            p = { port, mcpPort };
+         } else {
+            const [port] = await this.cfg.ports.allocate(1, basePort);
+            const [mcpPort] = await this.cfg.ports.allocate(
+               1,
+               baseMcpPort ?? basePort,
+            );
+            p = { port, mcpPort };
+         }
          this.ports.set(name, p);
       }
       return p;
@@ -256,7 +288,6 @@ class PublisherCluster {
          bootStats.stopMs += performance.now() - stopStart;
          this.pubs.delete(name);
       }
-      const { port, mcpPort } = this.portsFor(name);
       const serverRoot = path.join(
          this.cfg.workdir,
          `server-${this.cfg.tag}${name}`,
@@ -264,20 +295,36 @@ class PublisherCluster {
       mkdirSync(serverRoot, { recursive: true });
       if (!this.roots.includes(serverRoot)) this.roots.push(serverRoot);
       const bootStart = performance.now();
-      const server = await startServer({
-         repoRoot: this.cfg.repoRoot,
-         serverRoot,
-         configPath: this.cfg.configPath,
-         port,
-         mcpPort,
-         mode,
-         init,
-         extraEnv,
-         logFile: path.join(
-            this.cfg.workdir,
-            `server-${this.cfg.tag}${name}.log`,
-         ),
-      });
+      // A port is free when allocated but another process can bind it before
+      // this server does; the server then exits "in use" and boots again on
+      // fresh ports. Only that failure is retried.
+      const MAX_BOOT_ATTEMPTS = 5;
+      let server: ServerHandle | undefined;
+      for (let attempt = 1; !server; attempt++) {
+         const { port, mcpPort } = await this.portsFor(name, attempt > 1);
+         try {
+            server = await startServer({
+               repoRoot: this.cfg.repoRoot,
+               serverRoot,
+               configPath: this.cfg.configPath,
+               port,
+               mcpPort,
+               mode,
+               init,
+               extraEnv,
+               logFile: path.join(
+                  this.cfg.workdir,
+                  `server-${this.cfg.tag}${name}${attempt > 1 ? `-${attempt}` : ""}.log`,
+               ),
+            });
+         } catch (e) {
+            if (!(e instanceof PortInUseError) || attempt >= MAX_BOOT_ATTEMPTS)
+               throw e;
+            log.warn(
+               `[${this.cfg.tag}${name}] ${e.message}; retrying on fresh ports (attempt ${attempt + 1}/${MAX_BOOT_ATTEMPTS})`,
+            );
+         }
+      }
       bootStats.count++;
       bootStats.startMs += performance.now() - bootStart;
       const rest = new Rest(server.baseUrl, this.cfg.env);
@@ -306,6 +353,10 @@ class PublisherCluster {
    async stop(keepRoots = false): Promise<void> {
       for (const { server } of this.pubs.values()) await server.stop();
       this.pubs.clear();
+      for (const p of this.ports.values()) {
+         this.cfg.ports.release([p.port, p.mcpPort]);
+      }
+      this.ports.clear();
       if (!keepRoots) {
          for (const root of this.roots) {
             rmSync(root, { recursive: true, force: true });
@@ -435,9 +486,41 @@ async function main(): Promise<void> {
 
    await buildServerIfNeeded(repoRoot, args.rebuild);
 
+   // Containers left by earlier runs that died without tearing down (SIGKILL,
+   // a crash): only hammer's own, and only when their run is provably over.
+   await reapStaleContainers();
+   // One container per run, on a port Docker assigns, so two runs started at
+   // the same moment never share a name or race for a port.
    const pg = await startPostgres({
       hostPort: args.pgPort,
+      containerName: args.pgContainer,
       reuse: args.reusePg,
+      keep: args.keep,
+   });
+   // The clusters a worker has running right now, so an interrupted run can
+   // stop their publishers too.
+   const activeClusters = new Set<PublisherCluster>();
+   let tearingDown: Promise<void> | undefined;
+   const tearDownOnce = async (): Promise<void> => {
+      for (const cluster of activeClusters) await cluster.stop(args.keep);
+      if (!args.keep) {
+         await pg.stop();
+         rmSync(workdir, { recursive: true, force: true });
+      } else {
+         log.info(
+            `--keep: left workdir ${workdir} and container ${pg.containerName} up`,
+         );
+      }
+   };
+   // Once, whoever asks first: an interrupted run's in-flight scenario fails
+   // when its container goes, and its `finally` asks again.
+   const teardown = (): Promise<void> => (tearingDown ??= tearDownOnce());
+   // Ctrl-C or SIGTERM mid-run: the `finally` below never runs, so tear down
+   // here; the watchdog and the next run's reaper only cover a hard kill.
+   let interrupted = false;
+   const removeSignalTeardown = installSignalTeardown(async () => {
+      interrupted = true;
+      await teardown();
    });
    const results: ScenarioResult[] = [];
    let hardError: Error | null = null;
@@ -725,18 +808,19 @@ async function main(): Promise<void> {
             );
          };
 
-      // A worker's port block. Publisher NAMES stride by 100 within a cluster, so
-      // workers stride by 1000 to keep every REST/MCP port distinct. Clusters are
-      // per scenario but a worker only ever runs one at a time, so its block is
-      // free to be reused by its next scenario.
-      const clusterFor = (s: Scenario, w: number): PublisherCluster =>
+      // One allocator for the whole run, so no two of its publishers — across
+      // workers and scenarios — are ever handed the same port, and a cluster's
+      // ports return to it when its scenario ends.
+      const ports = new PortAllocator();
+      const clusterFor = (s: Scenario): PublisherCluster =>
          new PublisherCluster({
             repoRoot,
             workdir,
             configPath: scenarioConfigPath.get(s.id)!,
             env: PRIMARY,
-            basePort: args.port + w * 1000,
-            baseMcpPort: args.mcpPort + w * 1000,
+            ports,
+            basePort: args.port,
+            baseMcpPort: args.mcpPort,
             tag: `${resources.get(s.id)!.slug}-`,
          });
       if (args.workers > 1) {
@@ -807,6 +891,8 @@ async function main(): Promise<void> {
                ),
             restOf: (name) => bind(mgr.restOf(name)),
             editPackageModel: editPackageModelFor(r),
+            packageDir: (pkg: string, pkgEnv: string = PRIMARY) =>
+               path.join(packagesDir, r.envFor(pkgEnv), pkg),
             operatorSql: operatorSqlFor(r, lakes, warehouses),
             storedTables: (conn, schema) => {
                // DuckLake writes `<storage>/<schema>/<table>/<file>.parquet`.
@@ -850,16 +936,18 @@ async function main(): Promise<void> {
       // publisher and its storage down before taking the next one.
       let nextIdx = 0;
       await Promise.all(
-         Array.from({ length: args.workers }, async (_unused, w) => {
+         Array.from({ length: args.workers }, async () => {
             for (;;) {
                const i = nextIdx++;
                if (i >= scenarios.length) break;
                const s = scenarios[i];
-               const mgr = clusterFor(s, w);
+               const mgr = clusterFor(s);
+               activeClusters.add(mgr);
                try {
                   await runOne(s, mgr);
                } finally {
                   await mgr.stop(args.keep);
+                  activeClusters.delete(mgr);
                }
             }
          }),
@@ -869,14 +957,11 @@ async function main(): Promise<void> {
       log.err(`harness error: ${hardError.message}`);
       if (hardError.stack) log.info(hardError.stack);
    } finally {
-      if (!args.keep) {
-         await pg.stop();
-         rmSync(workdir, { recursive: true, force: true });
-      } else {
-         log.info(
-            `--keep: left workdir ${workdir} and container ${pg.containerName} up`,
-         );
-      }
+      removeSignalTeardown();
+      await teardown();
+      // The signal handler exits with the signal's code once the teardown is
+      // done; reporting the half-run here would race it with a failure code.
+      if (interrupted) await new Promise<never>(() => {});
    }
 
    // Report in declared (directory) order: execution order is now mode-grouped and,
