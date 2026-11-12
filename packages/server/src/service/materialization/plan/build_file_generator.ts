@@ -1039,7 +1039,7 @@ export function planModelMaterialize(
          ...(inline.length > 0 ? { inline, uniquenessChecks } : {}),
       });
    }
-   chainExtensionTables(plans, contents);
+   chainExtensionTables(plans, map);
    return { plans, refused };
 }
 
@@ -1061,11 +1061,7 @@ const INCREMENTAL_KEYS = ["refresh", "watermark", "merge_key", "partition"];
  * term, which would scope the extension's build to one caller). A plan that
  * does not qualify builds over the raw chain, as before: the same rows.
  */
-function chainExtensionTables(
-   plans: MaterializePlan[],
-   contents: Record<string, unknown>,
-): void {
-   const map = SourceMap.of({ contents });
+function chainExtensionTables(plans: MaterializePlan[], map: SourceMap): void {
    const byID = new Map(plans.map((p) => [p.sourceID, p]));
    const declarationOfID = (sourceID: string) =>
       declarationOf(map.node(sourceID)?.def as SourceDefLike);
