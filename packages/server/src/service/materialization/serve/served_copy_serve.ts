@@ -19,11 +19,12 @@
 
 import { readFileSync } from "fs";
 import { fileURLToPath } from "url";
-import type {
-   MalloyConfig,
-   ModelDef,
-   ModelMaterializer,
-   QueryMaterializer,
+import {
+   MalloyError,
+   type MalloyConfig,
+   type ModelDef,
+   type ModelMaterializer,
+   type QueryMaterializer,
 } from "@malloydata/malloy";
 import type { GraftRuntime, GraftScope } from "../../gate_classification";
 import { quoteManifestTablePath } from "../../quoting";
@@ -61,13 +62,19 @@ import {
    type ServedCopyRange,
 } from "./served_copy";
 import { servedCopyConfig, servedCopyAlias } from "./served_copy_config";
+import {
+   isCrossConnectionRefusal,
+   leaveOutCrossConnectionJoins,
+   type LeftOutDefinition,
+} from "../plan/cross_connection_joins";
 
 type VirtualMap = Map<string, Map<string, string>>;
 
 /**
  * Why the served copy declined a query, for the path report: `time_zone`, the
  * query sets a timezone over a stored computed dimension; `cross_connection`,
- * the copy waits on a join across connections; `not_served`, the copy (or the
+ * the copy waits on a join across connections, or the query reads a join it
+ * leaves out across connections; `not_served`, the copy (or the
  * queried source in it) carries a `served-copy-not-served` warning;
  * `opt_out`, the queried source opts out with `#@ -persist`.
  */
@@ -82,10 +89,35 @@ export class ServedCopyDecline extends Error {
    constructor(
       message: string,
       readonly code: ServedCopyDeclineCode,
+      /** What the path report may tell the caller; the message stays in logs. */
+      readonly callerDetail?: string,
    ) {
       super(message);
    }
 }
+
+/** The caller's detail for a query through a join left out across connections. */
+const LEFT_OUT_JOIN_DETAIL =
+   "The query uses a join to a source on another connection than the destination this table is stored in, so it is answered live.";
+
+/**
+ * Whether a query's compile failure reads a definition the served copy left
+ * out across connections: a missing field while some are left out (the copy
+ * keeps every other field of the author's).
+ */
+function readsLeftOutDefinition(compiled: Compiled, error: unknown): boolean {
+   if (!compiled.leftOut?.length) return false;
+   if (!(error instanceof MalloyError)) return false;
+   return (error.problems as { code?: string }[]).some(
+      (p) => p.code !== undefined && MISSING_FIELD_CODES.has(p.code),
+   );
+}
+
+/** Malloy's codes for a compile that reads a field the model does not have. */
+const MISSING_FIELD_CODES: ReadonlySet<string> = new Set([
+   "field-not-found",
+   "aggregate-source-not-found",
+]);
 
 /** The code on a package warning for a served copy that did not compile or re-root. */
 export const SERVED_COPY_WARNING_CODE = "served-copy-not-served";
@@ -102,7 +134,14 @@ export interface ServedCopyProblem {
       | "range_not_found"
       | "definition_not_parsed"
       | "fields_not_carried"
-      | "read_terms_not_kept";
+      | "read_terms_not_kept"
+      | "cross_connection_join";
+   /**
+    * For `cross_connection_join`: the join the served copy leaves out, because
+    * it reads a source on another connection than the destination its source
+    * is stored in.
+    */
+   join?: string;
    /** The compiler's message, for logs and the package warning only. */
    detail?: string;
 }
@@ -143,6 +182,12 @@ interface Compiled {
     * (decision 6). Dropped with the compile: a rebind or reload starts empty.
     */
    declined?: Map<string, ServedCopyDecline>;
+   /**
+    * Definitions left out because a join they read crosses connections in the
+    * served copy (question 11): a query that reads one skips the served copy
+    * with reason `cross_connection`.
+    */
+   leftOut?: readonly LeftOutDefinition[];
 }
 
 /** How many declined queries one compiled copy remembers before starting over. */
@@ -271,12 +316,33 @@ export class ServedCopyServe {
       }
       const declined = compiled.declined?.get(queryString);
       if (declined !== undefined) throw declined;
-      const decline = (reason: string, code: ServedCopyDeclineCode): never => {
+      const decline = (
+         reason: string,
+         code: ServedCopyDeclineCode,
+         callerDetail?: string,
+      ): never => {
          const memo = (compiled.declined ??= new Map());
          if (memo.size >= DECLINED_LIMIT) memo.clear();
-         const error = new ServedCopyDecline(reason, code);
+         const error = new ServedCopyDecline(reason, code, callerDetail);
          memo.set(queryString, error);
          throw error;
+      };
+      // A query through a join left out across connections (question 11)
+      // fails to compile for the field it reads: declined as
+      // `cross_connection`, which depends only on the query and this compile.
+      const compiling = async <T>(work: () => Promise<T>): Promise<T> => {
+         try {
+            return await work();
+         } catch (error) {
+            if (readsLeftOutDefinition(compiled, error)) {
+               decline(
+                  "the query reads a join the served copy leaves out across connections",
+                  "cross_connection",
+                  LEFT_OUT_JOIN_DETAIL,
+               );
+            }
+            throw error;
+         }
       };
       const virtualMap = buildVirtualMap(compiled.aliased);
       const runnable = compiled.materializer.loadRestrictedQuery(queryString);
@@ -285,7 +351,7 @@ export class ServedCopyServe {
       // source is an opted-out reader, or derives from one, is declined here
       // and answered by the next candidate (which never carries one).
       if (compiled.optOutIDs && compiled.optOutIDs.size > 0) {
-         const prepared = await readPreparedQuery(runnable);
+         const prepared = await compiling(() => readPreparedQuery(runnable));
          const struct = resolveStructRefSource<unknown>(
             prepared.structRef,
             compiled.modelDef as never,
@@ -300,10 +366,12 @@ export class ServedCopyServe {
       }
       // Compile eagerly so a query the copy cannot answer fails inside the
       // router's attempt, not at run time past the fallback.
-      const sql = await runnable.getSQL({
-         virtualMap,
-         givens: givens as never,
-      });
+      const sql = await compiling(() =>
+         runnable.getSQL({
+            virtualMap,
+            givens: givens as never,
+         }),
+      );
       const tablesRead = compiled.rerooted.filter((b) =>
          sql.includes(quoteManifestTablePath(b.tablePath, "duckdb")),
       );
@@ -489,6 +557,9 @@ export class ServedCopyServe {
          const stored = new Map(binding.schema.map((c) => [c.name, c.type]));
          columns = [];
          for (const c of plan.columns) {
+            // An inlined join's own columns are for readers outside Malloy;
+            // the served source reads the joined source through its join.
+            if (c.join !== undefined) continue;
             const type = stored.get(c.column);
             // A build that stored a dimension under another name cannot be
             // read back as that field.
@@ -527,7 +598,7 @@ export class ServedCopyServe {
          ...(plan
             ? {
                  storedDimensions: plan.columns
-                    .filter((c) => c.computed)
+                    .filter((c) => c.computed && c.join === undefined)
                     .map((c) => c.dimension),
               }
             : {}),
@@ -625,43 +696,89 @@ export class ServedCopyServe {
          for (const [url, text] of copy.files) {
             overlay.set(overlayKey(url), text);
          }
+         const packagePath = this.packagePath;
+         const config = servedCopyConfig(
+            this.packageConfig,
+            destinations(),
+            new Set(rerooted.map((b) => b.destinationName)),
+         );
+         const load = async (files: ReadonlyMap<string, string>) => {
+            const { runtime, modelURL, importBaseURL } =
+               await createModelRuntime(
+                  packagePath,
+                  this.host.modelPath(),
+                  config,
+                  { overlay: files },
+               );
+            const m = runtime.loadModel(modelURL, { importBaseURL });
+            const model = await m.getModel();
+            return {
+               materializer: m,
+               // eslint-disable-next-line @typescript-eslint/no-explicit-any
+               def: (model as any)._modelDef,
+               runtime: runtime as unknown as GraftRuntime,
+            };
+         };
          let materializer: ModelMaterializer;
          let servedDef: unknown;
          let servedRuntime: GraftRuntime;
+         let leftOut: LeftOutDefinition[] = [];
          try {
-            const { runtime, modelURL, importBaseURL } =
-               await createModelRuntime(
-                  this.packagePath,
-                  this.host.modelPath(),
-                  servedCopyConfig(
-                     this.packageConfig,
-                     destinations(),
-                     new Set(rerooted.map((b) => b.destinationName)),
-                  ),
-                  { overlay },
-               );
-            materializer = runtime.loadModel(modelURL, { importBaseURL });
-            servedRuntime = runtime as unknown as GraftRuntime;
-            const model = await materializer.getModel();
-            // eslint-disable-next-line @typescript-eslint/no-explicit-any
-            servedDef = (model as any)._modelDef;
+            ({
+               materializer,
+               def: servedDef,
+               runtime: servedRuntime,
+            } = await load(overlay));
          } catch (err) {
-            const detail = err instanceof Error ? err.message : String(err);
-            problems.push({
-               reason: classifyServedCopyFailure(detail),
-               detail,
-            });
-            return { key, generation, rerooted: [], aliased: [], problems };
+            // A reference join the re-root moved across connections (question
+            // 11): leave it out, with what reads it, so every other query
+            // still reads the table.
+            const byURL = new Map(
+               [...copy.files].map(([url, text]) => [url, text] as const),
+            );
+            const kept = await leaveOutCrossConnectionJoins({
+               firstError: err,
+               overlay: byURL,
+               readText: (u) => lift.fileText(u),
+               compile: async (files) => {
+                  await load(keyed(files));
+               },
+            }).catch(() => undefined);
+            if (!kept) {
+               const detail = err instanceof Error ? err.message : String(err);
+               problems.push({
+                  reason: classifyServedCopyFailure(err),
+                  detail,
+               });
+               return { key, generation, rerooted: [], aliased: [], problems };
+            }
+            try {
+               ({
+                  materializer,
+                  def: servedDef,
+                  runtime: servedRuntime,
+               } = await load(keyed(kept.overlay)));
+            } catch (again) {
+               const detail =
+                  again instanceof Error ? again.message : String(again);
+               problems.push({ reason: "compile_failed", detail });
+               return { key, generation, rerooted: [], aliased: [], problems };
+            }
+            leftOut = kept.leftOut;
          }
          // A re-rooted source must keep every field the author's has. One it
          // inherited from a base the re-root replaced (a measure, a view, a
          // join declared on the base) is not in its own text, so it is lost:
          // that source is left as written and the copy compiled again.
          const servedMap = SourceMap.of(servedDef);
+         // What a cross-connection join took with it is reported on its own.
+         const leftOutNames = new Set(leftOut.map((l) => l.name));
          const lost = candidates.filter((c) => {
             const author = fieldNames(map.node(c.reroot.sourceID)?.def);
             const served = fieldNames(servedMap.node(c.reroot.sourceID)?.def);
-            return [...author].some((name) => !served.has(name));
+            return [...author].some(
+               (name) => !served.has(name) && !leftOutNames.has(name),
+            );
          });
          // Fail closed on tenant isolation: every `where:` term that reads a
          // given (re-applied per caller at read, never in the table) must be
@@ -702,6 +819,14 @@ export class ServedCopyServe {
                optOutIDs.add(node.sourceID);
             }
          }
+         for (const l of leftOut) {
+            if (!l.crossConnection) continue;
+            problems.push({
+               sourceName: l.declaration ?? l.name,
+               reason: "cross_connection_join",
+               join: l.name,
+            });
+         }
          return {
             key,
             generation,
@@ -717,6 +842,7 @@ export class ServedCopyServe {
             rerooted,
             aliased,
             problems,
+            ...(leftOut.length > 0 ? { leftOut } : {}),
          };
       }
       return { key, generation, rerooted: [], aliased: [], problems };
@@ -811,9 +937,14 @@ function fieldNames(def: unknown): Set<string> {
  * and that is a coded wait, not a broken model.
  */
 export function classifyServedCopyFailure(
-   detail: string,
+   error: unknown,
 ): "cross_connection_unbuilt" | "compile_failed" {
-   return /Cannot join .* on connection/i.test(detail)
+   return isCrossConnectionRefusal(error)
       ? "cross_connection_unbuilt"
       : "compile_failed";
+}
+
+/** An overlay keyed as `createModelRuntime` reads it. */
+function keyed(files: ReadonlyMap<string, string>): Map<string, string> {
+   return new Map([...files].map(([url, text]) => [overlayKey(url), text]));
 }

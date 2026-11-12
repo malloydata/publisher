@@ -135,6 +135,11 @@ export interface LoadPackageRequest {
     * entities: a load that serves it, and the package-scope compile.
     */
    withEntities?: boolean;
+   /**
+    * `materialize.enabled` on the main thread: a model that joins sources
+    * across connections then loads from its build view (#6982).
+    */
+   materializeEnabled?: boolean;
 }
 
 // ──────────────────────────────────────────────────────────────────────
@@ -167,6 +172,12 @@ export interface SerializedModel {
     * belong to the pre-edit text. `.malloy` models only.
     */
    modelSourceText?: string;
+   /**
+    * Set when the model joins sources across connections (#6982) and was
+    * loaded, behind the materialize switch, from its build view: the
+    * definitions left out (`LeftOutDefinition[]`).
+    */
+   crossConnectionLeftOut?: unknown[];
    /** Accumulated dataStyles from sibling `.styles.json` files. */
    dataStyles?: unknown;
    /** Wall-clock ms spent compiling this single model in the worker. */

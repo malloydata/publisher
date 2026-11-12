@@ -391,7 +391,7 @@ function intoFirstExtend(
 }
 
 /** Indexes in `tokens` of a word followed by `:` (not `::`) at its own depth. */
-function statementStarts(tokens: readonly Token[]): number[] {
+export function statementStarts(tokens: readonly Token[]): number[] {
    const starts: number[] = [];
    for (let k = 0; k + 1 < tokens.length; k++) {
       const t = tokens[k];
@@ -408,7 +408,7 @@ function statementStarts(tokens: readonly Token[]): number[] {
 }
 
 /** Whether `t` can name a definition: a word or a quoted identifier. */
-function isName(t: Token | undefined): t is Token {
+export function isName(t: Token | undefined): t is Token {
    return !!t && (t.kind === "word" || t.text.startsWith("`"));
 }
 
@@ -617,7 +617,7 @@ function withTypes(text: string, applied: readonly Reroot[]): string {
 }
 
 /** The character offset of a zero-based line/character position, or -1. */
-function offsetOf(
+export function offsetOf(
    text: string,
    pos: { line: number; character: number },
 ): number {
@@ -636,7 +636,7 @@ function offsetOf(
 }
 
 /** One lexical token, at the bracket depth it sits at. */
-interface Token {
+export interface Token {
    kind: "word" | "open" | "close" | "other";
    text: string;
    start: number;
@@ -719,7 +719,7 @@ function topLevelTokens(s: string): Token[] | undefined {
  * skipped; a string or quoted identifier is one "other" token. Undefined when
  * brackets do not balance or a string or comment does not close.
  */
-function lexAll(s: string): Token[] | undefined {
+export function lexAll(s: string): Token[] | undefined {
    const out: Token[] = [];
    let depth = 0;
    let i = 0;

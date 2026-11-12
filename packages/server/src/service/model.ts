@@ -61,6 +61,22 @@ import {
    PayloadTooLargeError,
 } from "../errors";
 import { getMaterializeEnabled, getPersistStorageMode } from "../config";
+import { readFileSync } from "fs";
+import { fileURLToPath } from "url";
+import { overlayKey } from "./overlay_key";
+import {
+   loadLeavingOutCrossConnectionJoins,
+   type LeftOutDefinition,
+} from "./materialization/plan/cross_connection_joins";
+
+/** A local file's text by its URL, or undefined. */
+function readFileURLText(url: string): string | undefined {
+   try {
+      return readFileSync(fileURLToPath(url), "utf8");
+   } catch {
+      return undefined;
+   }
+}
 import {
    planModelPreaggregation,
    type RollupPlan,
@@ -451,6 +467,11 @@ export class Model {
     * on disk is newer than the served IR.
     */
    private compiledSourceText: string | undefined;
+   /**
+    * For a model whose files join sources across connections (#6982), loaded
+    * from its build view: the definitions left out. Undefined otherwise.
+    */
+   private crossConnectionLeftOut: LeftOutDefinition[] | undefined;
    /** {@link getReportModelFacts}, once read; boxed so `undefined` is cached too. */
    private reportModelFacts:
       | { value: ReportModelFacts | undefined }
@@ -856,15 +877,57 @@ export class Model {
       );
 
       try {
-         const { modelMaterializer, runnableNotebookCells } =
-            await Model.getModelMaterializer(
-               runtime,
-               importBaseURL,
-               modelURL,
-               modelPath,
-            );
-
-         const compiled = await modelMaterializer?.getModel();
+         const loadedModel = await Model.getModelMaterializer(
+            runtime,
+            importBaseURL,
+            modelURL,
+            modelPath,
+         );
+         let modelMaterializer = loadedModel.modelMaterializer;
+         const runnableNotebookCells = loadedModel.runnableNotebookCells;
+         let gateRuntime = runtime;
+         let compiled:
+            | Awaited<ReturnType<ModelMaterializer["getModel"]>>
+            | undefined;
+         let crossConnectionLeftOut: LeftOutDefinition[] | undefined;
+         try {
+            compiled = await modelMaterializer?.getModel();
+         } catch (first) {
+            // A file that joins sources across connections (#6982) loads
+            // from its build view behind the materialize switch.
+            const view =
+               getMaterializeEnabled() && modelType === "model"
+                  ? await loadLeavingOutCrossConnectionJoins({
+                       firstError: first,
+                       readText: readFileURLText,
+                       load: async (files) => {
+                          const rt = await Model.getModelRuntime(
+                             packagePath,
+                             modelPath,
+                             malloyConfig,
+                             {
+                                ...options,
+                                overlay: new Map([
+                                   ...(options?.overlay ?? []),
+                                   ...[...files].map(
+                                      ([u, t]) => [overlayKey(u), t] as const,
+                                   ),
+                                ]),
+                             },
+                          );
+                          const mm = rt.runtime.loadModel(rt.modelURL, {
+                             importBaseURL: rt.importBaseURL,
+                          });
+                          return { rt, mm, model: await mm.getModel() };
+                       },
+                    })
+                  : undefined;
+            if (!view) throw first;
+            modelMaterializer = view.result.mm;
+            gateRuntime = view.result.rt.runtime;
+            compiled = view.result.model;
+            crossConnectionLeftOut = view.leftOut;
+         }
          const checked =
             modelMaterializer && compiled
                ? await extractCheckedModel(
@@ -907,9 +970,10 @@ export class Model {
             policy,
             // Cast: `_loadModelFromModelDef` is internal and undeclared on the
             // public `Runtime` type.
-            gateRuntime: runtime as HydrationRuntime,
+            gateRuntime: gateRuntime as HydrationRuntime,
          });
          model.compiledSourceText = compiledTextFor(modelURL);
+         model.crossConnectionLeftOut = crossConnectionLeftOut;
          return model;
       } catch (thrown) {
          if (thrown instanceof Error && thrown.stack) {
@@ -1035,6 +1099,9 @@ export class Model {
       // Paired with `modelDef` above: the coordinates in that IR index this
       // text and no other revision of the file.
       model.compiledSourceText = data.modelSourceText;
+      model.crossConnectionLeftOut = data.crossConnectionLeftOut as
+         | LeftOutDefinition[]
+         | undefined;
       model.preparedRenderTagResults = data.renderTagResults as
          | { label: string; result?: Malloy.Result }[]
          | undefined;
@@ -2663,6 +2730,14 @@ export class Model {
    public async prepareServedCopy(): Promise<void> {
       if (!this.servedCopyEnabled()) return;
       await this.servedCopy.prepare();
+   }
+
+   /**
+    * The definitions this model's build view leaves out because they join
+    * sources across connections (#6982); empty for any other model.
+    */
+   public crossConnectionLeftOutDefinitions(): readonly LeftOutDefinition[] {
+      return this.crossConnectionLeftOut ?? [];
    }
 
    /** Why this model's served copy leaves sources unserved (empty when off). */

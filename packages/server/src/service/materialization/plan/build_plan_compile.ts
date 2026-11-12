@@ -24,6 +24,16 @@ import {
 } from "./build_plan";
 import { createEventLoopYielder } from "../../event_loop_yield";
 import { Model } from "../../model";
+import { readFileSync } from "fs";
+import { fileURLToPath } from "url";
+import { getMaterializeEnabled } from "../../../config";
+import { overlayKey } from "../../overlay_key";
+import { loadLeavingOutCrossConnectionJoins } from "./cross_connection_joins";
+
+/** An overlay keyed as `Model.getModelRuntime` reads it. */
+function keyed(files: ReadonlyMap<string, string>): Map<string, string> {
+   return new Map([...files].map(([url, text]) => [overlayKey(url), text]));
+}
 
 export async function compilePackageBuildPlan(
    pkg: BuildPlanPackage,
@@ -44,16 +54,49 @@ export async function compilePackageBuildPlan(
       await yielder.maybeYield();
       if (signal?.aborted) throw new Error("Build cancelled");
 
-      const { runtime, modelURL, importBaseURL } = await Model.getModelRuntime(
-         pkg.getPackagePath(),
-         modelPath,
-         pkg.getMalloyConfig(),
-      );
-      // Held onto (rather than chained straight into `.getModel()`) because
-      // the gate classification needs the SAME live materializer that
-      // compiled this model — see `classifyPersistSourceGate`'s doc.
-      const materializer = runtime.loadModel(modelURL, { importBaseURL });
-      const malloyModel = await materializer.getModel();
+      const load = async (files?: ReadonlyMap<string, string>) => {
+         const { runtime, modelURL, importBaseURL } =
+            await Model.getModelRuntime(
+               pkg.getPackagePath(),
+               modelPath,
+               pkg.getMalloyConfig(),
+               files ? { overlay: files } : undefined,
+            );
+         // Held onto (rather than chained straight into `.getModel()`)
+         // because the gate classification needs the SAME live materializer
+         // that compiled this model — see `classifyPersistSourceGate`'s doc.
+         const materializer = runtime.loadModel(modelURL, { importBaseURL });
+         return {
+            runtime,
+            materializer,
+            malloyModel: await materializer.getModel(),
+         };
+      };
+      let loaded: Awaited<ReturnType<typeof load>>;
+      // The build view's files, when the model joins sources across
+      // connections (#6982): its builds are planned from them.
+      let buildView: Map<string, string> | undefined;
+      try {
+         loaded = await load();
+      } catch (first) {
+         const view = getMaterializeEnabled()
+            ? await loadLeavingOutCrossConnectionJoins({
+                 firstError: first,
+                 readText: (url) => {
+                    try {
+                       return readFileSync(fileURLToPath(url), "utf8");
+                    } catch {
+                       return undefined;
+                    }
+                 },
+                 load: (files) => load(keyed(files)),
+              })
+            : undefined;
+         if (!view) throw first;
+         loaded = view.result;
+         buildView = keyed(view.overlay);
+      }
+      const { runtime, materializer, malloyModel } = loaded;
       await collectModelBuildPlan(parts, {
          modelPath,
          packagePath: pkg.getPackagePath(),
@@ -65,7 +108,7 @@ export async function compilePackageBuildPlan(
                pkg.getPackagePath(),
                modelPath,
                pkg.getMalloyConfig(),
-               { overlay },
+               { overlay: new Map([...(buildView ?? []), ...overlay]) },
             ),
       });
    }
