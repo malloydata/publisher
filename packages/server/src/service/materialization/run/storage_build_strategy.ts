@@ -67,6 +67,11 @@ import {
    partitionColumnsForBuild,
    readAuthorFile,
    redactConnectionSecrets,
+   currentUpstreamEntries,
+   noteWrongTierRecompute,
+   upstreamEntryIsCurrent,
+   WRONG_TIER_MARKER,
+   wrongTierDetail,
 } from "./materialization_run_support";
 import { carriesAuthorSql, isSameCatalog } from "./same_catalog_build";
 import { destinationSchemaOf } from "./storage_table_path";
@@ -308,6 +313,22 @@ export class StorageBuildStrategy
                   reason: safeDetail,
                },
             );
+            // A recompute because a parent's entry is at the wrong tier reads
+            // the warehouse; counted once per run per parent (#7087).
+            if (
+               err instanceof ChainedUpstreamMissingError &&
+               safeDetail.includes(WRONG_TIER_MARKER)
+            ) {
+               for (const upstream of err.missing) {
+                  noteWrongTierRecompute({
+                     planFacts,
+                     build: "storage",
+                     sourceName: persistSource.name,
+                     upstream,
+                     detail: safeDetail,
+                  });
+               }
+            }
          }
       }
 
@@ -563,8 +584,11 @@ export class StorageBuildStrategy
             (alias) => typeof lift.contents[alias]?.extends !== "string",
          );
       }
+      // Only an entry at the destination its source is declared in NOW: a
+      // stored table left from before the source moved is stale (#7087).
+      const currentEntries = currentUpstreamEntries(builtEntries, planFacts);
       const upstreams: ServeBinding[] = deriveServeBindings(
-         builtEntries,
+         currentEntries,
          aliasesForBinding,
          (name) => {
             try {
@@ -632,6 +656,23 @@ export class StorageBuildStrategy
                   : planFacts.addressBySourceId[sourceID];
             const entry =
                address === undefined ? undefined : builtEntries[address];
+            if (
+               entry !== undefined &&
+               address !== undefined &&
+               !upstreamEntryIsCurrent(address, entry, planFacts)
+            ) {
+               return wrongTierDetail(name, address, entry, planFacts);
+            }
+            if (
+               entry?.storageDestinationName === destinationName &&
+               !entry.schema?.length
+            ) {
+               return (
+                  `'${name}' is materialized in destination '${destinationName}', ` +
+                  `but by a reference that carries no column list, which this ` +
+                  `build needs to read it`
+               );
+            }
             if (entry?.storageDestinationName !== undefined) {
                return (
                   `'${name}' is materialized in destination ` +

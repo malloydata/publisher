@@ -51,6 +51,7 @@ describe("executeInstructedBuild", () => {
       instructions: BuildInstruction[],
       seed: Record<string, unknown>,
       apiConnections?: Record<string, unknown>,
+      strict = false,
    ): Promise<ExecuteResult> {
       // A stub BuildEnvironment. The `storage=` branch reads it, and so does the
       // per-source failure path, which redacts against the connection's CONFIG.
@@ -74,6 +75,7 @@ describe("executeInstructedBuild", () => {
                i: BuildInstruction[],
                s: Record<string, unknown>,
                sig: AbortSignal,
+               strict: boolean,
             ) => Promise<ExecuteResult>;
          }
       ).executeInstructedBuild(
@@ -82,6 +84,7 @@ describe("executeInstructedBuild", () => {
          instructions,
          seed,
          new AbortController().signal,
+         strict,
       );
    }
 
@@ -1272,6 +1275,183 @@ describe("executeInstructedBuild", () => {
       expect(seen?.buildManifest?.entries?.up?.tableName).toBe(
          '"schema"."orders_base"',
       );
+   });
+
+   // ms2data/service#7087: a source moved to `storage=` keeps its content
+   // address, and a stored table's reference names the WAREHOUSE connection, so
+   // a reference to it (or to the table from before the move) read as a
+   // warehouse table, and its bare name was rendered into warehouse SQL.
+   describe("an upstream declared `storage=` is never a warehouse table", () => {
+      async function downstreamSees(opts: {
+         upStorage?: string;
+         seed: Record<string, unknown>;
+         mode?: string;
+         strict?: boolean;
+      }) {
+         // Every render Malloy is handed. The FIRST is the build SQL; later ones
+         // only classify the build's upstreams and are never executed.
+         const renders: {
+            buildManifest?: {
+               entries?: Record<string, { tableName?: string }>;
+            };
+         }[] = [];
+         const connection = {
+            runSQL: sinon.stub().resolves(),
+            dialectName: "duckdb",
+         } as unknown as MalloyConnection;
+         const up = fakeSource({
+            name: "up",
+            sourceEntityId: "up",
+            ...(opts.upStorage
+               ? { annotationFields: { storage: opts.upStorage } }
+               : {}),
+         });
+         const down = fakeSource({
+            name: "down",
+            sourceEntityId: "bdownaaaaaaaaaa",
+            onGetSQL: (o) => {
+               renders.push(o as (typeof renders)[number]);
+               // Malloy's strict render refuses an upstream it cannot find.
+               const m = (
+                  o as {
+                     buildManifest?: {
+                        strict?: boolean;
+                        entries?: Record<string, unknown>;
+                     };
+                  }
+               ).buildManifest;
+               if (m?.strict && !m.entries?.up) {
+                  throw Object.assign(
+                     new Error("Persisted source 'up' not found in manifest"),
+                     { code: "runtime-manifest-strict-miss" },
+                  );
+               }
+            },
+         });
+         const compiled = compiledWith(
+            { up, down },
+            [["up"], ["down"]],
+            new Map([["duckdb", connection]]),
+         );
+         const { restore } = installSettings({
+            env: { PERSIST_STORAGE_MODE: opts.mode ?? "on" },
+         });
+         try {
+            const result = await callExecute(
+               compiled,
+               [
+                  {
+                     sourceEntityId: "bdownaaaaaaaaaa",
+                     materializedTableId: "mt-d",
+                     physicalTableName: "down_v1",
+                     realization: "COPY",
+                  },
+               ],
+               opts.seed,
+               undefined,
+               opts.strict ?? false,
+            );
+            return { seen: renders[0], result };
+         } finally {
+            restore();
+         }
+      }
+
+      it("does not render a stored upstream's unlabeled reference into warehouse SQL", async () => {
+         // The reference the control plane sends today: the stored table's
+         // name on the warehouse connection, no destination.
+         const { seen, result } = await downstreamSees({
+            upStorage: "lake",
+            seed: {
+               up: {
+                  sourceEntityId: "up",
+                  physicalTableName: "up__g004__e9c3ad40",
+                  connectionName: "duckdb",
+               },
+            },
+         });
+         expect(seen?.buildManifest?.entries?.up).toBeUndefined();
+         // Still carried in the run's manifest; only the warehouse render skips it.
+         expect(result.entries.up?.physicalTableName).toBe(
+            "up__g004__e9c3ad40",
+         );
+      });
+
+      it("does not render the warehouse table from before the upstream moved to storage", async () => {
+         const { seen } = await downstreamSees({
+            upStorage: "lake",
+            seed: {
+               up: {
+                  sourceEntityId: "up",
+                  physicalTableName: "analytics.up_v1",
+                  connectionName: "duckdb",
+               },
+            },
+         });
+         expect(seen?.buildManifest?.entries?.up).toBeUndefined();
+      });
+
+      const oldWarehouseTable = {
+         up: {
+            sourceEntityId: "up",
+            physicalTableName: "analytics.up_v1",
+            connectionName: "duckdb",
+         },
+      };
+
+      it("reads every upstream as a warehouse table while storage mode is off", async () => {
+         const { seen } = await downstreamSees({
+            upStorage: "lake",
+            mode: "off",
+            seed: oldWarehouseTable,
+         });
+         expect(seen?.buildManifest?.entries?.up?.tableName).toBe(
+            '"analytics"."up_v1"',
+         );
+      });
+
+      it("reads a storage= upstream as stored under write-only, so its warehouse table is not rendered", async () => {
+         const { seen } = await downstreamSees({
+            upStorage: "lake",
+            mode: "write-only",
+            seed: oldWarehouseTable,
+         });
+         expect(seen?.buildManifest?.entries?.up).toBeUndefined();
+      });
+
+      it("refuses a strict colocated build whose upstream was supplied at the wrong tier, naming both tiers", async () => {
+         // The only instructed source fails, so the run itself fails, with it.
+         const reason = await downstreamSees({
+            upStorage: "lake",
+            seed: oldWarehouseTable,
+            strict: true,
+         }).then(
+            () => "",
+            (err: unknown) =>
+               err instanceof Error ? err.message : String(err),
+         );
+         expect(reason).toContain(
+            "'up' is declared in storage destination 'lake'",
+         );
+         expect(reason).toContain("supplied at the wrong tier");
+         expect(reason).toContain("strict upstreams forbid");
+         expect(reason).not.toContain("not found in manifest");
+      });
+
+      it("still renders a colocated upstream's warehouse table", async () => {
+         const { seen } = await downstreamSees({
+            seed: {
+               up: {
+                  sourceEntityId: "up",
+                  physicalTableName: "analytics.up_v1",
+                  connectionName: "duckdb",
+               },
+            },
+         });
+         expect(seen?.buildManifest?.entries?.up?.tableName).toBe(
+            '"analytics"."up_v1"',
+         );
+      });
    });
 
    it("seeds unquoted when the upstream's connection is absent from the build (older CP / cross-connection)", async () => {

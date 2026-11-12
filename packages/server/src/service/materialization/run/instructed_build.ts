@@ -185,7 +185,15 @@ export class InstructedBuild {
          clearedTiers,
          index,
          // Once per run: it depends only on the plan.
-         planFacts: chainedPlanFacts(sources, connectionDigests),
+         planFacts: chainedPlanFacts(
+            sources,
+            connectionDigests,
+            // A host can imply a destination the annotation does not declare,
+            // so the instruction decides a source's current tier (#7087).
+            (sourceID, sourceEntityId) =>
+               index.bySourceID.get(sourceID) ??
+               index.bySourceEntityId.get(sourceEntityId),
+         ),
          ...this.seedInstructedRun(seedEntries, connections, strict),
          builtThisRun: [],
          retainedThisRun: [],
