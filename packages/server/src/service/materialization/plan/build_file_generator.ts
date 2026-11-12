@@ -329,12 +329,12 @@ function persistLine(plan: MaterializePlan): string {
 }
 
 /** One generated build source. */
-function emitBuildSource(plan: MaterializePlan, alias: string): string {
+function emitBuildSource(plan: MaterializePlan): string {
    const select = plan.columns
       .map((c) => `    ${identifier(c.dimension)}`)
       .join(",\n");
    return `${persistLine(plan)}
-source: ${identifier(plan.buildSourceName)} is ${alias} -> {
+source: ${identifier(plan.buildSourceName)} is ${identifier(importAlias(plan))} -> {
   select:
 ${select}
 }`;
@@ -374,6 +374,6 @@ export function generateBuildFile(
    return `##! experimental.persistence
 ${imports}
 
-${plans.map((plan) => emitBuildSource(plan, identifier(importAlias(plan)))).join("\n\n")}
+${plans.map((plan) => emitBuildSource(plan)).join("\n\n")}
 `;
 }
