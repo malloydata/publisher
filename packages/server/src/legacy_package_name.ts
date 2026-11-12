@@ -79,6 +79,20 @@ const PACKAGE_COLLECTION_PATH = new RegExp(
 const RECOVERED_VERSION = Symbol("recoveredVersionId");
 type WithRecovered = express.Request & { [RECOVERED_VERSION]?: string };
 
+/** Set on a legacy combined-name PATCH rewritten to the version-manifest PUT. */
+const LEGACY_MANIFEST_PATCH = Symbol("legacyManifestPatch");
+type WithLegacyPatch = express.Request & { [LEGACY_MANIFEST_PATCH]?: true };
+
+/**
+ * Whether this request is a legacy `PATCH …/packages/<pkg>___<version>`
+ * rewritten to `PUT …/versions/<version>/manifest`. Its body is the old
+ * package-update body (any of its fields, plus the `versionId` the body
+ * middleware adds), so the PUT reads only `manifestLocation` from it.
+ */
+export function isLegacyManifestPatch(req: express.Request): boolean {
+   return (req as WithLegacyPatch)[LEGACY_MANIFEST_PATCH] === true;
+}
+
 /**
  * Rewrites a combined package name in the path before routing, so every
  * route sees the package and its version. A route reading `versionId` from
@@ -127,6 +141,7 @@ export function legacyPackageNameMiddleware(): express.RequestHandler {
       } else if (rest === "" && req.method === "PATCH") {
          req.method = "PUT";
          path = `${versionsOf}/manifest`;
+         (req as WithLegacyPatch)[LEGACY_MANIFEST_PATCH] = true;
       }
       // The version goes into the URL itself, so a router that parses the
       // query string from `req.url` on each read (Express 5) sees it. Express

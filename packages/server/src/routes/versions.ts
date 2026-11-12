@@ -3,6 +3,7 @@
 
 import type express from "express";
 import type { VersionController } from "../controller/version.controller";
+import { isLegacyManifestPatch } from "../legacy_package_name";
 import { assertSafePackageName } from "../path_safety";
 import { apiRoute } from "./json_route";
 
@@ -70,6 +71,10 @@ export function registerVersionRoutes(
             req.params.packageName,
             req.params.version,
             req.body,
+            {
+               legacyPatch: isLegacyManifestPatch(req),
+               json: Boolean(req.is("application/json")),
+            },
          ),
       ),
    );

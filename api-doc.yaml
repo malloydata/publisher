@@ -2003,6 +2003,11 @@ paths:
         This is serving state, not package content, which is why it is the one thing about a
         published version that can change. It replaces the deprecated
         `PATCH .../packages/{packageName}` for rebinding a manifest.
+
+        An absent `manifestLocation` (an empty body, `{}`) clears the binding too, as null does:
+        a PUT replaces the binding, and many generated clients drop a null field from the JSON
+        they send. `manifestLocation` is the body's only field, so any other field is refused
+        with 400 naming it, rather than read as a clear.
       parameters:
         - $ref: "#/components/parameters/environmentName"
         - $ref: "#/components/parameters/packageName"
@@ -4619,10 +4624,11 @@ components:
           description: >-
             Where the build manifest to bind is: a gs:// or s3:// URI, a
             file:// URL, or an absolute path on this server (a mounted volume).
-            Null clears the binding and serves live. An empty string or a
-            relative path is refused with 400.
-      required:
-        - manifestLocation
+            Null, or leaving the field out, clears the binding and serves
+            live, so a client that drops a field it meant to send (a value
+            left undefined) clears the binding. An empty string or a relative
+            path is refused with 400, and so is any other field in the body
+            and a body not sent as application/json.
 
     PackageLatestVersion:
       type: object

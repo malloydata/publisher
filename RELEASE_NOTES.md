@@ -21,6 +21,10 @@ Give the heading a title — `## [Unreleased] — what changed`, with an em dash
 
 Two consequences worth knowing. A section merged to `main` ships in the **next** release, whenever that is, so do not write one for work that has not landed. And a heading already stamped with a version is history: a follow-up that changes that behaviour opens a **new** `[Unreleased]` section referencing the shipped version by number, rather than editing the old one.
 
+## [Unreleased] — An empty PUT to a version's manifest serves live
+
+`PUT …/packages/{pkg}/versions/{version}/manifest` with an empty body, `{}`, now clears the version's binding and serves it live, as `{"manifestLocation": null}` always has. It used to answer 400. Many generated clients drop a null field from the JSON they send, so a client clearing a binding sent `{}`, the clear was refused, and the version kept serving the tables it was bound to. `manifestLocation` is the body's only field, so any other field (a typo such as `manifestUri`) now answers 400 naming it, rather than being read as a clear, and a body not sent as `application/json` answers 400 rather than reading as `{}`. The deprecated `PATCH …/packages/<pkg>___<version>`, which reaches this route with the old package-update body, still reads only `manifestLocation` from it and ignores its other fields. See [docs/package-versions.md](docs/package-versions.md#bind-a-version-to-a-build-manifest).
+
 ## [Unreleased] — A source the eligibility gate refuses no longer fails the table its sibling built
 
 A base source and its `extend` share one table, so one refused by the eligibility gate (an `#(authorize)` on the extension, say) used to record its refusal against that shared table. That failed the table the eligible base had built, permanently, and which way it went depended on the order the sources happened to run in (ms2data/service#7078). The outcome now follows how each tier serves:
