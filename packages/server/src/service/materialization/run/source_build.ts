@@ -148,20 +148,47 @@ export class SourceBuilder {
          );
       };
       // A host-instructed colocated build refuses, strict or not, an upstream
-      // the host supplied at the wrong tier (#7087, decided 2026-11-12): a
-      // strict render over the reduced manifest misses exactly the upstreams
-      // this source reads, so a miss among the wrong-tier ones is that case.
-      if (
-         !isStorageBuild &&
-         planFacts.hostInstructed &&
-         wrongTier.length > 0 &&
-         !buildManifest.strict
-      ) {
+      // the host supplied at the wrong tier (#7087, decided 2026-11-12), when
+      // this source reads it. A source reads an upstream exactly when adding
+      // that upstream's entry back changes its permissive render (the table
+      // replaces the inlined SQL); permissive renders never throw, so a
+      // genuinely missing upstream cannot hide one, and the check does not
+      // depend on which miss a strict render happens to report first. The
+      // wrong-tier entry is rendered only to compare, never run.
+      if (!isStorageBuild && planFacts.hostInstructed && wrongTier.length > 0) {
+         const render = (entries: typeof buildManifest.entries) =>
+            buildSQLOf(
+               persistSource,
+               manifestForCompiler(
+                  { ...buildManifest, entries, strict: false },
+                  planFacts,
+               ),
+            );
+         let base: string | undefined;
          try {
-            buildSQLOf(persistSource, { ...buildManifest, strict: true });
-         } catch (err) {
-            const stale = staleMisses(err);
-            if (stale.length > 0) refuseHostSupplied(stale);
+            base = render(buildManifest.entries);
+         } catch {
+            // The source does not render at all; the build below reports why.
+         }
+         if (base !== undefined) {
+            const read = wrongTier.flatMap(([address, entry]) => {
+               let withEntry: string;
+               try {
+                  withEntry = render({
+                     ...buildManifest.entries,
+                     [address]: manifest.buildManifest.entries[address],
+                  });
+               } catch {
+                  return [];
+               }
+               if (withEntry === base) return [];
+               const name =
+                  entry.sourceName ??
+                  planFacts.namesByAddress?.[address]?.[0] ??
+                  address;
+               return [{ address, entry, name }];
+            });
+            if (read.length > 0) refuseHostSupplied(read);
          }
       }
       let buildSQL: string;

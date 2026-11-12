@@ -1297,6 +1297,10 @@ describe("executeInstructedBuild", () => {
          mode?: string;
          strict?: boolean;
          hostInstructed?: boolean;
+         /** The downstream does not read `up` (default: it does). */
+         downIgnoresUp?: boolean;
+         /** Another upstream nothing supplied; a strict render reports it first. */
+         alsoMissing?: boolean;
       }) {
          // Every render Malloy is handed. The FIRST is the build SQL; later ones
          // only classify the build's upstreams and are never executed.
@@ -1330,12 +1334,23 @@ describe("executeInstructedBuild", () => {
                      };
                   }
                ).buildManifest;
+               if (opts.downIgnoresUp) return undefined;
+               if (m?.strict && opts.alsoMissing) {
+                  throw Object.assign(
+                     new Error(
+                        "Persisted source 'other' not found in manifest",
+                     ),
+                     { code: "runtime-manifest-strict-miss" },
+                  );
+               }
                if (m?.strict && !m.entries?.up) {
                   throw Object.assign(
                      new Error("Persisted source 'up' not found in manifest"),
                      { code: "runtime-manifest-strict-miss" },
                   );
                }
+               // As Malloy does: with up's entry the SQL reads its table.
+               if (m?.entries?.up) return "SELECT * FROM up_table";
             },
          });
          const compiled = compiledWith(
@@ -1459,6 +1474,42 @@ describe("executeInstructedBuild", () => {
             (err: unknown) =>
                err instanceof Error ? err.message : String(err),
          );
+
+      const unlabeledUp = {
+         up: {
+            sourceEntityId: "up",
+            physicalTableName: "up__g004__e9c3ad40",
+            connectionName: "duckdb",
+         },
+      };
+
+      it("refuses the host-supplied wrong-tier upstream even when a strict render reports another miss first", async () => {
+         const reason = await reasonOf(
+            downstreamSees({
+               upStorage: "lake",
+               hostInstructed: true,
+               strict: true,
+               alsoMissing: true,
+               seed: unlabeledUp,
+            }),
+         );
+         expect(reason).toContain("the host supplied an upstream entry");
+         expect(reason).toContain(
+            "'up' is declared in storage destination 'lake'",
+         );
+      });
+
+      it("does not refuse a host-instructed build for a wrong-tier entry it does not read", async () => {
+         const reason = await reasonOf(
+            downstreamSees({
+               upStorage: "lake",
+               hostInstructed: true,
+               downIgnoresUp: true,
+               seed: unlabeledUp,
+            }),
+         );
+         expect(reason).not.toContain("the host supplied an upstream entry");
+      });
 
       it("refuses a host-instructed build whose upstream's unlabeled reference is at the wrong tier, not strict", async () => {
          const reason = await reasonOf(

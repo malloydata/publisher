@@ -145,7 +145,8 @@ describe("buildOneSourceIntoStorage (chained-build fallback ladder)", () => {
          | "uncarried"
          | "missing"
          | "infra"
-         | "wrongTier";
+         | "wrongTier"
+         | "wrongTierAndMissing";
       /** The host instructed the run (orchestrated). */
       hostInstructed?: boolean;
    }): Promise<{
@@ -233,6 +234,26 @@ describe("buildOneSourceIntoStorage (chained-build fallback ladder)", () => {
                   "'daily' is declared in storage destination 'lake', but its manifest entry is a warehouse table, or a reference that does not say where it lives: supplied at the wrong tier, so this build does not use it",
                ),
             ),
+         // Two upstreams: one supplied at the wrong tier, one simply not
+         // materialized here. Each carries its own reason.
+         wrongTierAndMissing: sinon.stub().rejects(
+            new ChainedUpstreamMissingError(
+               ["daily", "weekly"],
+               "persisted upstream of 'monthly': both — the build cannot stack on it",
+               [
+                  {
+                     name: "daily",
+                     detail:
+                        "'daily' is declared in storage destination 'lake', but its manifest entry is a warehouse table, or a reference that does not say where it lives: supplied at the wrong tier, so this build does not use it",
+                  },
+                  {
+                     name: "weekly",
+                     detail:
+                        "'weekly' is not materialized in destination 'lake' for this build",
+                  },
+               ],
+            ),
+         ),
          // A dispatch miss: a persisted upstream this build cannot see.
          missing: sinon
             .stub()
@@ -344,6 +365,27 @@ describe("buildOneSourceIntoStorage (chained-build fallback ladder)", () => {
             /the host supplied an upstream entry.*declared in storage destination 'lake'/is,
          );
       }
+   });
+
+   it("host-instructed: names only the upstream supplied at the wrong tier, each with its own reason", async () => {
+      const { HostSuppliedWrongTierError } = await import(
+         "./materialization_run_support"
+      );
+      const err = await callInto({
+         strict: false,
+         stackOnParent: "wrongTierAndMissing",
+         hostInstructed: true,
+      }).then(
+         () => undefined,
+         (e: unknown) => e,
+      );
+      expect(err).toBeInstanceOf(HostSuppliedWrongTierError);
+      const message = (err as Error).message;
+      expect((err as { missing: string[] }).missing).toEqual(["daily"]);
+      expect(message).toContain("'daily' is declared in storage destination");
+      expect(message).not.toContain("'weekly'");
+      // One reason per upstream, not the whole joined message repeated.
+      expect(message.split("supplied at the wrong tier").length).toBe(2);
    });
 
    it("self-instructed + a parent supplied at the wrong tier still recomputes when not strict", async () => {

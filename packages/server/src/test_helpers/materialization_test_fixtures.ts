@@ -187,7 +187,7 @@ export function fakeSource(opts: {
     * `buildManifest` that resolves upstream persist references — so a test can
     * assert what physical name a downstream build sees for its upstream.
     */
-   onGetSQL?: (sqlOpts: unknown) => void;
+   onGetSQL?: (sqlOpts: unknown) => string | void;
    /**
     * The compiled `_sourceDef` the materialization-eligibility gate walks
     * (parameters/givens). Defaults to an empty def (eligible); the gate only
@@ -259,8 +259,9 @@ export function fakeSource(opts: {
       connectionName: opts.connectionName ?? "duckdb",
       sql,
       buildSQL: (manifest: unknown) => {
-         opts.onGetSQL?.({ buildManifest: manifest });
-         return sql;
+         // A string return stands for the SQL Malloy renders for this
+         // manifest, for a test whose assertion depends on what it reads.
+         return opts.onGetSQL?.({ buildManifest: manifest }) ?? sql;
       },
       readsGivens: false,
       dependsOn: [],

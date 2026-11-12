@@ -288,16 +288,31 @@ export class StorageBuildStrategy
             // A host-instructed build refuses a host-supplied upstream entry
             // at the wrong tier, strict or not, instead of recomputing it
             // (#7087, decided 2026-11-12).
-            if (
+            // Only the upstreams whose own entry is at the wrong tier are named,
+            // each with its own reason: one host-supplied wrong-tier entry is
+            // enough to refuse, whatever else is missing.
+            const wrongTierUpstreams =
                planFacts.hostInstructed &&
-               err instanceof ChainedUpstreamMissingError &&
-               safeDetail.includes(WRONG_TIER_MARKER)
-            ) {
+               err instanceof ChainedUpstreamMissingError
+                  ? err.details
+                     ? err.details.filter((d) =>
+                          d.detail.includes(WRONG_TIER_MARKER),
+                       )
+                     : // A thrower that gives no per-name reasons: the whole
+                       // message is the reason for each missing upstream.
+                       safeDetail.includes(WRONG_TIER_MARKER)
+                       ? err.missing.map((name) => ({
+                            name,
+                            detail: safeDetail,
+                         }))
+                       : []
+                  : [];
+            if (wrongTierUpstreams.length > 0) {
                recordChainedStorageBuild("strict_refused");
                recordStorageBuildFailure(destinationName);
                throw new HostSuppliedWrongTierError(
                   persistSource.name,
-                  err.missing.map((name) => ({ name, detail: safeDetail })),
+                  wrongTierUpstreams,
                );
             }
             if (manifest.strict && pinnedRecompute) {
@@ -707,12 +722,14 @@ export class StorageBuildStrategy
                `'${destinationName}' for this build`
             );
          };
+         const details = missing.map((name) => ({ name, detail: where(name) }));
          throw new ChainedUpstreamMissingError(
             missing,
             `persisted upstream of '${persistSource.name}': ` +
-               `${missing.map(where).join("; ")} — the build cannot stack on ` +
-               `it, and the recompute that remains would rebuild the stored ` +
-               `tables its SQL inlines`,
+               `${details.map((d) => d.detail).join("; ")} — the build cannot ` +
+               `stack on it, and the recompute that remains would rebuild the ` +
+               `stored tables its SQL inlines`,
+            details,
          );
       }
       // A path to the source warehouse (a joined table, a SQL source) has no
