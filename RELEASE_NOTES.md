@@ -21,6 +21,15 @@ Give the heading a title — `## [Unreleased] — what changed`, with an em dash
 
 Two consequences worth knowing. A section merged to `main` ships in the **next** release, whenever that is, so do not write one for work that has not landed. And a heading already stamped with a version is history: a follow-up that changes that behaviour opens a **new** `[Unreleased]` section referencing the shipped version by number, rather than editing the old one.
 
+## [Unreleased] — A source the eligibility gate refuses no longer fails the table its sibling built
+
+A base source and its `extend` share one table, so one refused by the eligibility gate (an `#(authorize)` on the extension, say) used to record its refusal against that shared table. That failed the table the eligible base had built, permanently, and which way it went depended on the order the sources happened to run in (ms2data/service#7078). The outcome now follows how each tier serves:
+
+- **`storage=`:** a storage table is served per source, so the refusal fails only the refused source. The table is built and kept, the eligible base serves from it, and the refused source answers live. The run has no failure for the table; the refused source is listed in the run's `refusedSources` metadata and logged.
+- **Colocated:** a colocated table is served by its address, so every source on it would read it. When any source sharing the address is refused, the address is refused for all of them, in either order, and nothing is built on it. This matches what the serve side already did: it never bound such a table. The address's failure names the refused source with its own reason, whatever the order, and a run whose only sources are such a base and its refused extension still completes with that failure, as it did before, rather than failing as a run whose every source was refused. Only the sources on an instructed address are gated for this, so a source elsewhere in the package whose gate cannot be decided no longer fails the run; one on the address that cannot be decided refuses the address, as the serve side does.
+
+The wire shape is unchanged; the control plane needs no change.
+
 ## [Unreleased] — A configured package refused at boot is published again when it is next read
 
 With package versioning on (the default since #1571), a package in `publisher.config.json` is published as a version on the server's first start. When that publish was refused (its model did not compile, or a table it reads did not exist yet), nothing was placed, so the package had no files at all. Compiling it, building it and reading it all answered 404, "Package manifest for … does not exist", which named neither the package's real error nor the cause, and a failure that clears on its own (a warehouse table created after boot) never recovered until a restart with `--init`.
