@@ -1865,7 +1865,7 @@ describe("PackageController.getPackageBuildPlan", () => {
       // Let the route reach the plan read before the refresh lands.
       await new Promise((resolve) => setTimeout(resolve, 10));
       finish();
-      expect(await read).toBe(fresh);
+      expect(await read).toBe(fresh as unknown as Awaited<typeof read>);
    });
 
    it("is an empty plan when the package declares no persist source", async () => {
