@@ -246,10 +246,12 @@ export function computeSourceEntityId(
    // must not move it either (fact 1 in incremental_compiler_contract.spec.ts).
    //
    // Hashed the way the compiler hashes a BuildID (`makeDigest(digest, sql)`)
-   // over the target's `sql`, with Publisher's digest: equal to the target's
-   // own `buildId` (build_targets_address_equality pins it), and the digest
-   // stays the caller's, so the same SQL on another connection is another
-   // table.
+   // over `addressText`: the target's `sql`, plus the `partition=` layout and,
+   // with PUBLISHER_PERSIST_ADDRESS_INCLUDES_DESTINATION on, the `storage=`
+   // destination. With neither, it equals the target's own `buildId`
+   // (build_targets_address_equality pins that); otherwise the two differ and
+   // `manifestForCompiler` carries an entry under both. The digest stays the
+   // caller's, so the same SQL on another connection is another table.
    const resolved = buildTargetOf(source, target);
    const chosen = testAddresses.get(resolved);
    if (chosen !== undefined) {

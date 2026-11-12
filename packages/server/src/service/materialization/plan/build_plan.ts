@@ -118,6 +118,7 @@ export {
    deriveColumns,
    type PersistSourceGateOutcome,
 } from "./persist_source_fields";
+import type { WirePackageMaterialization } from "./plan_layers";
 
 type WireBuildGraph = components["schemas"]["BuildGraph"];
 type WirePersistSourcePlan = components["schemas"]["PersistSourcePlan"];
@@ -125,8 +126,7 @@ type WireRefusedSource = components["schemas"]["RefusedSource"];
 type WireStrippedTerm = components["schemas"]["StrippedTerm"];
 type WireJoinedTerms = components["schemas"]["JoinedTerms"];
 type BuildPlan = components["schemas"]["BuildPlan"];
-export type WirePackageMaterialization =
-   components["schemas"]["PackageMaterializationConfig"];
+export type { WirePackageMaterialization };
 
 /**
  * Minimal surface a package must expose to compile its build plan; satisfied by
