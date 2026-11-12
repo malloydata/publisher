@@ -67,9 +67,9 @@ export function storageDeltaTarget(params: {
    lineage: IncrementalLineage;
    persistSource: PersistSource;
    /**
-    * The manifest-resolved build SQL (the target's `buildSQL()`), deliberately NOT
-    * its public-column projection: that is applied outermost here so the delta's
-    * columns are byte-identical to the seed's.
+    * The manifest-resolved build SQL (the target's `buildSQL()`), deliberately
+    * NOT its public-column projection: that is applied outermost here so the
+    * delta's columns are byte-identical to the seed's.
     */
    buildSQL: string;
    queryMetadata?: QueryMetadata;

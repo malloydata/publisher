@@ -322,7 +322,11 @@ export class InstructedBuild {
       // identity. A sourceID match has not computed it yet.
       const sourceEntityId =
          resolved.sourceEntityId ??
-         computeSourceEntityId(persistSource, compiled.connectionDigests);
+         computeSourceEntityId(
+            persistSource,
+            compiled.connectionDigests,
+            compiled.targets?.[persistSource.sourceID],
+         );
 
       // Re-assert (idempotent) so no path into a storage build is ungated.
       if (

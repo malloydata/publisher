@@ -10,7 +10,7 @@ import { Materialization } from "../storage/DatabaseInterface";
 import { BuildInstruction, BuildPlan } from "../service/materialization/types";
 import {
    CompiledBuildPlan,
-   fixSourceAddressForTesting,
+   setTestAddressForTarget,
    plannedSources,
 } from "../service/materialization/plan/build_plan";
 
@@ -266,7 +266,7 @@ export function fakeSource(opts: {
       dependsOn: [],
       sources: [source],
    } as unknown as BuildTarget;
-   fixSourceAddressForTesting(source, opts.sourceEntityId);
+   setTestAddressForTarget(target, opts.sourceEntityId);
    plannedSources({
       connections: [
          { connectionName: target.connectionName, targets: [target] },

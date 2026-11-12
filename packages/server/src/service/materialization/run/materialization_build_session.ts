@@ -1076,9 +1076,9 @@ async function buildSameCatalogIntoStorage(params: {
  * `transientModel` (see {@link buildChainedStorageBuildModel}) rebinds every
  * upstream to a virtual source on this destination and re-declares the
  * downstream as a persist source over them. It is compiled against the build
- * session, and the downstream's `buildSQL` (planned under the `virtualMap`) is CTAS'd into the
- * destination; nothing is federated and nothing leaves DuckDB. Session
- * lifecycle mirrors {@link buildSourceIntoStorage}.
+ * session, and the downstream's `buildSQL` (planned under the `virtualMap`) is
+ * CTAS'd into the destination; nothing is federated and nothing leaves DuckDB.
+ * Session lifecycle mirrors {@link buildSourceIntoStorage}.
  *
  * @returns the destination name and the captured schema.
  */

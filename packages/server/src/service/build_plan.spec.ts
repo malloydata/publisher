@@ -377,7 +377,8 @@ describe("computeSourceEntityId", () => {
       expect(computeSourceEntityId(source, { duckdb: "dig-1" })).toBe(
          makeDigest("dig-1", "SELECT 7"),
       );
-      // The digest is the connection's: the same SQL elsewhere is another table.
+      // The digest is the connection's: the same SQL elsewhere is another
+      // table.
       expect(computeSourceEntityId(source, { duckdb: "dig-2" })).not.toBe(
          computeSourceEntityId(source, { duckdb: "dig-1" }),
       );

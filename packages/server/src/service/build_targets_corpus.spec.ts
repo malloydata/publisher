@@ -7,9 +7,10 @@
 //
 // A source's address keys the incremental ledger, reuse, refresh streams and
 // anchors (#6145 is what drift looks like): a moved address orphans the built
-// table and re-seeds forever, silently. `build_targets_address_equality.spec.ts`
-// pins the rule on one hand-written model; this runs it over every real model in
-// the repo that declares a persisted source:
+// table and re-seeds forever, silently.
+// `build_targets_address_equality.spec.ts` pins the rule on one hand-written
+// model; this runs it over every real model in the repo that declares a
+// persisted source:
 //
 //  - the persist fixtures under `tests/fixtures/persist-*`, compiled as their
 //    packages are, against their own data files;
@@ -102,7 +103,20 @@ async function compare(
    const checked: string[] = [];
    const moved: Moved[] = [];
    for (const source of plannedSources(targets)) {
-      if (targets.unbuildable.some((u) => u.source === source)) continue;
+      if (targets.unbuildable.some((u) => u.source === source)) {
+         // Unkeyable now. It must have been unaddressable before too: a source
+         // the deprecated getSQL() could render, and the target walk cannot
+         // key, has lost its address, and its built table is orphaned.
+         checked.push(source.name);
+         if (legacyRenders(source)) {
+            moved.push({
+               model: model.label,
+               source: source.name,
+               what: ["lostAddress"],
+            });
+         }
+         continue;
+      }
       const what = movedFields(source, digests);
       checked.push(source.name);
       if (what.length > 0) {
@@ -110,6 +124,16 @@ async function compare(
       }
    }
    return { checked, moved };
+}
+
+/** Whether the deprecated `getSQL()` renders `source` at all. */
+function legacyRenders(source: PersistSource): boolean {
+   try {
+      source.getSQL();
+      return true;
+   } catch {
+      return false;
+   }
 }
 
 /** Which forms differ between the target-based and deprecated computations. */

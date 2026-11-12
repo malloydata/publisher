@@ -91,6 +91,7 @@ export async function compilePackageBuildPlan(
    return {
       builds: parts.builds,
       sources: parts.sources,
+      targets: parts.targets,
       connectionDigests,
       connections,
       sourceModelPaths: parts.sourceModelPaths,
