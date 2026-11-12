@@ -1,10 +1,18 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
-import type { PersistSource } from "@malloydata/malloy";
+import type {
+   BuildTarget,
+   ConnectionBuild,
+   PersistSource,
+} from "@malloydata/malloy";
 import { Materialization } from "../storage/DatabaseInterface";
 import { BuildInstruction, BuildPlan } from "../service/materialization/types";
-import { CompiledBuildPlan } from "../service/materialization/plan/build_plan";
+import {
+   CompiledBuildPlan,
+   setTestAddressForTarget,
+   plannedSources,
+} from "../service/materialization/plan/build_plan";
 
 /**
  * Shared fixtures for the materialization unit specs (service, controller,
@@ -200,7 +208,8 @@ export function fakeSource(opts: {
    modelDef?: unknown;
 }): PersistSource {
    const fields = opts.annotationFields;
-   return {
+   const sql = opts.sql ?? "SELECT 1";
+   const source = {
       name: opts.name,
       sourceID: opts.name,
       ...(opts.modelDef !== undefined
@@ -215,11 +224,6 @@ export function fakeSource(opts: {
             type: "string",
             isAtomicField: () => true,
          })),
-      },
-      makeBuildId: () => opts.sourceEntityId,
-      getSQL: (sqlOpts?: unknown) => {
-         opts.onGetSQL?.(sqlOpts);
-         return opts.sql ?? "SELECT 1";
       },
       annotations: {
          // No notes, so `parseRouteTag` drops nothing and calls `parseAsTag`.
@@ -247,6 +251,29 @@ export function fakeSource(opts: {
          }),
       },
    } as unknown as PersistSource;
+   // The build target the source maps onto, recorded the way a real plan
+   // records it (plannedSources), keyed by the test's chosen address; its
+   // build SQL reports the manifest it was asked for, as getSQL() once did.
+   const target = {
+      buildId: opts.sourceEntityId,
+      connectionName: opts.connectionName ?? "duckdb",
+      sql,
+      buildSQL: (manifest: unknown) => {
+         opts.onGetSQL?.({ buildManifest: manifest });
+         return sql;
+      },
+      readsGivens: false,
+      dependsOn: [],
+      sources: [source],
+   } as unknown as BuildTarget;
+   setTestAddressForTarget(target, opts.sourceEntityId);
+   plannedSources({
+      connections: [
+         { connectionName: target.connectionName, targets: [target] },
+      ] as unknown as ConnectionBuild[],
+      unbuildable: [],
+   });
+   return source;
 }
 
 /**

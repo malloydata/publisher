@@ -30,7 +30,10 @@ import {
    Runtime,
 } from "@malloydata/malloy";
 import { unrecordedAudit } from "../../../src/service/access_record";
-import { plannedSources } from "../../../src/service/materialization/plan/build_plan";
+import {
+   buildSQLOf,
+   plannedSources,
+} from "../../../src/service/materialization/plan/build_plan";
 import {
    deriveServeBindings,
    groupAliasesByName,
@@ -198,9 +201,9 @@ export async function buildScenario(scenario: R4Scenario): Promise<R4Fixture> {
       const table = `r4_${source.name}_${i}`;
       // Cast to the declared types as the storage build does.
       const select = scenario.uncast
-         ? source.getSQL()
+         ? buildSQLOf(source, { entries: {} })
          : castToDeclaredTypes(
-              source.getSQL(),
+              buildSQLOf(source, { entries: {} }),
               persistSourceDeclaredColumns(source),
               { queryTimezone: persistSourceQueryTimezone(source) },
            );

@@ -2,6 +2,8 @@
 // SPDX-License-Identifier: MIT
 
 import type {
+   BuildManifest,
+   BuildTarget,
    ConnectionBuild,
    MalloyConfig,
    Connection as MalloyConnection,
@@ -21,7 +23,7 @@ import {
    type PackageAnnotationFinding,
 } from "../../annotation_reader";
 import { parseRouteTag, routeHasKey } from "../../motly";
-import { Annotations } from "@malloydata/malloy";
+import { Annotations, makeDigest } from "@malloydata/malloy";
 import { components } from "../../../api";
 import { MaterializationEligibilityError } from "../../../errors";
 import { logger } from "../../../logger";
@@ -130,6 +132,12 @@ export interface BuildPlanPackage {
 export interface CompiledBuildPlan {
    builds: SourceBuild[];
    sources: Record<string, PersistSource>;
+   /**
+    * sourceID -> the build target the source maps onto, for every keyable
+    * source in `sources` (an unkeyable one has none). Pass it to the
+    * addressing helpers to address a source without the fallback lookup.
+    */
+   targets?: Record<string, BuildTarget>;
    connectionDigests: Record<string, string>;
    connections: Map<string, MalloyConnection>;
    /**
@@ -207,7 +215,7 @@ function planDynamicFields(
  * A source's PUBLIC column names, or a throw. The strict counterpart to
  * {@link deriveColumns}: this list decides what gets WRITTEN, so "unknown" must
  * not read as "nothing to narrow". Empty throws too — it means everything
- * `getSQL` projects is hidden.
+ * the build SQL projects is hidden.
  */
 function publicColumnNames(persistSource: PersistSource): string[] {
    let names: string[];
@@ -228,8 +236,9 @@ function publicColumnNames(persistSource: PersistSource): string[] {
 }
 
 /**
- * Wrap a source's build SQL to project only its PUBLIC columns. `getSQL` emits
- * every underlying column, including hidden ones (`except:`, non-public access).
+ * Wrap a source's build SQL to project only its PUBLIC columns. The build SQL
+ * emits every underlying column, including hidden ones (`except:`, non-public
+ * access).
  *
  * A `storage=` build must not put a hidden column's values AT REST in the
  * destination, where direct catalog access reaches them past the source's
@@ -521,12 +530,114 @@ export function plannedSources(targets: {
    connections: ConnectionBuild[];
    unbuildable: UnbuildableSource[];
 }): PersistSource[] {
+   for (const connection of targets.connections) {
+      for (const target of connection.targets) {
+         for (const source of target.sources) {
+            buildTargets.set(source, target);
+         }
+      }
+   }
+   for (const { source, problem } of targets.unbuildable) {
+      unkeyable.set(source, problem.message);
+   }
    return [
       ...targets.connections.flatMap((c) =>
          c.targets.flatMap((t) => t.sources),
       ),
       ...targets.unbuildable.map((u) => u.source),
    ];
+}
+
+/**
+ * The build target each planned source maps onto, as {@link plannedSources}
+ * paired them. A plan carries its targets explicitly
+ * ({@link CompiledBuildPlan.targets}); this is the fallback lookup for a
+ * caller holding only the source, which works for every source that came
+ * from `plannedSources` (every production path does). Weak, so a model's
+ * sources and targets are collected with it.
+ */
+const buildTargets = new WeakMap<PersistSource, BuildTarget>();
+
+/** Why `getBuildTargets` could not key a source, as it reported it. */
+const unkeyable = new WeakMap<PersistSource, string>();
+
+/**
+ * Test doubles' chosen addresses, keyed by their TARGET. A fake target names
+ * the address its fixture asserts, where a real one is hashed; a partitioned
+ * source still folds its layout over it (see {@link computeSourceEntityId}),
+ * so a partition regression is not hidden. Set only by
+ * `test_helpers/materialization_test_fixtures`, never on a real target.
+ */
+const testAddresses = new WeakMap<BuildTarget, string>();
+
+/** See {@link testAddresses}. For test fixtures only. */
+export function setTestAddressForTarget(
+   target: BuildTarget,
+   address: string,
+): void {
+   testAddresses.set(target, address);
+}
+
+/**
+ * The build target `source` maps onto: `target` when the caller holds it (a
+ * plan's {@link CompiledBuildPlan.targets}), else the one
+ * {@link plannedSources} paired with this source. Throws for a source with
+ * none, naming why: one `getBuildTargets` could not key (an unbound parameter,
+ * a given with no value), which the deprecated `getSQL()` also threw for and
+ * every caller treats as unaddressable; or one that never came through
+ * `plannedSources`, which is a bug in the caller.
+ */
+export function buildTargetOf(
+   source: PersistSource,
+   target?: BuildTarget,
+): BuildTarget {
+   const found = target ?? buildTargets.get(source);
+   if (found !== undefined) return found;
+   const problem = unkeyable.get(source);
+   if (problem !== undefined) {
+      throw new Error(
+         `Persisted source '${source.name}' cannot be keyed: ${problem}`,
+      );
+   }
+   throw new Error(
+      `Persisted source '${source.name}' was never planned: it did not come ` +
+         "from plannedSources(), so no build target is known for it.",
+   );
+}
+
+/**
+ * The SQL `source`'s table is keyed by: the target's fully inlined `sql`, with
+ * no manifest substitution, so it describes what the source computes whatever
+ * else has been built.
+ */
+export function addressSQL(
+   source: PersistSource,
+   target?: BuildTarget,
+): string {
+   return buildTargetOf(source, target).sql;
+}
+
+/**
+ * The SQL to execute for `source`'s table: the target's `buildSQL`, which reads
+ * the dependencies `manifest` holds from their tables and is generated under
+ * the same givens and `virtualMap` as {@link addressSQL}.
+ */
+export function buildSQLOf(
+   source: PersistSource,
+   manifest: BuildManifest,
+   target?: BuildTarget,
+): string {
+   return buildTargetOf(source, target).buildSQL(manifest);
+}
+
+/** Record `source`'s target on `parts`, when it has one (an unkeyable source has none). */
+function recordTarget(
+   parts: Pick<BuildPlanParts, "targets">,
+   sourceID: string,
+   source: PersistSource,
+): void {
+   const target = buildTargets.get(source);
+   if (target !== undefined) parts.targets[sourceID] = target;
 }
 
 /** The sources of `build` in build order, skipping any absent from `sources`. */
@@ -551,45 +662,63 @@ export function* sourcesInBuildOrder(
 export function computeSourceEntityId(
    source: PersistSource,
    connectionDigests: Record<string, string>,
+   target?: BuildTarget,
 ): string {
-   // The no-options `getSQL()` is load-bearing: this address keys the
-   // covered_through ledger (incremental_build.ts), so it must describe WHAT the
-   // source computes, never HOW FAR a run got. A boundary value in this SQL would
+   // The target's `sql` is load-bearing: this address keys the covered_through
+   // ledger (incremental_build.ts), so it must describe WHAT the source
+   // computes, never HOW FAR a run got. A boundary value in this SQL would
    // re-address the table every refresh and re-seed forever. A declaration alone
    // must not move it either (fact 1 in incremental_compiler_contract.spec.ts).
-   return source.makeBuildId(
+   //
+   // Hashed the way the compiler hashes a BuildID (`makeDigest(digest, sql)`)
+   // over the target's `sql`, with Publisher's digest: equal to the target's
+   // own `buildId` (build_targets_address_equality pins it), and the digest
+   // stays the caller's, so the same SQL on another connection is another
+   // table.
+   const resolved = buildTargetOf(source, target);
+   const chosen = testAddresses.get(resolved);
+   if (chosen !== undefined) {
+      const layout = addressText(source, "");
+      return layout === "" ? chosen : makeDigest(chosen, layout);
+   }
+   return makeDigest(
       connectionDigests[source.connectionName],
-      addressPartitionLayout(source, source.getSQL()),
+      addressText(source, resolved.sql),
    );
 }
 
 /**
- * The key the compiler itself files a source's table under: like
- * {@link computeSourceEntityId} but without the partition layout. For a
- * partitioned source the two differ, so a manifest handed to the compiler
+ * The key the compiler itself files a source's table under: its target's
+ * `buildId`, which the compiler computed and looks tables up by. Like
+ * {@link computeSourceEntityId} but without the partition layout, so for a
+ * partitioned source the two differ and a manifest handed to the compiler
  * carries the entry under both (see `manifestForCompiler`).
+ *
+ * `connectionDigests` is unused: the target's key was computed under the
+ * runtime's own digests, for the same connections Publisher resolves
+ * (`build_targets_address_equality` pins the two forms equal). Kept so the
+ * signature, and its callers, are unchanged.
  */
 export function compilerBuildId(
    source: PersistSource,
-   connectionDigests: Record<string, string>,
+   _connectionDigests: Record<string, string>,
+   target?: BuildTarget,
 ): string {
-   return source.makeBuildId(
-      connectionDigests[source.connectionName],
-      source.getSQL(),
-   );
+   const resolved = buildTargetOf(source, target);
+   return testAddresses.get(resolved) ?? resolved.buildId;
 }
 
 /**
- * Fold a source's `partition=` into the text its address is computed from.
- * `getSQL()` carries no annotation bytes, so without this a `partition=` change
- * would be skipped as unchanged and the table would keep the old layout.
+ * Fold a source's `partition=` into the text its address is computed from. The
+ * target's `sql` carries no annotation bytes, so without this a `partition=`
+ * change would be skipped as unchanged and the table would keep the old layout.
  *
  * Derived here rather than passed in so every caller agrees
  * (`build_targets_address_equality` pins it). No `partition=` appends nothing,
  * keeping unpartitioned addresses stable; a change moves the address once, which
  * is the rebuild the author asked for.
  */
-function addressPartitionLayout(source: PersistSource, sql: string): string {
+export function addressText(source: PersistSource, sql: string): string {
    let columns: string[] = [];
    try {
       const resolved = resolvePartitionColumns(
@@ -748,6 +877,8 @@ export async function classifyPersistSourceGate(
 export interface BuildPlanParts {
    builds: SourceBuild[];
    sources: Record<string, PersistSource>;
+   /** See {@link CompiledBuildPlan.targets}. */
+   targets: Record<string, BuildTarget>;
    sourceModelPaths: Record<string, string>;
    droppedPersistSources: { name: string; modelPath: string }[];
    preaggregatePlans: Record<string, RollupPlan>;
@@ -760,6 +891,7 @@ export function emptyBuildPlanParts(): BuildPlanParts {
    return {
       builds: [],
       sources: {},
+      targets: {},
       sourceModelPaths: {},
       droppedPersistSources: [],
       preaggregatePlans: {},
@@ -779,6 +911,7 @@ export function mergeBuildPlanParts(
 ): void {
    into.builds.push(...from.builds);
    Object.assign(into.sources, from.sources);
+   Object.assign(into.targets, from.targets);
    Object.assign(into.sourceModelPaths, from.sourceModelPaths);
    into.droppedPersistSources.push(...from.droppedPersistSources);
    Object.assign(into.preaggregatePlans, from.preaggregatePlans);
@@ -925,6 +1058,7 @@ export async function collectModelBuildPlan(
          if (!planByName.has(source.name)) continue;
          const sourceID = source.sourceID;
          parts.sources[sourceID] = source;
+         recordTarget(parts, sourceID, source);
          // The AUTHOR's model path: that is where the annotation is changed.
          parts.sourceModelPaths[sourceID] = modelPath;
          const rollup = planByName.get(source.name);
@@ -1023,6 +1157,7 @@ export async function collectModelBuildPlan(
    for (const source of planned) {
       const sourceID = source.sourceID;
       parts.sources[sourceID] = source;
+      recordTarget(parts, sourceID, source);
       parts.sourceModelPaths[sourceID] = modelPath;
       // Unknown and retired keys, on the lines that parsed (a line that did
       // not is reported above). Attributed to the declaring model, so a model
@@ -1137,6 +1272,7 @@ const collidingRollupsBySources = new WeakMap<
  */
 export function collidingRollups(compiled: {
    sources: Record<string, PersistSource>;
+   targets?: Record<string, BuildTarget>;
    connectionDigests: Record<string, string>;
    preaggregatePlans?: Record<string, RollupPlan>;
    sourceModelPaths?: Record<string, string>;
@@ -1153,7 +1289,11 @@ export function collidingRollups(compiled: {
       if (storedBaseOfRollup(compiled, sourceID)) continue;
       let address: string;
       try {
-         address = computeSourceEntityId(source, compiled.connectionDigests);
+         address = computeSourceEntityId(
+            source,
+            compiled.connectionDigests,
+            compiled.targets?.[sourceID],
+         );
       } catch {
          // No address: the other gates refuse it on their own.
          continue;
@@ -1246,13 +1386,13 @@ export function deriveBuildPlan(
    const refusedSources: Record<string, WireRefusedSource> = {};
    for (const [sourceID, source] of Object.entries(sources)) {
       if (include && !include.has(source.name)) continue;
-      // One unreadable source must not cost the package its plan: getSQL()
+      // One unreadable source must not cost the package its plan: addressing
       // throws for a colocated source referencing a given with no default, and
       // an escaping throw would drop EVERY colocated binding for the package.
       try {
          const annotationFields = deriveAnnotationFields(source);
 
-         // Tier-appropriate eligibility BEFORE getSQL()/computeSourceEntityId(),
+         // Tier-appropriate eligibility BEFORE computeSourceEntityId(),
          // which fail for a refused source. Mirrors the build path: `storage=`
          // gets the storage-destination gate; plain `#@ persist` gets the
          // colocated gate, which admits a resolved, fully-attributed gate. The
@@ -1374,7 +1514,7 @@ export function deriveBuildPlan(
                  }
                : null,
             sourceEntityId: computeSourceEntityId(source, connectionDigests),
-            sql: source.getSQL(),
+            sql: addressSQL(source),
             // Verbatim; the resolved declaration is deliberately not a wire field
             // (see resolveIncrementalDeclaration).
             refresh: annotationFields.refresh ?? null,
@@ -1541,7 +1681,7 @@ function collectSourceEligibility(
  * eligibility authorize the other.
  *
  * Two DIFFERENT sources can share an id (identical SQL, different gates, since
- * `getSQL()` excludes annotations). Refusal therefore dominates: one refusal
+ * the build SQL excludes annotations). Refusal therefore dominates: one refusal
  * retracts the id for good, regardless of iteration order.
  */
 export type ColocatedSourceEligibility = {
@@ -1560,13 +1700,14 @@ function collectColocatedSourceEligibility(
       try {
          assertTierEligible(source, false, tierGateInputs(compiled));
       } catch (err) {
-         // Gated BEFORE computeSourceEntityId: the gate never calls getSQL(),
-         // so it refuses cleanly even when getSQL() would throw.
+         // Gated BEFORE computeSourceEntityId: the gate never addresses the
+         // source, so it refuses cleanly even when addressing would throw.
          let sourceEntityId: string;
          try {
             sourceEntityId = computeSourceEntityId(
                source,
                compiled.connectionDigests,
+               compiled.targets?.[sourceID],
             );
          } catch (idErr) {
             // No id to key the refusal under; the log is the only record that
@@ -1587,13 +1728,14 @@ function collectColocatedSourceEligibility(
          eligibleEntityIds.delete(sourceEntityId);
          continue;
       }
-      // A given-referencing colocated source's getSQL() can throw; contain it
+      // A given-referencing colocated source's addressing can throw; contain it
       // to this source's binding.
       let sourceEntityId: string;
       try {
          sourceEntityId = computeSourceEntityId(
             source,
             compiled.connectionDigests,
+            compiled.targets?.[sourceID],
          );
       } catch (err) {
          logger.warn(

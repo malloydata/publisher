@@ -1086,7 +1086,8 @@ function rollupServeShapeFragment(group: RollupShapeGroup): string {
  * materialized upstream is rebound to its virtual source (the same rebind as
  * the serve path), so the downstream computes over the parents' STORED tables
  * in DuckDB. The downstream is re-declared over them under `#@ persist` so the
- * caller can read `PersistSource.getSQL({ virtualMap })` from this model.
+ * caller can plan this model's build targets under the `virtualMap` and read
+ * their `buildSQL` from this model.
  *
  * `downstreamDefText` is the RHS of the author's `source: <name> is …`, lifted
  * by location (a top-level source's range starts after `source: `). The
