@@ -318,6 +318,33 @@ export type PackageListingOptions = {
    operational?: boolean;
 };
 
+/** At most this many build plans re-derive at once after a connection edit. */
+const PLAN_REFRESH_CONCURRENCY = 2;
+
+/**
+ * The connection names an edit changed: added, removed, or with a different
+ * configuration. Compared on the stored config (secrets included), so any
+ * input a connection digest could read counts as a change.
+ */
+export function changedConnectionNames(
+   before: readonly ApiConnection[],
+   after: readonly ApiConnection[],
+): Set<string> {
+   const byName = (list: readonly ApiConnection[]) =>
+      new Map(list.map((c) => [c.name ?? "", JSON.stringify(c)]));
+   const previous = byName(before);
+   const next = byName(after);
+   const changed = new Set<string>();
+   for (const [name, config] of next) {
+      if (previous.get(name) !== config) changed.add(name);
+   }
+   for (const name of previous.keys()) {
+      if (!next.has(name)) changed.add(name);
+   }
+   changed.delete("");
+   return changed;
+}
+
 export class Environment {
    private packages: Map<string, Package> = new Map();
    /**
@@ -358,6 +385,14 @@ export class Environment {
     * lifecycle phase, because a reload runs while the previous copy serves.
     */
    private readonly loadsInFlight = new PackageLoadTracker();
+   /** Bumped by every connection edit that can move content addresses. */
+   private connectionGeneration = 0;
+   /** The connections the latest edit changed, for the refresh's log lines. */
+   private lastChangedConnections: string[] = [];
+   /** Packages waiting to re-derive their build plan (see schedulePlanRefresh). */
+   private readonly planRefreshQueue = new Set<Package>();
+   /** Re-derivations running now, bounded by PLAN_REFRESH_CONCURRENCY. */
+   private planRefreshesRunning = 0;
    private malloyConfig: EnvironmentMalloyConfig;
    private connectionMutex = new Mutex();
    private retiredConnectionGenerations =
@@ -828,26 +863,91 @@ export class Environment {
    }
 
    /**
-    * Re-derive every loaded package's build plan against the connections just
-    * installed (see {@link Package.refreshBuildPlan}): a connection edit can
-    * move content addresses, and a plan computed at load would keep reporting
-    * the old ones. Loaded versions too. Readers of the plan wait for it.
+    * After a connection edit, re-derive the build plan of every loaded package
+    * and loaded version whose persist sources build on a changed connection
+    * (see {@link Package.markBuildPlanStale}): a content address folds in its
+    * connection's digest, so the edit can move it. A package whose plan does
+    * not touch a changed connection is left alone; one whose plan is
+    * unavailable is re-derived, since its connections are unknown.
     */
-   private refreshBuildPlans(): void {
+   private refreshBuildPlans(changed: ReadonlySet<string>): void {
+      if (changed.size === 0) return;
+      this.connectionGeneration++;
+      this.lastChangedConnections = [...changed].sort();
       const loaded = [
          ...this.packages.values(),
          ...(this.versionService?.cache.entries() ?? []).map(([, , v]) => v),
       ];
       for (const _package of loaded) {
-         void _package.refreshBuildPlan().catch((err: unknown) => {
-            logger.warn(
-               "Could not re-derive a build plan after a connection change",
-               {
-                  environmentName: this.environmentName,
-                  error: err instanceof Error ? err.message : String(err),
-               },
-            );
-         });
+         if (Environment.planUsesAny(_package, changed)) {
+            this.schedulePlanRefresh(_package);
+         }
+      }
+   }
+
+   private static planUsesAny(
+      _package: Package,
+      changed: ReadonlySet<string>,
+   ): boolean {
+      const names = _package.planConnectionNames();
+      if (names === null) return true;
+      for (const name of names) if (changed.has(name)) return true;
+      return false;
+   }
+
+   /**
+    * Mark `_package`'s plan stale at once, so readers wait for it, and queue
+    * its re-derivation. Queued once however many edits land before it starts
+    * (it reads the connections as they are when it runs), and run at most
+    * PLAN_REFRESH_CONCURRENCY at a time, so one edit never recompiles every
+    * package together.
+    */
+   private schedulePlanRefresh(_package: Package): void {
+      _package.markBuildPlanStale();
+      if (this.planRefreshQueue.has(_package)) return;
+      this.planRefreshQueue.add(_package);
+      this.pumpPlanRefreshes();
+   }
+
+   private pumpPlanRefreshes(): void {
+      while (
+         this.planRefreshesRunning < PLAN_REFRESH_CONCURRENCY &&
+         this.planRefreshQueue.size > 0
+      ) {
+         const [next] = this.planRefreshQueue;
+         this.planRefreshQueue.delete(next);
+         this.planRefreshesRunning++;
+         const connections = this.lastChangedConnections;
+         next
+            .refreshBuildPlan()
+            .then((derived) => {
+               if (!derived) {
+                  logger.warn(
+                     "Build plan could not be re-derived after a connection change; reads of it answer 409 until the package reloads",
+                     {
+                        environmentName: this.environmentName,
+                        packageName: next.getPackageName(),
+                        versionId: next.getVersionId(),
+                        changedConnections: connections,
+                     },
+                  );
+               }
+            })
+            .catch((err: unknown) => {
+               logger.warn(
+                  "Build plan re-derivation after a connection change failed",
+                  {
+                     environmentName: this.environmentName,
+                     packageName: next.getPackageName(),
+                     changedConnections: connections,
+                     error: errMessage(err),
+                  },
+               );
+            })
+            .finally(() => {
+               this.planRefreshesRunning--;
+               this.pumpPlanRefreshes();
+            });
       }
    }
 
@@ -1262,7 +1362,28 @@ export class Environment {
       packageName: string,
       fn: () => Promise<T>,
    ): Promise<T> {
-      return this.loadsInFlight.track(packageName, fn);
+      // A load or publish that a connection edit overtook derived its plan
+      // under the old connections: re-derive it, and the package's other
+      // loaded copies, once it lands (see refreshBuildPlans).
+      const generation = this.connectionGeneration;
+      return this.loadsInFlight.track(packageName, fn).then((result) => {
+         if (this.connectionGeneration !== generation) {
+            const changed = new Set(this.lastChangedConnections);
+            const loaded = [
+               ...(result instanceof Package ? [result] : []),
+               ...[this.packages.get(packageName)],
+               ...(this.versionService?.cache.entries() ?? [])
+                  .filter(([name]) => name === packageName)
+                  .map(([, , version]) => version),
+            ];
+            for (const _package of new Set(loaded)) {
+               if (_package && Environment.planUsesAny(_package, changed)) {
+                  this.schedulePlanRefresh(_package);
+               }
+            }
+         }
+         return result;
+      });
    }
 
    /**
@@ -4028,9 +4149,12 @@ export class Environment {
    ): void {
       const previousMalloyConfig = this.malloyConfig;
       this.malloyConfig = malloyConfig;
+      const previousConnections = this.apiConnections;
       this.apiConnections = malloyConfig.apiConnections;
       if (previousMalloyConfig !== malloyConfig) {
-         this.refreshBuildPlans();
+         this.refreshBuildPlans(
+            changedConnectionNames(previousConnections, this.apiConnections),
+         );
       }
       // Deliberately leaves connectionsAuthoritative alone: ConnectionService
       // calls this for a single-connection edit, which does not make a

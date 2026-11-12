@@ -1,7 +1,15 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
-import { afterEach, beforeEach, describe, expect, it } from "bun:test";
+import {
+   afterEach,
+   beforeEach,
+   describe,
+   expect,
+   it,
+   mock,
+   spyOn,
+} from "bun:test";
 import * as fs from "fs";
 import * as os from "os";
 import * as path from "path";
@@ -9,8 +17,15 @@ import { DuckDBConnection } from "../storage/duckdb/DuckDBConnection";
 import { createDuckDBRepository } from "../storage/duckdb/DuckDBRepository";
 import type { ResourceRepository } from "../storage/DatabaseInterface";
 import { initializeSchema } from "../storage/duckdb/schema";
-import { Environment } from "./environment";
-import type { Package } from "./package";
+import { changedConnectionNames, Environment } from "./environment";
+import { Package } from "./package";
+import type { EnvironmentStore } from "./environment_store";
+import { MaterializationService } from "./materialization/run/materialization_service";
+import {
+   BadRequestError,
+   BuildPlanRefreshingError,
+   BuildPlanUnavailableError,
+} from "../errors";
 import { compilePackageBuildPlan } from "./materialization/plan/build_plan_compile";
 import { computeSourceEntityId } from "./materialization/plan/build_plan";
 import { installSettings } from "../test_helpers/settings_env";
@@ -118,6 +133,7 @@ beforeEach(async () => {
 });
 
 afterEach(async () => {
+   mock.restore();
    restoreSettings();
    await db.close();
    fs.rmSync(root, { recursive: true, force: true });
@@ -142,11 +158,34 @@ async function compiled(pkg: Package): Promise<string[]> {
    );
 }
 
-async function editConnection(env: Environment, setupSQL: string) {
+async function editConnection(
+   env: Environment,
+   setupSQL: string,
+   extra: unknown[] = [],
+) {
    await env.update({
       name: "testEnv",
-      connections: [duck(setupSQL)],
+      connections: [duck(setupSQL), ...extra],
    } as never);
+}
+
+/** A MaterializationService over `environment`, as main_server.ts wires it. */
+function serviceOver(environment: Environment): MaterializationService {
+   return new MaterializationService({
+      storageManager: { getRepository: () => repo },
+      getEnvironment: async () => environment,
+      getLoadedEnvironments: () => [environment],
+   } as unknown as EnvironmentStore);
+}
+
+/** One instructed table for the package's persisted source at `address`. */
+function instruction(address: string) {
+   return {
+      sourceEntityId: address,
+      materializedTableId: "mt-1",
+      physicalTableName: "daily_g1",
+      realization: "COPY" as const,
+   };
 }
 
 // ms2data/service#6145. A content address folds in the connection's digest,
@@ -193,5 +232,153 @@ describe("a connection edit re-derives the loaded build plans", () => {
       await v1.whenBuildPlanCurrent();
 
       expect(planned(v1)).toEqual(before);
+   });
+});
+
+// The review of #1620: a failed re-derivation, the cost of an edit, the wait,
+// and loads an edit overtakes.
+describe("re-deriving after a connection edit", () => {
+   it("a failed re-derivation leaves no pre-edit plan: run creation refuses instead of validating against it", async () => {
+      const env = await newEnvironment();
+      const v1 = (await publish(env, source("1.0.0"))).loaded;
+      const before = planned(v1);
+      expect(before).toHaveLength(1);
+
+      // The re-derivation fails (as a model that no longer compiles would).
+      spyOn(Package.prototype, "refreshBuildPlan").mockImplementationOnce(
+         function (this: Package) {
+            return (
+               this as unknown as {
+                  materialization: {
+                     refreshBuildPlan(
+                        d: () => Promise<unknown>,
+                     ): Promise<boolean>;
+                  };
+               }
+            ).materialization.refreshBuildPlan(async () => {
+               throw new Error("does not compile");
+            });
+         },
+      );
+      await editConnection(env, "SELECT 9");
+      await v1.whenBuildPlanCurrent();
+
+      expect(v1.isBuildPlanUnavailable()).toBe(true);
+      expect(v1.getBuildPlan()).toBeNull();
+      const err = await serviceOver(env)
+         .createMaterialization("testEnv", PKG, {
+            buildInstructions: [instruction(before[0])],
+         })
+         .catch((e: unknown) => e);
+      expect(err).toBeInstanceOf(BuildPlanUnavailableError);
+   });
+
+   it("run creation waits for the re-derivation and validates against the new plan, end to end", async () => {
+      const env = await newEnvironment();
+      const v1 = (await publish(env, source("1.0.0"))).loaded;
+      const [before] = planned(v1);
+
+      await editConnection(env, "SELECT 4");
+      // Not awaited: run creation must wait for the re-derivation itself.
+      const err = await serviceOver(env)
+         .createMaterialization("testEnv", PKG, {
+            buildInstructions: [instruction(before)],
+         })
+         .catch((e: unknown) => e);
+      // The pre-edit address is refused at validation, never let through to
+      // fail later as "measured under a different definition".
+      expect(err).toBeInstanceOf(BadRequestError);
+      expect(String((err as Error).message)).toContain(before);
+      expect(planned(v1)).toEqual(await compiled(v1));
+   });
+
+   it("an edit to a connection no persisted source uses re-derives nothing", async () => {
+      const env = await newEnvironment();
+      const v1 = (await publish(env, source("1.0.0"))).loaded;
+      const refreshes = spyOn(Package.prototype, "refreshBuildPlan");
+
+      await editConnection(env, "SELECT 1", [
+         {
+            name: "other",
+            type: "duckdb",
+            duckdbConnection: { setupSQL: "SELECT 1" },
+         },
+      ]);
+
+      expect(v1.isBuildPlanStale()).toBe(false);
+      expect(refreshes).not.toHaveBeenCalled();
+      refreshes.mockRestore();
+   });
+
+   it("re-derives at most two packages at once, and a burst of edits costs one more each", async () => {
+      const env = await newEnvironment();
+      const loaded: Package[] = [];
+      for (const v of ["1.0.0", "2.0.0", "3.0.0", "4.0.0"]) {
+         loaded.push((await publish(env, source(v))).loaded);
+      }
+      let running = 0;
+      let peak = 0;
+      let calls = 0;
+      const original = Package.prototype.refreshBuildPlan;
+      const spy = spyOn(
+         Package.prototype,
+         "refreshBuildPlan",
+      ).mockImplementation(async function (this: Package) {
+         calls++;
+         running++;
+         peak = Math.max(peak, running);
+         try {
+            return await original.call(this);
+         } finally {
+            running--;
+         }
+      });
+      await editConnection(env, "SELECT 5");
+      await editConnection(env, "SELECT 6");
+      await Promise.all(loaded.map((p) => p.whenBuildPlanCurrent()));
+      spy.mockRestore();
+
+      expect(peak).toBeLessThanOrEqual(2);
+      // Each package once for the first edit, at most once more for the second.
+      expect(calls).toBeLessThanOrEqual(loaded.length * 2);
+      for (const p of loaded) expect(planned(p)).toEqual(await compiled(p));
+   }, 60_000);
+
+   it("a version published while an edit lands derives under the new connection", async () => {
+      const env = await newEnvironment();
+      await publish(env, source("1.0.0"));
+      const publishing = publish(env, source("2.0.0"));
+      await editConnection(env, "SELECT 7");
+      const v2 = (await publishing).loaded;
+      await v2.whenBuildPlanCurrent();
+      expect(planned(v2)).toEqual(await compiled(v2));
+   });
+
+   it("past the wait's cap, a reader gets BuildPlanRefreshingError rather than the pre-edit plan", async () => {
+      const env = await newEnvironment();
+      const v1 = (await publish(env, source("1.0.0"))).loaded;
+      v1.markBuildPlanStale();
+      const err = await v1.whenBuildPlanCurrent(5).catch((e: unknown) => e);
+      expect(err).toBeInstanceOf(BuildPlanRefreshingError);
+      expect(await v1.refreshBuildPlan()).toBe(true);
+      await v1.whenBuildPlanCurrent(5);
+   });
+});
+
+describe("changedConnectionNames", () => {
+   it("names added, removed and reconfigured connections, and nothing else", () => {
+      const a = { name: "a", type: "duckdb", duckdbConnection: {} };
+      const b = { name: "b", type: "duckdb", duckdbConnection: {} };
+      const b2 = { ...b, duckdbConnection: { setupSQL: "SELECT 1" } };
+      const c = { name: "c", type: "duckdb", duckdbConnection: {} };
+      expect(
+         [
+            ...changedConnectionNames([a, b] as never, [a, b2, c] as never),
+         ].sort(),
+      ).toEqual(["b", "c"]);
+      expect([
+         ...changedConnectionNames([a, b] as never, [a] as never),
+      ]).toEqual(["b"]);
+      expect(changedConnectionNames([a] as never, [a] as never).size).toBe(0);
    });
 });

@@ -311,7 +311,7 @@ export class PackageController {
       await pkg.whenBuildPlanCurrent();
       if (pkg.isBuildPlanUnavailable()) {
          throw new BuildPlanUnavailableError(
-            `The build plan of package ${packageName} could not be derived at load. Reload the package to derive it again; retrying the read does not.`,
+            `The build plan of package ${packageName} could not be derived (at load, or after a connection change). Reload the package to derive it again; retrying the read does not.`,
          );
       }
       return pkg.getBuildPlan() ?? { graphs: [], sources: {} };

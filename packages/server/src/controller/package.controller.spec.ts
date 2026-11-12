@@ -10,6 +10,7 @@ import {
    FrozenConfigError,
    PackageAdmissionRefusedError,
    PackageVersionError,
+   BuildPlanRefreshingError,
    BuildPlanUnavailableError,
    internalErrorToHttpError,
    ServiceUnavailableError,
@@ -1866,6 +1867,23 @@ describe("PackageController.getPackageBuildPlan", () => {
       await new Promise((resolve) => setTimeout(resolve, 10));
       finish();
       expect(await read).toBe(fresh as unknown as Awaited<typeof read>);
+   });
+
+   it("answers 503 with Retry-After when the re-derivation outlasts the wait (BuildPlanRefreshingError)", async () => {
+      const controller = controllerServing({
+         getBuildPlan: () => null,
+         isBuildPlanUnavailable: () => false,
+         whenBuildPlanCurrent: () =>
+            Promise.reject(new BuildPlanRefreshingError("refreshing")),
+      });
+      const err = await controller
+         .getPackageBuildPlan("env", "pkg")
+         .catch((e: unknown) => e);
+      expect(err).toBeInstanceOf(BuildPlanRefreshingError);
+      const answer = internalErrorToHttpError(err as Error, { log: false });
+      expect(answer.status).toBe(503);
+      expect(answer.headers).toEqual({ "Retry-After": "5" });
+      expect(answer.json.reason).toBe("BUILD_PLAN_REFRESHING");
    });
 
    it("is an empty plan when the package declares no persist source", async () => {

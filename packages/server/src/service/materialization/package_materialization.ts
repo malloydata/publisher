@@ -16,6 +16,7 @@ import {
    getPersistStorageMode,
 } from "../../config";
 import { PACKAGE_MANIFEST_NAME } from "../../constants";
+import { BuildPlanRefreshingError } from "../../errors";
 import { logger } from "../../logger";
 import {
    recordBuildPlanComputeDuration,
@@ -129,6 +130,14 @@ export interface PackageMaterializationOwner {
 }
 
 /**
+ * How long a reader of the build plan waits for a re-derivation after a
+ * connection change before it answers 503 with Retry-After instead. Long
+ * enough for an ordinary package's recompile, short enough that a caller's
+ * own timeout never fires first.
+ */
+export const BUILD_PLAN_REFRESH_WAIT_MS = 10_000;
+
+/**
  * A package's materialization state: its build plan and which sources may be
  * served from a materialized table, the manifest it is bound to (both tiers),
  * the serve routing it pushes onto its models, and the persistence-policy
@@ -169,8 +178,18 @@ export class PackageMaterialization {
    buildPlan: BuildPlan | null = null;
    /** The build plan could not be derived at load (see applyLoadBuildPlan). */
    private buildPlanFailed = false;
-   /** The plan re-derivation in flight after a connection edit, if any. */
-   private buildPlanRefresh: Promise<void> | undefined;
+   /**
+    * Set when a connection edit makes the plan stale, and resolved once a
+    * re-derivation started after the latest edit has finished (see
+    * refreshBuildPlan). Readers that must not see the pre-edit plan wait on it.
+    */
+   private buildPlanStale:
+      | { promise: Promise<void>; resolve: () => void }
+      | undefined;
+   /** Bumped by each markBuildPlanStale, so a refresh knows if it is the latest. */
+   private buildPlanStaleSeq = 0;
+   /** The re-derivation in flight, so refreshes run one at a time. */
+   private buildPlanRefreshChain: Promise<boolean> = Promise.resolve(true);
    // Keyed on the plan it came from, so a reload recomputes it.
    private preaggregateEntityIdCache:
       | { plan: BuildPlan | null; ids: ReadonlySet<string> }
@@ -329,7 +348,15 @@ export class PackageMaterialization {
          return performance.now() - buildPlanPhaseStart;
       } catch (err) {
          this.buildPlanFailed = true;
-         // Nothing from the previous load describes this one.
+         // Nothing from the previous load describes this one: a failed
+         // re-derivation after a connection edit must not leave the pre-edit
+         // plan and eligibility in force, or a run would validate against
+         // addresses the build no longer computes (ms2data/service#6145).
+         // Unknown eligibility refuses every new binding (fail closed).
+         this.buildPlan = null;
+         this.sourceEligibility = undefined;
+         this.colocatedSourceEligibility = undefined;
+         this.incrementalPolicySources = [];
          this.rollupsOverStoredBase = [];
          recordBuildPlanComputeFailed();
          logger.warn(
@@ -760,35 +787,115 @@ export class PackageMaterialization {
    }
 
    /**
-    * Re-derive the build plan from the connections as they are now. Every
-    * content address folds in its connection's digest, and the digest reads
-    * connection config (host, database, project, role, the setup SQL a
-    * statement timeout is applied through, …), so a connection edit can move
-    * the address of every source on it. The plan computed at load would keep
-    * handing out the old one: a host would echo ledger entries recorded under
-    * it, they would pass create-time validation against that same stale plan,
-    * and the run's own compile, made with the new connection, would refuse
-    * them as "measured under a different definition" (ms2data/service#6145).
-    *
-    * Serialized: an edit landing while a refresh runs re-derives again after
-    * it. Best-effort like the load: a failure marks the plan unavailable.
+    * Mark the plan stale after a connection edit. Every content address folds
+    * in its connection's digest, and the digest reads connection config (host,
+    * database, project, role, the setup SQL a statement timeout is applied
+    * through, …), so an edit can move the address of every source on it. Until
+    * {@link refreshBuildPlan} re-derives it, {@link whenBuildPlanCurrent}
+    * holds readers back: the plan computed before the edit would hand out the
+    * old addresses, a host would echo ledger entries recorded under them, they
+    * would pass create-time validation against that same plan, and the run's
+    * own compile would refuse them as "measured under a different definition"
+    * (ms2data/service#6145).
     */
-   refreshBuildPlan(): Promise<void> {
-      const previous = this.buildPlanRefresh ?? Promise.resolve();
-      const run = previous.then(async () => {
-         await this.applyLoadBuildPlan(undefined);
-      });
-      const tracked = run.finally(() => {
-         if (this.buildPlanRefresh === tracked)
-            this.buildPlanRefresh = undefined;
-      });
-      this.buildPlanRefresh = tracked;
-      return tracked;
+   markBuildPlanStale(): void {
+      this.buildPlanStaleSeq++;
+      if (!this.buildPlanStale) {
+         let resolve!: () => void;
+         const promise = new Promise<void>((r) => (resolve = r));
+         this.buildPlanStale = { promise, resolve };
+      }
    }
 
-   /** Resolves once no plan re-derivation is in flight (see refreshBuildPlan). */
-   whenBuildPlanCurrent(): Promise<void> {
-      return this.buildPlanRefresh ?? Promise.resolve();
+   /** Whether a connection edit has made the plan stale and it is not re-derived yet. */
+   isBuildPlanStale(): boolean {
+      return this.buildPlanStale !== undefined;
+   }
+
+   /**
+    * Re-derive the plan if it is stale, with `derive` supplying the outcome
+    * (the load worker's, so the recompile stays off this thread; undefined
+    * falls back to deriving here, as a load does past its soft deadline).
+    * Serialized; a refresh that finds the plan current does nothing, so a
+    * burst of edits costs one re-derivation per package. The waiters are
+    * released only by a refresh that started after the latest edit, so a late
+    * edit re-derives again. Resolves true when the plan was derived, false
+    * when it failed (the plan is then unavailable, see applyLoadBuildPlan).
+    */
+   refreshBuildPlan(
+      derive: () => Promise<LoadPackageOutcome["buildPlan"]>,
+   ): Promise<boolean> {
+      const run = this.buildPlanRefreshChain.then(async () => {
+         if (!this.buildPlanStale) return !this.buildPlanFailed;
+         const seq = this.buildPlanStaleSeq;
+         let workerPlan: LoadPackageOutcome["buildPlan"];
+         try {
+            workerPlan = await derive();
+         } catch (err) {
+            workerPlan = {
+               ok: false,
+               error: errMessage(err),
+               durationMs: 0,
+               digestSkipped: [],
+               eligibilityRefused: {},
+            };
+         }
+         const derived =
+            (await this.applyLoadBuildPlan(workerPlan)) !== undefined;
+         if (seq === this.buildPlanStaleSeq && this.buildPlanStale) {
+            this.buildPlanStale.resolve();
+            this.buildPlanStale = undefined;
+         }
+         return derived;
+      });
+      this.buildPlanRefreshChain = run.catch(() => false);
+      return run;
+   }
+
+   /**
+    * Resolves once the plan reflects the current connections (see
+    * markBuildPlanStale). Past `timeoutMs` it rejects with
+    * BuildPlanRefreshingError, a 503 with Retry-After, rather than hold the
+    * caller's request.
+    */
+   async whenBuildPlanCurrent(
+      timeoutMs: number = BUILD_PLAN_REFRESH_WAIT_MS,
+   ): Promise<void> {
+      const stale = this.buildPlanStale;
+      if (!stale) return;
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      try {
+         await Promise.race([
+            stale.promise,
+            new Promise<never>((_, reject) => {
+               timer = setTimeout(
+                  () =>
+                     reject(
+                        new BuildPlanRefreshingError(
+                           `The build plan of package ${this.owner.packageName()} is being re-derived after a connection change. Retry shortly.`,
+                        ),
+                     ),
+                  timeoutMs,
+               );
+            }),
+         ]);
+      } finally {
+         if (timer) clearTimeout(timer);
+      }
+   }
+
+   /**
+    * The connections this package's persist sources build on, from the plan,
+    * so a connection edit re-derives only the packages it can move. Null when
+    * the plan is unavailable (unknown, so any edit re-derives it).
+    */
+   planConnectionNames(): ReadonlySet<string> | null {
+      if (this.buildPlanFailed) return null;
+      return new Set(
+         Object.values(this.buildPlan?.sources ?? {}).map(
+            (source) => source.connectionName,
+         ),
+      );
    }
 
    /**

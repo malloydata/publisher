@@ -2915,7 +2915,14 @@ paths:
         declares no persist source has an empty plan. When the plan could not
         be derived at load, the read answers 409 with `reason`
         BUILD_PLAN_UNAVAILABLE; reloading the package derives it again, and
-        retrying the read does not.
+        retrying the read does not. After an edit to a connection the
+        package's persisted sources build on, the plan is re-derived (a
+        content address folds in its connection's digest) and the read waits
+        for it; past 10 seconds it answers 503 with `reason`
+        BUILD_PLAN_REFRESHING and a `Retry-After` header. A failed
+        re-derivation answers 409 BUILD_PLAN_UNAVAILABLE, as at load, and run
+        creation with `buildInstructions` is refused the same way rather than
+        checked against the plan from before the edit.
       parameters:
         - name: environmentName
           in: path

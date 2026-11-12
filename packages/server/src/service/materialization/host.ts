@@ -30,6 +30,11 @@ export interface MaterializationPackage extends BuildPlanPackage {
     * edit re-derives it). Optional: a stand-in package's plan never moves.
     */
    whenBuildPlanCurrent?(): Promise<void>;
+   /**
+    * Whether the plan could not be derived (at load, or re-derived after a
+    * connection edit). Optional, like whenBuildPlanCurrent.
+    */
+   isBuildPlanUnavailable?(): boolean;
    getPackageMetadata(): {
       scope?: string | null;
       manifestLocation?: string | null;
