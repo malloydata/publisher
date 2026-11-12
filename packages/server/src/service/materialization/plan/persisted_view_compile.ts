@@ -34,7 +34,7 @@ import type {
 import * as path from "path";
 import { fileURLToPath, pathToFileURL } from "url";
 import { logger } from "../../../logger";
-import { ownLevelNotes, type AnnotationsDef } from "../../annotations";
+import { annotationTexts, type AnnotationsDef } from "../../annotations";
 import { routeOfNote } from "../../annotation_reader";
 import {
    buildRowLevelProbe,
@@ -302,11 +302,17 @@ export async function tryCompilePersistedViewCompanion(args: {
    }
 }
 
-/** The notes of a view field the variant carries onto its own view: every route but `#@`. */
+/**
+ * The notes of a view field the variant carries onto its own view: every
+ * route but `#@`, inherited levels included (an alias `view: v2 is v`, or an
+ * `include:` re-annotation, keeps the render tags of the view it names on an
+ * inherited level, and live renders with them), ancestors first so a later
+ * note overrides an earlier one as it does live.
+ */
 export function viewNoteTexts(
    annotations: AnnotationsDef | undefined,
 ): string[] {
-   return ownLevelNotes(annotations)
-      .map((n) => n.text.trim())
+   return (annotationTexts(annotations) ?? [])
+      .map((t) => t.trim())
       .filter((t) => routeOfNote(t) !== "@" && !t.includes("\n"));
 }

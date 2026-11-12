@@ -12,6 +12,13 @@ import { tempBuildPlanPackages } from "../../../test_helpers/incremental_test_ha
 import { installSettings } from "../../../test_helpers/settings_env";
 import { compilePackageBuildPlan } from "./build_plan_compile";
 import {
+   FixedConnectionMap,
+   InMemoryURLReader,
+   Runtime,
+} from "@malloydata/malloy";
+import { DuckDBConnection } from "@malloydata/db-duckdb";
+import { viewNoteTexts } from "./persisted_view_compile";
+import {
    generatePersistedViewFile,
    PERSIST_VIEW_NOT_BUILT,
    type PersistedViewPlan,
@@ -310,5 +317,70 @@ source: b is a include {
 }
 `);
       expect(viewSources(c)).toEqual(["b__v__view"]);
+   });
+});
+
+describe("viewNoteTexts", () => {
+   it("carries the render tags an alias or an include inherits, never a #@ line", async () => {
+      const duckdb = new DuckDBConnection("duckdb", ":memory:");
+      try {
+         const url = "file:///pkg/m.malloy";
+         const runtime = new Runtime({
+            urlReader: new InMemoryURLReader(
+               new Map([
+                  [
+                     url,
+                     `##! experimental.access_modifiers
+source: a is ${TABLE} extend {
+  measure: n is count()
+  # bar_chart
+  view: v is { group_by: carrier; aggregate: n }
+}
+source: b is a extend {
+  #@ persist
+  view: v2 is v
+}
+source: c is a include {
+  #@ persist
+  public: v
+  public: *
+}
+`,
+                  ],
+               ]),
+            ),
+            connections: new FixedConnectionMap(
+               new Map([["duckdb", duckdb]]),
+               "duckdb",
+            ),
+         });
+         const model = await runtime.loadModel(new URL(url)).getModel();
+         const contents = (
+            model as unknown as {
+               _modelDef: {
+                  contents: Record<
+                     string,
+                     {
+                        fields: {
+                           name: string;
+                           as?: string;
+                           annotations?: never;
+                        }[];
+                     }
+                  >;
+               };
+            }
+         )._modelDef.contents;
+         const notesOf = (source: string, view: string) =>
+            viewNoteTexts(
+               contents[source].fields.find((f) => (f.as ?? f.name) === view)
+                  ?.annotations,
+            );
+         expect(notesOf("a", "v")).toEqual(["# bar_chart"]);
+         expect(notesOf("b", "v2")).toEqual(["# bar_chart"]);
+         expect(notesOf("c", "v")).toEqual(["# bar_chart"]);
+      } finally {
+         await duckdb.close();
+      }
    });
 });
