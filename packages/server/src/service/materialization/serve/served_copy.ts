@@ -323,6 +323,7 @@ function timeframeStatements(
       .join("\n");
    let out = `\n  internal rename:\n${renames}`;
    if (emitted.length > 0) {
+      // malloy-text: the author's own notes, then names through identifier and a timeframe from TIMEFRAMES
       const dims = emitted
          .map(
             (c) =>
@@ -342,6 +343,7 @@ function timeframeStatements(
  */
 function intoFirstExtend(
    extend: string,
+   // malloy-text: timeframeStatements' text, every name through identifier
    statements: string,
 ): string | undefined {
    if (extend === "") return `extend {${statements}\n}`;
@@ -539,6 +541,7 @@ export function declaredBaseName(
 export function typeDeclaration(
    r: Pick<Reroot, "typeName" | "columns">,
 ): string {
+   // malloy-text: the author's own notes, then names through identifier and a Malloy type name
    const fields = r.columns
       .map(
          (c) =>
