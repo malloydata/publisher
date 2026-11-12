@@ -1611,6 +1611,19 @@ export const CONTRACT: Record<string, Case[]> = {
          expect: fails("PUBLISHER_MATERIALIZE"),
       },
    ],
+   "materialize.gatedSources": [
+      { name: "unset", expect: value(false) },
+      {
+         name: "PUBLISHER_MATERIALIZE_GATED_SOURCES",
+         env: { PUBLISHER_MATERIALIZE_GATED_SOURCES: "true" },
+         expect: value(true),
+      },
+      {
+         name: "not a boolean",
+         env: { PUBLISHER_MATERIALIZE_GATED_SOURCES: "sometimes" },
+         expect: fails("PUBLISHER_MATERIALIZE_GATED_SOURCES"),
+      },
+   ],
    "persist.collisionEnforcementEnabled": [
       { name: "unset", expect: value(false) },
       {

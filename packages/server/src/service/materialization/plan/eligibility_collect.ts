@@ -16,6 +16,7 @@ import {
    assertMaterializationEligible,
    assertRollupNameUnshared,
    assertTierEligible,
+   gateEnforcedAtRead,
    type TierGateInputs,
 } from "./materialization_eligibility";
 import type { RollupPlan } from "./preaggregation_synthesis";
@@ -34,6 +35,8 @@ export interface EligibilityPlan {
    targets?: Record<string, BuildTarget>;
    connectionDigests: Record<string, string>;
    preaggregatePlans?: Record<string, RollupPlan>;
+   /** The `#(materialize)` plans, by the author's sourceID. */
+   materializePlans?: Record<string, unknown>;
    sourceModelPaths?: Record<string, string>;
    sourceGateOutcomes?: Record<string, PersistSourceGateOutcome>;
 }
@@ -178,7 +181,9 @@ export function collectSourceEligibility(
    for (const [sourceID, source] of Object.entries(compiled.sources)) {
       try {
          assertRollupNameUnshared(source, gate);
-         assertMaterializationEligible(source, deriveAnnotationFields(source));
+         assertMaterializationEligible(source, deriveAnnotationFields(source), {
+            gateEnforcedAtRead: gateEnforcedAtRead(sourceID, compiled),
+         });
          eligible.push(sourceID);
       } catch (err) {
          refused[sourceID] = errMessage(err);

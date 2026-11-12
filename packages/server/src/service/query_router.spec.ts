@@ -111,6 +111,39 @@ describe("routeQuery", () => {
       ]);
    });
 
+   it("lets a candidate that keeps the contracts past an entry-point gate only", async () => {
+      for (const [veto, expected] of [
+         ["entry_point", ["row_level_gate", undefined]],
+         [true, ["row_level_gate", "row_level_gate"]],
+      ] as const) {
+         const calls: string[] = [];
+         const decision = await routeQuery(
+            [
+               variant("storage", "answers", calls),
+               { ...variant("served", "answers", calls), keepsContracts: true },
+            ],
+            async () => veto,
+         );
+         expect(decision.considered.map((c) => c.reason)).toEqual([
+            ...expected,
+         ]);
+         expect(decision.served).toBe(veto === true ? "live" : "variant");
+      }
+   });
+
+   it("marks an answer let past an entry-point gate, so governing it re-proves the gate", async () => {
+      const served = {
+         ...variant("served", "answers", []),
+         keepsContracts: true,
+      };
+      const past = await routeQuery([served], async () => "entry_point");
+      expect(past.served === "variant" && past.pastEntryPointGate).toBe(true);
+      const ungated = await routeQuery([served], async () => false);
+      expect(ungated.served === "variant" && ungated.pastEntryPointGate).toBe(
+         undefined,
+      );
+   });
+
    it("asks about the gate once when a candidate applies, and never when none does", async () => {
       let asked = 0;
       const gate = async () => {

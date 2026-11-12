@@ -21,9 +21,11 @@ import { readFileSync } from "fs";
 import { fileURLToPath } from "url";
 import type {
    MalloyConfig,
+   ModelDef,
    ModelMaterializer,
    QueryMaterializer,
 } from "@malloydata/malloy";
+import type { GraftRuntime, GraftScope } from "../../gate_classification";
 import { quoteManifestTablePath } from "../../quoting";
 import { overlayKey } from "../../overlay_key";
 import {
@@ -119,6 +121,8 @@ interface Compiled {
    materializer?: ModelMaterializer;
    /** The served copy's compiled model, read (never edited) for source chains. */
    modelDef?: unknown;
+   /** The runtime it compiled in: a row-level graft reloads through it (R3). */
+   runtime?: GraftRuntime;
    /** The `sourceID`s of sources that opt out with `#@ -persist`. */
    optOutIDs?: ReadonlySet<string>;
    /** Bindings actually re-rooted, with their destination under its alias. */
@@ -246,6 +250,12 @@ export class ServedCopyServe {
       virtualMap: VirtualMap;
       bindings: ServeBinding[];
       tablesRead: ServeBinding[];
+      /**
+       * The served copy's compiled model, where a row-level gate is grafted
+       * when this answer runs (R3): the gate's text is the author's, kept in
+       * the copy, so the graft and its proofs read the same compile that runs.
+       */
+      graftScope: GraftScope;
    }> {
       const compiled = await this.ensureCompiled();
       if (!compiled.materializer || compiled.rerooted.length === 0) {
@@ -332,6 +342,15 @@ export class ServedCopyServe {
          virtualMap,
          bindings: compiled.rerooted,
          tablesRead,
+         graftScope: {
+            modelDef: compiled.modelDef as ModelDef,
+            materializer: compiled.materializer,
+            // Its own cache scope: a graft built on the served copy must never
+            // be shared with one built on the author's model, and a new
+            // compile (new bindings, a reload) starts afresh.
+            cacheScope: `served_copy\u0000${compiled.key}`,
+            runtime: compiled.runtime,
+         },
       };
    }
 
@@ -608,6 +627,7 @@ export class ServedCopyServe {
          }
          let materializer: ModelMaterializer;
          let servedDef: unknown;
+         let servedRuntime: GraftRuntime;
          try {
             const { runtime, modelURL, importBaseURL } =
                await createModelRuntime(
@@ -621,6 +641,7 @@ export class ServedCopyServe {
                   { overlay },
                );
             materializer = runtime.loadModel(modelURL, { importBaseURL });
+            servedRuntime = runtime as unknown as GraftRuntime;
             const model = await materializer.getModel();
             // eslint-disable-next-line @typescript-eslint/no-explicit-any
             servedDef = (model as any)._modelDef;
@@ -691,6 +712,7 @@ export class ServedCopyServe {
             ),
             materializer,
             modelDef: servedDef,
+            runtime: servedRuntime,
             optOutIDs,
             rerooted,
             aliased,

@@ -736,3 +736,75 @@ source:
       { timeout: 30000 },
    );
 });
+
+describe("a gated #(materialize) source (R3, contracts at read)", () => {
+   const GATED = `##! experimental.givens
+given: GROUPS :: string[]
+${BASE}
+#(access_filter) region in $GROUPS
+#(materialize) storage="lake"
+source: orders is orders_raw
+`;
+
+   async function outcome(gatedSources: boolean, text = GATED) {
+      restore?.();
+      restore = installSettings({
+         env: {
+            PUBLISHER_MATERIALIZE: "true",
+            PERSIST_STORAGE_MODE: "on",
+            PUBLISHER_MATERIALIZE_GATED_SOURCES: String(gatedSources),
+         },
+      }).restore;
+      const c = await compiled(text);
+      const [sourceID] = Object.keys(c.materializePlans ?? {});
+      return { c, sourceID, outcome: deriveBuildPlanOutcome(c, null) };
+   }
+
+   it(
+      "classifies the gate against the author's model, where its givens are declared",
+      async () => {
+         const { c, sourceID } = await outcome(true);
+         expect(c.sourceGateOutcomes?.[sourceID]).toEqual({
+            classification: "row_level",
+            attributed: true,
+         });
+      },
+      { timeout: 30000 },
+   );
+
+   it(
+      "is built and served from storage only with materialize.gatedSources on",
+      async () => {
+         const on = await outcome(true);
+         expect(on.outcome.plan?.refusedSources ?? {}).toEqual({});
+         expect(on.outcome.sourceEligibility.eligible).toEqual([on.sourceID]);
+         // Off, the managed tier never holds the gated source's columns.
+         const off = await outcome(false);
+         expect(off.outcome.plan?.refusedSources?.[off.sourceID]?.reason).toBe(
+            "authorize",
+         );
+         expect(off.outcome.sourceEligibility.eligible).toEqual([]);
+      },
+      { timeout: 30000 },
+   );
+
+   it(
+      "keeps refusing a gated #@ persist storage= source with the switch on",
+      async () => {
+         const { outcome: o } = await outcome(
+            true,
+            `##! experimental { persistence givens }
+given: GROUPS :: string[]
+${BASE}
+#(access_filter) region in $GROUPS
+#@ persist storage="lake" name="o_all"
+source: orders is orders_raw -> { select: * }
+`,
+         );
+         expect(
+            Object.values(o.plan?.refusedSources ?? {}).map((r) => r.reason),
+         ).toEqual(["authorize"]);
+      },
+      { timeout: 30000 },
+   );
+});

@@ -3075,16 +3075,23 @@ export class Model {
                preaggServeMaterializer,
             }),
             async () => {
-               const blocked =
-                  !bypassAuthorize &&
-                  // Cheap short-circuit for gate-free models. Safe, unlike
-                  // `hasAuthorize()`: see `hasAnyAuthorizeNote`.
-                  this.governor.hasAnyAuthorizeNote() &&
-                  (await this.governor.queryEntryPointHasRowLevelGate(
-                     runnable,
-                     callerRegion,
-                  ));
-               return blocked;
+               // Cheap short-circuit for gate-free models. Safe, unlike
+               // `hasAuthorize()`: see `hasAnyAuthorizeNote`.
+               if (bypassAuthorize || !this.governor.hasAnyAuthorizeNote()) {
+                  return false;
+               }
+               const veto = await this.governor.rowLevelGateVeto(
+                  runnable,
+                  callerRegion,
+               );
+               // Only an entry-point gate can be grafted on a routed compile
+               // (the served copy, R3); a caller join's gate, or one the walk
+               // could not decide, keeps every routed shape away.
+               return veto === "none"
+                  ? false
+                  : veto === "entry_point"
+                    ? "entry_point"
+                    : true;
             },
             { recordMetrics: false },
          );
@@ -3207,6 +3214,13 @@ export class Model {
          // The caller's OWN text, not the synthesized/injected `queryString`.
          callerQueryText: query,
          ceiling: { audit, source: () => compiledSource ?? sourceName },
+         // The served copy is the author's text, gates included: a row-level
+         // gate is grafted and proven on its own compile, so the routed answer
+         // keeps it (R3), and an answer let past an entry-point gate is
+         // re-proven there. Any other routed shape carries no annotations and
+         // is never reached past a row-level gate (the router's veto).
+         graftScope: answer.graftScope,
+         routedPastEntryPointGate: answer.pastEntryPointGate,
       };
       const { runnable: governed, decision } = await this.governor.govern(
          governRequest,
@@ -3239,9 +3253,11 @@ export class Model {
       // After the gate, so a denied caller gets its 403 rather than a 400 about
       // a value; before prepare, which is where Malloy would parse it.
       this.assertFilterGivens(givens);
-      // No post-hoc gate check is possible on a routed runnable (the serve
-      // shape carries no annotations): storage routing's correctness rests
-      // entirely on `queryEntryPointHasRowLevelGate`.
+      // No post-hoc gate check is possible on a serve-shape or rollup
+      // runnable (it carries no annotations): their correctness rests
+      // entirely on `queryEntryPointHasRowLevelGate`. The served copy is the
+      // exception (R3): it keeps the author's gates, and `govern()` above
+      // grafted and proved them on its own compile.
 
       const maxRows = getMaxQueryRows();
       const maxBytes = getMaxResponseBytes();
@@ -3389,14 +3405,17 @@ export class Model {
          answer = liveFallbackAnswer(answer);
          // The retry runs the LIVE compile, which `governed` is not (it is the
          // serve shape), so it is governed in its own right here: the same
-         // bind, on the runnable that will execute. Today routing already
-         // refuses any gated entry point (`queryEntryPointHasRowLevelGate`),
-         // so this decides nothing new; it is what keeps an ungoverned live
-         // runnable from ever running if that refusal narrows. Outside the
-         // retry's try, so a denial answers 403, not a mapped run error.
+         // bind, on the runnable that will execute. A gated entry point
+         // reaches here only through the served copy (R3), whose answer's
+         // graft scope is the served copy's: the retry grafts on the author's
+         // own scope, or the graft would recompile against the stored table
+         // that just failed. Outside the retry's try, so a denial answers
+         // 403, not a mapped run error.
          const { runnable: governedLive } = await this.governor.govern(
             {
                ...governRequest,
+               graftScope: undefined,
+               routedPastEntryPointGate: false,
                boundary: undefined,
                ceiling: undefined,
                bypassAlreadyNoted: true,

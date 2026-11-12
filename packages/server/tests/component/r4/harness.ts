@@ -53,6 +53,8 @@ import {
 } from "../../../src/service/materialization/stored_column_types";
 import type { ManifestEntry } from "../../../src/service/materialization/types";
 import { Model } from "../../../src/service/model";
+import type { HydrationRuntime } from "../../../src/service/model_runtime";
+import { malloyGivenToApi, type MalloyGiven } from "../../../src/service/given";
 import { ModelPolicy } from "../../../src/service/model_policy";
 import { QueryPrivileges } from "../../../src/service/model_query_request";
 
@@ -124,6 +126,8 @@ export interface R4Run {
 /** A built scenario: run queries against it. */
 export interface R4Fixture {
    bindings: ServeBinding[];
+   /** The model queries run against, for a test that reaches its internals. */
+   model: Model;
    run(query: R4Query): Promise<R4Run>;
    /**
     * Point the model at `bindings` (`[]` for live), clearing the memoized
@@ -379,6 +383,13 @@ export async function buildScenario(scenario: R4Scenario): Promise<R4Fixture> {
       modelMaterializer: materializer as any,
       modelDef,
       modelInfo: modelDefToModelInfo(modelDef),
+      // The model's given surface, as a package derives it, so a row-level
+      // gate reading a given can be decided.
+      givens: (
+         Array.from(compiled.givens.values()) as unknown as MalloyGiven[]
+      ).map(malloyGivenToApi),
+      // A row-level gate grafts through the model's runtime, as a package's does.
+      gateRuntime: runtime as unknown as HydrationRuntime,
       policy,
    });
    const serveConfig = new MalloyConfig({ connections: {} });
@@ -422,6 +433,7 @@ export async function buildScenario(scenario: R4Scenario): Promise<R4Fixture> {
    );
    return {
       bindings,
+      model,
       setClock(at) {
          if (!pinned) throw new Error("the scenario's clock is not pinned");
          pinned.clock = at;

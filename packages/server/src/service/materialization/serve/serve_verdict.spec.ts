@@ -131,6 +131,32 @@ describe("computeServeVerdicts", () => {
       expect(colocated.verdict).toBe("not_built");
    });
 
+   it("serves a gated stored source when the served copy keeps its gates (R3), never a gated rollup", () => {
+      const keeps = {
+         gated: () => true,
+         servedCopyKeepsGates: true,
+         boundStorageNames: new Set(["orders"]),
+         servedStorageNames: new Set(["orders"]),
+      };
+      const [stored] = computeServeVerdicts(
+         facts([plan("orders", STORAGE)], keeps),
+      );
+      expect(stored.verdict).toBe("serves");
+      const rollup = plan("orders_rollup_1", {
+         origin: "preaggregate",
+         preaggregate: {
+            baseSourceName: "orders",
+            grainDimensions: ["region"],
+            measures: [],
+         } as unknown as PersistSourcePlan["preaggregate"],
+      });
+      const [rolled] = computeServeVerdicts(facts([rollup], keeps));
+      expect(rolled).toMatchObject({
+         verdict: "live",
+         reason: "row_level_gate",
+      });
+   });
+
    it("reads a rollup's reach and gate through its base, by name", () => {
       const asked: [string | undefined, string, string | undefined][] = [];
       const rollup = plan("orders_rollup_1", {

@@ -925,6 +925,15 @@ export const getMaterializeEnabled = (): boolean =>
    settings.get("materialize.enabled");
 
 /**
+ * Whether the served copy may answer a query through a row-level gate, with
+ * the gate grafted on it (materialization v2's R3), from
+ * `PUBLISHER_MATERIALIZE_GATED_SOURCES` (default `false`). Only with
+ * {@link getMaterializeEnabled}.
+ */
+export const getMaterializeGatedSources = (): boolean =>
+   getMaterializeEnabled() && settings.get("materialize.gatedSources");
+
+/**
  * Whether a within-package persist-target COLLISION (two distinct persist
  * sources resolving to the same physical table in the same destination) is a
  * hard publish rejection, from `PERSIST_COLLISION_ENFORCE` (default `false`).
