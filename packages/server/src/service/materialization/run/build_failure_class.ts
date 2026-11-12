@@ -23,6 +23,7 @@ import {
    HostSuppliedWrongTierError,
    strictMissSourceId,
 } from "./materialization_run_support";
+import { InlinedJoinNotUniqueError } from "./inline_uniqueness";
 
 /**
  * Whether retrying one source's failed build could succeed, as reported on
@@ -131,6 +132,7 @@ export function classifyBuildError(err: unknown): BuildRetryable {
    // A property of the model, the package or the environment's configuration.
    if (
       err instanceof MaterializationEligibilityError ||
+      err instanceof InlinedJoinNotUniqueError ||
       err instanceof ChainedShapeNotCarriedError ||
       err instanceof ModelCompilationError ||
       err instanceof MalloyError ||

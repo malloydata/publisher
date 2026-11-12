@@ -24,6 +24,11 @@ import {
 } from "./build_plan";
 import { createEventLoopYielder } from "../../event_loop_yield";
 import { Model } from "../../model";
+import { keyedOverlay } from "../../overlay_key";
+import {
+   compiledFileText,
+   loadLeavingOutCrossConnectionJoins,
+} from "./cross_connection_joins";
 
 export async function compilePackageBuildPlan(
    pkg: BuildPlanPackage,
@@ -44,16 +49,41 @@ export async function compilePackageBuildPlan(
       await yielder.maybeYield();
       if (signal?.aborted) throw new Error("Build cancelled");
 
-      const { runtime, modelURL, importBaseURL } = await Model.getModelRuntime(
-         pkg.getPackagePath(),
-         modelPath,
-         pkg.getMalloyConfig(),
-      );
-      // Held onto (rather than chained straight into `.getModel()`) because
-      // the gate classification needs the SAME live materializer that
-      // compiled this model — see `classifyPersistSourceGate`'s doc.
-      const materializer = runtime.loadModel(modelURL, { importBaseURL });
-      const malloyModel = await materializer.getModel();
+      const load = async (files?: ReadonlyMap<string, string>) => {
+         const { runtime, modelURL, importBaseURL } =
+            await Model.getModelRuntime(
+               pkg.getPackagePath(),
+               modelPath,
+               pkg.getMalloyConfig(),
+               files ? { overlay: files } : undefined,
+            );
+         // Held onto (rather than chained straight into `.getModel()`)
+         // because the gate classification needs the SAME live materializer
+         // that compiled this model — see `classifyPersistSourceGate`'s doc.
+         const materializer = runtime.loadModel(modelURL, { importBaseURL });
+         return {
+            runtime,
+            materializer,
+            malloyModel: await materializer.getModel(),
+         };
+      };
+      let loaded: Awaited<ReturnType<typeof load>>;
+      // The build view's files, when the model joins sources across
+      // connections (#6982): its builds are planned from them.
+      let buildView: Map<string, string> | undefined;
+      try {
+         loaded = await load();
+      } catch (first) {
+         const view = await loadLeavingOutCrossConnectionJoins({
+            firstError: first,
+            readText: (url) => compiledFileText(url),
+            load: (files) => load(keyedOverlay(files)),
+         });
+         if (!view) throw first;
+         loaded = view.result;
+         buildView = keyedOverlay(view.overlay);
+      }
+      const { runtime, materializer, malloyModel } = loaded;
       await collectModelBuildPlan(parts, {
          modelPath,
          packagePath: pkg.getPackagePath(),
@@ -65,7 +95,7 @@ export async function compilePackageBuildPlan(
                pkg.getPackagePath(),
                modelPath,
                pkg.getMalloyConfig(),
-               { overlay },
+               { overlay: new Map([...(buildView ?? []), ...overlay]) },
             ),
       });
    }

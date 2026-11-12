@@ -1,6 +1,7 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
+import { assertInlinedJoinsUnique } from "./inline_uniqueness";
 import type {
    Connection as MalloyConnection,
    PersistSource,
@@ -448,6 +449,12 @@ export class InstructedBuild {
             compiled,
          );
 
+         // An inlined join_one must match at most one row (P8): checked on
+         // the source's own connection before anything is written.
+         await assertInlinedJoinsUnique(
+            compiled.materializePlans?.[persistSource.sourceID],
+            connection,
+         );
          entry = await this.seams.buildOneSource(
             persistSource,
             instruction,

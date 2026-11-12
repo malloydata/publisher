@@ -84,6 +84,19 @@ export async function tryCompileMaterializeCompanion(args: {
       const text = generateBuildFile(
          planned.plans,
          path.basename(args.modelPath),
+         (declaringURL) => {
+            let declaringFile: string;
+            try {
+               declaringFile = fileURLToPath(declaringURL);
+            } catch {
+               return undefined;
+            }
+            if (path.resolve(declaringFile) === modelFile) return undefined;
+            return path
+               .relative(path.dirname(modelFile), declaringFile)
+               .split(path.sep)
+               .join("/");
+         },
       );
       if (!text) return { refused };
       const url = materializeCompanionURL(args.packagePath, args.modelPath);
@@ -92,6 +105,15 @@ export async function tryCompileMaterializeCompanion(args: {
       );
       const materializer = runtime.loadModel(url, { importBaseURL });
       const model = await materializer.getModel();
+      // The P8 checks' SQL, compiled now (never run here) so a build runs it
+      // against the joined source's connection before it writes anything.
+      for (const plan of planned.plans) {
+         for (const check of plan.uniquenessChecks ?? []) {
+            check.sql = await materializer
+               .loadQueryByName(check.queryName)
+               .getSQL();
+         }
+      }
       return {
          generated: {
             plans: planned.plans,

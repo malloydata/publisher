@@ -167,6 +167,12 @@ export interface SerializedModel {
     * belong to the pre-edit text. `.malloy` models only.
     */
    modelSourceText?: string;
+   /**
+    * Set when the model joins sources across connections (#6982) and was
+    * loaded, behind the materialize switch, from its build view: the
+    * definitions left out (`LeftOutDefinition[]`).
+    */
+   crossConnectionLeftOut?: unknown[];
    /** Accumulated dataStyles from sibling `.styles.json` files. */
    dataStyles?: unknown;
    /** Wall-clock ms spent compiling this single model in the worker. */

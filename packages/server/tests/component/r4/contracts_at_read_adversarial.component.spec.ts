@@ -163,7 +163,7 @@ describe("R3 adversarially: two callers per gate kind", () => {
          // Interleaved, then repeated: a graft or its cache shared across
          // callers would hand the second caller the first one's rows.
          const order = [ORG_A, ORG_B, ORG_A, ORG_B];
-         const results = [];
+         const results: Awaited<ReturnType<typeof attempt>>[] = [];
          for (const givens of order) {
             results.push(await attempt(fixture, kind.malloy, givens));
          }

@@ -21,10 +21,20 @@
 
 import { isSourceDef, type ModelDef, type SourceDef } from "@malloydata/malloy";
 import {
+   fieldJoinUsage,
+   joinedSourceReads,
    resolveCompositeResolvedBase,
    resolveDeclaredSource,
    resolveExtendedSource,
    resolveQuerySourceBase,
+   sourceJoins,
+   type FieldJoinReads,
+   type SourceJoin,
+} from "../../governance/ir/source_graph";
+
+export type {
+   FieldJoinReads,
+   SourceJoin,
 } from "../../governance/ir/source_graph";
 
 /** The compiled source shape the map reads: compiler-set IR fields only. */
@@ -267,6 +277,36 @@ export class SourceMap {
    /** The declaration a name in this model's namespace refers to. */
    sourceIDOf(name: string): string | undefined {
       return this.idsByName.get(name);
+   }
+
+   /**
+    * The joins a declaration has, by name (its own and those it inherits), as
+    * the governance IR reads them. Empty for an unknown declaration.
+    */
+   joinsOf(sourceID: string): SourceJoin[] {
+      const node = this.nodesById.get(sourceID);
+      return node ? sourceJoins(node.def) : [];
+   }
+
+   /**
+    * For each non-join field of a declaration, the joins its value reads
+    * (see {@link fieldJoinUsage}); `undefined` for a field whose usage is
+    * unknown.
+    */
+   fieldJoinsOf(sourceID: string): Map<string, FieldJoinReads | undefined> {
+      const node = this.nodesById.get(sourceID);
+      return node ? fieldJoinUsage(node.def) : new Map();
+   }
+
+   /**
+    * The joined side of one of a declaration's joins, as the join holds it:
+    * its own joins and what each of its fields reads through them.
+    */
+   joinedReadsOf(join: SourceJoin): {
+      joins: SourceJoin[];
+      fieldJoins: Map<string, FieldJoinReads | undefined>;
+   } {
+      return joinedSourceReads(join);
    }
 
    /** Every node, declaration order first, then imports the registry holds. */

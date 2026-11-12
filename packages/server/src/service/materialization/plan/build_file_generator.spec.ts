@@ -13,6 +13,7 @@ import {
 import { compilePackageBuildPlan } from "./build_plan_compile";
 import { collectIncrementalDeclarations } from "./build_plan";
 import { incrementalLineage } from "../run/incremental_build";
+import { assertInlinedJoinsUnique } from "../run/inline_uniqueness";
 import {
    buildSourceName,
    generateBuildFile,
@@ -51,6 +52,19 @@ afterEach(async () => {
    restore?.();
    await packages.cleanup();
 });
+
+async function contentsOf(
+   pkg: Awaited<ReturnType<typeof packages.create>>,
+): Promise<Record<string, unknown>> {
+   const { Model } = await import("../../model");
+   const { runtime, modelURL, importBaseURL } = await Model.getModelRuntime(
+      pkg.getPackagePath(),
+      "m.malloy",
+      pkg.getMalloyConfig(),
+   );
+   const m = await runtime.loadModel(modelURL, { importBaseURL }).getModel();
+   return m._modelDef.contents as Record<string, unknown>;
+}
 
 async function compiled(files: string | Record<string, string>) {
    const pkg = await packages.create(files);
@@ -369,14 +383,184 @@ source: orders is orders_raw
       { timeout: 30000 },
    );
 
+   const JOINED = `${BASE}
+source: regions is duckdb.sql("""
+  select * from (values ('east', 'East coast'), ('west', 'West coast')) as t(code, label)
+""") extend {
+  primary_key: code
+  dimension: loud_label is upper(label)
+}
+source: lines is duckdb.sql("""
+  select * from (values (1, 1, 2.0), (2, 1, 3.0), (3, 2, 4.0)) as t(line_id, order_id, qty)
+""")
+`;
+
    it(
-      "refuses inline= until the joins pull request, and plans nothing for it",
+      "keeps a dimension through a reference join out of the table, and a join_many's fan-out out of the build",
+      async () => {
+         const c = await compiled(`${JOINED}
+#(materialize) name="orders_all"
+source: orders is orders_raw extend {
+  join_one: regions with region
+  join_many: lines on lines.order_id = id
+  dimension:
+    region_label is regions.label
+    line_qty is lines.qty
+    doubled is amount * 2
+}
+`);
+         const [plan] = generatedPlans(c);
+         expect(plan.columns.map((x) => x.column)).toEqual([
+            "id",
+            "region",
+            "amount",
+            "order_date",
+            "doubled",
+         ]);
+         expect(plan.inline).toBeUndefined();
+      },
+      { timeout: 30000 },
+   );
+
+   it(
+      "inlines a join_one: stores what reads through it and the joined source's dimensions, with a uniqueness check",
+      async () => {
+         const c = await compiled(`${JOINED}
+#(materialize) name="orders_all" inline=["regions"]
+source: orders is orders_raw extend {
+  join_one: regions with region
+  dimension: region_label is regions.label
+}
+`);
+         const [plan] = generatedPlans(c);
+         expect(plan.inline).toEqual(["regions"]);
+         expect(
+            plan.columns.map((x) => [x.column, x.join ?? null, x.computed]),
+         ).toEqual([
+            ["id", null, false],
+            ["region", null, false],
+            ["amount", null, false],
+            ["order_date", null, false],
+            ["region_label", null, true],
+            ["regions__code", "regions", true],
+            ["regions__label", "regions", true],
+            ["regions__loud_label", "regions", true],
+         ]);
+         expect(plan.uniquenessChecks).toHaveLength(1);
+         const [check] = plan.uniquenessChecks ?? [];
+         expect(check.join).toBe("regions");
+         expect(check.keyColumn).toBe("code");
+         expect(check.connectionName).toBe("duckdb");
+         expect(check.sql).toContain("HAVING");
+         // The check finds no duplicate here, and one when there is.
+         const pkg = await packages.create("");
+         const duckdb = await pkg.getMalloyConnection("duckdb");
+         expect((await duckdb.runSQL(check.sql as string)).rows).toEqual([]);
+         await assertInlinedJoinsUnique(plan, duckdb);
+      },
+      { timeout: 30000 },
+   );
+
+   it(
+      "fails a build whose inlined join_one matches a key twice, naming the join",
       async () => {
          const c = await compiled(`${BASE}
+source: regions is duckdb.sql("""
+  select * from (values ('east', 'East'), ('east', 'Also east'), ('west', 'West')) as t(code, label)
+""") extend { primary_key: code }
 #(materialize) name="orders_all" inline=["regions"]
-source: orders is orders_raw
+source: orders is orders_raw extend {
+  join_one: regions with region
+}
+`);
+         const [plan] = generatedPlans(c);
+         const pkg = await packages.create("");
+         const duckdb = await pkg.getMalloyConnection("duckdb");
+         await expect(assertInlinedJoinsUnique(plan, duckdb)).rejects.toThrow(
+            /inlines the join_one 'regions'/,
+         );
+         // A plan with no compiled check refuses, and says why.
+         const unchecked = {
+            ...plan,
+            uniquenessChecks: (plan.uniquenessChecks ?? []).map((check) => ({
+               ...check,
+               sql: undefined,
+            })),
+         };
+         await expect(
+            assertInlinedJoinsUnique(unchecked, duckdb),
+         ).rejects.toThrow(/carries no uniqueness check/);
+      },
+      { timeout: 30000 },
+   );
+
+   for (const [name, inline, why] of [
+      ["a name that is not a join", '["nope"]', /not a join/],
+      ["a join_many", '["lines"]', /join_many/],
+      ["a join defined in place", '["r2"]', /defined in place/],
+      ["a list of something else", '"regions"', /list of join names/],
+      ["a join with no single key", '["r3"]', /not one equality/],
+      // Keyed on a join_many's column: a build would store a row per line.
+      [
+         "a join keyed through a join_many",
+         '["r4"]',
+         /reads another join \(`lines`\)/,
+      ],
+      [
+         "a join keyed on a dimension that reads a join_many",
+         '["r5"]',
+         /reads another join \(`lines`\)/,
+      ],
+   ] as const) {
+      it(
+         `refuses inline= naming ${name}, and plans nothing for it`,
+         async () => {
+            const pkg = await packages.create(`${JOINED}
+#(materialize) name="orders_all" inline=${inline}
+source: orders is orders_raw extend {
+  join_one: regions with region
+  join_one: r2 is duckdb.sql("""select 'east' as code""") on r2.code = region
+  join_many: lines on lines.order_id = id
+  join_one: r3 is regions on r3.code = region and r3.label != 'x'
+  join_one: r4 is regions on r4.code = lines.line_id::string
+  dimension: line_sku is lines.line_id::string
+  join_one: r5 is regions on r5.code = line_sku
+}
+`);
+            const c = await compilePackageBuildPlan(pkg);
+            expect(generatedPlans(c)).toEqual([]);
+            // Reported as a package warning, not only logged.
+            const findings = (c.annotationFindings ?? []).filter(
+               (f) => f.code === "materialize-not-built",
+            );
+            expect(findings.map((f) => f.subject)).toEqual(["orders"]);
+            expect(findings[0].message).toMatch(why);
+            const { plans, refused } = planModelMaterialize(
+               await contentsOf(pkg),
+            );
+            expect(plans).toEqual([]);
+            expect(refused[0]?.reason).toMatch(why);
+         },
+         { timeout: 30000 },
+      );
+   }
+
+   it(
+      "refuses an inlined column that clashes with one of the source's own, as a package warning",
+      async () => {
+         const c = await compiled(`${JOINED}
+#(materialize) name="orders_all" inline=["regions"]
+source: orders is orders_raw extend {
+  join_one: regions with region
+  dimension: regions__label is upper(region)
+}
 `);
          expect(generatedPlans(c)).toEqual([]);
+         const findings = (c.annotationFindings ?? []).filter(
+            (f) => f.code === "materialize-not-built",
+         );
+         expect(findings.map((f) => f.subject)).toEqual(["orders"]);
+         expect(findings[0].message).toContain("`regions__label`");
       },
       { timeout: 30000 },
    );

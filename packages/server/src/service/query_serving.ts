@@ -423,7 +423,12 @@ export function routeCandidates(
          },
          explain: (err) =>
             err instanceof ServedCopyDecline
-               ? { code: `served_copy_${err.code}` }
+               ? {
+                    code: `served_copy_${err.code}`,
+                    ...(err.callerDetail
+                       ? { callerDetail: err.callerDetail }
+                       : {}),
+                 }
                : undefined,
          onSkip: (err) => {
             logger.debug("served copy cannot answer this query", {

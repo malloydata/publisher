@@ -8,6 +8,7 @@ import {
    servedCopyAlias,
    servedCopyConfig,
 } from "./served_copy_config";
+import { MalloyError } from "@malloydata/malloy";
 import { classifyServedCopyFailure } from "./served_copy_serve";
 
 function fakeConnection(name: string) {
@@ -75,14 +76,30 @@ describe("servedCopyConfig", () => {
 });
 
 describe("classifyServedCopyFailure", () => {
-   it("reads a refused cross-connection join as waiting for the other side", () => {
+   const problem = (code: string, message: string) =>
+      new MalloyError(message, [
+         {
+            code,
+            message,
+            severity: "error",
+         } as never,
+      ]);
+   it("reads a refused cross-connection join, by its code, as waiting for the other side", () => {
       expect(
          classifyServedCopyFailure(
-            "Cannot join 'customers', which is on connection 'wh_b', into a source on connection 'wh_a'",
+            problem(
+               "join-connection-mismatch",
+               "Cannot join 'customers', which is on connection 'wh_b', into a source on connection 'wh_a'",
+            ),
          ),
       ).toBe("cross_connection_unbuilt");
-      expect(classifyServedCopyFailure("'region' is not defined")).toBe(
-         "compile_failed",
-      );
+      expect(
+         classifyServedCopyFailure(
+            problem("field-not-found", "'region' is not defined"),
+         ),
+      ).toBe("compile_failed");
+      expect(
+         classifyServedCopyFailure(new Error("Cannot join a on connection b")),
+      ).toBe("compile_failed");
    });
 });
