@@ -140,6 +140,7 @@ source: orders is duckdb.sql("SELECT 1 AS id, 'east' AS region") extend {
          servedBy: { kind: "live" },
          considered: [],
          notConsidered: [],
+         warnings: [],
       });
    });
 });
@@ -310,6 +311,53 @@ source: orders is duckdb.sql("""
   measure: total is amount.sum()
 }
 `;
+
+describe("the path report reading the serve verdicts", () => {
+   it("says a table no published source reaches is WARNED unreachable, and names it only to a caller who may see it", async () => {
+      // index.malloy publishes daily only: by_region is materialized but
+      // nothing on the surface reads it, so its verdict is `unreachable`.
+      const pkg = await loadPackage(MODEL, {
+         "index.malloy": 'import "model.malloy"\nexport { daily }\n',
+      });
+      const verdict = pkg
+         .getServeVerdicts()
+         .find((v) => v.sourceName === "by_region");
+      expect(verdict).toMatchObject({ verdict: "live", reason: "unreachable" });
+
+      const cleared = await pathOf(
+         pkg,
+         "run: by_region -> { group_by: region; aggregate: n is n.sum() }",
+         { includeHidden: true },
+      );
+      expect(cleared.considered).toEqual([
+         {
+            tableId: entityIdOf(pkg, "by_region"),
+            kind: "materialized",
+            outcome: "skipped",
+            reason: "WARNED",
+            code: "unreachable",
+         },
+      ]);
+      expect(cleared.warnings).toEqual([
+         {
+            code: "unreachable",
+            tableId: entityIdOf(pkg, "by_region"),
+            sourceName: "by_region",
+            message: expect.stringContaining("No source the package publishes"),
+         },
+      ]);
+
+      // A published query never hears of it.
+      const published = await pathOf(
+         pkg,
+         "run: daily -> { group_by: region; aggregate: t is total.sum() }",
+         { modelPath: "index.malloy" },
+      );
+      expect(published.considered.map((c) => c.reason)).toEqual(["NOT_BUILT"]);
+      expect(published.warnings).toEqual([]);
+      expect(JSON.stringify(published)).not.toContain("by_region");
+   });
+});
 
 describe("the path report over a colocated rollup", () => {
    async function builtRollup(): Promise<{ pkg: Package; rollupId: string }> {

@@ -3658,6 +3658,7 @@ export class Model {
                servedBy: { kind: "live" },
                considered: [],
                notConsidered: [],
+               warnings: [],
             };
          }
          const toTable = (b: ServeBinding): StorageTable => ({

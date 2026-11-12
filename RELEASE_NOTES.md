@@ -21,6 +21,14 @@ Give the heading a title — `## [Unreleased] — what changed`, with an em dash
 
 Two consequences worth knowing. A section merged to `main` ships in the **next** release, whenever that is, so do not write one for work that has not landed. And a heading already stamped with a version is history: a follow-up that changes that behaviour opens a **new** `[Unreleased]` section referencing the shipped version by number, rather than editing the old one.
 
+## [Unreleased] — The path report says why a table that will not serve was skipped
+
+The path report now reads each table's serve verdict. A table no query can be answered from (its verdict is `live`) is reported as skipped `WARNED`, and the candidate gains `code`, the verdict's reason: `storage_mode`, `unreachable`, `row_level_gate`, `refused` or `shadowed`. Where the verdict knows more than one query can, it replaces what that query alone showed: a source the bind refuses read as `NOT_BUILT` before and now reads `WARNED` `refused`, and a rollup every published entry point gates reads `WARNED` `row_level_gate` rather than `CONTRACT`. Only a skip where the router never tried the table is replaced (`NOT_BUILT`, `WARNED`, and `CONTRACT` for the gate's own verdict); a skip the router reached by trying the table (`MISSING_FIELD`, `GRAIN_TOO_COARSE`, `COUNT_SEMANTICS`) keeps its reason and detail, and `STALE`, `RUN_FAILED` and a table that answered are unchanged. A `storage=` table and its colocated copy each read their own verdict.
+
+The report also gains `warnings`, one per such table: its `code`, `tableId`, `sourceName` and a sentence for a person. It is filtered like `notConsidered`, so a source the caller cannot list is never named, and it carries no refusal's own text; the package's warnings and status keep the full message and the fixes. Both fields are additive and optional. `WARNED` was already a `SkipReason`, so no enum gains a value; `code` is an open string.
+
+The verdicts are read from a per-package memo keyed on what they depend on (the plan, the bound tables and bindings, eligibility, the storage mode), so a query pays a key compare, not a verdict computation.
+
 ## [Unreleased] — A storage= build records its row count, and the workload log records which table answered
 
 A `storage=` build now records its table's row count in the manifest (`ManifestEntry.rowCount`, until now always null), counted in the destination after the build. A count that cannot be read leaves it null and the build stands. A colocated build still leaves it null, since counting would scan the warehouse.
