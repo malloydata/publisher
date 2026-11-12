@@ -592,4 +592,40 @@ source: orders is orders_raw -> { select: * }
       );
       expect(reason('#(materialize) name="a\n')).toContain("does not parse");
    });
+
+   it(
+      "plans only a source that declares #(materialize) itself, not an extension that inherits it",
+      async () => {
+         const c = await compiled(`${BASE}
+#(materialize) name="orders_all"
+source: orders is orders_raw extend { dimension: big is amount > 10 }
+
+source: east_orders is orders extend { where: region = 'east' }
+
+source: renamed_orders is orders
+
+#(materialize) name="west_all"
+source: west_orders is orders extend { where: region = 'west' }
+`);
+         // Malloy copies orders' note onto east_orders and renamed_orders by
+         // reference; neither declares one, so neither gets a build.
+         expect(
+            generatedPlans(c)
+               .map((p) => [p.sourceName, p.buildSourceName])
+               .sort(),
+         ).toEqual([
+            ["orders", "orders__mat"],
+            ["west_orders", "west_orders__mat"],
+         ]);
+         expect(Object.values(c.sources).map((s) => s.name)).not.toContain(
+            "east_orders__mat",
+         );
+         expect(
+            (c.annotationFindings ?? []).filter(
+               (f) => f.code === "materialize-not-built",
+            ),
+         ).toEqual([]);
+      },
+      { timeout: 30000 },
+   );
 });

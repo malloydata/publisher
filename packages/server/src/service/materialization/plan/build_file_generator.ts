@@ -61,7 +61,7 @@
  */
 
 import { Annotations } from "@malloydata/malloy";
-import { ownLevelNotes } from "../../annotations";
+import { ownLevelNotes, type AnnotationNote } from "../../annotations";
 import {
    routeOfNote,
    type PackageAnnotationFinding,
@@ -149,6 +149,11 @@ export interface MaterializeRefusal {
 
 interface SourceDefLike {
    sourceID?: unknown;
+   /** Where the source's own statement was parsed. */
+   location?: {
+      url?: string;
+      range?: { start: Position; end: Position };
+   };
    annotations?: Parameters<typeof ownLevelNotes>[0];
    fields?: unknown[];
 }
@@ -188,12 +193,63 @@ function splitSourceID(
    return match ? { name: match[1], url: match[2] } : undefined;
 }
 
+/** A position in a document, as the IR carries one. */
+interface Position {
+   line: number;
+   character: number;
+}
+
+function precedes(a: Position, b: Position): boolean {
+   return a.line < b.line || (a.line === b.line && a.character <= b.character);
+}
+
 /**
- * The source's own `#(materialize)` declaration, read from its own notes only
- * (not inherited: an extension of a materialized source declares its own).
- * Undefined when the source carries none.
+ * The notes the source's OWN statement declares. Malloy copies a base's
+ * annotation onto an extension or rename that declares none of its own, by
+ * reference, and the IR does not always say which source is the base
+ * (`extends` is absent on an extension of a table-backed extension). So a note
+ * is read as the source's own only where the note was parsed: in the source's
+ * own file, with no other source of the model declared between the note and
+ * this source's statement. `source: east_orders is orders extend {…}` carries
+ * `orders`' `#(materialize)`, parsed before `orders`, so it is `orders`' alone.
+ * A source the IR gives no location keeps every note.
  */
-export function readMaterializeDeclaration(def: SourceDefLike):
+function declaredNotes(
+   def: SourceDefLike,
+   others: readonly SourceDefLike[],
+): AnnotationNote[] {
+   const notes = ownLevelNotes(def.annotations);
+   const url = def.location?.url;
+   const start = def.location?.range?.start;
+   if (!start) return notes;
+   // Where each other source of this file starts: strictly before this one.
+   const earlier = others.flatMap((other) => {
+      const otherStart = other.location?.range?.start;
+      return other !== def &&
+         other.location?.url === url &&
+         otherStart &&
+         !precedes(start, otherStart)
+         ? [otherStart]
+         : [];
+   });
+   return notes.filter((note) => {
+      if (!note.at) return true;
+      if (note.at.url !== url) return false;
+      const noteEnd = note.at.range.end;
+      return !earlier.some((otherStart) => precedes(noteEnd, otherStart));
+   });
+}
+
+/**
+ * The source's own `#(materialize)` declaration, read from the notes its own
+ * statement declares (not inherited: an extension of a materialized source is
+ * planned only when it declares its own). `others` are the model's other
+ * sources (see {@link declaredNotes}). Undefined when the source declares none.
+ */
+export function readMaterializeDeclaration(
+   def: SourceDefLike,
+   others: readonly SourceDefLike[] = [],
+):
    | {
         tag: ReturnType<typeof parseRouteTag>["tag"];
         keys: string[];
@@ -201,7 +257,7 @@ export function readMaterializeDeclaration(def: SourceDefLike):
         errors: string[];
      }
    | undefined {
-   const notes = ownLevelNotes(def.annotations).filter(
+   const notes = declaredNotes(def, others).filter(
       (note) => routeOfNote(note.text) === MATERIALIZE_ROUTE,
    );
    if (notes.length === 0) return undefined;
@@ -221,8 +277,11 @@ export function readMaterializeDeclaration(def: SourceDefLike):
 }
 
 /** Whether the source carries its own `#@ persist` (not an inherited one). */
-function declaresOwnPersist(def: SourceDefLike): boolean {
-   const notes = ownLevelNotes(def.annotations).filter(
+function declaresOwnPersist(
+   def: SourceDefLike,
+   others: readonly SourceDefLike[],
+): boolean {
+   const notes = declaredNotes(def, others).filter(
       (note) => routeOfNote(note.text) === "@",
    );
    if (notes.length === 0) return false;
@@ -328,7 +387,10 @@ export function materializeColumns(def: SourceDefLike): MaterializeColumn[] {
  * decides from its `sourceID`'s file): a source another model imports or
  * re-exports through `index.malloy` is that file's to build, so a source has
  * one build source, one address and one table however many models import it.
- * Without `declaredHere` every source with a declaration is planned.
+ * Without `declaredHere` every source with a declaration is planned. Only a
+ * source whose own statement declares `#(materialize)` is planned, never an
+ * extension or rename that merely inherits its base's (see
+ * {@link declaredNotes}).
  */
 export function planModelMaterialize(
    contents: Record<string, unknown>,
@@ -339,6 +401,10 @@ export function planModelMaterialize(
 } {
    const plans: MaterializePlan[] = [];
    const refused: MaterializeRefusal[] = [];
+   const others = Object.values(contents).filter(
+      (object): object is SourceDefLike =>
+         !!object && typeof object === "object",
+   );
    // A plain code-unit order, not localeCompare: the generated text must not
    // depend on the host's locale.
    for (const [name, object] of Object.entries(contents).sort(([a], [b]) =>
@@ -351,7 +417,7 @@ export function planModelMaterialize(
       if (declaredHere && declaredIn && !declaredHere(declaredIn)) continue;
       let declaration;
       try {
-         declaration = readMaterializeDeclaration(def);
+         declaration = readMaterializeDeclaration(def, others);
       } catch (error) {
          refused.push({
             sourceName: name,
@@ -369,7 +435,7 @@ export function planModelMaterialize(
          });
          continue;
       }
-      if (declaresOwnPersist(def)) {
+      if (declaresOwnPersist(def, others)) {
          refused.push({
             sourceName: name,
             sourceID: def.sourceID,
