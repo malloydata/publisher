@@ -80,6 +80,22 @@ describe("incrementalLineage", () => {
       });
    });
 
+   it("carries a #(materialize) source's rolling window, for the refresh's delete", () => {
+      const window = [
+         {
+            field: "order_ts",
+            op: ">=" as const,
+            offset: { sign: -1 as const, amount: 30, unit: "day" as const },
+            code: "order_ts >= now - 30 days",
+         },
+      ];
+      expect(
+         lineage({ declaration: declaration({ rollingWindow: window }) })
+            ?.rollingWindow,
+      ).toEqual(window);
+      expect(lineage()).not.toHaveProperty("rollingWindow");
+   });
+
    // Every case below means "build this the ordinary way and do not touch the
    // ledger". The first two are the overwhelming majority of sources; the rest
    // are declarations the publish gate rejects, so reaching a build with one

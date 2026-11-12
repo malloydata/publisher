@@ -238,33 +238,40 @@ export function classifyRollingWindow(
    return { ok: true, terms };
 }
 
-const MS = {
-   second: 1000,
-   minute: 60_000,
-   hour: 3_600_000,
-   day: 86_400_000,
-   week: 7 * 86_400_000,
-   // Calendar units at their longest, so the bound is never later than the
-   // warehouse's own calendar arithmetic would put it.
-   month: 31 * 86_400_000,
-   quarter: 92 * 86_400_000,
-   year: 366 * 86_400_000,
-} as const;
+const DAY_MS = 86_400_000;
+
+/**
+ * Each unit's length at its longest and at its shortest, so a bound computed
+ * from it is never later than the warehouse's own calendar arithmetic would
+ * put it: a subtracted unit is taken at its longest, an added one at its
+ * shortest.
+ */
+const UNIT_MS: Record<NowOffsetUnit, { longest: number; shortest: number }> = {
+   second: { longest: 1000, shortest: 1000 },
+   minute: { longest: 60_000, shortest: 60_000 },
+   hour: { longest: 3_600_000, shortest: 3_600_000 },
+   day: { longest: DAY_MS, shortest: DAY_MS },
+   week: { longest: 7 * DAY_MS, shortest: 7 * DAY_MS },
+   month: { longest: 31 * DAY_MS, shortest: 28 * DAY_MS },
+   quarter: { longest: 92 * DAY_MS, shortest: 89 * DAY_MS },
+   year: { longest: 366 * DAY_MS, shortest: 365 * DAY_MS },
+};
 
 /**
  * The margin taken off a delete bound: a day covers any session time zone
- * (the warehouse's `now` may be local time, Publisher's clock is UTC) and the
- * build's own delay after the run's start. A row kept by the margin is still
- * trimmed by every read.
+ * (the warehouse's `now` may be local time, Publisher's clock is UTC), a
+ * daylight-saving hour in a day-sized unit, and the build's own delay after
+ * the run's start. A row kept by the margin is still trimmed by every read.
  */
-const DELETE_MARGIN_MS = MS.day;
+const DELETE_MARGIN_MS = DAY_MS;
 
 /**
  * The instant below which a refresh at `runStart` may delete rows of a lower
  * bound term: every read from `runStart` on has a later cut-off, so no read
  * needs a row older than this. Never later than the term's own cut-off at
- * `runStart`; calendar units are taken at their longest and a day's margin is
- * subtracted, so an error only ever keeps a row.
+ * `runStart`; calendar units are taken at their longest when subtracted and
+ * their shortest when added, and a day's margin is subtracted, so an error
+ * only ever keeps a row.
  */
 export function windowDeleteBefore(
    term: Pick<RollingWindowTerm, "op" | "offset">,
@@ -273,23 +280,13 @@ export function windowDeleteBefore(
    if (!isLowerBound(term)) {
       throw new Error("only a lower-bound term deletes rows");
    }
-   const offset = term.offset
-      ? term.offset.sign * term.offset.amount * MS[term.offset.unit]
+   const o = term.offset;
+   const offset = o
+      ? o.sign < 0
+         ? -o.amount * UNIT_MS[o.unit].longest
+         : o.amount * UNIT_MS[o.unit].shortest
       : 0;
-   // A positive offset on a calendar unit is shortest, not longest, when
-   // added; cap it at its shortest so the bound stays early.
-   const safeOffset =
-      term.offset && term.offset.sign > 0
-         ? term.offset.amount *
-           (term.offset.unit === "month"
-              ? 28 * MS.day
-              : term.offset.unit === "quarter"
-                ? 89 * MS.day
-                : term.offset.unit === "year"
-                  ? 365 * MS.day
-                  : MS[term.offset.unit])
-         : offset;
-   return new Date(runStart.getTime() + safeOffset - DELETE_MARGIN_MS);
+   return new Date(runStart.getTime() + offset - DELETE_MARGIN_MS);
 }
 
 /** The dotted field paths an expression reads. */
