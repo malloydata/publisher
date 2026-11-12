@@ -145,6 +145,48 @@ source: orders is duckdb.sql("SELECT 1 AS id, 'east' AS region") extend {
    });
 });
 
+describe("the access record's copy of the path report", () => {
+   async function auditOf(pkg: Package, query: string) {
+      const model = pkg.getModel("model.malloy");
+      if (!model) throw new Error("model.malloy did not load");
+      const audit = unrecordedAudit();
+      await model.runQuery(audit, { query }, QueryPrivileges.of({}));
+      return audit;
+   }
+
+   it("records which table answered and what was considered", async () => {
+      const pkg = await loadPackage();
+      await buildAndBind(pkg, { daily: {} });
+      const audit = await auditOf(
+         pkg,
+         "run: daily -> { group_by: region; aggregate: t is total.sum() }",
+      );
+      expect(audit.path).toEqual({
+         servedBy: { kind: "materialized", tableId: entityIdOf(pkg, "daily") },
+         considered: [
+            {
+               tableId: entityIdOf(pkg, "daily"),
+               kind: "materialized",
+               outcome: "used",
+            },
+         ],
+      });
+   });
+
+   it("records nothing for a query that answered live with nothing considered", async () => {
+      const pkg = await loadPackage(`
+source: orders is duckdb.sql("SELECT 1 AS id, 'east' AS region") extend {
+  measure: n is count()
+}
+`);
+      const audit = await auditOf(
+         pkg,
+         "run: orders -> { group_by: region; aggregate: n }",
+      );
+      expect(audit.path).toBeUndefined();
+   });
+});
+
 describe("the path report over colocated #@ persist", () => {
    it("reports an unbuilt table as NOT_BUILT and answers live", async () => {
       const pkg = await loadPackage();
