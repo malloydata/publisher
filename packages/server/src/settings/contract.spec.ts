@@ -5,6 +5,7 @@ import { describe, expect, it } from "bun:test";
 import os from "os";
 import path from "path";
 import { REGISTRY, Settings } from ".";
+import { availableCpus } from "./registry/storage";
 import { assertServerApis } from "../server_apis";
 import { getServerApiSettings } from "../config";
 import { withSettings, type SettingsInput } from "../test_helpers/settings_env";
@@ -1448,7 +1449,10 @@ export const CONTRACT: Record<string, Case[]> = {
       },
    ],
    "duckdb.threads": [
-      { name: "unset", expect: value("4") },
+      {
+         name: "unset: 4, or fewer on a smaller host",
+         expect: value(String(Math.min(4, availableCpus()))),
+      },
       {
          name: "PUBLISHER_DUCKDB_THREADS",
          env: { PUBLISHER_DUCKDB_THREADS: "8" },
@@ -1462,7 +1466,7 @@ export const CONTRACT: Record<string, Case[]> = {
       {
          name: "blank",
          env: { PUBLISHER_DUCKDB_THREADS: "" },
-         expect: value("4"),
+         expect: value(String(Math.min(4, availableCpus()))),
       },
       {
          name: "0 is refused",

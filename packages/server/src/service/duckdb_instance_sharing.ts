@@ -75,12 +75,14 @@ const openFiles = new Map<string, OpenFile>();
 const pendingOpens = new Map<string, Promise<void>>();
 /**
  * The databases Publisher ATTACHed on each instance, by the connection name
- * that attached them: attached name to a digest of the settings it was
- * attached with. ATTACHed catalogs belong to the instance, not to a session,
- * so a later generation of the same connection on the same instance must
- * replace what an earlier one attached (see {@link recordedAttachments}).
+ * that attached them. ATTACHed catalogs (and the secrets they use) belong to
+ * the instance, not to a session, so a later generation of the same connection
+ * on the same instance must replace what an earlier one attached (see
+ * {@link recordedAttachments}).
  */
-const attachmentsOn = new WeakMap<ActiveDB, Map<string, Map<string, string>>>();
+const attachmentsOn = new WeakMap<ActiveDB, Map<string, AttachmentRecord>>();
+/** The attach run in progress per instance and connection name. */
+const attachRuns = new WeakMap<ActiveDB, Map<string, Promise<unknown>>>();
 /** Connection names that have recorded an attachment on any instance. */
 const namesWithAttachments = new Set<string>();
 let installed = false;
@@ -332,10 +334,29 @@ function activeDBOf(connection: unknown): ActiveDB | undefined {
    return shareKey ? DuckDBConnection.activeDBs[shareKey] : undefined;
 }
 
+/** One database a connection ATTACHed, as {@link AttachmentRecord} holds it. */
+export interface RecordedAttachment {
+   /** A digest of the settings it was attached with. */
+   digest: string;
+   /** Its `type`, which names the secret its attach created. */
+   type: string;
+}
+
+/** What one connection has ATTACHed on an instance. */
+export interface AttachmentRecord {
+   /**
+    * The connection generation (environment config build) that wrote it. An
+    * older generation, still draining, never rewrites a newer one's record:
+    * it would put back the settings an edit replaced.
+    */
+   generation: number;
+   /** By attached name. */
+   databases: ReadonlyMap<string, RecordedAttachment>;
+}
+
 /**
- * What an earlier generation of `connectionName` ATTACHed on the instance
- * `connection` is on, as attached name to settings digest, or undefined when
- * no generation of it has attached anything there in this process.
+ * What a generation of `connectionName` ATTACHed on the instance `connection`
+ * is on, or undefined when none has attached anything there in this process.
  *
  * A connection edit keeps the instance (the file stays open, and an edit to
  * the attached databases alone does not even change the share key), so its
@@ -348,7 +369,7 @@ function activeDBOf(connection: unknown): ActiveDB | undefined {
 export function recordedAttachments(
    connection: unknown,
    connectionName: string,
-): ReadonlyMap<string, string> | undefined {
+): AttachmentRecord | undefined {
    const activeDB = activeDBOf(connection);
    if (!activeDB) return undefined;
    return attachmentsOn.get(activeDB)?.get(connectionName);
@@ -366,7 +387,7 @@ export function mayHoldAttachments(connectionName: string): boolean {
 export function recordAttachments(
    connection: unknown,
    connectionName: string,
-   attached: ReadonlyMap<string, string>,
+   record: AttachmentRecord,
 ): void {
    const activeDB = activeDBOf(connection);
    if (!activeDB) return;
@@ -375,8 +396,40 @@ export function recordAttachments(
       byConnection = new Map();
       attachmentsOn.set(activeDB, byConnection);
    }
-   byConnection.set(connectionName, new Map(attached));
-   if (attached.size > 0) namesWithAttachments.add(connectionName);
+   byConnection.set(connectionName, {
+      generation: record.generation,
+      databases: new Map(record.databases),
+   });
+   if (record.databases.size > 0) namesWithAttachments.add(connectionName);
+}
+
+/**
+ * Run `attach` once no other attach run of `connectionName` on the instance
+ * `connection` is in progress. Two generations attaching at once would each
+ * read the record before the other wrote it, and the slower ATTACH would win
+ * with whichever settings it carried. The connection must be open (its
+ * instance known); one that holds no shared instance runs at once.
+ */
+export function serializeAttachRun<T>(
+   connection: unknown,
+   connectionName: string,
+   attach: () => Promise<T>,
+): Promise<T> {
+   const activeDB = activeDBOf(connection);
+   if (!activeDB) return attach();
+   let runs = attachRuns.get(activeDB);
+   if (!runs) {
+      runs = new Map();
+      attachRuns.set(activeDB, runs);
+   }
+   const before = runs.get(connectionName) ?? Promise.resolve();
+   const run = before.then(attach, attach);
+   const settled = run.catch(() => {});
+   runs.set(connectionName, settled);
+   void settled.then(() => {
+      if (runs.get(connectionName) === settled) runs.delete(connectionName);
+   });
+   return run;
 }
 
 /** Test seam: the files this process holds open through shared instances. */
