@@ -55,6 +55,23 @@ source: last30_m is last30 extend {
 }
 
 #(materialize) storage="lake"
+source: older_via is events extend {
+  dimension: age_hours is hours(ts to now)
+  where: age_hours > 720
+  measure: n is count()
+}
+
+source: recent_via is events extend {
+  dimension: is_recent is ts >= now - 30 days
+  where: is_recent
+}
+
+#(materialize) storage="lake"
+source: recent_via_m is recent_via extend {
+  measure: n is count()
+}
+
+#(materialize) storage="lake"
 source: older is events extend {
   where: ts < now - 30 days
   measure: n is count()
@@ -132,6 +149,52 @@ describe("R4: a rolling window served at a pinned clock answers equal to live", 
       });
       expect(Number(later.served[0].n)).toBe(Number(atB.served[0].n) - 12);
    });
+
+   for (const at of READS) {
+      it(`answers a query with a time zone live, read at ${at}`, async () => {
+         // Malloy takes the offset in the query zone's wall time, so across
+         // the daylight-saving change inside this window a read at b needs
+         // an hour older than the build stored: the served copy declines.
+         fixture.setClock(at);
+         const run = await fixture.run({
+            name: "time zone",
+            malloy:
+               "run: recent -> { timezone: 'America/Los_Angeles' aggregate: n, total }",
+         });
+         expect(run.servedFrom).not.toBe("storage");
+         expect(rowDifference(run.live, run.served)).toBeUndefined();
+      });
+   }
+
+   it("reports the time-zone decline in the path report", async () => {
+      fixture.setClock(READS[1]);
+      fixture.setBindings(fixture.bindings);
+      const run = await fixture.runAsIs(
+         "run: recent -> { timezone: 'America/Los_Angeles' aggregate: n }",
+      );
+      expect(
+         (run.path?.considered ?? []).map((c) => [c.kind, c.outcome, c.reason]),
+      ).toEqual([["materialized", "skipped", "TIME_ZONE"]]);
+      expect(run.path?.servedBy.kind).toBe("live");
+   });
+
+   for (const [name, malloy] of [
+      [
+         "an upper bound read through a dimension",
+         "run: older_via -> { aggregate: n }",
+      ],
+      [
+         "a window inherited through a dimension",
+         "run: recent_via_m -> { aggregate: n }",
+      ],
+   ] as const) {
+      it(`does not store ${name}, which answers live`, async () => {
+         fixture.setClock(READS[1]);
+         const run = await fixture.run({ name, malloy });
+         expect(run.servedFrom).not.toBe("storage");
+         expect(rowDifference(run.live, run.served)).toBeUndefined();
+      });
+   }
 
    it("does not store an upper-bound window, which answers live", async () => {
       fixture.setClock(READS[1]);

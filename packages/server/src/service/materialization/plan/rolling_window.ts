@@ -183,13 +183,20 @@ export function isLowerBound(term: Pick<RollingWindowTerm, "op">): boolean {
  * must re-apply the term over the stored table).
  */
 export function classifyRollingWindow(
-   def: { filterList?: unknown },
+   def: { filterList?: unknown; fields?: unknown },
    storedColumns: ReadonlyMap<string, string>,
 ): RollingWindowClassification {
    const terms: RollingWindowTerm[] = [];
    const list = Array.isArray(def.filterList) ? def.filterList : [];
+   // A term can read the current time without spelling `now`: through a
+   // dimension that reads it (`where: is_recent`, `where: age_hours > 720`),
+   // or through a join whose own `where:` or `on` reads it. The build would
+   // evaluate it once and the re-root would lose it when inherited, so it
+   // counts as reading the current time, and its shape is refused below.
+   const timeFields = currentTimeFields(def.fields);
    for (const entry of list) {
-      if (!readsCurrentTime((entry as { e?: unknown })?.e)) continue;
+      const e = (entry as { e?: unknown })?.e;
+      if (!readsCurrentTime(e) && !readsTimeField(e, timeFields)) continue;
       const rawCode = (entry as { code?: unknown }).code;
       const code = typeof rawCode === "string" ? rawCode : "(unreadable)";
       const term = readRollingWindowTerm(entry);
@@ -285,33 +292,74 @@ export function windowDeleteBefore(
    return new Date(runStart.getTime() + safeOffset - DELETE_MARGIN_MS);
 }
 
-/** The one-segment field names an expression reads. */
-function fieldRefs(node: unknown, out: Set<string>, depth = 0): void {
+/** The dotted field paths an expression reads. */
+function fieldPaths(node: unknown, out: Set<string>, depth = 0): void {
    if (depth > MAX_DEPTH || node === null || typeof node !== "object") return;
    if (Array.isArray(node)) {
-      for (const item of node) fieldRefs(item, out, depth + 1);
+      for (const item of node) fieldPaths(item, out, depth + 1);
       return;
    }
    const record = node as Record<string, unknown>;
-   const name = readField(record as Expr);
-   if (name !== undefined) out.add(name);
+   if (
+      record.node === "field" &&
+      Array.isArray(record.path) &&
+      record.path.length > 0 &&
+      record.path.every((p) => typeof p === "string")
+   ) {
+      out.add((record.path as string[]).join("."));
+   }
    for (const [key, value] of Object.entries(record)) {
       if (key === "at" || key === "location" || key === "annotations") continue;
-      fieldRefs(value, out, depth + 1);
+      fieldPaths(value, out, depth + 1);
    }
 }
 
 /**
- * Every field of a source whose value depends on the current time: it reads
- * `now`, or reads (through any chain of the source's own fields) one that
- * does. Such a dimension is never stored, since its value differs per read.
+ * Whether a dotted path names a field in `timeFields`, or reads through a join
+ * there (a join whose own `where:` or `on` reads the current time makes every
+ * value read through it depend on it).
  */
-export function currentTimeFields(fields: unknown): Set<string> {
+export function dependsOnCurrentTime(
+   path: string,
+   timeFields: ReadonlySet<string>,
+): boolean {
+   const parts = path.split(".");
+   for (let i = 1; i <= parts.length; i++) {
+      if (timeFields.has(parts.slice(0, i).join("."))) return true;
+   }
+   return false;
+}
+
+/** Whether an expression reads a field whose value depends on the current time. */
+function readsTimeField(e: unknown, timeFields: ReadonlySet<string>): boolean {
+   if (timeFields.size === 0) return false;
+   const paths = new Set<string>();
+   fieldPaths(e, paths);
+   return [...paths].some((p) => dependsOnCurrentTime(p, timeFields));
+}
+
+/**
+ * Every field of a source whose value depends on the current time, as a dotted
+ * path: it reads `now`, or reads (through any chain of the source's fields,
+ * joined ones included) one that does. A join whose own `where:` or `on` reads
+ * the current time is listed by its own name, since every value read through
+ * it depends on it ({@link dependsOnCurrentTime}). Such a dimension is never
+ * stored, since its value differs per read.
+ */
+export function currentTimeFields(fields: unknown, depth = 0): Set<string> {
    const out = new Set<string>();
-   if (!Array.isArray(fields)) return out;
+   if (!Array.isArray(fields) || depth > MAX_DEPTH) return out;
    const deps = new Map<string, Set<string>>();
    for (const raw of fields) {
-      const f = raw as { name?: unknown; as?: unknown; e?: unknown };
+      const f = raw as {
+         name?: unknown;
+         as?: unknown;
+         e?: unknown;
+         join?: unknown;
+         fields?: unknown;
+         filterList?: unknown;
+         onExpression?: unknown;
+      };
       const name =
          typeof f.as === "string"
             ? f.as
@@ -319,16 +367,31 @@ export function currentTimeFields(fields: unknown): Set<string> {
               ? f.name
               : undefined;
       if (name === undefined) continue;
-      if (readsCurrentTime(f.e)) out.add(name);
       const refs = new Set<string>();
-      fieldRefs(f.e, refs);
+      if (f.join !== undefined) {
+         if (
+            readsCurrentTime(f.filterList) ||
+            readsCurrentTime(f.onExpression)
+         ) {
+            out.add(name);
+            continue;
+         }
+         for (const inner of currentTimeFields(f.fields, depth + 1)) {
+            out.add(`${name}.${inner}`);
+         }
+         // An `on` that reads one of this source's per-read dimensions.
+         fieldPaths(f.onExpression, refs);
+      } else {
+         if (readsCurrentTime(f.e)) out.add(name);
+         fieldPaths(f.e, refs);
+      }
       deps.set(name, refs);
    }
    for (let changed = true; changed; ) {
       changed = false;
       for (const [name, refs] of deps) {
          if (out.has(name)) continue;
-         if ([...refs].some((r) => out.has(r))) {
+         if ([...refs].some((r) => dependsOnCurrentTime(r, out))) {
             out.add(name);
             changed = true;
          }

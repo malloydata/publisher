@@ -43,6 +43,21 @@ source: upper_w is events extend { where: ts < now - 30 days }
 source: two_terms is events extend { where: ts >= now - 30 days and amount > 1 }
 source: shifted is events extend { where: ts >= now.day - 1 day }
 source: on_date is events extend { where: d >= now::date - 3 days }
+source: via_dim is events extend {
+  dimension: is_recent is ts >= now - 30 days
+  where: is_recent
+}
+source: via_age is events extend {
+  dimension: age_h is hours(ts to now)
+  where: age_h > 720
+}
+source: via_join is events extend {
+  join_one: e2 is events extend { where: ts >= now - 1 day } on amount = e2.amount
+  join_one: e3 is events on amount = e3.amount
+  dimension: e2_amount is e2.amount
+  dimension: e3_amount is e3.amount
+  where: e2.amount > 0
+}
 source: aged is events extend {
   dimension: age is hours(ts to now)
   dimension: old is age > 24
@@ -139,6 +154,15 @@ describe("classifyRollingWindow, over compiled sources", () => {
       }
    });
 
+   it("refuses a term that reads now through a dimension or a join", () => {
+      for (const name of ["via_dim", "via_age", "via_join"]) {
+         expect(classify(name)).toMatchObject({
+            ok: false,
+            reason: "current_time_shape",
+         });
+      }
+   });
+
    it("refuses a field that is not a stored timestamp", () => {
       expect(
          classifyRollingWindow(
@@ -168,6 +192,15 @@ describe("dimensions that depend on the current time", () => {
    it("are found directly and through another dimension", () => {
       const fields = (contents.aged as { fields: unknown[] }).fields;
       expect([...currentTimeFields(fields)].sort()).toEqual(["age", "old"]);
+   });
+
+   it("are found through a join whose own where: reads now", () => {
+      const fields = (contents.via_join as { fields: unknown[] }).fields;
+      const found = currentTimeFields(fields);
+      expect(found.has("e2")).toBe(true);
+      expect(found.has("e2_amount")).toBe(true);
+      expect(found.has("e3")).toBe(false);
+      expect(found.has("e3_amount")).toBe(false);
    });
 
    it("are not stored", () => {
