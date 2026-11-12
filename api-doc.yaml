@@ -5136,7 +5136,9 @@ components:
             it carries an `#(authorize)` or `#(access_filter)` gate, which the
             storage tier and rollups cannot keep yet), `shadowed` (its storage
             table is bound, but every model's source of that name is another
-            source).
+            source), `destination_missing` (`storage=` names a destination the
+            environment does not configure), `connection_cannot_hold_table`
+            (colocated, on a connection whose type creates no tables).
         message:
           type: string
           description: What the verdict means for this source, in a sentence.
@@ -11023,6 +11025,25 @@ components:
             in referenceManifest fails the build (compiler strict mode) instead
             of silently recomputing it live. Per-unit dispatch should set this
             true.
+        warehouseReach:
+          type: string
+          default: recompute
+          description: >-
+            What a strict build (`strictUpstreams: true`) does with a
+            `storage=` source whose only build recomputes a stored upstream
+            from the source warehouse: the source reaches the warehouse through
+            an intermediate that no stored table can stand in for, so no build
+            over the stored tables exists for it. `recompute` (the default,
+            and what an absent or null value means) builds it and reports
+            `upstreamReuse: recomputed` with the reason; `refuse` fails the
+            source instead, with that reason in its `SourceFailure.reason` and
+            `retryable: false`, and nothing reads the warehouse. Non-strict
+            builds ignore it, as they ignore `strictUpstreams`.
+
+
+            An open string, not an enum, so a later value needs no client
+            change; today's values are `recompute` and `refuse`, and any other
+            is a 400.
         ledger:
           type: array
           items:
@@ -11359,7 +11380,9 @@ components:
             deterministically earlier in the same run. That last source
             inherits its upstream's classification (`true` when any such
             upstream's failure is transient) and its `reason` names the
-            upstream's own failure.
+            upstream's own failure. Also `false` for a source a strict build
+            refused under `warehouseReach: refuse`, whose only build would
+            recompute its stored upstreams from the warehouse.
 
 
             `true` is a transient failure, not a property of the inputs: the

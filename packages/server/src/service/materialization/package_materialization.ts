@@ -72,6 +72,7 @@ import {
 import { STORED_COLUMN_TYPE_MISMATCH_CODE } from "./stored_column_types";
 import {
    computeServeVerdicts,
+   DEPLOYMENT_VERDICT_CODES,
    MATERIALIZATION_UNREACHABLE_CODE,
    type ServeVerdict,
    type ViewServeVerdict,
@@ -111,6 +112,18 @@ export function toTableNameManifest(
       out[sourceEntityId] = { tableName: entry.tableName };
    }
    return out;
+}
+
+/**
+ * What the environment answers about where a package's tables can be written
+ * (P13), read live. `undefined` from either means "not known", which never
+ * warns.
+ */
+export interface DeploymentFacts {
+   /** The configured storage destinations, or undefined when the list is not authoritative. */
+   destinationNames(): readonly string[] | undefined;
+   /** Whether a connection's configured type can create a table. */
+   connectionCanHoldTable(connectionName: string): boolean | undefined;
 }
 
 /** What a {@link PackageMaterialization} reads of the package that holds it. */
@@ -168,6 +181,8 @@ interface LiveVerdicts {
 export class PackageMaterialization {
    /** The environment's storage destinations for a serve-shape compile; see {@link setServeDestinationConfig}. */
    private serveDestinationConfig?: () => MalloyConfig;
+   /** The environment's deployment facts, read live; see {@link setDeploymentFacts}. */
+   private deploymentFacts?: DeploymentFacts;
    /** A destination's schema by name, resolved live; see {@link setServeDestinationSchema}. */
    private serveDestinationSchema?: (
       destinationName: string,
@@ -567,6 +582,9 @@ export class PackageMaterialization {
          this.rollupsOverStoredBase,
          getPersistStorageMode(),
          models,
+         // The deployment facts are read live, not replaced wholesale, so
+         // they key the memo by what they answer for this plan.
+         this.deploymentSignature(),
       ];
       const cached = this.liveVerdictCache;
       if (cached && cached.key.every((part, i) => part === key[i])) {
@@ -866,6 +884,17 @@ export class PackageMaterialization {
       resolver: (destinationName: string) => string | undefined,
    ): void {
       this.serveDestinationSchema = resolver;
+   }
+
+   /**
+    * Give the package the environment's deployment facts its publish warnings
+    * read (P13): which storage destinations exist, and which connections can
+    * hold a table. Read live on every package read, so a destination
+    * configured after the load clears its warning with no reload. Absent,
+    * nothing is warned.
+    */
+   setDeploymentFacts(facts: DeploymentFacts): void {
+      this.deploymentFacts = facts;
    }
 
    /**
@@ -1386,7 +1415,35 @@ export class PackageMaterialization {
          freshStorageNames,
          rollupsOverStoredBase: this.rollupsOverStoredBase,
          views,
+         destinationConfigured: (name) => this.destinationConfigured(name),
+         connectionCanHoldTable: (name) =>
+            this.deploymentFacts?.connectionCanHoldTable(name),
       });
+   }
+
+   /** See {@link ServeVerdictFacts.destinationConfigured}. */
+   private destinationConfigured(name: string): boolean | undefined {
+      const names = this.deploymentFacts?.destinationNames();
+      return names === undefined ? undefined : names.includes(name);
+   }
+
+   /**
+    * What the deployment facts answer for this plan's sources, as a string:
+    * the {@link liveVerdictsByTable} memo's key part for facts the
+    * environment can change under a loaded package.
+    */
+   private deploymentSignature(): string {
+      if (!this.deploymentFacts) return "";
+      const parts: string[] = [];
+      for (const source of Object.values(this.buildPlan?.sources ?? {})) {
+         const destination = source.annotationFields?.storage?.trim();
+         parts.push(
+            destination
+               ? `d:${destination}=${this.destinationConfigured(destination)}`
+               : `c:${source.connectionName}=${this.deploymentFacts.connectionCanHoldTable(source.connectionName)}`,
+         );
+      }
+      return parts.join("|");
    }
 
    /**
@@ -1515,6 +1572,32 @@ export class PackageMaterialization {
             severity: "warn" as const,
             message: v.message + " " + (v.fixes ?? []).join(" "),
          }));
+   }
+
+   /**
+    * Publish warnings for a materialized source the deployment cannot hold
+    * (P13): a `storage=` destination the environment does not configure
+    * (`materialization-destination-missing`), or a colocated source on a
+    * connection that cannot create tables
+    * (`materialization-connection-cannot-hold-table`). Unservable, not
+    * malformed: the package loads, the source serves live, and the warning
+    * clears once the deployment changes, with no reload.
+    */
+   deploymentWarnings(): ApiPackageWarning[] {
+      // serveVerdicts degrades to none on a throw, so a package read never fails here.
+      return this.serveVerdicts().flatMap((v) => {
+         const code = v.reason ? DEPLOYMENT_VERDICT_CODES[v.reason] : undefined;
+         if (!code) return [];
+         return [
+            {
+               model: v.modelPath ?? "",
+               subject: v.sourceName,
+               code,
+               severity: "warn" as const,
+               message: v.message + " " + (v.fixes ?? []).join(" "),
+            },
+         ];
+      });
    }
 
    /** Memo for {@link entryPointIndex}, keyed on the models map it read. */

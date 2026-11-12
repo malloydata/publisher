@@ -481,9 +481,15 @@ A `live` verdict's `reason`:
 | `unreachable` | No source on the package's published surface reads it: `index.malloy` hides it, and nothing it publishes is built on it, extends it or joins it. | Publish it, or a source built on it, or drop the annotation. |
 | `row_level_gate` | Every query through it carries an `#(authorize)` or `#(access_filter)` gate, which the storage tier and rollups cannot keep yet. | Materialize without `storage=`, or move the gate onto an entry point over the table. |
 | `shadowed` | Its storage table is bound, but every model's source of that name is another source. | Rename it. |
+| `destination_missing` | `storage=` names a destination this environment does not configure, so no build can write its table. Not reported while `PERSIST_STORAGE_MODE` is `off`, which ignores `storage=`. | Configure the destination, name a configured one, or drop `storage=`. |
+| `connection_cannot_hold_table` | Materialized in its own warehouse, on a connection whose type creates no tables. | Add `storage=` naming a configured destination, or drop the annotation. |
 
 `unreachable` is also a publish warning, code `materialization-unreachable`: the table is built
-for no query. The other `live` reasons already carry warnings of their own.
+for no query. So are the two deployment facts: `destination_missing` warns with code
+`materialization-destination-missing`, and `connection_cannot_hold_table` with
+`materialization-connection-cannot-hold-table`. The package still loads and the source serves live;
+both are read from the environment on every package read, so configuring the destination clears the
+warning with no reload. The other `live` reasons already carry warnings of their own.
 
 **Preview before publishing.** `POST …/packages?dryRun=true` answers the same verdicts, plus the
 `buildPlan`, for a package that is not published. For a source stored with `storage=` it also

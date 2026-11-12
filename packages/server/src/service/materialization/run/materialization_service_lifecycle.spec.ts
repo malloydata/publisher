@@ -503,6 +503,7 @@ describe("runBuild (branch behavior)", () => {
                  }[]
                | undefined;
             strictUpstreams?: boolean | undefined;
+            warehouseReach?: "recompute" | "refuse";
          },
          signal: AbortSignal,
       ) => Promise<void>;
@@ -609,6 +610,27 @@ describe("runBuild (branch behavior)", () => {
          sourcesBuilt: 1,
          sourcesReused: 1,
       });
+   });
+
+   // ms2data/service#6756: the host's warehouseReach reaches the run, last.
+   it("orchestrated: passes warehouseReach through to the instructed build", async () => {
+      const svc = stubEngine();
+      await svc.runBuild(
+         "mat-1",
+         "my-env",
+         "pkg",
+         {
+            sourceNames: undefined,
+            forceRefresh: false,
+            buildInstructions: [makeInstruction()],
+            strictUpstreams: true,
+            warehouseReach: "refuse",
+         },
+         new AbortController().signal,
+      );
+      const args = svc.executeInstructedBuild.firstCall.args;
+      expect(args[5]).toBe(true);
+      expect(args[args.length - 1]).toBe("refuse");
    });
 
    it("auto-run: derives instructions and auto-loads the manifest", async () => {
