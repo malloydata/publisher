@@ -2529,6 +2529,7 @@ export class Model {
                });
                continue;
             }
+            // malloy-text: a report tile's query, the author's Malloy, run as written
             const text = `run: ${tile.query}`;
             let queryInfo: Promise<Malloy.QueryInfo | undefined> | undefined;
             cells.push({

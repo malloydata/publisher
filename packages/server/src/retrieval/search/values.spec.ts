@@ -98,6 +98,12 @@ describe("value matching", () => {
       expect(filterStem("the Home Gardeners")).toBe("gard");
       expect(filterStem("ab")).toBeUndefined();
    });
+
+   it("cuts the stem by character, never through a surrogate pair", () => {
+      // U+20000 is one letter in two UTF-16 units; a cut by unit would leave
+      // half of it, which the value scan refuses as not a letter.
+      expect(filterStem("abc\u{20000}de")).toBe("abc\u{20000}");
+   });
 });
 
 // ---------------------------------------------------------------------------
@@ -262,21 +268,25 @@ describe("the lookup query over a real model (gates are the query path's)", () =
       ]);
    });
 
-   // A stem is letters and digits from filterStem, but it is quoted like any
-   // value: a quote in one reads as a character, not the end of the string.
-   it("reads a stem holding a quote as text, never as the end of the string", async () => {
-      const filtered = await valueFetcherFor(new RetrievalRegistry())({
-         environmentStore: store,
-         environmentName: "env",
-         packageName: "pkg",
-         modelPath: "m.malloy",
-         source: "open_segments",
-         dimension: "segment",
-         limit: 100,
-         stem: "gard' or true or '",
-         timeoutMs: 10_000,
-      });
-      expect(filtered).toEqual({ values: [], truncated: false });
+   // A stem goes inside a `~` (LIKE) pattern, where `%` and `_` are wildcards
+   // and a quote would end the string. filterStem yields letters and digits;
+   // anything else is refused, so a direct caller cannot widen the match.
+   it("refuses a stem holding a LIKE wildcard or a quote, instead of widening the match", async () => {
+      for (const stem of ["%", "g_rd", "gard' or true or '"]) {
+         await expect(
+            valueFetcherFor(new RetrievalRegistry())({
+               environmentStore: store,
+               environmentName: "env",
+               packageName: "pkg",
+               modelPath: "m.malloy",
+               source: "open_segments",
+               dimension: "segment",
+               limit: 100,
+               stem,
+               timeoutMs: 10_000,
+            }),
+         ).rejects.toThrow("only letters and digits");
+      }
    });
 
    it("reads the index's counted values through the same query, gates included", async () => {

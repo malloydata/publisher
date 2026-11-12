@@ -413,6 +413,7 @@ function emitRollup(plan: RollupPlan): string {
    const merged = plan.measures
       .map(
          (m) =>
+            // malloy-text: the re-aggregate method is a fixed name from RollupPlan (sum, min, max), not a value
             `    ${identifier(m.name)} is ${identifier(m.partialName)}.${m.reaggregate}()`,
       )
       .join("\n");
@@ -508,6 +509,7 @@ export function synthesizePreaggregationModel(
       })
       .join("\n");
 
+   // malloy-text: experimental flag names, a fixed set the caller passes, not a value
    return `##! experimental { ${experimentalFlags} }
 ${imports}
 

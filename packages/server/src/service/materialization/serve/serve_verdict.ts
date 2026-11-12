@@ -194,6 +194,7 @@ function verdictFor(
    };
    // A rollup is never queried by name: its base is what a query names.
    const rollupBase = source.preaggregate?.baseSourceName;
+   // malloy-text: markdown code formatting in a verdict message, not Malloy
    const subject = rollupBase
       ? `The rollup of \`${rollupBase}\` at (${source.preaggregate?.grainDimensions.join(", ")})`
       : `\`${source.name}\``;

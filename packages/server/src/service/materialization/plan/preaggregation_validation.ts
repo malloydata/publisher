@@ -479,6 +479,7 @@ export function validateSourcePreaggregation(
    // reproduces whatever joins it reaches through.
    const fanout = declaredFields.length > 0 ? fields.filter(isFanoutJoin) : [];
    if (fanout.length > 0) {
+      // malloy-text: markdown code formatting in a violation message, not Malloy
       const joins = fanout.map((f) => `\`${fieldName(f)}\``).join(", ");
       violations.push({
          code: "base_source_has_fanout_join",

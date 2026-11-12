@@ -244,6 +244,7 @@ export async function compileDocument(input: {
          }
       }
    }
+   // malloy-text: tile expressions are the document author's Malloy, compiled as written
    const tileExpressions = readDocumentTileExpressions(read.annotations);
    const restrictedTiles = new Set<string>();
    for (const expression of tileExpressions) {
@@ -255,6 +256,7 @@ export async function compileDocument(input: {
 
    // The query surface is checked against the cells the caller may read, so a
    // document that compiles is one that runs and publishes on a curated package.
+   // malloy-text: the document's definition cells, the author's Malloy as written
    const definitions = code
       .filter(
          (cell) => cell.kind === "definition" && !restrictedCells.has(cell),
@@ -418,12 +420,14 @@ export async function compileDocument(input: {
             await compiledBoundary(
                { getPreparedQuery: async () => prepared },
                prepared,
+               // malloy-text: a report tile's query, the author's Malloy, run as written
                `run: ${tile}`,
             );
          }
       },
       (tile, error) => {
          if (!(error instanceof MalloyError)) return;
+         // malloy-text: a report tile's query, the author's Malloy, run as written
          gates.nameVisible(`run: ${tile}`, definitions);
          tileProblems.push(
             tileProblem(

@@ -1167,6 +1167,7 @@ export function lintReport(
             !(property === "kind" && (kind === "text" || kind === "query")),
       );
       if (carried.length > 0) {
+         // malloy-text: markdown code formatting in a lint message, not Malloy
          const named = carried.map((property) => `\`${property}\``).join(", ");
          add(
             `\`${label}\` in \`tiles=[…]\` carries ${named}, which Publisher does not read: ` +
@@ -1177,6 +1178,7 @@ export function lintReport(
                     `(\`# label\`, \`# subtitle\`, \`# borderless\`).`),
          );
       }
+      // malloy-text: markdown code formatting in a lint message, not Malloy
       const tile = kind === "text" ? `text tile \`${label}\`` : `\`${label}\``;
       for (const property of ["row", "col", "colspan", "rowspan"]) {
          if (
@@ -1782,6 +1784,7 @@ export async function compileTileGivens(
       };
       try {
          prepared = (await materializer
+            // malloy-text: a report tile's query, the author's Malloy, run as written
             .loadQuery(`run: ${tile}`)
             .getPreparedQuery()) as typeof prepared;
       } catch (error) {
