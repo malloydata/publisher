@@ -266,6 +266,17 @@ The core lane is the critical path, phases 0, 1, 3, 4 and then 5; phase 2 fits b
 
 Order: 1, then 3, 4, 5 and 6, with 2 beside 3. If 2 or 3 is too large to review, 3 splits into the text module and answer record, then the rewriter and served model; 2 lands the generator before the re-address.
 
+**Phase 4 in four pull requests (decided 2026-11-11).**
+
+| # | Pull request | Scope |
+| --- | --- | --- |
+| 1 | `#(preaggregate)` | A1 to A7 on the source map and measure grammar; rollup variants in the user's file; `preaggregation_coverage.ts` and the IR classifier retired; the real fix for #6293 (a rollup over a `storage=` base); the `#@ preaggregate` deprecation warning |
+| 2 | View routing | The `#@ persist` view leg (P14): a persisted view answers a query only when the query calls that view exactly |
+| 3 | Join-to-rollup | The A7 leg; its count measures wait for Publisher's Malloy pin to include malloydata/malloy#3207 (question 12) |
+| 4 | Inline join_many | Pair-table serving (P5) with the parent-row flag written at build (Evidence 8) |
+
+Order: 1 first; 2, 3 and 4 in parallel after it, since they are separate legs of the same router. Rollups listed once per importing model file (one entry per rollup in the build plan) are de-duplicated in phase 3's pull request 2, where the source map supplies the identity.
+
 ## Telemetry and cost estimation
 
 T1–T7 reuse what Publisher already writes per query and per build; the new work is the store, the warehouse adapters, and estimates honest about their error. The Nov 1 plan's `estimate` call becomes the estimate half of `what_if`.
