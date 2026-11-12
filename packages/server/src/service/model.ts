@@ -204,6 +204,7 @@ import {
    runStatementCount,
 } from "./model_query_compile";
 import { runReadsPublished, scrubHiddenIds } from "./model_projection";
+import { compileOnlyDestinationConfig } from "./connection";
 import {
    StorageServeShape,
    type SourceTypeMismatches,
@@ -2331,6 +2332,7 @@ export class Model {
       if (this.preaggregateViolationsMemo === undefined) {
          this.preaggregateViolationsMemo = validateModelPreaggregation(
             this.modelDef.contents as Record<string, unknown>,
+            this.modelDef.modelID,
          );
       }
       return this.preaggregateViolationsMemo;
@@ -2784,7 +2786,11 @@ export class Model {
       const shape = new StorageServeShape(this.serveShapeHost(), {
          preview: true,
       });
-      shape.setServeDestinationConfig(destinations);
+      // Compile-only: before the first build a DuckLake destination's catalog
+      // does not exist yet, and the dialect must not depend on reaching it.
+      shape.setServeDestinationConfig(() =>
+         compileOnlyDestinationConfig(destinations()),
+      );
       // A view reading a given with no default serves once the caller
       // supplies it; the preview compiles with a placeholder in its place, so
       // it judges the stored columns, not the request.

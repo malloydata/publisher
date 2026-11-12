@@ -565,8 +565,12 @@ function tablesFor(
 /**
  * The plan of a rollup this model synthesized, by its name within this model.
  * A rollup's synthesized name is unique only per model, so a name planned in
- * several models is matched to this model's entry, and an ambiguous match
- * names nothing rather than another model's table.
+ * several models is matched to this model's entry. Several entries that share
+ * one content address are one table: every model that imports an annotated
+ * source (an `index.malloy` that re-exports it) synthesizes its own companion
+ * entry for the same rollup. Only entries naming different tables, none of
+ * them this model's, are ambiguous, and those name nothing rather than another
+ * model's table.
  */
 function planForRollup(
    input: Pick<QueryPathInput, "catalog" | "modelPath">,
@@ -577,7 +581,9 @@ function planForRollup(
    );
    if (named.length <= 1) return named[0];
    const own = named.filter((p) => p.modelPath === input.modelPath);
-   return own.length === 1 ? own[0] : undefined;
+   if (own.length === 1) return own[0];
+   const addresses = new Set(named.map((p) => p.sourceEntityId));
+   return addresses.size === 1 ? named[0] : undefined;
 }
 
 /** A storage binding's state, named through the plan where it knows it. */

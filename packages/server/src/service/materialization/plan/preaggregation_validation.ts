@@ -255,6 +255,23 @@ function validateGrainDimension(
 }
 
 /**
+ * Whether `field`'s own annotation, not one it inherits, declares
+ * `#@ preaggregate`.
+ */
+function declaresOwnPreaggregate(field: FieldLike): boolean {
+   const own = field as AnnotatableMeasure;
+   const annotations = own.annotations as
+      | (Record<string, unknown> & { inherits?: unknown })
+      | undefined;
+   if (!annotations) return false;
+   const { inherits: _inherited, ...ownLevel } = annotations;
+   return readPreaggregateAnnotation({
+      ...own,
+      annotations: ownLevel as AnnotatableMeasure["annotations"],
+   }).declared;
+}
+
+/**
  * Validate every `#@ preaggregate` declaration on one compiled source.
  *
  * Returns every violation found rather than the first, so an author fixing a
@@ -318,6 +335,12 @@ export function validateSourcePreaggregation(
          continue;
       }
       if (!isMeasure(field)) {
+         // A query's output column inherits the annotations of the field it
+         // was computed from (`orders -> { aggregate: total }` carries
+         // `total`'s `#@ preaggregate`), and in the query's output it is a
+         // dimension. Only a declaration written on this field is misplaced;
+         // an inherited one belongs to the measure it came from.
+         if (!declaresOwnPreaggregate(field)) continue;
          violations.push({
             code: "misplaced_on_dimension",
             sourceName,
@@ -474,13 +497,35 @@ export function validateSourcePreaggregation(
  * anywhere in the model is reached — including on sources nothing else
  * references.
  */
+/**
+ * The file URL a `<name>@<URL>` sourceID names: the '@' before the URL's
+ * scheme, since a backticked name may itself contain '@'.
+ */
+function declaringFileOf(sourceID: unknown): string | undefined {
+   if (typeof sourceID !== "string") return undefined;
+   return /^(.+)@([a-z][a-z0-9+.-]*:.*)$/i.exec(sourceID)?.[2];
+}
+
 export function validateModelPreaggregation(
    contents: Record<string, unknown>,
+   /**
+    * The model file's own URL. When given, a source another file declares is
+    * left to that file: every `.malloy` file is a model, so an `index.malloy`
+    * that imports a source would otherwise report its declarations again,
+    * under its own name.
+    */
+   modelURL?: string,
 ): PreaggregateViolation[] {
    const violations: PreaggregateViolation[] = [];
    for (const [name, object] of Object.entries(contents)) {
       const source = object as ValidatableSource;
       if (!source || typeof source !== "object") continue;
+      if (modelURL !== undefined) {
+         const declaredIn = declaringFileOf(
+            (source as { sourceID?: unknown }).sourceID,
+         );
+         if (declaredIn !== undefined && declaredIn !== modelURL) continue;
+      }
       // Anything with a field list is worth scanning; a non-source object cannot
       // carry a measure, and scanning it costs one annotation parse.
       violations.push(...validateSourcePreaggregation(name, source));

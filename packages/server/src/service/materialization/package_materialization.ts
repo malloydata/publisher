@@ -494,6 +494,7 @@ export class PackageMaterialization {
             sourceEntityId: source.sourceEntityId,
             origin:
                source.origin === "preaggregate" ? "preaggregate" : "persist",
+            ...(source.modelPath ? { modelPath: source.modelPath } : {}),
          });
       }
       const bound: Record<string, BoundTable> = {};
