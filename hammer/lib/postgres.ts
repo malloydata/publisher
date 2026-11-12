@@ -5,42 +5,165 @@
 // catalog store AND a source warehouse (a `postgres` connection), mirroring the
 // tutorial. One server, several databases.
 
-import { createServer } from "node:net";
+import { randomBytes } from "node:crypto";
+import { hostname } from "node:os";
 import { log, run, runOrThrow, waitFor } from "./util";
 
-/** The label a hammer run stamps on the container it creates: its own pid. */
-const OWNER_LABEL = "hammer.pid";
+/**
+ * Labels a hammer run stamps on the container it creates. `hammer.run` is the
+ * run's id; host, pid and the pid's start time say whether that run is still
+ * alive, so a label left by a crash or a reboot never looks owned forever.
+ */
+const LABEL_RUN = "hammer.run";
+const LABEL_HOST = "hammer.host";
+const LABEL_PID = "hammer.pid";
+const LABEL_PID_START = "hammer.pidstart";
+
+/** The name the harness used before containers were per run, still reusable. */
+export const LEGACY_CONTAINER_NAME = "publisher-hammer-pg";
+
+/** A short random id for one run. */
+export function newRunId(): string {
+   return randomBytes(4).toString("hex");
+}
 
 /**
- * The container name a run uses when none is given: one per host port, so two
- * runs on different ports never share (or tear down) a database, and a later
- * `--reuse-pg` on the same port finds the container a `--keep` run left.
+ * The container name a run uses when none is given: one per run, so two runs
+ * started at the same moment never pick the same name, whatever their ports.
  */
-export function defaultContainerName(hostPort: number): string {
-   return `publisher-hammer-pg-${hostPort}`;
+export function defaultContainerName(runId: string): string {
+   return `${LEGACY_CONTAINER_NAME}-${runId}`;
 }
 
-/** True when nothing on this host is listening on `port`. */
-export function portIsFree(port: number): Promise<boolean> {
-   return new Promise((resolve) => {
-      const server = createServer();
-      server.once("error", () => resolve(false));
-      server.once("listening", () => server.close(() => resolve(true)));
-      // No host: all interfaces, as `docker run -p` publishes.
-      server.listen(port);
-   });
+/** Who created a container, from its labels. */
+export interface ContainerOwner {
+   runId?: string;
+   host?: string;
+   pid?: number;
+   pidStart?: string;
 }
 
-/** The first free port at or above `from`, trying `attempts` ports. */
-export async function firstFreePort(
-   from: number,
-   attempts = 100,
-): Promise<number> {
-   for (let port = from; port < from + attempts; port++) {
-      if (await portIsFree(port)) return port;
+/** What `docker inspect` said about a container that exists. */
+export type OwnerReading =
+   | { kind: "labelled"; owner: ContainerOwner }
+   /** Made by hand or by an older harness: no run owns it. */
+   | { kind: "unlabelled" }
+   /** Inspect failed: ownership is unknown, so nothing may remove it. */
+   | { kind: "unknown"; error: string };
+
+/** Whether the run that created a container is still going. */
+export type Liveness = "live" | "dead" | "other-host";
+
+/** How this host checks whether a pid is still the process that labelled a container. */
+export interface ProcessProbe {
+   host: string;
+   /** True when `pid` exists (EPERM counts: it is someone else's live process). */
+   alive(pid: number): boolean;
+   /** The pid's start time as the OS reports it, or undefined when unknown. */
+   startTime(pid: number): Promise<string | undefined>;
+}
+
+/**
+ * Whether `owner` is still running. Only a run on THIS host can be checked: one
+ * on another host (a shared or remote Docker daemon) is reported as such, and
+ * the caller refuses rather than guess. A pid that exists but started at a
+ * different time is a reused pid, so the owner is dead.
+ */
+export async function ownerLiveness(
+   owner: ContainerOwner,
+   probe: ProcessProbe,
+): Promise<Liveness> {
+   if (owner.host !== undefined && owner.host !== probe.host) {
+      return "other-host";
    }
-   throw new Error(`no free port in ${from}-${from + attempts - 1}`);
+   if (owner.pid === undefined || !probe.alive(owner.pid)) return "dead";
+   if (owner.pidStart === undefined) return "live";
+   const now = await probe.startTime(owner.pid);
+   // Unknown start time (no `ps`): trust the pid rather than remove a live run's
+   // database.
+   if (now === undefined) return "live";
+   return now === owner.pidStart ? "live" : "dead";
 }
+
+/** The state of a container a run was asked to use (by name) or found. */
+export interface ContainerState {
+   name: string;
+   exists: boolean;
+   running: boolean;
+   owner?: OwnerReading;
+   liveness?: Liveness;
+}
+
+export type ContainerAction =
+   | { action: "create" }
+   | { action: "reuse" }
+   /** Remove the stale container (no live run owns it), then create. */
+   | { action: "replace" }
+   | { action: "refuse"; message: string };
+
+/**
+ * What to do with a named container. A container is reused only when it is
+ * running and no live run owns it, and removed only when it is provably not a
+ * live run's: an unreadable owner, a live owner, or an owner on another host
+ * refuses, and never suggests sharing a live run's database.
+ */
+export function decideContainerAction(
+   state: ContainerState,
+   wantReuse: boolean,
+): ContainerAction {
+   if (!state.exists) return { action: "create" };
+   const owner = state.owner ?? { kind: "unlabelled" };
+   if (owner.kind === "unknown") {
+      return {
+         action: "refuse",
+         message:
+            `could not read who owns Postgres container ${state.name} ` +
+            `(${owner.error}); leaving it alone. Inspect it with ` +
+            `\`docker inspect ${state.name}\` or remove it yourself.`,
+      };
+   }
+   if (owner.kind === "labelled" && state.liveness === "live") {
+      const pid = owner.owner.pid;
+      return {
+         action: "refuse",
+         message:
+            `Postgres container ${state.name} belongs to a hammer run that is ` +
+            `still going${pid === undefined ? "" : ` (pid ${pid})`}. Let it ` +
+            `finish, or start this run without --pg-container so it gets its ` +
+            `own database.`,
+      };
+   }
+   if (owner.kind === "labelled" && state.liveness === "other-host") {
+      return {
+         action: "refuse",
+         message:
+            `Postgres container ${state.name} was created by a hammer run on ` +
+            `${owner.owner.host}, which this host cannot check. If that run is ` +
+            `over, remove it with \`docker rm -fv ${state.name}\`.`,
+      };
+   }
+   if (wantReuse && state.running) return { action: "reuse" };
+   return { action: "replace" };
+}
+
+/** The real process probe: this host's name, `kill -0`, and `ps` for start times. */
+export const hostProbe: ProcessProbe = {
+   host: hostname(),
+   alive(pid: number): boolean {
+      try {
+         process.kill(pid, 0);
+         return true;
+      } catch (err) {
+         return (err as NodeJS.ErrnoException).code === "EPERM";
+      }
+   },
+   async startTime(pid: number): Promise<string | undefined> {
+      if (process.platform === "win32") return undefined;
+      const r = await run(["ps", "-o", "lstart=", "-p", String(pid)]);
+      const out = r.stdout.trim();
+      return r.code === 0 && out !== "" ? out : undefined;
+   },
+};
 
 export interface PostgresHandle {
    containerName: string;
@@ -70,85 +193,161 @@ export interface PostgresHandle {
 }
 
 export interface PostgresOptions {
+   /**
+    * A container to use by name. It is reused when it is running and no live
+    * run owns it, replaced when it is stopped or stale, and refused when a live
+    * run (or a run this host cannot check) owns it.
+    */
    containerName?: string;
+   /**
+    * Publish Postgres on this host port. Unset lets Docker assign a free one, so
+    * two runs started together never race for a port.
+    */
    hostPort?: number;
    user?: string;
    password?: string;
    image?: string;
-   /** Reuse a container of this name if it is already running. */
+   /**
+    * Without `containerName`: reuse a running hammer container no live run
+    * owns (one a `--keep` run left, under any hammer name, including the old
+    * fixed one), or start a new one when there is none.
+    */
    reuse?: boolean;
+   /** This run's id, for the default name and the owner label. */
+   runId?: string;
 }
 
-/**
- * The pid that created `name`, from its owner label, or undefined for a
- * container with no label (made by an older harness, or by hand).
- */
-async function ownerPid(name: string): Promise<number | undefined> {
+/** Who owns `name`, read from its labels. A failed inspect is "unknown". */
+async function readOwner(name: string): Promise<OwnerReading> {
    const r = await run([
       "docker",
       "inspect",
       "-f",
-      `{{index .Config.Labels "${OWNER_LABEL}"}}`,
+      "{{json .Config.Labels}}",
       name,
    ]);
-   const pid = Number(r.stdout.trim());
-   return r.code === 0 && Number.isInteger(pid) && pid > 0 ? pid : undefined;
+   if (r.code !== 0) {
+      return {
+         kind: "unknown",
+         error: (r.stderr || r.stdout).trim() || `exit ${r.code}`,
+      };
+   }
+   let labels: Record<string, string> | null;
+   try {
+      labels = JSON.parse(r.stdout.trim()) as Record<string, string> | null;
+   } catch {
+      return {
+         kind: "unknown",
+         error: `unreadable labels: ${r.stdout.trim()}`,
+      };
+   }
+   const pid = Number(labels?.[LABEL_PID]);
+   const owner: ContainerOwner = {
+      runId: labels?.[LABEL_RUN] || undefined,
+      host: labels?.[LABEL_HOST] || undefined,
+      pid: Number.isInteger(pid) && pid > 0 ? pid : undefined,
+      pidStart: labels?.[LABEL_PID_START] || undefined,
+   };
+   return owner.runId === undefined && owner.pid === undefined
+      ? { kind: "unlabelled" }
+      : { kind: "labelled", owner };
 }
 
-function processAlive(pid: number): boolean {
-   try {
-      process.kill(pid, 0);
-      return true;
-   } catch (err) {
-      // EPERM: alive, owned by someone else.
-      return (err as NodeJS.ErrnoException).code === "EPERM";
+/** A named container's existence, state and owner. */
+async function containerState(
+   name: string,
+   probe: ProcessProbe,
+): Promise<ContainerState> {
+   const r = await run([
+      "docker",
+      "ps",
+      "-a",
+      "--filter",
+      `name=^/${name}$`,
+      "--format",
+      "{{.Names}} {{.State}}",
+   ]);
+   const [found, status] = r.stdout.trim().split(/\s+/);
+   if (found !== name) return { name, exists: false, running: false };
+   const owner = await readOwner(name);
+   const liveness =
+      owner.kind === "labelled"
+         ? await ownerLiveness(owner.owner, probe)
+         : undefined;
+   return {
+      name,
+      exists: true,
+      running: status === "running",
+      owner,
+      liveness,
+   };
+}
+
+/**
+ * A running hammer container this run may reuse: the newest one, under any
+ * hammer name (the old fixed name included), that no live run owns.
+ */
+async function findReusableContainer(
+   probe: ProcessProbe,
+): Promise<string | undefined> {
+   const r = await run([
+      "docker",
+      "ps",
+      "--filter",
+      `name=^/${LEGACY_CONTAINER_NAME}`,
+      "--format",
+      "{{.Names}}",
+   ]);
+   for (const name of r.stdout.trim().split("\n").filter(Boolean)) {
+      const state = await containerState(name, probe);
+      if (decideContainerAction(state, true).action === "reuse") return name;
    }
+   return undefined;
 }
 
 export async function startPostgres(
    opts: PostgresOptions = {},
+   probe: ProcessProbe = hostProbe,
 ): Promise<PostgresHandle> {
-   const requestedPort = opts.hostPort ?? 55432;
-   const containerName =
-      opts.containerName ?? defaultContainerName(requestedPort);
-   let hostPort = requestedPort;
+   const runId = opts.runId ?? newRunId();
    const user = opts.user ?? "hammer";
    const password = opts.password ?? "hammer";
    const image = opts.image ?? "postgres:16";
 
-   const running = await run([
-      "docker",
-      "ps",
-      "--filter",
-      `name=^/${containerName}$`,
-      "--format",
-      "{{.Names}}",
-   ]);
-   const isUp = running.stdout.trim() === containerName;
-   let justCreated = false;
+   let containerName: string;
+   let action: ContainerAction;
+   let reusable: string | undefined;
+   if (opts.containerName) {
+      containerName = opts.containerName;
+      action = decideContainerAction(
+         await containerState(containerName, probe),
+         true,
+      );
+   } else if (opts.reuse && (reusable = await findReusableContainer(probe))) {
+      containerName = reusable;
+      action = { action: "reuse" };
+   } else {
+      containerName = defaultContainerName(runId);
+      action = decideContainerAction(
+         await containerState(containerName, probe),
+         false,
+      );
+   }
+   if (action.action === "refuse") throw new Error(action.message);
+   const justCreated = action.action !== "reuse";
 
-   if (isUp && opts.reuse) {
-      // A container named with --pg-container may publish another port.
-      hostPort = (await publishedPort(containerName)) ?? requestedPort;
+   if (action.action === "reuse") {
       log.ok(`reusing running Postgres container ${containerName}`);
    } else {
-      justCreated = true;
-      if (isUp || (await containerExists(containerName))) {
-         // Replace a container only when no live run owns it: a running
-         // container whose creating run is still alive is another run's
-         // database, and removing it fails that run mid-scenario.
-         const pid = await ownerPid(containerName);
-         if (isUp && pid !== undefined && processAlive(pid)) {
-            throw new Error(
-               `Postgres container ${containerName} belongs to a hammer run that is ` +
-                  `still going (pid ${pid}). Pass a different --pg-port or ` +
-                  `--pg-container, or --reuse-pg to share it.`,
-            );
-         }
+      if (action.action === "replace") {
          log.info(`removing stale container ${containerName}`);
          await run(["docker", "rm", "-f", containerName]);
       }
-      log.step(`starting Postgres (${image}) on host port ${hostPort}`);
+      const pidStart = (await probe.startTime(process.pid)) ?? "";
+      log.step(
+         `starting Postgres (${image}) as ${containerName}` +
+            (opts.hostPort ? ` on host port ${opts.hostPort}` : ""),
+      );
       await runOrThrow([
          "docker",
          "run",
@@ -156,15 +355,23 @@ export async function startPostgres(
          "--name",
          containerName,
          "--label",
-         `${OWNER_LABEL}=${process.pid}`,
+         `${LABEL_RUN}=${runId}`,
+         "--label",
+         `${LABEL_HOST}=${probe.host}`,
+         "--label",
+         `${LABEL_PID}=${process.pid}`,
+         "--label",
+         `${LABEL_PID_START}=${pidStart}`,
          "-e",
          `POSTGRES_USER=${user}`,
          "-e",
          `POSTGRES_PASSWORD=${password}`,
          "-e",
          "POSTGRES_DB=postgres",
+         // Docker assigns the host port when none is asked for: probing for a
+         // free one and then binding it raced a second run started together.
          "-p",
-         `${hostPort}:5432`,
+         opts.hostPort ? `127.0.0.1:${opts.hostPort}:5432` : "127.0.0.1::5432",
          image,
          // No `max_connections` override: the default 100 is ample now that a
          // publisher lives for one scenario. Publisher leaks 2 idle backends per
@@ -189,6 +396,15 @@ export async function startPostgres(
          "-c",
          "synchronous_commit=off",
       ]);
+   }
+
+   // The port Docker published, read back: assigned when none was asked for,
+   // and whatever a reused container publishes.
+   const hostPort = await publishedPort(containerName);
+   if (hostPort === undefined) {
+      throw new Error(
+         `Postgres container ${containerName} publishes no host port for 5432`,
+      );
    }
 
    const psqlBase = (db: string): string[] => [
@@ -346,22 +562,17 @@ function parseCsv(text: string): Record<string, string>[] {
    });
 }
 
-/** The host port a running container publishes for 5432, if any. */
-async function publishedPort(name: string): Promise<number | undefined> {
-   const r = await run(["docker", "port", name, "5432/tcp"]);
-   const match = /:(\d+)\s*$/m.exec(r.stdout.trim().split("\n")[0] ?? "");
+/**
+ * The host port in `docker port <name> 5432/tcp` output (`127.0.0.1:49153`,
+ * `0.0.0.0:55432` then `[::]:55432`), or undefined when nothing is published.
+ */
+export function parsePublishedPort(stdout: string): number | undefined {
+   const match = /:(\d+)\s*$/.exec(stdout.trim().split("\n")[0] ?? "");
    return match ? Number(match[1]) : undefined;
 }
 
-async function containerExists(name: string): Promise<boolean> {
-   const r = await run([
-      "docker",
-      "ps",
-      "-a",
-      "--filter",
-      `name=^/${name}$`,
-      "--format",
-      "{{.Names}}",
-   ]);
-   return r.stdout.trim() === name;
+/** The host port a running container publishes for 5432, if any. */
+async function publishedPort(name: string): Promise<number | undefined> {
+   const r = await run(["docker", "port", name, "5432/tcp"]);
+   return r.code === 0 ? parsePublishedPort(r.stdout) : undefined;
 }
