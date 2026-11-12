@@ -124,6 +124,14 @@ functions over compiler-set IR, so governance and materialization keep one
 reader of the chain. No IR edits, no compiler internals beyond what governance
 already reads (see the note on Malloy text over compiler internals).
 
+**The rule: the source map never walks segments itself.** Structural reading of a
+source's segments (its extends chain, renames, query bases, composites, joins and
+what a struct reaches) belongs in `governance/ir/source_graph.ts`, which every part
+of Publisher that needs segments reads. The source map is materialization's view
+over that structure: it adds only what materialization needs (keying by `sourceID`,
+stored tables, addresses, which annotations apply where). A walk the map needs and
+`source_graph.ts` lacks is added there first, as a pure function, and the map calls it.
+
 Built once per model per load (and per rebind where a binding generation
 matters), memoized, and unioned per package by `sourceID`, so a source several
 models import is one node.
