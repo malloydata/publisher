@@ -639,7 +639,7 @@ Every query result carries `path`, the path report. It says which materialized t
   "query": { "sourceName": "daily", "groupedBy": ["region"], "filteredBy": [], "measures": ["total"] },
   "servedBy": { "kind": "materialized", "tableId": "9f1c…", "dataAsOf": "2026-11-01T00:00:00.000Z" },
   "considered": [
-    { "tableId": "4ab0…", "kind": "rollup", "outcome": "skipped", "reason": "COUNT_SEMANTICS", "detail": "…" },
+    { "tableId": "4ab0…", "kind": "rollup", "outcome": "skipped", "reason": "COUNT_SEMANTICS", "detail": "aggregate count() is computed over the rollup's rows, not from a stored partial" },
     { "tableId": "9f1c…", "kind": "materialized", "outcome": "used" }
   ],
   "notConsidered": [
@@ -650,8 +650,9 @@ Every query result carries `path`, the path report. It says which materialized t
 
 - `tableId` is the table's `sourceEntityId`, the content address the build plan and manifest key on. Sources that build the same SQL share one table, so they share one id.
 - `considered` lists the tables on the queried source's chain (the source, what it extends or renames, and the source its query reads from) and the rollups of a source on it, in the order they are tried: `storage=` tables, then colocated rollups, then colocated tables nearest first. A table that was not tried because an earlier one answered is left out.
-- `reason` is one of `NOT_BUILT` (not bound to this package), `STALE` (past its freshness window), `CONTRACT` (the entry point has a row-level gate, which stored data cannot keep yet), `MISSING_FIELD` (the query does not compile against the stored form, with the compiler's message in `detail`), `COUNT_SEMANTICS` (a rollup cannot reproduce an aggregate the query computes), `GRAIN_TOO_COARSE` (a rollup's grain does not hold the query's groups) or `RUN_FAILED` (the stored read failed and the freshness fallback answered live). The list is closed, and codes may be added.
-- `notConsidered` names up to ten tables near the queried source that the query cannot use: on a source that extends it (`below`) or that shares an ancestor with it (`sibling`). Querying that source instead, or moving an annotation, would let one answer.
+- `reason` is one of `NOT_BUILT` (not bound to this package), `STALE` (past its freshness window), `CONTRACT` (the entry point has a row-level gate, which stored data cannot keep yet), `MISSING_FIELD` (the query does not compile against the stored form, or reaches a field a rollup does not carry), `COUNT_SEMANTICS` (a rollup cannot reproduce an aggregate the query computes), `GRAIN_TOO_COARSE` (a rollup's grain does not hold the query's groups), `RUN_FAILED` (the stored read failed and the freshness fallback answered live) or `WARNED` (a `storage=` table while `PERSIST_STORAGE_MODE` is `off` or `write-only`, which the package warns about; the query reads the source's own warehouse, where its colocated table may answer). The list is closed, and codes may be added.
+- `detail` is in the caller's own terms: the field path or aggregate in the query that a rollup cannot reproduce. A compile error against the stored form or a run-time storage error carries no `detail`, since its message can name storage paths and generated sources; it is in the server log.
+- `notConsidered` names up to ten tables near the queried source that the query cannot use: on a source that extends it (`below`) or that shares an ancestor with it (`sibling`). Querying that source instead, or moving an annotation, would let one answer. A source the caller cannot list (hidden by the package's `index.malloy` or the file's exports) is never named, unless the caller may see hidden sources.
 
 The report is assembled after the query runs and never changes which table answers. It is absent only if it could not be assembled.
 

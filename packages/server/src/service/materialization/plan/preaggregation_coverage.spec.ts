@@ -12,7 +12,10 @@ import {
    duckdbTestConnections,
    loadTestModel,
 } from "../../../test_helpers/incremental_test_harness";
-import { rollupCoverageViolation } from "./preaggregation_coverage";
+import {
+   RollupCoverageError,
+   rollupCoverageViolation,
+} from "./preaggregation_coverage";
 
 let connections: FixedConnectionMap;
 
@@ -57,7 +60,12 @@ async function prepare(model: string, query: string) {
 }
 
 async function violation(model: string, query: string) {
-   return rollupCoverageViolation(await prepare(model, query), ROLLUPS);
+   const v = rollupCoverageViolation(await prepare(model, query), ROLLUPS);
+   return v && `${v.member}: ${v.detail}`;
+}
+
+async function reason(model: string, query: string) {
+   return rollupCoverageViolation(await prepare(model, query), ROLLUPS)?.reason;
 }
 
 /** The member the composite resolver chose, so an allowed case is not vacuous. */
@@ -160,6 +168,27 @@ describe("an aggregate over the rollup's own rows refuses it", () => {
       expect(await violation(COLOCATED, query)).toStartWith(
          "r: reference b.total",
       );
+      // Typed, so the path report maps it without reading the message.
+      expect(await reason(COLOCATED, query)).toBe("missing_field");
+   });
+
+   it("types an aggregate and a row stage as count semantics", async () => {
+      expect(
+         await reason(COLOCATED, "run: orders -> { aggregate: n is count() }"),
+      ).toBe("count_semantics");
+      expect(
+         await reason(COLOCATED, "run: orders -> { select: category, qty }"),
+      ).toBe("count_semantics");
+   });
+
+   it("keeps the rollup's synthesized name out of the caller-facing detail", async () => {
+      const v = rollupCoverageViolation(
+         await prepare(COLOCATED, "run: orders -> { aggregate: n is count() }"),
+         ROLLUPS,
+      );
+      expect(v?.member).toBe("r");
+      expect(v?.detail).toStartWith("aggregate count()");
+      expect(new RollupCoverageError(v!).detail).toBe(v!.detail);
    });
 
    for (const [label, query] of ROW_STAGES) {

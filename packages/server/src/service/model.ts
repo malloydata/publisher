@@ -23,6 +23,7 @@ import {
    type RouteDecision,
    routeQuery,
    type Variant,
+   type VariantSkipExplanation,
 } from "./query_router";
 import * as fs from "fs/promises";
 import { createRequire } from "module";
@@ -410,7 +411,7 @@ export interface ModelState {
  * its virtual map and the bindings that produced the shape; a rollup needs
  * nothing beyond its runnable.
  */
-type RoutedExtra =
+export type RoutedExtra =
    | {
         kind: "storage";
         virtualMap: VirtualMap;
@@ -418,16 +419,62 @@ type RoutedExtra =
         origin: "persist" | "preaggregate";
         tablesRead: ServeBinding[];
      }
-   | { kind: "rollup" };
+   | {
+        kind: "rollup";
+        /**
+         * The composite member the compiled query resolved to: the rollup that
+         * answered, or the base when no rollup's grain covers the query.
+         */
+        resolvedMember?: string;
+     };
 
 /**
- * Record the `storage=` tier's routing metric from the router's decision, once
- * per query: a storage hit (with the origin that answered), a storage miss
- * (`live_fallback`: the transform could not answer, whatever answered next),
- * or a row-level gate that vetoed every applicable candidate before any was
- * tried. Nothing when the storage tier was not a candidate.
+ * A variant's account of a rollup coverage refusal, for the path report: a
+ * typed code, and the violation in the caller's own terms. Any other failure
+ * (a compile error against the stored form) is left unexplained, so its
+ * message, which can name storage paths and synthesized sources, stays in the
+ * logs.
  */
-function recordRoutingDecision(route: RouteDecision<RoutedExtra>): void {
+function explainCoverageSkip(
+   error: unknown,
+): VariantSkipExplanation | undefined {
+   if (!(error instanceof RollupCoverageError)) return undefined;
+   return { code: `rollup_${error.reason}`, callerDetail: error.detail };
+}
+
+/**
+ * The build manifest a run is handed, wrapped to record which entries Malloy
+ * looked up and found: the colocated tables it substituted. Malloy looks a
+ * persisted source up by its key in exactly one place (`persistedTableFor`),
+ * so a hit is a table the SQL reads, with no reading of the SQL text.
+ */
+function recordingManifest(
+   manifest: BuildManifest | undefined,
+   read: Set<string>,
+): BuildManifest | undefined {
+   if (!manifest) return undefined;
+   const entries = new Proxy(manifest.entries, {
+      get(target, key, receiver) {
+         if (typeof key === "string" && Object.hasOwn(target, key)) {
+            read.add(key);
+         }
+         return Reflect.get(target, key, receiver);
+      },
+   });
+   return { ...manifest, entries };
+}
+/**
+ * Record the serve-routing metric from the router's decision, once per query:
+ * a storage hit (with the origin that answered), a storage miss
+ * (`live_fallback`: the transform could not answer, whatever answered next),
+ * or `blocked_by_row_level_gate`, a row-level gate that vetoed every applicable
+ * candidate (storage, rollup, or both) before any was tried. Otherwise nothing
+ * when the storage tier was not a candidate.
+ */
+export function recordRoutingDecision(route: RouteDecision<RoutedExtra>): void {
+   // The gate vetoes every applicable candidate at once, before any compile,
+   // so it is recorded once per query whichever tiers were candidates: the
+   // label's contract (see recordStorageServeRouting) covers both tiers.
    if (route.considered.some((c) => c.reason === "row_level_gate")) {
       recordStorageServeRouting("blocked_by_row_level_gate");
       return;
@@ -2779,8 +2826,12 @@ export class Model {
       // outcome, and the stored tables a storage answer read.
       let routeConsidered: readonly ConsideredVariant[] = [];
       let storageTablesRead: ServeBinding[] | undefined;
+      // For a rollup answer: the composite member the compile resolved to.
+      let rollupMember: string | undefined;
       // Set when a storage read failed at run time and the query ran live.
-      let runFailedDetail: string | undefined;
+      let runFailed = false;
+      // The manifest entries the run that answered read (see recordingManifest).
+      let colocatedRead = new Set<string>();
       if (!this.modelMaterializer || !this.modelDef || !this.modelInfo)
          throw new BadRequestError("Model has no queryable entities.");
 
@@ -2985,6 +3036,7 @@ export class Model {
                servedFrom = "storage";
             } else {
                preaggRouted = true;
+               rollupMember = route.extra.resolvedMember;
             }
          }
       } catch (error) {
@@ -3166,7 +3218,10 @@ export class Model {
             governed,
             {
                givens: effectiveGivens,
-               buildManifest: effectiveBuildManifest,
+               buildManifest: recordingManifest(
+                  effectiveBuildManifest,
+                  colocatedRead,
+               ),
                virtualMap: serveVirtualMap,
             },
             {
@@ -3277,8 +3332,7 @@ export class Model {
             },
          );
          recordStorageServeRouting("runtime_live_fallback");
-         runFailedDetail =
-            error instanceof Error ? error.message : String(error);
+         runFailed = true;
          // The retry runs the LIVE compile, which `governed` is not (it is the
          // serve shape), so it is governed in its own right here: the same
          // bind, on the runnable that will execute. Today routing already
@@ -3301,7 +3355,14 @@ export class Model {
             // `liveBuildManifest`: this runs on the author's model.
             run = await prepareAndRun(
                governedLive,
-               { givens: querySurfaceGivens, buildManifest: liveBuildManifest },
+               {
+                  givens: querySurfaceGivens,
+                  // The retry is the run that answers: record its reads alone.
+                  buildManifest: recordingManifest(
+                     liveBuildManifest,
+                     (colocatedRead = new Set<string>()),
+                  ),
+               },
                {
                   abortSignal,
                   maxRows,
@@ -3401,9 +3462,11 @@ export class Model {
          viewName: sourceName && queryName ? queryName : undefined,
          considered: routeConsidered,
          storageTablesRead,
-         runFailedDetail,
-         sql: queryResults.sql,
+         runFailed,
+         colocatedRead,
+         rollupMember,
          freshManifest: buildManifest,
+         includeHidden: !!includeHiddenFilesAndSources,
       });
       audit.servedFrom = servedFrom ?? null;
       audit.executionTimeMs = Math.round(executionTime);
@@ -3435,7 +3498,7 @@ export class Model {
    /**
     * The path report for one answered query, or undefined when it cannot be
     * assembled (logged at debug). Reads the compile, the router's decision and
-    * the SQL that ran; changes nothing.
+    * the manifest entries the answering run read; changes nothing.
     */
    private async queryPathFor(args: {
       runnable: QueryMaterializer;
@@ -3443,9 +3506,11 @@ export class Model {
       viewName: string | undefined;
       considered: readonly ConsideredVariant[];
       storageTablesRead: ServeBinding[] | undefined;
-      runFailedDetail: string | undefined;
-      sql: string | undefined;
+      runFailed: boolean;
+      colocatedRead: ReadonlySet<string>;
+      rollupMember: string | undefined;
       freshManifest: BuildManifest | undefined;
+      includeHidden: boolean;
    }): Promise<ApiQueryPath | undefined> {
       try {
          const prepared = await readPreparedQuery(args.runnable);
@@ -3459,6 +3524,26 @@ export class Model {
             (typeof prepared.structRef === "string"
                ? prepared.structRef
                : (struct?.as ?? ""));
+         const shape = queryShapeOf(prepared.query, struct, {
+            sourceName,
+            viewName: args.viewName,
+         });
+         const catalog = this.policy.materializedTables();
+         // Nothing materialized for this model: the answer is live and there is
+         // nothing to name, so skip the chain walks and the catalog reads.
+         if (
+            (catalog?.planned.size ?? 0) === 0 &&
+            this.storageServe.serveBindings.length === 0 &&
+            this.preaggregateRollupPlans.length === 0 &&
+            args.considered.length === 0
+         ) {
+            return {
+               query: shape,
+               servedBy: { kind: "live" },
+               considered: [],
+               notConsidered: [],
+            };
+         }
          const toTable = (b: ServeBinding): StorageTable => ({
             sourceName: b.sourceName,
             sourceIDs: b.sourceIDs,
@@ -3466,13 +3551,14 @@ export class Model {
             tablePath: b.tablePath,
             freshAsOf: b.freshAsOf,
          });
+         const published = args.includeHidden
+            ? undefined
+            : this.publishedNames();
          return buildQueryPath({
-            shape: queryShapeOf(prepared.query, struct, {
-               sourceName,
-               viewName: args.viewName,
-            }),
+            shape,
+            modelPath: this.modelPath,
             chain: sourceChainOf(struct, modelDef),
-            catalog: this.policy.materializedTables(),
+            catalog,
             freshColocated: args.freshManifest
                ? new Set(Object.keys(args.freshManifest.entries))
                : undefined,
@@ -3487,13 +3573,24 @@ export class Model {
                baseSourceName: p.baseSourceName,
                ...(p.baseSourceID ? { baseSourceID: p.baseSourceID } : {}),
             })),
+            // Every `storage=` source carries a package warning when the tier
+            // is off or write-only (see storageWarnings).
+            storageWarned: getPersistStorageMode() !== "on",
             considered: args.considered,
             storageTablesRead: args.storageTablesRead?.map(toTable),
-            ...(args.runFailedDetail !== undefined
-               ? { runFailed: { detail: args.runFailedDetail } }
-               : {}),
-            sql: args.sql,
+            runFailed: args.runFailed,
+            colocatedRead: args.colocatedRead,
+            ...(args.rollupMember ? { rollupMember: args.rollupMember } : {}),
             chains: this.sourceChains(),
+            // The discovery surface: a name the caller cannot list is never
+            // named, unless the caller may see hidden sources.
+            ...(args.includeHidden
+               ? {}
+               : {
+                    isVisibleSource: (name: string) =>
+                       (published === undefined || published.has(name)) &&
+                       this.admitsSourceByName(name),
+                 }),
          });
       } catch (err) {
          logger.debug("Path report unavailable", {
@@ -3573,6 +3670,7 @@ export class Model {
                   },
                };
             },
+            explain: explainCoverageSkip,
             onSkip: (shapeErr) => {
                // A rollup refused for this query's aggregates is per-query and
                // expected, not a reason the package never serves from storage.
@@ -3648,13 +3746,28 @@ export class Model {
                });
                // Compiling proves only that the chosen member DEFINES every
                // field used; `count()` uses none and resolves to a rollup.
+               const compiled = (await candidate.getPreparedQuery())._query;
                const uncovered = rollupCoverageViolation(
-                  (await candidate.getPreparedQuery())._query,
+                  compiled,
                   rollupMeasuresByMember(this.preaggregateRollupPlans),
                );
                if (uncovered) throw new RollupCoverageError(uncovered);
-               return { runnable: candidate, extra: { kind: "rollup" } };
+               const resolvedMember = (
+                  compiled as
+                     | { compositeResolvedSourceDef?: { as?: unknown } }
+                     | undefined
+               )?.compositeResolvedSourceDef?.as;
+               return {
+                  runnable: candidate,
+                  extra: {
+                     kind: "rollup",
+                     ...(typeof resolvedMember === "string"
+                        ? { resolvedMember }
+                        : {}),
+                  },
+               };
             },
+            explain: explainCoverageSkip,
             onSkip: (preaggErr) => {
                // Expected and common: the companion imports only the sources it
                // rolls up, and a rollup stores only its declared measures.

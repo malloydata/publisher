@@ -67,7 +67,6 @@ function input(overrides: Partial<QueryPathInput>): QueryPathInput {
       storage: { all: [], fresh: [] },
       rollups: [],
       considered: [],
-      sql: undefined,
       chains: new Map(),
       ...overrides,
    };
@@ -118,7 +117,6 @@ describe("buildQueryPath", () => {
             storage: { all: [daily], fresh: [daily] },
             considered: [{ kind: "storage", outcome: "used" }],
             storageTablesRead: [daily],
-            sql: "SELECT * FROM lake.t_daily",
          }),
       );
       expect(answered.considered).toEqual([
@@ -135,10 +133,9 @@ describe("buildQueryPath", () => {
                   outcome: "skipped",
                   reason: "does_not_answer",
                   detail: "no field x",
-                  errorName: "Error",
                },
             ],
-            sql: "SELECT region FROM orders_built",
+            colocatedRead: new Set(["id_orders"]),
          }),
       );
       expect(missed.servedBy).toEqual({
@@ -150,8 +147,8 @@ describe("buildQueryPath", () => {
             tableId: "id_daily",
             kind: "materialized",
             outcome: "skipped",
+            // The compiler's own message stays in the logs.
             reason: "MISSING_FIELD",
-            detail: "no field x",
          },
          { tableId: "id_orders", kind: "materialized", outcome: "used" },
       ]);
@@ -173,17 +170,26 @@ describe("buildQueryPath", () => {
       });
    });
 
-   it("reads a colocated table only as a whole identifier in the SQL", () => {
-      const report = buildQueryPath(
-         input({
-            catalog: catalog([planned("daily")], { id_daily: "daily_t" }),
-            sql: "SELECT * FROM daily_t_old",
-         }),
+   it("names the colocated table the run read from the manifest, whatever the SQL says", () => {
+      const tables = catalog([planned("daily"), planned("orders")], {
+         id_daily: "daily_t",
+         id_orders: "orders_t",
+      });
+      // Bound, fresh and not read: not reported as tried.
+      const unread = buildQueryPath(
+         input({ catalog: tables, colocatedRead: new Set() }),
       );
-      // Bound, fresh and not read: nearer tables would have answered, so it is
-      // not reported as tried.
-      expect(report.servedBy).toEqual({ kind: "live" });
-      expect(report.considered).toEqual([]);
+      expect(unread.servedBy).toEqual({ kind: "live" });
+      expect(unread.considered).toEqual([]);
+      // The run substituted orders' table (daily's own is not in the manifest
+      // it read), so orders answered.
+      const read = buildQueryPath(
+         input({ catalog: tables, colocatedRead: new Set(["id_orders"]) }),
+      );
+      expect(read.servedBy).toEqual({
+         kind: "materialized",
+         tableId: "id_orders",
+      });
    });
 
    it("maps a rollup coverage refusal to COUNT_SEMANTICS, or MISSING_FIELD past the rollup's fields", () => {
@@ -198,7 +204,7 @@ describe("buildQueryPath", () => {
             },
          ],
       };
-      const reasonFor = (detail: string) =>
+      const skipFor = (code: string | undefined) =>
          buildQueryPath(
             input({
                ...base,
@@ -207,18 +213,170 @@ describe("buildQueryPath", () => {
                      kind: "rollup",
                      outcome: "skipped",
                      reason: "does_not_answer",
-                     detail,
-                     errorName: "RollupCoverageError",
+                     // Internal text, which never decides the reason.
+                     detail: "orders_rollup: reaches past, or not",
+                     ...(code
+                        ? { code, callerDetail: "aggregate count()" }
+                        : {}),
                   },
                ],
             }),
-         ).considered[0]?.reason;
-      expect(reasonFor("orders_rollup: aggregate count() is computed")).toBe(
-         "COUNT_SEMANTICS",
+         ).considered[0];
+      expect(skipFor("rollup_count_semantics")).toMatchObject({
+         reason: "COUNT_SEMANTICS",
+         detail: "aggregate count()",
+      });
+      expect(skipFor("rollup_missing_field")?.reason).toBe("MISSING_FIELD");
+      // Unexplained (a compile error): MISSING_FIELD, and no detail at all.
+      expect(skipFor(undefined)).toEqual({
+         tableId: "id_orders_rollup",
+         kind: "rollup",
+         outcome: "skipped",
+         reason: "MISSING_FIELD",
+      });
+   });
+
+   it("reports a run-time storage failure without its error text", () => {
+      const daily = storageOf("daily");
+      const report = buildQueryPath(
+         input({
+            catalog: catalog([planned("daily")]),
+            storage: { all: [daily], fresh: [daily] },
+            considered: [{ kind: "storage", outcome: "used" }],
+            storageTablesRead: [daily],
+            runFailed: true,
+         }),
       );
+      expect(report.considered).toEqual([
+         {
+            tableId: "id_daily",
+            kind: "materialized",
+            outcome: "skipped",
+            reason: "RUN_FAILED",
+         },
+      ]);
+   });
+
+   it("never names a storage table by its physical path", () => {
+      // The plan failed to compute: the binding has no content address.
+      const daily = storageOf("daily");
+      const report = buildQueryPath(
+         input({
+            catalog: catalog([]),
+            storage: { all: [daily], fresh: [daily] },
+            considered: [{ kind: "storage", outcome: "used" }],
+            storageTablesRead: [daily],
+         }),
+      );
+      expect(report.servedBy).toEqual({ kind: "materialized" });
+      expect(report.considered).toEqual([]);
+      expect(JSON.stringify(report)).not.toContain("lake.t_daily");
+   });
+
+   it("with the storage tier not routed, reports its table WARNED and still names the colocated table", () => {
+      const daily = storageOf("daily");
+      const tables = catalog([planned("daily")], { id_daily: "daily_t" });
+      const warned = buildQueryPath(
+         input({
+            catalog: tables,
+            storage: { all: [daily], fresh: [daily] },
+            storageWarned: true,
+            colocatedRead: new Set(["id_daily"]),
+         }),
+      );
+      // The same content address in two places: the storage copy is not
+      // routed, and the warehouse's own copy answered.
+      expect(warned.considered).toEqual([
+         {
+            tableId: "id_daily",
+            kind: "materialized",
+            outcome: "skipped",
+            reason: "WARNED",
+         },
+         { tableId: "id_daily", kind: "materialized", outcome: "used" },
+      ]);
+      expect(warned.servedBy).toEqual({
+         kind: "materialized",
+         tableId: "id_daily",
+      });
+      // No warning (a destination missing while the tier is on): the storage
+      // table is left out, and an unbuilt colocated twin is not invented.
+      const absent = buildQueryPath(
+         input({
+            catalog: catalog([planned("daily")]),
+            storage: { all: [daily], fresh: [daily] },
+         }),
+      );
+      expect(absent.considered).toEqual([]);
+   });
+
+   it("matches a rollup to its own model's plan, and names none when ambiguous", () => {
+      const rollupIn = (modelPath: string, id: string): PlannedTable => ({
+         sourceID: `orders_rollup@file:///${modelPath}#preaggregate`,
+         name: "orders_rollup",
+         sourceEntityId: id,
+         origin: "preaggregate",
+         modelPath,
+      });
+      const rollups = [
+         {
+            rollupSourceName: "orders_rollup",
+            baseSourceName: "orders",
+            baseSourceID: "orders@file:///m.malloy",
+         },
+      ];
+      const tables = catalog(
+         [rollupIn("a.malloy", "id_a"), rollupIn("b.malloy", "id_b")],
+         { id_a: "rollup_a", id_b: "rollup_b" },
+      );
+      const ownModel = buildQueryPath(
+         input({ modelPath: "b.malloy", catalog: tables, rollups }),
+      );
+      // Not routed to (no rollup decision): only its NOT_BUILT state would
+      // show; it is bound, so nothing is listed, but nearby lookups use b's.
       expect(
-         reasonFor("orders_rollup: reference a.b reaches past the rollup"),
-      ).toBe("MISSING_FIELD");
+         buildQueryPath(
+            input({
+               modelPath: "b.malloy",
+               catalog: tables,
+               rollups,
+               considered: [{ kind: "rollup", outcome: "used" }],
+               rollupMember: "orders_rollup",
+            }),
+         ).servedBy,
+      ).toEqual({ kind: "rollup", tableId: "id_b" });
+      expect(ownModel.considered).toEqual([]);
+      // A third model with the same name: ambiguous, so no table is named.
+      expect(
+         buildQueryPath(
+            input({
+               modelPath: "c.malloy",
+               catalog: tables,
+               rollups,
+               considered: [{ kind: "rollup", outcome: "used" }],
+               rollupMember: "orders_rollup",
+            }),
+         ).servedBy,
+      ).toEqual({ kind: "live" });
+   });
+
+   it("never names a source the caller cannot see among the nearby tables", () => {
+      const hidden = planned("orders_pii");
+      const shown = planned("orders_public");
+      const chains = new Map([
+         [hidden.sourceID, [hidden.sourceID, "orders@file:///m.malloy"]],
+         [shown.sourceID, [shown.sourceID, "orders@file:///m.malloy"]],
+      ]);
+      const report = buildQueryPath(
+         input({
+            catalog: catalog([hidden, shown]),
+            chains,
+            isVisibleSource: (name) => name !== "orders_pii",
+         }),
+      );
+      expect(report.notConsidered.map((n) => n.sourceName)).toEqual([
+         "orders_public",
+      ]);
    });
 
    it("lists at most ten nearby tables, nearest first", () => {
@@ -329,6 +487,7 @@ source: orders is duckdb.sql("""
   join_one: r is regions on r.code = region
   dimension: big is amount > 2
   measure: total is amount.sum()
+  view: by_region is { where: big; group_by: region; aggregate: total }
 }
 `;
    async function shapeOf(query: string) {
@@ -375,6 +534,17 @@ source: orders is duckdb.sql("""
          filteredBy: ["big", "r.code"],
          measures: ["amount"],
          timeZone: "Asia/Tokyo",
+      });
+   });
+
+   it("reads a nested named view's fields", async () => {
+      expect(
+         await shapeOf("run: orders -> { group_by: d; nest: by_region }"),
+      ).toEqual({
+         sourceName: "orders",
+         groupedBy: ["d", "region"],
+         filteredBy: ["big"],
+         measures: ["total"],
       });
    });
 });

@@ -43,10 +43,11 @@ source: daily is orders -> {
              ) AS t(id, order_date, region, amount)`,
          ],
       });
-      daily = fixture.bindings[0].tablePath;
+      // Its content address, never the physical table path.
+      daily = "h0";
    });
 
-   it("names the stored table that answered", async () => {
+   it("names the stored table that answered, by its content address", async () => {
       fixture.setBindings(fixture.bindings);
       const { path, servedFrom } = await fixture.runAsIs(
          "run: daily -> { group_by: region; aggregate: t is total.sum() }",
@@ -56,6 +57,7 @@ source: daily is orders -> {
       expect(path?.considered).toEqual([
          { tableId: daily, kind: "materialized", outcome: "used" },
       ]);
+      expect(JSON.stringify(path)).not.toContain(fixture.bindings[0].tablePath);
    });
 
    it("skips the stored table for a query it cannot compile, with the compiler's reason", async () => {
@@ -70,8 +72,9 @@ source: daily is orders -> {
             tableId: daily,
             kind: "materialized",
             outcome: "skipped",
+            // The compiler's message stays in the logs: it names the
+            // synthesized serve-shape sources.
             reason: "MISSING_FIELD",
-            detail: expect.any(String),
          },
       ]);
    });
@@ -115,13 +118,14 @@ source: daily is orders -> {
       expect(path?.servedBy).toEqual({ kind: "live" });
       expect(path?.considered).toEqual([
          {
-            tableId: missing,
+            tableId: daily,
             kind: "materialized",
             outcome: "skipped",
             reason: "RUN_FAILED",
-            detail: expect.stringContaining("no_such_table"),
          },
       ]);
+      // The store's error (here a table path) is never on the wire.
+      expect(JSON.stringify(path)).not.toContain("no_such_table");
    });
 
    it("reports nothing considered for a source with no table", async () => {

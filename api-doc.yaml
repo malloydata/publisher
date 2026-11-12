@@ -8543,9 +8543,12 @@ components:
         detail:
           type: string
           description: >-
-            For a skip, the specifics, for a person: the compiler's message for
-            a field the table lacks, the aggregate a rollup cannot reproduce, the
-            run-time error. Absent when `outcome` is `used`.
+            For a skip, the specifics, for a person, in the caller's own terms:
+            for example the field path or aggregate in the query that a rollup
+            cannot reproduce. Never an internal error message (a compile error
+            against the stored form, a run-time storage error), which can name
+            storage paths or synthesized sources; those skips carry no detail.
+            Absent when `outcome` is `used`.
 
     QueryPathNearby:
       type: object

@@ -44,6 +44,7 @@ import {
 } from "../../../src/service/materialization/stored_column_types";
 import type { ManifestEntry } from "../../../src/service/materialization/types";
 import { Model } from "../../../src/service/model";
+import { ModelPolicy } from "../../../src/service/model_policy";
 import { QueryPrivileges } from "../../../src/service/model_query_request";
 
 /**
@@ -227,6 +228,24 @@ export async function buildScenario(scenario: R4Scenario): Promise<R4Fixture> {
 
    // eslint-disable-next-line @typescript-eslint/no-explicit-any
    const modelDef = (compiled as any)._modelDef;
+   // The plan's catalog, as a package hands it to its models, so the path
+   // report names each stored table by its content address.
+   const policy = ModelPolicy.fixed({
+      materializedTables: {
+         planned: new Map(
+            sources.map((source) => [
+               source.sourceID,
+               {
+                  sourceID: source.sourceID,
+                  name: source.name,
+                  sourceEntityId: plan[source.sourceID].sourceEntityId,
+                  origin: "persist" as const,
+               },
+            ]),
+         ),
+         bound: {},
+      },
+   });
    const model = new Model({
       packageName: "r4",
       modelPath: entry,
@@ -236,6 +255,7 @@ export async function buildScenario(scenario: R4Scenario): Promise<R4Fixture> {
       modelMaterializer: materializer as any,
       modelDef,
       modelInfo: modelDefToModelInfo(modelDef),
+      policy,
    });
    const serveConfig = new MalloyConfig({ connections: {} });
    serveConfig.wrapConnections(

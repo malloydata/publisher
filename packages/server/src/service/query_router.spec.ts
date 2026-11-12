@@ -68,7 +68,6 @@ describe("routeQuery", () => {
             outcome: "skipped",
             reason: "does_not_answer",
             detail: "storage cannot answer",
-            errorName: "Error",
          },
          { kind: "rollup", outcome: "used" },
       ]);
@@ -135,6 +134,36 @@ describe("routeQuery", () => {
       expect(calls).toEqual([]);
       expect(decision.considered).toEqual([
          { kind: "rollup", outcome: "skipped", reason: "not_applicable" },
+      ]);
+   });
+
+   it("records a candidate's own explanation of its skip, and survives one that throws", async () => {
+      const explained: Variant<string> = {
+         ...variant("storage", "misses", []),
+         explain: () => ({ code: "rollup_missing_field", callerDetail: "x" }),
+      };
+      const broken: Variant<string> = {
+         ...variant("rollup", "misses", []),
+         explain: () => {
+            throw new Error("boom");
+         },
+      };
+      const decision = await routeQuery([explained, broken], async () => false);
+      expect(decision.considered).toEqual([
+         {
+            kind: "storage",
+            outcome: "skipped",
+            reason: "does_not_answer",
+            detail: "storage cannot answer",
+            code: "rollup_missing_field",
+            callerDetail: "x",
+         },
+         {
+            kind: "rollup",
+            outcome: "skipped",
+            reason: "does_not_answer",
+            detail: "rollup cannot answer",
+         },
       ]);
    });
 });

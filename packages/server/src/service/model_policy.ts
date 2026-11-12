@@ -115,6 +115,8 @@ export interface FixedModelPolicy {
    discoveryCuration?: boolean;
    queryBoundary?: QueryBoundaryPolicy;
    siblingModelDefResolver?: SiblingModelDefResolver;
+   /** The materialized tables the path report reads; omitted names none. */
+   materializedTables?: MaterializedTableCatalog;
 }
 
 function fixedPolicy(
@@ -124,6 +126,7 @@ function fixedPolicy(
    const discoveryCuration = fields.discoveryCuration ?? false;
    const boundary = fields.queryBoundary ?? UNCURATED_BOUNDARY;
    const sibling = fields.siblingModelDefResolver;
+   const tables = fields.materializedTables;
    return Object.freeze({
       origin,
       discoveryCurationEnabled: () => discoveryCuration,
@@ -131,7 +134,7 @@ function fixedPolicy(
       siblingModelDefResolver: () => sibling,
       freshBuildManifestEntries: () => undefined,
       preaggregateEntityIds: () => undefined,
-      materializedTables: () => undefined,
+      materializedTables: () => tables,
    });
 }
 

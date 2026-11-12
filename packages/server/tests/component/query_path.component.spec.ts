@@ -13,6 +13,7 @@ import * as path from "path";
 import { unrecordedAudit } from "../../src/service/access_record";
 import { Environment } from "../../src/service/environment";
 import { parsePackageName } from "../../src/service/identity";
+import { QueryPrivileges } from "../../src/service/model_query_request";
 import type { Package } from "../../src/service/package";
 import { writePackageFiles } from "../../src/test_helpers/temp_package";
 
@@ -50,10 +51,13 @@ afterEach(async () => {
    await fs.rm(rootDir, { recursive: true, force: true }).catch(() => {});
 });
 
-async function loadPackage(model = MODEL): Promise<Package> {
+async function loadPackage(
+   model = MODEL,
+   extraFiles: Record<string, string> = {},
+): Promise<Package> {
    writePackageFiles(
       path.join(envPath, "pkg"),
-      { "model.malloy": model },
+      { "model.malloy": model, ...extraFiles },
       { manifest: { name: "pkg", description: "fixture" } },
    );
    const env = await Environment.create("testEnv", envPath, []);
@@ -96,13 +100,49 @@ async function buildAndBind(
    pkg.bindColocatedServeManifest(bound as never);
 }
 
-async function pathOf(pkg: Package, query: string) {
-   const model = pkg.getModel("model.malloy");
-   if (!model) throw new Error("model.malloy did not load");
-   const { path } = await model.runQuery(unrecordedAudit(), { query });
+async function pathOf(
+   pkg: Package,
+   query: string,
+   options: { modelPath?: string; includeHidden?: boolean } = {},
+) {
+   const modelPath = options.modelPath ?? "model.malloy";
+   const model = pkg.getModel(modelPath);
+   if (!model) throw new Error(`${modelPath} did not load`);
+   const { path } = await model.runQuery(
+      unrecordedAudit(),
+      { query },
+      QueryPrivileges.of({
+         includeHiddenFilesAndSources: options.includeHidden === true,
+      }),
+   );
    if (!path) throw new Error("no path report");
    return path;
 }
+
+describe("the path report for a model with nothing materialized", () => {
+   it("answers live with the query's shape, and reads no catalog", async () => {
+      const pkg = await loadPackage(`
+source: orders is duckdb.sql("SELECT 1 AS id, 'east' AS region") extend {
+  measure: n is count()
+}
+`);
+      const report = await pathOf(
+         pkg,
+         "run: orders -> { group_by: region; aggregate: n }",
+      );
+      expect(report).toEqual({
+         query: {
+            sourceName: "orders",
+            groupedBy: ["region"],
+            filteredBy: [],
+            measures: ["n"],
+         },
+         servedBy: { kind: "live" },
+         considered: [],
+         notConsidered: [],
+      });
+   });
+});
 
 describe("the path report over colocated #@ persist", () => {
    it("reports an unbuilt table as NOT_BUILT and answers live", async () => {
@@ -224,6 +264,24 @@ describe("the path report over colocated #@ persist", () => {
             built: false,
          },
       ]);
+   });
+
+   it("never names a sibling the package's surface hides", async () => {
+      // index.malloy publishes by_region only: daily is a building block.
+      const pkg = await loadPackage(MODEL, {
+         "index.malloy": 'import "model.malloy"\nexport { by_region }\n',
+      });
+      const query =
+         "run: by_region -> { group_by: region; aggregate: n is n.sum() }";
+      const report = await pathOf(pkg, query, { modelPath: "index.malloy" });
+      expect(report.notConsidered).toEqual([]);
+      expect(JSON.stringify(report)).not.toContain("daily");
+      // A caller cleared to see hidden sources is told about it.
+      const cleared = await pathOf(pkg, query, {
+         modelPath: "index.malloy",
+         includeHidden: true,
+      });
+      expect(cleared.notConsidered.map((n) => n.sourceName)).toEqual(["daily"]);
    });
 
    it("lists a sibling's table, off the queried source's chain", async () => {
