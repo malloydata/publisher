@@ -181,6 +181,9 @@ export const PROBES: Record<string, (context: SettingsContext) => unknown> = {
    "logging.level": () => settings.get("logging.level"),
    "logging.responseBodiesEnabled": () =>
       settings.get("logging.responseBodiesEnabled"),
+   "workloadLog.store": () => settings.get("workloadLog.store"),
+   "workloadLog.retentionDays": () => settings.get("workloadLog.retentionDays"),
+   "workloadLog.maxRows": () => settings.get("workloadLog.maxRows"),
    "shutdown.drainDurationSeconds": () =>
       settings.get("shutdown.drainDurationSeconds"),
    "shutdown.gracefulCloseTimeoutSeconds": () =>

@@ -154,6 +154,18 @@ export async function performGracefulShutdownAfterDrain(
    ]);
 
    try {
+      // The workload log's buffered records, now that no request can add one.
+      // Lazy-imported, like the pool below, to keep it out of this module's
+      // import graph.
+      const { stopWorkloadLogSink } = await import(
+         "./service/workload_log_store"
+      );
+      await stopWorkloadLogSink();
+   } catch (_error) {
+      /* do nothing: the store never fails a shutdown */
+   }
+
+   try {
       await shutdownSDK();
       logger.info("OpenTelemetry SDK shut down");
    } catch (_error) {

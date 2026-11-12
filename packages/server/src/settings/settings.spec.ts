@@ -106,6 +106,9 @@ const DESIGN_VARIABLES: Partial<Record<SettingKey, string>> = {
    "shutdown.drainDurationSeconds": "PUBLISHER_SHUTDOWN_DRAIN_DURATION_SECONDS",
    "shutdown.gracefulCloseTimeoutSeconds":
       "PUBLISHER_SHUTDOWN_GRACEFUL_CLOSE_TIMEOUT_SECONDS",
+   "workloadLog.store": "PUBLISHER_WORKLOAD_LOG_STORE",
+   "workloadLog.retentionDays": "PUBLISHER_WORKLOAD_LOG_RETENTION_DAYS",
+   "workloadLog.maxRows": "PUBLISHER_WORKLOAD_LOG_MAX_ROWS",
    "retrieval.embedding.apiKey": "PUBLISHER_RETRIEVAL_EMBEDDING_API_KEY",
    "retrieval.embedding.model": "PUBLISHER_RETRIEVAL_EMBEDDING_MODEL",
    "retrieval.embedding.baseUrl": "PUBLISHER_RETRIEVAL_EMBEDDING_BASE_URL",

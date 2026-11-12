@@ -3321,6 +3321,8 @@ export class Model {
             bypassAuthorize,
             grafts: decision.grafts,
             rowCount: queryResults.totalRows,
+            // A named view on a source; a model-level named query has no source.
+            ...(sourceName && queryName ? { view: queryName } : {}),
          });
       } catch (err) {
          logger.debug("Access summary unavailable", {
@@ -3330,6 +3332,7 @@ export class Model {
       }
       audit.servedFrom = servedFrom ?? null;
       audit.executionTimeMs = Math.round(executionTime);
+      if (queryCostBytes !== undefined) audit.scannedBytes = queryCostBytes;
       return {
          result: wrappedResult,
          serializedResult,
@@ -4328,6 +4331,11 @@ export class Model {
                   modelPath: this.modelPath,
                   error: (err as Error).message,
                });
+            }
+            // As in runQuery: only when reported, absent is not zero.
+            const cellScannedBytes = result?.runStats?.queryCostBytes;
+            if (cellScannedBytes !== undefined) {
+               audit.scannedBytes = cellScannedBytes;
             }
             // As in runQuery.
             if (

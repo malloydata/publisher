@@ -1805,6 +1805,70 @@ export const CONTRACT: Record<string, Case[]> = {
          expect: value(true),
       },
    ],
+   "workloadLog.store": [
+      { name: "unset", expect: value("off") },
+      {
+         name: "PUBLISHER_WORKLOAD_LOG_STORE on",
+         env: { PUBLISHER_WORKLOAD_LOG_STORE: "on" },
+         expect: value("on"),
+      },
+      {
+         name: "any case, with surrounding space",
+         env: { PUBLISHER_WORKLOAD_LOG_STORE: " On " },
+         expect: value("on"),
+      },
+      {
+         name: "blank",
+         env: { PUBLISHER_WORKLOAD_LOG_STORE: "" },
+         expect: value("off"),
+      },
+      {
+         name: "another value fails",
+         env: { PUBLISHER_WORKLOAD_LOG_STORE: "yes" },
+         expect: fails("PUBLISHER_WORKLOAD_LOG_STORE"),
+      },
+   ],
+   "workloadLog.retentionDays": [
+      { name: "unset", expect: value(30) },
+      {
+         name: "PUBLISHER_WORKLOAD_LOG_RETENTION_DAYS",
+         env: { PUBLISHER_WORKLOAD_LOG_RETENTION_DAYS: "7" },
+         expect: value(7),
+      },
+      {
+         name: "blank",
+         env: { PUBLISHER_WORKLOAD_LOG_RETENTION_DAYS: "" },
+         expect: value(30),
+      },
+      {
+         name: "zero fails",
+         env: { PUBLISHER_WORKLOAD_LOG_RETENTION_DAYS: "0" },
+         expect: fails("PUBLISHER_WORKLOAD_LOG_RETENTION_DAYS"),
+      },
+      {
+         name: "not a number fails",
+         env: { PUBLISHER_WORKLOAD_LOG_RETENTION_DAYS: "a week" },
+         expect: fails("PUBLISHER_WORKLOAD_LOG_RETENTION_DAYS"),
+      },
+   ],
+   "workloadLog.maxRows": [
+      { name: "unset", expect: value(1000000) },
+      {
+         name: "PUBLISHER_WORKLOAD_LOG_MAX_ROWS",
+         env: { PUBLISHER_WORKLOAD_LOG_MAX_ROWS: "5000" },
+         expect: value(5000),
+      },
+      {
+         name: "blank",
+         env: { PUBLISHER_WORKLOAD_LOG_MAX_ROWS: "" },
+         expect: value(1000000),
+      },
+      {
+         name: "not a number fails",
+         env: { PUBLISHER_WORKLOAD_LOG_MAX_ROWS: "lots" },
+         expect: fails("PUBLISHER_WORKLOAD_LOG_MAX_ROWS"),
+      },
+   ],
    "shutdown.drainDurationSeconds": [
       { name: "unset", expect: value(0) },
       {

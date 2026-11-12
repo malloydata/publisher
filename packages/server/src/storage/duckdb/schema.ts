@@ -272,6 +272,27 @@ async function createDeclaredTables(db: DuckDBConnection): Promise<void> {
     )
   `);
 
+   // The workload log's local store (materialization v2, T1): one access
+   // record per row, written only when PUBLISHER_WORKLOAD_LOG_STORE=on, pruned by
+   // age and row count (service/workload_log_store.ts). The columns are what
+   // the log is read by; `record` holds the whole record.
+   await db.run(`
+    CREATE TABLE IF NOT EXISTS workload_log (
+      recorded_at TIMESTAMP NOT NULL,
+      environment VARCHAR NOT NULL,
+      package VARCHAR NOT NULL,
+      model_path VARCHAR,
+      source VARCHAR,
+      shape_key VARCHAR,
+      served_from VARCHAR,
+      outcome VARCHAR NOT NULL,
+      duration_ms BIGINT NOT NULL,
+      row_count BIGINT,
+      scanned_bytes BIGINT,
+      record JSON NOT NULL
+    )
+  `);
+
    await createEntityEmbeddingsTable(db);
    await createEntityKeyphrasesTable(db);
    await createSourceSummariesTable(db);
@@ -907,6 +928,7 @@ async function dropAllTables(db: DuckDBConnection): Promise<void> {
       "storage_destinations",
       "environments",
       "themes",
+      "workload_log",
       "entity_embeddings",
       "entity_keyphrases",
       "source_summaries",
