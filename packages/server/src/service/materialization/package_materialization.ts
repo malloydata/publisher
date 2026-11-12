@@ -79,7 +79,7 @@ import {
 import { storageTablePath } from "./run/storage_table_path";
 import { structsReachedFrom } from "../governance/ir/source_graph";
 import { CLASSIFICATION_COVERAGE } from "../classification";
-import { reachableSourceIDs } from "./plan/source_map";
+import { reachableSourceIDs, SourceMap } from "./plan/source_map";
 import type {
    BuildManifest,
    BuildPlan,
@@ -860,6 +860,21 @@ export class PackageMaterialization {
       }
    }
 
+   /**
+    * A declaration's compiled definition, from the package model that holds it
+    * as a node of its own (the model that declares or imports it). A model
+    * that reaches a source only through a join (an index importing the file
+    * that joins it, #6643) holds the join, not the declaration, so its served
+    * copy finds the declaration here.
+    */
+   private declarationOf(sourceID: string): unknown {
+      for (const model of this.owner.models().values()) {
+         const def = SourceMap.of(model.getModelDef?.()).node(sourceID)?.def;
+         if (def) return def;
+      }
+      return undefined;
+   }
+
    /** Push the current storage serve bindings onto every loaded model. */
    pushStorageServeBindingsToModels(): void {
       for (const model of this.owner.models().values()) {
@@ -868,6 +883,7 @@ export class PackageMaterialization {
             this.owner.packagePath(),
             this.owner.malloyConfig(),
             this.materializePlans,
+            (sourceID) => this.declarationOf(sourceID),
          );
          model.setServeBindings(this.storageServeBindings);
          // Compiled at bind so a served copy that does not compile is a
