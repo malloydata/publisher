@@ -72,6 +72,13 @@ export interface Variant<Extra = unknown> {
     * Undefined leaves the skip unexplained beyond `does_not_answer`.
     */
    explain?(error: unknown): VariantSkipExplanation | undefined;
+   /**
+    * The candidate keeps the domain's contracts (R3): it compiles the author's
+    * own text, gates included, so `govern()` grafts and proves a row-level gate
+    * on it exactly as on live. The row-level veto skips every other candidate
+    * (`row_level_gate`), whose shape carries no annotations; this one is tried.
+    */
+   keepsContracts?: boolean;
 }
 
 /** A candidate's own account of why it did not answer (see {@link Variant.explain}). */
@@ -163,7 +170,7 @@ async function decideRoute<Extra>(
          });
          continue;
       }
-      if (blocked) {
+      if (blocked && !variant.keepsContracts) {
          considered.push({
             kind: variant.kind,
             outcome: "skipped",

@@ -3207,6 +3207,13 @@ export class Model {
          // The caller's OWN text, not the synthesized/injected `queryString`.
          callerQueryText: query,
          ceiling: { audit, source: () => compiledSource ?? sourceName },
+         // The served copy is the author's text, gates included: a row-level
+         // gate is grafted and proven on its compile, so the routed answer
+         // keeps it (R3). Any other routed shape carries no annotations and is
+         // never reached past a row-level gate (the router's veto).
+         ...(answer.via === "served_copy" && answer.graftScope
+            ? { graftScope: answer.graftScope }
+            : {}),
       };
       const { runnable: governed, decision } = await this.governor.govern(
          governRequest,
@@ -3239,9 +3246,11 @@ export class Model {
       // After the gate, so a denied caller gets its 403 rather than a 400 about
       // a value; before prepare, which is where Malloy would parse it.
       this.assertFilterGivens(givens);
-      // No post-hoc gate check is possible on a routed runnable (the serve
-      // shape carries no annotations): storage routing's correctness rests
-      // entirely on `queryEntryPointHasRowLevelGate`.
+      // No post-hoc gate check is possible on a serve-shape or rollup
+      // runnable (it carries no annotations): their correctness rests
+      // entirely on `queryEntryPointHasRowLevelGate`. The served copy is the
+      // exception (R3): it keeps the author's gates, and `govern()` above
+      // grafted and proved them on its own compile.
 
       const maxRows = getMaxQueryRows();
       const maxBytes = getMaxResponseBytes();

@@ -34,7 +34,8 @@ import type {
    QueryMaterializer,
    VirtualMap,
 } from "@malloydata/malloy";
-import { getPersistStorageMode } from "../config";
+import { getMaterializeGatedSources, getPersistStorageMode } from "../config";
+import type { GraftScope } from "./gate_classification";
 import { logger } from "../logger";
 import { recordStorageServeRouting } from "../materialization_metrics";
 import { sourceChain } from "./materialization/plan/source_map";
@@ -97,6 +98,8 @@ export type RoutedExtra =
         tablesRead: ServeBinding[];
         /** Set when the served copy on `virtual` answered, not the serve shape. */
         via?: "served_copy";
+        /** The served copy's graft scope, for `govern()` (see ServedCopyServe.loadQuery). */
+        graftScope?: GraftScope;
      }
    | {
         kind: "rollup";
@@ -127,6 +130,8 @@ export interface Answer {
    readonly storageTablesRead: readonly ServeBinding[] | undefined;
    /** For a storage answer: `served_copy` when the served copy on `virtual` answered rather than the serve shape. */
    readonly via: "served_copy" | undefined;
+   /** For a served-copy answer: where `govern()` grafts a row-level gate (R3). */
+   readonly graftScope: GraftScope | undefined;
    /** For a rollup answer: the composite member the compile resolved to. */
    readonly rollupMember: string | undefined;
    /** A storage read failed at run time and the query was answered live. */
@@ -144,6 +149,7 @@ export const LIVE_ANSWER: Answer = Object.freeze({
    serveShapeBindings: [],
    storageTablesRead: undefined,
    via: undefined,
+   graftScope: undefined,
    rollupMember: undefined,
    runFailed: false,
    colocatedRead: new Set<string>(),
@@ -164,6 +170,7 @@ export function routedAnswer(route: RouteDecision<RoutedExtra>): Answer {
          serveShapeBindings: route.extra.bindings,
          storageTablesRead: route.extra.tablesRead,
          via: route.extra.via,
+         graftScope: route.extra.graftScope,
       });
    }
    return Object.freeze({
@@ -272,7 +279,11 @@ export function recordRoutingDecision(route: RouteDecision<RoutedExtra>): void {
    // The gate vetoes every applicable candidate at once, before any compile,
    // so it is recorded once per query whichever tiers were candidates: the
    // label's contract (see recordStorageServeRouting) covers both tiers.
-   if (route.considered.some((c) => c.reason === "row_level_gate")) {
+   // A served copy that keeps the contracts (R3) may still answer past it.
+   if (
+      route.served !== "variant" &&
+      route.considered.some((c) => c.reason === "row_level_gate")
+   ) {
       recordStorageServeRouting("blocked_by_row_level_gate");
       return;
    }
@@ -377,6 +388,9 @@ export function routeCandidates(
       candidates.push({
          kind: "served",
          applicable: true,
+         // R3, behind its own switch until the managed-tier review (plan,
+         // question 14): a row-level gate is grafted on the served copy.
+         keepsContracts: getMaterializeGatedSources(),
          attempt: async () => {
             const served = await host.servedCopy.loadQuery(
                queryString,
@@ -395,6 +409,7 @@ export function routeCandidates(
                   origin: "persist",
                   tablesRead: served.tablesRead,
                   via: "served_copy",
+                  graftScope: served.graftScope,
                },
             };
          },

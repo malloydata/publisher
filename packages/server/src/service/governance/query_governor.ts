@@ -2752,7 +2752,11 @@ export class QueryGovernor {
          this.graftedMaterializerCache.set(key, materializer);
          return materializer;
       }
-      const built = this.buildGraftedMaterializer(grafts, graftScope.modelDef);
+      const built = this.buildGraftedMaterializer(
+         grafts,
+         graftScope.modelDef,
+         graftScope.runtime,
+      );
       this.graftedMaterializerCache.set(key, built);
       // Evict after inserting, so the entry just built is never dropped.
       while (
@@ -2786,8 +2790,9 @@ export class QueryGovernor {
          condition: FilterCondition;
       }>,
       modelDef: ModelDef,
+      runtime: GraftScope["runtime"] = this.gateRuntime,
    ): ModelMaterializer {
-      if (!this.gateRuntime) {
+      if (!runtime) {
          throw new Error(
             "no retained runtime to graft a row-level gate through",
          );
@@ -2811,7 +2816,7 @@ export class QueryGovernor {
             condition,
          );
       }
-      return this.gateRuntime._loadModelFromModelDef(copy);
+      return runtime._loadModelFromModelDef(copy);
    }
 
    /**

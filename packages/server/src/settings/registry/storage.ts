@@ -153,6 +153,15 @@ export const storage = [
       aliases: { env: ["PUBLISHER_MATERIALIZE"] },
    }),
    setting({
+      key: "materialize.gatedSources",
+      type: boolean(),
+      default: false,
+      description:
+         "Let the served copy answer a query through a row-level gate, with the gate grafted on it (materialization v2's R3, in development).",
+      notes: "Materialization v2's R3, contracts at read, behind `PUBLISHER_MATERIALIZE` and off by default until the security review that question 14 of the plan asks for. Today a query whose entry point carries a row-level gate (`#(authorize)` with a row filter, `#(access_filter)`) is never answered from a `storage=` table. On, the served copy may answer it: the served copy is the author's own text, gates included, so the row filter is grafted and proven on the served compile exactly as on live, and only the served copy is let through; today's serve shape and rollups stay blocked. A gate that cannot be grafted on the served copy denies, as it does live. Storing a gated source puts its columns in the managed tier, which is why this waits for the review. Read at startup.",
+      aliases: { env: ["PUBLISHER_MATERIALIZE_GATED_SOURCES"] },
+   }),
+   setting({
       key: "persist.collisionEnforcementEnabled",
       type: boolean(),
       default: false,

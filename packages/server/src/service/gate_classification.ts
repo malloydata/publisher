@@ -104,6 +104,12 @@ export interface GraftScope {
    modelDef: ModelDef;
    materializer: ModelMaterializer;
    cacheScope: string;
+   /**
+    * The runtime a graft on this scope reloads its model through. Absent: the
+    * model's own retained runtime. The served copy passes its own, whose
+    * connections reach the storage destinations its `virtual()` sources name.
+    */
+   runtime?: { _loadModelFromModelDef(modelDef: ModelDef): ModelMaterializer };
 }
 
 /**
