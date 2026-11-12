@@ -45,6 +45,7 @@ import {
    upstreamReuseFromManifest,
    wrongTierDetail,
 } from "./materialization_run_support";
+import type { SwapDependents } from "./name_view";
 import type { StorageBuildRequest } from "./storage_build_strategy";
 
 /** The colocated tier, in the order it is tried: a delta, else a full rebuild. */
@@ -90,6 +91,8 @@ export class SourceBuilder {
       contentSourceEntityId?: string,
       // The default knows nothing; only test seams rely on it.
       planFacts: ChainedPlanFacts = NO_PLAN_FACTS,
+      // A `name=` view the colocated swap must carry (see SwapDependents).
+      swapDependents?: SwapDependents,
    ): Promise<ManifestEntry> {
       const physicalTableName = instruction.physicalTableName;
       const isStorageBuild =
@@ -402,6 +405,7 @@ export class SourceBuilder {
             persistSource,
             { physicalTableName, sourceEntityId: contentSourceEntityId },
          ),
+         ...(swapDependents ? { swapDependents } : {}),
       };
       for (const strategy of COLOCATED_STRATEGIES) {
          const entry = await strategy.build(request);

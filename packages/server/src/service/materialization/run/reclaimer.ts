@@ -29,7 +29,22 @@ import {
    stagingSuffix,
    tableKeyOf,
 } from "./materialization_run_support";
+import {
+   nameViewsIn,
+   nameViewSuccessors,
+   settleNameViewsBeforeDrop,
+   type NameViewRecord,
+} from "./name_view";
 import type { RunLifecycle } from "./run_lifecycle";
+
+/**
+ * The `name=` views a sweep must settle before it drops their tables: those
+ * the runs being dropped recorded, and where each could point instead.
+ */
+export interface NameViewsToSettle {
+   recorded: NameViewRecord[];
+   successorFor: (view: NameViewRecord) => NameViewRecord | undefined;
+}
 
 /** A physical table's key for drop bookkeeping: where it lives, and its name. */
 function tableKey(destination: string, physicalTableName: string): string {
@@ -300,7 +315,35 @@ export class Reclaimer {
          Object.values(entries),
          stillReferenced,
          await this.connectionResolverFor(environment, packageName, m.version),
+         await this.nameViewsToSettle(
+            environmentId,
+            packageName,
+            [m],
+            (other) => other.id !== m.id,
+         ),
       );
+   }
+
+   /**
+    * The `name=` views `runs` recorded, and for each the newest table another
+    * committed run (among those `include` admits) points the same view at;
+    * undefined when the runs recorded none.
+    */
+   private async nameViewsToSettle(
+      environmentId: string,
+      packageName: string,
+      runs: Materialization[],
+      include: (other: Materialization) => boolean,
+   ): Promise<NameViewsToSettle | undefined> {
+      const recorded = runs.flatMap((m) => nameViewsIn(m.metadata));
+      if (recorded.length === 0) return undefined;
+      const others = (
+         (await this.repository.listMaterializations(
+            environmentId,
+            packageName,
+         )) ?? []
+      ).filter((o) => include(o) && o.status === "MANIFEST_FILE_READY");
+      return { recorded, successorFor: nameViewSuccessors(others) };
    }
 
    /**
@@ -370,10 +413,19 @@ export class Reclaimer {
       entries: ManifestEntry[],
       stillReferenced: Set<string>,
       connectionFor: (name: string) => Promise<MalloyConnection | undefined>,
+      // The `name=` views to settle before their tables go (name_view.ts).
+      nameViews?: NameViewsToSettle,
    ): Promise<ManifestEntry[]> {
       const m = { id: materializationId };
       const connectionCache = new Map<string, MalloyConnection>();
       const owed: ManifestEntry[] = [];
+      const cachedConnection = async (name: string) => {
+         const cached = connectionCache.get(name);
+         if (cached) return cached;
+         const resolved = await connectionFor(name);
+         if (resolved) connectionCache.set(name, resolved);
+         return resolved;
+      };
       for (const entry of entries) {
          const connectionName = entry.connectionName;
          const physicalTableName = entry.physicalTableName;
@@ -396,6 +448,30 @@ export class Reclaimer {
                },
             );
             continue;
+         }
+
+         // Before the table: a Postgres view refuses its table's drop, and a
+         // view left reading a dropped table answers nothing.
+         if (nameViews) {
+            await settleNameViewsBeforeDrop(
+               entry,
+               nameViews.recorded,
+               nameViews.successorFor,
+               {
+                  connectionFor: cachedConnection,
+                  destinationFor: (name) =>
+                     destinationForCleanup(environment, name),
+                  environmentPath: environment.getEnvironmentPath(),
+                  runOptions: (name) =>
+                     dropRunSQLOptions(
+                        environment,
+                        name,
+                        environmentName,
+                        packageName,
+                        m.id,
+                     ),
+               },
+            );
          }
 
          // A storage= table lives in the destination, not the source warehouse,
@@ -442,17 +518,13 @@ export class Reclaimer {
          }
 
          try {
-            let connection = connectionCache.get(connectionName);
+            const connection = await cachedConnection(connectionName);
             if (!connection) {
-               connection = await connectionFor(connectionName);
-               if (!connection) {
-                  logger.info(
-                     "Skipping drop: the table lived in an unloaded version's in-memory duckdb",
-                     { materializationId: m.id, physicalTableName },
-                  );
-                  continue;
-               }
-               connectionCache.set(connectionName, connection);
+               logger.info(
+                  "Skipping drop: the table lived in an unloaded version's in-memory duckdb",
+                  { materializationId: m.id, physicalTableName },
+               );
+               continue;
             }
             // Quoted as buildOneSource quoted it, so what built also drops.
             const dialect = connection.dialectName;
@@ -710,6 +782,12 @@ export class Reclaimer {
          packageName,
          versionId,
       );
+      const nameViews = await this.nameViewsToSettle(
+         environmentId,
+         packageName,
+         runs,
+         (other) => !reclaimed.has(other.id),
+      );
       for (const m of runs) {
          const owed = await this.deps.dropManifestEntries(
             environment,
@@ -719,6 +797,7 @@ export class Reclaimer {
             reclaimableEntries(m),
             stillReferenced,
             connectionFor,
+            nameViews,
          );
          await this.repository.deleteMaterialization(m.id);
          if (owed.length > 0) {

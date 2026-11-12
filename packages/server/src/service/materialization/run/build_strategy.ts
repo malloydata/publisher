@@ -9,6 +9,7 @@ import type {
 import type { BuildInstruction, ManifestEntry } from "../types";
 import type { QueryMetadata } from "../../query_metadata";
 import type { sourceIncrementalRefresh } from "./incremental_build";
+import type { SwapDependents } from "./name_view";
 
 /** A source's incremental refresh the run can act on: its context and lineage. */
 export type IncrementalRefreshTarget = NonNullable<
@@ -52,4 +53,10 @@ export interface ColocatedBuildRequest {
    >;
    /** The source's incremental refresh, when it declares one the run can act on. */
    incrementalRefresh?: IncrementalRefreshTarget;
+   /**
+    * A `name=` view that reads the very table this build replaces, on a
+    * dialect whose views bind to their table: the swap drops and remakes it
+    * in its transaction (see {@link SwapDependents}).
+    */
+   swapDependents?: SwapDependents;
 }

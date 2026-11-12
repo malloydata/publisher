@@ -43,6 +43,7 @@ import {
    type BuildQueryMetadata,
    type ChainedPlanFacts,
 } from "./materialization_run_support";
+import type { NameViewIntent } from "./name_view";
 
 /** The eligibility gate a source was cleared by. */
 export type EligibilityTier = "storage" | "colocated";
@@ -116,6 +117,8 @@ export interface InstructedRun {
    // table CONTAINS, the coordinate says which table it IS, and only the latter
    // answers "have I written this already".
    writtenTargets: Map<string, { sourceEntityId: string; sourceName: string }>;
+   /** The `name=` views the sources this run built call for (name_view.ts). */
+   nameViewIntents?: NameViewIntent[];
 }
 
 /** One source the colocated gate refuses, as colocatedRefusalOn reports it. */

@@ -63,6 +63,15 @@ import {
    reportRetainedStorageTables,
    type WarehouseReach,
 } from "./materialization_run_support";
+import {
+   nameViewIntentFor,
+   preflightNameView,
+   publishNameViews,
+   swapDependentsFor,
+   type NameViewContext,
+   type NameViewRecord,
+   type SwapDependents,
+} from "./name_view";
 import type { SourceBuilder } from "./source_build";
 
 /** sourceID -> the sourceIDs it reads, merged across every connection's build. */
@@ -181,6 +190,11 @@ export class InstructedBuild {
        * eligible sources, and only these answer live.
        */
       refusedBesideBuilt: Record<string, RefusedSource>;
+      /**
+       * What became of each `name=` view the built sources call for, made
+       * once every source built (name_view.ts). Empty without any.
+       */
+      nameViews: NameViewRecord[];
    }> {
       const { builds, sources, connectionDigests, connections } = compiled;
       const index = indexInstructions(instructions);
@@ -219,6 +233,7 @@ export class InstructedBuild {
          builtAddresses: new Set(),
          builtSources: [],
          writtenTargets: new Map(),
+         nameViewIntents: [],
       };
       assertNoTableCollisions(builds, sources, connectionDigests, index);
 
@@ -299,11 +314,21 @@ export class InstructedBuild {
          throw err;
       }
 
+      // Only once every source built, so a run that fails part-way never
+      // points a view at a table its manifest will not name. Never throws.
+      const nameViews = run.nameViewIntents?.length
+         ? await publishNameViews(
+              run.nameViewIntents,
+              nameViewContext(run, undefined),
+           )
+         : [];
+
       return {
          entries: run.entries,
          failures: run.failures,
          sourcesRefused: run.refusals.length,
          ...settled,
+         nameViews,
       };
    }
 
@@ -442,6 +467,12 @@ export class InstructedBuild {
          return;
       }
 
+      const nameView = nameViewIntentFor(
+         compiled,
+         persistSource,
+         instruction,
+         sourceEntityId,
+      );
       let entry;
       try {
          // An instructed destination that cannot be honored REFUSES, never
@@ -459,6 +490,23 @@ export class InstructedBuild {
             compiled.materializePlans?.[persistSource.sourceID],
             connection,
          );
+
+         // A `name=` someone else holds fails the source before it writes.
+         let swapDependents: SwapDependents | undefined;
+         if (nameView) {
+            const probed = await preflightNameView(
+               nameView,
+               nameViewContext(run, connection),
+            );
+            if (probed && !instruction.destination) {
+               swapDependents = swapDependentsFor(
+                  nameView,
+                  probed.slot,
+                  probed.dialect,
+               );
+            }
+         }
+
          entry = await this.seams.buildOneSource(
             persistSource,
             instruction,
@@ -473,6 +521,8 @@ export class InstructedBuild {
             // boundary can never be read against different SQL.
             sourceEntityId,
             run.planFacts,
+            // Passed only when present, so a seam's recorded call is unchanged.
+            ...(swapDependents ? ([swapDependents] as const) : []),
          );
          // A manifest travels without its build plan, so this is the only
          // signal that a table belongs to a rollup in no model file; served as
@@ -498,6 +548,7 @@ export class InstructedBuild {
          sourceEntityId,
          sourceName: persistSource.name,
       });
+      if (nameView) run.nameViewIntents?.push(nameView);
       if (isReclaimableStorageTable(entry)) {
          run.builtThisRun.push(entry);
       } else if (entry.storageDestinationName) {
@@ -579,6 +630,29 @@ export class InstructedBuild {
       }
       return false;
    }
+}
+
+/**
+ * How a run reaches the site of a `name=` view: the source's connection (the
+ * one this build holds, when given), or the destination the run builds into.
+ */
+function nameViewContext(
+   run: InstructedRun,
+   connection: MalloyConnection | undefined,
+): NameViewContext {
+   return {
+      connectionFor: (name) =>
+         (connection && connection.name === name ? connection : undefined) ??
+         run.compiled.connections.get(name),
+      destinationFor: (name) => {
+         try {
+            return run.environment.getStorageDestination(name);
+         } catch {
+            return undefined;
+         }
+      },
+      environmentPath: run.environment.getEnvironmentPath(),
+   };
 }
 
 /**

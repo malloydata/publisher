@@ -46,6 +46,7 @@ export class ColocatedCtasStrategy
          buildSQL,
          runOptions,
          incrementalRefresh,
+         swapDependents,
       } = request;
       const sourceEntityId = instruction.sourceEntityId;
       const physicalTableName = instruction.physicalTableName;
@@ -98,6 +99,7 @@ export class ColocatedCtasStrategy
          stagingTableName,
          backupTableName: `${physicalTableName}${backupSuffix(sourceEntityId)}`,
          connectionName: persistSource.connectionName,
+         swapDependents,
       });
 
       // Visible to later downstreams in this run, under the SAME quoted path
@@ -200,6 +202,13 @@ interface SwapArgs {
    stagingTableName: string;
    backupTableName: string;
    connectionName: string;
+   /**
+    * Statements the transactional swap runs before its DROP and after its
+    * RENAME: a `name=` view that depends on the served table, dropped and
+    * made again in the same transaction. Only Postgres asks for them; a
+    * non-transactional swap never gets any.
+    */
+   swapDependents?: ColocatedBuildRequest["swapDependents"];
 }
 
 /**
@@ -245,11 +254,14 @@ async function swapInTransaction({
    physicalTableName,
    stagingTableName,
    connectionName,
+   swapDependents,
 }: SwapArgs): Promise<void> {
    const run = (sql: string) => connection.runSQL(sql, runOptions);
    const body = [
+      ...(swapDependents?.before ?? []),
       `DROP TABLE IF EXISTS ${quoteTablePath(physicalTableName, dialect)}`,
       `ALTER TABLE ${quoteTablePath(stagingTableName, dialect)} RENAME TO ${quoteRenameTarget(physicalTableName, dialect)}`,
+      ...(swapDependents?.after ?? []),
    ];
    const explicit = dialect !== "postgres";
    const statements = explicit

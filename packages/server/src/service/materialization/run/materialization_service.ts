@@ -63,6 +63,7 @@ import {
    tallySources,
    type WarehouseReach,
 } from "./materialization_run_support";
+import { NAME_VIEWS_KEY } from "./name_view";
 import { Reclaimer } from "./reclaimer";
 import { RunLifecycle } from "./run_lifecycle";
 import {
@@ -818,6 +819,7 @@ export class MaterializationService {
             // refusal is in failures".
             refusalsInFailures = instructedRefused,
             refusedBesideBuilt = {},
+            nameViews = [],
          } = await this.executeInstructedBuild(
             compiled,
             environment,
@@ -883,6 +885,9 @@ export class MaterializationService {
                  }
                : {}),
             durationMs,
+            // The `name=` views this run pointed, for the dropper and the
+            // reclaimers to find (name_view.ts).
+            ...(nameViews.length > 0 ? { [NAME_VIEWS_KEY]: nameViews } : {}),
             // commitManifest replaces the metadata, so the version is set again.
             ...(versionId !== undefined
                ? {
