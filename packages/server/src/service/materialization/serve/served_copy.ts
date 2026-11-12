@@ -37,13 +37,10 @@
 import { identifier, nowComparison, stringLiteral } from "../../malloy_text";
 import type { MaterializeReadTimeTerm } from "../plan/build_file_generator";
 import { duckdbTypeToMalloy } from "./materialization_serve_transform";
-import {
-   isName,
-   lexAll,
-   offsetOf,
-   statementStarts,
-   type Token,
-} from "../malloy_lexer";
+import { declarationSpans, topLevelTokens } from "../declaration_text";
+import { isName, lexAll, offsetOf, statementStarts } from "../malloy_lexer";
+
+export { declarationSpans };
 
 /** A zero-based Malloy range, as a compiled source's `location.range` carries. */
 export interface ServedCopyRange {
@@ -599,73 +596,4 @@ function withTypes(text: string, applied: readonly Reroot[]): string {
    const head = lines.slice(0, i).join("\n");
    const rest = lines.slice(i).join("\n");
    return `${head}${head ? "\n" : ""}${SERVED_COPY_FLAG}\n${types}\n\n${rest}`;
-}
-
-/**
- * Where the name ends (`is` begins) and where the trailing run of top-level
- * `extend { … }` blocks begins, if any. Undefined when no top-level `is`
- * follows the name.
- */
-export function declarationSpans(
-   declaration: string,
-): { nameEnd: number; extendStart?: number; queryShaped: boolean } | undefined {
-   const tokens = topLevelTokens(declaration);
-   if (!tokens) return undefined;
-   const isIndex = tokens.findIndex(
-      (t) => t.kind === "word" && t.text === "is",
-   );
-   if (isIndex <= 0) return undefined;
-   const nameEnd = tokens[isIndex].start;
-   // Walk back from the end over `extend` + block pairs.
-   let extendStart: number | undefined;
-   let j = tokens.length - 1;
-   while (j > isIndex + 1) {
-      const close = tokens[j];
-      if (close.kind !== "close") break;
-      // The block's opening brace is the matching top-level "open" before it.
-      const open = tokens[j - 1];
-      const kw = tokens[j - 2];
-      if (
-         open?.kind !== "open" ||
-         kw?.kind !== "word" ||
-         kw.text !== "extend" ||
-         j - 2 <= isIndex
-      ) {
-         break;
-      }
-      extendStart = kw.start;
-      j -= 3;
-   }
-   // A query-shaped base has a top-level `->` before its trailing extends.
-   const baseEnd = extendStart ?? declaration.length;
-   const queryShaped = tokens.some(
-      (t, k) =>
-         k > isIndex &&
-         t.text === "-" &&
-         t.end <= baseEnd &&
-         tokens[k + 1]?.text === ">" &&
-         tokens[k + 1].start === t.end,
-   );
-   return {
-      nameEnd,
-      ...(extendStart !== undefined ? { extendStart } : {}),
-      queryShaped,
-   };
-}
-
-/**
- * The tokens at brace depth 0: words, quoted text, and each top-level `{ … }`
- * block as an "open" token at its `{` and a "close" token at its `}` (the
- * block's inside is skipped). Undefined when the text does not lex.
- */
-function topLevelTokens(s: string): Token[] | undefined {
-   const all = lexAll(s);
-   if (!all) return undefined;
-   return all.filter(
-      (t) =>
-         t.depth === 0 &&
-         ((t.kind !== "open" && t.kind !== "close") ||
-            t.text === "{" ||
-            t.text === "}"),
-   );
 }
