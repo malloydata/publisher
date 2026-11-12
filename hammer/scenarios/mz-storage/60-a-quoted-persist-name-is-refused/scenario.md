@@ -8,7 +8,7 @@ Copyright (c) Credible Data Inc.
 SPDX-License-Identifier: MIT
 -->
 
-# An author-quoted `#@ persist name=` is refused at publish
+# An author-quoted `#@ persist name=` is refused when the model loads
 
 A `#@ persist name=` value is a plain identifier path: dot-separated segments of
 letters, digits, `_` and `-`. Publisher quotes each segment for the target warehouse

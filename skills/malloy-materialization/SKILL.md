@@ -107,7 +107,7 @@ If **even this** doesn't build after a real run, the problem is package-wide: re
 - **Flag every file that declares a persist source** - a flagless model nothing flagged imports is skipped without a warning.
 - **A `#@ persist` on a plain `extend` over `conn.table(...)` fails the run** - every run that covers it, naming the source.
 - **A tag doesn't build** - only an explicit run, the standalone scheduler, or a hosted control plane does.
-- **Quote the name, once** - bare stops the load; double-quoted silently serves live.
+- **Quote the name, once** - bare stops the load, and so does a name with quotes inside it; Publisher quotes each segment for you.
 - **A ready run can still have lost a source** - read `manifest.failures` and `metadata.refusedSources`.
 - **A reload unbinds; a restart rebinds** - run a build before trusting a timing.
 - **Reuse is by content address, not by name** - `--force-refresh` and every scheduler fire defeat it.

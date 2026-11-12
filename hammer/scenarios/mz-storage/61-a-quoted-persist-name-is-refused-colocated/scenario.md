@@ -8,7 +8,7 @@ Copyright (c) Credible Data Inc.
 SPDX-License-Identifier: MIT
 -->
 
-# An author-quoted `#@ persist name=` is refused at publish — COLOCATED
+# An author-quoted `#@ persist name=` is refused when the model loads — COLOCATED
 
 The colocated twin of `a-quoted-persist-name-is-refused`. With no `storage=`, the
 source materializes into its own warehouse, and the colocated build would also derive
