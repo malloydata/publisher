@@ -91,6 +91,42 @@ export interface Reroot {
     * `extend` repeats is applied twice, which is harmless).
     */
    readTimeTerms?: readonly MaterializeReadTimeTerm[];
+   /**
+    * For a `#(materialize)` source that inlines a join_many: its stored table
+    * is a pair table (P5), so the source is re-rooted on its parent rows and
+    * the join re-pointed at its child rows ({@link PairReroot}).
+    */
+   pair?: PairReroot;
+}
+
+/**
+ * How the served copy reads a pair table (an inlined join_many, P5). The
+ * source is the rows the parent-row flag marks, one per parent, so it is the
+ * author's source over its own columns. Its join_many keeps the author's
+ * condition but joins the rows the child-row flag marks, one per child,
+ * renamed back to the joined source's own fields and extended with the joined
+ * source's own trailing `extend` blocks, so the query is live's LEFT JOIN and
+ * Malloy's symmetric aggregates (and its count of a childless parent,
+ * malloydata/malloy#1762) apply exactly as they do live.
+ */
+export interface PairReroot {
+   /** The join_many's name on the re-rooted source. */
+   join: string;
+   /** The parent-row flag's stored column. */
+   parentRowColumn: ServedColumn;
+   /** The child-row flag's stored column. */
+   childRowColumn: ServedColumn;
+   /** The `type:` the child rows are read as; unique in the file. */
+   childTypeName: string;
+   /**
+    * The joined source's stored fields: `name` its field, `column` the pair
+    * table's `<join>__<field>` column, and the field's own annotations.
+    */
+   childColumns: readonly (ServedColumn & { column: string })[];
+   /** The joined source's declaration, `<name> is <definition>`, verbatim. */
+   childDeclaration: string;
+   /** The joined source's computed dimensions the pair table stores. */
+   childStoredDimensions: readonly string[];
 }
 
 /** One stored column of a re-rooted source. */
@@ -135,7 +171,11 @@ export interface RerootRefusal {
     * whole chain's filters, so re-rooting it would drop its base's `where:`.
     * It is left as written; it still inherits a re-rooted base by name.
     */
-   reason: "range_not_found" | "definition_not_parsed" | "not_query_shaped";
+   reason:
+      | "range_not_found"
+      | "definition_not_parsed"
+      | "not_query_shaped"
+      | "pair_join_not_found";
 }
 
 /** The served copy of the files that declare re-rooted sources. */
@@ -207,6 +247,16 @@ export function buildServedCopy(
             continue;
          }
          const replaced = rerootDeclaration(declaration, r);
+         if (replaced === undefined && r.pair && spans) {
+            // The pair's join is not in the source's own `extend` text (a base
+            // the re-root replaces declares it), so it cannot be re-pointed.
+            refused.push({
+               sourceName: r.sourceName,
+               url,
+               reason: "pair_join_not_found",
+            });
+            continue;
+         }
          if (replaced === undefined) {
             refused.push({
                sourceName: r.sourceName,
@@ -227,7 +277,8 @@ export function buildServedCopy(
 /**
  * The re-rooted declaration text for one source: `<name> is <virtual>` plus the
  * author's trailing `extend { … }` blocks, verbatim. Undefined when the
- * declaration text does not parse as `<name> is <definition>`.
+ * declaration text does not parse as `<name> is <definition>`, or, for a pair
+ * table, when the join_many it re-points is not in that text.
  */
 export function rerootDeclaration(
    declaration: string,
@@ -240,22 +291,65 @@ export function rerootDeclaration(
       | "storedDimensions"
       | "reservedNames"
       | "readTimeTerms"
+      | "pair"
    > & { columns?: Reroot["columns"] },
 ): string | undefined {
    const spans = declarationSpans(declaration);
    if (!spans) return undefined;
-   const virtual =
+   const virtualOf = (typeName: string) =>
       `${identifier(r.connectionAlias)}.virtual(${stringLiteral(r.virtualHandle)})` +
-      `::${identifier(r.typeName)}`;
+      `::${identifier(typeName)}`;
+   let virtual = virtualOf(r.typeName);
+   if (r.pair) {
+      // The parent rows, over the source's own columns only: the flag and
+      // the child columns are not fields of the served source.
+      const own = (r.columns ?? []).map((c) => `    ${identifier(c.name)}`);
+      virtual =
+         `${virtual} -> {\n  where: ${identifier(r.pair.parentRowColumn.name)}\n` +
+         `  select:\n${own.join(",\n")}\n}`;
+   }
    const name = declaration.slice(0, spans.nameEnd).trimEnd();
-   let extend =
+   let extend = servedExtend(
       spans.extendStart === undefined
          ? ""
-         : declaration.slice(spans.extendStart).trimEnd();
-   // Each stored timeframe column, renamed internally so its field can be
-   // redefined with the timeframe a `type:` cannot declare.
-   const timeframed = timeframedColumns(r.columns ?? [], r.reservedNames ?? []);
-   const stored = new Set(r.storedDimensions ?? []);
+         : declaration.slice(spans.extendStart).trimEnd(),
+      r.columns ?? [],
+      r.storedDimensions ?? [],
+      r.reservedNames ?? [],
+   );
+   if (extend === undefined) return undefined;
+   if (r.pair) {
+      const child = pairChildSource(r.pair, virtualOf(r.pair.childTypeName), [
+         ...(r.reservedNames ?? []),
+      ]);
+      if (child === undefined) return undefined;
+      const repointed = repointJoin(extend, r.pair.join, child);
+      if (repointed === undefined) return undefined;
+      extend = repointed;
+   }
+   const terms = (r.readTimeTerms ?? [])
+      .map(readTimeTermText)
+      .filter((t) => t !== undefined);
+   const reread = terms.length ? ` extend { where: ${terms.join(", ")} }` : "";
+   return `${name} is ${virtual}${reread}${extend ? ` ${extend}` : ""}`;
+}
+
+/**
+ * A run of `extend { … }` blocks as the served copy keeps it over stored
+ * columns: each stored computed dimension's definition dropped (the column
+ * stands in for it), and each stored timeframe column renamed internally and
+ * its field redefined with the timeframe a `type:` cannot declare. Undefined
+ * when the text does not lex.
+ */
+function servedExtend(
+   text: string,
+   columns: readonly ServedColumn[],
+   storedDimensions: readonly string[],
+   reservedNames: readonly string[],
+): string | undefined {
+   let extend = text;
+   const timeframed = timeframedColumns(columns, reservedNames);
+   const stored = new Set(storedDimensions);
    const rewrite = new Map<string, string>();
    for (const c of timeframed) {
       // Only a `#(materialize)` computed dimension has a definition in the
@@ -286,11 +380,104 @@ export function rerootDeclaration(
       if (opened === undefined) return undefined;
       extend = opened;
    }
-   const terms = (r.readTimeTerms ?? [])
-      .map(readTimeTermText)
-      .filter((t) => t !== undefined);
-   const reread = terms.length ? ` extend { where: ${terms.join(", ")} }` : "";
-   return `${name} is ${virtual}${reread}${extend ? ` ${extend}` : ""}`;
+   return extend;
+}
+
+/**
+ * The source a pair table's join_many reads in the served copy: the rows the
+ * child-row flag marks, each stored column renamed back to the joined
+ * source's field (with that field's annotations), then the joined source's
+ * own trailing `extend` blocks over them. Undefined when its declaration does
+ * not parse.
+ */
+function pairChildSource(
+   pair: PairReroot,
+   virtual: string,
+   reservedNames: readonly string[],
+): string | undefined {
+   const spans = declarationSpans(pair.childDeclaration);
+   if (!spans) return undefined;
+   // malloy-text: the author's own notes, then names through identifier
+   const select = pair.childColumns
+      .map(
+         (c) =>
+            (c.notes ?? []).map((n) => `      ${n.trimEnd()}\n`).join("") +
+            `      ${identifier(c.name)} is ${identifier(c.column)}`,
+      )
+      .join(",\n");
+   const extend = servedExtend(
+      spans.extendStart === undefined
+         ? ""
+         : pair.childDeclaration.slice(spans.extendStart).trimEnd(),
+      pair.childColumns,
+      pair.childStoredDimensions,
+      reservedNames,
+   );
+   if (extend === undefined) return undefined;
+   const base =
+      // malloy-text: virtual is the caller's virtual() reference, through identifier and stringLiteral
+      `(${virtual} -> {\n    where: ${identifier(pair.childRowColumn.name)}\n` +
+      `    select:\n${select}\n  })`;
+   return extend ? `${base} ${extend}` : base;
+}
+
+/**
+ * In a run of `extend { … }` blocks, point the `join_many:` definition named
+ * `join` at `source` (`<join> is <source>`), keeping its name, its condition
+ * and its annotations. Undefined when the text does not lex or declares no
+ * such join_many: one inherited from a base the re-root replaces is not in it.
+ */
+export function repointJoin(
+   text: string,
+   join: string,
+   source: string,
+): string | undefined {
+   const tokens = lexAll(text);
+   if (!tokens) return undefined;
+   const level = tokens.filter((t) => t.depth === 1 && t.kind !== "close");
+   const closes = tokens.filter((t) => t.kind === "close" && t.depth === 0);
+   const starts = statementStarts(level);
+   const nameOf = (t: { text: string }) =>
+      t.text.startsWith("`") ? t.text.slice(1, -1) : t.text;
+   for (let si = 0; si < starts.length; si++) {
+      const kw = level[starts[si]];
+      if (kw.text !== "join_many") continue;
+      const colon = level[starts[si] + 1];
+      const nextStart =
+         si + 1 < starts.length ? level[starts[si + 1]].start : Infinity;
+      const blockEnd =
+         closes.find((t) => t.start > kw.start)?.start ?? Infinity;
+      const stmtEnd = Math.min(nextStart, blockEnd);
+      const body = level.filter(
+         (t) => t.start > colon.start && t.start < stmtEnd,
+      );
+      for (let k = 0; k + 1 < body.length; k++) {
+         if (!isName(body[k]) || nameOf(body[k]) !== join) continue;
+         // A definition opens the statement, follows a comma, or starts a
+         // new line after the previous one.
+         if (
+            k > 0 &&
+            body[k - 1].text !== "," &&
+            !text.slice(body[k - 1].end, body[k].start).includes("\n")
+         ) {
+            continue;
+         }
+         const next = body[k + 1];
+         if (next.text === "on") {
+            return (
+               text.slice(0, body[k].end) +
+               ` is ${source}` +
+               text.slice(body[k].end)
+            );
+         }
+         if (next.text !== "is") continue;
+         // `<join> is <source> on …`: replace what it joins, up to `on`.
+         const on = body.slice(k + 2).find((t) => t.text === "on");
+         if (!on) return undefined;
+         return text.slice(0, next.end) + ` ${source} ` + text.slice(on.start);
+      }
+   }
+   return undefined;
 }
 
 /**
@@ -597,7 +784,29 @@ function withTypes(text: string, applied: readonly Reroot[]): string {
       }
       break;
    }
-   const types = applied.map(typeDeclaration).join("\n");
+   const types = applied
+      .flatMap((r) =>
+         r.pair
+            ? [
+                 typeDeclaration({
+                    typeName: r.typeName,
+                    columns: [...r.columns, r.pair.parentRowColumn],
+                 }),
+                 typeDeclaration({
+                    typeName: r.pair.childTypeName,
+                    // The child's annotations go on its renamed field instead.
+                    columns: [
+                       ...r.pair.childColumns.map((c) => ({
+                          name: c.column,
+                          type: c.type,
+                       })),
+                       r.pair.childRowColumn,
+                    ],
+                 }),
+              ]
+            : [typeDeclaration(r)],
+      )
+      .join("\n");
    const head = lines.slice(0, i).join("\n");
    const rest = lines.slice(i).join("\n");
    return `${head}${head ? "\n" : ""}${SERVED_COPY_FLAG}\n${types}\n\n${rest}`;

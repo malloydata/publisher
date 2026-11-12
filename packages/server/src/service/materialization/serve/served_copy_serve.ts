@@ -35,7 +35,10 @@ import {
 } from "../../model_runtime";
 import { SourceMap } from "../plan/source_map";
 import { givenReadingFilterTerms } from "../plan/persist_dynamic_terms";
-import type { MaterializePlan } from "../plan/build_file_generator";
+import type {
+   MaterializePair,
+   MaterializePlan,
+} from "../plan/build_file_generator";
 import { rollingWindowsOf } from "../plan/rolling_window";
 import { evaluateManifestFreshness } from "../run/freshness";
 import {
@@ -57,6 +60,7 @@ import {
 import {
    buildServedCopy,
    declaredBaseName,
+   type PairReroot,
    type Reroot,
    type ServedColumn,
    type ServedCopyRange,
@@ -157,6 +161,8 @@ export interface ServedCopyProblem {
       | "no_declaration"
       | "range_not_found"
       | "definition_not_parsed"
+      | "pair_join_not_found"
+      | "pair_not_compiled"
       | "fields_not_carried"
       | "read_terms_not_kept"
       | "cross_connection_join"
@@ -549,6 +555,7 @@ export class ServedCopyServe {
       map: SourceMap,
       problems: ServedCopyProblem[],
       reservedNames: readonly string[],
+      fileText: (url: string) => string | undefined,
    ): Reroot | undefined {
       // `#(materialize)`: the binding is the generated build source's; its
       // plan names the author's source, by sourceID.
@@ -636,10 +643,26 @@ export class ServedCopyServe {
          }
          columns = narrowed.map((c) => ({ ...c, ...timeframeOf(c.name) }));
       }
+      let pair: PairReroot | undefined;
+      if (plan?.pair) {
+         pair = pairRerootOf(
+            plan,
+            plan.pair,
+            sourceName,
+            new Map(binding.schema.map((c) => [c.name, c.type])),
+            map,
+            fileText,
+         );
+         if (!pair) {
+            problems.push({ sourceName, reason: "column_types" });
+            return undefined;
+         }
+      }
       return {
          url,
          range,
          sourceName,
+         ...(pair ? { pair } : {}),
          connectionAlias: servedCopyAlias(binding.destinationName),
          virtualHandle: binding.virtualHandle,
          typeName: `${sourceName}__served`,
@@ -676,8 +699,21 @@ export class ServedCopyServe {
          reroot: Reroot & { sourceID: string };
       }[] = [];
       const reservedNames = modelFieldNames(map);
+      const lift = authorModelLiftContext(modelDef, (u) => {
+         try {
+            return readFileSync(fileURLToPath(u), "utf8");
+         } catch {
+            return undefined;
+         }
+      });
       for (const binding of bindings) {
-         const reroot = this.rerootFor(binding, map, problems, reservedNames);
+         const reroot = this.rerootFor(
+            binding,
+            map,
+            problems,
+            reservedNames,
+            (u) => lift.fileText(u),
+         );
          if (reroot) {
             candidates.push({
                binding,
@@ -689,13 +725,6 @@ export class ServedCopyServe {
       // re-rooting the extension too would replace the base it inherits its
       // parent's fields from (a `#(materialize)` extension inherits the
       // annotation, so it has a table of its own). Leave it as written.
-      const lift = authorModelLiftContext(modelDef, (u) => {
-         try {
-            return readFileSync(fileURLToPath(u), "utf8");
-         } catch {
-            return undefined;
-         }
-      });
       // The chain comes from the compiled `extends`, which Malloy records only
       // in a model with the persistence flag (a `#(materialize)` model needs
       // none), so the declaration's own text, `<name> is <base> extend …`,
@@ -715,7 +744,7 @@ export class ServedCopyServe {
       });
       // At most one pass per candidate: each pass either compiles with every
       // remaining source whole, or drops the sources it lost fields on.
-      for (let pass = 0; pass <= candidates.length; pass++) {
+      for (let pass = 0; pass <= candidates.length + 1; pass++) {
          const copy = buildServedCopy(
             candidates.map((c) => c.reroot),
             (u) => lift.fileText(u),
@@ -794,8 +823,26 @@ export class ServedCopyServe {
                   await load(keyedOverlay(files));
                },
             }).catch(() => undefined);
+            // A pair table's re-pointed join is the one text the served copy
+            // writes from another declaration (the joined source's); when the
+            // copy does not compile, try again without the pair tables first,
+            // so the model's other tables still serve.
+            const withoutPairs = (detail: string): boolean => {
+               const pairs = candidates.filter((c) => c.reroot.pair);
+               if (pairs.length === 0) return false;
+               for (const c of pairs) {
+                  problems.push({
+                     sourceName: c.reroot.sourceName,
+                     reason: "pair_not_compiled",
+                     detail,
+                  });
+               }
+               candidates = candidates.filter((c) => !c.reroot.pair);
+               return true;
+            };
             if (!kept) {
                const detail = err instanceof Error ? err.message : String(err);
+               if (withoutPairs(detail)) continue;
                problems.push({
                   reason: classifyServedCopyFailure(err),
                   detail,
@@ -811,6 +858,7 @@ export class ServedCopyServe {
             } catch (again) {
                const detail =
                   again instanceof Error ? again.message : String(again);
+               if (withoutPairs(detail)) continue;
                problems.push({ reason: "compile_failed", detail });
                return { key, generation, rerooted: [], aliased: [], problems };
             }
@@ -901,7 +949,11 @@ export class ServedCopyServe {
             generation,
             computedTables: new Set(
                candidates
-                  .filter((c) => (c.reroot.storedDimensions ?? []).length > 0)
+                  .filter(
+                     (c) =>
+                        (c.reroot.storedDimensions ?? []).length > 0 ||
+                        (c.reroot.pair?.childStoredDimensions ?? []).length > 0,
+                  )
                   .map((c) => c.binding.tablePath),
             ),
             materializer,
@@ -917,6 +969,76 @@ export class ServedCopyServe {
       }
       return { key, generation, rerooted: [], aliased: [], problems };
    }
+}
+
+/**
+ * How the served copy reads one pair table (P5), from its plan, the stored
+ * schema and the joined source's declaration; undefined when the table does
+ * not store what the plan says (a column missing) or the joined source's
+ * declaration cannot be read.
+ */
+function pairRerootOf(
+   plan: MaterializePlan,
+   pair: MaterializePair,
+   sourceName: string,
+   stored: ReadonlyMap<string, string>,
+   map: SourceMap,
+   fileText: (url: string) => string | undefined,
+): PairReroot | undefined {
+   const parentRow = stored.get(pair.parentRowColumn);
+   const childRow = stored.get(pair.childRowColumn);
+   if (!parentRow || !childRow) return undefined;
+   const child = map.node(pair.childSourceID)?.def as
+      | {
+           fields?: unknown[];
+           location?: { url?: string; range?: ServedCopyRange };
+        }
+      | undefined;
+   const url = child?.location?.url;
+   const range = child?.location?.range;
+   const text = url ? fileText(url) : undefined;
+   if (!text || !range) return undefined;
+   const start = offsetOf(text, range.start);
+   const end = offsetOf(text, range.end);
+   if (start < 0 || end < start) return undefined;
+   const fields = new Map(
+      (
+         (child?.fields ?? []) as {
+            name?: unknown;
+            as?: unknown;
+            e?: unknown;
+            timeframe?: unknown;
+         }[]
+      ).map((f) => [String(f.as ?? f.name), f] as const),
+   );
+   const childColumns: PairReroot["childColumns"][number][] = [];
+   const childStoredDimensions: string[] = [];
+   for (const c of plan.columns) {
+      if (c.join !== pair.join) continue;
+      const type = stored.get(c.column);
+      if (type === undefined) return undefined;
+      const field = fields.get(c.dimension);
+      const notes = fieldNotes(field);
+      childColumns.push({
+         name: c.dimension,
+         column: c.column,
+         type,
+         ...(notes.length > 0 ? { notes } : {}),
+         ...(typeof field?.timeframe === "string"
+            ? { timeframe: field.timeframe }
+            : {}),
+      });
+      if (field?.e !== undefined) childStoredDimensions.push(c.dimension);
+   }
+   return {
+      join: pair.join,
+      parentRowColumn: { name: pair.parentRowColumn, type: parentRow },
+      childRowColumn: { name: pair.childRowColumn, type: childRow },
+      childTypeName: `${sourceName}__${pair.join}__pair_served`,
+      childColumns,
+      childDeclaration: text.slice(start, end),
+      childStoredDimensions,
+   };
 }
 
 /**

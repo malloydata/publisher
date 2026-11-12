@@ -12,6 +12,7 @@ import {
    SERVED_COPY_FLAG,
    typeDeclaration,
    type Reroot,
+   repointJoin,
 } from "./served_copy";
 
 /** The zero-based range of `needle`'s declaration (after `source: `) in `text`. */
@@ -545,5 +546,46 @@ describe("a stored timeframe truncation (decision 3)", () => {
       expect(out?.text).toBe("extend { dimension: m is m__stored.month }");
       expect([...(out?.rewritten ?? [])]).toEqual(["m"]);
       expect([...(out?.dropped ?? [])].sort()).toEqual(["a", "b"]);
+   });
+});
+
+describe("repointJoin (pair tables, P5)", () => {
+   const to = "(PAIR)";
+   it("points `<join> on …` at the pair source, keeping the condition", () => {
+      expect(
+         repointJoin(
+            "extend {\n  join_many: segments on segments.flight_id = id\n}",
+            "segments",
+            to,
+         ),
+      ).toBe(
+         "extend {\n  join_many: segments is (PAIR) on segments.flight_id = id\n}",
+      );
+   });
+   it("replaces what `<join> is <source> on …` joins", () => {
+      expect(
+         repointJoin(
+            "extend { join_many: s is segments extend { where: miles > 0 } on s.flight_id = id }",
+            "s",
+            to,
+         ),
+      ).toBe("extend { join_many: s is (PAIR) on s.flight_id = id }");
+   });
+   it("finds one definition of several, and a quoted name", () => {
+      expect(
+         repointJoin(
+            "extend {\n  join_many:\n    a on a.k = id\n    `b` on b.k = id\n}",
+            "b",
+            to,
+         ),
+      ).toBe(
+         "extend {\n  join_many:\n    a on a.k = id\n    `b` is (PAIR) on b.k = id\n}",
+      );
+   });
+   it("leaves a join_one, a mention in a condition, and a missing join alone", () => {
+      const text =
+         "extend { join_one: segments with flight_id; join_many: s on s.k = segments.k }";
+      expect(repointJoin(text, "segments", to)).toBeUndefined();
+      expect(repointJoin("extend { }", "segments", to)).toBeUndefined();
    });
 });
