@@ -6,10 +6,11 @@ import net from "node:net";
 import {
    HOST,
    isPortFree,
-   looksLikePortInUse,
    PortAllocator,
    portsReportedInUse,
+   portsTakenAtExit,
 } from "./ports";
+import { waitFor } from "./util";
 
 const held: net.Server[] = [];
 
@@ -106,24 +107,12 @@ describe("PortAllocator from a base (--port)", () => {
    });
 });
 
-describe("isPortFree / looksLikePortInUse", () => {
+describe("isPortFree / portsReportedInUse", () => {
    it("reports a held port as busy", async () => {
       const [p] = await new PortAllocator().allocate(1);
       expect(await isPortFree(p)).toBe(true);
       await hold(p);
       expect(await isPortFree(p)).toBe(false);
-   });
-
-   it("recognises Publisher's in-use message and the errno", () => {
-      expect(
-         looksLikePortInUse("error: Port 14000 in use; pass --port <n>"),
-      ).toBe(true);
-      expect(looksLikePortInUse("Error: listen EADDRINUSE: 127.0.0.1:1")).toBe(
-         true,
-      );
-      expect(looksLikePortInUse("PUBLISHER_INIT_FAILED something else")).toBe(
-         false,
-      );
    });
 
    it("names the ports Publisher reported in use", () => {
@@ -132,5 +121,67 @@ describe("isPortFree / looksLikePortInUse", () => {
          "error: Port 50237 in use; pass --mcp_port <n>\n";
       expect(portsReportedInUse(log)).toEqual([50237]);
       expect(portsReportedInUse("listen EADDRINUSE")).toEqual([]);
+   });
+});
+
+describe("portsTakenAtExit", () => {
+   const never = async (): Promise<boolean> => {
+      throw new Error("must not probe when Publisher named the port");
+   };
+
+   it("is the named port when it is one of ours", async () => {
+      const out = "error: Port 50237 in use; pass --mcp_port <n>\n";
+      expect(await portsTakenAtExit(out, [50236, 50237], never)).toEqual([
+         50237,
+      ]);
+   });
+
+   it("is empty when the named port is not ours (no retry would help)", async () => {
+      const out = "error: Port 9999 in use; pass --admin_port <n>\n";
+      expect(await portsTakenAtExit(out, [50236, 50237], never)).toEqual([]);
+   });
+
+   it("with nothing named, is whichever of ours is still held", async () => {
+      const busy = new Set([50237]);
+      const probe = async (p: number): Promise<boolean> => !busy.has(p);
+      expect(await portsTakenAtExit("", [50236, 50237], probe)).toEqual([
+         50237,
+      ]);
+      expect(
+         await portsTakenAtExit(
+            "PUBLISHER_INIT_FAILED",
+            [1, 2],
+            async () => true,
+         ),
+      ).toEqual([]);
+   });
+});
+
+describe("waitFor with a signal", () => {
+   it("stops mid-interval when the signal aborts, without another attempt", async () => {
+      const ac = new AbortController();
+      let calls = 0;
+      const start = performance.now();
+      const wait = waitFor(
+         "never",
+         async () => {
+            calls++;
+            return false;
+         },
+         { timeoutMs: 60_000, intervalMs: 10_000, signal: ac.signal },
+      );
+      setTimeout(() => ac.abort(), 50);
+      await expect(wait).rejects.toThrow("stopped waiting for never");
+      expect(performance.now() - start).toBeLessThan(2_000);
+      expect(calls).toBe(1);
+   });
+
+   it("still resolves with the value when no signal aborts", async () => {
+      let n = 0;
+      const v = await waitFor("third try", async () => ++n >= 3 && n, {
+         intervalMs: 1,
+         signal: new AbortController().signal,
+      });
+      expect(v).toBe(3);
    });
 });

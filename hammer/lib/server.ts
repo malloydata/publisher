@@ -10,13 +10,7 @@ import path from "path";
 import { existsSync, readdirSync, statSync } from "fs";
 import type { Subprocess } from "bun";
 import { log, runOrThrow, sleep, waitFor } from "./util";
-import {
-   HOST,
-   isPortFree,
-   looksLikePortInUse,
-   PortInUseError,
-   portsReportedInUse,
-} from "./ports";
+import { HOST, PortInUseError, portsTakenAtExit } from "./ports";
 
 /** Newest mtime under `dir`, or 0 if it does not exist. Skips build output. */
 function newestMtimeMs(dir: string): number {
@@ -128,13 +122,20 @@ export async function startServer(opts: ServerOptions): Promise<ServerHandle> {
    );
 
    const logSink = opts.logFile ? Bun.file(opts.logFile).writer() : null;
+   // Every listener goes on HOST, the interface the port allocator probes; an
+   // inherited MCP_HOST would move MCP elsewhere. An inherited admin port would
+   // be the same fixed port for every publisher, the collision this harness
+   // allocates ports to avoid, so only a scenario's own env can turn it on.
+   const inherited: Record<string, string | undefined> = { ...process.env };
+   delete inherited.PUBLISHER_ADMIN_PORT;
    const proc: Subprocess = Bun.spawn(args, {
       cwd: serverDir,
       env: {
-         ...process.env,
+         ...inherited,
          NODE_ENV: "production",
          PERSIST_STORAGE_MODE: opts.mode,
          PUBLISHER_HOST: HOST,
+         MCP_HOST: HOST,
          ...opts.extraEnv,
       },
       stdout: opts.inheritStdio ? "inherit" : "pipe",
@@ -203,7 +204,9 @@ export async function startServer(opts: ServerOptions): Promise<ServerHandle> {
             throw new Error(
                `server process exited early (see ${opts.logFile ?? "stdio"})`,
             );
-         const res = await fetch(`${baseUrl}/api/v0/status`);
+         const res = await fetch(`${baseUrl}/api/v0/status`, {
+            signal: pollDone.signal,
+         });
          if (!res.ok) return false;
          const body = (await res.json()) as { operationalState?: string };
          return body.operationalState === "serving";
@@ -217,22 +220,7 @@ export async function startServer(opts: ServerOptions): Promise<ServerHandle> {
    const exitedEarly = proc.exited.then(async () => {
       if (ready) return;
       await Promise.race([Promise.allSettled(pumps), sleep(2000)]);
-      // Publisher names the port it could not bind; failing that, the errno in
-      // its output or a port that is still held now says the same thing.
-      const ports = [opts.port, opts.mcpPort];
-      const held = async (): Promise<number[]> =>
-         (
-            await Promise.all(
-               ports.map(async (p) => ((await isPortFree(p)) ? null : p)),
-            )
-         ).filter((p): p is number => p !== null);
-      const named = portsReportedInUse(tail);
-      const taken =
-         named.length > 0
-            ? named
-            : looksLikePortInUse(tail)
-              ? ports
-              : await held();
+      const taken = await portsTakenAtExit(tail, [opts.port, opts.mcpPort]);
       const where = opts.logFile ?? "stdio";
       if (taken.length > 0) {
          throw new PortInUseError(
@@ -251,9 +239,7 @@ export async function startServer(opts: ServerOptions): Promise<ServerHandle> {
    } finally {
       pollDone.abort();
    }
-   // Keep the losers from surfacing as unhandled rejections after we've moved on.
-   void poll.catch(() => undefined);
-   void exitedEarly.catch(() => undefined);
+   // The race subscribed to every loser, so a later rejection is handled.
 
    log.ok(`server serving (mode=${opts.mode})`);
    return { baseUrl, mcpUrl, mode: opts.mode, stop };

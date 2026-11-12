@@ -74,6 +74,16 @@ interface Args {
    workers: number;
 }
 
+/** A `--port`-style value, refused here rather than at the first boot. */
+function portArg(flag: string, value: string | undefined): number {
+   const n = Number(value);
+   if (!Number.isInteger(n) || n < 1 || n > 65535) {
+      console.error(`${flag} takes a port from 1 to 65535, not "${value}"`);
+      process.exit(2);
+   }
+   return n;
+}
+
 function parseArgs(argv: string[]): Args {
    const a: Args = {
       keep: false,
@@ -115,8 +125,8 @@ function parseArgs(argv: string[]): Args {
       else if (arg === "--quiet") a.quiet = true;
       else if (arg === "--pg-port") a.pgPort = Number(next());
       else if (arg === "--pg-container") a.pgContainer = next();
-      else if (arg === "--port") a.port = Number(next());
-      else if (arg === "--mcp-port") a.mcpPort = Number(next());
+      else if (arg === "--port") a.port = portArg(arg, next());
+      else if (arg === "--mcp-port") a.mcpPort = portArg(arg, next());
       else if (arg === "--workers") a.workers = Math.max(1, Number(next()));
       else if (arg === "--help" || arg === "-h") {
          console.log(

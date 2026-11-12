@@ -151,12 +151,25 @@ export class PortInUseError extends Error {
    }
 }
 
-/** Publisher's own wording for a failed bind, or the errno behind it. */
-export function looksLikePortInUse(output: string): boolean {
-   return /EADDRINUSE|Port \d+ in use|address already in use/i.test(output);
-}
-
 /** The ports Publisher said were in use (`Port N in use; pass --port <n>`). */
 export function portsReportedInUse(output: string): number[] {
    return [...output.matchAll(/Port (\d+) in use/g)].map((m) => Number(m[1]));
+}
+
+/**
+ * Which of `ours` a server that exited before serving could not bind. Publisher
+ * names the port in its output (`portsReportedInUse`); only ours count, since
+ * any other (an admin port a scenario set) is not cured by fresh ports. With no
+ * such line (inheritStdio, nothing captured), one of ours that someone else
+ * still holds says the same thing. Empty: the exit was not about our ports.
+ */
+export async function portsTakenAtExit(
+   output: string,
+   ours: number[],
+   probe: (port: number) => Promise<boolean> = (p) => isPortFree(p),
+): Promise<number[]> {
+   const named = portsReportedInUse(output);
+   if (named.length > 0) return ours.filter((p) => named.includes(p));
+   const busy = await Promise.all(ours.map(async (p) => !(await probe(p))));
+   return ours.filter((_p, i) => busy[i]);
 }
