@@ -34,7 +34,11 @@ import type {
    QueryMaterializer,
    VirtualMap,
 } from "@malloydata/malloy";
-import { getMaterializeGatedSources, getPersistStorageMode } from "../config";
+import {
+   getMaterializeEnabled,
+   getMaterializeGatedSources,
+   getPersistStorageMode,
+} from "../config";
 import type { GraftScope } from "./gate_classification";
 import { logger } from "../logger";
 import { recordStorageServeRouting } from "../materialization_metrics";
@@ -729,9 +733,12 @@ export async function queryPathFor(
       });
       const catalog = host.materializedTables();
       const plans = host.rollupPlans();
-      const variantRollups = host.rollupVariants.hasRollups()
-         ? host.rollupVariants.rollups()
-         : [];
+      // The `#(preaggregate)` leg exists only with the switch on; off, its
+      // plans are never read.
+      const variantRollups =
+         getMaterializeEnabled() && host.rollupVariants.hasRollups()
+            ? host.rollupVariants.rollups()
+            : [];
       // Nothing materialized for this model: the answer is live and there is
       // nothing to name, so skip the chain walks and the catalog reads.
       if (
