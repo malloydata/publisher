@@ -54,6 +54,9 @@ afterEach(async () => {
    for (const connection of opened.splice(0)) {
       await connection.close().catch(() => {});
    }
+   // Nothing this spec opened may outlive its test: in a serial run every later
+   // spec file shares this process.
+   expect(openFilesHere()).toEqual([]);
    fs.rmSync(dir, { recursive: true, force: true });
 });
 
@@ -146,6 +149,18 @@ describe("one DuckDB instance per file", () => {
       expect(
          (await c.runSQL("SELECT count(*)::INTEGER AS n FROM t")).rows,
       ).toEqual([{ n: 1 }]);
+   });
+
+   it("keeps the instance open while a joining connection connects, even if the last other one closes meanwhile", async () => {
+      const file = path.join(dir, "race.duckdb");
+      const a = open({ databasePath: file, setupSQL: "SELECT 1" });
+      await a.runSQL("CREATE TABLE t AS SELECT 5 AS v");
+      // b joins a's instance; its connect is still pending when a closes.
+      const b = open({ databasePath: file, setupSQL: "SELECT 2" });
+      await a.close();
+      expect((await b.runSQL("SELECT v FROM t")).rows).toEqual([{ v: 5 }]);
+      await b.close();
+      expect(openFilesHere()).toEqual([]);
    });
 
    it("does not share between different files", async () => {

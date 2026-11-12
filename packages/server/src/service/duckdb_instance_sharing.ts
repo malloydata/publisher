@@ -159,8 +159,15 @@ export function installDuckDBInstanceSharing(): void {
       if (!file) return init.call(this);
 
       const instanceKey = instanceKeyOf(normalized);
-      const open = openFiles.get(file);
-      if (open && isLive(open)) {
+      let open = openFiles.get(file);
+      if (open && !isLive(open)) {
+         // Closed since (or by closeAllInstances): forget it, so a stale entry
+         // never pins a closed instance or refuses a fresh open.
+         openFiles.delete(file);
+         open = undefined;
+      }
+      let pin: ActiveDB["connections"][number] | undefined;
+      if (open) {
          if (open.instanceKey !== instanceKey) {
             this.setupError = new DuckDBInstanceSettingsChangedError(file);
             return Promise.resolve();
@@ -168,8 +175,24 @@ export function installDuckDBInstanceSharing(): void {
          // Malloy's init reads activeDBs synchronously, before its first
          // await, so this alias is seen and the open instance is reused.
          DuckDBConnection.activeDBs[this.shareKey] ??= open.activeDB;
+         // Malloy adds this connection to the instance's list only after
+         // `instance.connect()` resolves. Until then a placeholder holds the
+         // instance open, so the last other connection detaching meanwhile
+         // cannot close it under the pending connect.
+         pin = {} as ActiveDB["connections"][number];
+         open.activeDB.connections.push(pin);
       }
+      const shared = open?.activeDB;
       return init.call(this).then(() => {
+         if (shared && pin) {
+            shared.connections = shared.connections.filter((c) => c !== pin);
+            if (shared.connections.length === 0) {
+               // The connect failed and nothing else holds the instance:
+               // release it, as the last detach would have.
+               releaseInstance(shared);
+               return;
+            }
+         }
          const activeDB = DuckDBConnection.activeDBs[this.shareKey];
          if (activeDB && !this.setupError) {
             openFiles.set(file, { instanceKey, activeDB });
@@ -181,20 +204,38 @@ export function installDuckDBInstanceSharing(): void {
       const activeDB = DuckDBConnection.activeDBs[this.shareKey];
       detachInstance.call(this);
       if (!activeDB || activeDB.connections.length > 0) return;
-      // The last sharer closed the instance: drop every alias to it, or a
-      // later connection would reuse a closed instance.
-      for (const [key, value] of Object.entries(DuckDBConnection.activeDBs)) {
-         if (value === activeDB) delete DuckDBConnection.activeDBs[key];
-      }
-      for (const [file, open] of openFiles) {
-         if (open.activeDB === activeDB) openFiles.delete(file);
-      }
+      dropAliases(activeDB);
    };
+}
+
+/**
+ * Forget an instance the last sharer closed: drop every alias to it, or a
+ * later connection would reuse a closed instance.
+ */
+function dropAliases(activeDB: ActiveDB): void {
+   for (const [key, value] of Object.entries(DuckDBConnection.activeDBs)) {
+      if (value === activeDB) delete DuckDBConnection.activeDBs[key];
+   }
+   for (const [file, open] of openFiles) {
+      if (open.activeDB === activeDB) openFiles.delete(file);
+   }
+}
+
+/** Close an instance nothing holds any more, and forget it. */
+function releaseInstance(activeDB: ActiveDB): void {
+   try {
+      activeDB.instance.closeSync();
+   } catch {
+      // Best effort, as db-duckdb's own cleanup: a close that fails leaves
+      // nothing this module can recover.
+   }
+   dropAliases(activeDB);
 }
 
 /** Test seam: the files this process holds open through shared instances. */
 export function openDuckDBFilesForTesting(): string[] {
-   return [...openFiles.entries()]
-      .filter(([, open]) => isLive(open))
-      .map(([file]) => file);
+   for (const [file, open] of openFiles) {
+      if (!isLive(open)) openFiles.delete(file);
+   }
+   return [...openFiles.keys()];
 }
