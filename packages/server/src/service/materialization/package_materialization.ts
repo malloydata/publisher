@@ -1403,6 +1403,15 @@ export class PackageMaterialization {
    ): ServeVerdict[] {
       const models = this.owner.models();
       const index = this.entryPointIndex(models);
+      const persistedViews = new Map<
+         string,
+         { sourceID: string; sourceName: string; viewName: string }
+      >();
+      for (const model of models.values()) {
+         for (const v of model.persistedViewBuilds?.() ?? []) {
+            persistedViews.set(v.buildSourceID, v);
+         }
+      }
       const servedStorageNames = new Set<string>();
       for (const model of models.values()) {
          for (const name of model.servedStorageSourceNames?.() ?? []) {
@@ -1468,6 +1477,7 @@ export class PackageMaterialization {
                ? "serves"
                : "not_served";
          },
+         persistedViewOf: (sourceID) => persistedViews.get(sourceID),
          views,
          destinationConfigured: (name) => this.destinationConfigured(name),
          connectionCanHoldTable: (name) =>
