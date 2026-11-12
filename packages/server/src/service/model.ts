@@ -3586,7 +3586,8 @@ export class Model {
       audit.servedFrom = servedFrom ?? null;
       audit.executionTimeMs = Math.round(executionTime);
       if (queryCostBytes !== undefined) audit.scannedBytes = queryCostBytes;
-      if (path) audit.path = accessPathOf(path);
+      const recordedPath = path ? accessPathOf(path) : undefined;
+      if (recordedPath) audit.path = recordedPath;
       return {
          result: wrappedResult,
          serializedResult,

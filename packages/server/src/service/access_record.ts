@@ -310,6 +310,8 @@ export interface AccessPathCandidate {
    kind: string;
    outcome: string;
    reason?: string;
+   /** The serve verdict's reason on a `WARNED` skip, when the report gives one. */
+   code?: string;
 }
 
 /** The access record's copy of a query's path report: see `AccessRecord.path`. */
@@ -322,6 +324,10 @@ export interface AccessPath {
  * The access record's copy of a path report: which table answered and each
  * table considered. Structural, so it reads the API's `QueryPath` without this
  * module importing the materialization code that builds it.
+ *
+ * `undefined` when the query answered live with nothing considered, the
+ * common case in a package with nothing materialized: that copy would say no
+ * more than `servedFrom` and would add bytes to every record.
  */
 export function accessPathOf(report: {
    servedBy: { kind: string; tableId?: string };
@@ -330,8 +336,12 @@ export function accessPathOf(report: {
       kind: string;
       outcome: string;
       reason?: string;
+      code?: string;
    }[];
-}): AccessPath {
+}): AccessPath | undefined {
+   if (report.servedBy.kind === "live" && report.considered.length === 0) {
+      return undefined;
+   }
    return {
       servedBy: {
          kind: report.servedBy.kind,
@@ -344,6 +354,7 @@ export function accessPathOf(report: {
          kind: c.kind,
          outcome: c.outcome,
          ...(c.reason !== undefined ? { reason: c.reason } : {}),
+         ...(c.code !== undefined ? { code: c.code } : {}),
       })),
    };
 }
@@ -379,8 +390,10 @@ export interface AccessRecord extends Partial<QueryAccessSummary> {
    /**
     * What answered the query, from its path report (materialization v2, D1),
     * kept compact: the table that answered and each table considered, with
-    * why it was skipped, which is what a workload analysis counts. The query's shape is `shape`; the
-    * report's nearby tables and skip details stay on the query result.
+    * why it was skipped, which is what a workload analysis counts. The query's
+    * shape is `shape`; the report's nearby tables and skip details stay on the
+    * query result. Absent when the query answered live with nothing
+    * considered.
     */
    path?: AccessPath;
    /** The refusal's message, on a non-ok outcome. Never a gate's detail: the route already redacts those. */

@@ -480,9 +480,39 @@ describe("accessPathOf", () => {
       });
    });
 
-   it("leaves out a tableId or reason the report does not have", () => {
+   it("leaves out a tableId, reason or code the report does not have, and keeps a code it does", () => {
+      expect(
+         accessPathOf({
+            servedBy: { kind: "live" },
+            considered: [
+               { tableId: "abc", kind: "materialized", outcome: "skipped" },
+               {
+                  tableId: "def",
+                  kind: "materialized",
+                  outcome: "skipped",
+                  reason: "WARNED",
+                  code: "unreachable",
+               },
+            ],
+         }),
+      ).toEqual({
+         servedBy: { kind: "live" },
+         considered: [
+            { tableId: "abc", kind: "materialized", outcome: "skipped" },
+            {
+               tableId: "def",
+               kind: "materialized",
+               outcome: "skipped",
+               reason: "WARNED",
+               code: "unreachable",
+            },
+         ],
+      });
+   });
+
+   it("records nothing for a live answer with nothing considered", () => {
       expect(
          accessPathOf({ servedBy: { kind: "live" }, considered: [] }),
-      ).toEqual({ servedBy: { kind: "live" }, considered: [] });
+      ).toBeUndefined();
    });
 });
