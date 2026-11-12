@@ -277,7 +277,9 @@ export function buildFilterClause(
  * the caller's query cannot swallow it and neutralize the filter.
  */
 export function injectFilterRefinement(
+   // malloy-text: the caller's own query, refined as written
    query: string,
+   // malloy-text: a filter clause the caller's request carries, Malloy as written
    filterClause: string,
 ): string {
    if (!filterClause) {

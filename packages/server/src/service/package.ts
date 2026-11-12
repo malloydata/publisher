@@ -3124,6 +3124,7 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
       }[] = [];
       for (const tile of queryTiles(manifest.tiles)) {
          checks.push({
+            // malloy-text: a report tile's query, the author's Malloy, run as written
             request: { query: `run: ${tile.query}` },
             describe: (source) =>
                `Tile ${tile.query} on ${manifest.layout === "grid" ? "dashboard" : "notebook"} ${manifest.name} reads ` +

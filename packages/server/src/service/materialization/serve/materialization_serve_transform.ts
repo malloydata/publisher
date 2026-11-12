@@ -432,6 +432,7 @@ export function duckdbTypeToMalloyType(
  */
 export function duckdbTypeToMalloy(duckdbType: string): string {
    const mapped = duckdbTypeToMalloyType(duckdbType);
+   // malloy-text: a Malloy type name from the fixed DuckDB type map, not a value
    if ("type" in mapped) return mapped.type;
    recordServeShapeTypeFallback(mapped.unmapped);
    logger.warn(
@@ -477,6 +478,7 @@ export function buildServeShapeModel(
 function serveShapeGivenLine(given: ServeShapeGiven): string {
    const suffix =
       given.defaultText !== undefined ? ` is ${given.defaultText}` : "";
+   // malloy-text: the given's type and default (in suffix) are the author's Malloy text, as written
    return `  ${identifier(given.name)} :: ${given.type}${suffix}`;
 }
 
@@ -536,17 +538,21 @@ function serveShapeFragment(binding: ServeBinding): string {
 function refinementLines(refinements: readonly SourceRefinement[]): string[] {
    const lines: string[] = [];
    for (const r of refinements) {
+      // malloy-text: a join's keyword and text are the author's Malloy, lifted by location
       if (r.kind === "join") lines.push(`   ${r.keyword}: ${r.text}`);
    }
    for (const r of refinements) {
       if (r.kind === "dimension" || r.kind === "measure") {
+         // malloy-text: the field kind is a fixed keyword; its code is the author's Malloy, lifted by location
          lines.push(`   ${r.kind}: ${identifier(r.name)} is ${r.code}`);
       }
    }
    for (const r of refinements) {
+      // malloy-text: a filter is the author's Malloy, lifted by location
       if (r.kind === "filter") lines.push(`   where: ${r.code}`);
    }
    for (const r of refinements) {
+      // malloy-text: a view is the author's Malloy, lifted by location
       if (r.kind === "view") lines.push(`   view: ${r.text}`);
    }
    return lines;
@@ -600,6 +606,7 @@ export interface DerivedSourceLift {
 
 /** One lifted source, as `source: X is <base> extend { … }`. */
 function derivedSourceFragment(lift: DerivedSourceLift): string {
+   // malloy-text: a query-derived source is the author's Malloy, lifted by location
    if (lift.text !== undefined) return `source: ${lift.text}`;
    const lines = refinementLines(lift.refinements);
    const body = lines.length > 0 ? ` extend {\n${lines.join("\n")}\n}` : "";
@@ -1112,6 +1119,7 @@ export function buildChainedStorageBuildModel(params: {
    // Malloy accumulates `##!` lines, so repeating an author's flag is harmless.
    const givens = params.givens ?? [];
    const flags = [
+      // malloy-text: the author files' own `##!` lines, carried as written
       ...(params.documentFlags ?? []),
       givens.length
          ? "##! experimental { persistence virtual_source givens }"
@@ -1127,6 +1135,7 @@ export function buildChainedStorageBuildModel(params: {
       `${upstreamFragments}\n` +
       (derived ? `${derived}\n` : "") +
       `#@ persist storage=${annotationValue(params.destinationName)}\n` +
+      // malloy-text: the downstream's definition is the author's Malloy, lifted by location
       `source: ${params.downstreamDefText}\n`
    );
 }

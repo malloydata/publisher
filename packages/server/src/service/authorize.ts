@@ -892,6 +892,7 @@ interface AuthorizeProbeCompiler {
  */
 export function buildRowLevelProbe(
    graftTarget: string,
+   // malloy-text: the author's own gate expression, probed as written
    filterText: string,
 ): string {
    return `run: ${quotedIdentifier(graftTarget)} extend { where: ${filterText} } -> { select: __authorize_probe is 1; limit: 1 }`;
