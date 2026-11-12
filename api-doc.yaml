@@ -11041,6 +11041,19 @@ components:
             case-folding engine (Snowflake). Optional: omit it and the reference
             seeds unquoted (the pre-existing behavior), which fails a downstream
             build on such an engine.
+        storageDestinationName:
+          type: string
+          description: >-
+            The storage destination the upstream table lives in, for a table a
+            `storage=` build wrote; omit it for a table in the source's own
+            warehouse. A stored table's `connectionName` is the source's
+            warehouse connection, so without this field a reference to a stored
+            table reads as a warehouse table. The publisher uses a reference as
+            an upstream only where this agrees with where the upstream source is
+            declared now (a source that moved to or from `storage=` keeps its
+            content address): a stored upstream is stacked on in its
+            destination, and never rendered into warehouse SQL. Optional and
+            additive: a reference without it still serves a colocated upstream.
 
     BuildInstruction:
       type: object

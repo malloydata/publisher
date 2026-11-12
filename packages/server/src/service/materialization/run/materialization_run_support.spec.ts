@@ -3,6 +3,7 @@
 
 import { Manifest } from "@malloydata/malloy";
 import { describe, expect, it } from "bun:test";
+import type { ManifestEntry } from "../types";
 import {
    manifestExcludingStorage,
    manifestForCompiler,
@@ -10,6 +11,7 @@ import {
    stagingSuffix,
    strictMissSourceId,
    tallySources,
+   upstreamEntryIsCurrent,
    upstreamReuseFromManifest,
 } from "./materialization_run_support";
 
@@ -124,6 +126,76 @@ describe("manifestExcludingStorage (chained-storage inline)", () => {
       expect(reduced.entries.wh_up.tableName).toBe('"wh_up_v1"');
       expect(reduced.entries.lake_up).toBeUndefined();
       expect(reduced.strict).toBe(true);
+   });
+});
+
+// ms2data/service#7087: an entry is an upstream only at the tier its source is
+// declared in now; the content address does not include the destination.
+describe("upstreamEntryIsCurrent", () => {
+   const facts = {
+      declaredTiersByAddress: {
+         stored: ["lake"],
+         colocated: [null],
+         split: [null, "lake"],
+      },
+   };
+   it("keeps an entry at its source's declared tier", () => {
+      expect(
+         upstreamEntryIsCurrent(
+            "stored",
+            { storageDestinationName: "lake" },
+            facts,
+         ),
+      ).toBe(true);
+      expect(upstreamEntryIsCurrent("colocated", {}, facts)).toBe(true);
+   });
+   it("rejects an entry from before its source moved tier", () => {
+      // A warehouse table, or an unlabeled reference, for a source now stored.
+      expect(upstreamEntryIsCurrent("stored", {}, facts)).toBe(false);
+      // A stored table for a source now colocated, or now in another destination.
+      expect(
+         upstreamEntryIsCurrent(
+            "colocated",
+            { storageDestinationName: "lake" },
+            facts,
+         ),
+      ).toBe(false);
+      expect(
+         upstreamEntryIsCurrent(
+            "stored",
+            { storageDestinationName: "lake2" },
+            facts,
+         ),
+      ).toBe(false);
+   });
+   it("keeps either tier on an address its sources split, and every entry the plan does not know", () => {
+      expect(upstreamEntryIsCurrent("split", {}, facts)).toBe(true);
+      expect(
+         upstreamEntryIsCurrent(
+            "split",
+            { storageDestinationName: "lake" },
+            facts,
+         ),
+      ).toBe(true);
+      expect(upstreamEntryIsCurrent("unknown", {}, facts)).toBe(true);
+      expect(upstreamEntryIsCurrent("stored", {}, {})).toBe(true);
+   });
+   it("drops a stale warehouse entry from the warehouse manifest", () => {
+      const manifest = new Manifest();
+      manifest.update("stored", { tableName: '"up__g004"' });
+      manifest.update("colocated", { tableName: '"co_v1"' });
+      const built: Record<string, ManifestEntry> = {
+         stored: { sourceEntityId: "stored", physicalTableName: "up__g004" },
+         colocated: { sourceEntityId: "colocated", physicalTableName: "co_v1" },
+      };
+      const reduced = manifestExcludingStorage(manifest, built, facts);
+      expect(Object.keys(reduced.entries)).toEqual(["colocated"]);
+      // Without plan facts, every warehouse entry is kept, as before.
+      const legacy = manifestExcludingStorage(manifest, built);
+      expect(Object.keys(legacy.entries).sort()).toEqual([
+         "colocated",
+         "stored",
+      ]);
    });
 });
 

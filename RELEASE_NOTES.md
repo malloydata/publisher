@@ -21,6 +21,12 @@ Give the heading a title — `## [Unreleased] — what changed`, with an em dash
 
 Two consequences worth knowing. A section merged to `main` ships in the **next** release, whenever that is, so do not write one for work that has not landed. And a heading already stamped with a version is history: a follow-up that changes that behaviour opens a **new** `[Unreleased]` section referencing the shipped version by number, rather than editing the old one.
 
+## [Unreleased] — A chained build never sends a stored upstream's name to the warehouse
+
+A source moved to or from `storage=` keeps its content address, and a stored table's manifest entry names the source's warehouse connection. So a build whose upstream had moved to `storage=` could resolve that upstream through a reference the orchestrator sent, or through the warehouse table from before the move, and render the stored table's bare name into warehouse SQL. The warehouse then answered with an error such as `Dataset …:UNKNOWN` (ms2data/service#7087).
+
+An upstream is now used only at the tier its source is declared in now. A warehouse entry for a source declared `storage=` is never rendered into warehouse SQL: a colocated child recomputes that upstream, or, under a strict manifest, refuses naming it. A stored entry in a destination the source no longer declares is never stacked on. `ManifestReference` gains an optional `storageDestinationName`, so an orchestrator can say a referenced table is stored. A reference without it is still read as a warehouse table, so nothing changes for colocated upstreams.
+
 ## [Unreleased] — An empty PUT to a version's manifest serves live
 
 `PUT …/packages/{pkg}/versions/{version}/manifest` with an empty body, `{}`, now clears the version's binding and serves it live, as `{"manifestLocation": null}` always has. It used to answer 400. Many generated clients drop a null field from the JSON they send, so a client clearing a binding sent `{}`, the clear was refused, and the version kept serving the tables it was bound to. `manifestLocation` is the body's only field, so any other field (a typo such as `manifestUri`) now answers 400 naming it, rather than being read as a clear, and a body not sent as `application/json` answers 400 rather than reading as `{}`. The deprecated `PATCH …/packages/<pkg>___<version>`, which reaches this route with the old package-update body, still reads only `manifestLocation` from it and ignores its other fields. See [docs/package-versions.md](docs/package-versions.md#bind-a-version-to-a-build-manifest).

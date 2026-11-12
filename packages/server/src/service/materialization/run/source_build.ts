@@ -103,7 +103,11 @@ export class SourceBuilder {
       // before parent reuse could run. Strict is enforced below, where a
       // recompute would really happen. A colocated build keeps strict: its
       // buildSQL IS what runs.
-      const reducedManifest = manifestExcludingStorage(manifest, builtEntries);
+      const reducedManifest = manifestExcludingStorage(
+         manifest,
+         builtEntries,
+         planFacts,
+      );
       const buildManifest = isStorageBuild
          ? { ...reducedManifest, strict: false }
          : reducedManifest;

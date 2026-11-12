@@ -73,6 +73,16 @@ export interface ChainedPlanFacts {
     * leaves upstreams matched by name, as before.
     */
    sourceIDsFor?: (sourceName: string, sourceEntityId: string) => string[];
+   /**
+    * Where the plan's sources at each content address are declared to live NOW:
+    * a storage destination's name, or null for the source's own warehouse (a
+    * `storage=` source counts as null while `PERSIST_STORAGE_MODE` is off).
+    * The address does not include the destination (P12), so a source that moved
+    * tier keeps its address, and an entry for it may describe the table it had
+    * before the move. {@link upstreamEntryIsCurrent} reads this. Absent without
+    * a plan, which leaves every entry trusted, as before.
+    */
+   declaredTiersByAddress?: Record<string, readonly (string | null)[]>;
 }
 
 /** A build with no plan to consult: nothing is known to be stored. */
@@ -180,11 +190,17 @@ export function upstreamReuseFromManifest(params: {
          inManifestOnly.push(name);
          if (params.tier === "colocated") {
             const destination =
-               params.builtEntries[address]?.storageDestinationName ??
-               "a storage destination";
+               params.builtEntries[address]?.storageDestinationName;
             reasons.push(
-               `persisted upstream '${name}' is materialized in storage ` +
-                  `destination '${destination}', which a warehouse build cannot read`,
+               destination
+                  ? `persisted upstream '${name}' is materialized in storage ` +
+                       `destination '${destination}', which a warehouse build cannot read`
+                  : // A warehouse entry for a source now declared `storage=`
+                    // (#7087): the table from before it moved, or a stored
+                    // table a reference did not label. Neither is read here.
+                    `persisted upstream '${name}' is declared in a storage ` +
+                       `destination, and its manifest entry is not a table a ` +
+                       `warehouse build can read`,
             );
          }
          continue;
@@ -299,6 +315,8 @@ export function chainedPlanFacts(
    > = {};
    const addressBySourceId: Record<string, string | undefined> = {};
    const compilerKeyBySourceId: Record<string, string | undefined> = {};
+   const declaredTiersByAddress: Record<string, (string | null)[]> = {};
+   const storageOn = getPersistStorageMode() !== "off";
    for (const [sourceID, source] of Object.entries(sources)) {
       let sourceEntityId: string | undefined;
       try {
@@ -314,6 +332,16 @@ export function chainedPlanFacts(
       planSources.push({ name: source.name, sourceEntityId });
       planSourcesById[sourceID] = { name: source.name, sourceEntityId };
       addressBySourceId[sourceID] = sourceEntityId;
+      if (sourceEntityId !== undefined) {
+         let tier: string | null = null;
+         try {
+            tier = storageOn ? (declaredStorage(source) ?? null) : null;
+         } catch {
+            // Unreadable annotations: the colocated reading, as the build does.
+         }
+         const tiers = (declaredTiersByAddress[sourceEntityId] ??= []);
+         if (!tiers.includes(tier)) tiers.push(tier);
+      }
    }
    return {
       persistSourceIds: new Set(Object.keys(sources)),
@@ -321,7 +349,29 @@ export function chainedPlanFacts(
       addressBySourceId,
       compilerKeyBySourceId,
       sourceIDsFor: planSourceIds(planSourcesById),
+      declaredTiersByAddress,
    };
+}
+
+/**
+ * Whether a manifest entry describes the table its source is declared to have
+ * NOW (ms2data/service#7087). An entry's tier is its `storageDestinationName`,
+ * or null for a warehouse table. A source moved to or from `storage=` keeps its
+ * content address, so a carried or referenced entry can be the table from
+ * before the move: a warehouse table for a source now stored, or a stored table
+ * for a source now colocated or in another destination. Such an entry is stale
+ * and is never used as an upstream: not rendered into warehouse SQL, and not
+ * stacked on. An address the plan does not know, or a run with no plan, keeps
+ * every entry, as before.
+ */
+export function upstreamEntryIsCurrent(
+   address: string,
+   entry: Pick<ManifestEntry, "storageDestinationName">,
+   planFacts: Pick<ChainedPlanFacts, "declaredTiersByAddress">,
+): boolean {
+   const tiers = planFacts.declaredTiersByAddress?.[address];
+   if (!tiers || tiers.length === 0) return true;
+   return tiers.includes(entry.storageDestinationName ?? null);
 }
 
 /** An author model file's text by `file:` URL, or undefined when unreadable. */
@@ -428,13 +478,22 @@ export function selfAssignTableName(persistSource: PersistSource): string {
 export function manifestExcludingStorage(
    manifest: Manifest,
    builtEntries: Record<string, ManifestEntry>,
+   planFacts: Pick<ChainedPlanFacts, "declaredTiersByAddress"> = NO_PLAN_FACTS,
 ): Manifest["buildManifest"] {
    const reduced = new Manifest();
    reduced.strict = manifest.strict;
    // Reuse the already dialect-quoted names, not the raw physical names.
    const quoted = manifest.buildManifest.entries;
    for (const [id, entry] of Object.entries(builtEntries)) {
-      if (!entry.storageDestinationName && quoted[id]) {
+      // A warehouse entry for a source now declared `storage=` is either the
+      // table from before the move or a stored table a reference did not label
+      // (a reference that omits `storageDestinationName` reads as a warehouse
+      // table): either way its name must never reach warehouse SQL (#7087).
+      if (
+         !entry.storageDestinationName &&
+         quoted[id] &&
+         upstreamEntryIsCurrent(id, entry, planFacts)
+      ) {
          reduced.update(id, { tableName: quoted[id].tableName });
       }
    }

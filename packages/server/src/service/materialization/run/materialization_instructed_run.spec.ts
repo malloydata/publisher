@@ -1274,6 +1274,117 @@ describe("executeInstructedBuild", () => {
       );
    });
 
+   // ms2data/service#7087: a source moved to `storage=` keeps its content
+   // address, and a stored table's reference names the WAREHOUSE connection, so
+   // a reference to it (or to the table from before the move) read as a
+   // warehouse table, and its bare name was rendered into warehouse SQL.
+   describe("an upstream declared `storage=` is never a warehouse table", () => {
+      async function downstreamSees(opts: {
+         upStorage?: string;
+         seed: Record<string, unknown>;
+      }) {
+         // Every render Malloy is handed. The FIRST is the build SQL; later ones
+         // only classify the build's upstreams and are never executed.
+         const renders: {
+            buildManifest?: {
+               entries?: Record<string, { tableName?: string }>;
+            };
+         }[] = [];
+         const connection = {
+            runSQL: sinon.stub().resolves(),
+            dialectName: "duckdb",
+         } as unknown as MalloyConnection;
+         const up = fakeSource({
+            name: "up",
+            sourceEntityId: "up",
+            ...(opts.upStorage
+               ? { annotationFields: { storage: opts.upStorage } }
+               : {}),
+         });
+         const down = fakeSource({
+            name: "down",
+            sourceEntityId: "bdownaaaaaaaaaa",
+            onGetSQL: (o) => {
+               renders.push(o as (typeof renders)[number]);
+            },
+         });
+         const compiled = compiledWith(
+            { up, down },
+            [["up"], ["down"]],
+            new Map([["duckdb", connection]]),
+         );
+         const { restore } = installSettings({
+            env: { PERSIST_STORAGE_MODE: "on" },
+         });
+         try {
+            const result = await callExecute(
+               compiled,
+               [
+                  {
+                     sourceEntityId: "bdownaaaaaaaaaa",
+                     materializedTableId: "mt-d",
+                     physicalTableName: "down_v1",
+                     realization: "COPY",
+                  },
+               ],
+               opts.seed,
+            );
+            return { seen: renders[0], result };
+         } finally {
+            restore();
+         }
+      }
+
+      it("does not render a stored upstream's unlabeled reference into warehouse SQL", async () => {
+         // The reference the control plane sends today: the stored table's
+         // name on the warehouse connection, no destination.
+         const { seen, result } = await downstreamSees({
+            upStorage: "lake",
+            seed: {
+               up: {
+                  sourceEntityId: "up",
+                  physicalTableName: "up__g004__e9c3ad40",
+                  connectionName: "duckdb",
+               },
+            },
+         });
+         expect(seen?.buildManifest?.entries?.up).toBeUndefined();
+         // Still carried in the run's manifest; only the warehouse render skips it.
+         expect(result.entries.up?.physicalTableName).toBe(
+            "up__g004__e9c3ad40",
+         );
+      });
+
+      it("does not render the warehouse table from before the upstream moved to storage", async () => {
+         const { seen } = await downstreamSees({
+            upStorage: "lake",
+            seed: {
+               up: {
+                  sourceEntityId: "up",
+                  physicalTableName: "analytics.up_v1",
+                  connectionName: "duckdb",
+               },
+            },
+         });
+         expect(seen?.buildManifest?.entries?.up).toBeUndefined();
+      });
+
+      it("still renders a colocated upstream's warehouse table", async () => {
+         const { seen } = await downstreamSees({
+            seed: {
+               up: {
+                  sourceEntityId: "up",
+                  physicalTableName: "analytics.up_v1",
+                  connectionName: "duckdb",
+               },
+            },
+         });
+         expect(seen?.buildManifest?.entries?.up?.tableName).toBe(
+            '"analytics"."up_v1"',
+         );
+      });
+   });
+
    it("seeds unquoted when the upstream's connection is absent from the build (older CP / cross-connection)", async () => {
       // No connectionName on the seed (an older control plane) -> bind verbatim,
       // exactly the pre-change behavior. Non-case-folding engines are unaffected;

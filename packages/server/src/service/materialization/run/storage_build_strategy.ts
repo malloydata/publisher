@@ -67,6 +67,7 @@ import {
    partitionColumnsForBuild,
    readAuthorFile,
    redactConnectionSecrets,
+   upstreamEntryIsCurrent,
 } from "./materialization_run_support";
 import { carriesAuthorSql, isSameCatalog } from "./same_catalog_build";
 import { destinationSchemaOf } from "./storage_table_path";
@@ -563,8 +564,15 @@ export class StorageBuildStrategy
             (alias) => typeof lift.contents[alias]?.extends !== "string",
          );
       }
+      // Only an entry at the destination its source is declared in NOW: a
+      // stored table left from before the source moved is stale (#7087).
+      const currentEntries = Object.fromEntries(
+         Object.entries(builtEntries).filter(([address, entry]) =>
+            upstreamEntryIsCurrent(address, entry, planFacts),
+         ),
+      );
       const upstreams: ServeBinding[] = deriveServeBindings(
-         builtEntries,
+         currentEntries,
          aliasesForBinding,
          (name) => {
             try {
@@ -632,6 +640,27 @@ export class StorageBuildStrategy
                   : planFacts.addressBySourceId[sourceID];
             const entry =
                address === undefined ? undefined : builtEntries[address];
+            if (
+               entry !== undefined &&
+               address !== undefined &&
+               !upstreamEntryIsCurrent(address, entry, planFacts)
+            ) {
+               return (
+                  `'${name}' has only a table from before its destination ` +
+                  `changed (${entry.storageDestinationName ? `in '${entry.storageDestinationName}'` : "a warehouse table"}), ` +
+                  `which this build does not use`
+               );
+            }
+            if (
+               entry?.storageDestinationName === destinationName &&
+               !entry.schema?.length
+            ) {
+               return (
+                  `'${name}' is materialized in destination '${destinationName}', ` +
+                  `but by a reference that carries no column list, which this ` +
+                  `build needs to read it`
+               );
+            }
             if (entry?.storageDestinationName !== undefined) {
                return (
                   `'${name}' is materialized in destination ` +

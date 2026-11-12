@@ -395,6 +395,9 @@ export function referenceManifestToEntries(
          sourceEntityId: ref.sourceEntityId,
          physicalTableName: ref.physicalTableName,
          connectionName: ref.connectionName,
+         ...(ref.storageDestinationName
+            ? { storageDestinationName: ref.storageDestinationName }
+            : {}),
       };
    }
    return entries;
