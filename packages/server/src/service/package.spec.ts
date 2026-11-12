@@ -641,10 +641,31 @@ describe("service/package", () => {
             new Map(),
          );
          // Private by design: its only writer is the load path, which needs a
-         // compiled package. Set directly to isolate the filter.
+         // compiled package. Set directly to isolate the filter. Eligibility is
+         // keyed by sourceID, and a binding names the plan sources it
+         // materializes, so the plan holds every source the case names.
+         const id = (name: string) => `${name}@m.malloy`;
          (
             pkg as unknown as { sourceEligibility: typeof eligibility }
-         ).sourceEligibility = eligibility;
+         ).sourceEligibility = eligibility && {
+            eligible: eligibility.eligible.map(id),
+            refused: Object.fromEntries(
+               Object.entries(eligibility.refused).map(([n, r]) => [id(n), r]),
+            ),
+         };
+         const planned = [
+            ...(eligibility?.eligible ?? []),
+            ...Object.keys(eligibility?.refused ?? {}),
+         ];
+         (pkg as unknown as { buildPlan: unknown }).buildPlan = {
+            graphs: [],
+            sources: Object.fromEntries(
+               planned.map((name) => [
+                  id(name),
+                  { name, sourceEntityId: `eid-${name}`, sourceID: id(name) },
+               ]),
+            ),
+         };
          return pkg;
       };
 

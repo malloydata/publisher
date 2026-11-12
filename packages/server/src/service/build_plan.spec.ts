@@ -1012,8 +1012,11 @@ source: orders is duckdb.sql("""SELECT * FROM (VALUES (${amount}, 'A')) AS t(amo
             expect(r.message).toContain("a.malloy");
             expect(r.message).toContain("b.malloy");
          }
-         // The storage serve side refuses the shared name too.
-         expect(sourceEligibility.eligible).not.toContain(refused[0].name);
+         // The storage serve side refuses both rollups too, by sourceID.
+         for (const sourceID of Object.keys(plan?.refusedSources ?? {})) {
+            expect(sourceEligibility.eligible).not.toContain(sourceID);
+            expect(sourceEligibility.refused[sourceID]).toBeDefined();
+         }
       },
       { timeout: 20000 },
    );

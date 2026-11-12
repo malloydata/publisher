@@ -98,16 +98,16 @@ describe("SourceMap", () => {
       const modelDef = await compile({ "model.malloy": MODEL }, "model.malloy");
       const map = SourceMap.of(modelDef);
       expect(sourceChain(modelDef.contents["daily_ext"], modelDef)).toEqual([
-         map.sourceIDOf("daily_ext"),
-         map.sourceIDOf("daily"),
-         map.sourceIDOf("orders"),
+         map.sourceIDOf("daily_ext")!,
+         map.sourceIDOf("daily")!,
+         map.sourceIDOf("orders")!,
       ]);
       // A plain alias compiles to a copy of its target's definition, so its
       // chain continues from the target's base: the target's table stands for it.
       expect(sourceChain(modelDef.contents["renamed"], modelDef)).toEqual([
-         map.sourceIDOf("renamed"),
-         map.sourceIDOf("daily"),
-         map.sourceIDOf("orders"),
+         map.sourceIDOf("renamed")!,
+         map.sourceIDOf("daily")!,
+         map.sourceIDOf("orders")!,
       ]);
    });
 
@@ -123,9 +123,9 @@ describe("SourceMap", () => {
          expect(reexported.sourceIDOf(name)).toBe(declared.sourceIDOf(name));
       }
       expect(sourceChain(indexDef.contents["daily_ext"], indexDef)).toEqual([
-         declared.sourceIDOf("daily_ext"),
-         declared.sourceIDOf("daily"),
-         declared.sourceIDOf("orders"),
+         declared.sourceIDOf("daily_ext")!,
+         declared.sourceIDOf("daily")!,
+         declared.sourceIDOf("orders")!,
       ]);
    });
 });
