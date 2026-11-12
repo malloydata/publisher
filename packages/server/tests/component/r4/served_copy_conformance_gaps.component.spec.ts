@@ -8,9 +8,9 @@
  * with the wrong field metadata, and that the served copy now answers equal to
  * live (rows, field types and annotations) with the switch on.
  *
- * It reads the fixture's own shapes and harness, and asserts the cases the
- * fixture still declares as gaps, so it fails on main and passes here; the
- * fixture's declarations go when both have merged. The two tolerances the
+ * It reads the fixture's own shapes and harness. The fixture no longer
+ * declares these cases as gaps; this spec also pins that the served copy, not
+ * the serve shape or live, is what answers them. The two tolerances the
  * fixture applies to every stored read (a number's subtype, the `#(malloy)`
  * drill annotation) apply here too: they are not these gaps.
  */
