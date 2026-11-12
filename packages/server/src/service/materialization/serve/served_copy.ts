@@ -35,7 +35,7 @@
  */
 
 import { identifier, nowComparison, stringLiteral } from "../../malloy_text";
-import type { RollingWindowTerm } from "../plan/rolling_window";
+import type { MaterializeReadTimeTerm } from "../plan/build_file_generator";
 import { duckdbTypeToMalloy } from "./materialization_serve_transform";
 
 /** A zero-based Malloy range, as a compiled source's `location.range` carries. */
@@ -80,13 +80,13 @@ export interface Reroot {
     */
    reservedNames?: readonly string[];
    /**
-    * For a `#(materialize)` re-root: its rolling-window terms, re-applied over
-    * the stored table at every read's clock. The table holds the window as of
-    * its build; a term inherited from a base is not in the source's own text,
-    * so the re-root writes every term again right on the stored table (one
-    * the source's own `extend` repeats is applied twice, which is harmless).
+    * For a `#(materialize)` re-root: its plan's read-time terms, applied again
+    * over the stored table at every read ({@link readTimeTermText}). A term
+    * inherited from a base is not in the source's own text, so the re-root
+    * writes every term right on the stored table (one the source's own
+    * `extend` repeats is applied twice, which is harmless).
     */
-   rollingWindow?: readonly RollingWindowTerm[];
+   readTimeTerms?: readonly MaterializeReadTimeTerm[];
 }
 
 /** One stored column of a re-rooted source. */
@@ -235,7 +235,7 @@ export function rerootDeclaration(
       | "typeName"
       | "storedDimensions"
       | "reservedNames"
-      | "rollingWindow"
+      | "readTimeTerms"
    > & { columns?: Reroot["columns"] },
 ): string | undefined {
    const spans = declarationSpans(declaration);
@@ -282,11 +282,30 @@ export function rerootDeclaration(
       if (opened === undefined) return undefined;
       extend = opened;
    }
-   const window = r.rollingWindow
-      ?.map((t) => nowComparison(t.field, t.op, t.offset))
-      .join(", ");
-   const reread = window ? ` extend { where: ${window} }` : "";
+   const terms = (r.readTimeTerms ?? [])
+      .map(readTimeTermText)
+      .filter((t) => t !== undefined);
+   const reread = terms.length ? ` extend { where: ${terms.join(", ")} }` : "";
    return `${name} is ${virtual}${reread}${extend ? ` ${extend}` : ""}`;
+}
+
+/**
+ * The `where:` text the re-root writes over the stored table for one
+ * read-time term, or undefined when the source's own text already carries it.
+ * Exhaustive by `kind`, so a new kind of read-time term must say how it is
+ * re-applied.
+ */
+function readTimeTermText(term: MaterializeReadTimeTerm): string | undefined {
+   switch (term.kind) {
+      case "current_time":
+         // Written from the classified parts, never the author's text: a term
+         // inherited from a base is re-applied here, outside its own file.
+         return nowComparison(
+            term.window.field,
+            term.window.op,
+            term.window.offset,
+         );
+   }
 }
 
 /** A timeframe column with the internal name its stored value is renamed to. */

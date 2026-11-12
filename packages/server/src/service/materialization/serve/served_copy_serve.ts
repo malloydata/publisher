@@ -33,6 +33,7 @@ import {
 import { SourceMap } from "../plan/source_map";
 import { givenReadingFilterTerms } from "../plan/persist_dynamic_terms";
 import type { MaterializePlan } from "../plan/build_file_generator";
+import { rollingWindowsOf } from "../plan/rolling_window";
 import { evaluateManifestFreshness } from "../run/freshness";
 import {
    declaredColumnsOf,
@@ -337,7 +338,9 @@ export class ServedCopyServe {
    /** Whether a binding stores a `#(materialize)` source with a rolling window. */
    private readsRollingWindow(binding: ServeBinding): boolean {
       return (binding.sourceIDs ?? []).some(
-         (id) => (this.materializePlans[id]?.rollingWindow?.length ?? 0) > 0,
+         (id) =>
+            rollingWindowsOf(this.materializePlans[id]?.readTimeTerms).length >
+            0,
       );
    }
 
@@ -509,8 +512,8 @@ export class ServedCopyServe {
                     .map((c) => c.dimension),
               }
             : {}),
-         ...(plan?.rollingWindow?.length
-            ? { rollingWindow: plan.rollingWindow }
+         ...(plan?.readTimeTerms?.length
+            ? { readTimeTerms: plan.readTimeTerms }
             : {}),
          sourceID: node.sourceID,
       } as Reroot & { sourceID: string };

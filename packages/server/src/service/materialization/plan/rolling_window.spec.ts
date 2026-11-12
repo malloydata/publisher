@@ -22,22 +22,31 @@ import {
    planModelMaterialize,
 } from "./build_file_generator";
 import {
-   classifyRollingWindow,
+   classifyWhereTerms,
    currentTimeFields,
-   readRollingWindowTerm,
-   windowDeleteBefore,
-} from "./rolling_window";
+   readRollingWindow,
+} from "./persist_dynamic_terms";
+import { rollingWindowTerms, windowDeleteBefore } from "./rolling_window";
 
 const URL_ = "file:///rw/m.malloy";
 let duckdb: DuckDBConnection;
 let contents: Record<string, unknown>;
 
-const model = `source: events is duckdb.table('events')
+const model = `##! experimental.givens
+source: events is duckdb.table('events')
 #(materialize) storage="lake"
 source: lower_w is events extend { where: ts >= now - 30 days }
 source: lower_bare is events extend { where: ts > now }
 source: mirrored is events extend { where: now - 2 hours <= ts }
+#(materialize) storage="lake"
 source: inherited is lower_w extend { where: amount > 1 }
+source: unannotated_ext is lower_w extend { where: amount > 1 }
+given: ORG :: number is 1
+source: given_and_now is events extend { where: ts >= now - 30 days and amount = $ORG }
+source: given_beside_now is events extend {
+  where: amount = $ORG
+  where: ts >= now - 30 days
+}
 #(materialize) storage="lake"
 source: upper_w is events extend { where: ts < now - 30 days }
 source: two_terms is events extend { where: ts >= now - 30 days and amount > 1 }
@@ -93,24 +102,63 @@ const stored = new Map([
    ["amount", "number"],
 ]);
 
-function classify(name: string) {
-   return classifyRollingWindow(
-      contents[name] as { filterList?: unknown },
-      stored,
-   );
+function def(name: string) {
+   return contents[name] as { filterList?: unknown; fields?: unknown };
 }
 
-describe("classifyRollingWindow, over compiled sources", () => {
+function classify(name: string) {
+   return rollingWindowTerms(classifyWhereTerms(def(name)), stored);
+}
+
+describe("classifyWhereTerms, the one where: term classifier", () => {
+   it("classifies each term by what it depends on", () => {
+      expect(
+         classifyWhereTerms(def("given_beside_now")).map((t) => [
+            t.code,
+            t.dependsOn.kind,
+         ]),
+      ).toEqual([
+         ["amount = $ORG", "given"],
+         ["ts >= now - 30 days", "current_time"],
+      ]);
+      expect(
+         classifyWhereTerms(def("inherited")).map((t) => t.dependsOn.kind),
+      ).toEqual(["current_time", "fixed"]);
+      expect(
+         classifyWhereTerms(def("given_and_now")).map((t) => t.dependsOn.kind),
+      ).toEqual(["given_and_current_time"]);
+   });
+
+   it("reads a given term as the v1 classifier does", () => {
+      const [given] = classifyWhereTerms(def("given_beside_now"));
+      expect(given.dependsOn).toEqual({
+         kind: "given",
+         term: { code: "amount = $ORG", givens: ["ORG"], columns: ["amount"] },
+      });
+   });
+
+   it("reads a current-time term through a dimension, with no window", () => {
+      expect(classifyWhereTerms(def("via_age"))).toEqual([
+         { code: "age_h > 720", dependsOn: { kind: "current_time" } },
+      ]);
+   });
+});
+
+describe("rollingWindowTerms, over compiled sources", () => {
    it("reads a lower bound with an offset", () => {
       const out = classify("lower_w");
       expect(out).toEqual({
          ok: true,
          terms: [
             {
-               field: "ts",
-               op: ">=",
-               offset: { sign: -1, amount: 30, unit: "day" },
+               kind: "current_time",
                code: "ts >= now - 30 days",
+               columns: ["ts"],
+               window: {
+                  field: "ts",
+                  op: ">=",
+                  offset: { sign: -1, amount: 30, unit: "day" },
+               },
             },
          ],
       });
@@ -118,13 +166,9 @@ describe("classifyRollingWindow, over compiled sources", () => {
 
    it("reads a bare now, and a mirrored comparison with the field on the right", () => {
       const bare = classify("lower_bare");
-      expect(bare.ok && bare.terms[0]).toMatchObject({
-         field: "ts",
-         op: ">",
-      });
-      expect(bare.ok && bare.terms[0].offset).toBeUndefined();
+      expect(bare.ok && bare.terms[0].window).toEqual({ field: "ts", op: ">" });
       const mirrored = classify("mirrored");
-      expect(mirrored.ok && mirrored.terms[0]).toMatchObject({
+      expect(mirrored.ok && mirrored.terms[0].window).toEqual({
          field: "ts",
          op: ">=",
          offset: { sign: -1, amount: 2, unit: "hour" },
@@ -165,11 +209,22 @@ describe("classifyRollingWindow, over compiled sources", () => {
 
    it("refuses a field that is not a stored timestamp", () => {
       expect(
-         classifyRollingWindow(
-            contents.lower_w as { filterList?: unknown },
+         rollingWindowTerms(
+            classifyWhereTerms(def("lower_w")),
             new Map([["amount", "number"]]),
          ),
       ).toMatchObject({ ok: false, reason: "current_time_field" });
+   });
+
+   it("refuses one term that reads both a given and now, not two terms that each read one", () => {
+      expect(classify("given_and_now")).toMatchObject({
+         ok: false,
+         reason: "current_time_given",
+      });
+      expect(classify("given_beside_now")).toMatchObject({
+         ok: true,
+         terms: [{ code: "ts >= now - 30 days" }],
+      });
    });
 
    it("accepts a source with no current-time term", () => {
@@ -178,7 +233,7 @@ describe("classifyRollingWindow, over compiled sources", () => {
 
    it("reads nothing from a filter that is not a comparison with now", () => {
       expect(
-         readRollingWindowTerm({
+         readRollingWindow({
             e: {
                node: ">=",
                kids: { left: { node: "now" }, right: { node: "now" } },
@@ -216,14 +271,17 @@ describe("dimensions that depend on the current time", () => {
 describe("planModelMaterialize with a rolling window", () => {
    it("records the window on the plan, and refuses an upper bound", () => {
       const { plans, refused } = planModelMaterialize(contents);
-      // `inherited` extends `lower_w`, so it carries the annotation and the
-      // window both.
-      expect(plans.map((p) => [p.sourceName, p.rollingWindow?.length])).toEqual(
-         [
-            ["inherited", 1],
-            ["lower_w", 1],
-         ],
-      );
+      // `inherited` declares its own #(materialize) and carries its base's
+      // window; `unannotated_ext` declares none, so it is not planned.
+      expect(
+         plans.map((p) => [
+            p.sourceName,
+            p.readTimeTerms?.map((t) => [t.kind, t.code]),
+         ]),
+      ).toEqual([
+         ["inherited", [["current_time", "ts >= now - 30 days"]]],
+         ["lower_w", [["current_time", "ts >= now - 30 days"]]],
+      ]);
       expect(refused.map((r) => r.sourceName)).toEqual(["upper_w"]);
       expect(refused[0].reason).toContain("OLDER than a moving cut-off");
    });
@@ -382,7 +440,6 @@ describe("the incremental delete, run on DuckDB", () => {
                field: "ts",
                op: ">=" as const,
                offset: { sign: -1 as const, amount: 7, unit: "day" as const },
-               code: "ts >= now - 7 days",
             },
          ],
       };

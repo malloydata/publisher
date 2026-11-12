@@ -60,12 +60,16 @@ describe("rerootDeclaration", () => {
             virtualHandle: "h",
             typeName: "recent__served",
             storedDimensions: [],
-            rollingWindow: [
+            readTimeTerms: [
                {
-                  field: "ts",
-                  op: ">=",
-                  offset: { sign: -1, amount: 30, unit: "day" },
+                  kind: "current_time",
                   code: "now - 30 days <= ts",
+                  columns: ["ts"],
+                  window: {
+                     field: "ts",
+                     op: ">=",
+                     offset: { sign: -1, amount: 30, unit: "day" },
+                  },
                },
             ],
          },

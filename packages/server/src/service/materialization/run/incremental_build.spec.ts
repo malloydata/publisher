@@ -86,7 +86,6 @@ describe("incrementalLineage", () => {
             field: "order_ts",
             op: ">=" as const,
             offset: { sign: -1 as const, amount: 30, unit: "day" as const },
-            code: "order_ts >= now - 30 days",
          },
       ];
       expect(

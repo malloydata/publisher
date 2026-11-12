@@ -2,8 +2,12 @@
 // SPDX-License-Identifier: MIT
 
 /**
- * Rolling windows (materialization v2, phase 3): a `where:` term that compares
- * a stored time field with the current time, `ts >= now - 30 days`.
+ * Rolling windows (materialization v2, phase 3): what a `#(materialize)`
+ * source may do with a `where:` term that compares a stored time field with
+ * the current time, `ts >= now - 30 days`. The terms themselves are read by
+ * the one `where:` classifier, `classifyWhereTerms` in
+ * `persist_dynamic_terms.ts`; this module is the policy over its output and
+ * reads no IR.
  *
  * The build evaluates the term once, at the build's own clock, and the served
  * copy keeps the term so every read re-applies it at the read's clock. The
@@ -12,9 +16,10 @@
  *
  * - A lower bound (`ts >= now - 30 days`, "the last 30 days") is evaluated at
  *   build start *b*: every later read's cut-off is later, so the read trims.
- *   The build file needs no rewrite, because the build query's own `now` IS
- *   *b* (the build runs at or after *b*, and every read runs after the table
- *   it reads was written).
+ *   The build file writes the term as the author did, with no literal: the
+ *   build query's own `now` is at or after *b*, and every read runs after the
+ *   table it reads was written. The content address is computed over that
+ *   unsubstituted text, so it never moves with the clock.
  * - An upper bound (`ts < now - 30 days`, "older than 30 days") must be
  *   evaluated at *b* + the refresh interval, which Publisher does not know for
  *   a build on demand (question 2). It is refused: the source is not built and
@@ -25,32 +30,34 @@
  * then deletes the rows below the new lower bound ({@link windowDeleteBefore}),
  * so the table stays one window plus one interval in size.
  *
- * The term is read from the compiled source's filter list, never from its
- * text, and only one shape is accepted: a single comparison of a stored
- * timestamp field with `now`, optionally offset by a whole number of one unit.
- * Anything else that reads the current time in a `where:` is refused.
- *
- * Reading `filterList` and `fields` off a compiled source is the same read
- * `persist_dynamic_terms.ts` (the given-reading term classifier) makes; this
- * module classifies the current-time terms beside it.
+ * The origin's build and the destination's read must agree on the instant
+ * `now` names. They do because Malloy's connectors read it in UTC: DuckDB,
+ * Postgres, Snowflake and Trino pin the session to UTC, and BigQuery's
+ * `CURRENT_TIMESTAMP()` and SQL Server's `SYSUTCDATETIME()` are UTC. A
+ * connection whose setup SQL moves the session's time zone breaks that, as it
+ * breaks Malloy's own time arithmetic. A query `timezone:` moves the cut-off
+ * to that zone's wall time, so the served copy answers such a query live.
  */
 
-import {
-   NOW_OFFSET_UNITS,
-   type NowComparisonOp,
-   type NowOffsetUnit,
-} from "../../malloy_text";
+import type { NowOffsetUnit } from "../../malloy_text";
+import type {
+   ClassifiedWhereTerm,
+   RollingWindow,
+} from "./persist_dynamic_terms";
 
-/** One accepted current-time term of a materialized source. */
-export interface RollingWindowTerm {
-   /** The stored timestamp column the term compares. */
-   field: string;
-   /** As written, with the field on the left. */
-   op: NowComparisonOp;
-   /** `now + sign * amount unit`; absent for a bare `now`. */
-   offset?: { sign: 1 | -1; amount: number; unit: NowOffsetUnit };
+export type { RollingWindow };
+
+/**
+ * A current-time `where:` term a materialized source builds as written and its
+ * served copy writes again over the stored table, at every read's clock.
+ */
+export interface CurrentTimeReadTerm {
+   kind: "current_time";
    /** The author's text of the term, for messages. */
    code: string;
+   /** The stored columns it reads: the window's field. */
+   columns: string[];
+   window: RollingWindow;
 }
 
 /** Why a source's current-time terms cannot be materialized. */
@@ -58,149 +65,53 @@ export interface RollingWindowRefusal {
    reason:
       | "current_time_shape"
       | "current_time_upper_bound"
-      | "current_time_field";
+      | "current_time_field"
+      | "current_time_given";
    detail: string;
 }
 
 export type RollingWindowClassification =
-   | { ok: true; terms: RollingWindowTerm[] }
+   | { ok: true; terms: CurrentTimeReadTerm[] }
    | ({ ok: false } & RollingWindowRefusal);
 
-/** Max IR depth to walk; deep enough for real expressions, a hang backstop. */
-const MAX_DEPTH = 200;
-
-/** Whether a slice of compiled IR reads the current time (`now`). */
-export function readsCurrentTime(node: unknown, depth = 0): boolean {
-   if (depth > MAX_DEPTH) return true; // fail closed
-   if (node === null || typeof node !== "object") return false;
-   if (Array.isArray(node)) {
-      return node.some((item) => readsCurrentTime(item, depth + 1));
-   }
-   const record = node as Record<string, unknown>;
-   if (record.node === "now") return true;
-   for (const [key, value] of Object.entries(record)) {
-      // Locations and annotations carry no expression.
-      if (key === "at" || key === "location" || key === "annotations") continue;
-      if (readsCurrentTime(value, depth + 1)) return true;
-   }
-   return false;
-}
-
-const COMPARISONS: ReadonlySet<string> = new Set([">=", ">", "<", "<="]);
-const MIRROR: Record<NowComparisonOp, NowComparisonOp> = {
-   ">=": "<=",
-   ">": "<",
-   "<": ">",
-   "<=": ">=",
-};
 const TIME_TYPES: ReadonlySet<string> = new Set(["timestamp", "timestamptz"]);
 
-interface Expr {
-   node?: unknown;
-   kids?: Record<string, unknown>;
-   path?: unknown;
-   op?: unknown;
-   units?: unknown;
-   literal?: unknown;
-}
-
-/** `now` or `now ± <n> <unit>`, read as an offset; undefined for any other shape. */
-function readNow(
-   e: Expr | undefined,
-): { offset?: RollingWindowTerm["offset"] } | undefined {
-   if (!e || typeof e !== "object") return undefined;
-   if (e.node === "now") return {};
-   if (e.node !== "delta") return undefined;
-   const base = e.kids?.base as Expr | undefined;
-   const delta = e.kids?.delta as Expr | undefined;
-   if (base?.node !== "now") return undefined;
-   if (delta?.node !== "numberLiteral" || typeof delta.literal !== "string") {
-      return undefined;
-   }
-   if (!/^\d+$/.test(delta.literal)) return undefined;
-   const amount = Number(delta.literal);
-   if (!Number.isSafeInteger(amount)) return undefined;
-   if (e.op !== "+" && e.op !== "-") return undefined;
-   if (
-      typeof e.units !== "string" ||
-      !(NOW_OFFSET_UNITS as readonly string[]).includes(e.units)
-   ) {
-      return undefined;
-   }
-   return {
-      offset: {
-         sign: e.op === "-" ? -1 : 1,
-         amount,
-         unit: e.units as NowOffsetUnit,
-      },
-   };
-}
-
-/** A one-segment field reference's name, or undefined. */
-function readField(e: Expr | undefined): string | undefined {
-   if (!e || e.node !== "field" || !Array.isArray(e.path)) return undefined;
-   if (e.path.length !== 1 || typeof e.path[0] !== "string") return undefined;
-   return e.path[0];
-}
-
-/** One filter entry as a rolling-window term, or undefined when its shape is not one. */
-export function readRollingWindowTerm(
-   entry: unknown,
-): Omit<RollingWindowTerm, "code"> | undefined {
-   const e = (entry as { e?: Expr } | null)?.e;
-   if (!e || typeof e.node !== "string" || !COMPARISONS.has(e.node)) {
-      return undefined;
-   }
-   const left = e.kids?.left as Expr | undefined;
-   const right = e.kids?.right as Expr | undefined;
-   const op = e.node as NowComparisonOp;
-   const leftField = readField(left);
-   const rightNow = readNow(right);
-   if (leftField !== undefined && rightNow) {
-      return { field: leftField, op, ...rightNow };
-   }
-   const rightField = readField(right);
-   const leftNow = readNow(left);
-   if (rightField !== undefined && leftNow) {
-      return { field: rightField, op: MIRROR[op], ...leftNow };
-   }
-   return undefined;
-}
-
 /** Whether the term keeps rows newer than its cut-off ("the last 30 days"). */
-export function isLowerBound(term: Pick<RollingWindowTerm, "op">): boolean {
-   return term.op === ">=" || term.op === ">";
+export function isLowerBound(window: Pick<RollingWindow, "op">): boolean {
+   return window.op === ">=" || window.op === ">";
 }
 
 /**
- * Classify the current-time terms of a compiled source's `where:` (its whole
- * filter list, inherited terms included: an extension's list carries its
- * parent's). `storedColumns` maps each stored column to its Malloy type.
+ * The current-time terms of a materialized source, from the classified
+ * `where:` terms of its compiled definition, or the first that cannot be
+ * stored. `storedColumns` maps each stored column to its Malloy type.
  *
- * Accepted: a lower bound on a stored timestamp column. Refused, with the
- * first offending term: any other shape that reads `now`, an upper bound
- * (question 2), or a field that is not a stored timestamp column (the read
- * must re-apply the term over the stored table).
+ * Accepted: a lower bound on a stored timestamp column. Refused: any other
+ * shape that reads `now` (directly or through a field or join), an upper
+ * bound (question 2), a field that is not a stored timestamp column (the read
+ * must re-apply the term over the stored table), and a term that also reads a
+ * given. Fixed and given-reading terms are not this module's to judge.
  */
-export function classifyRollingWindow(
-   def: { filterList?: unknown; fields?: unknown },
+export function rollingWindowTerms(
+   classified: readonly ClassifiedWhereTerm[],
    storedColumns: ReadonlyMap<string, string>,
 ): RollingWindowClassification {
-   const terms: RollingWindowTerm[] = [];
-   const list = Array.isArray(def.filterList) ? def.filterList : [];
-   // A term can read the current time without spelling `now`: through a
-   // dimension that reads it (`where: is_recent`, `where: age_hours > 720`),
-   // or through a join whose own `where:` or `on` reads it. The build would
-   // evaluate it once and the re-root would lose it when inherited, so it
-   // counts as reading the current time, and its shape is refused below.
-   const timeFields = currentTimeFields(def.fields);
-   for (const entry of list) {
-      const e = (entry as { e?: unknown })?.e;
-      if (!readsCurrentTime(e) && !readsTimeField(e, timeFields)) continue;
-      const rawCode = (entry as { code?: unknown }).code;
-      const code = typeof rawCode === "string" ? rawCode : "(unreadable)";
-      const term = readRollingWindowTerm(entry);
-      if (!term) {
+   const terms: CurrentTimeReadTerm[] = [];
+   for (const { code: rawCode, dependsOn } of classified) {
+      const code = rawCode || "(unreadable)";
+      if (dependsOn.kind === "given_and_current_time") {
+         return {
+            ok: false,
+            reason: "current_time_given",
+            detail:
+               `the \`where:\` term \`${code}\` reads both a given and the ` +
+               "current time, which a stored table cannot re-apply as one " +
+               "term; write them as two `where:` terms",
+         };
+      }
+      if (dependsOn.kind !== "current_time") continue;
+      const window = dependsOn.window;
+      if (!window) {
          return {
             ok: false,
             reason: "current_time_shape",
@@ -211,7 +122,7 @@ export function classifyRollingWindow(
                "of one unit (`ts >= now - 30 days`)",
          };
       }
-      if (!isLowerBound(term)) {
+      if (!isLowerBound(window)) {
          return {
             ok: false,
             reason: "current_time_upper_bound",
@@ -222,20 +133,34 @@ export function classifyRollingWindow(
                "serves live",
          };
       }
-      const type = storedColumns.get(term.field);
+      const type = storedColumns.get(window.field);
       if (type === undefined || !TIME_TYPES.has(type)) {
          return {
             ok: false,
             reason: "current_time_field",
             detail:
-               `the \`where:\` term \`${code}\` compares \`${term.field}\`, which ` +
+               `the \`where:\` term \`${code}\` compares \`${window.field}\`, which ` +
                "is not a stored timestamp column of the source, so a read cannot " +
                "re-apply it over the stored table",
          };
       }
-      terms.push({ ...term, code });
+      terms.push({
+         kind: "current_time",
+         code,
+         columns: [window.field],
+         window,
+      });
    }
    return { ok: true, terms };
+}
+
+/** The windows among a plan's read-time terms: what a refresh deletes below. */
+export function rollingWindowsOf(
+   terms: readonly { kind: string; window?: RollingWindow }[] | undefined,
+): RollingWindow[] {
+   return (terms ?? []).flatMap((t) =>
+      t.kind === "current_time" && t.window ? [t.window] : [],
+   );
 }
 
 const DAY_MS = 86_400_000;
@@ -258,10 +183,10 @@ const UNIT_MS: Record<NowOffsetUnit, { longest: number; shortest: number }> = {
 };
 
 /**
- * The margin taken off a delete bound: a day covers any session time zone
- * (the warehouse's `now` may be local time, Publisher's clock is UTC), a
- * daylight-saving hour in a day-sized unit, and the build's own delay after
- * the run's start. A row kept by the margin is still trimmed by every read.
+ * The margin taken off a delete bound: a day covers a warehouse clock or
+ * session that differs from Publisher's, a daylight-saving hour in a day-sized
+ * unit, and the build's own delay after the run's start. A row kept by the
+ * margin is still trimmed by every read.
  */
 const DELETE_MARGIN_MS = DAY_MS;
 
@@ -274,125 +199,17 @@ const DELETE_MARGIN_MS = DAY_MS;
  * only ever keeps a row.
  */
 export function windowDeleteBefore(
-   term: Pick<RollingWindowTerm, "op" | "offset">,
+   window: Pick<RollingWindow, "op" | "offset">,
    runStart: Date,
 ): Date {
-   if (!isLowerBound(term)) {
+   if (!isLowerBound(window)) {
       throw new Error("only a lower-bound term deletes rows");
    }
-   const o = term.offset;
+   const o = window.offset;
    const offset = o
       ? o.sign < 0
          ? -o.amount * UNIT_MS[o.unit].longest
          : o.amount * UNIT_MS[o.unit].shortest
       : 0;
    return new Date(runStart.getTime() + offset - DELETE_MARGIN_MS);
-}
-
-/** The dotted field paths an expression reads. */
-function fieldPaths(node: unknown, out: Set<string>, depth = 0): void {
-   if (depth > MAX_DEPTH || node === null || typeof node !== "object") return;
-   if (Array.isArray(node)) {
-      for (const item of node) fieldPaths(item, out, depth + 1);
-      return;
-   }
-   const record = node as Record<string, unknown>;
-   if (
-      record.node === "field" &&
-      Array.isArray(record.path) &&
-      record.path.length > 0 &&
-      record.path.every((p) => typeof p === "string")
-   ) {
-      out.add((record.path as string[]).join("."));
-   }
-   for (const [key, value] of Object.entries(record)) {
-      if (key === "at" || key === "location" || key === "annotations") continue;
-      fieldPaths(value, out, depth + 1);
-   }
-}
-
-/**
- * Whether a dotted path names a field in `timeFields`, or reads through a join
- * there (a join whose own `where:` or `on` reads the current time makes every
- * value read through it depend on it).
- */
-export function dependsOnCurrentTime(
-   path: string,
-   timeFields: ReadonlySet<string>,
-): boolean {
-   const parts = path.split(".");
-   for (let i = 1; i <= parts.length; i++) {
-      if (timeFields.has(parts.slice(0, i).join("."))) return true;
-   }
-   return false;
-}
-
-/** Whether an expression reads a field whose value depends on the current time. */
-function readsTimeField(e: unknown, timeFields: ReadonlySet<string>): boolean {
-   if (timeFields.size === 0) return false;
-   const paths = new Set<string>();
-   fieldPaths(e, paths);
-   return [...paths].some((p) => dependsOnCurrentTime(p, timeFields));
-}
-
-/**
- * Every field of a source whose value depends on the current time, as a dotted
- * path: it reads `now`, or reads (through any chain of the source's fields,
- * joined ones included) one that does. A join whose own `where:` or `on` reads
- * the current time is listed by its own name, since every value read through
- * it depends on it ({@link dependsOnCurrentTime}). Such a dimension is never
- * stored, since its value differs per read.
- */
-export function currentTimeFields(fields: unknown, depth = 0): Set<string> {
-   const out = new Set<string>();
-   if (!Array.isArray(fields) || depth > MAX_DEPTH) return out;
-   const deps = new Map<string, Set<string>>();
-   for (const raw of fields) {
-      const f = raw as {
-         name?: unknown;
-         as?: unknown;
-         e?: unknown;
-         join?: unknown;
-         fields?: unknown;
-         filterList?: unknown;
-         onExpression?: unknown;
-      };
-      const name =
-         typeof f.as === "string"
-            ? f.as
-            : typeof f.name === "string"
-              ? f.name
-              : undefined;
-      if (name === undefined) continue;
-      const refs = new Set<string>();
-      if (f.join !== undefined) {
-         if (
-            readsCurrentTime(f.filterList) ||
-            readsCurrentTime(f.onExpression)
-         ) {
-            out.add(name);
-            continue;
-         }
-         for (const inner of currentTimeFields(f.fields, depth + 1)) {
-            out.add(`${name}.${inner}`);
-         }
-         // An `on` that reads one of this source's per-read dimensions.
-         fieldPaths(f.onExpression, refs);
-      } else {
-         if (readsCurrentTime(f.e)) out.add(name);
-         fieldPaths(f.e, refs);
-      }
-      deps.set(name, refs);
-   }
-   for (let changed = true; changed; ) {
-      changed = false;
-      for (const [name, refs] of deps) {
-         if (out.has(name)) continue;
-         if ([...refs].some((r) => dependsOnCurrentTime(r, out))) {
-            out.add(name);
-            changed = true;
-         }
-      }
-   }
-   return out;
 }

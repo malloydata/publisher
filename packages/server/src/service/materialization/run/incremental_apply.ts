@@ -8,10 +8,7 @@ import type { IncrementalLedgerEntry } from "../../../storage/DatabaseInterface"
 import type { IncrementalStrategy } from "../types";
 import { errMessage } from "../../../utils";
 import { quoteIdentifier } from "../../quoting";
-import {
-   windowDeleteBefore,
-   type RollingWindowTerm,
-} from "../plan/rolling_window";
+import { windowDeleteBefore, type RollingWindow } from "../plan/rolling_window";
 
 /**
  * Generating and applying an incremental DELTA: the bounded slice of a persisted
@@ -852,7 +849,7 @@ export interface IncrementalLineage {
     * Not compared with the ledger: the terms are in the build SQL, so a change
     * to one already changes {@link sourceEntityId}.
     */
-   rollingWindow?: readonly RollingWindowTerm[];
+   rollingWindow?: readonly RollingWindow[];
 }
 
 /**
@@ -1262,11 +1259,11 @@ export async function planIncrementalStep(inputs: {
       watermarkName: lineage.watermarkName,
       start,
       end: end.bound,
-      windowDeletes: (lineage.rollingWindow ?? []).map((term) => ({
-         column: term.field,
+      windowDeletes: (lineage.rollingWindow ?? []).map((window) => ({
+         column: window.field,
          before: canonicalBoundValue(
             "timestamp",
-            windowDeleteBefore(term, inputs.now),
+            windowDeleteBefore(window, inputs.now),
          ),
       })),
    });

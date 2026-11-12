@@ -76,11 +76,8 @@ import {
 } from "../../annotation_reader";
 import { annotationValue, identifier, stringLiteral } from "../../malloy_text";
 import { parseRouteTag, routeHasKey } from "../../motly";
-import {
-   classifyRollingWindow,
-   currentTimeFields,
-   type RollingWindowTerm,
-} from "./rolling_window";
+import { classifyWhereTerms, currentTimeFields } from "./persist_dynamic_terms";
+import { rollingWindowTerms, type CurrentTimeReadTerm } from "./rolling_window";
 
 /** The route `#(materialize)` is on. */
 export const MATERIALIZE_ROUTE = "materialize";
@@ -136,6 +133,16 @@ export interface MaterializeColumn {
    computed: boolean;
 }
 
+/**
+ * A `where:` term of a materialized source that depends on the read, so the
+ * served copy applies it again over the stored table, by what it reads
+ * (`classifyWhereTerms`, the one term classifier). A current-time term
+ * (rolling_window.ts) is built as written, since the build's own `now` stores
+ * the widest set, and is also the bound an incremental refresh deletes below.
+ * A given-reading term (P2) joins this union as its own `kind`.
+ */
+export type MaterializeReadTimeTerm = CurrentTimeReadTerm;
+
 /** What the generator writes for one `#(materialize)` source. */
 export interface MaterializePlan {
    /** The author's source name in this model. */
@@ -152,11 +159,10 @@ export interface MaterializePlan {
     */
    persist: Record<string, string>;
    /**
-    * The source's rolling-window `where:` terms (rolling_window.ts): built at
-    * the build's own clock, re-applied by the served copy at every read, and
-    * the bound an incremental refresh deletes below. Absent when none.
+    * The source's read-time `where:` terms: the ones the served copy applies
+    * again over the stored table at every read. Absent when it has none.
     */
-   rollingWindow?: RollingWindowTerm[];
+   readTimeTerms?: MaterializeReadTimeTerm[];
 }
 
 /** A declaration the generator could not plan, and why. */
@@ -450,8 +456,8 @@ export function planModelMaterialize(
          });
          continue;
       }
-      const window = classifyRollingWindow(
-         def,
+      const window = rollingWindowTerms(
+         classifyWhereTerms(def),
          new Map(columns.map((c) => [c.column, columnType(def, c.dimension)])),
       );
       if (!window.ok) {
@@ -505,7 +511,7 @@ export function planModelMaterialize(
          buildSourceName: buildSourceName(name),
          columns,
          persist,
-         ...(window.terms.length > 0 ? { rollingWindow: window.terms } : {}),
+         ...(window.terms.length > 0 ? { readTimeTerms: window.terms } : {}),
       });
    }
    return { plans, refused };

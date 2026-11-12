@@ -57,6 +57,7 @@ import {
    type MaterializePlan,
 } from "./build_file_generator";
 import { tryCompileMaterializeCompanion } from "./materialize_compile";
+import { rollingWindowsOf } from "./rolling_window";
 import { getMaterializeEnabled } from "../../../config";
 import {
    classifyDynamicTerms,
@@ -1179,8 +1180,10 @@ export function collectIncrementalDeclarations(
             source,
             deriveAnnotationFields(source),
          );
-         const window = materializePlans[sourceID]?.rollingWindow;
-         declarations[sourceID] = window?.length
+         const window = rollingWindowsOf(
+            materializePlans[sourceID]?.readTimeTerms,
+         );
+         declarations[sourceID] = window.length
             ? { ...declaration, rollingWindow: window }
             : declaration;
       } catch (err) {
