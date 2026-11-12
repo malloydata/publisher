@@ -132,6 +132,11 @@ export interface Answer {
    readonly via: "served_copy" | undefined;
    /** For a served-copy answer: where `govern()` grafts a row-level gate (R3). */
    readonly graftScope: GraftScope | undefined;
+   /**
+    * The answering variant was let past an entry-point gate because it keeps
+    * the contracts (R3): `govern()` must find and enforce that gate on it.
+    */
+   readonly pastEntryPointGate: boolean;
    /** For a rollup answer: the composite member the compile resolved to. */
    readonly rollupMember: string | undefined;
    /** A storage read failed at run time and the query was answered live. */
@@ -150,6 +155,7 @@ export const LIVE_ANSWER: Answer = Object.freeze({
    storageTablesRead: undefined,
    via: undefined,
    graftScope: undefined,
+   pastEntryPointGate: false,
    rollupMember: undefined,
    runFailed: false,
    colocatedRead: new Set<string>(),
@@ -171,11 +177,13 @@ export function routedAnswer(route: RouteDecision<RoutedExtra>): Answer {
          storageTablesRead: route.extra.tablesRead,
          via: route.extra.via,
          graftScope: route.extra.graftScope,
+         pastEntryPointGate: route.pastEntryPointGate === true,
       });
    }
    return Object.freeze({
       ...LIVE_ANSWER,
       considered: route.considered,
+      pastEntryPointGate: route.pastEntryPointGate === true,
       tier: "rollup",
       routedRunnable: route.runnable,
       rollupMember: route.extra.resolvedMember,

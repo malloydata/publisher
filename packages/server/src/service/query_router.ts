@@ -120,6 +120,12 @@ export type RouteDecision<Extra> =
         runnable: QueryMaterializer;
         extra: Extra;
         considered: ConsideredVariant[];
+        /**
+         * Set when this candidate answered past an `entry_point` veto (it
+         * {@link Variant.keepsContracts}): the query's entry point is gated, so
+         * governing the answer must find and enforce that gate on it.
+         */
+        pastEntryPointGate?: true;
      }
    | { served: "live"; considered: ConsideredVariant[] };
 
@@ -198,6 +204,7 @@ async function decideRoute<Extra>(
             runnable: answer.runnable,
             extra: answer.extra,
             considered,
+            ...(veto === "entry_point" ? { pastEntryPointGate: true } : {}),
          };
       } catch (error) {
          considered.push({

@@ -126,6 +126,8 @@ export interface R4Run {
 /** A built scenario: run queries against it. */
 export interface R4Fixture {
    bindings: ServeBinding[];
+   /** The model queries run against, for a test that reaches its internals. */
+   model: Model;
    run(query: R4Query): Promise<R4Run>;
    /**
     * Point the model at `bindings` (`[]` for live), clearing the memoized
@@ -431,6 +433,7 @@ export async function buildScenario(scenario: R4Scenario): Promise<R4Fixture> {
    );
    return {
       bindings,
+      model,
       setClock(at) {
          if (!pinned) throw new Error("the scenario's clock is not pinned");
          pinned.clock = at;

@@ -3215,12 +3215,12 @@ export class Model {
          callerQueryText: query,
          ceiling: { audit, source: () => compiledSource ?? sourceName },
          // The served copy is the author's text, gates included: a row-level
-         // gate is grafted and proven on its compile, so the routed answer
-         // keeps it (R3). Any other routed shape carries no annotations and is
-         // never reached past a row-level gate (the router's veto).
-         ...(answer.via === "served_copy" && answer.graftScope
-            ? { graftScope: answer.graftScope }
-            : {}),
+         // gate is grafted and proven on its own compile, so the routed answer
+         // keeps it (R3), and an answer let past an entry-point gate is
+         // re-proven there. Any other routed shape carries no annotations and
+         // is never reached past a row-level gate (the router's veto).
+         graftScope: answer.graftScope,
+         routedPastEntryPointGate: answer.pastEntryPointGate,
       };
       const { runnable: governed, decision } = await this.governor.govern(
          governRequest,
@@ -3415,6 +3415,7 @@ export class Model {
             {
                ...governRequest,
                graftScope: undefined,
+               routedPastEntryPointGate: false,
                boundary: undefined,
                ceiling: undefined,
                bypassAlreadyNoted: true,

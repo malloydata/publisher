@@ -25,7 +25,7 @@ import type {
    ModelMaterializer,
    QueryMaterializer,
 } from "@malloydata/malloy";
-import type { GraftScope } from "../../gate_classification";
+import type { GraftRuntime, GraftScope } from "../../gate_classification";
 import { quoteManifestTablePath } from "../../quoting";
 import { overlayKey } from "../../overlay_key";
 import {
@@ -122,7 +122,7 @@ interface Compiled {
    /** The served copy's compiled model, read (never edited) for source chains. */
    modelDef?: unknown;
    /** The runtime it compiled in: a row-level graft reloads through it (R3). */
-   runtime?: GraftScope["runtime"];
+   runtime?: GraftRuntime;
    /** The `sourceID`s of sources that opt out with `#@ -persist`. */
    optOutIDs?: ReadonlySet<string>;
    /** Bindings actually re-rooted, with their destination under its alias. */
@@ -349,7 +349,7 @@ export class ServedCopyServe {
             // be shared with one built on the author's model, and a new
             // compile (new bindings, a reload) starts afresh.
             cacheScope: `served_copy\u0000${compiled.key}`,
-            ...(compiled.runtime ? { runtime: compiled.runtime } : {}),
+            runtime: compiled.runtime,
          },
       };
    }
@@ -627,7 +627,7 @@ export class ServedCopyServe {
          }
          let materializer: ModelMaterializer;
          let servedDef: unknown;
-         let servedRuntime: GraftScope["runtime"];
+         let servedRuntime: GraftRuntime;
          try {
             const { runtime, modelURL, importBaseURL } =
                await createModelRuntime(
@@ -641,7 +641,7 @@ export class ServedCopyServe {
                   { overlay },
                );
             materializer = runtime.loadModel(modelURL, { importBaseURL });
-            servedRuntime = runtime as unknown as GraftScope["runtime"];
+            servedRuntime = runtime as unknown as GraftRuntime;
             const model = await materializer.getModel();
             // eslint-disable-next-line @typescript-eslint/no-explicit-any
             servedDef = (model as any)._modelDef;
