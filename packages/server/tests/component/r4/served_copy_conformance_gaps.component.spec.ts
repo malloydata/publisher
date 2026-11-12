@@ -294,3 +294,65 @@ source: order_facts is orders_raw -> {
       });
    }
 });
+
+/**
+ * Decision 3: a connection-rooted `#@ persist` source re-roots with its own
+ * extend run applied again over the table. A `where:` there that reads a
+ * given must answer each caller as live does, whatever the build applied.
+ */
+describe("served copy gap closed: a raw SQL source whose where: reads a given, two callers", () => {
+   const files = {
+      "m.malloy": `##! experimental { persistence givens }
+
+given: REGION :: string is 'north'
+
+#@ persist name="raw_scoped" storage="lake"
+source: raw_scoped is duckdb.sql("""
+  SELECT region, CAST(amount AS DOUBLE) AS amount
+  FROM read_csv('data/orders.csv', header=true, all_varchar=true)
+""") extend {
+  where: region = $REGION
+  measure: total is amount.sum()
+}
+`,
+   };
+   const query = "run: raw_scoped -> { group_by: region; aggregate: total }";
+   const callers = ["north", "east"];
+   let restore: () => void = () => {};
+   let fixture: LoadedFixture | undefined;
+   const live = new Map<string, Outcome>();
+   const served = new Map<string, Outcome>();
+
+   beforeAll(async () => {
+      restore = withSwitch("on");
+      const loader = await loadFixture({ ...DATA_FILES, ...files });
+      for (const region of callers) {
+         live.set(
+            region,
+            await loader.run("m.malloy", query, { REGION: region }),
+         );
+      }
+      fixture = await loader.bind();
+      for (const region of callers) {
+         served.set(
+            region,
+            await fixture.run("m.malloy", query, { REGION: region }),
+         );
+      }
+   });
+   afterAll(async () => {
+      restore();
+      await fixture?.dispose();
+   });
+
+   for (const region of callers) {
+      it(`caller ${region}: that caller's rows, equal to live`, () => {
+         const l = answerOf(live.get(region));
+         const s = answerOf(served.get(region));
+         expect(rowDifference(l.rows, s.rows)).toBeUndefined();
+         expect(
+            s.rows.map((r) => (r as Record<string, unknown>)["region"]),
+         ).toEqual([region]);
+      });
+   }
+});
