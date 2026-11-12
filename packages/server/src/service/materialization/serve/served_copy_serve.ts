@@ -31,6 +31,7 @@ import {
    type ModelConnectionInput,
 } from "../../model_runtime";
 import { SourceMap } from "../plan/source_map";
+import { givenReadingFilterTerms } from "../plan/persist_dynamic_terms";
 import type { MaterializePlan } from "../plan/build_file_generator";
 import { evaluateManifestFreshness } from "../run/freshness";
 import {
@@ -97,7 +98,8 @@ export interface ServedCopyProblem {
       | "no_declaration"
       | "range_not_found"
       | "definition_not_parsed"
-      | "fields_not_carried";
+      | "fields_not_carried"
+      | "read_terms_not_kept";
    /** The compiler's message, for logs and the package warning only. */
    detail?: string;
 }
@@ -617,14 +619,36 @@ export class ServedCopyServe {
             const served = fieldNames(servedMap.node(c.reroot.sourceID)?.def);
             return [...author].some((name) => !served.has(name));
          });
-         if (lost.length > 0) {
+         // Fail closed on tenant isolation: every `where:` term that reads a
+         // given (re-applied per caller at read, never in the table) must be
+         // applied by the served source too. One written where the re-root
+         // replaced it (a parenthesised head, an inline extend in the base)
+         // is gone from the served source's compiled filters, and the copy
+         // would answer every caller with every caller's rows.
+         const unscoped = candidates.filter(
+            (c) =>
+               !lost.includes(c) &&
+               !keepsGivenTerms(
+                  map.node(c.reroot.sourceID)?.def,
+                  servedMap.node(c.reroot.sourceID)?.def,
+               ),
+         );
+         if (lost.length > 0 || unscoped.length > 0) {
             for (const c of lost) {
                problems.push({
                   sourceName: c.reroot.sourceName,
                   reason: "fields_not_carried",
                });
             }
-            candidates = candidates.filter((c) => !lost.includes(c));
+            for (const c of unscoped) {
+               problems.push({
+                  sourceName: c.reroot.sourceName,
+                  reason: "read_terms_not_kept",
+               });
+            }
+            candidates = candidates.filter(
+               (c) => !lost.includes(c) && !unscoped.includes(c),
+            );
             continue;
          }
          // Every declaration the model reaches, imported ones included.
@@ -680,6 +704,26 @@ function fieldNotes(field: unknown): string[] {
       | undefined;
    walk(f?.annotations ?? f?.annotation, 0);
    return out;
+}
+
+/**
+ * Whether the served source applies every given-reading `where:` term the
+ * author's applies: the same text, reading the same givens, in its own
+ * compiled filters (so a term in a comment, a string or another source never
+ * counts). Unreadable or unrecorded terms fail closed.
+ */
+export function keepsGivenTerms(author: unknown, served: unknown): boolean {
+   if (!author || !served) return false;
+   try {
+      const key = (t: { code: string; givens: string[] }) =>
+         `${t.code.replace(/\s+/g, " ").trim()}\u0000${t.givens.join(",")}`;
+      const kept = new Set(givenReadingFilterTerms(served).map(key));
+      return givenReadingFilterTerms(author).every(
+         (t) => t.code.trim() !== "" && kept.has(key(t)),
+      );
+   } catch {
+      return false;
+   }
 }
 
 /** Whether a compiled query sets a `timezone:` anywhere in it. */

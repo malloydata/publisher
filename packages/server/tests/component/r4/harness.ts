@@ -27,6 +27,7 @@ import * as path from "path";
 import { pathToFileURL } from "url";
 import {
    FixedConnectionMap,
+   type GivenValue,
    InMemoryURLReader,
    MalloyConfig,
    modelDefToModelInfo,
@@ -66,6 +67,8 @@ export interface R4Query {
    name: string;
    /** A `run:` statement. */
    malloy: string;
+   /** The caller's given values, for both runs. */
+   givens?: Record<string, GivenValue>;
    /**
     * SQL over the seed tables that computes the right answer without Malloy,
     * as rows with the same column names. Checked against both runs.
@@ -342,10 +345,13 @@ export async function buildScenario(scenario: R4Scenario): Promise<R4Fixture> {
       materializePlans,
    );
 
-   const runOnce = async (malloy: string) => {
+   const runOnce = async (
+      malloy: string,
+      givens?: Record<string, GivenValue>,
+   ) => {
       const result = await model.runQuery(
          unrecordedAudit(),
-         { query: malloy, filterParams: {} },
+         { query: malloy, filterParams: {}, ...(givens ? { givens } : {}) },
          QueryPrivileges.of({ bypassFilters: true }),
       );
       return {
@@ -411,9 +417,9 @@ export async function buildScenario(scenario: R4Scenario): Promise<R4Fixture> {
       },
       async run(query: R4Query): Promise<R4Run> {
          model.setServeBindings([]);
-         const live = await runOnce(query.malloy);
+         const live = await runOnce(query.malloy, query.givens);
          model.setServeBindings(bindings);
-         const served = await runOnce(query.malloy);
+         const served = await runOnce(query.malloy, query.givens);
          const truth = query.truthSql
             ? ((await duckdb.runSQL(query.truthSql, { rowLimit: 10_000 }))
                  .rows as Row[])

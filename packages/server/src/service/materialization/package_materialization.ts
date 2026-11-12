@@ -1892,6 +1892,8 @@ function servedCopyProblemMessage(reason: ServedCopyProblem["reason"]): string {
       case "range_not_found":
       case "definition_not_parsed":
          return "This source's declaration could not be re-rooted on its table, so the served copy leaves it to the serve shape.";
+      case "read_terms_not_kept":
+         return "This source filters by a given in a place its stored table cannot keep, so the served copy leaves it as written rather than answer every caller alike.";
       case "fields_not_carried":
          return "This source inherits fields (a measure, view or join declared on the source it is built from) that its stored table does not carry, so the served copy leaves it as written.";
    }
