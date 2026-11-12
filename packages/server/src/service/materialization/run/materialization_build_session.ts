@@ -1376,7 +1376,41 @@ export async function dropStorageTable(params: {
 }
 
 /**
+ * Run `fn` on an isolated read-write session with a `storage=` destination
+ * attached under its own name, as {@link dropStorageTable} reaches it. For
+ * statements on one named object (the `name=` view), never a scan.
+ */
+export async function withStorageDestinationSession<T>(
+   params: {
+      destinationName: string;
+      destinationConnection: ApiConnection;
+      environmentPath: string;
+   },
+   fn: (session: DuckDBConnection) => Promise<T>,
+): Promise<T> {
+   const { destinationName, destinationConnection, environmentPath } = params;
+   assertSupportedDestination(destinationName, destinationConnection);
+   const { session, dispose, workDir } = createIsolatedBuildSession(
+      `view_${destinationName}`,
+   );
+   try {
+      await applySessionResourceLimits(session, { tempDirectory: workDir });
+      await attachDestinationReadWrite(
+         session,
+         destinationName,
+         destinationConnection,
+         environmentPath,
+      );
+      return await fn(session);
+   } finally {
+      await dispose();
+   }
+}
+
+/**
  * The tables in one schema of a `storage=` destination, in name order.
+ * Tables only: a `name=` view (name_view.ts) is never listed, so a sweep
+ * that drops what it lists never reaches one.
  *
  * Read-only, on an isolated instance. A plain DuckDB destination with no
  * database file yet is reported empty rather than created by looking.
