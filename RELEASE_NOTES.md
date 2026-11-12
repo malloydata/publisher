@@ -21,6 +21,12 @@ Give the heading a title — `## [Unreleased] — what changed`, with an em dash
 
 Two consequences worth knowing. A section merged to `main` ships in the **next** release, whenever that is, so do not write one for work that has not landed. And a heading already stamped with a version is history: a follow-up that changes that behaviour opens a **new** `[Unreleased]` section referencing the shipped version by number, rather than editing the old one.
 
+## [Unreleased] — In development: `#(preaggregate)` is read and its rollups built behind PUBLISHER_MATERIALIZE
+
+With `PUBLISHER_MATERIALIZE` on (off by default), `#(preaggregate) grain=["category"]` on a measure plans and builds a rollup of it at that grain (materialization v2, phase 4; [docs/preaggregation.md](docs/preaggregation.md)). Measures qualify by their own text, checked against the compiled measure: sums, counts, mins and maxes, filtered or not, and expressions of them (`revenue / order_count`, `coalesce(x.max(), 0)`), each stored as its own partial. A source with a `join_many` may be rolled up. A rollup over a `#@ persist storage=` base builds, from the author's rows (#6293), and a rollup is planned once, under the model that declares its base, however many models import it, so the build plan lists it once. Queries are not answered from these rollups yet; that is the next change.
+
+A malformed declaration (a measure whose partials cannot be merged, an unknown key, a grain naming no dimension) is refused at publish, and is a warning on load. One that cannot be honoured here is a coded warning and is not built: a join-level aggregate whose key is not in the grain, an access filter on a field the grain drops or read through a join, a build that reads a given, a source, grain dimension or measure that reads the current time (a rolling window would be fixed at build time), or a measure Publisher cannot read with certainty. With the switch off nothing changes, and `#@ preaggregate` keeps its v1 behaviour either way.
+
 ## [Unreleased] — In development: `#@ -persist` and `#@ preaggregate` are deprecated in materialization v2, with a migration recipe
 
 Materialization v2 deprecates two v1 forms. `#@ -persist` has no v2 form, because a materialized source serves every reader. `#@ preaggregate` is renamed `#(preaggregate)`, which phase 4 builds. Both follow the Publisher v1 plan's rule for a deprecated form: a package warning through 0.x, refused at 1.0.0, and the reader removed in 1.1. `#@ persist` itself is not deprecated, and moving to `#(materialize)` is optional.

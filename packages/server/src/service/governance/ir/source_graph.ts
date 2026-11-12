@@ -200,6 +200,16 @@ export interface SourceJoin {
     */
    keyColumn: string | undefined;
    /**
+    * The joining source's own field the join is keyed on, when its condition
+    * is one equality between a field of the joined source and one plain field
+    * of the joining source (`join_one: carriers with carrier`, `on
+    * carriers.code = carrier`); undefined for any other condition. Each row of
+    * the joined source then meets the joining rows of one value of that
+    * field, which is what lets a join-level aggregate be re-summed across
+    * groups that keep it.
+    */
+   baseKey: string | undefined;
+   /**
     * The source's other joins its condition reads, directly or through the
     * source's fields (`join_one: c on c.id = s.carrier` reads `s`), and
     * whether it reaches past one into a join of a joined source; undefined
@@ -389,6 +399,7 @@ export function sourceJoins(def: unknown): SourceJoin[] {
          primaryKey:
             typeof f.primaryKey === "string" ? f.primaryKey : undefined,
          keyColumn: joinKeyColumn(name, f.onExpression),
+         baseKey: joinBaseKey(name, f.onExpression),
          condition: reader.conditionOf(name),
          fields: Array.isArray(f.fields) ? f.fields : [],
       });
@@ -412,6 +423,21 @@ function joinKeyColumn(join: string, on: unknown): string | undefined {
    const other = sides.find((s) => s !== joined[0]);
    if (expressionPaths(other).some((p) => p[0] === join)) return undefined;
    return (joined[0]?.path as string[])[1];
+}
+
+/** See {@link SourceJoin.baseKey}. */
+function joinBaseKey(join: string, on: unknown): string | undefined {
+   if (joinKeyColumn(join, on) === undefined) return undefined;
+   const expr = on as IrExpr;
+   const other = [expr.kids?.left, expr.kids?.right].find(
+      (s) => !(Array.isArray(s?.path) && s?.path[0] === join),
+   );
+   return other?.node === "field" &&
+      Array.isArray(other.path) &&
+      other.path.length === 1 &&
+      typeof other.path[0] === "string"
+      ? other.path[0]
+      : undefined;
 }
 
 /**

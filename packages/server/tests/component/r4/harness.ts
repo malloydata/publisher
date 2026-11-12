@@ -19,6 +19,8 @@
 
 import { loadLeavingOutCrossConnectionJoins } from "../../../src/service/materialization/plan/cross_connection_joins";
 import { tryCompileMaterializeCompanion } from "../../../src/service/materialization/plan/materialize_compile";
+import { tryCompileRollupCompanion } from "../../../src/service/materialization/plan/rollup_compile";
+import { createModelRuntime } from "../../../src/service/model_runtime";
 import type { MaterializePlan } from "../../../src/service/materialization/plan/build_file_generator";
 import type { ServedCopyServe } from "../../../src/service/materialization/serve/served_copy_serve";
 import { DuckDBConnection } from "@malloydata/db-duckdb";
@@ -116,6 +118,13 @@ export interface R4Scenario {
    origins?: Record<string, string[]>;
    /** Planned sources, by name, to leave unbuilt (no table, no binding). */
    unbuilt?: string[];
+   /**
+    * Also build the generated `#(preaggregate)` rollups (the rollup companion
+    * beside the entry model): a `storage=` rollup into the destination, a
+    * colocated one into the scenario's own database under the build
+    * manifest, as a package with PUBLISHER_MATERIALIZE on does.
+    */
+   preaggregate?: boolean;
 }
 
 export type Row = Record<string, unknown>;
@@ -129,12 +138,20 @@ export interface R4Run {
    servedFields: { name: string; type: unknown }[];
    /** `served_copy` when the served copy on `virtual` answered. */
    servedVia?: string;
+   /** The path report's `servedBy`: which table answered. */
+   servedBy?: { kind: string; tableId?: string };
    truth?: Row[];
 }
 
 /** A built scenario: run queries against it. */
 export interface R4Fixture {
    bindings: ServeBinding[];
+   /**
+    * With {@link R4Scenario.preaggregate}: each colocated `#(preaggregate)`
+    * rollup built, by its generated source name, to the table it was built
+    * into in the scenario's database.
+    */
+   rollupTables: Record<string, string>;
    /** The model queries run against, for a test that reaches its internals. */
    model: Model;
    run(query: R4Query): Promise<R4Run>;
@@ -360,7 +377,76 @@ export async function buildScenario(scenario: R4Scenario): Promise<R4Fixture> {
               ? [presentAs(s, { name: p.sourceName, sourceID: p.sourceID })]
               : [];
         })
-      : plannedSources(await runtime.getBuildTargets(compiled));
+      : await runtime
+           .getBuildTargets(compiled)
+           .then(plannedSources)
+           // A model without `##! experimental.persistence` persists nothing.
+           .catch(() => []);
+   // `#(preaggregate)`: the rollup companion's targets, built beside the rest.
+   // Compiled as a package compiles it, with the package's connections, so
+   // its build ids are the ones a served query looks up.
+   const rollups = scenario.preaggregate
+      ? await tryCompileRollupCompanion({
+           packagePath: dir,
+           modelPath: entry,
+           modelDef: authorDef,
+           getRuntime: async (overlay) =>
+              createModelRuntime(dir, entry, new Map([["duckdb", duckdb]]), {
+                 overlay,
+              }),
+        })
+      : undefined;
+   if (scenario.preaggregate && !rollups?.generated) {
+      throw new Error(
+         `the #(preaggregate) companion did not compile: ${JSON.stringify(rollups?.refused)}`,
+      );
+   }
+   const rollupTargets = rollups?.generated
+      ? await rollups.generated.runtime.getBuildTargets(rollups.generated.model)
+      : undefined;
+   const rollupPlanByName = new Map(
+      (rollups?.generated?.plans ?? []).map((p) => [p.rollupSourceName, p]),
+   );
+   // A colocated rollup: built into the scenario's database, read through the
+   // build manifest keyed by its build id.
+   const colocatedEntries: Record<string, { tableName: string }> = {};
+   const rollupPlanned: [
+      string,
+      {
+         sourceID: string;
+         name: string;
+         sourceEntityId: string;
+         origin: "preaggregate";
+      },
+   ][] = [];
+   for (const connection of rollupTargets?.connections ?? []) {
+      for (const target of connection.targets) {
+         const source = target.sources[0];
+         const plan = source && rollupPlanByName.get(source.name);
+         if (!source || !plan || plan.storage !== undefined) continue;
+         const table = `r4_rollup_${Object.keys(colocatedEntries).length}`;
+         await duckdb.runSQL(
+            `CREATE TABLE ${table} AS ${target.buildSQL({ entries: {} })}`,
+         );
+         colocatedEntries[target.buildId] = { tableName: table };
+         rollupPlanned.push([
+            source.sourceID,
+            {
+               sourceID: source.sourceID,
+               name: source.name,
+               sourceEntityId: target.buildId,
+               origin: "preaggregate",
+            },
+         ]);
+      }
+   }
+   const storageRollups = rollupTargets
+      ? plannedSources(rollupTargets).filter(
+           (s) => rollupPlanByName.get(s.name)?.storage !== undefined,
+        )
+      : [];
+   const rollupOrigin = new Set(storageRollups.map((s) => s.sourceID));
+   sources.push(...storageRollups);
    const materializePlans: Record<string, MaterializePlan> = {};
    for (const plan of companion?.plans ?? []) {
       materializePlans[plan.sourceID] = plan;
@@ -408,6 +494,9 @@ export async function buildScenario(scenario: R4Scenario): Promise<R4Fixture> {
          ).map((c) => ({ name: c.column_name, type: c.column_type })),
          realization: "COPY",
          rowCount: null,
+         ...(rollupOrigin.has(source.sourceID)
+            ? { origin: "preaggregate" }
+            : {}),
       } as ManifestEntry;
    }
    const bindings = deriveServeBindings(
@@ -420,21 +509,34 @@ export async function buildScenario(scenario: R4Scenario): Promise<R4Fixture> {
    const modelDef = authorDef;
    // The plan's catalog, as a package hands it to its models, so the path
    // report names each stored table by its content address.
+   // Off for the live run, so a colocated rollup is not read through it.
+   let manifestOn = true;
    const policy = ModelPolicy.fixed({
       materializedTables: {
-         planned: new Map(
-            sources.map((source) => [
-               source.sourceID,
-               {
-                  sourceID: source.sourceID,
-                  name: source.name,
-                  sourceEntityId: plan[source.sourceID].sourceEntityId,
-                  origin: "persist" as const,
-               },
-            ]),
-         ),
-         bound: {},
+         planned: new Map([
+            ...sources.map(
+               (source) =>
+                  [
+                     source.sourceID,
+                     {
+                        sourceID: source.sourceID,
+                        name: source.name,
+                        sourceEntityId: plan[source.sourceID].sourceEntityId,
+                        origin: rollupOrigin.has(source.sourceID)
+                           ? ("preaggregate" as const)
+                           : ("persist" as const),
+                     },
+                  ] as const,
+            ),
+            ...rollupPlanned,
+         ]),
+         bound: colocatedEntries,
       },
+      freshBuildManifestEntries: () =>
+         manifestOn && Object.keys(colocatedEntries).length > 0
+            ? colocatedEntries
+            : undefined,
+      preaggregateEntityIds: new Set(Object.keys(colocatedEntries)),
    });
    const model = new Model({
       packageName: "r4",
@@ -507,6 +609,12 @@ export async function buildScenario(scenario: R4Scenario): Promise<R4Fixture> {
       setBindings(next) {
          model.setServeBindings(next);
       },
+      rollupTables: Object.fromEntries(
+         rollupPlanned.map(([, p]) => [
+            p.name,
+            colocatedEntries[p.sourceEntityId]?.tableName ?? "",
+         ]),
+      ),
       runAsIs: runOnce,
       async servedFieldNotes(source, field) {
          model.setServeBindings(bindings);
@@ -552,7 +660,9 @@ export async function buildScenario(scenario: R4Scenario): Promise<R4Fixture> {
       },
       async run(query: R4Query): Promise<R4Run> {
          model.setServeBindings([]);
+         manifestOn = false;
          const live = await runOnce(query.malloy, query.givens);
+         manifestOn = true;
          model.setServeBindings(bindings);
          const served = await runOnce(query.malloy, query.givens);
          const truth = query.truthSql
@@ -565,6 +675,7 @@ export async function buildScenario(scenario: R4Scenario): Promise<R4Fixture> {
             liveFields: live.fields,
             servedFields: served.fields,
             servedFrom: served.servedFrom,
+            servedBy: served.path?.servedBy,
             ...(served.path?.servedBy?.via
                ? { servedVia: served.path.servedBy.via }
                : {}),

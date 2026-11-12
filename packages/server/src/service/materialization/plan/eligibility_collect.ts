@@ -55,8 +55,8 @@ export interface EligibilityPlan {
  * synthesized companion, which is never written; and the base's own stored
  * binding claims the name the rollup would be served under. So it is left out
  * of the plan and every run, with a package warning, and the base still builds
- * and serves from storage. Rollups over a stored base are materialization v2
- * phase 4 (`#(preaggregate)`).
+ * and serves from storage. A `#(preaggregate)` rollup over a stored base
+ * builds and serves (materialization v2 phase 4), so it is never named here.
  */
 export function storedBaseOfRollup(
    compiled: {
@@ -67,6 +67,11 @@ export function storedBaseOfRollup(
 ): PersistSource | undefined {
    const plan = compiled.preaggregatePlans?.[sourceID];
    const rollup = compiled.sources[sourceID];
+   // A `#(preaggregate)` rollup builds over the author's rows, not its base's
+   // table, and serves as its own router variant: the real fix (#6293).
+   if ((plan as { variant?: unknown } | undefined)?.variant === true) {
+      return undefined;
+   }
    if (!plan?.baseSourceID || !rollup || !declaredStorage(rollup)) {
       return undefined;
    }

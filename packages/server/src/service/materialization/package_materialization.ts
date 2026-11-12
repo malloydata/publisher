@@ -14,6 +14,7 @@ import { components } from "../../api";
 import {
    getMaterializeGatedSources,
    getPersistCollisionEnforce,
+   getMaterializeEnabled,
    getPersistStorageMode,
 } from "../../config";
 import { PACKAGE_MANIFEST_NAME } from "../../constants";
@@ -1126,7 +1127,11 @@ export class PackageMaterialization {
             `declares '#@ preaggregate storage=' rollups, but is itself ` +
             `persisted with 'storage=', so the rollups are not built: a rollup ` +
             `over a stored base cannot build or serve yet, and queries read the ` +
-            `base's stored table instead.`,
+            `base's stored table instead.` +
+            (getMaterializeEnabled()
+               ? ` Write the rollup as '#(preaggregate) grain=[…] storage=…' ` +
+                 `on the measure, which builds and serves over a stored base.`
+               : ""),
       }));
    }
 
@@ -1844,8 +1849,8 @@ export class PackageMaterialization {
    }
 
    /**
-    * The publish refusal for `#@` lines that do not parse, one per line, or ""
-    * when none. Publish only: a load warns (the finding rides
+    * The publish refusal for `#@` lines that do not parse, and for malformed
+    * `#(preaggregate)` declarations, one per line, or "" when none. Publish only: a load warns (the finding rides
     * `Package.warnings`), so a package already published keeps loading and its
     * schedule keeps running, and a metadata PATCH is not refused for it. Kept
     * out of {@link persistencePolicyWarnings}, which the scheduler and the
@@ -1853,7 +1858,14 @@ export class PackageMaterialization {
     */
    formatUnparseableAnnotations(): string {
       return this.annotationFindings
-         .filter((finding) => finding.code === "persist-unparseable")
+         .filter(
+            (finding) =>
+               finding.code === "persist-unparseable" ||
+               // A malformed `#(preaggregate)` is refused at publish too; a
+               // package already published keeps loading with the warning.
+               (finding.route === "preaggregate" &&
+                  finding.tier === "malformed"),
+         )
          .map(
             (finding) =>
                `${finding.model ? `${finding.model}: ` : ""}${finding.message}`,
