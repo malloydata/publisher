@@ -329,6 +329,9 @@ export interface AccessPath {
  * common case in a package with nothing materialized: that copy would say no
  * more than `servedFrom` and would add bytes to every record.
  */
+/** The shape of a verdict code the record keeps (`storage_mode`, `unreachable`). */
+const SAFE_CODE = /^[a-z_]+$/;
+
 export function accessPathOf(report: {
    servedBy: { kind: string; tableId?: string };
    considered: readonly {
@@ -354,7 +357,11 @@ export function accessPathOf(report: {
          kind: c.kind,
          outcome: c.outcome,
          ...(c.reason !== undefined ? { reason: c.reason } : {}),
-         ...(c.code !== undefined ? { code: c.code } : {}),
+         // A coded value only: anything else is dropped, so free text can
+         // never reach the log or the local store.
+         ...(c.code !== undefined && SAFE_CODE.test(c.code)
+            ? { code: c.code }
+            : {}),
       })),
    };
 }
@@ -396,6 +403,12 @@ export interface AccessRecord extends Partial<QueryAccessSummary> {
     * considered.
     */
    path?: AccessPath;
+   /**
+    * True when the query answered but its path report could not be
+    * assembled, so an absent `path` reads as "unknown", not as "answered
+    * live with nothing considered".
+    */
+   pathUnavailable?: true;
    /** The refusal's message, on a non-ok outcome. Never a gate's detail: the route already redacts those. */
    error?: string;
 }
@@ -454,6 +467,7 @@ export interface QueryAudit {
    executionTimeMs?: number;
    scannedBytes?: number;
    path?: AccessPath;
+   pathUnavailable?: true;
 }
 
 /** What a route knows before it runs the request. */
@@ -563,6 +577,7 @@ export async function withAccessRecord<T>(
          ? { scannedBytes: audit.scannedBytes }
          : {}),
       ...(audit.path !== undefined ? { path: audit.path } : {}),
+      ...(audit.pathUnavailable ? { pathUnavailable: true as const } : {}),
    }));
    return result;
 }

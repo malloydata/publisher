@@ -33,7 +33,7 @@ The verdicts are read from a per-package memo keyed on what they depend on (the 
 
 A `storage=` build now records its table's row count in the manifest (`ManifestEntry.rowCount`, until now always null), counted in the destination after the build. A count that cannot be read leaves it null and the build stands. A colocated build still leaves it null, since counting would scan the warehouse.
 
-Each answered query's access record gains an optional `path`: the table that answered (`servedBy`) and each table considered, with its outcome and skip reason, from the query's path report. A query that answered live with nothing considered, which is every query in a package with nothing materialized, carries none. The workload log's local store keeps it with the rest of the record, so its history says which materialized table served each shape and why the others did not. See [docs/access-record.md](docs/access-record.md).
+Each answered query's access record gains an optional `path`: the table that answered (`servedBy`) and each table considered, with its outcome and skip reason, from the query's path report. A query that answered live with nothing considered, which is every query in a package with nothing materialized, carries none. A query whose path report could not be assembled carries `pathUnavailable: true` instead, so the two can be told apart. The workload log's local store keeps it with the rest of the record, so its history says which materialized table served each shape and why the others did not. See [docs/access-record.md](docs/access-record.md).
 
 ## [Unreleased] — Every materialized source says whether it serves, and a dry run previews it
 

@@ -3588,6 +3588,9 @@ export class Model {
       if (queryCostBytes !== undefined) audit.scannedBytes = queryCostBytes;
       const recordedPath = path ? accessPathOf(path) : undefined;
       if (recordedPath) audit.path = recordedPath;
+      // No report at all (it could not be assembled), as against a report
+      // that says live with nothing considered, which records no `path`.
+      if (!path) audit.pathUnavailable = true;
       return {
          result: wrappedResult,
          serializedResult,
