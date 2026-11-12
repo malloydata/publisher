@@ -84,7 +84,14 @@ const shape = (
 });
 
 /** An answered query's outcome; a live (not storage-served) answer. */
-const OK = { outcome: "ok", status: 200, servedFrom: null } as const;
+// An answered query carries what answered it, from its path report: here
+// nothing is materialized, so the source answered live with nothing considered.
+const OK = {
+   outcome: "ok",
+   status: 200,
+   servedFrom: null,
+   path: { servedBy: { kind: "live" }, considered: [] },
+} as const;
 
 let info: ReturnType<typeof spyOn>;
 beforeEach(() => {

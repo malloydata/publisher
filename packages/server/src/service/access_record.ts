@@ -304,6 +304,50 @@ export function outcomeOf(error: unknown, status: number): AccessOutcome {
    return "error";
 }
 
+/** A table the router considered for a query, as the access record keeps it. */
+export interface AccessPathCandidate {
+   tableId: string;
+   kind: string;
+   outcome: string;
+   reason?: string;
+}
+
+/** The access record's copy of a query's path report: see `AccessRecord.path`. */
+export interface AccessPath {
+   servedBy: { kind: string; tableId?: string };
+   considered: AccessPathCandidate[];
+}
+
+/**
+ * The access record's copy of a path report: which table answered and each
+ * table considered. Structural, so it reads the API's `QueryPath` without this
+ * module importing the materialization code that builds it.
+ */
+export function accessPathOf(report: {
+   servedBy: { kind: string; tableId?: string };
+   considered: readonly {
+      tableId: string;
+      kind: string;
+      outcome: string;
+      reason?: string;
+   }[];
+}): AccessPath {
+   return {
+      servedBy: {
+         kind: report.servedBy.kind,
+         ...(report.servedBy.tableId !== undefined
+            ? { tableId: report.servedBy.tableId }
+            : {}),
+      },
+      considered: report.considered.map((c) => ({
+         tableId: c.tableId,
+         kind: c.kind,
+         outcome: c.outcome,
+         ...(c.reason !== undefined ? { reason: c.reason } : {}),
+      })),
+   };
+}
+
 /** One emitted record. */
 export interface AccessRecord extends Partial<QueryAccessSummary> {
    event: "access";
@@ -332,10 +376,13 @@ export interface AccessRecord extends Partial<QueryAccessSummary> {
     * (BigQuery today). Absent is not zero.
     */
    scannedBytes?: number;
-   // The path report (materialization v2, D1) attaches here as `path` when
-   // it lands: which variants the router considered and why each was
-   // skipped. The workload log stores whatever the record carries, so it
-   // needs no change for it.
+   /**
+    * What answered the query, from its path report (materialization v2, D1),
+    * kept compact: the table that answered and each table considered, with
+    * why it was skipped, which is what a workload analysis counts. The query's shape is `shape`; the
+    * report's nearby tables and skip details stay on the query result.
+    */
+   path?: AccessPath;
    /** The refusal's message, on a non-ok outcome. Never a gate's detail: the route already redacts those. */
    error?: string;
 }
@@ -393,6 +440,7 @@ export interface QueryAudit {
    servedFrom?: string | null;
    executionTimeMs?: number;
    scannedBytes?: number;
+   path?: AccessPath;
 }
 
 /** What a route knows before it runs the request. */
@@ -501,6 +549,7 @@ export async function withAccessRecord<T>(
       ...(audit.scannedBytes !== undefined
          ? { scannedBytes: audit.scannedBytes }
          : {}),
+      ...(audit.path !== undefined ? { path: audit.path } : {}),
    }));
    return result;
 }
