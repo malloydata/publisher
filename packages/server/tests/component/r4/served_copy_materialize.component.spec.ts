@@ -107,6 +107,21 @@ describe("R4: the served copy over #(materialize) answers equal to live", () => 
       });
    }
 
+   it("builds and binds only the sources that declare #(materialize), not an extension that inherits it", async () => {
+      // Malloy copies east_orders' #(materialize) onto east_ext, which
+      // declares none: east_ext has no build source and no table of its own.
+      expect(fixture.bindings.map((b) => b.sourceName).sort()).toEqual([
+         "east_orders",
+         "kept_west",
+      ]);
+      fixture.setBindings(fixture.bindings);
+      const { path } = await fixture.runAsIs(
+         "run: east_ext -> { group_by: region; aggregate: n, total }",
+      );
+      expect(path?.servedBy.kind).not.toBe("live");
+      expect(JSON.stringify(path)).not.toContain("east_ext__mat");
+   });
+
    it("carries a stored dimension's #(doc) and #(classification) onto the served field", async () => {
       const notes = await fixture.servedFieldNotes(
          "east_orders",

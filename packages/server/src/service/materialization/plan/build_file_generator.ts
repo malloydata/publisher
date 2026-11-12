@@ -62,6 +62,7 @@
 
 import { Annotations } from "@malloydata/malloy";
 import { ownLevelNotes } from "../../annotations";
+import { declaredNotes } from "../../governance/ir/declared_notes";
 import {
    routeOfNote,
    type PackageAnnotationFinding,
@@ -149,6 +150,11 @@ export interface MaterializeRefusal {
 
 interface SourceDefLike {
    sourceID?: unknown;
+   /** Where the source's own statement was parsed. */
+   location?: {
+      url?: string;
+      range?: { start?: { line: number; character: number } };
+   };
    annotations?: Parameters<typeof ownLevelNotes>[0];
    fields?: unknown[];
 }
@@ -189,11 +195,16 @@ function splitSourceID(
 }
 
 /**
- * The source's own `#(materialize)` declaration, read from its own notes only
- * (not inherited: an extension of a materialized source declares its own).
- * Undefined when the source carries none.
+ * The source's own `#(materialize)` declaration, read from the notes its own
+ * statement declares (not inherited: an extension of a materialized source is
+ * planned only when it declares its own). `contents` is the compiled model's
+ * `contents`, `def` among them (see {@link declaredNotes}). Undefined when the
+ * source declares none.
  */
-export function readMaterializeDeclaration(def: SourceDefLike):
+export function readMaterializeDeclaration(
+   def: SourceDefLike,
+   contents: Readonly<Record<string, unknown>> = {},
+):
    | {
         tag: ReturnType<typeof parseRouteTag>["tag"];
         keys: string[];
@@ -201,7 +212,7 @@ export function readMaterializeDeclaration(def: SourceDefLike):
         errors: string[];
      }
    | undefined {
-   const notes = ownLevelNotes(def.annotations).filter(
+   const notes = declaredNotes(def, contents).filter(
       (note) => routeOfNote(note.text) === MATERIALIZE_ROUTE,
    );
    if (notes.length === 0) return undefined;
@@ -221,8 +232,11 @@ export function readMaterializeDeclaration(def: SourceDefLike):
 }
 
 /** Whether the source carries its own `#@ persist` (not an inherited one). */
-function declaresOwnPersist(def: SourceDefLike): boolean {
-   const notes = ownLevelNotes(def.annotations).filter(
+function declaresOwnPersist(
+   def: SourceDefLike,
+   contents: Readonly<Record<string, unknown>>,
+): boolean {
+   const notes = declaredNotes(def, contents).filter(
       (note) => routeOfNote(note.text) === "@",
    );
    if (notes.length === 0) return false;
@@ -328,7 +342,10 @@ export function materializeColumns(def: SourceDefLike): MaterializeColumn[] {
  * decides from its `sourceID`'s file): a source another model imports or
  * re-exports through `index.malloy` is that file's to build, so a source has
  * one build source, one address and one table however many models import it.
- * Without `declaredHere` every source with a declaration is planned.
+ * Without `declaredHere` every source with a declaration is planned. Only a
+ * source whose own statement declares `#(materialize)` is planned, never an
+ * extension or rename that merely inherits its base's (see
+ * {@link declaredNotes}).
  */
 export function planModelMaterialize(
    contents: Record<string, unknown>,
@@ -351,7 +368,7 @@ export function planModelMaterialize(
       if (declaredHere && declaredIn && !declaredHere(declaredIn)) continue;
       let declaration;
       try {
-         declaration = readMaterializeDeclaration(def);
+         declaration = readMaterializeDeclaration(def, contents);
       } catch (error) {
          refused.push({
             sourceName: name,
@@ -369,7 +386,7 @@ export function planModelMaterialize(
          });
          continue;
       }
-      if (declaresOwnPersist(def)) {
+      if (declaresOwnPersist(def, contents)) {
          refused.push({
             sourceName: name,
             sourceID: def.sourceID,
