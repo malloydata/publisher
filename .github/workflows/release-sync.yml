@@ -34,10 +34,8 @@ name: Release sync
 
 on:
   pull_request:
-  push:
-    branches: [main]
   # Right after a release, so main reads red as soon as there is a release PR
-  # to merge, rather than at the next push. A workflow_run run checks out and
+  # to merge, rather than at the next pull request. A workflow_run run checks out and
   # reports on the default branch's head.
   workflow_run:
     # By the workflow's `name:`, so it must change with release.yml's.
@@ -47,6 +45,13 @@ on:
 
 permissions:
   contents: read
+
+# A pull request's runs share one group, so a push to the PR cancels the run for
+# the commit it supersedes. Every other event is grouped by its own run id, so a
+# scheduled, dispatched, or release-triggered run is never cancelled or queued.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: true
 
 jobs:
   release_sync:

@@ -16,6 +16,13 @@ env:
 permissions:
   contents: read
 
+# A pull request's runs share one group, so a push to the PR cancels the run for
+# the commit it supersedes. Every other event is grouped by its own run id, so a
+# scheduled, dispatched, or release-triggered run is never cancelled or queued.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: true
+
 jobs:
   playwright:
     name: Playwright (packages/app)

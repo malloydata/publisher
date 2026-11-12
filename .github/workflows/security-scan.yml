@@ -12,8 +12,9 @@ name: Security Scan
 #   misconfiguration scanner has no GitHub Actions support, so the workflows are
 #   not covered here.
 # - `secret-scan` job: scans the working tree for committed secrets / keys.
-# - All three run on PR, on push to main, and on a weekly schedule (so new
-#   advisories show up against unchanged code).
+# - All three run on PR and on a weekly schedule. The scheduled run scans main,
+#   so new advisories show up against unchanged code and main's Code Scanning
+#   results stay current.
 #
 # Enforcement: each job uploads its full SARIF (all severities) to Code Scanning
 # for triage, then runs a second scan scoped to CRITICAL with `exit-code: 1` that
@@ -35,8 +36,6 @@ name: Security Scan
 # covers only what is in the repository.
 
 on:
-  push:
-    branches: [main]
   pull_request:
     branches: [main]
   schedule:
@@ -49,8 +48,11 @@ permissions:
   security-events: write
   actions: read
 
+# A pull request's runs share one group, so a push to the PR cancels the run for
+# the commit it supersedes. Every other event is grouped by its own run id, so a
+# scheduled, dispatched, or release-triggered run is never cancelled or queued.
 concurrency:
-  group: security-scan-${{ github.ref }}
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.run_id }}
   cancel-in-progress: true
 
 jobs:

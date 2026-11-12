@@ -10,7 +10,16 @@ workflow owns what, and the publishing rules that bite.
 
 ## CI
 
-`build.yml` is the entry point (pushes and PRs). It does not run the test suites itself: it holds
+**Nothing runs on a push to `main`.** Each PR's checks run against its merge with `main` as of
+the PR's last push, and workflows trigger on `pull_request`, `schedule`, `workflow_dispatch`, and
+`workflow_run` only. The weekly scheduled runs of `security-scan.yml` and `image-scan.yml` are what
+refresh `main`'s Code Scanning results, and `k6-tests.yml` runs by hand. Every PR-triggered workflow carries the same
+`concurrency` block: runs for one PR share a group, so a new push cancels the superseded run, and
+any other event is grouped by its own run id so it is never cancelled. Do not add a `concurrency`
+block to a `workflow_call` workflow: there `github.workflow` is the caller's name, so it would
+share, and cancel, its caller's group.
+
+`build.yml` is the entry point (every PR). It does not run the test suites itself: it holds
 `lint` (typecheck), `lint_format` (prettier, eslint, and the DuckDB/pg version-consistency guards),
 `runtime_test` (starts the built server bin under both `npx` with the Node shebang and a direct
 `bun run` on the bundle), `docker_smoke_test`, `python_sdk_build` (calls `python-sdk.yml`),
@@ -38,7 +47,7 @@ manual dispatch): it builds and verifies the Python client, for `build.yml` on e
 **Not every publish workflow is purely a publish workflow, so a red check on a PR that touches one
 package can come from its own file rather than from `build.yml`.** Know which job:
 
-- `skills-npm.yml`'s `check_pack` runs on PRs and on pushes to `main` that touch `skills/**`,
+- `skills-npm.yml`'s `check_pack` runs on PRs that touch `skills/**`,
   `packages/skills/**`, or the workflow file. It only builds and tests the package; skills carries
   no PR-time version check any more (see *Skills and create-malloy-package version at release
   time* below).
@@ -49,7 +58,7 @@ package can come from its own file rather than from `build.yml`.** Know which jo
 
 Two workflows hold real warehouse credentials, and both should be treated as such when edited:
 `connection-integration-tests.yml` (the full connection matrix) and `k6-tests.yml`, which passes
-`BQ_PRESTO_TRINO_KEY` and runs on pushes as well as on demand.
+`BQ_PRESTO_TRINO_KEY` and runs on demand only.
 
 ## Publishing
 
@@ -250,8 +259,8 @@ Why this shape, and not the ones it replaced:
   which is what the `publisher-release` skill does) runs its checks and any maintainer can merge it.
 
 **`release-sync.yml` fails while a release's PR is unmerged.** It compares npm's `latest` for
-`@malloy-publisher/sdk` with the version `packages/sdk/package.json` declares, on every PR, every
-push to `main`, and right after each `release.yml` run (`workflow_run`, against `main`'s head, so
+`@malloy-publisher/sdk` with the version `packages/sdk/package.json` declares, on every PR and
+right after each `release.yml` run (`workflow_run`, against `main`'s head, so
 `main` reads red as soon as there is a release PR to merge). It is its own workflow rather than a
 `build.yml` job because it is not about the build: it changes state when npm does, not when the
 code does. `main`'s version moves only when a release PR merges, so npm ahead

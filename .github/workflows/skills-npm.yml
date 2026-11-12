@@ -24,12 +24,6 @@ name: skills
 # version. See "Resolve version to publish" in the publish job below.
 
 on:
-  push:
-    branches: [main]
-    paths:
-      - "skills/**"
-      - "packages/skills/**"
-      - ".github/workflows/skills-npm.yml"
   pull_request:
     paths:
       - "skills/**"
@@ -48,6 +42,13 @@ on:
 env:
   BUN_VERSION: 1.3.13
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
+# A pull request's runs share one group, so a push to the PR cancels the run for
+# the commit it supersedes. Every other event is grouped by its own run id, so a
+# scheduled, dispatched, or release-triggered run is never cancelled or queued.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: true
 
 jobs:
   check_pack:

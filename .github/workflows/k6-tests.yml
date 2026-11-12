@@ -3,9 +3,8 @@
 
 name: k6 Tests
 
+# Dispatch only: no workflow runs on a push to main.
 on:
-  push:
-    branches: [main]
   workflow_dispatch:
 
 env:

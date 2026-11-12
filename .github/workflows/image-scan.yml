@@ -12,8 +12,7 @@ name: Image Scan
 # a lockfile, and it omits whatever `bun install --production` drops.
 #
 # - `image` job: builds the image from this checkout with the same Dockerfile and
-#   build args as the release build and scans it. Runs on PR, on push to main, and
-#   weekly.
+#   build args as the release build and scans it. Runs on PR and weekly.
 # - `published-image` job: scans `ms2data/malloy-publisher:latest` as pulled from
 #   Docker Hub. Runs weekly and on dispatch only, since a PR cannot change it. New
 #   advisories against the base layer land here first, without anyone touching the
@@ -25,8 +24,6 @@ name: Image Scan
 # Acceptances live in the same .trivyignore.yaml as the source-tree scans.
 
 on:
-  push:
-    branches: [main]
   pull_request:
     branches: [main]
   schedule:
@@ -43,11 +40,11 @@ permissions:
   security-events: write
   actions: read
 
-# Keyed on the event as well as the ref: a push to main shares the scheduled run's
-# ref, and without the event in the key it would cancel the weekly run, which is the
-# only run that executes `published-image`.
+# A pull request's runs share one group, so a push to the PR cancels the run for
+# the commit it supersedes. Every other event is grouped by its own run id, so a
+# scheduled, dispatched, or release-triggered run is never cancelled or queued.
 concurrency:
-  group: image-scan-${{ github.event_name }}-${{ github.ref }}
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.run_id }}
   cancel-in-progress: true
 
 jobs:
