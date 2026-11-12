@@ -185,11 +185,24 @@ describe("R4: extension tables answer equal to live", () => {
       });
    });
 
-   it("builds a storage= extension over the raw chain, with a table of its own", () => {
-      expect(Object.values(storage.buildReads).flat()).toEqual([]);
+   it("builds a storage= extension over its parent's stored table, in the order and with the stacked address a colocated chain has", () => {
+      expect(storage.buildReads).toEqual(colocated.buildReads);
       expect(Object.keys(storage.tableIds).sort()).toEqual(
          Object.keys(colocated.tableIds).sort(),
       );
+      // Each extension's build ran in the destination over its parent's
+      // table: the parent's table is in its SQL, the warehouse's is not.
+      const parents = Object.fromEntries(
+         Object.entries(storage.buildReads).filter(([, r]) => r.length > 0),
+      );
+      expect(Object.keys(storage.storedBuildSQL).sort()).toEqual(
+         Object.keys(parents).sort(),
+      );
+      for (const [name, [parent]] of Object.entries(parents)) {
+         const sql = storage.storedBuildSQL[name];
+         expect(sql).toContain(storage.physicalTables[parent]);
+         expect(sql).not.toMatch(/\bev\b/);
+      }
    });
 
    for (const [label, fixture] of [
@@ -281,59 +294,113 @@ describe("R4: extension tables answer equal to live", () => {
 describe("R4: an extension table adding a rolling window answers equal to live", () => {
    const B = "2026-11-10 00:00:00";
    const READS = ["2026-11-10 00:00:00", "2026-11-10 23:59:59"];
-   let restore: () => void;
-   let fixture: R4Fixture;
-   beforeAll(async () => {
-      restore = installSettings({
-         env: { PERSIST_STORAGE_MODE: "on", PUBLISHER_MATERIALIZE: "true" },
-      }).restore;
-      fixture = await buildScenario({
-         files: {
-            "m.malloy": `source: events is duckdb.table('events')
+   /**
+    * Three deep: a rolling window on the second, and a given-reading `where:`
+    * and a rolling window of its own on the third.
+    */
+   const windowModel = (storage: string) => `##! experimental.givens
+given: HALF :: string is 'am'
 
-#(materialize) name="ev_all"
+source: events is duckdb.table('events')
+
+#(materialize) ${storage}name="ev_all"
 source: ev_all is events extend {
   dimension: half_up is upper(half)
   measure: n is count()
 }
 
-#(materialize) name="ev_recent"
+#(materialize) ${storage}name="ev_recent"
 source: ev_recent is ev_all extend {
   where: ts >= now - 30 days
   measure: total is amount.sum()
 }
-`,
-         },
-         seedSql: [
-            `CREATE TABLE events AS
-               SELECT ts, row_number() OVER (ORDER BY ts) AS amount,
-                      CASE WHEN hour(ts) < 12 THEN 'am' ELSE 'pm' END AS half
-               FROM range(TIMESTAMP '${B}' - INTERVAL 36 DAY, TIMESTAMP '${B}' + INTERVAL 2 DAY, INTERVAL 1 HOUR) t(ts)`,
-         ],
-         materialize: true,
-         clock: B,
-      });
+
+#(materialize) ${storage}name="ev_week"
+source: ev_week is ev_recent extend {
+  where: half = $HALF, ts >= now - 7 days
+  dimension: day_of is ts.day
+}
+`;
+   let restore: () => void;
+   const fixtures: Record<string, R4Fixture> = {};
+   beforeAll(async () => {
+      restore = installSettings({
+         env: { PERSIST_STORAGE_MODE: "on", PUBLISHER_MATERIALIZE: "true" },
+      }).restore;
+      for (const [label, storage] of [
+         ["colocated", ""],
+         ["storage=", 'storage="lake" '],
+      ]) {
+         fixtures[label] = await buildScenario({
+            files: { "m.malloy": windowModel(storage) },
+            seedSql: [
+               `CREATE TABLE events AS
+                  SELECT ts, row_number() OVER (ORDER BY ts) AS amount,
+                         CASE WHEN hour(ts) < 12 THEN 'am' ELSE 'pm' END AS half
+                  FROM range(TIMESTAMP '${B}' - INTERVAL 36 DAY, TIMESTAMP '${B}' + INTERVAL 2 DAY, INTERVAL 1 HOUR) t(ts)`,
+            ],
+            materialize: true,
+            clock: B,
+         });
+      }
    });
    afterAll(async () => {
       restore();
       await disposeScenarios();
    });
 
-   it("builds the window's extension over its parent's build source", () => {
-      expect(fixture.buildReads.ev_recent).toEqual(["ev_all"]);
-   });
-
-   for (const at of READS) {
-      it(`a measure over the window, read at ${at}`, async () => {
-         fixture.setClock(at);
-         const run = await fixture.run({
-            name: "window",
-            malloy:
-               "run: ev_recent -> { group_by: half_up; aggregate: n, total }",
+   for (const label of ["colocated", "storage="]) {
+      describe(label, () => {
+         it("builds each window's extension over its parent's table", () => {
+            const f = fixtures[label];
+            expect(f.buildReads).toEqual({
+               ev_all: [],
+               ev_recent: ["ev_all"],
+               ev_week: ["ev_recent"],
+            });
+            if (label === "storage=") {
+               for (const [name, parent] of [
+                  ["ev_recent", "ev_all"],
+                  ["ev_week", "ev_recent"],
+               ]) {
+                  expect(f.storedBuildSQL[name]).toContain(
+                     f.physicalTables[parent],
+                  );
+                  expect(f.storedBuildSQL[name]).not.toMatch(/\bevents\b/);
+               }
+            }
          });
-         expect(run.servedVia).toBe("served_copy");
-         expect(run.live.length).toBeGreaterThan(0);
-         expect(rowDifference(run.live, run.served)).toBeUndefined();
+
+         for (const at of READS) {
+            it(`a measure over the window, read at ${at}`, async () => {
+               const f = fixtures[label];
+               f.setClock(at);
+               const run = await f.run({
+                  name: "window",
+                  malloy:
+                     "run: ev_recent -> { group_by: half_up; aggregate: n, total }",
+               });
+               expect(run.servedVia).toBe("served_copy");
+               expect(run.live.length).toBeGreaterThan(0);
+               expect(rowDifference(run.live, run.served)).toBeUndefined();
+            });
+
+            for (const HALF of ["am", "pm"]) {
+               it(`the third table's own window and given, as ${HALF}, read at ${at}`, async () => {
+                  const f = fixtures[label];
+                  f.setClock(at);
+                  const run = await f.run({
+                     name: `week as ${HALF}`,
+                     malloy:
+                        "run: ev_week -> { group_by: day_of, half_up; aggregate: n, total }",
+                     givens: { HALF },
+                  });
+                  expect(run.servedVia).toBe("served_copy");
+                  expect(run.live.length).toBeGreaterThan(0);
+                  expect(rowDifference(run.live, run.served)).toBeUndefined();
+               });
+            }
+         }
       });
    }
 });

@@ -365,3 +365,13 @@ export function afterModelHeader(text: string): number {
    }
    return Math.min(offset, text.length);
 }
+
+/** The `##!` lines of an author file, in order, trimmed. */
+export function documentFlagLines(text: string): string[] {
+   // Block comments first, so a `##!` quoted inside one is not a flag.
+   return text
+      .replace(/\/\*[\s\S]*?\*\//g, "")
+      .split("\n")
+      .map((line) => line.trim())
+      .filter((line) => line.startsWith("##!"));
+}

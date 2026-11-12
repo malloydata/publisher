@@ -10,10 +10,13 @@
  * against the author's edits.
  */
 
-import type {
-   Model as MalloyModel,
-   ModelMaterializer,
+import {
+   FixedConnectionMap,
+   InMemoryURLReader,
    Runtime,
+   type Connection,
+   type Model as MalloyModel,
+   type ModelMaterializer,
 } from "@malloydata/malloy";
 import * as path from "path";
 import { fileURLToPath, pathToFileURL } from "url";
@@ -22,15 +25,18 @@ import {
    buildCopyName,
    buildCopyText,
    chainLevels,
+   extensionOverStoredModel,
    generateBuildFiles,
    givenReadTerms,
    levelFileName,
    MATERIALIZE_COMPANION_SUFFIX,
    planModelMaterialize,
    settledChains,
+   storedChainText,
    withoutParent,
    type MaterializePlan,
    type MaterializeRefusal,
+   type StoredColumnType,
 } from "./build_file_generator";
 import type { SynthesizedRuntimeFactory } from "./preaggregation_compile";
 
@@ -152,6 +158,29 @@ export async function tryCompileMaterializeCompanion(args: {
             },
          );
          ({ plans, copies } = await prepare(plans.map(withoutParent)));
+         generated = await compileCompanion(args, plans, copies);
+      }
+      // A `storage=` extension table builds in its destination from its
+      // chain alone, over its parent's stored table (P10). One whose chain
+      // does not compile there, with nothing else to read, builds over the
+      // raw chain, from the warehouse, as it did before P10.
+      const unstored = generated
+         ? await storedChainsNotCompiling(generated)
+         : new Map<string, string>();
+      if (unstored.size > 0) {
+         for (const [sourceID, error] of unstored) {
+            logger.warn(
+               "A storage= extension table does not compile over its parent's stored table alone; it builds over the raw chain",
+               {
+                  modelPath: args.modelPath,
+                  sourceName: planOf(plans, sourceID)?.sourceName,
+                  error,
+               },
+            );
+         }
+         ({ plans, copies } = await prepare(
+            plans.map((p) => (unstored.has(p.sourceID) ? withoutParent(p) : p)),
+         ));
          generated = await compileCompanion(args, plans, copies);
       }
       // A build copy re-declares its whole file, so a `#@ persist` source the
@@ -283,6 +312,126 @@ async function compileCompanion(
            }
          : {}),
    };
+}
+
+/**
+ * The `storage=` extension tables among `generated`'s plans (P10) whose build
+ * does not compile in a destination from {@link extensionOverStoredModel}
+ * alone, by sourceID, with why. Checked here, at plan time, against a
+ * stand-in for the destination that has DuckDB's dialect and no table, and
+ * the parent's stored columns as its build source declares them, so a chain
+ * that reaches anything but the parent's table (a join to a warehouse source,
+ * a table named in place) never chains, and its build is never refused for a
+ * shape the plan could have seen.
+ */
+async function storedChainsNotCompiling(
+   generated: GeneratedMaterialize,
+): Promise<Map<string, string>> {
+   const out = new Map<string, string>();
+   for (const plan of generated.plans) {
+      const over = plan.buildsOver;
+      const chain = over?.overStored;
+      const destination = plan.persist.storage;
+      if (!over || !chain || destination === undefined) continue;
+      const parent = planOf(generated.plans, over.sourceID);
+      try {
+         if (!parent) throw new Error("its parent is no longer planned");
+         const columns = parentStoredColumns(
+            generated.model,
+            parent.buildSourceName,
+         );
+         const handle = "stand_in";
+         const url = "file:///materialize-stored-chain/m.malloy";
+         const runtime = new Runtime({
+            urlReader: new InMemoryURLReader(
+               new Map([
+                  [
+                     url,
+                     extensionOverStoredModel({
+                        plan,
+                        chain,
+                        connectionName: destination,
+                        virtualHandle: handle,
+                        columns,
+                     }),
+                  ],
+               ]),
+            ),
+            connections: new FixedConnectionMap(
+               new Map([[destination, destinationStandIn(destination)]]),
+               destination,
+            ),
+         });
+         const model = await runtime.loadModel(new URL(url)).getModel();
+         const targets = await runtime.getBuildTargets(model, {
+            virtualMap: new Map([[destination, new Map([[handle, "t"]])]]),
+         });
+         const built = targets.connections.some((c) =>
+            c.targets.some((t) =>
+               t.sources.some((s) => s.name === plan.buildSourceName),
+            ),
+         );
+         if (!built) throw new Error("its build source is not planned there");
+      } catch (error) {
+         out.set(
+            plan.sourceID,
+            error instanceof Error ? error.message : String(error),
+         );
+      }
+   }
+   return out;
+}
+
+/**
+ * The parent's stored columns as its generated build source declares them,
+ * each with the Malloy type a stored table of it reads back as. Throws for a
+ * column of a type a stored table does not carry faithfully.
+ */
+function parentStoredColumns(
+   model: MalloyModel,
+   buildSourceName: string,
+): StoredColumnType[] {
+   return model
+      .getExploreByName(buildSourceName)
+      .allFields.filter((f) => f.isAtomicField())
+      .map((f) => {
+         const type = STORED_TYPES[String(f.type)];
+         if (!type) {
+            throw new Error(`column '${f.name}' is of type ${String(f.type)}`);
+         }
+         return { name: f.name, type };
+      });
+}
+
+/** The Malloy type a stored column of each atomic type reads back as. */
+const STORED_TYPES: Readonly<Record<string, string>> = {
+   string: "string",
+   number: "number",
+   boolean: "boolean",
+   date: "date",
+   timestamp: "timestamp",
+   timestamptz: "timestamp",
+   json: "json",
+};
+
+/**
+ * A destination for a plan-time compile: DuckDB's dialect (every destination
+ * is DuckDB or DuckLake), and no table or SQL to read, so anything a chain
+ * names but its parent's stored table fails to compile.
+ */
+function destinationStandIn(name: string): Connection {
+   const none = "not available to an extension table's build";
+   const standIn = {
+      name,
+      dialectName: "duckdb",
+      getDigest: () => `materialize-stored-chain:${name}`,
+      fetchSchemaForTables: async (tables: Record<string, string>) => ({
+         schemas: {},
+         errors: Object.fromEntries(Object.keys(tables).map((k) => [k, none])),
+      }),
+      fetchSchemaForSQLStruct: async () => ({ error: none }),
+   };
+   return standIn as unknown as Connection;
 }
 
 /** The plan of `sourceID` among `plans`. */
@@ -449,6 +598,14 @@ async function withBuildCopies(
             localPath(plan.buildsOver.declaration.url) !== modelFile)
       ) {
          plan = withoutParent(plan);
+      }
+      // A `storage=` pair also carries what its build compiles in the
+      // destination over the parent's stored table; without it, the raw chain.
+      if (plan.buildsOver && parent && plan.persist.storage !== undefined) {
+         const overStored = storedChainText(text as string, plan, parent);
+         plan = overStored
+            ? { ...plan, buildsOver: { ...plan.buildsOver, overStored } }
+            : withoutParent(plan);
       }
       if (!given && !plan.buildsOver) {
          kept.set(plan.sourceID, plan);

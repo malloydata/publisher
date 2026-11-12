@@ -19,7 +19,12 @@
 
 import { loadLeavingOutCrossConnectionJoins } from "../../../src/service/materialization/plan/cross_connection_joins";
 import { tryCompileMaterializeCompanion } from "../../../src/service/materialization/plan/materialize_compile";
-import type { MaterializePlan } from "../../../src/service/materialization/plan/build_file_generator";
+import {
+   extensionOverStoredModel,
+   type MaterializePlan,
+} from "../../../src/service/materialization/plan/build_file_generator";
+import { planChainedDownstream } from "../../../src/service/materialization/run/materialization_build_session";
+import { storageTablePath } from "../../../src/service/materialization/run/storage_table_path";
 import type { ServedCopyServe } from "../../../src/service/materialization/serve/served_copy_serve";
 import { DuckDBConnection } from "@malloydata/db-duckdb";
 import * as fs from "fs";
@@ -32,6 +37,7 @@ import {
    InMemoryURLReader,
    MalloyConfig,
    modelDefToModelInfo,
+   type PersistSource,
    type QueryRecord,
    Runtime,
 } from "@malloydata/malloy";
@@ -42,7 +48,9 @@ import {
 } from "../../../src/service/materialization/plan/build_plan";
 import { presentAs } from "../../../src/service/materialization/plan/addressing";
 import {
+   buildVirtualMap,
    deriveServeBindings,
+   duckdbTypeToMalloy,
    groupAliasesByName,
    planSourceIds,
    type ServeBinding,
@@ -142,6 +150,13 @@ export interface R4Fixture {
     * reads the tables of (Malloy's build order), by the author's source name.
     */
    buildReads: Record<string, string[]>;
+   /**
+    * For each `storage=` extension table (P10): the SQL its build ran in the
+    * destination over its parent's stored table, by the author's source name.
+    */
+   storedBuildSQL: Record<string, string>;
+   /** Each built source's stored table, by the author's source name. */
+   physicalTables: Record<string, string>;
    /** The model queries run against, for a test that reaches its internals. */
    model: Model;
    run(query: R4Query): Promise<R4Run>;
@@ -393,16 +408,68 @@ export async function buildScenario(scenario: R4Scenario): Promise<R4Fixture> {
    sources.forEach((source, i) => {
       plan[source.sourceID] = { name: source.name, sourceEntityId: `h${i}` };
    });
+   // Each built source's entry by sourceID, for an extension table built over
+   // its parent's stored table.
+   const entryBySourceID = new Map<string, ManifestEntry>();
+   const storedBuildSQL: Record<string, string> = {};
    for (const [i, source] of sources.entries()) {
       if (scenario.unbuilt?.includes(source.name)) continue;
       const table = `r4_${source.name}_${i}`;
+      // A `storage=` extension table (P10) is built as its storage build
+      // builds it: from its plan's chain, over its parent's stored table, in
+      // the destination alone. Any other source from its own SQL.
+      const over = materializePlans[source.sourceID]?.buildsOver;
+      const parentEntry = over?.overStored
+         ? entryBySourceID.get(over.sourceID)
+         : undefined;
+      let built: { sql: string; source: PersistSource } = {
+         sql: buildSQLOf(source, { entries: {} }),
+         source,
+      };
+      if (over?.overStored && parentEntry) {
+         const schema = (parentEntry.schema ?? []).map((c) => ({
+            name: c.name as string,
+            type: c.type as string,
+         }));
+         const planned = await planChainedDownstream({
+            transientModel: extensionOverStoredModel({
+               plan: materializePlans[source.sourceID],
+               chain: over.overStored,
+               connectionName: DESTINATION,
+               virtualHandle: parentEntry.sourceEntityId,
+               columns: schema.map((c) => ({
+                  name: c.name,
+                  type: duckdbTypeToMalloy(c.type),
+               })),
+            }),
+            downstreamName: materializePlans[source.sourceID].buildSourceName,
+            virtualMap: buildVirtualMap([
+               {
+                  sourceName: over.overStored.parentBuildSourceName,
+                  destinationName: DESTINATION,
+                  virtualHandle: parentEntry.sourceEntityId,
+                  tablePath: storageTablePath(
+                     DESTINATION,
+                     parentEntry.physicalTableName,
+                  ),
+                  schema,
+               },
+            ]),
+            connections: new FixedConnectionMap(
+               new Map([[DESTINATION, duckdb]]),
+               DESTINATION,
+            ),
+         });
+         built = { sql: planned.sql, source: planned.downstream };
+         storedBuildSQL[source.name] = planned.sql;
+      }
       // Cast to the declared types as the storage build does.
       const select = scenario.uncast
-         ? buildSQLOf(source, { entries: {} })
+         ? built.sql
          : castToDeclaredTypes(
-              buildSQLOf(source, { entries: {} }),
-              persistSourceDeclaredColumns(source),
-              { queryTimezone: persistSourceQueryTimezone(source) },
+              built.sql,
+              persistSourceDeclaredColumns(built.source),
+              { queryTimezone: persistSourceQueryTimezone(built.source) },
            );
       const origin = connections.get(source.connectionName);
       if (origin && origin !== duckdb) {
@@ -434,6 +501,7 @@ export async function buildScenario(scenario: R4Scenario): Promise<R4Fixture> {
          realization: "COPY",
          rowCount: null,
       } as ManifestEntry;
+      entryBySourceID.set(source.sourceID, entries[`h${i}`]);
    }
    const bindings = deriveServeBindings(
       entries,
@@ -520,6 +588,8 @@ export async function buildScenario(scenario: R4Scenario): Promise<R4Fixture> {
          Object.values(plan).map((p) => [p.name, p.sourceEntityId]),
       ),
       buildReads,
+      storedBuildSQL,
+      physicalTables: Object.fromEntries(physicalNames),
       model,
       setClock(at) {
          if (!pinned) throw new Error("the scenario's clock is not pinned");

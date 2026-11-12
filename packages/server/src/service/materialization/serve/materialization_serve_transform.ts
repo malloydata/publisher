@@ -19,6 +19,9 @@ import { quoteManifestTablePath } from "../../quoting";
 import { annotationValue, identifier, stringLiteral } from "../../malloy_text";
 import { storageTablePath } from "../run/storage_table_path";
 import { pipelineReferences, structRefSourceId } from "../plan/source_map";
+import { documentFlagLines } from "../declaration_text";
+
+export { documentFlagLines };
 
 /**
  * A dimension or measure from the author's source, re-declared on the serve
@@ -1223,16 +1226,6 @@ export function documentFlagsForLifts(
    return [...files]
       .flatMap((url) => documentFlagLines(ctx.fileText(url) ?? ""))
       .filter((line, i, all) => all.indexOf(line) === i);
-}
-
-/** The `##!` lines of an author file, in order, trimmed. */
-export function documentFlagLines(text: string): string[] {
-   // Block comments first, so a `##!` quoted inside one is not a flag.
-   return text
-      .replace(/\/\*[\s\S]*?\*\//g, "")
-      .split("\n")
-      .map((line) => line.trim())
-      .filter((line) => line.startsWith("##!"));
 }
 
 /**

@@ -102,11 +102,17 @@
  * sources then sit in level files (`<model>.<n>.materialize-level.malloy`),
  * one per depth of the chain, which the companion imports, since a build
  * copy imports its parent's level and the companion cannot be imported by
- * what it imports. Only a colocated pair with no incremental keys chains
- * (the storage tier stacks on a parent by lifting author text, which a
- * generated source has none of), and an extension that does not chain, or
- * whose chained build does not compile, builds over the raw chain as before:
- * the same rows, from the warehouse.
+ * what it imports. Only a pair on one tier (both colocated, or both in one
+ * `storage=` destination) with no incremental keys chains. A `storage=`
+ * extension's warehouse cannot read its parent's stored table, so its build
+ * runs in the destination from a text of its own ({@link storedChainText},
+ * {@link extensionOverStoredModel}): the parent's build source declared as
+ * the virtual source of its stored table, then the declarations from the
+ * parent to the extension as the build copy writes them, and nothing else of
+ * the file, which the plan compiles against a stand-in for the destination
+ * before it chains. An extension that does not chain, or whose chained build
+ * does not compile, builds over the raw chain as before: the same rows, from
+ * the warehouse.
  *
  * A declaration that is not built is reported as a package warning
  * (`materialize-not-built`), so an author sees why, and the source serves live.
@@ -126,6 +132,7 @@ import { parseRouteTag, routeHasKey } from "../../motly";
 import {
    afterModelHeader,
    declarationSpans,
+   documentFlagLines,
    dropDimensions,
    inverseRenameBlocks,
 } from "../declaration_text";
@@ -336,6 +343,36 @@ export interface MaterializeParent {
    sourceName: string;
    /** The parent's declaration in that file, which the build copy re-roots. */
    declaration: TermUse;
+   /**
+    * The declarations from just below the parent to the extension's own,
+    * root first, each an `extend` or a rename of the one before, in the same
+    * file: what a `storage=` build carries over the parent's stored table.
+    */
+   path: TermUse[];
+   /**
+    * For a `storage=` pair, set with the build copy: the text the extension's
+    * build compiles in its destination over the parent's stored table
+    * ({@link extensionOverStoredModel}). Absent for a colocated pair.
+    */
+   overStored?: StoredChain;
+}
+
+/**
+ * What a `storage=` extension table's build compiles in its destination
+ * (P10): no source but the parent's stored table, so the build reads the
+ * destination alone, never the warehouse.
+ */
+export interface StoredChain {
+   /** The parent's generated build source, which the declarations re-root on. */
+   parentBuildSourceName: string;
+   /** The author file's `##!` flags, which its declarations may need. */
+   flags: string[];
+   /**
+    * `source:` statements, root first: the parent re-rooted on
+    * {@link parentBuildSourceName}, then each declaration on
+    * {@link MaterializeParent.path}, as the extension's build copy writes them.
+    */
+   declarations: string;
 }
 
 /** A declaration the generator could not plan, and why. */
@@ -1119,11 +1156,13 @@ const INCREMENTAL_KEYS = ["refresh", "watermark", "merge_key", "partition"];
  * source (P10) its `buildsOver`. The ancestor is the first planned source up
  * the chain, reached through `extend` and renames only (a query-shaped hop
  * starts a new segment, which the build cannot re-root on a table), declared
- * in the same file (the build copy re-roots it in that file's text). Both must
- * be colocated (no `storage=`), carry no incremental key, and the parent no
- * given-reading `where:` (its build source's own `extend` re-applies that
- * term, which would scope the extension's build to one caller). A plan that
- * does not qualify builds over the raw chain, as before: the same rows.
+ * in the same file (the build copy re-roots it in that file's text), as is
+ * every declaration between them (`path`). Both must be on one tier (both
+ * colocated, or both `storage=` the same destination), carry no incremental
+ * key, and the parent no given-reading `where:` (its build source's own
+ * `extend` re-applies that term, which would scope the extension's build to
+ * one caller). A plan that does not qualify builds over the raw chain, as
+ * before: the same rows.
  */
 function chainExtensionTables(plans: MaterializePlan[], map: SourceMap): void {
    const byID = new Map(plans.map((p) => [p.sourceID, p]));
@@ -1132,24 +1171,29 @@ function chainExtensionTables(plans: MaterializePlan[], map: SourceMap): void {
    for (const plan of plans) {
       let node = map.node(plan.sourceID);
       let parent: MaterializePlan | undefined;
+      // The sources from the extension up to just below the parent.
+      const below: string[] = [];
       for (let hops = 0; node && hops < 64 && !parent; hops++) {
          const base = node.base;
          if (!base || base.hop === "query" || base.sourceID === undefined) {
             break;
          }
+         below.push(node.sourceID);
          parent = byID.get(base.sourceID);
          node = map.node(base.sourceID);
       }
       if (!parent || parent === plan) continue;
-      const own = declarationOfID(plan.sourceID);
       const declaration = declarationOfID(parent.sourceID);
-      if (!own || !declaration || own.url !== declaration.url) continue;
+      const path = below.reverse().map(declarationOfID);
       if (
-         plan.persist.storage !== undefined ||
-         parent.persist.storage !== undefined
+         !declaration ||
+         path.some((d) => d === undefined || d.url !== declaration.url)
       ) {
          continue;
       }
+      // One tier on both sides: colocated, or one storage destination, whose
+      // build reads the parent's table there (see `overStored`).
+      if (plan.persist.storage !== parent.persist.storage) continue;
       const incremental = (p: MaterializePlan) =>
          Object.keys(p.persist).some((k) => INCREMENTAL_KEYS.includes(k));
       if (incremental(plan) || incremental(parent)) continue;
@@ -1158,6 +1202,7 @@ function chainExtensionTables(plans: MaterializePlan[], map: SourceMap): void {
          sourceID: parent.sourceID,
          sourceName: parent.sourceName,
          declaration,
+         path: path as TermUse[],
       };
    }
 }
@@ -1199,15 +1244,20 @@ function persistLine(plan: MaterializePlan): string {
    return keys ? `#@ persist ${keys}` : "#@ persist";
 }
 
-/** One generated build source. */
-function emitBuildSource(plan: MaterializePlan): string {
-   const select = plan.columns
+/** A generated build source's `select:` list: every stored column. */
+function buildSourceSelect(plan: MaterializePlan): string {
+   return plan.columns
       .map((c) =>
          c.join === undefined
             ? `    ${identifier(c.dimension)}`
             : `    ${identifier(c.column)} is ${identifier(c.join)}.${identifier(c.dimension)}`,
       )
       .join(",\n");
+}
+
+/** One generated build source. */
+function emitBuildSource(plan: MaterializePlan): string {
+   const select = buildSourceSelect(plan);
    const given = givenReadTerms(plan);
    // malloy-text: each term is the author's own given-reading where:, re-applied as written on its own declaration
    const readTime = given.length
@@ -1246,6 +1296,26 @@ function importAlias(plan: MaterializePlan): string {
 }
 
 /**
+ * The author's source a generated name stands for, among `plans`, or
+ * undefined for a name no generated file declares: a build source is its
+ * author's source; the alias an extension table's build reads its base by
+ * (P10) is on its parent's table, since its build copy re-roots the parent on
+ * the parent's build source, so it is the parent.
+ */
+export function generatedNameOwner(
+   name: string,
+   plans: Iterable<MaterializePlan>,
+): string | undefined {
+   for (const plan of plans) {
+      if (plan.buildSourceName === name) return plan.sourceName;
+      if (plan.buildsOver && importAlias(plan) === name) {
+         return plan.buildsOver.sourceName;
+      }
+   }
+   return undefined;
+}
+
+/**
  * The build copy of one planned source's declaring file: `text` with that
  * source's read-time terms replaced by `true` (P2), so a query over the
  * copy's source applies every `where:` but those, or why a term cannot be
@@ -1268,9 +1338,37 @@ export function buildCopyText(
    plan: MaterializePlan,
    chain?: { parent: MaterializePlan; importFrom: string },
 ): { copy: string } | { reason: string } {
-   const edits: { start: number; end: number; insert: string }[] = [];
+   const edits = copyEdits(text, plan, chain?.parent);
+   if ("reason" in edits) return edits;
+   let copy = applyEdits(text, edits.edits);
+   if (chain) {
+      const at = afterModelHeader(copy);
+      const line = `import { ${identifier(chain.parent.buildSourceName)} } from ${stringLiteral(chain.importFrom)}\n`;
+      copy = `${copy.slice(0, at)}${line}${copy.slice(at)}`;
+   }
+   return { copy };
+}
+
+/** One splice of a file's text: `[start, end)` replaced by `insert`. */
+interface TextEdit {
+   start: number;
+   end: number;
+   insert: string;
+}
+
+/**
+ * The edits {@link buildCopyText} makes to `text`: the plan's given-reading
+ * terms replaced by `true` (P2), and, with `parent`, the parent's
+ * declaration re-rooted on its build source (P10).
+ */
+function copyEdits(
+   text: string,
+   plan: MaterializePlan,
+   parent?: MaterializePlan,
+): { edits: TextEdit[] } | { reason: string } {
+   const edits: TextEdit[] = [];
    const given = givenReadTerms(plan);
-   if (given.length > 0 || !chain) {
+   if (given.length > 0 || !parent) {
       const found =
          plan.declaration && given.length > 0
             ? termSpans(text, plan.declaration, given)
@@ -1278,13 +1376,13 @@ export function buildCopyText(
       if ("reason" in found) return found;
       for (const span of found.spans) edits.push({ ...span, insert: "true" });
    }
-   if (chain) {
-      const parent = plan.buildsOver;
-      const from = parent ? offsetOf(text, parent.declaration.range.start) : -1;
-      const to = parent ? offsetOf(text, parent.declaration.range.end) : -1;
+   if (parent) {
+      const range = plan.buildsOver?.declaration.range;
+      const from = range ? offsetOf(text, range.start) : -1;
+      const to = range ? offsetOf(text, range.end) : -1;
       const rerooted =
          from >= 0 && to >= from
-            ? rerootOnBuildSource(text.slice(from, to), chain.parent)
+            ? rerootOnBuildSource(text.slice(from, to), parent)
             : undefined;
       if (
          rerooted === undefined ||
@@ -1294,16 +1392,106 @@ export function buildCopyText(
       }
       edits.push({ start: from, end: to, insert: rerooted });
    }
-   let copy = text;
+   return { edits };
+}
+
+/** `text` with `edits` applied; none may overlap. */
+function applyEdits(text: string, edits: readonly TextEdit[]): string {
+   let out = text;
    for (const edit of [...edits].sort((a, b) => b.start - a.start)) {
-      copy = `${copy.slice(0, edit.start)}${edit.insert}${copy.slice(edit.end)}`;
+      out = `${out.slice(0, edit.start)}${edit.insert}${out.slice(edit.end)}`;
    }
-   if (chain) {
-      const at = afterModelHeader(copy);
-      const line = `import { ${identifier(chain.parent.buildSourceName)} } from ${stringLiteral(chain.importFrom)}\n`;
-      copy = `${copy.slice(0, at)}${line}${copy.slice(at)}`;
+   return out;
+}
+
+/**
+ * The text a `storage=` extension table's build compiles in its destination
+ * (P10): the parent's declaration and each one on the path to the
+ * extension's, edited as the build copy edits them (the parent re-rooted on
+ * its build source, the extension's given-reading terms out) and nothing else
+ * of the file, so the build reads no source but the parent's stored table.
+ * Undefined when the copy's edits cannot be made, or a declaration is not
+ * where the plan says.
+ */
+export function storedChainText(
+   text: string,
+   plan: MaterializePlan,
+   parent: MaterializePlan,
+): StoredChain | undefined {
+   const over = plan.buildsOver;
+   if (!over) return undefined;
+   const edits = copyEdits(text, plan, parent);
+   if ("reason" in edits) return undefined;
+   const statements: string[] = [];
+   for (const { range } of [over.declaration, ...over.path]) {
+      const from = offsetOf(text, range.start);
+      const to = offsetOf(text, range.end);
+      if (from < 0 || to < from) return undefined;
+      const inside = edits.edits
+         .filter((e) => e.start >= from && e.end <= to)
+         .map((e) => ({ ...e, start: e.start - from, end: e.end - from }));
+      // malloy-text: the author's own declaration, edited as its build copy edits it
+      statements.push(`source: ${applyEdits(text.slice(from, to), inside)}`);
    }
-   return { copy };
+   return {
+      parentBuildSourceName: parent.buildSourceName,
+      flags: documentFlagLines(text),
+      declarations: statements.join("\n"),
+   };
+}
+
+/** A stored column of the parent, as {@link extensionOverStoredModel} declares it. */
+export interface StoredColumnType {
+   name: string;
+   /** A Malloy basic type: `string`, `number`, `boolean`, `date`, `timestamp` or `json`. */
+   type: string;
+}
+
+/**
+ * The model a `storage=` extension table builds from in its destination
+ * (P10): the parent's build source declared as the virtual source of its
+ * stored table on `connectionName`, the extension's {@link StoredChain} over
+ * it, and the extension's generated build source, `#@ persist storage=`, last.
+ * Its given-reading terms are not written: the build leaves them out, and the
+ * table's address is the companion's, not this model's.
+ */
+export function extensionOverStoredModel(params: {
+   plan: MaterializePlan;
+   chain: StoredChain;
+   /** The connection the stored table is read through: the destination. */
+   connectionName: string;
+   /** The virtualMap handle of the parent's stored table. */
+   virtualHandle: string;
+   /** The parent's stored columns. */
+   columns: readonly StoredColumnType[];
+}): string {
+   const { plan, chain } = params;
+   const typeName = identifier(`${chain.parentBuildSourceName}__shape`);
+   // malloy-text: names through identifier, each type a Malloy basic type name
+   const fields = params.columns
+      .map((c) => `   ${identifier(c.name)}::${c.type}`)
+      .join(",\n");
+   const select = buildSourceSelect(plan);
+   const flags = [
+      // malloy-text: the author file's own `##!` lines, carried as written
+      ...chain.flags,
+      "##! experimental { persistence virtual_source }",
+   ].join("\n");
+   // malloy-text: the author's own declarations, edited as the build copy edits them (storedChainText)
+   const declarations = chain.declarations;
+   return `${flags}
+type: ${typeName} is {
+${fields}
+}
+source: ${identifier(chain.parentBuildSourceName)} is ${identifier(params.connectionName)}.virtual(${stringLiteral(params.virtualHandle)})::${typeName}
+${declarations}
+source: ${identifier(importAlias(plan))} is ${identifier(plan.sourceName)}
+#@ persist storage=${annotationValue(params.connectionName)}
+source: ${identifier(plan.buildSourceName)} is ${identifier(importAlias(plan))} -> {
+  select:
+${select}
+}
+`;
 }
 
 const PARENT_NOT_REROOTED =
