@@ -524,7 +524,15 @@ export function validateModelPreaggregation(
          const declaredIn = declaringFileOf(
             (source as { sourceID?: unknown }).sourceID,
          );
-         if (declaredIn !== undefined && declaredIn !== modelURL) continue;
+         // A notebook's cells compile as `internal://` documents, so a source
+         // a cell declares is this model's own (as `authoredNotes` reads it).
+         if (
+            declaredIn !== undefined &&
+            declaredIn !== modelURL &&
+            !declaredIn.startsWith("internal://")
+         ) {
+            continue;
+         }
       }
       // Anything with a field list is worth scanning; a non-source object cannot
       // carry a measure, and scanning it costs one annotation parse.

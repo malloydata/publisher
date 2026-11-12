@@ -649,6 +649,45 @@ describe("buildQueryPath, reading the serve verdicts", () => {
       );
    });
 
+   it("gives no queried-source warning for a table whose other-tier copy answered", () => {
+      // A colocated and a storage= copy share one address; the storage copy
+      // is skipped behind the gate while the colocated copy answered. The
+      // queried source's refusal codes the skip, but no warning contradicts
+      // the table that served.
+      const secure: PlannedTable = {
+         ...planned("daily_secure"),
+         sourceEntityId: "id_daily",
+      };
+      const daily = storageOf("daily");
+      const base = planned("daily");
+      const report = buildQueryPath(
+         input({
+            chain: [secure.sourceID, base.sourceID],
+            catalog: {
+               ...catalog([base, secure], { id_daily: "daily_t" }),
+               liveVerdicts: new Map(),
+               sourceVerdicts: new Map([
+                  [
+                     secure.sourceID,
+                     { reason: "refused", sourceName: "daily_secure" },
+                  ],
+               ]),
+            },
+            storage: { all: [daily], fresh: [daily] },
+            considered: [
+               {
+                  kind: "storage",
+                  outcome: "skipped",
+                  reason: "row_level_gate",
+               },
+            ],
+            colocatedRead: new Set(["id_daily"]),
+         }),
+      );
+      expect(report.considered.some((c) => c.outcome === "used")).toBe(true);
+      expect(report.warnings).toEqual([]);
+   });
+
    it("never lets the queried source's verdict replace a skip the router reached by trying the table", () => {
       const rollup = planned("orders_rollup", "preaggregate");
       const gated = planned("orders_gated");

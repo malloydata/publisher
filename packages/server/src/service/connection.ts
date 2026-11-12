@@ -2673,6 +2673,13 @@ export function restrictMalloyConfigToConnections(
 export const STORAGE_DESTINATION_DIALECT = "duckdb";
 
 /**
+ * A DuckLake lookup refusing only because its catalog does not exist yet: an
+ * attach never creates one, so before the first build the catalog is absent.
+ */
+const CATALOG_NOT_CREATED_YET =
+   /creating a new DuckLake is explicitly disabled|DuckLake .*does not exist/i;
+
+/**
  * `base` for a compile that never runs SQL, such as the dry-run preview of a
  * stored source's views. Malloy learns a connection's dialect by looking the
  * connection up, and looking up a DuckLake destination attaches its catalog,
@@ -2692,15 +2699,20 @@ export function compileOnlyDestinationConfig(base: MalloyConfig): MalloyConfig {
          } catch (error) {
             // A name no destination holds stays unknown: the preview must not
             // serve a view from a destination that does not exist.
+            const message =
+               error instanceof Error ? error.message : String(error);
             if (
                !name ||
                error instanceof ConnectionNotFoundError ||
-               /No connection named/.test(
-                  error instanceof Error ? error.message : String(error),
-               )
+               /No connection named/.test(message)
             ) {
                throw error;
             }
+            // Only a catalog the first build has not created yet compiles
+            // against the dialect alone. Anything else (bad credentials, an
+            // unreachable catalog host, a wrong path) would fail serving too,
+            // so the preview must say so rather than predict `serves`.
+            if (!CATALOG_NOT_CREATED_YET.test(message)) throw error;
             const refuse = () => {
                throw new Error(
                   `Destination ${name} could not be reached, so the preview compiles against its dialect only and cannot run SQL: ${

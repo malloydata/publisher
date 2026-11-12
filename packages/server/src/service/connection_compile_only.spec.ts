@@ -22,13 +22,32 @@ function configThatThrows(error: Error): MalloyConfig {
 describe("compileOnlyDestinationConfig", () => {
    it("answers a destination it cannot reach with its dialect, and refuses to run SQL on it", async () => {
       const config = compileOnlyDestinationConfig(
-         configThatThrows(new Error("catalog does not exist")),
+         configThatThrows(
+            new Error(
+               'Existing DuckLake at metadata catalog "postgres:…" does not exist - and creating a new DuckLake is explicitly disabled',
+            ),
+         ),
       );
       const connection = await config.connections.lookupConnection("lake");
       expect(connection.dialectName).toBe(STORAGE_DESTINATION_DIALECT);
       expect(() => connection.runSQL("SELECT 1")).toThrow(
-         /preview compiles against its dialect only.*catalog does not exist/,
+         /preview compiles against its dialect only.*does not exist/,
       );
+   });
+
+   it("lets any other lookup failure through, so the preview never predicts serving from a broken destination", async () => {
+      for (const message of [
+         'IO Error: Unable to connect to Postgres at "host=catalog": connection refused',
+         "password authentication failed for user",
+         'Cannot open file "/data/lake.ducklake": Permission denied',
+      ]) {
+         const config = compileOnlyDestinationConfig(
+            configThatThrows(new Error(message)),
+         );
+         await expect(
+            config.connections.lookupConnection("lake"),
+         ).rejects.toThrow(message);
+      }
    });
 
    it("still refuses a name the base config does not hold", async () => {

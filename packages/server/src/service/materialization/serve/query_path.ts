@@ -427,7 +427,11 @@ function applyServeVerdicts(
             candidate.reason = "WARNED";
             candidate.code = own.verdict.reason;
             delete candidate.detail;
-            if (!warned.has(candidate.tableId)) {
+            // As below: a table whose other-tier copy answered gets no warning.
+            if (
+               !used.has(candidate.tableId) &&
+               !warned.has(candidate.tableId)
+            ) {
                warned.add(candidate.tableId);
                // The caller queried this source, so naming it reveals nothing.
                warnings.push({
