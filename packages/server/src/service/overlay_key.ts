@@ -24,3 +24,10 @@ export function overlayKey(url: URL | string): string {
 export function overlayKeyOfPath(filePath: string): string {
    return pathToFileURL(filePath).href;
 }
+
+/** `files` (by URL) as an overlay, each keyed by {@link overlayKey}. */
+export function keyedOverlay(
+   files: Iterable<readonly [string, string]>,
+): Map<string, string> {
+   return new Map([...files].map(([url, text]) => [overlayKey(url), text]));
+}

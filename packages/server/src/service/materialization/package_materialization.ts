@@ -1197,7 +1197,27 @@ export class PackageMaterialization {
    servedCopyWarnings(): ApiPackageWarning[] {
       const warnings: ApiPackageWarning[] = [];
       for (const [modelPath, model] of this.owner.models()) {
-         for (const l of model.crossConnectionLeftOutDefinitions?.() ?? []) {
+         const leftOut = model.crossConnectionLeftOutDefinitions?.() ?? [];
+         // What read a left-out join goes with it; nothing leaves silently.
+         const readers = leftOut.filter((l) => !l.crossConnection);
+         if (readers.length > 0) {
+            warnings.push({
+               model: modelPath,
+               code: SERVED_COPY_WARNING_CODE,
+               severity: "warn",
+               message:
+                  "These definitions read a join left out across connections, so this model loads without them: " +
+                  readers
+                     .map((l) =>
+                        l.declaration
+                           ? `\`${l.declaration}.${l.name}\``
+                           : `\`${l.name}\``,
+                     )
+                     .join(", ") +
+                  ".",
+            });
+         }
+         for (const l of leftOut) {
             if (!l.crossConnection) continue;
             warnings.push({
                model: modelPath,

@@ -28,7 +28,7 @@ import {
 } from "@malloydata/malloy";
 import type { GraftRuntime, GraftScope } from "../../gate_classification";
 import { quoteManifestTablePath } from "../../quoting";
-import { overlayKey } from "../../overlay_key";
+import { keyedOverlay, overlayKey } from "../../overlay_key";
 import {
    createModelRuntime,
    type ModelConnectionInput,
@@ -62,6 +62,7 @@ import {
    type ServedCopyRange,
 } from "./served_copy";
 import { servedCopyConfig, servedCopyAlias } from "./served_copy_config";
+import { offsetOf } from "../malloy_lexer";
 import {
    isCrossConnectionRefusal,
    leaveOutCrossConnectionJoins,
@@ -102,15 +103,37 @@ const LEFT_OUT_JOIN_DETAIL =
 
 /**
  * Whether a query's compile failure reads a definition the served copy left
- * out across connections: a missing field while some are left out (the copy
- * keeps every other field of the author's).
+ * out across connections: a missing field whose name, where the problem points
+ * in the query's text, is one left out (the copy keeps every other field of
+ * the author's). A problem whose place cannot be read counts, since declining
+ * only sends the query on to live.
  */
-function readsLeftOutDefinition(compiled: Compiled, error: unknown): boolean {
+function readsLeftOutDefinition(
+   compiled: Compiled,
+   error: unknown,
+   queryString: string,
+): boolean {
    if (!compiled.leftOut?.length) return false;
    if (!(error instanceof MalloyError)) return false;
-   return (error.problems as { code?: string }[]).some(
-      (p) => p.code !== undefined && MISSING_FIELD_CODES.has(p.code),
-   );
+   const names = new Set(compiled.leftOut.map((l) => l.name));
+   return (
+      error.problems as {
+         code?: string;
+         at?: { range?: { start: { line: number; character: number } } };
+      }[]
+   ).some((p) => {
+      if (p.code === undefined || !MISSING_FIELD_CODES.has(p.code)) {
+         return false;
+      }
+      const start = p.at?.range?.start;
+      const offset = start ? offsetOf(queryString, start) : -1;
+      if (offset < 0) return true;
+      const path = /^[`A-Za-z0-9_.]+/.exec(queryString.slice(offset))?.[0];
+      if (!path) return true;
+      return path
+         .split(".")
+         .some((part) => names.has(part.replace(/^`|`$/g, "")));
+   });
 }
 
 /** Malloy's codes for a compile that reads a field the model does not have. */
@@ -334,7 +357,7 @@ export class ServedCopyServe {
          try {
             return await work();
          } catch (error) {
-            if (readsLeftOutDefinition(compiled, error)) {
+            if (readsLeftOutDefinition(compiled, error, queryString)) {
                decline(
                   "the query reads a join the served copy leaves out across connections",
                   "cross_connection",
@@ -741,7 +764,7 @@ export class ServedCopyServe {
                overlay: byURL,
                readText: (u) => lift.fileText(u),
                compile: async (files) => {
-                  await load(keyed(files));
+                  await load(keyedOverlay(files));
                },
             }).catch(() => undefined);
             if (!kept) {
@@ -757,7 +780,7 @@ export class ServedCopyServe {
                   materializer,
                   def: servedDef,
                   runtime: servedRuntime,
-               } = await load(keyed(kept.overlay)));
+               } = await load(keyedOverlay(kept.overlay)));
             } catch (again) {
                const detail =
                   again instanceof Error ? again.message : String(again);
@@ -771,13 +794,25 @@ export class ServedCopyServe {
          // join declared on the base) is not in its own text, so it is lost:
          // that source is left as written and the copy compiled again.
          const servedMap = SourceMap.of(servedDef);
-         // What a cross-connection join took with it is reported on its own.
-         const leftOutNames = new Set(leftOut.map((l) => l.name));
+         // What a cross-connection join took with it is reported on its own,
+         // when it was left out of this source or one it is built from.
          const lost = candidates.filter((c) => {
             const author = fieldNames(map.node(c.reroot.sourceID)?.def);
             const served = fieldNames(servedMap.node(c.reroot.sourceID)?.def);
+            const node = map.node(c.reroot.sourceID);
+            const chain = new Set(
+               (node ? map.chainOf(node.def) : [c.reroot.sourceID])
+                  .map((id) => map.node(id)?.name)
+                  .filter((n): n is string => n !== undefined),
+            );
+            chain.add(c.reroot.sourceName);
+            const excused = new Set(
+               leftOut
+                  .filter((l) => chain.has(l.declaration ?? l.name))
+                  .map((l) => l.name),
+            );
             return [...author].some(
-               (name) => !served.has(name) && !leftOutNames.has(name),
+               (name) => !served.has(name) && !excused.has(name),
             );
          });
          // Fail closed on tenant isolation: every `where:` term that reads a
@@ -942,9 +977,4 @@ export function classifyServedCopyFailure(
    return isCrossConnectionRefusal(error)
       ? "cross_connection_unbuilt"
       : "compile_failed";
-}
-
-/** An overlay keyed as `createModelRuntime` reads it. */
-function keyed(files: ReadonlyMap<string, string>): Map<string, string> {
-   return new Map([...files].map(([url, text]) => [overlayKey(url), text]));
 }

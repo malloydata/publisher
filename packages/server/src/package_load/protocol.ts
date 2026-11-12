@@ -135,11 +135,6 @@ export interface LoadPackageRequest {
     * entities: a load that serves it, and the package-scope compile.
     */
    withEntities?: boolean;
-   /**
-    * `materialize.enabled` on the main thread: a model that joins sources
-    * across connections then loads from its build view (#6982).
-    */
-   materializeEnabled?: boolean;
 }
 
 // ──────────────────────────────────────────────────────────────────────

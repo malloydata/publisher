@@ -1,7 +1,7 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
-import { describe, expect, it } from "bun:test";
+import { afterAll, beforeAll, describe, expect, it } from "bun:test";
 import { DuckDBConnection } from "@malloydata/db-duckdb";
 import {
    FixedConnectionMap,
@@ -13,6 +13,7 @@ import {
    isCrossConnectionRefusal,
    loadLeavingOutCrossConnectionJoins,
 } from "./cross_connection_joins";
+import { installSettings } from "../../../test_helpers/settings_env";
 
 const URL_ = "file:///p/m.malloy";
 
@@ -23,6 +24,29 @@ function compileWith(text: string) {
       const runtime = new Runtime({
          urlReader: new InMemoryURLReader(
             new Map([[URL_, overlay.get(URL_) ?? text]]),
+         ),
+         connections: new FixedConnectionMap(
+            new Map([
+               ["crm", crm],
+               ["product", product],
+            ]),
+            "crm",
+         ),
+      });
+      return runtime.loadModel(new URL(URL_)).getModel();
+   };
+}
+
+/** Compile `files` (by URL), entered at {@link URL_}, with an overlay. */
+function compileFiles(files: Record<string, string>) {
+   const crm = new DuckDBConnection("crm", ":memory:");
+   const product = new DuckDBConnection("product", ":memory:");
+   return async (overlay: ReadonlyMap<string, string>) => {
+      const runtime = new Runtime({
+         urlReader: new InMemoryURLReader(
+            new Map(
+               Object.entries(files).map(([u, t]) => [u, overlay.get(u) ?? t]),
+            ),
          ),
          connections: new FixedConnectionMap(
             new Map([
@@ -54,6 +78,14 @@ source: account_usage is accounts extend {
 `;
 
 describe("leaving out joins across connections", () => {
+   let restore: () => void;
+   beforeAll(() => {
+      restore = installSettings({
+         env: { PUBLISHER_MATERIALIZE: "true" },
+      }).restore;
+   });
+   afterAll(() => restore());
+
    it("recognizes Malloy's refusal by its code", async () => {
       const error = await compileWith(model)(new Map()).catch((e) => e);
       expect(isCrossConnectionRefusal(error)).toBe(true);
@@ -133,5 +165,89 @@ describe("leaving out joins across connections", () => {
       const cut = definitionCutAt(text, text.indexOf("x > 1"));
       // The innermost definition statement holding a where: is its source.
       expect(cut?.left.keyword).toBe("source");
+   });
+
+   it("keeps each kept definition's own annotations where a statement holds several", () => {
+      const text =
+         "source: s is t extend {\n  dimension:\n    # a\n    a is u.x\n    # b\n    b is y\n}\n";
+      const cut = definitionCutAt(text, text.indexOf("a is"));
+      const out = (text.slice(0, cut?.start) + text.slice(cut?.end)).replace(
+         /\s+/g,
+         " ",
+      );
+      expect(out).toBe("source: s is t extend { dimension: # b b is y } ");
+   });
+
+   it("leaves a model annotation above a source it leaves out", () => {
+      const text = '##! experimental.x\n## doc="m"\n# s\nsource: s is t\n';
+      const cut = definitionCutAt(text, text.indexOf("s is"));
+      const out = text.slice(0, cut?.start) + text.slice(cut?.end);
+      expect(out).toBe('##! experimental.x\n## doc="m"\n\n');
+   });
+
+   it("follows a join left out of an imported file into its importer", async () => {
+      const base = "file:///p/base.malloy";
+      const files: Record<string, string> = {
+         [base]: model,
+         [URL_]: `import "base.malloy"
+source: report is account_usage extend {
+  view: by_events is { group_by: account_name; aggregate: total_events }
+  view: kept is { group_by: upper_name; aggregate: n }
+}
+`,
+      };
+      const compile = compileFiles(files);
+      const firstError = await compile(new Map()).catch((e) => e);
+      const view = await loadLeavingOutCrossConnectionJoins({
+         firstError,
+         readText: (u) => files[u],
+         load: compile,
+      });
+      expect(view?.leftOut.map((l) => [l.url, l.name])).toEqual([
+         [base, "u"],
+         [base, "first_events"],
+         [base, "total_events"],
+         [base, "by_account"],
+         [URL_, "by_events"],
+      ]);
+   });
+
+   it("leaves a file alone whose own error outlives the left-out joins", async () => {
+      const base = "file:///p/base.malloy";
+      const files: Record<string, string> = {
+         [base]: model,
+         [URL_]: `import "base.malloy"
+source: report is account_usage extend {
+  dimension: oops is nope
+}
+source: other is nowhere
+`,
+      };
+      const compile = compileFiles(files);
+      const firstError = await compile(new Map()).catch((e) => e);
+      expect(
+         await loadLeavingOutCrossConnectionJoins({
+            firstError,
+            readText: (u) => files[u],
+            load: compile,
+         }),
+      ).toBeUndefined();
+   });
+
+   it("loads nothing from a build view with the switch off", async () => {
+      const off = installSettings({ env: { PUBLISHER_MATERIALIZE: "false" } });
+      try {
+         const compile = compileWith(model);
+         const firstError = await compile(new Map()).catch((e) => e);
+         expect(
+            await loadLeavingOutCrossConnectionJoins({
+               firstError,
+               readText: () => model,
+               load: compile,
+            }),
+         ).toBeUndefined();
+      } finally {
+         off.restore();
+      }
    });
 });

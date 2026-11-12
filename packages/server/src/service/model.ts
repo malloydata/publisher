@@ -61,22 +61,12 @@ import {
    PayloadTooLargeError,
 } from "../errors";
 import { getMaterializeEnabled, getPersistStorageMode } from "../config";
-import { readFileSync } from "fs";
-import { fileURLToPath } from "url";
-import { overlayKey } from "./overlay_key";
+import { keyedOverlay } from "./overlay_key";
 import {
+   compiledFileText,
    loadLeavingOutCrossConnectionJoins,
    type LeftOutDefinition,
 } from "./materialization/plan/cross_connection_joins";
-
-/** A local file's text by its URL, or undefined. */
-function readFileURLText(url: string): string | undefined {
-   try {
-      return readFileSync(fileURLToPath(url), "utf8");
-   } catch {
-      return undefined;
-   }
-}
 import {
    planModelPreaggregation,
    type RollupPlan,
@@ -896,10 +886,11 @@ export class Model {
             // A file that joins sources across connections (#6982) loads
             // from its build view behind the materialize switch.
             const view =
-               getMaterializeEnabled() && modelType === "model"
+               modelType === "model"
                   ? await loadLeavingOutCrossConnectionJoins({
                        firstError: first,
-                       readText: readFileURLText,
+                       readText: (url) =>
+                          compiledFileText(url, options?.overlay),
                        load: async (files) => {
                           const rt = await Model.getModelRuntime(
                              packagePath,
@@ -909,9 +900,7 @@ export class Model {
                                 ...options,
                                 overlay: new Map([
                                    ...(options?.overlay ?? []),
-                                   ...[...files].map(
-                                      ([u, t]) => [overlayKey(u), t] as const,
-                                   ),
+                                   ...keyedOverlay(files),
                                 ]),
                              },
                           );

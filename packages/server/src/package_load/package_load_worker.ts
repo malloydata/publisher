@@ -847,7 +847,6 @@ function captureReadText(inner: { readURL: (url: URL) => Promise<string> }): {
    };
 }
 
-/** A Runtime for the job: its connections and its build manifest. */
 /** `reader`, with `overlay`'s files (by URL) read in place of the ones it holds. */
 function overlaidReader(
    reader: { readURL: (url: URL) => Promise<string> },
@@ -863,6 +862,7 @@ function overlaidReader(
    };
 }
 
+/** A Runtime for the job: its connections and its build manifest. */
 function jobRuntime(
    job: LoadPackageRequest,
    malloyConfig: MalloyConfig,
@@ -990,27 +990,21 @@ async function compileMalloyModel(
       compiled = await mm.getModel();
    } catch (first) {
       const reader = makeWorkerUrlReader(job);
-      const view = job.materializeEnabled
-         ? await loadLeavingOutCrossConnectionJoins({
-              firstError: first,
-              readText: (url) => {
-                 try {
-                    return fs.readFileSync(fileURLToPath(url), "utf8");
-                 } catch {
-                    return undefined;
-                 }
-              },
-              load: async (overlay) => {
-                 const rt = jobRuntime(
-                    job,
-                    malloyConfig,
-                    overlaidReader(reader, overlay),
-                 );
-                 const m = rt.loadModel(modelURL, { importBaseURL });
-                 return { rt, m, model: await m.getModel() };
-              },
-           })
-         : undefined;
+      const view = await loadLeavingOutCrossConnectionJoins({
+         firstError: first,
+         // The text the failed compile read (the job's replacement or
+         // overlay, else the file), which its problems' positions index.
+         readText: (url) => textFor(new URL(url)),
+         load: async (overlay) => {
+            const rt = jobRuntime(
+               job,
+               malloyConfig,
+               overlaidReader(reader, overlay),
+            );
+            const m = rt.loadModel(modelURL, { importBaseURL });
+            return { rt, m, model: await m.getModel() };
+         },
+      });
       if (!view) throw first;
       runtime = view.result.rt;
       mm = view.result.m;

@@ -24,16 +24,11 @@ import {
 } from "./build_plan";
 import { createEventLoopYielder } from "../../event_loop_yield";
 import { Model } from "../../model";
-import { readFileSync } from "fs";
-import { fileURLToPath } from "url";
-import { getMaterializeEnabled } from "../../../config";
-import { overlayKey } from "../../overlay_key";
-import { loadLeavingOutCrossConnectionJoins } from "./cross_connection_joins";
-
-/** An overlay keyed as `Model.getModelRuntime` reads it. */
-function keyed(files: ReadonlyMap<string, string>): Map<string, string> {
-   return new Map([...files].map(([url, text]) => [overlayKey(url), text]));
-}
+import { keyedOverlay } from "../../overlay_key";
+import {
+   compiledFileText,
+   loadLeavingOutCrossConnectionJoins,
+} from "./cross_connection_joins";
 
 export async function compilePackageBuildPlan(
    pkg: BuildPlanPackage,
@@ -79,22 +74,14 @@ export async function compilePackageBuildPlan(
       try {
          loaded = await load();
       } catch (first) {
-         const view = getMaterializeEnabled()
-            ? await loadLeavingOutCrossConnectionJoins({
-                 firstError: first,
-                 readText: (url) => {
-                    try {
-                       return readFileSync(fileURLToPath(url), "utf8");
-                    } catch {
-                       return undefined;
-                    }
-                 },
-                 load: (files) => load(keyed(files)),
-              })
-            : undefined;
+         const view = await loadLeavingOutCrossConnectionJoins({
+            firstError: first,
+            readText: (url) => compiledFileText(url),
+            load: (files) => load(keyedOverlay(files)),
+         });
          if (!view) throw first;
          loaded = view.result;
-         buildView = keyed(view.overlay);
+         buildView = keyedOverlay(view.overlay);
       }
       const { runtime, materializer, malloyModel } = loaded;
       await collectModelBuildPlan(parts, {

@@ -22,23 +22,53 @@
  * Either way the same text operation applies: blank out the join's definition,
  * compile again, and blank out each definition that then fails because it read
  * what was left out (a dimension or measure through the join, a view over that
- * measure), until the text compiles. Blanking keeps every other character's
- * line and column, so the compiled locations of everything kept still index the
- * author's file. Only a refusal of exactly this kind starts it: a file with any
- * other error is left to fail as it does today.
+ * measure, a join keyed on it), until the text compiles. Blanking keeps every
+ * other character's line and column, so the compiled locations of everything
+ * kept still index the author's file.
+ *
+ * Only a refusal of exactly this kind starts it, and nothing else is ever left
+ * out: the first compile may report, beside the refused joins, only problems
+ * that follow from them (an importer that cannot find a source whose file
+ * failed), and each of those must be gone once the joins are out. A file with
+ * any other error is left to fail as it does today. Later passes leave out
+ * only definitions that fail for reading something missing; any other problem
+ * stops it.
+ *
+ * There is no compiler facility for this: Malloy has no "compile without these
+ * joins", and a file that does not compile has no IR to read ranges from, so
+ * the edit is made on the text, with the rewriters' lexer (../malloy_lexer.ts).
  */
 
+import { readFileSync } from "fs";
+import { fileURLToPath } from "url";
 import { MalloyError } from "@malloydata/malloy";
+import { getMaterializeEnabled } from "../../../config";
+import { overlayKey } from "../../overlay_key";
 import {
    isName,
    lexAll,
    offsetOf,
    statementStarts,
    type Token,
-} from "../serve/served_copy";
+} from "../malloy_lexer";
 
 /** Malloy's problem code for a join into a source on another connection. */
 export const JOIN_CONNECTION_MISMATCH = "join-connection-mismatch";
+
+/**
+ * Malloy's codes for a definition that fails because it reads something
+ * missing, directly or through another definition that failed: what leaving a
+ * join out causes, and the only problems a pass leaves a definition out for.
+ */
+const FOLLOWS_FROM_LEFT_OUT: ReadonlySet<string> = new Set([
+   "field-not-found",
+   "source-not-found",
+   "source-or-query-not-found",
+   "aggregate-source-not-found",
+   "aggregate-of-scalar",
+   "scalar-in-measure",
+   "ungroup-of-non-aggregate",
+]);
 
 /** The statements a definition can be left out of. */
 const DEFINITION_KEYWORDS = new Set([
@@ -73,14 +103,27 @@ interface Cut {
    left: Omit<LeftOutDefinition, "url" | "crossConnection">;
 }
 
-/** Whether `error` is Malloy refusing only joins across connections. */
+/**
+ * Whether `error` is Malloy refusing joins across connections, and nothing
+ * else but what may follow from that refusal (see the file's doc).
+ */
 export function isCrossConnectionRefusal(error: unknown): boolean {
    const problems = errorProblems(error);
    return (
       problems !== undefined &&
-      problems.length > 0 &&
-      problems.every((p) => p.code === JOIN_CONNECTION_MISMATCH)
+      problems.some((p) => p.code === JOIN_CONNECTION_MISMATCH) &&
+      problems.every(
+         (p) =>
+            p.code === JOIN_CONNECTION_MISMATCH ||
+            (p.code !== undefined && FOLLOWS_FROM_LEFT_OUT.has(p.code)),
+      )
    );
+}
+
+/** A problem's identity across compiles of the same text: where, and what. */
+function problemKey(p: ProblemLike): string {
+   const start = p.at?.range?.start;
+   return `${p.at?.url}\u0000${start?.line}:${start?.character}\u0000${p.code}`;
 }
 
 interface ProblemLike {
@@ -124,13 +167,40 @@ export async function leaveOutCrossConnectionJoins(args: {
    if (!isCrossConnectionRefusal(args.firstError)) return undefined;
    const overlay = new Map(args.overlay ?? []);
    const leftOut: LeftOutDefinition[] = [];
-   let problems = errorProblems(args.firstError) ?? [];
+   const first = errorProblems(args.firstError) ?? [];
+   // What the first compile reported beside the refused joins must follow
+   // from them (an importer that could not find a source whose file failed),
+   // so it is never left out itself: each pass leaves out what fails anew,
+   // and once nothing else fails, one still there is the author's own error
+   // and the file is left to fail with it.
+   const followOn = new Set(
+      first.filter((p) => p.code !== JOIN_CONNECTION_MISMATCH).map(problemKey),
+   );
+   let problems = first;
    const maxPasses = args.maxPasses ?? 8;
    for (let pass = 0; pass < maxPasses; pass++) {
+      // The refused joins go first, alone.
+      const refusedJoins = problems.filter(
+         (p) => p.code === JOIN_CONNECTION_MISMATCH,
+      );
+      const toCut =
+         refusedJoins.length > 0
+            ? refusedJoins
+            : problems.filter((p) => !followOn.has(problemKey(p)));
+      if (
+         toCut.length === 0 ||
+         toCut.some(
+            (p) =>
+               p.code !== JOIN_CONNECTION_MISMATCH &&
+               (p.code === undefined || !FOLLOWS_FROM_LEFT_OUT.has(p.code)),
+         )
+      ) {
+         return undefined;
+      }
       // Every cut of a pass is found in the same text, before any is applied,
       // so two errors in one definition leave it out once.
       const byUrl = new Map<string, ProblemLike[]>();
-      for (const p of problems) {
+      for (const p of toCut) {
          const url = p.at?.url;
          if (!url || !p.at?.range) return undefined;
          const list = byUrl.get(url) ?? [];
@@ -285,11 +355,16 @@ export function definitionCutAt(text: string, offset: number): Cut | undefined {
       const to = i + 1 < starts.length ? body[starts[i + 1]].start : stmt.end;
       const toks = inside.filter((t) => t.start >= from && t.start < to);
       // The separating comma belongs between definitions, not to one.
-      const last =
-         toks[toks.length - 1]?.text === "," && i + 1 < starts.length
-            ? toks[toks.length - 2]
-            : toks[toks.length - 1];
-      return { name: body[k], from, lastEnd: last?.end ?? body[k].end };
+      const comma =
+         toks[toks.length - 1]?.text === "," && i + 1 < starts.length;
+      const last = comma ? toks[toks.length - 2] : toks[toks.length - 1];
+      return {
+         name: body[k],
+         from,
+         lastEnd: last?.end ?? body[k].end,
+         // Through the comma after it, when one separates it from the next.
+         fullEnd: toks[toks.length - 1]?.end ?? body[k].end,
+      };
    });
    const at = defs.findIndex(
       (def, i) =>
@@ -310,21 +385,54 @@ export function definitionCutAt(text: string, offset: number): Cut | undefined {
       ...(declaration && declaration !== name ? { declaration } : {}),
    };
    if (defs.length === 1) {
-      // The whole statement, from the end of whatever precedes it, so its own
-      // annotation lines go with it.
+      // The whole statement, with the annotation lines written on it.
       const before = tokens.filter((t) => t.end <= stmt.keyword.start);
       return {
-         start: before[before.length - 1]?.end ?? 0,
+         start: annotationsStart(
+            text,
+            before[before.length - 1]?.end ?? 0,
+            stmt.keyword.start,
+         ),
          end: stmtLast.end,
          left,
       };
    }
    if (index === 0) {
-      // Through the comma, up to the next definition.
-      return { start: def.from, end: defs[1].from, left };
+      // From the colon, so its own annotation lines go with it, through its
+      // comma; the next definition keeps the annotation lines written on it.
+      return { start: stmt.colon.end, end: def.fullEnd, left };
    }
-   // From the end of the definition before it (taking the comma between them).
+   // From the end of the definition before it (taking the comma between them,
+   // and this one's annotation lines).
    return { start: defs[index - 1].lastEnd, end: def.lastEnd, left };
+}
+
+/**
+ * Where the annotation lines written on a statement at `keyword` begin: the
+ * run of `#` lines (and blank lines) right above it, no further back than
+ * `floor`. A `##` model annotation is the file's, not the statement's, so the
+ * run stops at one; nothing on the statement's own line before it moves.
+ */
+function annotationsStart(
+   text: string,
+   floor: number,
+   keyword: number,
+): number {
+   const lineStart = text.lastIndexOf("\n", keyword - 1) + 1;
+   if (lineStart < floor || text.slice(lineStart, keyword).trim() !== "") {
+      return keyword;
+   }
+   let start = lineStart;
+   while (start > floor) {
+      const prevStart = text.lastIndexOf("\n", start - 2) + 1;
+      if (prevStart < floor) break;
+      const line = text.slice(prevStart, start - 1).trim();
+      if (line !== "" && !(line.startsWith("#") && !line.startsWith("##"))) {
+         break;
+      }
+      start = prevStart;
+   }
+   return start;
 }
 
 /** The name of the top-level `source:` or `query:` holding `offset`. */
@@ -347,12 +455,35 @@ function enclosingDeclaration(
 }
 
 /**
+ * A file's text by URL, as a compile read it: `overlay`'s (keyed by
+ * {@link overlayKey}) when it holds the file, else the file on disk.
+ */
+export function compiledFileText(
+   url: string,
+   overlay?: ReadonlyMap<string, string>,
+): string | undefined {
+   const held = overlay?.get(overlayKey(url));
+   if (held !== undefined) return held;
+   try {
+      return readFileSync(fileURLToPath(url), "utf8");
+   } catch {
+      return undefined;
+   }
+}
+
+/**
  * Load a model whose files join sources across connections (#6982): with the
  * materialize switch on, `load` again with those joins, and what reads them,
  * left out (the build view), so builds are planned from it and the model
  * serves every query that does not need them. `firstError` is the failure of
- * `load` with no overlay. Undefined when it is any other failure, or the
- * build view does not compile either; the caller then reports `firstError`.
+ * `load` with no overlay; `readText` gives each file's text as that compile
+ * read it, which the problems' positions index. Undefined when the switch is
+ * off, it is any other failure, or the build view does not compile either;
+ * the caller then reports `firstError`.
+ *
+ * The one entry point for every load of an author's model: the package-load
+ * worker, `Model.create` and the main-thread build plan, so discovery, gates,
+ * the build plan and live all read the same build view.
  */
 export async function loadLeavingOutCrossConnectionJoins<T>(args: {
    firstError: unknown;
@@ -362,6 +493,7 @@ export async function loadLeavingOutCrossConnectionJoins<T>(args: {
    | { result: T; overlay: Map<string, string>; leftOut: LeftOutDefinition[] }
    | undefined
 > {
+   if (!getMaterializeEnabled()) return undefined;
    let result: T | undefined;
    let loaded = false;
    const kept = await leaveOutCrossConnectionJoins({

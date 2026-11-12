@@ -464,7 +464,6 @@ export class PackageLoadPool {
          computeBuildPlan: qj.request.computeBuildPlan,
          withPreaggregateCompanions: qj.request.withPreaggregateCompanions,
          withEntities: qj.request.withEntities,
-         materializeEnabled: settings.get("materialize.enabled"),
          mainThreadWorkBudgetMs: this.mainThreadWorkBudgetMs,
       };
       pw.worker.postMessage(message);
