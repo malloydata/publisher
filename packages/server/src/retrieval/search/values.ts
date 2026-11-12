@@ -24,7 +24,7 @@ import {
    runUnrecorded,
    withAccessRecord,
 } from "../../service/access_record";
-import { quotedIdentifier } from "../../service/malloy_text";
+import { quotedIdentifier, stringLiteral } from "../../service/malloy_text";
 import type { PackageLookup } from "../../service/environment_ports";
 import { QueryPrivileges } from "../../service/model_query_request";
 import { runWithQueryTimeout } from "../../query_timeout";
@@ -188,9 +188,10 @@ export async function queryDistinctValues(
             typeof request.dimension === "string"
                ? quotedIdentifier(request.dimension)
                : request.dimension.map(quotedIdentifier).join(".");
-         // The stem is letters and digits only (see filterStem), so it needs no escaping.
+         // The stem is letters and digits (see filterStem), but it is quoted
+         // like every other value, so no caller can widen it.
          const where = request.stem
-            ? `${dim} != null and lower(${dim}) ~ '%${request.stem}%'`
+            ? `${dim} != null and lower(${dim}) ~ ${stringLiteral(`%${request.stem}%`)}`
             : `${dim} != null`;
          const body = request.counted
             ? `where: ${where} group_by: v is ${dim} aggregate: n is count() order_by: n desc limit: ${request.limit + 1}`

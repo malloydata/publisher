@@ -11,7 +11,7 @@
  * based on the provided filter values and the declared filter definitions.
  */
 
-import { escapeString } from "./malloy_text";
+import { escapeString, quotedIdentifier } from "./malloy_text";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -189,7 +189,7 @@ function buildPredicate(
    filter: FilterDefinition,
    value: string | string[],
 ): string {
-   const dim = `\`${filter.dimension}\``;
+   const dim = quotedIdentifier(filter.dimension);
 
    switch (filter.type) {
       case "equal": {
