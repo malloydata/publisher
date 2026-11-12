@@ -146,6 +146,45 @@ describe("deprecation warnings for #@ -persist and #@ preaggregate", () => {
       expect(found[0].message).toContain("#(materialize)");
    });
 
+   it("reports each definition of a multi-definition statement, and nothing a same-named file elsewhere declares", async () => {
+      // `sub/models/v1.malloy` ends in `models/v1.malloy`: its notes reach
+      // `models/v1.malloy` through the import and must stay its own.
+      write("sub/models/v1.malloy", MODEL);
+      write(
+         "models/v1.malloy",
+         `##! experimental.persistence\nimport { summary_fresh } from "../sub/models/v1.malloy"\n\nsource: again is summary_fresh extend {}\n\n#@ -persist\nsource: a is ${ROWS}, b is ${ROWS}\nsource: a_ext is a extend {}\n`,
+      );
+
+      const found = await deprecations(true);
+
+      expect(found.map((w) => [w.model, w.subject])).toEqual([
+         ["models/v1.malloy", "a"],
+         ["models/v1.malloy", "b"],
+         ["sub/models/v1.malloy", "summary_fresh"],
+      ]);
+   });
+
+   it("counts a measure an include list annotates, once per measure, and nothing an extension carries", async () => {
+      write(
+         "models/v1.malloy",
+         `##! experimental.persistence\n##! experimental.access_modifiers\nsource: orders is ${ROWS} extend {\n  #@ preaggregate grain="region"\n  measure: total is amt.sum(), n is count()\n}\nsource: listed is orders include {\n  #@ preaggregate grain="id"\n  total\n  n\n}\nsource: orders_ext is orders extend { dimension: big is amt > 10 }\n`,
+      );
+      const harness: MetricsHarness = await startMetricsHarness();
+      resetDeprecatedUsageMetricsForTest();
+      try {
+         await load(true);
+         // orders.total, orders.n and listed.total.
+         expect(
+            await harness.collectCounter("publisher_deprecated_usage_total", {
+               feature: "preaggregate_annotation",
+            }),
+         ).toBe(3);
+      } finally {
+         resetDeprecatedUsageMetricsForTest();
+         await harness.shutdown();
+      }
+   });
+
    it("holds back the #@ preaggregate warning with the switch on, but still counts it", async () => {
       write("models/v1.malloy", MODEL);
       const harness: MetricsHarness = await startMetricsHarness();

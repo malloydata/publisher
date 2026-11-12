@@ -16,11 +16,8 @@
 
 import { isSourceDef, type ModelDef } from "@malloydata/malloy";
 import { payloadOfNote, routeOfNote } from "../annotation_reader";
-import {
-   notePositionKey,
-   ownLevelNotes,
-   type NotePosition,
-} from "../annotations";
+import { ownLevelNotes, type AnnotationNote } from "../annotations";
+import { declaredNotes } from "../governance/ir/declared_notes";
 
 /** One deprecated `#@` annotation, at the source or measure that declares it. */
 export type DeprecatedPersistAnnotation =
@@ -30,72 +27,76 @@ export type DeprecatedPersistAnnotation =
 const OPT_OUT_PAYLOAD = /^\s*-persist\b/;
 const PREAGGREGATE_PAYLOAD = /^\s*preaggregate\b/;
 
-interface NoteLike {
-   text: string;
-   at?: NotePosition;
-}
-
 /** Whether a note is a `#@` line whose payload `payload` matches. */
-function isPersistRouteNote(note: NoteLike, payload: RegExp): boolean {
+function isPersistRouteNote(note: AnnotationNote, payload: RegExp): boolean {
    return (
       routeOfNote(note.text) === "@" && payload.test(payloadOfNote(note.text))
    );
 }
 
+interface Position {
+   line: number;
+   character: number;
+}
+
+function notAfter(a: Position, b: Position): boolean {
+   return a.line < b.line || (a.line === b.line && a.character <= b.character);
+}
+
 /**
- * Every deprecated `#@` annotation `modelPath`'s own file declares: one per
- * `#@ -persist` line and one per measure declaring `#@ preaggregate`, however
- * many sources carry them. A source that extends,
- * aliases or imports an annotated one carries the same note (Malloy copies it
- * by reference), and is not reported; the note is attributed to the first
- * source that carries it, which in declaration order is the one it was written
- * on. Notes written in another file are that file's to report.
+ * Every deprecated `#@` annotation the model file declares: one per source
+ * whose own statement declares `#@ -persist`, and one per measure whose own
+ * definition, in a source statement of this file, declares `#@ preaggregate`
+ * (however many grains). `declaredHere` says whether a document URL is this
+ * model's file: a source an import brought in is its own file's to report.
+ *
+ * Which source declares a source-level note is {@link declaredNotes}'s rule,
+ * the one the `#(materialize)` planner reads: an extension or rename that
+ * declares nothing inherits its base's notes and is not reported, and each
+ * definition of a multi-definition statement declares the block's notes. A
+ * measure's note is the source's own when it was parsed inside that source's
+ * statement, so an extension that carries the base's measures (and the base's
+ * notes on them) reports none, while an `include` list item that annotates a
+ * measure it lists does.
  */
 export function deprecatedPersistAnnotations(
    modelDef: ModelDef,
-   modelPath: string,
+   declaredHere: (url: string) => boolean,
 ): DeprecatedPersistAnnotation[] {
-   const ownFile = (at: NotePosition | undefined): boolean => {
-      if (at === undefined) return false;
-      try {
-         return decodeURIComponent(new URL(at.url).pathname).endsWith(
-            `/${modelPath}`,
-         );
-      } catch {
-         return false;
-      }
-   };
-   const seen = new Set<string>();
-   /** Whether `note` is written here and not reported yet; marks it reported. */
-   const fresh = (note: NoteLike): boolean => {
-      if (!ownFile(note.at)) return false;
-      const key = notePositionKey(note.at as NotePosition);
-      if (seen.has(key)) return false;
-      seen.add(key);
-      return true;
-   };
-
    const found: DeprecatedPersistAnnotation[] = [];
    for (const entry of Object.values(modelDef.contents)) {
       if (!isSourceDef(entry)) continue;
+      const url = entry.location?.url;
+      if (!url || !declaredHere(url)) continue;
       const source = entry.as || entry.name;
-      for (const note of ownLevelNotes(entry.annotations) as NoteLike[]) {
-         if (isPersistRouteNote(note, OPT_OUT_PAYLOAD) && fresh(note)) {
-            found.push({ kind: "persist_opt_out", source });
-         }
+      if (
+         declaredNotes(entry, modelDef.contents).some((note) =>
+            isPersistRouteNote(note, OPT_OUT_PAYLOAD),
+         )
+      ) {
+         found.push({ kind: "persist_opt_out", source });
       }
+      const range = entry.location?.range;
+      /** Whether `note` was parsed in this source's own statement. */
+      const ownStatement = (note: AnnotationNote): boolean =>
+         note.at !== undefined &&
+         note.at.url === url &&
+         (range === undefined ||
+            (notAfter(range.start, note.at.range.start) &&
+               notAfter(note.at.range.start, range.end)));
       for (const field of entry.fields) {
          const annotations = (field as { annotations?: unknown }).annotations;
          if (annotations === undefined) continue;
          const notes = ownLevelNotes(
             annotations as Parameters<typeof ownLevelNotes>[0],
-         ) as NoteLike[];
-         // One finding per measure, however many grains it declares; every
-         // line is marked seen, so an extension carrying them reports none.
-         const declared = notes
-            .filter((note) => isPersistRouteNote(note, PREAGGREGATE_PAYLOAD))
-            .map(fresh);
-         if (declared.includes(true)) {
+         );
+         if (
+            notes.some(
+               (note) =>
+                  ownStatement(note) &&
+                  isPersistRouteNote(note, PREAGGREGATE_PAYLOAD),
+            )
+         ) {
             found.push({
                kind: "preaggregate",
                source,

@@ -38,6 +38,7 @@ import {
 import * as fs from "fs/promises";
 import { createRequire } from "module";
 import * as path from "path";
+import { fileURLToPath } from "url";
 import { components } from "../api";
 import {
    getMaxQueryRows,
@@ -395,6 +396,11 @@ export interface ModelState {
     * row-level gate denies.
     */
    gateRuntime?: HydrationRuntime;
+   /**
+    * The model file's absolute path, which tells a source this file declares
+    * from one an import brought in. Absent: no source counts as declared here.
+    */
+   modelFile?: string;
 }
 
 export class Model {
@@ -404,6 +410,8 @@ export class Model {
    private modelType: ModelType;
    private modelMaterializer: ModelMaterializer | undefined;
    private modelDef: ModelDef | undefined;
+   /** See {@link ModelState.modelFile}. */
+   private modelFile: string | undefined;
    /** See {@link declaredDeprecatedPersistAnnotations}. */
    private deprecatedPersistAnnotationsMemo:
       | DeprecatedPersistAnnotation[]
@@ -617,6 +625,7 @@ export class Model {
       this.dataStyles = state.dataStyles;
       this.modelType = state.modelType;
       this.modelDef = state.modelDef;
+      this.modelFile = state.modelFile;
       this.modelMaterializer = state.modelMaterializer;
       this.sources = state.sources;
       this.queries = state.queries;
@@ -656,15 +665,6 @@ export class Model {
     */
    public declaredFilterSourceNames(): string[] {
       if (!this.modelDef) return [];
-      const ownFile = (url: string): boolean => {
-         try {
-            return decodeURIComponent(new URL(url).pathname).endsWith(
-               `/${this.modelPath}`,
-            );
-         } catch {
-            return false;
-         }
-      };
       const names: string[] = [];
       for (const entry of Object.values(this.modelDef.contents)) {
          if (!isSourceDef(entry)) continue;
@@ -673,11 +673,25 @@ export class Model {
             (note) =>
                note.text.trim().startsWith(FILTER_ANNOTATION_PREFIX) &&
                note.at !== undefined &&
-               ownFile(note.at.url),
+               this.declaredHere(note.at.url),
          );
          if (declares) names.push(entry.as || entry.name);
       }
       return names.sort();
+   }
+
+   /**
+    * Whether a document URL is this model's own file. Compared as resolved
+    * paths: a suffix match on {@link modelPath} would take
+    * `sub/models/a.malloy`, imported here, for `models/a.malloy`.
+    */
+   private declaredHere(url: string): boolean {
+      if (this.modelFile === undefined) return false;
+      try {
+         return path.resolve(fileURLToPath(url)) === this.modelFile;
+      } catch {
+         return false;
+      }
    }
 
    /**
@@ -688,7 +702,9 @@ export class Model {
       if (!this.modelDef) return [];
       // Read per package request, and the model never changes: walk it once.
       return (this.deprecatedPersistAnnotationsMemo ??=
-         deprecatedPersistAnnotations(this.modelDef, this.modelPath));
+         deprecatedPersistAnnotations(this.modelDef, (url) =>
+            this.declaredHere(url),
+         ));
    }
 
    /** The parsed filter definitions for a source; empty when none. */
@@ -971,6 +987,7 @@ export class Model {
             modelType,
             modelMaterializer,
             modelDef,
+            modelFile: path.resolve(packagePath, modelPath),
             sources,
             queries,
             sourceInfos,
@@ -1021,7 +1038,7 @@ export class Model {
     */
    public static fromSerialized(
       packageName: string,
-      _packagePath: string,
+      packagePath: string,
       malloyConfig: ModelConnectionInput,
       data: SerializedModel,
       options: {
@@ -1091,6 +1108,7 @@ export class Model {
          modelType: data.modelType,
          modelMaterializer,
          modelDef,
+         modelFile: path.resolve(packagePath, data.modelPath),
          sources,
          queries,
          sourceInfos,
