@@ -488,6 +488,7 @@ source: orders is orders_raw extend {
       ["a join_many", '["lines"]', /join_many/],
       ["a join defined in place", '["r2"]', /defined in place/],
       ["a list of something else", '"regions"', /list of join names/],
+      ["a join with no single key", '["r3"]', /not one equality/],
    ] as const) {
       it(
          `refuses inline= naming ${name}, and plans nothing for it`,
@@ -498,10 +499,17 @@ source: orders is orders_raw extend {
   join_one: regions with region
   join_one: r2 is duckdb.sql("""select 'east' as code""") on r2.code = region
   join_many: lines on lines.order_id = id
+  join_one: r3 is regions on r3.code = region and r3.label != 'x'
 }
 `);
             const c = await compilePackageBuildPlan(pkg);
             expect(generatedPlans(c)).toEqual([]);
+            // Reported as a package warning, not only logged.
+            const findings = (c.annotationFindings ?? []).filter(
+               (f) => f.code === "materialize-not-built",
+            );
+            expect(findings.map((f) => f.subject)).toEqual(["orders"]);
+            expect(findings[0].message).toMatch(why);
             const { plans, refused } = planModelMaterialize(
                await contentsOf(pkg),
             );
@@ -511,6 +519,26 @@ source: orders is orders_raw extend {
          { timeout: 30000 },
       );
    }
+
+   it(
+      "refuses an inlined column that clashes with one of the source's own, as a package warning",
+      async () => {
+         const c = await compiled(`${JOINED}
+#(materialize) name="orders_all" inline=["regions"]
+source: orders is orders_raw extend {
+  join_one: regions with region
+  dimension: regions__label is upper(region)
+}
+`);
+         expect(generatedPlans(c)).toEqual([]);
+         const findings = (c.annotationFindings ?? []).filter(
+            (f) => f.code === "materialize-not-built",
+         );
+         expect(findings.map((f) => f.subject)).toEqual(["orders"]);
+         expect(findings[0].message).toContain("`regions__label`");
+      },
+      { timeout: 30000 },
+   );
 
    it(
       "with PUBLISHER_MATERIALIZE off, plans nothing for #(materialize) and leaves #@ persist sources as they were",

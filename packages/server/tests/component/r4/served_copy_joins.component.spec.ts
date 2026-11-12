@@ -283,9 +283,9 @@ describe("R4: a join across origin connections, stored in one destination (#6982
          unbuilt: ["usage"],
       });
       fixture.setBindings(fixture.bindings);
-      expect(
-         fixture.bindings.map((b) => b.sourceName).includes("usage"),
-      ).toBe(false);
+      expect(fixture.bindings.map((b) => b.sourceName).includes("usage")).toBe(
+         false,
+      );
       // Through the join: neither the served copy (the join left out) nor
       // the build view live can answer.
       await expect(
