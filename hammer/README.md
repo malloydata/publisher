@@ -263,10 +263,13 @@ A run never leaves a container or a volume behind, whichever way it ends:
 - **No anonymous volumes.** The `postgres` image declares a `VOLUME` for its
   data directory, so every container got an anonymous volume, and a container
   removed with plain `docker rm -f` left it behind. Hammer mounts a tmpfs at
-  `/var/lib/postgresql/data` instead (the data is throwaway; a run measured no
-  slower), so there is no volume to leak, and every removal is `rm -fv`
-  anyway. The container is started with `--rm`, so one that stops for any
-  reason takes its filesystem with it.
+  `/var/lib/postgresql/data` instead, since the data is throwaway, so there is
+  no volume to leak, and every removal is `rm -fv` anyway. The container is
+  started with `--rm`, so one that stops for any reason takes its filesystem
+  with it. The cost is memory: a full run's databases peak around 3.4 GB of
+  tmpfs in the Docker VM, held only while the run lasts. Runs were no slower
+  (a full run took 310s on tmpfs against 761s on a volume, both beside other
+  hammer runs, so the gap is mostly load, not the disk).
 - **Watchdog.** Each run that creates a container starts a detached `sh` that
   polls the hammer pid (`kill -0`) and, once it is gone, removes every container
   labelled `hammer.run=<this run's id>`. It removes by the run's label, never by
