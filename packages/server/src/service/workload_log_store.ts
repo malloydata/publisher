@@ -76,6 +76,25 @@ export interface WorkloadLogRow {
    record: AccessRecord;
 }
 
+/** One table's use in {@link WorkloadLogStore.tableUse}. */
+export interface WorkloadTableUseEntry {
+   /** Answered queries whose path report lists the table. */
+   considered: number;
+   /** Of those, the queries it answered. */
+   hits: number;
+   /** The rest, by skip reason (the path report's `SkipReason`). */
+   skips: Record<string, number>;
+}
+
+/** {@link WorkloadLogStore.tableUse}'s answer. */
+export interface WorkloadTableUse {
+   /** The package's answered queries in the window. */
+   answered: number;
+   /** Of those, the ones whose record carries a path report. */
+   reported: number;
+   tables: Record<string, WorkloadTableUseEntry>;
+}
+
 const droppedCounter = lazyCounter(
    "publisher_workload_log_dropped_total",
    "Workload log records the local store could not write (a failed flush, or the buffer full before storage opened). The access record itself is still logged.",
@@ -291,6 +310,72 @@ export class WorkloadLogStore implements AccessRecordSink {
             [over],
          );
       }
+   }
+
+   /**
+    * How each table was used by one package's answered queries since `since`
+    * (table stats, materialization v2 T2): read from the path report each
+    * record carries. Keyed by `tableId`, the table's content address, so a
+    * table several versions of a package share is counted once. A record
+    * from before the path report carries none and is counted only in
+    * `answered`.
+    */
+   async tableUse(params: {
+      environment: string;
+      package: string;
+      since: Date;
+   }): Promise<WorkloadTableUse> {
+      const db = this.storage.getDuckDbConnection();
+      const where =
+         "environment = ? AND package = ? AND recorded_at >= ? AND outcome = 'ok'";
+      const args = [
+         params.environment,
+         params.package,
+         params.since.toISOString(),
+      ];
+      const totals = await db.all<Record<string, unknown>>(
+         `SELECT count(*) AS answered,
+                 count(*) FILTER (WHERE json_extract(record, '$.path') IS NOT NULL) AS reported
+          FROM workload_log WHERE ${where}`,
+         args,
+      );
+      const rows = await db.all<Record<string, unknown>>(
+         `SELECT json_extract_string(c, '$.tableId') AS table_id,
+                 json_extract_string(c, '$.outcome') AS outcome,
+                 json_extract_string(c, '$.reason') AS reason,
+                 count(*) AS n
+          FROM (
+             SELECT unnest(json_extract(record, '$.path.considered[*]')) AS c
+             FROM workload_log
+             WHERE ${where} AND json_extract(record, '$.path') IS NOT NULL
+          )
+          GROUP BY ALL`,
+         args,
+      );
+      const tables: Record<string, WorkloadTableUseEntry> = {};
+      for (const row of rows) {
+         const tableId = row.table_id;
+         if (typeof tableId !== "string" || tableId === "") continue;
+         const entry = (tables[tableId] ??= {
+            considered: 0,
+            hits: 0,
+            skips: {},
+         });
+         const n = Number(row.n ?? 0);
+         entry.considered += n;
+         if (row.outcome === "used") {
+            entry.hits += n;
+         } else {
+            const reason = typeof row.reason === "string" ? row.reason : "";
+            entry.skips[reason || "UNKNOWN"] =
+               (entry.skips[reason || "UNKNOWN"] ?? 0) + n;
+         }
+      }
+      return {
+         answered: Number(totals[0]?.answered ?? 0),
+         reported: Number(totals[0]?.reported ?? 0),
+         tables,
+      };
    }
 
    /** The stored rows, newest first: for tests and the tools that read the log. */

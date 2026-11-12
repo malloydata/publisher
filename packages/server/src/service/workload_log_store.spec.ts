@@ -304,6 +304,69 @@ describe("WorkloadLogStore", () => {
       expect(redactErrorLiterals("name = 'o''brien'")).toBe("name = ?");
    });
 
+   it("counts each table's hits and skips by reason, from the path reports in the window", async () => {
+      const s = store();
+      const served = (tableId: string) => ({
+         servedBy: { kind: "materialized", tableId },
+         considered: [
+            { tableId, kind: "materialized", outcome: "used" },
+            {
+               tableId: "t_far",
+               kind: "materialized",
+               outcome: "skipped",
+               reason: "MISSING_FIELD",
+            },
+         ],
+      });
+      s.add(record({ path: served("t_daily") }));
+      s.add(record({ path: served("t_daily") }));
+      s.add(
+         record({
+            path: {
+               servedBy: { kind: "live" },
+               considered: [
+                  {
+                     tableId: "t_daily",
+                     kind: "materialized",
+                     outcome: "skipped",
+                     reason: "STALE",
+                  },
+               ],
+            },
+         }),
+      );
+      // Answered but from before the path report: counted only in `answered`.
+      s.add(record());
+      // Refused, another package, and before the window: not counted.
+      s.add(record({ outcome: "denied_lock", path: served("t_daily") }));
+      s.add(record({ package: "other", path: served("t_daily") }));
+      await s.flush();
+      clock = new Date("2026-11-12T12:00:00Z");
+      s.add(record({ path: served("t_new") }));
+      await s.flush();
+
+      const use = await s.tableUse({
+         environment: "env",
+         package: "pkg",
+         since: new Date("2026-11-11T00:00:00Z"),
+      });
+      expect(use.answered).toBe(5);
+      expect(use.reported).toBe(4);
+      expect(use.tables).toEqual({
+         t_daily: { considered: 3, hits: 2, skips: { STALE: 1 } },
+         t_far: { considered: 3, hits: 0, skips: { MISSING_FIELD: 3 } },
+         t_new: { considered: 1, hits: 1, skips: {} },
+      });
+
+      const windowed = await s.tableUse({
+         environment: "env",
+         package: "pkg",
+         since: new Date("2026-11-12T00:00:00Z"),
+      });
+      expect(windowed.answered).toBe(1);
+      expect(Object.keys(windowed.tables).sort()).toEqual(["t_far", "t_new"]);
+   });
+
    it("stopWorkloadLogSink writes what is buffered and removes the sink", async () => {
       const s = store();
       setWorkloadLogSink(s);

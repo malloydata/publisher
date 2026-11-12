@@ -21,6 +21,10 @@ Give the heading a title — `## [Unreleased] — what changed`, with an em dash
 
 Two consequences worth knowing. A section merged to `main` ships in the **next** release, whenever that is, so do not write one for work that has not landed. And a heading already stamped with a version is history: a follow-up that changes that behaviour opens a **new** `[Unreleased]` section referencing the shipped version by number, rather than editing the old one.
 
+## [Unreleased] — Table stats: what each materialized table costs and how often it answers
+
+`GET …/packages/{pkg}/table-stats` reports, for each table a package's build plan materializes, its last build (row count, build time, the bytes its read scanned), its build counts across recorded runs, its columns, and, with the workload log's local store on, how often it answered queries in a window and why it was skipped for the rest, counted by skip reason. It reads only what Publisher already holds and queries no warehouse. With the store off, `workload.available` is `false` and no table carries `use`, so unknown never reads as zero. See [docs/materialization.md](docs/materialization.md#table-stats).
+
 ## [Unreleased] — A storage= build records its row count, and the workload log records which table answered
 
 A `storage=` build now records its table's row count in the manifest (`ManifestEntry.rowCount`, until now always null), counted in the destination after the build. A count that cannot be read leaves it null and the build stands. A colocated build still leaves it null, since counting would scan the warehouse.

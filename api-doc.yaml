@@ -2947,6 +2947,69 @@ paths:
         "503":
           $ref: "#/components/responses/ServiceUnavailable"
 
+  /environments/{environmentName}/packages/{packageName}/table-stats:
+    get:
+      tags:
+        - materializations
+      operationId: get-package-table-stats
+      summary: Read size, build cost and query use for a package's materialized tables
+      description: |
+        Table statistics (materialization v2, T2). For each table the package's
+        build plan materializes: its row count, columns, build time and the bytes
+        its build read scanned, from the newest run Publisher recorded that built
+        it; its build counts across recorded runs; and, when the workload log's
+        local store is on, how many answered queries it served and why it was
+        skipped for the rest, from each query's path report.
+
+        Reads only what Publisher already holds: no warehouse is queried. A
+        table built only by runs Publisher did not record (a build another
+        host ran) has no `lastBuild`. When the workload log's local store is
+        off (`PUBLISHER_WORKLOAD_LOG_STORE`), `workload.available` is false and
+        no table carries `use`: unknown, not zero.
+      parameters:
+        - name: environmentName
+          in: path
+          description: Name of the environment
+          required: true
+          schema:
+            $ref: "#/components/schemas/IdentifierPattern"
+        - name: packageName
+          in: path
+          description: Name of the package
+          required: true
+          schema:
+            $ref: "#/components/schemas/IdentifierPattern"
+        - $ref: "#/components/parameters/versionId"
+        - name: windowHours
+          in: query
+          required: false
+          description: >-
+            The workload window, in hours back from now: 1 to 8760. Omitted, a
+            week (168). Anything else answers 400.
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 8760
+      responses:
+        "200":
+          description: The package's table statistics
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TableStats"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "410":
+          $ref: "#/components/responses/Gone"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
+
   /environments/{environmentName}/packages/{packageName}/embedding-index:
     get:
       tags:
@@ -8688,6 +8751,140 @@ components:
         built:
           type: boolean
           description: Whether the table is bound to this package.
+
+    TableStats:
+      type: object
+      description: >-
+        Size, build cost and query use for each table a package's build plan
+        materializes (materialization v2, T2), from data Publisher already holds.
+      required: [measuredAt, window, workload, runsRead, tables]
+      properties:
+        measuredAt:
+          type: string
+          format: date-time
+        window:
+          type: object
+          description: The workload window `use` covers.
+          required: [since, until]
+          properties:
+            since:
+              type: string
+              format: date-time
+            until:
+              type: string
+              format: date-time
+        workload:
+          type: object
+          description: >-
+            Whether query use could be read. `available` false means the
+            workload log's local store is off or unreadable, so no table
+            carries `use`.
+          required: [available]
+          properties:
+            available:
+              type: boolean
+            unavailableReason:
+              type: string
+            answeredQueries:
+              type: integer
+              description: The package's answered queries in the window.
+            reportedQueries:
+              type: integer
+              description: >-
+                Of those, the ones whose record carries a path report. Records
+                from before this release carry none, so `use` counts only these.
+        runsRead:
+          type: integer
+          description: Recorded runs read for `lastBuild` and `builds`, newest first (at most 100).
+        tables:
+          type: array
+          description: One per source in the build plan, by source name.
+          items:
+            $ref: "#/components/schemas/TableStat"
+
+    TableStat:
+      type: object
+      required: [tableId, sourceName, sourceID, origin, builds, columns, columnsFrom]
+      properties:
+        tableId:
+          type: string
+          description: >-
+            The table's content address (`sourceEntityId` in the build plan and
+            manifest, `tableId` in the path report).
+        sourceName:
+          type: string
+        sourceID:
+          type: string
+        origin:
+          type: string
+          description: >-
+            `persist` for a `#@ persist` source, `preaggregate` for a rollup
+            Publisher synthesized (as `PersistSourcePlan.origin`).
+        lastBuild:
+          type: object
+          description: >-
+            The newest recorded run that built this table. Absent when no
+            recorded run did.
+          required: [materializationId]
+          properties:
+            materializationId:
+              type: string
+            builtAt:
+              type: string
+              format: date-time
+            rowCount:
+              type: integer
+            buildDurationMs:
+              type: integer
+            scannedBytes:
+              type: integer
+              description: >-
+                Warehouse bytes the build's read scanned, where the warehouse
+                reports them (`ManifestEntry.queryCostBytes`). Absent is unknown,
+                not zero.
+            storageDestinationName:
+              type: string
+        builds:
+          type: object
+          description: Builds of this table across the recorded runs read.
+          required: [succeeded, failed]
+          properties:
+            succeeded:
+              type: integer
+            failed:
+              type: integer
+            meanDurationMs:
+              type: integer
+        columns:
+          type: array
+          items:
+            $ref: "#/components/schemas/Column"
+        columnsFrom:
+          type: string
+          description: >-
+            `stored`, the schema the last build captured from the destination (a
+            `storage=` table); `declared`, the columns the source declares (a
+            colocated table, or one never built).
+        use:
+          type: object
+          description: >-
+            Query use in the window, from the path reports in the workload log.
+            Absent when `workload.available` is false.
+          required: [considered, hits, skips]
+          properties:
+            considered:
+              type: integer
+              description: Answered queries whose path report lists this table.
+            hits:
+              type: integer
+              description: Of those, the queries this table answered.
+            skips:
+              type: object
+              description: >-
+                The rest, counted by skip reason (`SkipReason` values, such as
+                `NOT_BUILT` or `MISSING_FIELD`).
+              additionalProperties:
+                type: integer
 
     QueryPathTableKind:
       type: string

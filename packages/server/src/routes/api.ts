@@ -928,6 +928,22 @@ function registerMaterializationRoutes(
          ),
       ),
    );
+   // Table statistics (materialization v2, T2): beside the runs they read.
+   app.get(
+      `${pkg}/table-stats`,
+      apiRoute((req) =>
+         materializationController.getTableStats(
+            req.params.environmentName,
+            req.params.packageName,
+            {
+               versionId: versionRefOf(req),
+               windowHours: Array.isArray(req.query.windowHours)
+                  ? req.query.windowHours.join(",")
+                  : req.query.windowHours,
+            },
+         ),
+      ),
+   );
    app.get(
       materialization,
       apiRoute((req) =>
