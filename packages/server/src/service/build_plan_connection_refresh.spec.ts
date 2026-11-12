@@ -582,27 +582,31 @@ source: weekly is duck2.sql("SELECT 3 AS id, 4 AS amount") -> { select: id, amou
       expect(internals.planRefreshQueue.size).toBe(0);
    }, 15_000);
 
-   it("is retried with backoff, and a successful retry clears the 409", async () => {
-      const env = await newEnvironment();
-      const v1 = (await publish(env, source("1.0.0"))).loaded;
+   itReopensDuckDBFile(
+      "is retried with backoff, and a successful retry clears the 409",
+      async () => {
+         const env = await newEnvironment();
+         const v1 = (await publish(env, source("1.0.0"))).loaded;
 
-      failNextRefresh();
-      await editConnection(env, "SELECT 8");
-      await v1.whenBuildPlanCurrent();
-      expect(v1.isBuildPlanUnavailable()).toBe(true);
+         failNextRefresh();
+         await editConnection(env, "SELECT 8");
+         await v1.whenBuildPlanCurrent();
+         expect(v1.isBuildPlanUnavailable()).toBe(true);
 
-      // The first retry waits 2s (backoffAfter(1)); no edit or reload needed.
-      const deadline = Date.now() + 15_000;
-      while (v1.isBuildPlanUnavailable() && Date.now() < deadline) {
-         await new Promise((resolve) => setTimeout(resolve, 100));
-      }
-      expect(v1.isBuildPlanUnavailable()).toBe(false);
-      expect(planned(v1)).toEqual(await compiled(v1));
-      expect(
-         (v1 as unknown as Internals).materialization
-            .servingPlanWhileUnavailable,
-      ).toBeNull();
-   }, 30_000);
+         // The first retry waits 2s (backoffAfter(1)); no edit or reload needed.
+         const deadline = Date.now() + 15_000;
+         while (v1.isBuildPlanUnavailable() && Date.now() < deadline) {
+            await new Promise((resolve) => setTimeout(resolve, 100));
+         }
+         expect(v1.isBuildPlanUnavailable()).toBe(false);
+         expect(planned(v1)).toEqual(await compiled(v1));
+         expect(
+            (v1 as unknown as Internals).materialization
+               .servingPlanWhileUnavailable,
+         ).toBeNull();
+      },
+      30_000,
+   );
 
    it("re-derives when a connection a skipped source needed is created", async () => {
       const env = await newEnvironment();
