@@ -265,11 +265,6 @@ source: by_status is d -> {
             reason:
                "the serve shape does not serve a source with rename: in its extend block or an extension renaming its fields",
          },
-         "materialize/on": {
-            kind: "live",
-            reason:
-               "the served copy of a #(materialize) source with rename: does not compile (served-copy-not-served)",
-         },
       },
       files: {
          "m.malloy": `${HEADER}
@@ -396,11 +391,11 @@ source: annotated is orders_raw -> {
             malloy:
                "run: annotated -> { group_by: region, order_month; aggregate: grand }",
             gaps: {
-               storage: {
+               "storage/off": {
                   kind: "metadata",
                   issue: "#7089",
                   reason:
-                     "#(doc) and # label on a persisted query's output field are dropped from the stored field",
+                     "the serve shape drops #(doc) and # label on a persisted query's output field",
                },
             },
          },
@@ -524,15 +519,9 @@ query: top_regions is from_view -> {
       name: "query-shaped: a nest",
       about: "A persisted query with a nest: (a repeated record column)",
       gaps: {
-         storage: {
+         "storage/off": {
             kind: "live",
-            reason:
-               "the served copy over a persisted nest does not compile, and the serve shape answers it live",
-         },
-         "materialize/on": {
-            kind: "live",
-            reason:
-               "the served copy leaves a #(materialize) nest as written (fields_not_carried: its table does not carry the nest)",
+            reason: "the serve shape answers a persisted nest live",
          },
       },
       files: {
@@ -566,19 +555,6 @@ source: nested is orders_raw -> {
    {
       name: "reserved-word names",
       about: "A source and its fields named by reserved words, quoted in backticks, persisted under a reserved table name",
-      gaps: {
-         storage: {
-            kind: "live",
-            issue: "#6738",
-            reason:
-               "the served copy does not compile with reserved-word names, and the serve shape answers them live",
-         },
-         "materialize/on": {
-            kind: "live",
-            issue: "#6738",
-            reason: "the served copy does not compile with reserved-word names",
-         },
-      },
       files: {
          "m.malloy": `${HEADER}
 import "raw.malloy"
@@ -785,20 +761,6 @@ source: orders_j is orders_raw extend {
             name: "a persisted fact through its join, from the index",
             malloy:
                "run: order_facts -> { group_by: c.segment; aggregate: t is amount.sum() }",
-            gaps: {
-               "storage/on": {
-                  kind: "fallback",
-                  issue: "#6643",
-                  reason:
-                     "the served copy does not answer through an index that imports only the joining file; the serve shape does",
-               },
-               "materialize/on": {
-                  kind: "live",
-                  issue: "#6643",
-                  reason:
-                     "the served copy does not answer through an index that imports only the joining file",
-               },
-            },
          },
          {
             name: "a persisted fact through its join, in its own file",
@@ -929,12 +891,6 @@ source: monthly is orders_raw -> {
                   issue: "#7089",
                   reason: "the serve shape drops a stored column's timeframe",
                },
-               "storage/on": {
-                  kind: "metadata",
-                  issue: "#7089",
-                  reason:
-                     "the served copy drops #(doc) on a persisted query's output field",
-               },
             },
          },
          {
@@ -959,11 +915,11 @@ source: monthly is orders_raw -> {
             malloy:
                "run: monthly -> { select: region, discount_rate; order_by: region, discount_rate }",
             gaps: {
-               storage: {
+               "storage/off": {
                   kind: "metadata",
                   issue: "#7089",
                   reason:
-                     "# percent on a persisted query's output field is dropped from the stored field",
+                     "the serve shape drops # percent on a persisted query's output field",
                },
             },
          },
@@ -1268,13 +1224,6 @@ source: raw_direct is duckdb.sql("""
          {
             name: "the source itself",
             malloy: "run: raw_direct -> { group_by: region; aggregate: total }",
-            gaps: {
-               "storage/on": {
-                  kind: "fallback",
-                  reason:
-                     "the served copy re-roots only a query-shaped v1 source (docs/materialization.md); the serve shape answers",
-               },
-            },
          },
       ],
    },
