@@ -26,9 +26,9 @@ import {
 } from "./lib/config";
 import { writePackage } from "./lib/packages";
 import { runLakeSql } from "./lib/ducklake";
-import { firstFreePort, startPostgres } from "./lib/postgres";
+import { startPostgres } from "./lib/postgres";
+import { installSignalTeardown } from "./lib/signals";
 
-const DEFAULT_PG_PORT = 55432;
 import {
    buildServerIfNeeded,
    startServer,
@@ -54,9 +54,9 @@ interface Args {
    rebuild: boolean;
    reusePg: boolean;
    quiet: boolean;
-   /** Unset: the first free port from 55432 (55432 itself under --reuse-pg). */
+   /** Unset: Docker assigns a free host port. */
    pgPort?: number;
-   /** Unset: one name per port (see defaultContainerName). */
+   /** Unset: one name per run (see defaultContainerName). */
    pgContainer?: string;
    port: number;
    mcpPort: number;
@@ -440,17 +440,37 @@ async function main(): Promise<void> {
 
    await buildServerIfNeeded(repoRoot, args.rebuild);
 
-   // A fixed default port would make a second concurrent run fail to publish
-   // it; reuse keeps the default so it finds the container a --keep run left.
-   const pgPort =
-      args.pgPort ??
-      (args.reusePg || args.pgContainer
-         ? DEFAULT_PG_PORT
-         : await firstFreePort(DEFAULT_PG_PORT));
+   // One container per run, on a port Docker assigns, so two runs started at
+   // the same moment never share a name or race for a port.
    const pg = await startPostgres({
-      hostPort: pgPort,
+      hostPort: args.pgPort,
       containerName: args.pgContainer,
       reuse: args.reusePg,
+   });
+   // The clusters a worker has running right now, so an interrupted run can
+   // stop their publishers too.
+   const activeClusters = new Set<PublisherCluster>();
+   let tearingDown: Promise<void> | undefined;
+   const tearDownOnce = async (): Promise<void> => {
+      for (const cluster of activeClusters) await cluster.stop(args.keep);
+      if (!args.keep) {
+         await pg.stop();
+         rmSync(workdir, { recursive: true, force: true });
+      } else {
+         log.info(
+            `--keep: left workdir ${workdir} and container ${pg.containerName} up`,
+         );
+      }
+   };
+   // Once, whoever asks first: an interrupted run's in-flight scenario fails
+   // when its container goes, and its `finally` asks again.
+   const teardown = (): Promise<void> => (tearingDown ??= tearDownOnce());
+   // Ctrl-C or SIGTERM mid-run: the `finally` below never runs, so tear down
+   // here, or the container is left under a name no later run will find.
+   let interrupted = false;
+   const removeSignalTeardown = installSignalTeardown(async () => {
+      interrupted = true;
+      await teardown();
    });
    const results: ScenarioResult[] = [];
    let hardError: Error | null = null;
@@ -869,10 +889,12 @@ async function main(): Promise<void> {
                if (i >= scenarios.length) break;
                const s = scenarios[i];
                const mgr = clusterFor(s, w);
+               activeClusters.add(mgr);
                try {
                   await runOne(s, mgr);
                } finally {
                   await mgr.stop(args.keep);
+                  activeClusters.delete(mgr);
                }
             }
          }),
@@ -882,14 +904,11 @@ async function main(): Promise<void> {
       log.err(`harness error: ${hardError.message}`);
       if (hardError.stack) log.info(hardError.stack);
    } finally {
-      if (!args.keep) {
-         await pg.stop();
-         rmSync(workdir, { recursive: true, force: true });
-      } else {
-         log.info(
-            `--keep: left workdir ${workdir} and container ${pg.containerName} up`,
-         );
-      }
+      removeSignalTeardown();
+      await teardown();
+      // The signal handler exits with the signal's code once the teardown is
+      // done; reporting the half-run here would race it with a failure code.
+      if (interrupted) await new Promise<never>(() => {});
    }
 
    // Report in declared (directory) order: execution order is now mode-grouped and,
