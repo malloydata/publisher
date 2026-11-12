@@ -43,8 +43,8 @@
  * computes it at read, through the join. `inline=["j"]` on a join_one stores
  * the dimensions that read through `j` (one hop: not through a join of the
  * joined source), and the joined source's own exposed dimensions as
- * `j__<field>` columns for readers outside Malloy (the served source does not
- * declare them; it reaches the joined source through the join, as written).
+ * `j__<field>` columns, which the served copy answers `j.<field>` from with no
+ * join at read (served_copy.ts, `InlinedJoin`).
  * An inlined join is checked unique at every build (P8): the plan carries a
  * generated group-by over the joined source on the join's key, and a build
  * whose check finds a key matched twice fails, naming the join.
@@ -191,8 +191,8 @@ export interface MaterializeColumn {
    computed: boolean;
    /**
     * For a column of an inlined join's joined source: the join's name, with
-    * {@link dimension} the joined source's field. The served copy does not
-    * declare these; it reads the joined source through the join.
+    * {@link dimension} the joined source's field. The served copy declares
+    * these under the join's name, in place of the join.
     */
    join?: string;
 }

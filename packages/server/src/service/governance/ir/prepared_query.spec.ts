@@ -9,6 +9,7 @@
 import { describe, expect, it } from "bun:test";
 import type { ModelDef } from "@malloydata/malloy";
 import {
+   joinGrainAggregatePaths,
    preparedQueryView,
    probeFilterList,
    resolveStructRef,
@@ -96,5 +97,58 @@ describe("structRef decoders", () => {
       expect(
          probeFilterList(preparedQueryView({ _query: { structRef: "s" } })),
       ).toBeUndefined();
+   });
+});
+
+describe("joinGrainAggregatePaths", () => {
+   const view = (pipeline: unknown) =>
+      preparedQueryView({ _query: { structRef: "s", pipeline } });
+   it("reads every uniqueKeyRequirement path, nested segments included", () => {
+      const out = joinGrainAggregatePaths(
+         view([
+            {
+               expandedFieldUsage: [
+                  { path: ["carriers", "x"] },
+                  {
+                     path: ["carriers"],
+                     uniqueKeyRequirement: { isCount: false },
+                  },
+                  { path: [], uniqueKeyRequirement: { isCount: true } },
+               ],
+               queryFields: [
+                  {
+                     pipeline: [
+                        {
+                           expandedFieldUsage: [
+                              { path: ["f", "c"], uniqueKeyRequirement: {} },
+                           ],
+                        },
+                     ],
+                  },
+               ],
+               // Not the query's reads.
+               outputStruct: {
+                  expandedFieldUsage: [
+                     { path: ["o"], uniqueKeyRequirement: {} },
+                  ],
+               },
+            },
+         ]),
+      );
+      expect(out).toEqual({
+         paths: [["carriers"], [], ["f", "c"]],
+         unreadable: false,
+      });
+   });
+   it("fails closed on a requirement it cannot read", () => {
+      expect(
+         joinGrainAggregatePaths(
+            view([
+               {
+                  expandedFieldUsage: [{ path: "x", uniqueKeyRequirement: {} }],
+               },
+            ]),
+         ).unreadable,
+      ).toBe(true);
    });
 });

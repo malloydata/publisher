@@ -572,6 +572,7 @@ export const VARIANT_SKIP_CODES = {
    served_copy_cross_connection: "CROSS_CONNECTION",
    served_copy_not_served: "WARNED",
    served_copy_opt_out: "WARNED",
+   served_copy_count_semantics: "COUNT_SEMANTICS",
 } as const satisfies Record<string, SkipReason>;
 
 /**

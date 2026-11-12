@@ -43,6 +43,7 @@ import {
    storedColumnTypeMismatches,
 } from "../stored_column_types";
 import {
+   joinGrainAggregatePaths,
    readPreparedQuery,
    resolveStructRefSource,
 } from "../../governance/ir/prepared_query";
@@ -57,12 +58,14 @@ import {
 import {
    buildServedCopy,
    declaredBaseName,
+   type InlinedJoin,
+   type JoinedColumn,
    type Reroot,
    type ServedColumn,
    type ServedCopyRange,
 } from "./served_copy";
 import { servedCopyConfig, servedCopyAlias } from "./served_copy_config";
-import { offsetOf } from "../malloy_lexer";
+import { lexAll, offsetOf } from "../malloy_lexer";
 import { classificationFindingsBySource } from "../../classification_findings";
 import {
    isCrossConnectionRefusal,
@@ -78,13 +81,17 @@ type VirtualMap = Map<string, Map<string, string>>;
  * the copy waits on a join across connections, or the query reads a join it
  * leaves out across connections; `not_served`, the copy (or the
  * queried source in it) carries a `served-copy-not-served` warning;
- * `opt_out`, the queried source opts out with `#@ -persist`.
+ * `opt_out`, the queried source opts out with `#@ -persist`;
+ * `count_semantics`, the query aggregates at the grain of a join the copy
+ * answers from stored columns (an inlined join_one), which only live's join
+ * computes.
  */
 export type ServedCopyDeclineCode =
    | "time_zone"
    | "cross_connection"
    | "not_served"
-   | "opt_out";
+   | "opt_out"
+   | "count_semantics";
 
 /** A query the served copy declines, with why. */
 export class ServedCopyDecline extends Error {
@@ -97,6 +104,10 @@ export class ServedCopyDecline extends Error {
       super(message);
    }
 }
+
+/** The caller's detail for a join-grain aggregate through an inlined join. */
+const JOIN_GRAIN_DETAIL =
+   "The query aggregates at the grain of a join whose fields this table stores inline (a measure of the joined source, or an aggregate such as j.x.sum() or j.count()), which only the join computes, so it is answered live.";
 
 /** The caller's detail for a query through a join left out across connections. */
 const LEFT_OUT_JOIN_DETAIL =
@@ -211,6 +222,12 @@ interface Compiled {
     * sets its own `timezone:` would read values live computes differently.
     */
    computedTables?: ReadonlySet<string>;
+   /**
+    * The join_ones each table answers from stored columns (an inlined join,
+    * {@link InlinedJoin}), by table path: a query that aggregates at one's
+    * grain is declined (`count_semantics`).
+    */
+   inlinedJoins?: ReadonlyMap<string, ReadonlySet<string>>;
    aliased: ServeBinding[];
    problems: ServedCopyProblem[];
    /**
@@ -442,6 +459,32 @@ export class ServedCopyServe {
          // left unserved, with a package warning saying why.
          decline("the query reads no re-rooted table", "not_served");
       }
+      // A join answered from stored columns is a record, so an aggregate at
+      // its grain (`j.x.sum()`, `j.count()`, a measure that reads one) would
+      // be computed per row of the source instead of per joined row. Malloy
+      // marks each such aggregate where it needs a symmetric one; live's
+      // join answers those.
+      const inlined = new Set(
+         tablesRead.flatMap((b) => [
+            ...(compiled.inlinedJoins?.get(b.tablePath) ?? []),
+         ]),
+      );
+      if (inlined.size > 0) {
+         const grain = joinGrainAggregatePaths(
+            await readPreparedQuery(runnable),
+         );
+         if (
+            grain.unreadable ||
+            grain.paths.some((p) => p.some((name) => inlined.has(name))) ||
+            readsJoinStar(queryString, inlined)
+         ) {
+            decline(
+               "the query aggregates at the grain of a join the served copy answers from stored columns",
+               "count_semantics",
+               JOIN_GRAIN_DETAIL,
+            );
+         }
+      }
       // A query that sets a timezone is answered live when it reads either
       // of two tables. A stored computed dimension (`order_ts.day`,
       // `day_of_week(order_ts)`) was evaluated at build in the default
@@ -610,6 +653,7 @@ export class ServedCopyServe {
          return typeof tf === "string" ? { timeframe: tf } : {};
       };
       let columns: ServedColumn[];
+      let inlinedJoins: InlinedJoin[] = [];
       if (plan) {
          // Exactly what the build stored: the plan's columns (the source's
          // public atomic dimensions, computed ones too, each under its own
@@ -617,8 +661,8 @@ export class ServedCopyServe {
          const stored = new Map(binding.schema.map((c) => [c.name, c.type]));
          columns = [];
          for (const c of plan.columns) {
-            // An inlined join's own columns are for readers outside Malloy;
-            // the served source reads the joined source through its join.
+            // An inlined join's columns are read under the join's name
+            // (inlinedJoinsOf, below), not as fields of the source.
             if (c.join !== undefined) continue;
             const type = stored.get(c.column);
             // A build that stored a dimension under another name cannot be
@@ -635,6 +679,12 @@ export class ServedCopyServe {
                ...timeframeOf(c.dimension),
             });
          }
+         const joined = inlinedJoinsOf(plan, def.fields, stored);
+         if (joined === undefined) {
+            problems.push({ sourceName, reason: "column_types" });
+            return undefined;
+         }
+         inlinedJoins = joined;
       } else {
          const narrowed = narrowSchemaToPublic(binding.schema, def.fields);
          if (
@@ -665,6 +715,7 @@ export class ServedCopyServe {
          ...(plan?.readTimeTerms?.length
             ? { readTimeTerms: plan.readTimeTerms }
             : {}),
+         ...(inlinedJoins.length > 0 ? { inlinedJoins } : {}),
          sourceID: node.sourceID,
       } as Reroot & { sourceID: string };
    }
@@ -724,8 +775,9 @@ export class ServedCopyServe {
          return base === undefined || !rerootedNames.has(base);
       });
       // At most one pass per candidate: each pass either compiles with every
-      // remaining source whole, or drops the sources it lost fields on.
-      for (let pass = 0; pass <= candidates.length; pass++) {
+      // remaining source whole, or drops the sources it lost fields on; and
+      // one more that keeps inlined joins as written.
+      for (let pass = 0; pass <= candidates.length + 1; pass++) {
          const copy = buildServedCopy(
             candidates.map((c) => c.reroot),
             (u) => lift.fileText(u),
@@ -783,6 +835,20 @@ export class ServedCopyServe {
          let servedDef: unknown;
          let servedRuntime: GraftRuntime;
          let leftOut: LeftOutDefinition[] = [];
+         // The record that replaces an inlined join is the one text the
+         // served copy writes over a join's place; when the copy does not
+         // compile with it (the source's own text reads the join in a way
+         // the record cannot answer), compile again with every inlined join
+         // kept as written, which reads the joined source through the join.
+         const keepInlinedJoins = (): boolean => {
+            if (!candidates.some((c) => c.reroot.inlinedJoins)) return false;
+            candidates = candidates.map((c) => {
+               if (!c.reroot.inlinedJoins) return c;
+               const { inlinedJoins: _kept, ...reroot } = c.reroot;
+               return { ...c, reroot };
+            });
+            return true;
+         };
          try {
             ({
                materializer,
@@ -805,6 +871,7 @@ export class ServedCopyServe {
                },
             }).catch(() => undefined);
             if (!kept) {
+               if (keepInlinedJoins()) continue;
                const detail = err instanceof Error ? err.message : String(err);
                problems.push({
                   reason: classifyServedCopyFailure(err),
@@ -819,6 +886,7 @@ export class ServedCopyServe {
                   runtime: servedRuntime,
                } = await load(keyedOverlay(kept.overlay)));
             } catch (again) {
+               if (keepInlinedJoins()) continue;
                const detail =
                   again instanceof Error ? again.message : String(again);
                problems.push({ reason: "compile_failed", detail });
@@ -909,10 +977,24 @@ export class ServedCopyServe {
          return {
             key,
             generation,
+            // An inlined join's columns are the joined source's fields as the
+            // build computed them, in its time zone.
             computedTables: new Set(
                candidates
-                  .filter((c) => (c.reroot.storedDimensions ?? []).length > 0)
+                  .filter(
+                     (c) =>
+                        (c.reroot.storedDimensions ?? []).length > 0 ||
+                        (c.reroot.inlinedJoins ?? []).length > 0,
+                  )
                   .map((c) => c.binding.tablePath),
+            ),
+            inlinedJoins: new Map(
+               candidates
+                  .filter((c) => c.reroot.inlinedJoins?.length)
+                  .map((c) => [
+                     c.binding.tablePath,
+                     new Set((c.reroot.inlinedJoins ?? []).map((j) => j.join)),
+                  ]),
             ),
             materializer,
             modelDef: servedDef,
@@ -1067,4 +1149,79 @@ export function classifyServedCopyFailure(
    return isCrossConnectionRefusal(error)
       ? "cross_connection_unbuilt"
       : "compile_failed";
+}
+
+/**
+ * The join_ones a `#(materialize)` plan inlines, as the served copy answers
+ * them from stored columns: each stored `<join>__<field>` column with its
+ * stored type and the joined field's timeframe. A join whose joined source
+ * filters by a given is left out (kept as written, so each caller's read
+ * applies the filter through the join). Undefined when the table lacks a
+ * column the plan stores.
+ */
+function inlinedJoinsOf(
+   plan: MaterializePlan,
+   fields: unknown[] | undefined,
+   stored: ReadonlyMap<string, string>,
+): InlinedJoin[] | undefined {
+   const joinDefs = new Map(
+      (
+         (fields ?? []) as {
+            name?: unknown;
+            as?: unknown;
+            join?: unknown;
+            fields?: unknown;
+         }[]
+      )
+         .filter((f) => f.join === "one")
+         .map((f) => [String(f.as ?? f.name), f] as const),
+   );
+   const out: InlinedJoin[] = [];
+   for (const join of plan.inline ?? []) {
+      const def = joinDefs.get(join);
+      if (!def || givenReadingFilterTerms(def).length > 0) continue;
+      const joinedFields = new Map(
+         (
+            (Array.isArray(def.fields) ? def.fields : []) as {
+               name?: unknown;
+               as?: unknown;
+               timeframe?: unknown;
+            }[]
+         ).map((f) => [String(f.as ?? f.name), f] as const),
+      );
+      const columns: JoinedColumn[] = [];
+      for (const c of plan.columns) {
+         if (c.join !== join) continue;
+         const type = stored.get(c.column);
+         if (type === undefined) return undefined;
+         const timeframe = joinedFields.get(c.dimension)?.timeframe;
+         columns.push({
+            name: c.dimension,
+            column: c.column,
+            type,
+            ...(typeof timeframe === "string" ? { timeframe } : {}),
+         });
+      }
+      if (columns.length > 0) out.push({ join, columns });
+   }
+   return out;
+}
+
+/**
+ * Whether a query reads `<join>.*` through any of `joins`: a star expands to
+ * the joined source's fields, which a record of its stored fields may not all
+ * be. Unlexable text counts.
+ */
+function readsJoinStar(
+   queryString: string,
+   joins: ReadonlySet<string>,
+): boolean {
+   const tokens = lexAll(queryString);
+   if (!tokens) return true;
+   return tokens.some(
+      (t, i) =>
+         joins.has(t.text.startsWith("`") ? t.text.slice(1, -1) : t.text) &&
+         tokens[i + 1]?.text === "." &&
+         tokens[i + 2]?.text === "*",
+   );
 }

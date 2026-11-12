@@ -138,3 +138,53 @@ export function probeFilterList<T>(view: PreparedQueryView): T[] | undefined {
    const ref = view.structRef as { filterList?: T[] } | undefined;
    return ref?.filterList;
 }
+
+/**
+ * The join paths a prepared query aggregates at a join's own grain: each
+ * `expandedFieldUsage` entry (in every segment of its pipeline, nested ones
+ * included) that carries a `uniqueKeyRequirement`, which Malloy records where
+ * it needs a symmetric aggregate (`j.x.sum()`, `j.count()`, a measure that
+ * reads one) and nowhere else. A path is relative to the segment's source;
+ * the empty path is the source's own grain. `unreadable` is set when an entry
+ * carries a requirement on a path that is not a list of names, so a caller
+ * fails closed.
+ */
+export function joinGrainAggregatePaths(view: PreparedQueryView): {
+   paths: string[][];
+   unreadable: boolean;
+} {
+   const out: string[][] = [];
+   let unreadable = false;
+   const walk = (node: unknown, depth: number): void => {
+      if (!node || typeof node !== "object" || depth > 64) return;
+      if (Array.isArray(node)) {
+         for (const n of node) walk(n, depth + 1);
+         return;
+      }
+      const usage = (node as { expandedFieldUsage?: unknown })
+         .expandedFieldUsage;
+      if (Array.isArray(usage)) {
+         for (const u of usage as {
+            path?: unknown;
+            uniqueKeyRequirement?: unknown;
+         }[]) {
+            if (!u || u.uniqueKeyRequirement === undefined) continue;
+            if (
+               !Array.isArray(u.path) ||
+               u.path.some((p) => typeof p !== "string")
+            ) {
+               unreadable = true;
+               continue;
+            }
+            out.push(u.path as string[]);
+         }
+      }
+      for (const [key, value] of Object.entries(node)) {
+         // A segment's source and output shape are not the query's reads.
+         if (key === "structRef" || key === "outputStruct") continue;
+         walk(value, depth + 1);
+      }
+   };
+   walk(view.pipeline, 0);
+   return { paths: out, unreadable };
+}
