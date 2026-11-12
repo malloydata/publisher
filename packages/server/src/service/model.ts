@@ -215,6 +215,7 @@ import {
    readPreparedQuery,
    resolveStructRefSource,
 } from "./governance/ir/prepared_query";
+import type { ViewServeVerdict } from "./materialization/serve/serve_verdict";
 
 export type { ModelConnectionInput, ModelType } from "./model_runtime";
 export type {
@@ -499,15 +500,7 @@ export class Model {
    private modelMaterializer: ModelMaterializer | undefined;
    private modelDef: ModelDef | undefined;
    private modelInfo: Malloy.ModelInfo | undefined;
-   private storageServe = new StorageServeShape({
-      modelPath: () => this.modelPath,
-      modelDef: () => this.modelDef,
-      givens: () => this.givens,
-      rollupPlans: () => this.preaggregateRollupPlans,
-      rollupPlansVersion: () => this.preaggregatePlansVersion,
-      ensureSharedQueryModel: (materializer) =>
-         this.ensureSharedQueryModel(materializer),
-   });
+   private storageServe = new StorageServeShape(this.serveShapeHost());
    /**
     * The synthesized pre-aggregation model for this model, compiled once per load
     * by the owning Package (see Package.pushPreaggregateServeModels) and reused by
@@ -2745,6 +2738,100 @@ export class Model {
       return this.storageServe.storedColumnTypeMismatches();
    }
 
+   /** What a serve shape reads from this model; one per shape instance. */
+   private serveShapeHost(): ConstructorParameters<
+      typeof StorageServeShape
+   >[0] {
+      return {
+         modelPath: () => this.modelPath,
+         modelDef: () => this.modelDef,
+         givens: () => this.givens,
+         rollupPlans: () => this.preaggregateRollupPlans,
+         rollupPlansVersion: () => this.preaggregatePlansVersion,
+         ensureSharedQueryModel: (materializer) =>
+            this.ensureSharedQueryModel(materializer),
+      };
+   }
+
+   /**
+    * The source names this model keeps a storage serve binding for: the
+    * package pushes every binding to every model, and a model drops one that
+    * materializes a same-named source declared elsewhere (see
+    * {@link StorageServeShape.setServeBindings}).
+    */
+   public servedStorageSourceNames(): string[] {
+      return this.storageServe.serveBindings.map((b) => b.sourceName);
+   }
+
+   /**
+    * Whether each named view of the given stored sources compiles against a
+    * serve shape over `bindings`, without touching this model's own shape
+    * (ms2data/service#7090). The shape is a throwaway: it compiles against the
+    * same destinations a served query would, and needs no built table, since a
+    * virtual source declares its columns. Empty when no destination is
+    * configured, since then nothing serves from storage either way.
+    */
+   public async previewStorageViews(
+      bindings: ServeBinding[],
+   ): Promise<Map<string, ViewServeVerdict[]>> {
+      const out = new Map<string, ViewServeVerdict[]>();
+      const destinations = this.storageServe.serveDestinationConfig;
+      if (!destinations || bindings.length === 0 || !this.modelDef) return out;
+      const shape = new StorageServeShape(this.serveShapeHost(), {
+         preview: true,
+      });
+      shape.setServeDestinationConfig(destinations);
+      // A view reading a given with no default serves once the caller
+      // supplies it; the preview compiles with a placeholder in its place, so
+      // it judges the stored columns, not the request.
+      const placeholders = placeholderGivens(this.givens);
+      shape.setServeBindings(bindings);
+      for (const binding of shape.serveBindings) {
+         if (binding.origin === "preaggregate") continue;
+         const def = this.modelDef.contents?.[binding.sourceName] as
+            | {
+                 fields?: readonly {
+                    name?: string;
+                    as?: string;
+                    type?: string;
+                 }[];
+              }
+            | undefined;
+         const views = (def?.fields ?? [])
+            .filter((f) => f.type === "turtle")
+            .map((f) => f.as ?? f.name)
+            .filter((name): name is string => typeof name === "string");
+         const verdicts: ViewServeVerdict[] = [];
+         for (const view of views) {
+            try {
+               await shape.loadServeShapeQuery(
+                  `run: ${quoteMalloyIdentifier(binding.sourceName)} -> ${quoteMalloyIdentifier(view)}`,
+                  placeholders,
+               );
+               verdicts.push({ view, verdict: "serves" });
+            } catch (error) {
+               const message = firstLine(
+                  error instanceof Error ? error.message : String(error),
+               );
+               verdicts.push({
+                  view,
+                  verdict: "live",
+                  // The view itself is missing: the shape dropped this source's
+                  // views because one of them does not compile, which the
+                  // compiler reports as an unknown name, not as the cause.
+                  detail: message.startsWith(`'${view}' is not defined`)
+                     ? VIEWS_DROPPED_DETAIL
+                     : message,
+               });
+            }
+         }
+         // By the plan's sourceID: two models' same-named stored sources are
+         // different sources with different views.
+         out.set(binding.sourceIDs?.[0] ?? binding.sourceName, verdicts);
+      }
+      return out;
+   }
+
    /**
     * Refuse a request whose value for one of this model's `filter<T>` givens
     * does not parse, with a 400 naming the given and the parser's reason. Run
@@ -4727,4 +4814,39 @@ export class Model {
          );
       }
    }
+}
+
+/**
+ * Why a stored source's view is live when the serve shape left its views off:
+ * the shape drops every view of a source when any one of them does not compile
+ * against the stored columns, so this one is answered live too.
+ */
+const VIEWS_DROPPED_DETAIL =
+   "The serve shape left this source's views off: at least one of them does " +
+   "not compile against the stored columns (a field the table does not hold, " +
+   "or a file the shape could not read), " +
+   "and the shape then drops all of them, so each is answered live.";
+
+/**
+ * A value for each given with no default, for a compile that only asks
+ * whether a query compiles: `null`, or an empty filter for a `filter<T>`
+ * given, whose SQL needs a filter literal (as model_info.ts does for the same
+ * reason).
+ */
+function placeholderGivens(
+   givens:
+      | readonly { name?: string; type?: string; default?: unknown }[]
+      | undefined,
+): Record<string, GivenValue> {
+   const out: Record<string, GivenValue> = {};
+   for (const given of givens ?? []) {
+      if (!given.name || given.default !== undefined) continue;
+      out[given.name] = /^filter\b/i.test(given.type ?? "") ? "" : null;
+   }
+   return out;
+}
+
+/** The first line of an error message, which is where Malloy says what failed. */
+function firstLine(message: string): string {
+   return message.split("\n")[0].trim();
 }

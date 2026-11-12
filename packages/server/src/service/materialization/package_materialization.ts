@@ -1,7 +1,11 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
-import type { MalloyConfig } from "@malloydata/malloy";
+import {
+   isSourceDef,
+   type MalloyConfig,
+   type SourceDef,
+} from "@malloydata/malloy";
 import {
    findingSeverity,
    type PackageAnnotationFinding,
@@ -41,7 +45,10 @@ import type {
    PreaggregateViolationCode,
 } from "./plan/preaggregation_validation";
 import { CronEvaluator } from "./run/cron_evaluator";
-import { filterFreshManifest } from "./run/freshness";
+import {
+   evaluateManifestFreshness,
+   filterFreshManifest,
+} from "./run/freshness";
 import type {
    BoundTable,
    MaterializedTableCatalog,
@@ -51,8 +58,18 @@ import {
    deriveServeBindings,
    groupAliasesByName,
    planSourceIds,
+   type ServeBinding,
 } from "./serve/materialization_serve_transform";
 import { STORED_COLUMN_TYPE_MISMATCH_CODE } from "./stored_column_types";
+import {
+   computeServeVerdicts,
+   MATERIALIZATION_UNREACHABLE_CODE,
+   type ServeVerdict,
+   sourceIDsReachedFrom,
+   type ViewServeVerdict,
+} from "./serve/serve_verdict";
+import { storageTablePath } from "./run/storage_table_path";
+import { structsReachedFrom } from "../governance/ir/source_graph";
 import type {
    BuildManifest,
    BuildPlan,
@@ -99,6 +116,14 @@ export interface PackageMaterializationOwner {
    malloyConfig(): MalloyConfig;
    /** The package, for a main-thread build-plan compute. */
    buildPlanPackage: BuildPlanPackage;
+   /**
+    * The sources callers may query, by the model that publishes them, or
+    * undefined when every source is queryable. Optional: a spec's owner need
+    * not curate.
+    */
+   publishedSurface?():
+      | { modelPath: string; names: string[]; queries?: string[] }[]
+      | undefined;
 }
 
 /**
@@ -835,6 +860,331 @@ export class PackageMaterialization {
    }
 
    /**
+    * Each materialized source's serve verdict (materialization v2, D2;
+    * ms2data/service#6277): whether queries are answered from its table, and
+    * when not, why and what to change. Read from the plan and the binding as
+    * they stand now, so it follows each bind. `views` adds per-view verdicts
+    * (a preview, see {@link previewServeVerdicts}).
+    */
+   serveVerdicts(
+      views?: ReadonlyMap<string, ViewServeVerdict[]>,
+   ): ServeVerdict[] {
+      if (!this.buildPlan && this.rollupsOverStoredBase.length === 0) return [];
+      try {
+         return this.computeVerdicts(views);
+      } catch (error) {
+         // Reporting only: a verdict that cannot be computed must not fail
+         // the dry run, the package read or the status poll that carries it.
+         logger.warn("Could not compute serve verdicts", {
+            packageName: this.owner.packageName(),
+            error: errMessage(error),
+         });
+         return [];
+      }
+   }
+
+   private computeVerdicts(
+      views?: ReadonlyMap<string, ViewServeVerdict[]>,
+   ): ServeVerdict[] {
+      const models = this.owner.models();
+      const index = this.entryPointIndex(models);
+      const servedStorageNames = new Set<string>();
+      for (const model of models.values()) {
+         for (const name of model.servedStorageSourceNames?.() ?? []) {
+            servedStorageNames.add(name);
+         }
+      }
+      const now = new Date();
+      const freshStorageNames = new Set(
+         this.storageServeBindings
+            .filter(
+               (b) =>
+                  evaluateManifestFreshness(
+                     {
+                        tableName: b.tablePath,
+                        dataAsOf: b.freshAsOf,
+                        freshnessWindowSeconds: b.freshnessWindowSeconds,
+                        freshnessFallback: b.freshnessFallback,
+                     },
+                     now,
+                  ) === "serve_table",
+            )
+            .map((b) => b.sourceName),
+      );
+      const reads = (
+         ids: ReadonlySet<string>,
+         sourceID: string | undefined,
+         sourceName: string,
+      ) =>
+         sourceID !== undefined
+            ? ids.has(sourceID)
+            : [...ids].some((id) => id.startsWith(`${sourceName}@`));
+      return computeServeVerdicts({
+         plan: this.buildPlan,
+         storageMode: getPersistStorageMode(),
+         reachable: (sourceID, sourceName) =>
+            index?.reached === undefined ||
+            reads(index.reached, sourceID, sourceName),
+         gated: (sourceID, sourceName) => {
+            const reaching = (index?.roots ?? []).filter((root) =>
+               reads(root.ids, sourceID, sourceName),
+            );
+            return reaching.length > 0 && reaching.every((root) => root.gated);
+         },
+         refusedAtBind: (_sourceID, source, tier) =>
+            this.refusedAtBind(source, tier),
+         boundEntityIds: new Set(Object.keys(this.buildManifestEntries ?? {})),
+         freshEntityIds: new Set(
+            Object.keys(this.getFreshBuildManifest(now.getTime()) ?? {}),
+         ),
+         boundStorageNames: new Set(
+            this.storageServeBindings.map((b) => b.sourceName),
+         ),
+         servedStorageNames,
+         freshStorageNames,
+         rollupsOverStoredBase: this.rollupsOverStoredBase,
+         views,
+      });
+   }
+
+   /**
+    * Why the bind refuses a planned source, as {@link bindStorageServeBindings}
+    * and {@link bindColocatedServeManifest} decide it, or undefined when it
+    * keeps it. Storage requires a positive eligibility, as the bind does.
+    * Colocated rollups need not appear in the colocated record, so only an
+    * authored source missing from it, or one it names as refused, counts.
+    */
+   private refusedAtBind(
+      source: { name: string; sourceEntityId: string; origin?: string },
+      tier: "colocated" | "storage",
+   ): string | undefined {
+      if (tier === "storage") {
+         const eligibility = this.sourceEligibility;
+         if (!eligibility || eligibility.eligible.includes(source.name)) {
+            return undefined;
+         }
+         return (
+            eligibility.refused[source.name] ??
+            "the source was never examined for eligibility"
+         );
+      }
+      const eligibility = this.colocatedSourceEligibility;
+      if (!eligibility) return undefined;
+      const refused = eligibility.refused[source.sourceEntityId];
+      if (refused !== undefined) return refused;
+      if (
+         source.origin !== "preaggregate" &&
+         !eligibility.eligibleEntityIds.has(source.sourceEntityId)
+      ) {
+         return "the source was never examined for eligibility";
+      }
+      return undefined;
+   }
+
+   /**
+    * {@link serveVerdicts} with each stored source's named views compiled
+    * against a serve shape, before anything is built (ms2data/service#7090):
+    * the shape is declared from the plan's output columns, the types the build
+    * stores, so it needs no table. Costs one shape compile per model and one
+    * compile per view, so it runs only where a caller asks for a preview.
+    */
+   async previewServeVerdicts(): Promise<ServeVerdict[]> {
+      let bindings: ServeBinding[];
+      try {
+         bindings = this.previewServeBindings();
+      } catch (error) {
+         logger.warn("Could not declare the preview's serve bindings", {
+            packageName: this.owner.packageName(),
+            error: errMessage(error),
+         });
+         bindings = [];
+      }
+      const views = new Map<string, ViewServeVerdict[]>();
+      if (bindings.length > 0) {
+         for (const model of this.owner.models().values()) {
+            try {
+               const found = await model.previewStorageViews(bindings);
+               // Keyed by sourceID: a model that imports the source reports
+               // the same views as the one that declares it.
+               for (const [sourceID, verdicts] of found) {
+                  if (!views.has(sourceID)) views.set(sourceID, verdicts);
+               }
+            } catch (error) {
+               logger.debug("Could not preview a model's storage views", {
+                  packageName: this.owner.packageName(),
+                  error: errMessage(error),
+               });
+            }
+         }
+      }
+      return this.serveVerdicts(views);
+   }
+
+   /**
+    * One serve binding per planned `storage=` source, as its first build would
+    * bind it: declared from the plan's output columns at the DuckDB types the
+    * build stores them as (see stored_column_types.ts). The table it names is
+    * never read; a preview only compiles.
+    */
+   previewServeBindings(): ServeBinding[] {
+      const out: ServeBinding[] = [];
+      for (const [sourceID, source] of Object.entries(
+         this.buildPlan?.sources ?? {},
+      )) {
+         const destinationName = source.annotationFields?.storage?.trim();
+         if (!destinationName || source.origin === "preaggregate") continue;
+         const schema = (source.columns ?? []).flatMap((column) => {
+            const type = PREVIEW_STORED_TYPES[String(column.type ?? "")];
+            return column.name && type ? [{ name: column.name, type }] : [];
+         });
+         if (schema.length === 0) continue;
+         out.push({
+            sourceName: source.name,
+            sourceIDs: [sourceID],
+            origin: "persist",
+            destinationName,
+            virtualHandle: source.sourceEntityId,
+            tablePath: storageTablePath(
+               destinationName,
+               `preview_${source.sourceEntityId}`,
+               this.serveDestinationSchema?.(destinationName),
+            ),
+            schema,
+         });
+      }
+      return out;
+   }
+
+   /**
+    * Warnings for materialized sources whose verdict is `unreachable`: nothing
+    * on the published surface reads them, so their tables are built for no
+    * query (ms2data/service#6277). The other live verdicts already carry a
+    * warning of their own (storage mode, refusals, rollups over a stored base).
+    */
+   unreachableMaterializationWarnings(): ApiPackageWarning[] {
+      // serveVerdicts degrades to none on a throw, so a package read never fails here.
+      return this.serveVerdicts()
+         .filter((v) => v.reason === "unreachable")
+         .map((v) => ({
+            model: v.modelPath ?? "",
+            subject: v.sourceName,
+            code: MATERIALIZATION_UNREACHABLE_CODE,
+            severity: "warn" as const,
+            message: v.message + " " + (v.fixes ?? []).join(" "),
+         }));
+   }
+
+   /** Memo for {@link entryPointIndex}, keyed on the models map it read. */
+   private entryPointMemo:
+      | { models: Map<string, Model>; index: EntryPointIndex | undefined }
+      | undefined;
+
+   /**
+    * The package's entry points (what callers may query) and what each
+    * reads, or undefined when that cannot be told. Memoized on the models
+    * map, which a load or reload replaces wholesale along with the surface it
+    * curates, so the status poll does no walk of its own.
+    */
+   private entryPointIndex(
+      models: Map<string, Model>,
+   ): EntryPointIndex | undefined {
+      if (this.entryPointMemo?.models === models) {
+         return this.entryPointMemo.index;
+      }
+      let index: EntryPointIndex | undefined;
+      try {
+         index = this.buildEntryPointIndex(models);
+      } catch (error) {
+         logger.debug("Could not read which sources the entry points reach", {
+            packageName: this.owner.packageName(),
+            error: errMessage(error),
+         });
+         index = undefined;
+      }
+      this.entryPointMemo = { models, index };
+      return index;
+   }
+
+   /**
+    * Each entry point a caller may query (a published source or named query,
+    * or every model's when the package curates nothing), the sourceIDs it
+    * reads, and whether it carries a row-level gate, the question routing
+    * asks of a query's entry point. Undefined when a model has no compiled
+    * definition: a false `unreachable` or `row_level_gate` is a false alarm,
+    * so unknown stays quiet.
+    */
+   private buildEntryPointIndex(
+      models: Map<string, Model>,
+   ): EntryPointIndex | undefined {
+      const surface = this.owner.publishedSurface?.();
+      const entries =
+         surface ??
+         [...models].map(([modelPath, model]) => ({
+            modelPath,
+            names: (model.getSources?.() ?? []).flatMap((source) =>
+               source.name ? [source.name] : [],
+            ),
+            queries: (model.getQueries?.() ?? []).flatMap((query) =>
+               query.name ? [query.name] : [],
+            ),
+         }));
+      const roots: EntryPointIndex["roots"] = [];
+      for (const { modelPath, names, queries } of entries) {
+         const model = models.get(modelPath);
+         const modelDef = model?.getModelDef?.();
+         if (!model || !modelDef) return undefined;
+         const gatedSources = new Set(
+            (model.getSources?.(true) ?? []).flatMap((source) =>
+               source.name &&
+               ((source.authorize?.length ?? 0) > 0 ||
+                  (source.accessFilter?.length ?? 0) > 0)
+                  ? [source.name]
+                  : [],
+            ),
+         );
+         const sourceRoot = (name: string, gated: boolean): void => {
+            const entry = modelDef.contents?.[name];
+            if (!entry || !isSourceDef(entry)) return;
+            roots.push({
+               gated,
+               ids: sourceIDsReachedFrom(structsReachedFrom([entry], modelDef)),
+            });
+         };
+         for (const name of names) sourceRoot(name, gatedSources.has(name));
+         // A published named query reads its source, and whatever its
+         // pipeline names; it is gated as that source is.
+         for (const name of queries ?? []) {
+            const query = modelDef.contents?.[name] as
+               | { type?: string; structRef?: unknown }
+               | undefined;
+            if (query?.type !== "query") continue;
+            const ref = query.structRef;
+            const base =
+               typeof ref === "string"
+                  ? modelDef.contents?.[ref]
+                  : (ref as SourceDef | undefined);
+            const ids = sourceIDsReachedFrom([query]);
+            if (base && isSourceDef(base)) {
+               for (const id of sourceIDsReachedFrom(
+                  structsReachedFrom([base], modelDef),
+               )) {
+                  ids.add(id);
+               }
+            }
+            roots.push({
+               gated: typeof ref === "string" && gatedSources.has(ref),
+               ids,
+            });
+         }
+      }
+      const reached =
+         surface === undefined
+            ? undefined
+            : new Set(roots.flatMap((root) => [...root.ids]));
+      return { roots, reached };
+   }
+
+   /**
     * The Malloy Persistence policy's REJECTION rules: a non-empty result fails a
     * publish and disarms the scheduler (warn-only at load). Advisory findings go
     * to materializationConfigWarnings. Cross-package scope rules are not
@@ -1067,3 +1417,26 @@ export class PackageMaterialization {
       return this.persistenceCollisionWarnings().join("\n");
    }
 }
+
+/** See PackageMaterialization's entry-point index. */
+interface EntryPointIndex {
+   /** Each entry point: the sourceIDs it reads, and whether a row-level gate sits on it. */
+   roots: { gated: boolean; ids: Set<string> }[];
+   /** Every sourceID an entry point reads; undefined when the package curates nothing. */
+   reached: Set<string> | undefined;
+}
+
+/**
+ * The DuckDB type a preview declares a stored column as, by its Malloy type:
+ * what the build stores (stored_column_types.ts casts string, boolean and date
+ * to these; numbers and timestamps already arrive as one). A column of any
+ * other type is left off, and a view reading it previews as live.
+ */
+const PREVIEW_STORED_TYPES: Readonly<Record<string, string>> = {
+   string: "VARCHAR",
+   number: "DOUBLE",
+   boolean: "BOOLEAN",
+   date: "DATE",
+   timestamp: "TIMESTAMP",
+   timestamptz: "TIMESTAMP WITH TIME ZONE",
+};
