@@ -3,6 +3,7 @@
 
 import {
    BadRequestError,
+   BuildPlanUnavailableError,
    InvalidStateTransitionError,
    MaterializationEligibilityError,
    MaterializationNotFoundError,
@@ -381,6 +382,14 @@ export class MaterializationService {
          // Validate against the plan the run will build from: a connection
          // edit re-derives it (ms2data/service#6145).
          await pkg.whenBuildPlanCurrent?.();
+         // Never against a plan that failed to derive: after a failed
+         // re-derivation the pre-edit plan is gone, and validating against
+         // nothing would let stale ledger entries through to the build.
+         if (pkg.isBuildPlanUnavailable?.()) {
+            throw new BuildPlanUnavailableError(
+               `The build plan of package ${packageName} could not be derived, so the build instructions cannot be checked against it. Reload the package to derive it again.`,
+            );
+         }
          validateInstructions(
             pkg.getBuildPlan(),
             buildInstructions,

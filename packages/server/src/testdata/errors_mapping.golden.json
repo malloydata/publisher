@@ -407,6 +407,43 @@
       ]
     }
   },
+  "BuildPlanRefreshingError": {
+    "class": "BuildPlanRefreshingError",
+    "http": {
+      "status": 503,
+      "json": {
+        "code": 503,
+        "message": "build plan is being re-derived",
+        "reason": "BUILD_PLAN_REFRESHING"
+      },
+      "headers": {
+        "Retry-After": "5"
+      },
+      "logged": false,
+      "logs": []
+    },
+    "mcp": {
+      "message": "An unexpected internal error occurred during executeQuery.: build plan is being re-derived",
+      "suggestions": [
+        "Try the request again later.",
+        "If the problem persists, check server logs or contact support."
+      ],
+      "logs": []
+    },
+    "mcpSetup": {
+      "message": "An unexpected internal error occurred during executeQuery (Setup).: build plan is being re-derived",
+      "suggestions": [
+        "Try the request again later.",
+        "If the problem persists, check server logs or contact support."
+      ],
+      "logs": [
+        [
+          "error",
+          "[MCP Server Error] Error accessing package/model for query"
+        ]
+      ]
+    }
+  },
   "NotImplementedError": {
     "class": "NotImplementedError",
     "http": {

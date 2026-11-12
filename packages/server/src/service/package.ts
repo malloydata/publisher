@@ -2045,14 +2045,45 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
       this.materialization.invalidateServeShapes();
    }
 
-   /** See {@link PackageMaterialization.refreshBuildPlan}. */
-   public refreshBuildPlan(): Promise<void> {
-      return this.materialization.refreshBuildPlan();
+   /** See {@link PackageMaterialization.markBuildPlanStale}. */
+   public markBuildPlanStale(): void {
+      this.materialization.markBuildPlanStale();
+   }
+
+   /** See {@link PackageMaterialization.isBuildPlanStale}. */
+   public isBuildPlanStale(): boolean {
+      return this.materialization.isBuildPlanStale();
+   }
+
+   /** See {@link PackageMaterialization.planConnectionNames}. */
+   public planConnectionNames(): ReadonlySet<string> | null {
+      return this.materialization.planConnectionNames();
+   }
+
+   /**
+    * Re-derive a stale build plan (see {@link PackageMaterialization.refreshBuildPlan})
+    * in the load worker pool, as a load derives it, so a connection edit's
+    * recompile stays off the main thread. Resolves true when it was derived.
+    */
+   public refreshBuildPlan(): Promise<boolean> {
+      return this.materialization.refreshBuildPlan(async () => {
+         const outcome = await loadOutcomeOrThrow(
+            getPackageLoadPool().loadPackage({
+               packagePath: this.packagePath,
+               packageName: this.packageName,
+               environmentName: this.environmentName,
+               malloyConfig: this.malloyConfig,
+               defaultConnectionName: "duckdb",
+               computeBuildPlan: true,
+            }),
+         );
+         return outcome.buildPlan;
+      });
    }
 
    /** See {@link PackageMaterialization.whenBuildPlanCurrent}. */
-   public whenBuildPlanCurrent(): Promise<void> {
-      return this.materialization.whenBuildPlanCurrent();
+   public whenBuildPlanCurrent(timeoutMs?: number): Promise<void> {
+      return this.materialization.whenBuildPlanCurrent(timeoutMs);
    }
 
    /**

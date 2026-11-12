@@ -10,6 +10,7 @@ import {
    AccessDeniedError,
    AgentNotFoundError,
    BadRequestError,
+   BuildPlanRefreshingError,
    BuildPlanUnavailableError,
    ChainedShapeNotCarriedError,
    ChainedUpstreamMissingError,
@@ -148,6 +149,10 @@ const CASES: Array<[string, () => unknown]> = [
    [
       "BuildPlanUnavailableError",
       () => new BuildPlanUnavailableError("build plan could not be derived"),
+   ],
+   [
+      "BuildPlanRefreshingError",
+      () => new BuildPlanRefreshingError("build plan is being re-derived"),
    ],
    [
       "NotImplementedError",
