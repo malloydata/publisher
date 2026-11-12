@@ -50,6 +50,18 @@ import { installSettings } from "../test_helpers/settings_env";
 
 afterAll(closeCorpus);
 
+// Loaded once for the file: every load opens a file-backed DuckDB instance per
+// scenario connection (about 280) and none closes before `closeCorpus`, so a
+// second load doubled the open instances. That ran Windows CI out of memory.
+let loaded: Promise<{ models: CorpusModel[]; skipped: string[] }> | undefined;
+function corpusOnce(): Promise<{ models: CorpusModel[]; skipped: string[] }> {
+   loaded ??= hammerModels().then((hammer) => ({
+      models: [...fixtureModels(), ...hammer.models],
+      skipped: hammer.skipped,
+   }));
+   return loaded;
+}
+
 /** What moved for one source, or nothing. */
 interface Moved {
    model: string;
@@ -144,10 +156,9 @@ describe("build-target addresses over the repo's persist corpus", () => {
    it(
       "no source's address, compiler key, wire SQL or build SQL moves",
       async () => {
-         const hammer = await hammerModels();
-         const corpus = [...fixtureModels(), ...hammer.models];
+         const { models: corpus, skipped } = await corpusOnce();
          const moved: Moved[] = [];
-         const uncompiled: string[] = [...hammer.skipped];
+         const uncompiled: string[] = [...skipped];
          let checked = 0;
          for (const model of corpus) {
             try {
@@ -185,8 +196,7 @@ describe("build-target addresses over the repo's persist corpus", () => {
    it(
       "with the destination switch on, exactly the storage= sources move",
       async () => {
-         const hammer = await hammerModels();
-         const corpus = [...fixtureModels(), ...hammer.models];
+         const { models: corpus } = await corpusOnce();
          const unexpected: string[] = [];
          let storageSources = 0;
          let colocatedSources = 0;

@@ -51,6 +51,8 @@ let sourcesPath: string;
 let db: DuckDBConnection;
 let repo: ResourceRepository;
 let restoreSettings: () => void;
+/** Every environment a test opened, closed after it so no retry outlives it. */
+const opened: Environment[] = [];
 
 /** A package tree with one persisted source over the `duck` connection. */
 function writePackage(
@@ -86,6 +88,7 @@ async function newEnvironment(
       duck("SELECT 1") as never,
       ...(extraConnections as never[]),
    ]);
+   opened.push(env);
    env.bindVersions(repo, ENV_ID, {
       downloaderFor: (_packageName, location) => async (stagingPath) => {
          await fs.promises.cp(location, stagingPath, { recursive: true });
@@ -145,6 +148,9 @@ beforeEach(async () => {
 
 afterEach(async () => {
    mock.restore();
+   // Closing cancels the environment's re-derivation retries: left open, they
+   // kept firing with backoff into later spec files, against a deleted root.
+   for (const env of opened.splice(0)) await env.closeAllConnections();
    restoreSettings();
    await db.close();
    fs.rmSync(root, { recursive: true, force: true });
