@@ -628,4 +628,51 @@ source: west_orders is orders extend { where: region = 'west' }
       },
       { timeout: 30000 },
    );
+
+   it(
+      "reads a declaration by the statement that wrote it: across an import, past comments, through chained extensions, and on every definition of a block",
+      async () => {
+         const c = await compiled({
+            "a.malloy": `${BASE}
+#(materialize) name="orders_all"
+source: orders is orders_raw extend { dimension: big is amount > 10 }
+`,
+            "m.malloy": `import 'a.malloy'
+// orders' declaration reaches these by reference, from another file.
+source: east_orders is orders extend { where: region = 'east' }
+source: renamed_orders is orders
+
+#(materialize) name="west_all"
+
+// A comment and blank lines between the annotation and its statement.
+
+source: west_orders is orders extend { where: region = 'west' }
+source: west_big is west_orders extend { where: big }
+source: west_big_east is west_big extend { dimension: e is region = 'east' }
+
+// A block annotation is every definition's own: both are read as declaring
+// it, so both are refused for the same reason.
+#(materialize)
+source:
+   first_copy is orders extend {}
+   second_copy is orders extend {}
+`,
+         });
+         expect(
+            generatedPlans(c)
+               .map((p) => [p.sourceName, p.buildSourceName])
+               .sort(),
+         ).toEqual([
+            ["orders", "orders__mat"],
+            ["west_orders", "west_orders__mat"],
+         ]);
+         expect(
+            (c.annotationFindings ?? [])
+               .filter((f) => f.code === "materialize-not-built")
+               .map((f) => f.message.match(/`(\w+)`/)?.[1] ?? f.message)
+               .sort(),
+         ).toEqual(["first_copy", "second_copy"]);
+      },
+      { timeout: 30000 },
+   );
 });
