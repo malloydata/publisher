@@ -61,6 +61,7 @@ import {
    type Reroot,
    type ServedColumn,
    type ServedCopyRange,
+   storedMalloyType,
 } from "./served_copy";
 import { servedCopyConfig, servedCopyAlias } from "./served_copy_config";
 import { offsetOf } from "../malloy_lexer";
@@ -668,6 +669,12 @@ export class ServedCopyServe {
             };
          });
       }
+      // A column the `type:` cannot declare faithfully would fail the whole
+      // model's copy, not just this source: leave this one to its fallback.
+      if (columns.some((c) => storedMalloyType(c.type) === undefined)) {
+         problems.push({ sourceName, reason: "column_types" });
+         return undefined;
+      }
       return {
          url,
          range,
@@ -906,13 +913,20 @@ export class ServedCopyServe {
          // replaced it (a parenthesised head, an inline extend in the base)
          // is gone from the served source's compiled filters, and the copy
          // would answer every caller with every caller's rows.
+         // A source the served compile holds only as a join (#6643) and that
+         // applies a `where:` is not re-rooted either: the governor proves a
+         // joined source's filters against its declaring file's live compile,
+         // whose text the re-root changed, so it would refuse every caller
+         // (403) where live answers. Left as written, what reads it is live.
          const unscoped = candidates.filter(
             (c) =>
                !lost.includes(c) &&
-               !keepsGivenTerms(
+               (!keepsGivenTerms(
                   c.reroot.authorDef,
                   servedDefOf(servedMap, c.reroot.sourceID),
-               ),
+               ) ||
+                  (!hasOwnNode(servedMap, c.reroot.sourceID) &&
+                     appliesFilters(c.reroot.authorDef))),
          );
          if (lost.length > 0 || unscoped.length > 0) {
             for (const c of lost) {
@@ -1092,12 +1106,23 @@ function setsTimezone(query: unknown, depth = 0): boolean {
  */
 function servedDefOf(map: SourceMap, sourceID: string): unknown {
    const node = map.node(sourceID);
-   if (node && Array.isArray(node.def.fields)) return node.def;
+   if (hasOwnNode(map, sourceID)) return node?.def;
    for (const n of map.nodes()) {
       const join = joinedDefinitionOf(n.def, sourceID);
       if (join !== undefined) return join;
    }
    return node?.def;
+}
+
+/** Whether the compile holds `sourceID` as a node with fields of its own. */
+function hasOwnNode(map: SourceMap, sourceID: string): boolean {
+   return Array.isArray(map.node(sourceID)?.def.fields);
+}
+
+/** Whether a source definition applies any `where:` term. */
+function appliesFilters(def: unknown): boolean {
+   const filters = (def as { filterList?: unknown[] } | undefined)?.filterList;
+   return Array.isArray(filters) && filters.length > 0;
 }
 
 /** Every field name any source in the model declares. */

@@ -602,10 +602,19 @@ export function declaredBaseName(
  * (a MAP, a union) is the serve shape's `json`, which does not compile.
  */
 export function storedTypeText(stored: string): string {
+   return storedMalloyType(stored) ?? duckdbTypeToMalloy(stored);
+}
+
+/**
+ * {@link storedTypeText} when the stored type reads back faithfully, else
+ * undefined: a type the `type:` could only declare as `json`, which Malloy
+ * refuses there, so one such column would fail the whole model's copy. A
+ * nest built from a warehouse whose nests are JSON (Postgres, Snowflake) is
+ * stored as `JSON`, for one.
+ */
+export function storedMalloyType(stored: string): string | undefined {
    const parsed = parseNestedType(stored.trim());
-   if (parsed === undefined || parsed.rest.trim() !== "") {
-      return duckdbTypeToMalloy(stored);
-   }
+   if (parsed === undefined || parsed.rest.trim() !== "") return undefined;
    return parsed.text;
 }
 

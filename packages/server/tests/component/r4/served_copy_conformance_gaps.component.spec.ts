@@ -16,7 +16,7 @@
  */
 
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
-import { DATA_FILES } from "./conformance/data";
+import { DATA_FILES, RAW_MODEL } from "./conformance/data";
 import {
    type Answer,
    freshLoadPool,
@@ -170,3 +170,127 @@ for (const c of CASES) {
       }
    });
 }
+
+/**
+ * #6643's guards, two callers: a per-caller `where:` on a persisted source
+ * the index reaches only through a join. Each caller must read only its own
+ * rows, equal to live, from the index and from the joining file. From the
+ * index the served copy does not re-root the joined source (the governor
+ * could not prove its filter there and refused every caller), so the query
+ * through the join answers live; from the joining file it is served.
+ */
+describe("served copy gap closed: a given term on a source reached only through a join (#6643), two callers", () => {
+   const GIVENS = "##! experimental { persistence givens }";
+   const files = {
+      // The given is imported by name (Malloy merges a given one import hop
+      // deep); customer_dim itself stays reachable only through the join.
+      "index.malloy": `${GIVENS}
+import "facts.malloy"
+import { REGION } from "dims.malloy"
+export { order_facts }
+`,
+      "dims.malloy": `${GIVENS}
+import "raw.malloy"
+
+given: REGION :: string is 'north'
+
+#@ persist name="customer_dim" storage="lake"
+source: customer_dim is customers_raw -> {
+  select: id, segment, home_region
+} extend {
+  primary_key: id
+  where: home_region = $REGION
+}
+`,
+      "facts.malloy": `${GIVENS}
+import "raw.malloy"
+import "dims.malloy"
+
+#@ persist name="order_facts" storage="lake"
+source: order_facts is orders_raw -> {
+  select: id, customer_id, region, amount
+} extend {
+  join_one: c is customer_dim on customer_id = c.id
+}
+`,
+   };
+   const query =
+      "run: order_facts -> { group_by: c.segment, c.home_region; aggregate: t is amount.sum(), n is count() }";
+   const callers = ["north", "east"];
+   let restore: () => void = () => {};
+   let fixture: LoadedFixture | undefined;
+   const live = new Map<string, Outcome>();
+   const served = new Map<string, Outcome>();
+   /** The same query in the joining file, where the source is a node. */
+   const servedInFacts = new Map<string, Outcome>();
+   const liveInFacts = new Map<string, Outcome>();
+
+   beforeAll(async () => {
+      restore = withSwitch("on");
+      const loader = await loadFixture({
+         ...DATA_FILES,
+         "raw.malloy": RAW_MODEL,
+         ...files,
+      });
+      for (const region of callers) {
+         live.set(
+            region,
+            await loader.run("index.malloy", query, { REGION: region }),
+         );
+         liveInFacts.set(
+            region,
+            await loader.run("facts.malloy", query, { REGION: region }),
+         );
+      }
+      fixture = await loader.bind();
+      for (const region of callers) {
+         served.set(
+            region,
+            await fixture.run("index.malloy", query, { REGION: region }),
+         );
+         servedInFacts.set(
+            region,
+            await fixture.run("facts.malloy", query, { REGION: region }),
+         );
+      }
+   });
+   afterAll(async () => {
+      restore();
+      await fixture?.dispose();
+   });
+
+   /** What a caller got: its rows' regions, or the error. */
+   function seen(outcome: Outcome | undefined): unknown {
+      if (!outcome) throw new Error("no outcome");
+      if ("error" in outcome) return { error: outcome.error };
+      return {
+         regions: [
+            ...new Set(
+               outcome.answer.rows
+                  .map((r) => (r as Record<string, unknown>)["home_region"])
+                  .filter((v) => v !== null),
+            ),
+         ],
+      };
+   }
+
+   for (const region of callers) {
+      it(`caller ${region}, from the index: that caller's rows only, equal to live`, () => {
+         const l = answerOf(live.get(region));
+         const s = answerOf(served.get(region));
+         expect(rowDifference(l.rows, s.rows)).toBeUndefined();
+         expect(seen(served.get(region))).toEqual({ regions: [region] });
+      });
+
+      it(`caller ${region}, from the joining file: that caller's rows only, equal to live`, () => {
+         const l = answerOf(liveInFacts.get(region));
+         const s = answerOf(servedInFacts.get(region));
+         expect(rowDifference(l.rows, s.rows)).toBeUndefined();
+         expect(seen(servedInFacts.get(region))).toEqual({ regions: [region] });
+      });
+
+      it(`caller ${region}, from the joining file: the served copy answers`, () => {
+         expect(answerOf(servedInFacts.get(region)).via).toBe("served_copy");
+      });
+   }
+});

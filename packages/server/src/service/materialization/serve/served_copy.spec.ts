@@ -11,6 +11,7 @@ import {
    rerootDeclaration,
    rewriteDimensions,
    SERVED_COPY_FLAG,
+   storedMalloyType,
    storedTypeText,
    typeDeclaration,
    type Reroot,
@@ -209,6 +210,17 @@ describe("storedTypeText", () => {
       expect(storedTypeText("TIMESTAMP WITH TIME ZONE")).toBe("timestamp");
       expect(storedTypeText("MAP(VARCHAR, INTEGER)")).toBe("json");
       expect(storedTypeText("STRUCT(a VARCHAR")).toBe("json");
+   });
+
+   it("storedMalloyType: undefined for what the type: could only call json", () => {
+      // A nest built from Postgres or Snowflake lands as JSON: the source is
+      // declined on its own rather than failing the whole model's copy.
+      expect(storedMalloyType("JSON")).toBeUndefined();
+      expect(storedMalloyType("MAP(VARCHAR, INTEGER)")).toBeUndefined();
+      expect(storedMalloyType("STRUCT(a VARCHAR")).toBeUndefined();
+      expect(storedMalloyType("BLOB")).toBeUndefined();
+      expect(storedMalloyType("STRUCT(s VARCHAR)[]")).toBe("{ s::string }[]");
+      expect(storedMalloyType("BIGINT")).toBe("number");
    });
 });
 
