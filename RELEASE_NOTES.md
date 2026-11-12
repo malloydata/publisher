@@ -21,6 +21,12 @@ Give the heading a title — `## [Unreleased] — what changed`, with an em dash
 
 Two consequences worth knowing. A section merged to `main` ships in the **next** release, whenever that is, so do not write one for work that has not landed. And a heading already stamped with a version is history: a follow-up that changes that behaviour opens a **new** `[Unreleased]` section referencing the shipped version by number, rather than editing the old one.
 
+## [Unreleased] — Editing a file-backed DuckDB connection no longer opens the file twice
+
+Publisher now keeps one DuckDB instance per database file. Editing an environment's DuckDB connection (its `setupSQL` or attached databases) used to open the file a second time while the previous connection drained, and a re-derived build plan opened it at once. On Windows that failed ("being used by another process") for up to 30 seconds after the edit; on Linux and macOS a second instance of one file is unsupported by DuckDB. The edited connection now opens on the instance that already holds the file, with its own `setupSQL` on its own session, and the draining connection keeps answering until it closes. A connection that would open an already-open file with different open-time settings (access mode, threads, memory limit, extensions, security policy or directories) is refused with a message instead; those settings change after a restart. Publisher's API cannot change them.
+
+Pending build-plan retries now stop when an environment is deleted and when the server shuts down, instead of firing against files that are gone.
+
 ## [Unreleased] — A switch to address a `storage=` table by its destination (off by default)
 
 `PUBLISHER_PERSIST_ADDRESS_INCLUDES_DESTINATION=true` folds a `storage=` source's destination into its content address (`sourceEntityId`), so a source moved from colocated to `storage=`, or to another destination, gets a new table instead of reusing or resolving the old one (#7087's address half). Colocated addresses never move, and nothing moves while `PERSIST_STORAGE_MODE` is `off`.

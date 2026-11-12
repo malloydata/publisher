@@ -430,6 +430,18 @@ export class Environment {
       Package,
       { failures: number; timer?: ReturnType<typeof setTimeout> }
    >();
+   /**
+    * Set once this environment is closed (deleted, or the server is shutting
+    * down): no re-derivation is queued or retried after it, so a timer cannot
+    * fire against a package whose files are gone.
+    */
+   private planRefreshesClosed = false;
+   /**
+    * Every environment not yet closed, for {@link cancelAllPlanRefreshes}.
+    * Weak, so an environment nobody closes (a test's) can still be collected.
+    */
+   private static readonly openEnvironments = new Set<WeakRef<Environment>>();
+   private readonly openEnvironmentRef = new WeakRef<Environment>(this);
    private malloyConfig: EnvironmentMalloyConfig;
    private connectionMutex = new Mutex();
    private retiredConnectionGenerations =
@@ -542,6 +554,7 @@ export class Environment {
       this.environmentName = environmentName;
       this.environmentPath = environmentPath;
       this.lifecycle = new PackageLifecycle(environmentName);
+      Environment.openEnvironments.add(this.openEnvironmentRef);
       this.malloyConfig = malloyConfig;
       this.apiConnections = apiConnections;
       this.destinations = [];
@@ -943,6 +956,7 @@ export class Environment {
       _package: Package,
       changedConnections: Iterable<string> = this.lastChangedConnections,
    ): void {
+      if (this.planRefreshesClosed) return;
       _package.markBuildPlanStale(changedConnections);
       // This edit's refresh supersedes a pending retry.
       const backoff = this.planRefreshBackoff.get(_package);
@@ -961,11 +975,13 @@ export class Environment {
     * is reloaded, replaced or deleted (it is then not a loaded copy).
     */
    private schedulePlanRetry(_package: Package): void {
+      if (this.planRefreshesClosed) return;
       const backoff = this.planRefreshBackoff.get(_package) ?? { failures: 0 };
       backoff.failures++;
       if (backoff.timer) clearTimeout(backoff.timer);
       backoff.timer = setTimeout(() => {
          backoff.timer = undefined;
+         if (this.planRefreshesClosed) return;
          if (!this.isLoadedCopy(_package)) {
             this.planRefreshBackoff.delete(_package);
             return;
@@ -990,6 +1006,7 @@ export class Environment {
    }
 
    private pumpPlanRefreshes(): void {
+      if (this.planRefreshesClosed) return;
       while (
          this.planRefreshesRunning < planRefreshConcurrency() &&
          this.planRefreshQueue.size > 0
@@ -4321,7 +4338,36 @@ export class Environment {
       }
    }
 
+   /**
+    * Stop every pending and future build-plan re-derivation and retry for this
+    * environment. Called when it is closed; a re-derivation already running
+    * finishes, but nothing is queued or retried after it.
+    */
+   public cancelPlanRefreshes(): void {
+      this.planRefreshesClosed = true;
+      for (const backoff of this.planRefreshBackoff.values()) {
+         if (backoff.timer) clearTimeout(backoff.timer);
+      }
+      this.planRefreshBackoff.clear();
+      this.planRefreshQueue.clear();
+      this.planRefreshRetrying.clear();
+      Environment.openEnvironments.delete(this.openEnvironmentRef);
+   }
+
+   /**
+    * {@link cancelPlanRefreshes} for every open environment: the server's
+    * graceful shutdown, so no retry timer fires while it exits.
+    */
+   public static cancelAllPlanRefreshes(): void {
+      for (const ref of [...Environment.openEnvironments]) {
+         const environment = ref.deref();
+         if (environment) environment.cancelPlanRefreshes();
+         else Environment.openEnvironments.delete(ref);
+      }
+   }
+
    public async closeAllConnections(): Promise<void> {
+      this.cancelPlanRefreshes();
       // Package configs (each with its own sandbox `duckdb`) first, or hard
       // unload leaks their handles.
       const packageReleases = await Promise.allSettled(
