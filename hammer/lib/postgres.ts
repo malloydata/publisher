@@ -5,7 +5,42 @@
 // catalog store AND a source warehouse (a `postgres` connection), mirroring the
 // tutorial. One server, several databases.
 
+import { createServer } from "node:net";
 import { log, run, runOrThrow, waitFor } from "./util";
+
+/** The label a hammer run stamps on the container it creates: its own pid. */
+const OWNER_LABEL = "hammer.pid";
+
+/**
+ * The container name a run uses when none is given: one per host port, so two
+ * runs on different ports never share (or tear down) a database, and a later
+ * `--reuse-pg` on the same port finds the container a `--keep` run left.
+ */
+export function defaultContainerName(hostPort: number): string {
+   return `publisher-hammer-pg-${hostPort}`;
+}
+
+/** True when nothing on this host is listening on `port`. */
+export function portIsFree(port: number): Promise<boolean> {
+   return new Promise((resolve) => {
+      const server = createServer();
+      server.once("error", () => resolve(false));
+      server.once("listening", () => server.close(() => resolve(true)));
+      // No host: all interfaces, as `docker run -p` publishes.
+      server.listen(port);
+   });
+}
+
+/** The first free port at or above `from`, trying `attempts` ports. */
+export async function firstFreePort(
+   from: number,
+   attempts = 100,
+): Promise<number> {
+   for (let port = from; port < from + attempts; port++) {
+      if (await portIsFree(port)) return port;
+   }
+   throw new Error(`no free port in ${from}-${from + attempts - 1}`);
+}
 
 export interface PostgresHandle {
    containerName: string;
@@ -44,11 +79,39 @@ export interface PostgresOptions {
    reuse?: boolean;
 }
 
+/**
+ * The pid that created `name`, from its owner label, or undefined for a
+ * container with no label (made by an older harness, or by hand).
+ */
+async function ownerPid(name: string): Promise<number | undefined> {
+   const r = await run([
+      "docker",
+      "inspect",
+      "-f",
+      `{{index .Config.Labels "${OWNER_LABEL}"}}`,
+      name,
+   ]);
+   const pid = Number(r.stdout.trim());
+   return r.code === 0 && Number.isInteger(pid) && pid > 0 ? pid : undefined;
+}
+
+function processAlive(pid: number): boolean {
+   try {
+      process.kill(pid, 0);
+      return true;
+   } catch (err) {
+      // EPERM: alive, owned by someone else.
+      return (err as NodeJS.ErrnoException).code === "EPERM";
+   }
+}
+
 export async function startPostgres(
    opts: PostgresOptions = {},
 ): Promise<PostgresHandle> {
-   const containerName = opts.containerName ?? "publisher-hammer-pg";
-   const hostPort = opts.hostPort ?? 55432;
+   const requestedPort = opts.hostPort ?? 55432;
+   const containerName =
+      opts.containerName ?? defaultContainerName(requestedPort);
+   let hostPort = requestedPort;
    const user = opts.user ?? "hammer";
    const password = opts.password ?? "hammer";
    const image = opts.image ?? "postgres:16";
@@ -65,10 +128,23 @@ export async function startPostgres(
    let justCreated = false;
 
    if (isUp && opts.reuse) {
+      // A container named with --pg-container may publish another port.
+      hostPort = (await publishedPort(containerName)) ?? requestedPort;
       log.ok(`reusing running Postgres container ${containerName}`);
    } else {
       justCreated = true;
       if (isUp || (await containerExists(containerName))) {
+         // Replace a container only when no live run owns it: a running
+         // container whose creating run is still alive is another run's
+         // database, and removing it fails that run mid-scenario.
+         const pid = await ownerPid(containerName);
+         if (isUp && pid !== undefined && processAlive(pid)) {
+            throw new Error(
+               `Postgres container ${containerName} belongs to a hammer run that is ` +
+                  `still going (pid ${pid}). Pass a different --pg-port or ` +
+                  `--pg-container, or --reuse-pg to share it.`,
+            );
+         }
          log.info(`removing stale container ${containerName}`);
          await run(["docker", "rm", "-f", containerName]);
       }
@@ -79,6 +155,8 @@ export async function startPostgres(
          "-d",
          "--name",
          containerName,
+         "--label",
+         `${OWNER_LABEL}=${process.pid}`,
          "-e",
          `POSTGRES_USER=${user}`,
          "-e",
@@ -183,6 +261,12 @@ export async function startPostgres(
          return parseCsv(r.stdout.trim());
       },
       async stop(): Promise<void> {
+         // Only the container this run created: a reused one belongs to the
+         // run (or person) that started it.
+         if (!justCreated) {
+            log.info(`leaving reused Postgres container ${containerName} up`);
+            return;
+         }
          log.info(`removing Postgres container ${containerName}`);
          await run(["docker", "rm", "-f", containerName]);
       },
@@ -260,6 +344,13 @@ function parseCsv(text: string): Record<string, string>[] {
       headers.forEach((h, i) => (row[h] = cells[i] ?? ""));
       return row;
    });
+}
+
+/** The host port a running container publishes for 5432, if any. */
+async function publishedPort(name: string): Promise<number | undefined> {
+   const r = await run(["docker", "port", name, "5432/tcp"]);
+   const match = /:(\d+)\s*$/m.exec(r.stdout.trim().split("\n")[0] ?? "");
+   return match ? Number(match[1]) : undefined;
 }
 
 async function containerExists(name: string): Promise<boolean> {
