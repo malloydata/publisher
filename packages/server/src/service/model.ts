@@ -2817,15 +2817,19 @@ export class Model {
                const message = firstLine(
                   error instanceof Error ? error.message : String(error),
                );
+               // The shape left this view off because it does not compile
+               // against the stored columns: report that compile error, not
+               // the unknown name the query then hits.
+               const own = shape.prunedViews(binding.sourceName).get(view);
                verdicts.push({
                   view,
                   verdict: "live",
-                  // The view itself is missing: the shape dropped this source's
-                  // views because one of them does not compile, which the
-                  // compiler reports as an unknown name, not as the cause.
-                  detail: message.startsWith(`'${view}' is not defined`)
-                     ? VIEWS_DROPPED_DETAIL
-                     : message,
+                  detail:
+                     own !== undefined
+                        ? firstLine(own)
+                        : message.startsWith(`'${view}' is not defined`)
+                          ? VIEWS_DROPPED_DETAIL
+                          : message,
                });
             }
          }
@@ -4823,15 +4827,15 @@ export class Model {
 }
 
 /**
- * Why a stored source's view is live when the serve shape left its views off:
- * the shape drops every view of a source when any one of them does not compile
- * against the stored columns, so this one is answered live too.
+ * Why a stored source's view is live when the serve shape left its views off
+ * without naming a view: the shape could not isolate one (the shape failed
+ * even without any view, or the file holding them could not be read), so it
+ * dropped the view category and each view is answered live.
  */
 const VIEWS_DROPPED_DETAIL =
-   "The serve shape left this source's views off: at least one of them does " +
-   "not compile against the stored columns (a field the table does not hold, " +
-   "or a file the shape could not read), " +
-   "and the shape then drops all of them, so each is answered live.";
+   "The serve shape left this source's views off: it could not compile them " +
+   "against the stored columns and could not single out the view at fault " +
+   "(or could not read the file that declares them), so each is answered live.";
 
 /**
  * A value for each given with no default, for a compile that only asks

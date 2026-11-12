@@ -113,16 +113,17 @@ describe("previewing a stored source's views", () => {
       expect(model.servedStorageSourceNames()).toEqual([]);
    });
 
-   // What serving does today: one view the stored columns cannot answer drops
-   // every view of the source from the shape, so the preview says so for each.
-   it("says a source's views are live when one of them cannot compile against the stored columns", async () => {
+   // One view the stored columns cannot answer goes live alone, named with
+   // its own compile error; the source's other views still serve.
+   it("names the one view that cannot compile against the stored columns, and serves the rest", async () => {
       const model = await buildModel(true);
       const views = (await model.previewStorageViews([BINDING])).get("X");
       expect(views?.map((v) => [v.view, v.verdict])).toEqual([
-         ["totals", "live"],
+         ["totals", "serves"],
          ["by_region", "live"],
       ]);
-      expect(views?.[0].detail).toContain("drops all of them");
+      // The column the table lacks, not the unknown view the query then hits.
+      expect(views?.[1].detail).toBe("'region' is not defined");
    });
 
    it("says nothing without a storage destination, since nothing serves from storage then", async () => {
