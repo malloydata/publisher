@@ -312,16 +312,43 @@ export function recordRoutingDecision(route: RouteDecision<RoutedExtra>): void {
  * The build manifest a run is handed, wrapped to record which entries Malloy
  * looked up and found: the colocated tables it substituted. Malloy looks a
  * persisted source up by its key in exactly one place (`persistedTableFor`),
- * so a hit is a table the SQL reads, with no reading of the SQL text.
+ * a plain `entries[buildId]`, so a hit is a table the SQL reads, with no
+ * reading of the SQL text.
+ *
+ * Malloy also ENUMERATES the entries before it compiles (it checks every
+ * entry's table path), and an enumeration reads each value too. Those reads
+ * are not lookups: recording them reported every bound table as having
+ * answered, including for a `#@ -persist` reader that recomputes and for a
+ * source Malloy never substitutes. An enumeration (`Object.entries`, spread,
+ * `for…in`) asks for a key's own-property descriptor and then, in the same
+ * synchronous step, reads that key's value; a lookup reads the value alone.
+ * So a read of the key whose descriptor was just asked for is not recorded.
+ * "Just" ends at the next read or the next microtask, whichever is first:
+ * `Object.keys` asks for descriptors and reads no value, and Malloy awaits
+ * (its connection lookups) between that and the compile that looks up.
  */
 export function recordingManifest(
    manifest: BuildManifest | undefined,
    read: Set<string>,
 ): BuildManifest | undefined {
    if (!manifest) return undefined;
+   let described: string | symbol | undefined;
    const entries = new Proxy(manifest.entries, {
+      getOwnPropertyDescriptor(target, key) {
+         described = key;
+         queueMicrotask(() => {
+            if (described === key) described = undefined;
+         });
+         return Reflect.getOwnPropertyDescriptor(target, key);
+      },
       get(target, key, receiver) {
-         if (typeof key === "string" && Object.hasOwn(target, key)) {
+         const enumerated = described === key;
+         described = undefined;
+         if (
+            !enumerated &&
+            typeof key === "string" &&
+            Object.hasOwn(target, key)
+         ) {
             read.add(key);
          }
          return Reflect.get(target, key, receiver);

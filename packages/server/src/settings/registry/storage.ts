@@ -167,7 +167,7 @@ export const storage = [
       default: false,
       description:
          "Refuse a publish where two persist sources resolve to the same table.",
-      notes: "Set to `true` to refuse a publish in which two persist sources of one package resolve to the same table in the same destination. Off, a collision is a warning; loading a package only ever warns.",
+      notes: "Set to `true` to refuse a publish in which two persist sources of one package resolve to the same table in the same destination. Off, a collision is a warning; loading a package only ever warns. Either way neither source is served from the shared table, which holds whichever build ran last: queries on both are answered live until each has its own `name=`.",
       aliases: { env: ["PERSIST_COLLISION_ENFORCE"] },
    }),
    setting({

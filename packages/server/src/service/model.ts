@@ -86,6 +86,7 @@ import type { SerializedModel } from "../package_load/protocol";
 import { decodeSerializedModel } from "../package_load/protocol_decode";
 import { BuildManifest } from "./materialization/types";
 import {
+   modelAnnotations,
    ownModelAnnotations,
    ownModelNoteObjects,
    ownModelNotes,
@@ -136,6 +137,7 @@ import {
    parseRouteTag,
    readAutorun,
    readStartingGivens,
+   routeHasKey,
    tagText,
 } from "./motly";
 import {
@@ -1292,6 +1294,38 @@ export class Model {
          ? { ...manifest, entries }
          : undefined;
    }
+
+   /**
+    * `manifest`, or undefined when this model does not carry `##!
+    * experimental.persistence` (its own or through an import). Malloy refuses
+    * a non-empty `buildManifest` against such a model, and the package's
+    * manifest is package-wide: one colocated table bound for another model
+    * (a `#@ persist` model beside it, or a `#(materialize)` source, whose
+    * author file needs no flag) would 400 every query here. A model without
+    * the flag has no persisted source for Malloy to substitute, so nothing it
+    * reads is lost. Presence only, decided as Malloy decides it.
+    */
+   private manifestIfPersistent(
+      manifest: BuildManifest | undefined,
+   ): BuildManifest | undefined {
+      const modelDef = this.modelDef;
+      if (!manifest || !modelDef) return undefined;
+      if (this.persistenceFlagMemo?.modelDef !== modelDef) {
+         this.persistenceFlagMemo = {
+            modelDef,
+            persistent: routeHasKey(
+               new Annotations(modelAnnotations(modelDef)),
+               "!",
+               "experimental",
+               "persistence",
+            ),
+         };
+      }
+      return this.persistenceFlagMemo.persistent ? manifest : undefined;
+   }
+
+   /** {@link manifestIfPersistent}'s answer for the model it was read from. */
+   private persistenceFlagMemo?: { modelDef: ModelDef; persistent: boolean };
 
    /** `includeHidden` lists sources the file does not export, which `queryableSources: "all"` still serves. */
    public getSources(includeHidden = false): ApiSource[] | undefined {
@@ -2729,6 +2763,16 @@ export class Model {
       return this.crossConnectionLeftOut ?? [];
    }
 
+   /**
+    * The sources this model's served copy answers from storage, by author
+    * `sourceID`: undefined when the served copy is off for this model, and
+    * `pending` before it has compiled.
+    */
+   public servedCopySourceIDs(): ReadonlySet<string> | "pending" | undefined {
+      if (!this.servedCopyEnabled()) return undefined;
+      return this.servedCopy.rerootedSourceIDs() ?? "pending";
+   }
+
    /** Why this model's served copy leaves sources unserved (empty when off). */
    public servedCopyProblems(): readonly ServedCopyProblem[] {
       if (!this.servedCopyEnabled()) return [];
@@ -2958,7 +3002,9 @@ export class Model {
       // and run all agree on the same freshness substitution.
       const buildManifest = this.resolveFreshBuildManifest();
       // Without rollup entries, for every runnable that is NOT the companion.
-      const liveBuildManifest = this.withoutPreaggregateEntries(buildManifest);
+      const liveBuildManifest = this.manifestIfPersistent(
+         this.withoutPreaggregateEntries(buildManifest),
+      );
       // See filterGivensToModelSurface. Resolved from the caller's own compiled
       // query, before routing or any graft replaces it.
       let querySurfaceGivens: Record<string, GivenValue> | undefined;

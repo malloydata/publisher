@@ -77,6 +77,7 @@ import {
    type ViewServeVerdict,
 } from "./serve/serve_verdict";
 import { storageTablePath } from "./run/storage_table_path";
+import { quoteManifestTablePath } from "../quoting";
 import { structsReachedFrom } from "../governance/ir/source_graph";
 import { CLASSIFICATION_COVERAGE } from "../classification";
 import { reachableSourceIDs } from "./plan/source_map";
@@ -703,9 +704,21 @@ export class PackageMaterialization {
       const eligibleEntityIds = eligibility?.eligibleEntityIds;
       const allowed: FreshnessManifest = {};
       let dropped = 0;
+      const dialects = this.dialectsByEntityId();
       for (const [sourceEntityId, entry] of Object.entries(entries)) {
          if (eligibleEntityIds?.has(sourceEntityId)) {
-            allowed[sourceEntityId] = entry;
+            // Malloy pastes `tableName` into `FROM` verbatim, so a table named
+            // by a reserved word (`name="order"`) or needing case preserved
+            // reaches the warehouse only quoted, as the builder CREATEd it and
+            // as `Package.reloadAllModels` binds it. The dialect is the plan's
+            // for this content address; a quoted name passes through.
+            const dialect = dialects.get(sourceEntityId);
+            allowed[sourceEntityId] = dialect
+               ? {
+                    ...entry,
+                    tableName: quoteManifestTablePath(entry.tableName, dialect),
+                 }
+               : entry;
             continue;
          }
          dropped++;
@@ -734,6 +747,17 @@ export class PackageMaterialization {
          );
       }
       this.recordManifestBinding(allowed);
+   }
+
+   /** Each planned source's dialect, by its content address. */
+   private dialectsByEntityId(): Map<string, string> {
+      const out = new Map<string, string>();
+      for (const source of Object.values(this.buildPlan?.sources ?? {})) {
+         if (source.sourceEntityId && source.dialect) {
+            out.set(source.sourceEntityId, source.dialect);
+         }
+      }
+      return out;
    }
 
    /**
@@ -1365,6 +1389,19 @@ export class PackageMaterialization {
             servedStorageNames.add(name);
          }
       }
+      // What the served copies answer from storage: every model's, since a
+      // source is re-rooted in each model that reads it.
+      let servedCopyOn = false;
+      let servedCopyPending = false;
+      const servedCopyIDs = new Set<string>();
+      for (const model of models.values()) {
+         const ids = model.servedCopySourceIDs?.();
+         if (ids === undefined) continue;
+         servedCopyOn = true;
+         if (ids === "pending") servedCopyPending = true;
+         else for (const id of ids) servedCopyIDs.add(id);
+      }
+      const materializeIDs = new Set(Object.keys(this.materializePlans));
       const now = new Date();
       const freshStorageNames = new Set(
          this.storageServeBindings
@@ -1415,6 +1452,13 @@ export class PackageMaterialization {
          servedStorageNames,
          freshStorageNames,
          rollupsOverStoredBase: this.rollupsOverStoredBase,
+         materialize: (sourceID) => {
+            if (!materializeIDs.has(sourceID)) return undefined;
+            if (!servedCopyOn) return "off";
+            return servedCopyIDs.has(sourceID) || servedCopyPending
+               ? "serves"
+               : "not_served";
+         },
          views,
          destinationConfigured: (name) => this.destinationConfigured(name),
          connectionCanHoldTable: (name) =>
@@ -1878,8 +1922,10 @@ export class PackageMaterialization {
     * storage kill switch never hides a collision.
     *
     * Warn-only unless `PERSIST_COLLISION_ENFORCE` is set, so packages published
-    * before this check still republish. Cross-version and cross-package
-    * collisions need the host's global view.
+    * before this check still republish. Either way none of them is served
+    * from the shared table (`sharedTables` in eligibility_collect.ts): it
+    * holds whichever build ran last, so each answers live. Cross-version and
+    * cross-package collisions need the host's global view.
     */
    persistenceCollisionWarnings(): string[] {
       const sources = this.buildPlan?.sources
@@ -1922,7 +1968,8 @@ export class PackageMaterialization {
                `"${name}" in destination "${destination}". Distinct sources ` +
                `must not share a physical target — the second build would ` +
                `overwrite the first, and a serve binding or GC drop for one ` +
-               `would affect the other. Give each a distinct #@ persist name=.`,
+               `would affect the other, so none is served from it and queries ` +
+               `on them are answered live. Give each a distinct #@ persist name=.`,
          );
       }
       return warnings;

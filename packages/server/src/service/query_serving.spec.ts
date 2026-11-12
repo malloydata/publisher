@@ -210,6 +210,20 @@ describe("recordingManifest", () => {
       expect([...read]).toEqual(["a"]);
    });
 
+   it("does not count Malloy's enumeration of the entries as a lookup", async () => {
+      const read = new Set<string>();
+      const wrapped = recordingManifest(manifest(["a", "b"]), read)!;
+      // Malloy checks every entry's table path before it compiles.
+      for (const [, entry] of Object.entries(wrapped.entries)) void entry;
+      void { ...wrapped.entries };
+      expect(Object.keys(wrapped.entries)).toEqual(["a", "b"]);
+      expect([...read]).toEqual([]);
+      // It awaits (connection lookups) before the compile looks a table up.
+      await Promise.resolve();
+      void wrapped.entries["b"];
+      expect([...read]).toEqual(["b"]);
+   });
+
    it("is undefined for no manifest", () => {
       expect(recordingManifest(undefined, new Set())).toBeUndefined();
    });
