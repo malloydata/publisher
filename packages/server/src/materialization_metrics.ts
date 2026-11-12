@@ -112,7 +112,7 @@ const sourcesCounter = lazyCounter(
 );
 const annotationFindingsCounter = lazyCounter(
    "publisher_annotation_findings_total",
-   "Coded findings on authored #@ annotations, counted once each time a package is loaded and accepted for serving (boot, add, publish, reload; a refused publish and a gate re-run count nothing). Labels: code (e.g. 'persist-unknown-key', 'persist-unparseable'), tier ('malformed' for an error-severity finding, 'unservable' for a warning).",
+   "Coded findings on authored annotations (the #@ route, and the near-miss and malformed-route scan over every route), counted once each time a package is loaded and accepted for serving (boot, add, publish, reload; a refused publish and a gate re-run count nothing). Labels: code (e.g. 'persist-unknown-key', 'persist-unparseable', 'annotation-near-miss'), tier ('malformed' for an error-severity finding, 'unservable' for a warning).",
 );
 const incrementalStepCounter = lazyCounter(
    "publisher_materialization_incremental_step_total",
@@ -200,6 +200,15 @@ const storageServeRoutingCounter = lazyCounter(
       "denominator. NOTE 'live_fallback' here means the transform was INELIGIBLE, " +
       "which QueryResult.servedFrom reports as null - that field's " +
       "'live_fallback' is this counter's 'runtime_live_fallback'.",
+);
+const queryVariantRoutingCounter = lazyCounter(
+   "publisher_query_variant_routing_total",
+   "The variant router's decision on each candidate it considered for a query, " +
+      "one count per candidate (materialization v2, #6272). Labels: variant " +
+      "('storage'|'rollup'), outcome ('used'|'skipped'), reason ('none' when used; " +
+      "'row_level_gate'|'not_applicable'|'does_not_answer' when skipped, and " +
+      "'run_failed' for a chosen variant whose run failed and fell back live). " +
+      "Counted once the query is answered. A query with no candidate records nothing.",
 );
 const storageTableRetainedCounter = lazyCounter(
    "publisher_storage_tables_retained_total",
@@ -623,6 +632,23 @@ export function recordStorageServeRouting(
       outcome,
       ...(origin ? { origin } : {}),
    });
+}
+
+/**
+ * One candidate of a routed query: what the router did with it, and why.
+ * `run_failed` is a chosen variant whose run failed and fell back live.
+ */
+export function recordQueryVariantRouting(
+   variant: "storage" | "rollup",
+   outcome: "used" | "skipped",
+   reason:
+      | "none"
+      | "row_level_gate"
+      | "not_applicable"
+      | "does_not_answer"
+      | "run_failed",
+): void {
+   queryVariantRoutingCounter().add(1, { variant, outcome, reason });
 }
 
 /**

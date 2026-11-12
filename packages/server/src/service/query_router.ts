@@ -23,6 +23,7 @@
  */
 
 import type { QueryMaterializer } from "@malloydata/malloy";
+import { recordQueryVariantRouting } from "../materialization_metrics";
 
 /** The kinds of candidate the router knows, in their usual catalog order. */
 export type VariantKind = "storage" | "rollup";
@@ -110,6 +111,39 @@ export type RouteDecision<Extra> =
  * its variant exists for this model, and marks it inapplicable for this request.
  */
 export async function routeQuery<Extra>(
+   variants: ReadonlyArray<Variant<Extra>>,
+   blockedByGate: () => Promise<boolean>,
+   /**
+    * Count each candidate in `publisher_query_variant_routing_total` now. Off
+    * when the caller counts after the run instead ({@link recordVariantRouting}),
+    * so a variant whose run fails and falls back live is not counted `used`.
+    */
+   { recordMetrics = true }: { recordMetrics?: boolean } = {},
+): Promise<RouteDecision<Extra>> {
+   const decision = await decideRoute(variants, blockedByGate);
+   if (recordMetrics) recordVariantRouting(decision.considered);
+   return decision;
+}
+
+/**
+ * One count per candidate the router considered. With `runFailed`, the
+ * variant it chose failed at run time and the query was answered live, so
+ * that variant counts as `skipped` with reason `run_failed`, not `used`.
+ */
+export function recordVariantRouting(
+   considered: readonly ConsideredVariant[],
+   runFailed = false,
+): void {
+   for (const c of considered) {
+      if (runFailed && c.outcome === "used") {
+         recordQueryVariantRouting(c.kind, "skipped", "run_failed");
+      } else {
+         recordQueryVariantRouting(c.kind, c.outcome, c.reason ?? "none");
+      }
+   }
+}
+
+async function decideRoute<Extra>(
    variants: ReadonlyArray<Variant<Extra>>,
    blockedByGate: () => Promise<boolean>,
 ): Promise<RouteDecision<Extra>> {

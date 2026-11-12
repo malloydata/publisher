@@ -64,6 +64,14 @@ function readNote(
    return undefined;
 }
 
+/**
+ * The route a note is on as Publisher reads it (glued prefixes included), or
+ * `undefined` when it is on no route.
+ */
+export function publisherRouteOf(text: string): string | undefined {
+   return readNote(text)?.route;
+}
+
 /** Whether a note is on `route`, as Publisher reads it (glued prefixes included). */
 export function isOnRoute(text: string, route: string): boolean {
    return readNote(text)?.route === route;
@@ -288,7 +296,7 @@ function nearestKey(
 }
 
 /** Levenshtein distance between two short strings. */
-function editDistance(a: string, b: string): number {
+export function editDistance(a: string, b: string): number {
    let previous = Array.from({ length: b.length + 1 }, (_, j) => j);
    for (let i = 1; i <= a.length; i++) {
       const current = [i];
@@ -400,4 +408,89 @@ export function readRouteList(
    if (values.length === 0) return fault("names nothing");
    if (values.some((v) => v === "")) return fault("names an empty value");
    return { values };
+}
+
+const REGEXP_SPECIAL = /[.*+?^${}()|[\]\\]/g;
+
+/** A route name folded for comparison: lower case, no separators. */
+export function foldRouteName(name: string): string {
+   return name.toLowerCase().replace(/[-_\s]/g, "");
+}
+
+/** The two patterns {@link isRouteAttempt} tests, compiled once per name list. */
+interface RouteAttemptPatterns {
+   /** A malformed-prefix note reaching for a name: `#( doc )`, `#doc`. */
+   malformed: RegExp;
+   /** A MOTLY payload that is a bracketed name: `# (doc) …`. */
+   motly: RegExp;
+}
+
+const routeAttemptPatternCache = new Map<string, RouteAttemptPatterns>();
+
+/**
+ * {@link isRouteAttempt}'s patterns for `names`, compiled on first use and
+ * cached: the load sweep and the near-miss scan test every note against the
+ * same few lists. `names` must not be empty (see isRouteAttempt).
+ */
+export function routeAttemptPatterns(
+   names: readonly string[],
+): RouteAttemptPatterns {
+   const key = names.join("\u0000");
+   const cached = routeAttemptPatternCache.get(key);
+   if (cached) return cached;
+   const words = names
+      .map((name) => name.replace(REGEXP_SPECIAL, "\\$&"))
+      .join("|");
+   const patterns = {
+      malformed: new RegExp(
+         `^##?\\|?[ \\t]*(?:[([{<][ \\t]*)?(?:${words})`,
+         "iu",
+      ),
+      motly: new RegExp(
+         `^[ \\t]*[([{<][ \\t]*(?:${words})[ \\t]*[)\\]}>]`,
+         "iu",
+      ),
+   };
+   routeAttemptPatternCache.set(key, patterns);
+   return patterns;
+}
+
+/**
+ * Whether `text` reads as an author reaching for `route`, written as one of
+ * `names` (case-insensitive), while Malloy routes it somewhere else, so no
+ * reader of `route` ever sees it. Keyed on Malloy's route, so it cannot claim
+ * another app's namespace:
+ *
+ *  - `""` (a MOTLY tag): only when the payload is a bracketed name, as in
+ *    `# (doc) …`; an ordinary render tag never matches.
+ *  - `undefined` (a malformed prefix): when the text was reaching for one of
+ *    the names, as in `#( doc )`, `#(doc)X`, `#doc`.
+ *  - any other route: when it is one of the names spelled another way
+ *    (`#(Doc)`), never a different word.
+ *
+ * `names` must not be empty: an empty alternation would match every
+ * malformed note. Shared by the gate refusal and the near-miss scan.
+ */
+export function isRouteAttempt(
+   text: string,
+   route: string,
+   names: readonly string[],
+): boolean {
+   if (names.length === 0) {
+      throw new Error(
+         `No near-miss spellings for route \`${route}\`: an empty alternation ` +
+            "matches every malformed note.",
+      );
+   }
+   const trimmed = text.trimStart();
+   const noted = routeOfNote(trimmed);
+   if (noted === route) return false;
+   if (noted === undefined) {
+      return routeAttemptPatterns(names).malformed.test(trimmed);
+   }
+   if (noted === "") {
+      return routeAttemptPatterns(names).motly.test(payloadOfNote(trimmed));
+   }
+   const lowered = noted.toLowerCase();
+   return names.some((name) => name.toLowerCase() === lowered);
 }

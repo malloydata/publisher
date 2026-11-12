@@ -37,7 +37,14 @@
  */
 
 import { createRequire } from "module";
-import { payloadOfNote, routeOfNote } from "./annotation_reader";
+import {
+   editDistance,
+   foldRouteName,
+   isRouteAttempt,
+   payloadOfNote,
+   routeAttemptPatterns,
+   routeOfNote,
+} from "./annotation_reader";
 import { BadRequestError, ModelCompilationError } from "../errors";
 import { logger } from "../logger";
 import { type AnnotationNote } from "./annotations";
@@ -83,7 +90,7 @@ export const AUTHORIZE_TAG_LIKE = String.raw`##?\|?[ \t]*(?:[([{<][ \t]*)?(?:(?:
 const AUTHORIZE_ANNOTATION_ANYWHERE = new RegExp(AUTHORIZE_TAG_LIKE, "iu");
 
 /**
- * Every spelling that reads as an author reaching for `route`, case-insensitive
+ * Every spelling that reads as an author reaching for a gate `route`, case-insensitive
  * — the exact route word, its ordinary hyphen/underscore/no-separator variants,
  * and (for a compound route name) the same set with its two words transposed.
  * Transposed spellings like `#(authorize-source)` are distinct Malloy routes,
@@ -93,7 +100,7 @@ const AUTHORIZE_ANNOTATION_ANYWHERE = new RegExp(AUTHORIZE_TAG_LIKE, "iu");
  * `#(AUTHORIZE)` / `#(Authorize)` / `# (authorize)` — distinct routes to
  * Malloy.
  *
- * No entry may be an empty list ({@link nearMissWordAlternation} throws): an
+ * No entry may be an empty list ({@link isRouteAttempt} throws): an
  * empty alternation matches EVERY route-`undefined` note (`#percent`,
  * `#currency`, `#drill`), failing loads over gates nobody wrote.
  *
@@ -132,47 +139,17 @@ function nearMissRouteNames(route: string): readonly string[] {
    }
 }
 
-const REGEXP_SPECIAL = /[.*+?^${}()|[\]\\]/g;
-
-/** `nearMissRouteNames(route)`, escaped and `|`-joined. Throws on an empty
- *  list — see {@link nearMissRouteNames}. */
-function nearMissWordAlternation(route: string): string {
-   const names = nearMissRouteNames(route);
-   if (names.length === 0) {
-      throw new Error(
-         `No near-miss spellings for authorize route \`${route}\` — an empty ` +
-            "alternation matches every malformed-prefix note, which would " +
-            "fail package loads over annotations nobody wrote.",
-      );
-   }
-   return names.map((name) => name.replace(REGEXP_SPECIAL, "\\$&")).join("|");
-}
-
-/**
- * A MOTLY (route `""`) payload that is an author reaching for `route`: optional
- * space/tab, an opening bracket, the route word, a closing bracket. The
- * REQUIRED bracket keeps ordinary render tags (`# bar_chart`, `# size=lg`) and
- * an unbracketed MOTLY tag named `authorize` out.
- */
-function motlyAuthorizePayloadPattern(route: string): RegExp {
-   return new RegExp(
-      `^[ \\t]*[([{<][ \\t]*(?:${nearMissWordAlternation(route)})[ \\t]*[)\\]}>]`,
-      "iu",
-   );
-}
-
 /**
  * A malformed-prefix note (route `undefined`) that was reaching for `route` —
- * `#( authorize )`, `#(authorize )`, `#(authorize)X`, `#authorize`.
+ * `#( authorize )`, `#(authorize )`, `#(authorize)X`, `#authorize`. It is the
+ * very pattern {@link isRouteAttempt} tests for the route, so a spec over this
+ * one pins the refusal's real language.
  *
  * A text match is safe here only BECAUSE the route is already `undefined`: it
  * cannot steal a route that belongs to somebody else.
  */
 export function malformedAuthorizeAttemptPattern(route: string): RegExp {
-   return new RegExp(
-      `^##?\\|?[ \\t]*(?:[([{<][ \\t]*)?(?:${nearMissWordAlternation(route)})`,
-      "iu",
-   );
+   return routeAttemptPatterns(nearMissRouteNames(route)).malformed;
 }
 
 /**
@@ -539,7 +516,7 @@ export function containsAuthorizeAnnotationTag(texts: string[]): boolean {
  * Keyed on Malloy's ROUTE, so it cannot refuse another app's namespace:
  *
  *  - `""` (MOTLY) — a near miss only if the payload is a bracketed route word
- *    ({@link motlyAuthorizePayloadPattern}); render tags pass through.
+ *    ({@link isRouteAttempt}); render tags pass through.
  *  - `undefined` (malformed prefix) — a near miss if the text was reaching for
  *    the route ({@link malformedAuthorizeAttemptPattern}).
  *  - any other NAME — somebody else's route (`#(authorize-v2)`,
@@ -553,28 +530,56 @@ export function collectAuthorizeNearMisses(
    texts: Iterable<string>,
    route: string,
 ): string[] {
-   const motlyPattern = motlyAuthorizePayloadPattern(route);
-   const malformedPattern = malformedAuthorizeAttemptPattern(route);
-   const nearMissNames = new Set(
-      nearMissRouteNames(route).map((name) => name.toLowerCase()),
-   );
+   const names = nearMissRouteNames(route);
    const found: string[] = [];
    for (const text of texts) {
-      const trimmed = text.trimStart();
-      const noted = routeOfNote(trimmed);
-      if (noted === route) continue; // a real gate
-      const nearMiss =
-         noted === undefined
-            ? malformedPattern.test(trimmed)
-            : noted === ""
-              ? motlyPattern.test(payloadOfNote(trimmed))
-              : nearMissNames.has(noted.toLowerCase());
-      if (!nearMiss) continue;
+      if (
+         !isRouteAttempt(text, route, names) &&
+         misspelledGateRoute(text) !== route
+      ) {
+         continue;
+      }
       // The first line only — the part that decides routing — so the gate
       // expression stays out of the load error.
-      found.push(trimmed.split(/[\r\n]/, 1)[0]);
+      found.push(text.trimStart().split(/[\r\n]/, 1)[0]);
    }
    return found;
+}
+
+/**
+ * The gate route a note misspells (`#(authorise)`, `#(acess_filter)`,
+ * `# (autorize)`), or `undefined`: its route word within two edits of a gate
+ * route, folded. The fixed spellings in {@link nearMissRouteNames} catch case,
+ * separators and spacing; this catches the typos they cannot list. A misspelled
+ * gate is refused like those, since loading it inert leaves the source open.
+ *
+ * Not a misspelling: a word that contains a gate's name (`#(authorized)`,
+ * `#(reauthorize)`, `#(access_filters)`), which reads as another app's route, and a name with a
+ * `/`, `.` or `:` (a URL or version). The near-miss scan still warns on those.
+ */
+export function misspelledGateRoute(text: string): string | undefined {
+   const trimmed = text.trimStart();
+   const noted = routeOfNote(trimmed);
+   let name: string | undefined;
+   if (noted === undefined) {
+      name = /^##?\|?[ \t]*[([{<]?[ \t]*([A-Za-z_][\w-]*)/.exec(trimmed)?.[1];
+   } else if (noted === "") {
+      name = /^[ \t]*[([{<][ \t]*([A-Za-z_][\w-]*)[ \t]*[)\]}>]/.exec(
+         payloadOfNote(trimmed),
+      )?.[1];
+   } else {
+      name = noted;
+   }
+   if (name === undefined || /[/.:]/.test(name)) return undefined;
+   if (RECOGNIZED_AUTHORIZE_SPELLINGS.includes(name)) return undefined;
+   const folded = foldRouteName(name);
+   for (const route of RECOGNIZED_AUTHORIZE_SPELLINGS) {
+      const target = foldRouteName(route);
+      if (folded.includes(target)) continue;
+      const distance = editDistance(folded, target);
+      if (distance >= 1 && distance <= 2) return route;
+   }
+   return undefined;
 }
 
 /**
@@ -600,6 +605,8 @@ export function collectAuthorizeNearMissesAllRoutes(
  * `#(rowauthorize)` author to the lock.
  */
 function guessedNearMissRoute(text: string): string {
+   const misspelled = misspelledGateRoute(text);
+   if (misspelled !== undefined) return misspelled;
    const lower = text.toLowerCase();
    let best = ACCESS_FILTER_ROUTE;
    let bestLength = 0;
@@ -619,6 +626,19 @@ function guessedNearMissRoute(text: string): string {
  *
  * Names every finding at once, so one reload fixes them all.
  */
+/**
+ * One near-miss spelling as the load refusal names it: its first line and the
+ * gate it meant, or `undefined` when `text` is not a gate near miss. For a
+ * surface that reports the refusal per note (`compile_model` at `file` scope).
+ */
+export function gateNearMissOf(text: string): string | undefined {
+   const [first] = collectAuthorizeNearMissesAllRoutes([text]);
+   return first === undefined
+      ? undefined
+      : `\`${first}\` is never enforced (meant \`#(${guessedNearMissRoute(first)})\`?): ` +
+           `the model will not load until it is spelled as the gate it means`;
+}
+
 export function assertNoAuthorizeNearMisses(found: readonly string[]): void {
    if (found.length === 0) return;
    const unique = [...new Set(found)];
