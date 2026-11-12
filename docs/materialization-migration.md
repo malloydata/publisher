@@ -49,14 +49,19 @@ source's own query produces. The served copy then reads that table under the sou
 its extensions, views, joins, named queries and importing files are unchanged
 ([the served copy](materialization.md#the-served-copy-in-development-publisher_materialize)).
 
-- **No `##! experimental.persistence` in your file.** The flag lives in the build source Publisher
-  generates. A file that also has v1 `#@ persist` sources still needs it.
+- **No `##! experimental.persistence` in your file**, for a `storage=` source. The flag lives in the
+  build source Publisher generates. A file that also has v1 `#@ persist` sources still needs it, and
+  so, today, does a file with a colocated `#(materialize)` source ([below](#colocated-build-into-the-sources-own-warehouse)).
+- **An extension does not inherit `#(materialize)`.** Only the source whose own statement carries it
+  is built. A source that extends or renames it is not a second table: it reads the materialized
+  source's table through the served copy, as its own text says.
 - **One annotation per source.** A source that carries both `#(materialize)` and its own
   `#@ persist` is not built, and is reported as `materialize-not-built`.
 - **A declaration Publisher cannot build serves live, with a warning.** It is never refused. The
   warning is `materialize-not-built`, and it names the reason.
 - **`#(materialize)` takes only these keys:** `name`, `storage`, `refresh`, `watermark`,
-  `merge_key`, `partition`, `freshness.*` and `queryMetadata.*`. Any other key, a misspelled
+  `merge_key`, `partition`, `freshness.*`, `queryMetadata.*`, and `inline` (v2 only; [joins](#joins-reference-by-default-inline-to-store-a-join_one)).
+  Any other key, a misspelled
   `name=` for example, is a `materialize-not-built` warning rather than a default table. v1's
   `realization=` has no v2 form.
 
@@ -90,6 +95,11 @@ is Publisher's, and the existing checks refuse two sources that land on one tabl
 **Builds today. Serving is coming in phase 3.** The build plan builds the table under your
 source's name, but queries on the source are still computed live from its warehouse. Keep the v1
 form for anything that needs to be served from its table now.
+
+**Keep `##! experimental.persistence` in a file with a colocated `#(materialize)` source.** Without
+it, once the table is built, queries on that model answer 400 (`A non-empty buildManifest was
+supplied, but the model is missing ##! experimental.persistence`). This is a defect, and the
+colocated serving work removes the need for the flag.
 
 ```malloy
 // v1
@@ -148,7 +158,8 @@ its `where:` already applied.
 **Accepted and carried; not yet verified end to end.** The keys are copied onto the generated build
 source and checked by the [same rules](materialization.md#incremental-refresh), including the
 dialect rule: Postgres, BigQuery and Snowflake only, so a DuckDB source must say `refresh="full"`.
-Rolling windows (a current-time `where:`) with the incremental delete arrive later in phase 3.
+A [rolling window](#a-rolling-window-a-current-time-where) adds a delete below the moving cut-off
+to each incremental refresh.
 
 ```malloy
 // v1
@@ -184,6 +195,67 @@ appears in the build plan, and the served copy drops a stale table per query, as
 
 The package-level `materialization` block in `publisher.json` (`schedule`, `freshness`, `scope`)
 applies to `#(materialize)` sources as it does to v1 ones.
+
+### A `where:` that reads a given
+
+**Works**, with `storage=`. The given-reading term is left out of the build and applied at read
+with each caller's value, as a v1 `#@ persist storage=` source does when the term is in its
+`extend`. v2 needs no query shape for it.
+
+```malloy
+// v1
+##! experimental { persistence givens }
+given: ORG_ID :: number is 1
+#@ persist name="scoped" storage="lake"
+source: scoped is raw -> { select: * } extend { where: org_id = $ORG_ID }
+
+// v2
+##! experimental { givens }
+given: ORG_ID :: number is 1
+#(materialize) storage="lake"
+source: scoped is raw extend { where: org_id = $ORG_ID }
+```
+
+The gates v1 applies to a given still apply, because the generated build source is judged like any
+`#@ persist` source: a given in a declared `dimension:` or `measure:`, or in a join's `on:`, is
+refused, and the source serves live.
+
+### A rolling window: a current-time `where:`
+
+**Works**, v2 only. A `where:` that keeps the last stretch of time (`ts >= now - 30 days`) builds as
+of the build and is re-applied at every read at the read's own clock. Other shapes that read `now`
+leave the source unbuilt, and it serves live. The rules are in
+[materialization.md](materialization.md#the-served-copy-in-development-publisher_materialize).
+
+```malloy
+#(materialize) storage="lake" refresh="full"
+source: recent_orders is orders extend {
+  where: order_date >= now - 30 days
+}
+```
+
+### Joins: reference by default, `inline=` to store a join_one
+
+**Works**, v2 only. A `#(materialize)` table holds the source's own rows, and its joins read the
+joined source at query time, from that source's table when it is materialized in the same
+destination. `inline=["j"]` on a join_one also stores what reads through `j` as `j__<field>`
+columns, after checking the join key is unique. A Malloy query through `j` still reads the join, so
+it is answered live unless the joined source is stored in the same destination.
+
+```malloy
+#(materialize) storage="lake" inline=["regions"]
+source: orders_wide is orders extend {
+  join_one: regions with region_id
+}
+```
+
+### A source with a row-level gate
+
+**Behind its own switch, off by default.** With `PUBLISHER_MATERIALIZE_GATED_SOURCES` on as well, a
+`#(materialize) storage=` source whose own `#(authorize)` or `#(access_filter)` compiles to a row
+filter is built and served from the served copy with the gate grafted on. Off, it is refused as a
+gated `#@ persist storage=` source is, and serves live. It stays off until a security review of
+storing gated sources' columns in the managed tier.
 
 <a id="persist-opt-out"></a>
 
@@ -241,16 +313,14 @@ inherited measures. A `#(preaggregate)` written today is not read.
 
 Each of these is a later pull request. The warning text names the reason when it applies.
 
-| v2 form                                                                      | Status                                                              |
-| ---------------------------------------------------------------------------- | ------------------------------------------------------------------- |
-| Serving a colocated `#(materialize)` table                                   | Phase 3. It builds, and queries are computed live                   |
-| `inline=[…]`: a join stored in the row                                       | Phase 3 (joins). Not built; `materialize-not-built`                 |
-| A `where:` that reads a given (`$ORG_ID`), left out of the build             | Phase 3. Refused by the same gates as v1, so the source serves live |
-| A current-time `where:` (a rolling window)                                   | Phase 3 (table behaviours)                                          |
-| The `name=` view, and a materialized extension built from its parent's table | Phase 3                                                             |
-| A dimension that depends on the query time zone, computed at read            | Phase 3. Today it is stored as the build computed it                |
-| `#(preaggregate)`, and routing a persisted view (`#@ persist` on a view)     | Phase 4                                                             |
-| Generations, as-of reads, and the control plane's promote and cleanup        | Phase 5                                                             |
+| v2 form                                                                      | Status                                                               |
+| ---------------------------------------------------------------------------- | -------------------------------------------------------------------- |
+| Serving a colocated `#(materialize)` table                                   | Phase 3. It builds, and queries are computed live                    |
+| `inline=` on a join_many or join_cross                                       | Phase 4. Not built; `materialize-not-built`                          |
+| The `name=` view, and a materialized extension built from its parent's table | Phase 3                                                              |
+| A stored computed dimension under a query's own `timezone:`                  | Answered live today, since the build computed it in the default zone |
+| `#(preaggregate)`, and routing a persisted view (`#@ persist` on a view)     | Phase 4                                                              |
+| Generations, as-of reads, and the control plane's promote and cleanup        | Phase 5                                                              |
 
 ## Addresses: what moves once
 
@@ -281,10 +351,12 @@ it. The build plan, the manifest and reuse all key on it.
   `PUBLISHER_PERSIST_ADDRESS_INCLUDES_DESTINATION` are read at startup. Workers that disagree plan
   different sources or compute different addresses for one source.
 - **Read warning codes as open strings.** This page adds `deprecated-persist-opt-out`, and reserves
-  `deprecated-preaggregate-annotation` (not emitted until phase 4), beside `materialize-not-built` and
-  `served-copy-not-served`. None is an error, and the package loads.
-- **Later phases add more to watch.** The `name=` view is a new, comment-marked warehouse object, and
-  the sweeper, the table dropper and package delete must recognize it. A rolling window adds a delete
-  to the incremental ledger. Both arrive in phase 3.
-  Generations and promote arrive in phase 5. See
+  `deprecated-preaggregate-annotation` (not emitted until phase 4), beside `materialize-not-built`,
+  `served-copy-not-served`, `materialization-destination-missing` and
+  `materialization-connection-cannot-hold-table`. None is an error, and the package loads.
+- **A rolling window deletes as well as appends.** An incremental refresh of a source with a
+  rolling window deletes the rows below the new cut-off in the same transaction.
+- **Later phases add more to watch.** The `name=` view (phase 3) is a new, comment-marked warehouse
+  object, and the sweeper, the table dropper and package delete must recognize it. Generations and
+  promote arrive in phase 5. See
   [the plan's control-plane contract](materialization-v2-plan.md#ownership).
