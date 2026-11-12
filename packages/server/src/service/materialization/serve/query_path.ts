@@ -365,7 +365,8 @@ export function buildQueryPath(input: QueryPathInput): ApiQueryPath {
 /**
  * Whether a serve verdict explains a skip better than the query did. Only
  * skips where the router never tried the table: `NOT_BUILT` and `WARNED`
- * (nothing to try), and `CONTRACT` when the verdict is the same gate. A skip
+ * (nothing to try), and `CONTRACT` when the verdict is the same gate or a
+ * refusal (a gated extension the eligibility gate refused at build). A skip
  * the router reached by trying the table (`MISSING_FIELD`, `GRAIN_TOO_COARSE`,
  * `COUNT_SEMANTICS`, …) is this query's own reason, and a caller who can reach
  * a table no published entry point reaches is seeing exactly that; `STALE` and
@@ -373,7 +374,10 @@ export function buildQueryPath(input: QueryPathInput): ApiQueryPath {
  */
 function verdictExplains(reason: SkipReason | undefined, verdict: string) {
    if (reason === "NOT_BUILT" || reason === "WARNED") return true;
-   return reason === "CONTRACT" && verdict === "row_level_gate";
+   return (
+      reason === "CONTRACT" &&
+      (verdict === "row_level_gate" || verdict === "refused")
+   );
 }
 
 /**
@@ -381,7 +385,8 @@ function verdictExplains(reason: SkipReason | undefined, verdict: string) {
  * be answered from is reported `WARNED`, with the verdict's reason as `code`,
  * in place of what this query alone showed when the verdict explains it
  * ({@link verdictExplains}): `NOT_BUILT` for a source the bind refuses,
- * `CONTRACT` for a rollup every entry point gates. A table that answered stays
+ * `CONTRACT` for a rollup every entry point gates or a gated source the build
+ * refused. A table that answered stays
  * `used`. Returns one warning per such table whose source the caller may see.
  */
 function applyServeVerdicts(

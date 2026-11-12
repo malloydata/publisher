@@ -138,6 +138,14 @@ export interface PackageMaterializationOwner {
 export const BUILD_PLAN_REFRESH_WAIT_MS = 10_000;
 
 /**
+ * The code on the warning for a `#@ persist` source a compile-time gate
+ * refused (a row-level gate, a free parameter, a given in the persisted query,
+ * or a `storage=` source the storage gate refuses). Not counted as an
+ * annotation finding: the annotation is well formed.
+ */
+export const PERSIST_SOURCE_REFUSED_CODE = "persist-source-refused";
+
+/**
  * A package's materialization state: its build plan and which sources may be
  * served from a materialized table, the manifest it is bound to (both tiers),
  * the serve routing it pushes onto its models, and the persistence-policy
@@ -961,7 +969,10 @@ export class PackageMaterialization {
 
    /**
     * Warnings for the `#@ persist` sources the compile-time gates refused,
-    * carrying the gate's message verbatim so there is one wording to maintain.
+    * coded {@link PERSIST_SOURCE_REFUSED_CODE}. Not an annotation finding: the
+    * annotation is well formed; the source it sits on cannot be materialized.
+    * Each carries the gate's message verbatim, so there is one wording to
+    * maintain.
     * A rollup's `subject` is its BASE source (its own name is generated), and
     * is omitted when the base is unavailable.
     */
@@ -974,7 +985,11 @@ export class PackageMaterialization {
                ? this.buildPlan?.sources?.[sourceID]?.preaggregate
                     ?.baseSourceName
                : source.name;
-         const warning: ApiPackageWarning = { message: source.message };
+         const warning: ApiPackageWarning = {
+            message: source.message,
+            code: PERSIST_SOURCE_REFUSED_CODE,
+            severity: "warn",
+         };
          if (source.modelPath) warning.model = source.modelPath;
          if (subject) warning.subject = subject;
          return warning;

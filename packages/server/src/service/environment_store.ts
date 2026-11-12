@@ -675,12 +675,18 @@ export class EnvironmentStore
                   // A refused publish places nothing. A local location can be
                   // read again, so the package's next access publishes it
                   // again (Environment.setConfiguredPublishRetry); a remote
-                  // one's mount is removed below.
+                  // one's mount is removed below, so its reads answer this
+                  // error until the next --init.
                   if (local) {
                      environment.setConfiguredPublishRetry(
                         configured.name,
                         publish,
                         () => localPackageFingerprint(sourceLocation),
+                     );
+                  } else {
+                     environment.setConfiguredPublishRefused(
+                        configured.name,
+                        error,
                      );
                   }
                   throw error;

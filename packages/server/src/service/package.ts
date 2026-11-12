@@ -1,6 +1,7 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
+import { INCREMENTAL_NO_MERGE_KEY_CODE } from "./materialization/plan/incremental_policy";
 import * as fs from "fs/promises";
 import * as path from "path";
 import { pathToFileURL } from "url";
@@ -2273,6 +2274,11 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
          // curates, not an annotation finding.
          ...this.preaggregateAccessWarnings(),
          ...this.annotationNearMissWarnings(),
+         // The incremental declaration's own advisory is about the annotation;
+         // the shared-address one is about the SQL, so it is not counted.
+         ...this.materialization
+            .incrementalPolicyAdvisories()
+            .filter((w) => w.code === INCREMENTAL_NO_MERGE_KEY_CODE),
       ].filter((warning) => warning.code !== undefined);
    }
 

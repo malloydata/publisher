@@ -482,6 +482,81 @@ describe("buildQueryPath, reading the serve verdicts", () => {
       expect(report.warnings?.map((w) => w.code)).toEqual(["row_level_gate"]);
    });
 
+   it("reports a gated source the build refused as WARNED refused, in place of CONTRACT, on either tier", () => {
+      // storage=: the router skipped the stored table for the entry point's
+      // gate; the verdict knows the build refused the gated source outright.
+      const daily = storageOf("daily");
+      const storageReport = buildQueryPath(
+         input({
+            catalog: {
+               ...catalog([planned("daily")]),
+               liveVerdicts: verdicts({
+                  "storage:id_daily": {
+                     reason: "refused",
+                     sourceName: "daily",
+                  },
+               }),
+            },
+            storage: { all: [daily], fresh: [daily] },
+            considered: [
+               {
+                  kind: "storage",
+                  outcome: "skipped",
+                  reason: "row_level_gate",
+               },
+            ],
+         }),
+      );
+      expect(storageReport.considered).toEqual([
+         {
+            tableId: "id_daily",
+            kind: "materialized",
+            outcome: "skipped",
+            reason: "WARNED",
+            code: "refused",
+         },
+      ]);
+      expect(storageReport.warnings?.map((w) => w.code)).toEqual(["refused"]);
+
+      // Colocated: a rollup skipped for the gate, whose verdict is a refusal.
+      const rollup = planned("orders_rollup", "preaggregate");
+      const rollupInput = (isVisibleSource?: (name: string) => boolean) =>
+         input({
+            catalog: {
+               ...catalog([rollup], { id_orders_rollup: "rollup_t" }),
+               liveVerdicts: verdicts({
+                  "colocated:id_orders_rollup": {
+                     reason: "refused",
+                     sourceName: "orders_rollup",
+                  },
+               }),
+            },
+            rollups: [
+               {
+                  rollupSourceName: "orders_rollup",
+                  baseSourceName: "orders",
+                  baseSourceID: "orders@file:///m.malloy",
+               },
+            ],
+            considered: [
+               { kind: "rollup", outcome: "skipped", reason: "row_level_gate" },
+            ],
+            ...(isVisibleSource ? { isVisibleSource } : {}),
+         });
+      const colocated = buildQueryPath(rollupInput());
+      expect(colocated.considered[0]).toMatchObject({
+         reason: "WARNED",
+         code: "refused",
+      });
+      expect(colocated.warnings?.map((w) => w.code)).toEqual(["refused"]);
+      // A source the caller cannot list keeps its code but is never named.
+      const hidden = buildQueryPath(
+         rollupInput((name) => name !== "orders_rollup"),
+      );
+      expect(hidden.considered[0]).toMatchObject({ code: "refused" });
+      expect(hidden.warnings).toEqual([]);
+   });
+
    it("keeps what only this query shows: a table that answered, STALE and RUN_FAILED", () => {
       const daily = storageOf("daily");
       const liveVerdicts = verdicts({

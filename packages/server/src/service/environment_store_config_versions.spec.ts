@@ -412,6 +412,43 @@ describe("retrying a refused configured package's publish", () => {
       expect(calls).toBe(1);
    });
 
+   it("answers a refused remote package's boot error on every read, and never publishes it", async () => {
+      env.PUBLISHER_PACKAGE_VERSIONING = "on";
+      configure([{ name: "ok", location: source("ok", "1.0.0") }]);
+      const s = await openStore();
+      const environment = await s.getEnvironment(
+         parseEnvironmentName(ENV),
+         false,
+      );
+      const bootError = new Error("remote boot refusal: ghost_table");
+      environment.setConfiguredPublishRefused("ghost", bootError);
+      const realNow = Date.now;
+      try {
+         for (const offset of [0, 3_600_000]) {
+            Date.now = () => realNow() + offset;
+            await expect(environment.getPackage(ghost, false)).rejects.toBe(
+               bootError,
+            );
+            await expect(
+               environment.publishRefusedConfiguredPackage("ghost"),
+            ).rejects.toBe(bootError);
+         }
+      } finally {
+         Date.now = realNow;
+      }
+      // A request naming a version still answers 404, not the boot error.
+      await expect(
+         environment.getPackage(ghost, false, {
+            versionId: VersionRef.of("9.9.9"),
+         }),
+      ).rejects.not.toBe(bootError);
+      // A delete forgets it.
+      await environment.deletePackage(ghost).catch(() => {});
+      await expect(environment.getPackage(ghost, false)).rejects.not.toBe(
+         bootError,
+      );
+   });
+
    it("lets a delete land after a retry in flight, and starts none after it", async () => {
       const events: string[] = [];
       let release!: () => void;

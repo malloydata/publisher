@@ -17,6 +17,7 @@ import {
 } from "../test_helpers/temp_package";
 import {
    PackageMaterialization,
+   PERSIST_SOURCE_REFUSED_CODE,
    type PackageMaterializationOwner,
 } from "./materialization/package_materialization";
 import { MATERIALIZATION_UNREACHABLE_CODE } from "./materialization/serve/serve_verdict";
@@ -167,6 +168,23 @@ source: secure_orders is orders extend {}
             "not_built",
          );
       });
+   });
+
+   it("codes the warning for a persisted source a compile-time gate refuses", async () => {
+      // A given read inside the persisted query: the gate refuses the source.
+      loaded = await loadTempPackage({
+         "orders.malloy": `##! experimental { persistence givens }
+given: REGION :: string
+
+#@ persist name="orders_t"
+source: orders is ${ROWS} -> { select: * ; where: region = $REGION }
+`,
+      });
+      const refused = (loaded.pkg.getPackageMetadata().warnings ?? []).filter(
+         (w) => w.code === PERSIST_SOURCE_REFUSED_CODE,
+      );
+      expect(refused).toHaveLength(1);
+      expect(refused[0]).toMatchObject({ subject: "orders", severity: "warn" });
    });
 
    // GET …/status reads the verdicts on every poll: the entry-point walk is
