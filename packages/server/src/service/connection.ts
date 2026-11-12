@@ -2666,6 +2666,85 @@ export function restrictMalloyConfigToConnections(
    return restricted;
 }
 
+/**
+ * The SQL dialect of every storage destination: DuckLake, the one declarable
+ * destination type (DECLARABLE_STORAGE_DESTINATION_TYPES), is DuckDB.
+ */
+export const STORAGE_DESTINATION_DIALECT = "duckdb";
+
+/**
+ * A DuckLake lookup refusing only because its catalog does not exist yet: an
+ * attach never creates one, so before the first build the catalog is absent.
+ */
+const CATALOG_NOT_CREATED_YET =
+   /creating a new DuckLake is explicitly disabled|DuckLake .*does not exist/i;
+
+/**
+ * `base` for a compile that never runs SQL, such as the dry-run preview of a
+ * stored source's views. Malloy learns a connection's dialect by looking the
+ * connection up, and looking up a DuckLake destination attaches its catalog,
+ * which fails before the first build has created it (an attach never creates
+ * a catalog) or while it is unreachable. The lookup error would leave the
+ * dialect unknown and every view of a stored source would preview as `live`
+ * ("Cannot determine dialect"), though serving it needs only the dialect at
+ * compile. So a destination whose lookup fails answers with a stand-in that
+ * carries the destination dialect and refuses anything that would run SQL.
+ */
+export function compileOnlyDestinationConfig(base: MalloyConfig): MalloyConfig {
+   const config = new MalloyConfig({ connections: {} });
+   config.wrapConnections(() => ({
+      lookupConnection: async (name?: string) => {
+         try {
+            return await base.connections.lookupConnection(name);
+         } catch (error) {
+            // A name no destination holds stays unknown: the preview must not
+            // serve a view from a destination that does not exist.
+            const message =
+               error instanceof Error ? error.message : String(error);
+            if (
+               !name ||
+               error instanceof ConnectionNotFoundError ||
+               /No connection named/.test(message)
+            ) {
+               throw error;
+            }
+            // Only a catalog the first build has not created yet compiles
+            // against the dialect alone. Anything else (bad credentials, an
+            // unreachable catalog host, a wrong path) would fail serving too,
+            // so the preview must say so rather than predict `serves`.
+            if (!CATALOG_NOT_CREATED_YET.test(message)) throw error;
+            const refuse = () => {
+               throw new Error(
+                  `Destination ${name} could not be reached, so the preview compiles against its dialect only and cannot run SQL: ${
+                     error instanceof Error ? error.message : String(error)
+                  }`,
+               );
+            };
+            return {
+               name,
+               dialectName: STORAGE_DESTINATION_DIALECT,
+               getDigest: async () => `compile-only:${name}`,
+               runSQL: refuse,
+               runSQLStream: refuse,
+               fetchSchemaForTables: refuse,
+               fetchSchemaForSQLStruct: refuse,
+               estimateQueryCost: refuse,
+               close: async () => {},
+               canPersist: () => false,
+               canStream: () => false,
+               isPool: () => false,
+               get supportsNesting() {
+                  return true;
+               },
+            } as unknown as Awaited<
+               ReturnType<MalloyConfig["connections"]["lookupConnection"]>
+            >;
+         }
+      },
+   }));
+   return config;
+}
+
 export type EnvironmentMalloyConfig = {
    malloyConfig: MalloyConfig;
    apiConnections: InternalConnection[];

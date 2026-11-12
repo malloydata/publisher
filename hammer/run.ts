@@ -840,6 +840,8 @@ async function main(): Promise<void> {
                ),
             restOf: (name) => bind(mgr.restOf(name)),
             editPackageModel: editPackageModelFor(r),
+            packageDir: (pkg: string, pkgEnv: string = PRIMARY) =>
+               path.join(packagesDir, r.envFor(pkgEnv), pkg),
             operatorSql: operatorSqlFor(r, lakes, warehouses),
             storedTables: (conn, schema) => {
                // DuckLake writes `<storage>/<schema>/<table>/<file>.parquet`.

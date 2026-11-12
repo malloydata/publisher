@@ -126,6 +126,31 @@ describe("previewing a stored source's views", () => {
       expect(views?.[1].detail).toBe("'region' is not defined");
    });
 
+   // A DuckLake destination is looked up by attaching its catalog, which
+   // fails before the first build has created it. Malloy learns the dialect
+   // from that lookup, so a failed one left the dialect unknown and every view
+   // previewed live with "Cannot determine dialect".
+   it("serves the views of a destination whose catalog cannot be attached yet", async () => {
+      const model = await buildModel(true);
+      const unattachable = new MalloyConfig({ connections: {} });
+      unattachable.wrapConnections(() => ({
+         lookupConnection: async () => {
+            throw new Error(
+               'Existing DuckLake at metadata catalog "postgres:…" does not exist - and creating a new DuckLake is explicitly disabled',
+            );
+         },
+      }));
+      model.setServeDestinationConfig(() => unattachable);
+      const full: ServeBinding = {
+         ...BINDING,
+         schema: [...BINDING.schema, { name: "region", type: "VARCHAR" }],
+      };
+      expect((await model.previewStorageViews([full])).get("X")).toEqual([
+         { view: "totals", verdict: "serves" },
+         { view: "by_region", verdict: "serves" },
+      ]);
+   });
+
    it("says nothing without a storage destination, since nothing serves from storage then", async () => {
       const model = await buildModel(false);
       expect((await model.previewStorageViews([BINDING])).size).toBe(0);

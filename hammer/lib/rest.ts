@@ -175,6 +175,30 @@ export class Rest {
       };
    }
 
+   /**
+    * POST …/packages?dryRun=true with a `location`: what a publish of that tree
+    * would answer (the build plan and the serve verdicts it predicts), with
+    * nothing installed.
+    */
+   async dryRunFrom(
+      pkg: string,
+      location: string,
+   ): Promise<{ ok: boolean; status: number; body: Record<string, unknown> }> {
+      const res = await fetch(
+         `${this.baseUrl}/api/v0/environments/${this.env}/packages?dryRun=true`,
+         {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({ name: pkg, location }),
+         },
+      );
+      return {
+         ok: res.ok,
+         status: res.status,
+         body: (await res.json()) as Record<string, unknown>,
+      };
+   }
+
    /** PUT …/latest: point the package's latest at a version. */
    async setLatestVersion(
       pkg: string,

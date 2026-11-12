@@ -94,6 +94,14 @@ export interface MaterializedTableCatalog {
     * when the verdicts are not known.
     */
    liveVerdicts?: ReadonlyMap<string, LiveTableVerdict>;
+   /**
+    * Each planned source's own serve verdict when it is `live` for a reason
+    * other than staleness, keyed by `sourceID`. A source can be live while the
+    * table it shares serves another source (a gated extension the eligibility
+    * gate refused, beside its base), which {@link liveVerdicts} cannot say.
+    * Absent when the verdicts are not known.
+    */
+   sourceVerdicts?: ReadonlyMap<string, LiveTableVerdict>;
 }
 
 /** The key of {@link MaterializedTableCatalog.liveVerdicts}. */
@@ -392,11 +400,12 @@ function verdictExplains(reason: SkipReason | undefined, verdict: string) {
 function applyServeVerdicts(
    considered: ApiCandidate[],
    tierOf: ReadonlyMap<ApiCandidate, TableState["tier"]>,
-   input: Pick<QueryPathInput, "catalog" | "isVisibleSource">,
+   input: Pick<QueryPathInput, "catalog" | "isVisibleSource" | "chain">,
 ): ApiWarning[] {
-   const verdicts = input.catalog?.liveVerdicts;
+   const verdicts = input.catalog?.liveVerdicts ?? new Map();
    const warnings: ApiWarning[] = [];
-   if (!verdicts || verdicts.size === 0) return warnings;
+   const own = ownSourceVerdict(input);
+   if (verdicts.size === 0 && !own) return warnings;
    // A table that answered (its colocated copy, beside a storage copy that is
    // not routed) is no table that "answers no query": its skipped twin keeps
    // the code, and no warning says otherwise.
@@ -408,8 +417,31 @@ function applyServeVerdicts(
       if (candidate.outcome !== "skipped") continue;
       const tier = tierOf.get(candidate);
       if (!tier) continue;
-      const verdict = verdicts.get(liveVerdictKey(tier, candidate.tableId));
+      const verdict: LiveTableVerdict | undefined = verdicts.get(
+         liveVerdictKey(tier, candidate.tableId),
+      );
       if (!verdict || !verdictExplains(candidate.reason, verdict.reason)) {
+         // The table serves another source; the queried source's own verdict
+         // may still explain why this query could not use it.
+         if (own && ownVerdictExplains(candidate, own)) {
+            candidate.reason = "WARNED";
+            candidate.code = own.verdict.reason;
+            delete candidate.detail;
+            // As below: a table whose other-tier copy answered gets no warning.
+            if (
+               !used.has(candidate.tableId) &&
+               !warned.has(candidate.tableId)
+            ) {
+               warned.add(candidate.tableId);
+               // The caller queried this source, so naming it reveals nothing.
+               warnings.push({
+                  code: own.verdict.reason,
+                  tableId: candidate.tableId,
+                  sourceName: own.verdict.sourceName,
+                  message: verdictWarningMessage(own.verdict.reason),
+               });
+            }
+         }
          continue;
       }
       candidate.reason = "WARNED";
@@ -431,6 +463,39 @@ function applyServeVerdicts(
       });
    }
    return warnings;
+}
+
+/** The queried source's own `live` verdict, with the table it would have. */
+function ownSourceVerdict(
+   input: Pick<QueryPathInput, "catalog" | "chain">,
+): { verdict: LiveTableVerdict; ownTableId?: string } | undefined {
+   const sourceID = input.chain[0];
+   if (!sourceID) return undefined;
+   const verdict = input.catalog?.sourceVerdicts?.get(sourceID);
+   if (!verdict) return undefined;
+   if (verdict.reason !== "refused" && verdict.reason !== "row_level_gate") {
+      return undefined;
+   }
+   const ownTableId = input.catalog?.planned.get(sourceID)?.sourceEntityId;
+   return { verdict, ...(ownTableId ? { ownTableId } : {}) };
+}
+
+/**
+ * Whether the queried source's own verdict explains a skip: `CONTRACT` on any
+ * table (the gate that refused the source kept the query off it), and
+ * `NOT_BUILT` only on the source's own table, which the refusal left unbuilt.
+ * A skip the router reached by trying the table keeps its own reason.
+ */
+function ownVerdictExplains(
+   candidate: ApiCandidate,
+   own: { ownTableId?: string },
+): boolean {
+   if (candidate.reason === "CONTRACT") return true;
+   return (
+      candidate.reason === "NOT_BUILT" &&
+      own.ownTableId !== undefined &&
+      candidate.tableId === own.ownTableId
+   );
 }
 
 /**
@@ -565,8 +630,12 @@ function tablesFor(
 /**
  * The plan of a rollup this model synthesized, by its name within this model.
  * A rollup's synthesized name is unique only per model, so a name planned in
- * several models is matched to this model's entry, and an ambiguous match
- * names nothing rather than another model's table.
+ * several models is matched to this model's entry. Several entries that share
+ * one content address are one table: every model that imports an annotated
+ * source (an `index.malloy` that re-exports it) synthesizes its own companion
+ * entry for the same rollup. Only entries naming different tables, none of
+ * them this model's, are ambiguous, and those name nothing rather than another
+ * model's table.
  */
 function planForRollup(
    input: Pick<QueryPathInput, "catalog" | "modelPath">,
@@ -577,7 +646,9 @@ function planForRollup(
    );
    if (named.length <= 1) return named[0];
    const own = named.filter((p) => p.modelPath === input.modelPath);
-   return own.length === 1 ? own[0] : undefined;
+   if (own.length === 1) return own[0];
+   const addresses = new Set(named.map((p) => p.sourceEntityId));
+   return addresses.size === 1 ? named[0] : undefined;
 }
 
 /** A storage binding's state, named through the plan where it knows it. */

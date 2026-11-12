@@ -557,6 +557,183 @@ describe("buildQueryPath, reading the serve verdicts", () => {
       expect(hidden.warnings).toEqual([]);
    });
 
+   it("reads the queried source's own verdict when the table it shares serves another source", () => {
+      // storage=: a gated extension shares its base's table. The table serves
+      // the base (no table verdict), but the extension's own verdict says the
+      // build refused it, which is why this query could not use the table.
+      const base = planned("daily");
+      const secure: PlannedTable = {
+         ...planned("daily_secure"),
+         sourceEntityId: "id_daily",
+      };
+      const daily = storageOf("daily");
+      const sourceVerdicts = new Map([
+         [secure.sourceID, { reason: "refused", sourceName: "daily_secure" }],
+      ]);
+      const storageReport = buildQueryPath(
+         input({
+            chain: [secure.sourceID, base.sourceID],
+            catalog: {
+               ...catalog([base, secure]),
+               liveVerdicts: new Map(),
+               sourceVerdicts,
+            },
+            storage: { all: [daily], fresh: [daily] },
+            considered: [
+               {
+                  kind: "storage",
+                  outcome: "skipped",
+                  reason: "row_level_gate",
+               },
+            ],
+         }),
+      );
+      // Every row naming the shared table carries the refusal; one warning.
+      expect(storageReport.considered.length).toBeGreaterThan(0);
+      for (const entry of storageReport.considered) {
+         expect(entry).toMatchObject({
+            tableId: "id_daily",
+            outcome: "skipped",
+            reason: "WARNED",
+            code: "refused",
+         });
+      }
+      expect(storageReport.warnings).toEqual([
+         expect.objectContaining({
+            code: "refused",
+            tableId: "id_daily",
+            sourceName: "daily_secure",
+         }),
+      ]);
+
+      // Colocated: a rollup that serves other entry points (no table verdict),
+      // queried through a gated source whose own verdict is the gate.
+      const rollup = planned("orders_rollup", "preaggregate");
+      const gated: PlannedTable = planned("orders_gated");
+      const colocated = buildQueryPath(
+         input({
+            chain: [gated.sourceID, "orders@file:///m.malloy"],
+            catalog: {
+               ...catalog([rollup, gated], { id_orders_rollup: "rollup_t" }),
+               sourceVerdicts: new Map([
+                  [
+                     gated.sourceID,
+                     { reason: "row_level_gate", sourceName: "orders_gated" },
+                  ],
+               ]),
+            },
+            rollups: [
+               {
+                  rollupSourceName: "orders_rollup",
+                  baseSourceName: "orders",
+                  baseSourceID: "orders@file:///m.malloy",
+               },
+            ],
+            considered: [
+               { kind: "rollup", outcome: "skipped", reason: "row_level_gate" },
+            ],
+         }),
+      );
+      expect(colocated.considered[0]).toMatchObject({
+         tableId: "id_orders_rollup",
+         reason: "WARNED",
+         code: "row_level_gate",
+      });
+      // One warning per table: the rollup, and the gated source's own table
+      // its gate left unbuilt; both name the queried source.
+      expect(colocated.warnings?.map((w) => [w.tableId, w.sourceName])).toEqual(
+         [
+            ["id_orders_rollup", "orders_gated"],
+            ["id_orders_gated", "orders_gated"],
+         ],
+      );
+   });
+
+   it("gives no queried-source warning for a table whose other-tier copy answered", () => {
+      // A colocated and a storage= copy share one address; the storage copy
+      // is skipped behind the gate while the colocated copy answered. The
+      // queried source's refusal codes the skip, but no warning contradicts
+      // the table that served.
+      const secure: PlannedTable = {
+         ...planned("daily_secure"),
+         sourceEntityId: "id_daily",
+      };
+      const daily = storageOf("daily");
+      const base = planned("daily");
+      const report = buildQueryPath(
+         input({
+            chain: [secure.sourceID, base.sourceID],
+            catalog: {
+               ...catalog([base, secure], { id_daily: "daily_t" }),
+               liveVerdicts: new Map(),
+               sourceVerdicts: new Map([
+                  [
+                     secure.sourceID,
+                     { reason: "refused", sourceName: "daily_secure" },
+                  ],
+               ]),
+            },
+            storage: { all: [daily], fresh: [daily] },
+            considered: [
+               {
+                  kind: "storage",
+                  outcome: "skipped",
+                  reason: "row_level_gate",
+               },
+            ],
+            colocatedRead: new Set(["id_daily"]),
+         }),
+      );
+      expect(report.considered.some((c) => c.outcome === "used")).toBe(true);
+      expect(report.warnings).toEqual([]);
+   });
+
+   it("never lets the queried source's verdict replace a skip the router reached by trying the table", () => {
+      const rollup = planned("orders_rollup", "preaggregate");
+      const gated = planned("orders_gated");
+      const report = buildQueryPath(
+         input({
+            chain: [gated.sourceID, "orders@file:///m.malloy"],
+            catalog: {
+               ...catalog([rollup, gated], { id_orders_rollup: "rollup_t" }),
+               sourceVerdicts: new Map([
+                  [
+                     gated.sourceID,
+                     { reason: "refused", sourceName: "orders_gated" },
+                  ],
+               ]),
+            },
+            rollups: [
+               {
+                  rollupSourceName: "orders_rollup",
+                  baseSourceName: "orders",
+                  baseSourceID: "orders@file:///m.malloy",
+               },
+            ],
+            considered: [
+               {
+                  kind: "rollup",
+                  outcome: "skipped",
+                  reason: "does_not_answer",
+                  detail: "region",
+                  errorName: "RollupCoverageError",
+                  coverageReason: "missing_field",
+               } as never,
+            ],
+         }),
+      );
+      // The rollup the router tried keeps its own reason; only the gated
+      // source's own unbuilt table carries the refusal.
+      const tried = report.considered.find(
+         (c) => c.tableId === "id_orders_rollup",
+      );
+      expect(tried?.reason).not.toBe("WARNED");
+      expect(tried?.code).toBeUndefined();
+      expect(report.warnings?.map((w) => w.tableId)).toEqual([
+         "id_orders_gated",
+      ]);
+   });
+
    it("keeps what only this query shows: a table that answered, STALE and RUN_FAILED", () => {
       const daily = storageOf("daily");
       const liveVerdicts = verdicts({
