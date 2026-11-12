@@ -771,6 +771,44 @@ describe("PackageLoadPool (work for the main thread)", () => {
       }
    });
 
+   it("logs a job's entries in the async context of the call that queued it", async () => {
+      // A hypothetical load (what-if) must have its worker's entries demoted
+      // like the rest of its work, so they are logged in its own context.
+      fs.writeFileSync(
+         path.join(tempDir, "malformed.malloy"),
+         `##! experimental.persistence
+source: base is duckdb.sql("select 1 as a")
+#@ persist name="t" (
+source: t is base -> { group_by: a }
+`,
+      );
+      const { tearDown, load } = await setUp(() => Promise.resolve());
+      const { logger } = await import("../logger");
+      const { runHypothetical, isHypothetical } = await import(
+         "../hypothetical_scope"
+      );
+      const seen: boolean[] = [];
+      const logSpy = spyOn(logger, "log").mockImplementation(((
+         entry: unknown,
+      ) => {
+         const message = String(
+            (entry as { message?: unknown } | undefined)?.message ?? "",
+         );
+         if (message.startsWith("Persist annotation issue")) {
+            seen.push(isHypothetical());
+         }
+         return logger;
+      }) as unknown as typeof logger.log);
+      try {
+         await runHypothetical(() => load(true));
+         expect(seen.length).toBeGreaterThan(0);
+         expect(seen.every((inScope) => inScope)).toBe(true);
+      } finally {
+         logSpy.mockRestore();
+         await tearDown();
+      }
+   });
+
    it("logs a job's entries on this thread as they are written, so a job that times out keeps them", async () => {
       // A malformed `#@ persist` tag is reported while the worker collects
       // the plan; the other model waits on a table forever, so the job times

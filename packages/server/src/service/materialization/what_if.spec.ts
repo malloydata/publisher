@@ -2,9 +2,14 @@
 // SPDX-License-Identifier: MIT
 
 import { describe, expect, it } from "bun:test";
-import { BadRequestError } from "../../errors";
+import * as fs from "fs";
+import * as os from "os";
+import * as path from "path";
+import { BadRequestError, NotQueryableError } from "../../errors";
 import {
+   answerErrorText,
    diffPlans,
+   stagePackageTree,
    MAX_WHAT_IF_QUERIES,
    parseWhatIfQueries,
    storedSchemaOf,
@@ -124,5 +129,56 @@ describe("diffPlans", () => {
       const diff = diffPlans(null, plan({ "a@m": { entity: "e" } }));
       expect(diff.added.map((s) => s.name)).toEqual(["a"]);
       expect(diff.removed).toEqual([]);
+   });
+});
+
+describe("answerErrorText", () => {
+   it("passes on what the query route would tell the caller", () => {
+      expect(answerErrorText(new BadRequestError("bad given"))).toBe(
+         "bad given",
+      );
+      expect(answerErrorText(new NotQueryableError("not queryable"))).toBe(
+         "not queryable",
+      );
+   });
+
+   it("answers an internal failure generically, never with its text", () => {
+      const text = answerErrorText(
+         new Error("IO Error: /var/lib/lake/catalog.db: s3://bucket/key"),
+      );
+      expect(text).not.toContain("s3://");
+      expect(text).not.toContain("/var/lib");
+   });
+});
+
+describe("stagePackageTree", () => {
+   it("copies the files a proposal may edit and the manifest, links the rest, and skips what a load never reads", async () => {
+      const root = fs.mkdtempSync(path.join(os.tmpdir(), "what-if-stage-"));
+      try {
+         const from = path.join(root, "pkg");
+         const to = path.join(root, "staged");
+         fs.mkdirSync(path.join(from, "data"), { recursive: true });
+         fs.mkdirSync(path.join(from, ".git"), { recursive: true });
+         fs.writeFileSync(path.join(from, "model.malloy"), "source: x is y");
+         fs.writeFileSync(path.join(from, "publisher.json"), "{}");
+         fs.writeFileSync(path.join(from, "data", "rows.json"), "[]");
+         fs.writeFileSync(path.join(from, ".git", "HEAD"), "ref");
+         fs.symlinkSync(
+            path.join(root, "nowhere"),
+            path.join(from, "dangling.csv"),
+         );
+
+         await stagePackageTree(from, to);
+
+         const isLink = (p: string) => fs.lstatSync(p).isSymbolicLink();
+         expect(isLink(path.join(to, "model.malloy"))).toBe(false);
+         expect(isLink(path.join(to, "publisher.json"))).toBe(false);
+         // A JSON dataset can be large: linked, never copied.
+         expect(isLink(path.join(to, "data", "rows.json"))).toBe(true);
+         expect(fs.existsSync(path.join(to, ".git"))).toBe(false);
+         expect(fs.existsSync(path.join(to, "dangling.csv"))).toBe(false);
+      } finally {
+         fs.rmSync(root, { recursive: true, force: true });
+      }
    });
 });

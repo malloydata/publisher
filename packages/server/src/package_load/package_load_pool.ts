@@ -23,6 +23,7 @@
  *   compile burning CPU, and the worker is retired so no queued load goes to it
  *   while it exits.
  */
+import { AsyncResource } from "async_hooks";
 import type {
    FetchSchemaOptions,
    InfoConnection,
@@ -116,6 +117,8 @@ const WORKER_SPAWN_TIMEOUT_MS = 30_000;
 
 interface JobContext {
    jobId: string;
+   /** See {@link QueuedJob.context}. */
+   context: AsyncResource;
    pw: PoolWorker;
    connections: LookupConnection<InfoConnection>;
    urlReader: PackageLoadUrlReader;
@@ -128,6 +131,12 @@ interface QueuedJob {
    request: LoadPackageJob;
    resolve: (result: LoadPackageOutcome) => void;
    reject: (err: Error) => void;
+   /**
+    * The caller's async context, captured at enqueue: the entries the job's
+    * worker writes are logged in it, so a hypothetical load's lines are
+    * demoted like the rest of its work (hypothetical_scope.ts).
+    */
+   context: AsyncResource;
 }
 
 interface PoolWorker {
@@ -302,7 +311,12 @@ export class PackageLoadPool {
          throw new Error("PackageLoadPool is shutting down");
       }
       return new Promise<LoadPackageOutcome>((resolve, reject) => {
-         this.queue.push({ request, resolve, reject });
+         this.queue.push({
+            request,
+            resolve,
+            reject,
+            context: new AsyncResource("PackageLoadJob"),
+         });
          this.tryDispatch();
       });
    }
@@ -397,6 +411,7 @@ export class PackageLoadPool {
 
       this.jobs.set(jobId, {
          jobId,
+         context: qj.context,
          pw,
          connections: qj.request.malloyConfig.connections,
          urlReader: qj.request.urlReader ?? defaultUrlReader,
@@ -586,9 +601,14 @@ export class PackageLoadPool {
          case "read-url":
             this.answerWorker(pw, msg, this.handleReadUrl(pw, msg));
             return;
-         case "log":
-            handleWorkerLog(msg);
+         case "log": {
+            // In the job's own context (see QueuedJob.context).
+            const jobId = pw.inFlight.values().next().value;
+            const ctx = jobId === undefined ? undefined : this.jobs.get(jobId);
+            if (ctx) ctx.context.runInAsyncScope(() => handleWorkerLog(msg));
+            else handleWorkerLog(msg);
             return;
+         }
          default: {
             const exhaustive: never = msg;
             void exhaustive;

@@ -56,6 +56,19 @@ const ROLLUP_QUERY =
    "run: raw_orders -> { group_by: category; aggregate: revenue }";
 
 const SUMMARY_QUERY = "run: order_summary -> { aggregate: c is count() }";
+
+/**
+ * Two persisted siblings, and an `index.malloy` that publishes only one: the
+ * other is a building block the package does not publish.
+ */
+const CURATED_MODEL = `${PROPOSED}
+#@ persist name="hidden_summary"
+source: hidden_summary is raw_orders -> {
+  group_by: category
+  aggregate: hidden_total is amount.sum()
+}
+`;
+const CURATED_INDEX = `import "${MODEL}"\nexport { order_summary }\n`;
 const RAW_QUERY = "run: raw_orders -> { aggregate: c is count() }";
 
 interface Candidate {
@@ -108,8 +121,8 @@ describe("what-if over v1 annotations (E2E)", () => {
    const api = (pkg: string, p: string) =>
       `${baseUrl}/api/v0/environments/${ENV}/packages/${pkg}${p}`;
 
-   async function whatIf(body: unknown): Promise<Response> {
-      return fetch(api(BASE, "/build-plan/what-if"), {
+   async function whatIf(body: unknown, query = ""): Promise<Response> {
+      return fetch(api(BASE, `/build-plan/what-if${query}`), {
          method: "POST",
          headers: { "Content-Type": "application/json" },
          body: JSON.stringify(body),
@@ -307,6 +320,42 @@ describe("what-if over v1 annotations (E2E)", () => {
       const body = (await res.json()) as WhatIf;
       expect(body.answers[0]?.error).toBeTruthy();
       expect(body.answers[0]?.path).toBeUndefined();
+   });
+
+   it("names no hidden source, and refuses a query against one, as a query does", async () => {
+      const body = {
+         files: [
+            { path: MODEL, content: CURATED_MODEL },
+            { path: "index.malloy", content: CURATED_INDEX },
+         ],
+         queries: [
+            { modelPath: "index.malloy", query: SUMMARY_QUERY },
+            {
+               modelPath: "index.malloy",
+               query: "run: hidden_summary -> { aggregate: c is count() }",
+            },
+         ],
+      };
+      const res = await whatIf(body);
+      expect(res.status).toBe(200);
+      const hidden = (await res.json()) as WhatIf;
+      // The plan keeps the build plan's semantics: every planned source.
+      expect(hidden.plan.added.map((s) => s.name).sort()).toEqual([
+         "hidden_summary",
+         "order_summary",
+      ]);
+      const [published, offSurface] = hidden.answers;
+      expect(published?.path).toBeDefined();
+      expect(JSON.stringify(published?.path)).not.toContain("hidden_summary");
+      expect(offSurface?.path).toBeUndefined();
+      expect(offSurface?.error).toBeTruthy();
+
+      // With hidden sources included, the off-surface query is answered.
+      const opened = await whatIf(body, "?includeHiddenFilesAndSources=true");
+      expect(opened.status).toBe(200);
+      const included = (await opened.json()) as WhatIf;
+      expect(included.answers[1]?.error).toBeUndefined();
+      expect(included.answers[1]?.path).toBeDefined();
    });
 
    it("refuses an unsafe proposal path before anything loads", async () => {

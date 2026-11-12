@@ -10,20 +10,35 @@ import {
 import { AxiosError } from "axios";
 import { RequestHandler } from "express";
 import winston from "winston";
+import { isHypothetical } from "./hypothetical_scope";
 
 const isTelemetryEnabled = Boolean(externalEnv("OTEL_EXPORTER_OTLP_ENDPOINT"));
+
+/**
+ * Inside a hypothetical scope (hypothetical_scope.ts) every line is dropped, or
+ * kept and marked when debug is on. An error there comes from the proposal the
+ * caller sent, which the response already carries, not from anything served.
+ */
+const demoteHypothetical = winston.format((info) => {
+   if (!isHypothetical()) return info;
+   const levels = logger.levels;
+   const debugOn = (levels[logger.level] ?? 0) >= (levels.debug ?? 0);
+   return debugOn ? Object.assign(info, { hypothetical: true }) : false;
+});
 
 export const logger = winston.createLogger({
    // An unknown level is the default, debug, with a startup warning.
    level: settings.get("logging.level"),
    format: isTelemetryEnabled
       ? winston.format.combine(
+           demoteHypothetical(),
            winston.format.uncolorize(),
            winston.format.timestamp(),
            winston.format.errors({ stack: true }),
            winston.format.json(),
         )
       : winston.format.combine(
+           demoteHypothetical(),
            winston.format.colorize(),
            winston.format.simple(),
         ),

@@ -3730,6 +3730,12 @@ export class Model {
       sourceName?: string;
       queryName?: string;
       givens?: Record<string, GivenValue>;
+      /**
+       * As on a query: off, the query boundary applies (a source the package
+       * does not publish is refused with the query route's 404) and the
+       * report names no hidden source.
+       */
+      includeHiddenFilesAndSources?: boolean;
    }): Promise<ApiQueryPath> {
       if (this.compilationError) {
          throw new BadRequestError(
@@ -3740,6 +3746,14 @@ export class Model {
          throw new BadRequestError("Model has no queryable entities.");
       }
       const { query, sourceName, queryName, givens } = request;
+      const includeHidden = !!request.includeHiddenFilesAndSources;
+      // The checks a query gets before it compiles, in the same order: a
+      // malformed filter given is the query route's 400, and a source off the
+      // published surface its 404, before a compile error could describe it.
+      this.assertFilterGivens(givens);
+      const boundary = includeHidden
+         ? "cleared"
+         : this.assertQueryBoundaryEarly(sourceName, queryName, query);
       let queryString: string;
       if (query && !sourceName && !queryName) {
          // The same caller-text guards a query gets.
@@ -3758,7 +3772,34 @@ export class Model {
       await this.ensureSharedQueryModel(this.modelMaterializer);
       const live = this.modelMaterializer.loadRestrictedQuery(queryString);
       const compileError = await compileErrorOf(live);
-      if (compileError) throw queryCompileError(compileError, query ?? "");
+      if (compileError) {
+         // As a query: a compile error over a source off the surface is the
+         // boundary's 404, so its schema cannot be probed.
+         if (
+            boundary === "deferred" &&
+            query &&
+            !this.queryTextSourcesQueryable(query)
+         ) {
+            const offSurface = extractRunTargetSourceNames(query).find(
+               (t) =>
+                  this.declaresSource(t) &&
+                  !this.isCuratedSource(t) &&
+                  !this.derivesFromCurated(t, query),
+            );
+            throw this.notQueryable(
+               "Query target is not queryable.",
+               offSurface !== undefined,
+               "source",
+               offSurface,
+            );
+         }
+         throw queryCompileError(compileError, query ?? "");
+      }
+      const compiledSource =
+         await this.governor.resolveAuthorizeSourceFromRunnable(live);
+      if (boundary === "deferred") {
+         this.assertQueryBoundaryCompiled(compiledSource, query);
+      }
       const surfaceGivens = this.governor.filterGivensToModelSurface(
          givens,
          await this.governor.givenNamesReadByQuery(live, givens),
@@ -3812,8 +3853,6 @@ export class Model {
          ),
          virtualMap: storageRouted?.virtualMap,
       });
-      const compiledSource =
-         await this.governor.resolveAuthorizeSourceFromRunnable(live);
       const path = await this.queryPathFor({
          runnable: live,
          sourceName: compiledSource ?? sourceName,
@@ -3824,9 +3863,7 @@ export class Model {
          colocatedRead,
          rollupMember: rollupRouted?.resolvedMember,
          freshManifest: buildManifest,
-         // What-if is an authoring tool behind the gateway, like the build
-         // plan: it names every table, hidden or not.
-         includeHidden: true,
+         includeHidden,
       });
       if (!path) {
          throw new BadRequestError(

@@ -31,13 +31,21 @@ import * as path from "path";
 import type { GivenValue } from "@malloydata/malloy";
 import { components } from "../../api";
 import { getPersistStorageMode } from "../../config";
-import { BadRequestError } from "../../errors";
-import { MODEL_FILE_SUFFIX, NOTEBOOK_FILE_SUFFIX } from "../../constants";
+import {
+   BadRequestError,
+   NotQueryableError,
+   QueryCompileError,
+} from "../../errors";
+import { logger } from "../../logger";
+import {
+   MODEL_FILE_SUFFIX,
+   NOTEBOOK_FILE_SUFFIX,
+   PACKAGE_MANIFEST_NAME,
+} from "../../constants";
 import type { OverlayFile } from "../request_overlay";
 import type { Package } from "../package";
 import type { Environment } from "../environment";
 import { formatPublishRejections } from "../publish_checks";
-import type { PackageMaterialization } from "./package_materialization";
 import type { FreshnessManifest, ManifestEntry } from "./types";
 import { errMessage } from "../../utils";
 
@@ -61,6 +69,13 @@ export interface WhatIfRequest {
    files: OverlayFile[];
    queries: WhatIfQuery[];
    givens?: Record<string, GivenValue>;
+   /**
+    * As on a query: off, a query against a source the package does not
+    * publish is refused, and each answer names no hidden source. The `plan`
+    * and `refused` lists keep the build plan's semantics and name every
+    * planned source, as `GET …/build-plan` does.
+    */
+   includeHiddenFilesAndSources?: boolean;
 }
 
 /** At most this many queries per request: each is a compile, or several. */
@@ -143,26 +158,41 @@ export function parseWhatIfQueries(input: unknown): WhatIfQuery[] {
    });
 }
 
+/** Directories a package load never reads, left out of the staged copy. */
+const UNSTAGED_DIRECTORIES: ReadonlySet<string> = new Set([".git"]);
+
 /**
  * Copy the package tree at `from` into `to` for the throwaway load: model
- * files, notebooks and JSON are copied, so the proposal's edits land on a copy;
- * everything else (data files, which can be large) is linked, never written.
+ * files, notebooks and the manifest are copied, so the proposal's edits land
+ * on a copy; everything else (data files, a JSON dataset among them, which can
+ * be large) is linked, never written. A link that resolves nowhere is left
+ * out, as a load would not find it either.
  */
-async function stagePackageTree(from: string, to: string): Promise<void> {
+export async function stagePackageTree(
+   from: string,
+   to: string,
+): Promise<void> {
    await fs.mkdir(to, { recursive: true });
    for (const entry of await fs.readdir(from, { withFileTypes: true })) {
       const source = path.join(from, entry.name);
       const target = path.join(to, entry.name);
       if (entry.isDirectory()) {
+         if (UNSTAGED_DIRECTORIES.has(entry.name)) continue;
          await stagePackageTree(source, target);
       } else if (
          entry.name.endsWith(MODEL_FILE_SUFFIX) ||
          entry.name.endsWith(NOTEBOOK_FILE_SUFFIX) ||
-         entry.name.endsWith(".json")
+         entry.name === PACKAGE_MANIFEST_NAME
       ) {
          await fs.copyFile(source, target);
       } else if (entry.isFile() || entry.isSymbolicLink()) {
-         await fs.symlink(await fs.realpath(source), target);
+         let resolved: string;
+         try {
+            resolved = await fs.realpath(source);
+         } catch {
+            continue;
+         }
+         await fs.symlink(resolved, target);
       }
    }
 }
@@ -213,13 +243,10 @@ async function bindProposedTables(
    pkg: Package,
    plan: ApiBuildPlan,
 ): Promise<ApiWhatIfRefusal[]> {
-   // The package's eligibility gates and rollup push are not on its public
-   // surface; read here, never changed. Pre-filtering against the same gates
-   // the bind applies keeps the bind from logging a refusal for a source that
-   // was only proposed.
-   const materialization = (
-      pkg as unknown as { materialization: PackageMaterialization }
-   ).materialization;
+   // Pre-filtered against the same gates the bind applies, so each refusal is
+   // reported with its reason rather than dropped by the bind.
+   const { storage: storageEligibility, colocated: colocatedEligibility } =
+      pkg.servingEligibility();
    const refusals: ApiWhatIfRefusal[] = [];
    for (const refused of Object.values(plan.refusedSources ?? {})) {
       refusals.push({
@@ -231,8 +258,6 @@ async function bindProposedTables(
    }
    const colocated: FreshnessManifest = {};
    const stored: Record<string, ManifestEntry> = {};
-   const storageEligibility = materialization.sourceEligibility;
-   const colocatedEligibility = materialization.colocatedSourceEligibility;
    for (const source of Object.values(plan.sources)) {
       const destination = source.annotationFields?.storage?.trim();
       if (destination && getPersistStorageMode() === "off") {
@@ -288,8 +313,29 @@ async function bindProposedTables(
    pkg.bindColocatedServeManifest(colocated);
    pkg.bindStorageServeBindings(stored);
    // The companion compiles against the manifest just bound.
-   await materialization.pushPreaggregateServeModels();
+   await pkg.pushPreaggregateServeModels();
    return refusals;
+}
+
+/**
+ * The error text an answer may carry: what the query route would tell the
+ * caller (a compile error in their own query, a 400, the boundary's 404).
+ * Anything else is an internal failure, whose text can name connections or
+ * paths; it is logged (at debug, inside the hypothetical scope) and answered
+ * generically.
+ */
+export function answerErrorText(error: unknown): string {
+   if (
+      error instanceof QueryCompileError ||
+      error instanceof BadRequestError ||
+      error instanceof NotQueryableError
+   ) {
+      return error.message;
+   }
+   logger.debug("What-if could not route a query", {
+      error: errMessage(error),
+   });
+   return "This query could not be routed against the proposal.";
 }
 
 /** Route each query against the bound proposal, one answer each. */
@@ -297,6 +343,7 @@ async function answerQueries(
    pkg: Package,
    queries: readonly WhatIfQuery[],
    givens: Record<string, GivenValue> | undefined,
+   includeHiddenFilesAndSources: boolean,
 ): Promise<ApiWhatIfAnswer[]> {
    const answers: ApiWhatIfAnswer[] = [];
    for (const query of queries) {
@@ -324,10 +371,11 @@ async function answerQueries(
             sourceName: query.sourceName,
             queryName: query.queryName,
             givens,
+            includeHiddenFilesAndSources,
          });
          answers.push({ ...echo, path });
       } catch (error) {
-         answers.push({ ...echo, error: errMessage(error) });
+         answers.push({ ...echo, error: answerErrorText(error) });
       }
    }
    return answers;
@@ -375,6 +423,7 @@ export async function runWhatIf(
                   pkg,
                   request.queries,
                   request.givens,
+                  !!request.includeHiddenFilesAndSources,
                ),
             };
          },

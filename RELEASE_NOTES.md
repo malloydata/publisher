@@ -25,7 +25,7 @@ Two consequences worth knowing. A section merged to `main` ships in the **next**
 
 `POST /api/v0/environments/{env}/packages/{pkg}/build-plan/what-if` takes a proposed edit to a package's files (add or remove a `#@ persist`, change its `storage=`, add a `#@ preaggregate`) and a list of queries, and answers each query's path report as it would be once the proposal were built: which table answers, and why every other table is skipped. It also says what the proposal adds to, removes from and changes in the build plan, and which proposed sources a build would refuse.
 
-Nothing is built, written, installed or run. The proposal loads as a throwaway package (a dry-run publish's load, with its refusals), is bound to the tables its plan would build through the package's own eligibility gates, and each query is routed exactly as a served one, compiled only. No routing metric or serve log is recorded. See [docs/materialization.md](docs/materialization.md#before-you-annotate-what-if).
+Nothing is built, written, installed or run. The proposal loads as a throwaway package (a dry-run publish's load, with its refusals), is bound to the tables its plan would build through the package's own eligibility gates, and each query is routed exactly as a served one, compiled only. Nothing it does writes an operator log or moves a metric. As on a query, a query against a source the package does not publish is refused and no answer names a hidden source, unless `includeHiddenFilesAndSources=true`. See [docs/materialization.md](docs/materialization.md#before-you-annotate-what-if).
 
 This is materialization v2's what-if (T3) for the v1 annotations; what-if over `#(materialize)` and `#(preaggregate)` comes with them.
 

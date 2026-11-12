@@ -15,6 +15,7 @@ import {
    runWhatIf,
 } from "../service/materialization/what_if";
 import { parseOverlayFiles } from "../service/request_overlay";
+import { runHypothetical } from "../hypothetical_scope";
 import { withSpan } from "../telemetry";
 
 type ApiWhatIf = components["schemas"]["WhatIf"];
@@ -27,11 +28,29 @@ type ApiWhatIf = components["schemas"]["WhatIf"];
 export class WhatIfController {
    constructor(private readonly environmentStore: PackageLookup) {}
 
+   /**
+    * Runs as hypothetical work (hypothetical_scope.ts): nothing here serves
+    * anyone, so the throwaway load, bind and routes write no operator log and
+    * move no metric, the request overlay count included.
+    */
    public async whatIf(
       environmentName: string,
       packageName: string,
       body: unknown,
       versionId: VersionRef = VersionRef.LATEST,
+      options: { includeHiddenFilesAndSources?: boolean } = {},
+   ): Promise<ApiWhatIf> {
+      return runHypothetical(() =>
+         this.answer(environmentName, packageName, body, versionId, options),
+      );
+   }
+
+   private async answer(
+      environmentName: string,
+      packageName: string,
+      body: unknown,
+      versionId: VersionRef,
+      options: { includeHiddenFilesAndSources?: boolean },
    ): Promise<ApiWhatIf> {
       if (!body || typeof body !== "object" || Array.isArray(body)) {
          throw new BadRequestError(
@@ -66,6 +85,8 @@ export class WhatIfController {
             runWhatIf(environment, current, packageName, {
                files: proposal,
                queries: parsedQueries,
+               includeHiddenFilesAndSources:
+                  !!options.includeHiddenFilesAndSources,
                ...(givens !== undefined
                   ? { givens: givens as Record<string, GivenValue> }
                   : {}),

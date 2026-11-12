@@ -2028,6 +2028,27 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
       this.materialization.bindStorageServeBindings(entries);
    }
 
+   /**
+    * The gates a bind admits sources through, read-only: the `storage=` tier's
+    * by name, the colocated tier's by content address. What-if checks a
+    * proposal's tables against them before binding, so it can report each
+    * refusal rather than have the bind drop it.
+    */
+   public servingEligibility(): {
+      storage: SourceEligibility | undefined;
+      colocated: ColocatedSourceEligibility | undefined;
+   } {
+      return {
+         storage: this.materialization.sourceEligibility,
+         colocated: this.materialization.colocatedSourceEligibility,
+      };
+   }
+
+   /** See {@link PackageMaterialization.pushPreaggregateServeModels}. */
+   public async pushPreaggregateServeModels(): Promise<void> {
+      await this.materialization.pushPreaggregateServeModels();
+   }
+
    /** See {@link PackageMaterialization.setServeDestinationSchema}. */
    public setServeDestinationSchema(
       resolver: (destinationName: string) => string | undefined,

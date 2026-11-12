@@ -728,7 +728,9 @@ The answer is each query's path report under the proposal (the same `path` a que
 - Every proposed table passes the same eligibility gates a real bind applies, so a source a build would refuse (a gated source on the storage tier, a `storage=` source while `PERSIST_STORAGE_MODE` is `off`) is listed in `refused` and its queries answer live, as they would.
 - A `storage=` table is declared from the build plan's column types. A column whose Malloy type has no DuckDB counterpart a build would store (`json`, a `sql native` type) is left off, so a query that reads it answers live.
 - `files` may be omitted to ask the same question of the annotations as they stand, with every planned table built.
-- No routing metric or serve log is recorded for these routes. It takes a query slot, like a compile, and at most 50 queries a request.
+- Nothing the request does writes an operator log or moves a metric: the throwaway load, bind and routes all run as hypothetical work. It takes a query slot, like a compile, and at most 50 queries a request.
+- As on a query, a query against a source the package does not publish is refused (that answer's `error`), and no answer names a hidden source, unless `includeHiddenFilesAndSources=true`. `plan` and `refused` name every planned source, as `GET …/build-plan` does.
+- An answer's `error` is what the query route would say: a compile error in the query, a malformed given, or the query boundary's refusal. Any other failure is reported generically, with its detail in the server's debug log.
 - Covers the v1 annotations (`#@ persist`, `storage=`, `#@ preaggregate`). What-if over `#(materialize)` and `#(preaggregate)` comes with them.
 
 ## Standalone vs. hosted (control-plane) deployments

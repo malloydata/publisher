@@ -2968,8 +2968,17 @@ paths:
         is routed against that binding compiled only. Compiling reads each
         source's schema from its connection, as a compile does; never rows.
         The binding passes the package's own eligibility gates, so a source a
-        build would refuse is listed in `refused` and serves live. No routing
-        metric or serve log is recorded.
+        build would refuse is listed in `refused` and serves live. Nothing it
+        does writes an operator log or moves a metric.
+
+        As on a query, a query against a source the package does not publish
+        is refused (that answer's `error`), and each answer names no hidden
+        source, unless `includeHiddenFilesAndSources` is true. `plan` and
+        `refused` name every planned source, as `GET …/build-plan` does. An
+        answer's `error` is what the query route would say (a compile error in
+        the query, a malformed given, the query boundary's refusal); any other
+        failure is reported generically and its detail stays in the server's
+        debug log.
 
         A `storage=` table is declared from its columns' Malloy types; a column
         of another type is left off, so a query reading it is not answered
@@ -2989,6 +2998,7 @@ paths:
           schema:
             $ref: "#/components/schemas/IdentifierPattern"
         - $ref: "#/components/parameters/versionId"
+        - $ref: "#/components/parameters/includeHiddenFilesAndSources"
       requestBody:
         required: true
         content:

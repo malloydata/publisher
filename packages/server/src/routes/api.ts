@@ -905,6 +905,12 @@ function registerQueryRoutes(
             req.params.packageName,
             req.body,
             versionRefOf(req),
+            {
+               includeHiddenFilesAndSources: booleanParam(
+                  req,
+                  "includeHiddenFilesAndSources",
+               ),
+            },
          ),
       ),
    );

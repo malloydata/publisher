@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 import {
+   createNoopMeter,
    metrics,
    SpanStatusCode,
    trace,
@@ -12,6 +13,7 @@ import {
    type Histogram,
    type Meter,
 } from "@opentelemetry/api";
+import { isHypothetical } from "./hypothetical_scope";
 
 /**
  * Single source of truth for the OpenTelemetry meter name. Every
@@ -51,17 +53,27 @@ export function lazyInstrument<T>(create: () => T): () => T {
    return () => (instrument ??= create());
 }
 
+/** Instruments that record nothing, handed out inside a hypothetical scope. */
+const noopMeter = createNoopMeter();
+const noopCounter = noopMeter.createCounter("hypothetical");
+const noopHistogram = noopMeter.createHistogram("hypothetical");
+
+/**
+ * A counter that records nothing for hypothetical work (a what-if), so a
+ * proposal that serves no one never moves a production metric.
+ */
 export function lazyCounter(
    name: string,
    description: string,
    unit?: string,
 ): () => Counter {
-   return lazyInstrument(() =>
+   const instrument = lazyInstrument(() =>
       publisherMeter().createCounter(name, {
          description,
          ...(unit ? { unit } : {}),
       }),
    );
+   return () => (isHypothetical() ? noopCounter : instrument());
 }
 
 export function lazyHistogram(
@@ -69,7 +81,7 @@ export function lazyHistogram(
    description: string,
    { unit = "ms", buckets }: { unit?: string; buckets?: number[] } = {},
 ): () => Histogram {
-   return lazyInstrument(() =>
+   const instrument = lazyInstrument(() =>
       publisherMeter().createHistogram(name, {
          description,
          // "" means a dimensionless histogram (a count), created with no unit.
@@ -77,6 +89,7 @@ export function lazyHistogram(
          ...(buckets ? { advice: { explicitBucketBoundaries: buckets } } : {}),
       }),
    );
+   return () => (isHypothetical() ? noopHistogram : instrument());
 }
 
 /** Drop every lazily created instrument so the next use binds to the current provider. */
