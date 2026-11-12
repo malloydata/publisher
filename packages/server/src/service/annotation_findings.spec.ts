@@ -25,6 +25,11 @@ import { Environment } from "./environment";
 import { parsePackageName } from "./identity";
 import type { Package } from "./package";
 import { formatPublishRejections } from "./publish_checks";
+import {
+   PackageMaterialization,
+   type PackageMaterializationOwner,
+} from "./materialization/package_materialization";
+import type { PackageAnnotationFinding } from "./annotation_reader";
 import { installSettings } from "../test_helpers/settings_env";
 
 let rootDir: string;
@@ -285,4 +290,105 @@ describe("annotation findings on a loaded package", () => {
       },
       { timeout: 30000 },
    );
+
+   it(
+      "refuses a #(materialize) line that does not parse at publish, with the switch on",
+      async () => {
+         const { restore } = installSettings({
+            env: { PUBLISHER_MATERIALIZE: "true" },
+         });
+         await __setPackageLoadPoolForTests(new PackageLoadPool(1));
+         try {
+            const pkg = await loadPackage(
+               `${RAW}#(materialize) name="t\nsource: orders is raw\n`,
+            );
+            const [warning] = coded(pkg, "materialize-unparseable");
+            expect(warning).toMatchObject({
+               severity: "error",
+               subject: "orders",
+            });
+            expect(warning.message).toContain("does not parse");
+            // Not built: nothing is planned for it.
+            expect(Object.keys(pkg.getBuildPlan()?.sources ?? {})).toEqual([]);
+            // A package already published keeps loading; publish refuses.
+            expect(formatPublishRejections(pkg)).toContain("does not parse");
+         } finally {
+            await __setPackageLoadPoolForTests(null);
+            restore();
+         }
+      },
+      { timeout: 30000 },
+   );
+
+   it(
+      "with the switch off, reads neither v2 route: no finding, and publish is not refused",
+      async () => {
+         for (const line of [
+            '#(materialize) nmae="t"',
+            '#(materialize) name="t',
+            '#(preaggregate) grian=["category"]',
+            '#(preaggregate) grain=["category"',
+         ]) {
+            const pkg = await loadPackage(
+               `${RAW}${line}\nsource: orders is raw\n`,
+            );
+            const codes = (pkg.getPackageMetadata().warnings ?? []).map(
+               (w) => w.code,
+            );
+            expect(
+               codes.filter(
+                  (c) =>
+                     c?.startsWith("materialize-") ||
+                     c?.startsWith("preaggregate-"),
+               ),
+            ).toEqual([]);
+            expect(formatPublishRejections(pkg)).toBeUndefined();
+         }
+      },
+      { timeout: 60000 },
+   );
+});
+
+describe("the publish refusal for malformed materialization v2 declarations", () => {
+   // The contract a v2 route's reader relies on: any `malformed` finding on
+   // `#(materialize)` or `#(preaggregate)` (one that does not parse, an
+   // unknown key, ...) is refused at publish, while the load only warns.
+   function refusalOf(findings: PackageAnnotationFinding[]): string {
+      const materialization = new PackageMaterialization(
+         {} as unknown as PackageMaterializationOwner,
+      );
+      (
+         materialization as unknown as {
+            annotationFindings: PackageAnnotationFinding[];
+         }
+      ).annotationFindings = findings;
+      return materialization.formatUnparseableAnnotations();
+   }
+
+   it("refuses a malformed finding on either v2 route, and nothing unservable", () => {
+      const finding = (
+         route: string,
+         tier: PackageAnnotationFinding["tier"],
+         code: string,
+      ): PackageAnnotationFinding => ({
+         route,
+         tier,
+         code,
+         message: `${code} on ${route}`,
+         subject: "orders",
+         model: "m.malloy",
+      });
+      expect(
+         refusalOf([
+            finding("preaggregate", "malformed", "preaggregate-malformed"),
+            finding("materialize", "malformed", "materialize-unparseable"),
+            finding("materialize", "unservable", "materialize-not-built"),
+            // v1's `#@` unknown key only warns (P13).
+            finding("@", "unservable", "persist-unknown-key"),
+         ]).split("\n"),
+      ).toEqual([
+         "m.malloy: preaggregate-malformed on preaggregate",
+         "m.malloy: materialize-unparseable on materialize",
+      ]);
+   });
 });

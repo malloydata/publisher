@@ -194,6 +194,9 @@ export const GENERATOR_KEYS: readonly string[] = [
 /** The code of a `#(materialize)` key outside the route's closed set. */
 export const MATERIALIZE_UNKNOWN_KEY_CODE = "materialize-unknown-key";
 
+/** The code of a `#(materialize)` line that does not parse. */
+export const MATERIALIZE_UNPARSEABLE_CODE = "materialize-unparseable";
+
 /** One stored column of a materialized source. */
 export interface MaterializeColumn {
    /** The dimension's name on the author's source. */
@@ -325,7 +328,8 @@ export interface MaterializeRefusal {
    sourceID?: string;
    reason: string;
    /**
-    * Set when the declaration cannot be read as written (an unknown key):
+    * Set when the declaration cannot be read as written (it does not parse,
+    * or has an unknown key):
     * the finding is `malformed` under this code, refused at publish, rather
     * than the `unservable` `materialize-not-built`.
     */
@@ -906,6 +910,7 @@ export function planModelMaterialize(
             sourceName: name,
             sourceID: def.sourceID,
             reason: `#(materialize) does not parse: ${error instanceof Error ? error.message : String(error)}`,
+            malformedCode: MATERIALIZE_UNPARSEABLE_CODE,
          });
          continue;
       }
@@ -915,6 +920,7 @@ export function planModelMaterialize(
             sourceName: name,
             sourceID: def.sourceID,
             reason: `#(materialize) does not parse: ${declaration.errors.join("; ")}`,
+            malformedCode: MATERIALIZE_UNPARSEABLE_CODE,
          });
          continue;
       }

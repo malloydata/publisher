@@ -274,6 +274,11 @@ export function readRouteTag(
    const spec = PUBLISHER_ROUTES[route];
    const accepted = keys ?? spec?.keys;
    const findings: AnnotationFinding[] = [];
+   // `#@`, `#!` and `#` are sigil routes; an app route is written `#(name)`.
+   const spelled =
+      route === "@" || route === "!" || route === ""
+         ? `#${route}`
+         : `#(${route})`;
    if (accepted) {
       for (const [key] of tag.entries()) {
          const retired = spec?.retiredKeys?.[key];
@@ -282,7 +287,7 @@ export function readRouteTag(
                route,
                tier: "malformed",
                code: `${route === "@" ? "persist" : route}-retired-key`,
-               message: `\`${key}=\` is no longer read on \`#${route}\``,
+               message: `\`${key}=\` is no longer read on \`${spelled}\``,
                rewrite: retired,
             });
          } else if (!accepted.has(key)) {
@@ -293,7 +298,7 @@ export function readRouteTag(
                   ? "malformed"
                   : "unservable",
                code: `${route === "@" ? "persist" : route}-unknown-key`,
-               message: `\`${key}=\` is not a key \`#${route}\` reads, so it does nothing${near ? ` (did you mean \`${near}=\`?)` : ""}`,
+               message: `\`${key}=\` is not a key \`${spelled}\` reads, so it does nothing${near ? ` (did you mean \`${near}=\`?)` : ""}`,
             });
          }
       }

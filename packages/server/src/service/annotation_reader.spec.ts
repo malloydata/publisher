@@ -170,6 +170,8 @@ describe("the materialization v2 routes", () => {
          ]);
          expect(findings[0]?.message).toContain(`\`${key}\``);
          expect(findings[0]?.message).toContain(`did you mean \`${near}=\`?`);
+         // Named as it is written, `#(route)`.
+         expect(findings[0]?.message).toContain(`\`#(${route})\` reads`);
       }
       expect(
          readRouteTag(
