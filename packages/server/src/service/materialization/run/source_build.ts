@@ -40,8 +40,11 @@ import {
    manifestExcludingStorage,
    manifestForCompiler,
    NO_PLAN_FACTS,
+   noteWrongTierRecompute,
    readAuthorFile,
+   upstreamEntryIsCurrent,
    upstreamReuseFromManifest,
+   wrongTierDetail,
 } from "./materialization_run_support";
 import type { StorageBuildRequest } from "./storage_build_strategy";
 
@@ -111,7 +114,44 @@ export class SourceBuilder {
       const buildManifest = isStorageBuild
          ? { ...reducedManifest, strict: false }
          : reducedManifest;
-      const buildSQL = buildSQLOf(persistSource, buildManifest);
+      // Entries left out of the warehouse render only because they are at the
+      // wrong tier for the upstream as declared now (#7087), by address.
+      const wrongTier = Object.entries(builtEntries).filter(
+         ([address, entry]) =>
+            !entry.storageDestinationName &&
+            address in manifest.buildManifest.entries &&
+            !upstreamEntryIsCurrent(address, entry, planFacts),
+      );
+      let buildSQL: string;
+      try {
+         buildSQL = buildSQLOf(persistSource, buildManifest);
+      } catch (err) {
+         // A strict colocated render misses an upstream whose entry was
+         // supplied, at the wrong tier: say that, not Malloy's generic miss.
+         const message = err instanceof Error ? err.message : String(err);
+         // The name Malloy's miss quotes; a reference carries no sourceName,
+         // so the plan's names for the address are tried too.
+         const stale = wrongTier.flatMap(([address, entry]) => {
+            const name = [
+               ...(entry.sourceName ? [entry.sourceName] : []),
+               ...(planFacts.namesByAddress?.[address] ?? []),
+            ].find((n) => message.includes(`'${n}'`));
+            return name ? [{ address, entry, name }] : [];
+         });
+         if (!isStorageBuild && manifest.strict && stale.length > 0) {
+            throw new ChainedUpstreamMissingError(
+               stale.map((s) => s.name),
+               `Failed to materialize source '${persistSource.name}': ` +
+                  stale
+                     .map((s) =>
+                        wrongTierDetail(s.name, s.address, s.entry, planFacts),
+                     )
+                     .join("; ") +
+                  `, and strict upstreams forbid recomputing it from raw`,
+            );
+         }
+         throw err;
+      }
 
       // Which stored tables this source reads, and whether the substituted
       // manifest holds each, decided once for both tiers. It drives stacking on
@@ -188,6 +228,27 @@ export class SourceBuilder {
               rootAddress: contentSourceEntityId ?? instruction.sourceEntityId,
            })
          : { fields: {}, inManifestOnly: [], missing: [] };
+      // A colocated build that recomputes an upstream because its entry is at
+      // the wrong tier reads the warehouse for it: logged and counted once per
+      // run per upstream, since the entry fields alone hide the cost (#7087).
+      if (!isStorageBuild && wrongTier.length > 0) {
+         const wrongTierAddresses = new Map(wrongTier);
+         for (const { name, sourceID } of reached.persisted) {
+            const address = planFacts.addressBySourceId[sourceID];
+            const entry =
+               address === undefined
+                  ? undefined
+                  : wrongTierAddresses.get(address);
+            if (!entry || !reuse.inManifestOnly.includes(name)) continue;
+            noteWrongTierRecompute({
+               planFacts,
+               build: "colocated",
+               sourceName: persistSource.name,
+               upstream: name,
+               detail: wrongTierDetail(name, address!, entry, planFacts),
+            });
+         }
+      }
 
       // Every statement of this build carries the same metadata so query history
       // shows it as one unit of work. Resolved before the storage branch so both

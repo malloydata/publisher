@@ -6,7 +6,10 @@ import { Manifest } from "@malloydata/malloy";
 import { MaterializationEligibilityError } from "../../../errors";
 import { logger } from "../../../logger";
 import { malloyGivenToApi, type MalloyGiven } from "../../given";
-import { recordStorageTableRetained } from "../../../materialization_metrics";
+import {
+   recordStaleUpstreamEntry,
+   recordStorageTableRetained,
+} from "../../../materialization_metrics";
 import {
    BuildInstruction,
    isLegacyFailedEntry,
@@ -74,15 +77,21 @@ export interface ChainedPlanFacts {
     */
    sourceIDsFor?: (sourceName: string, sourceEntityId: string) => string[];
    /**
-    * Where the plan's sources at each content address are declared to live NOW:
-    * a storage destination's name, or null for the source's own warehouse (a
-    * `storage=` source counts as null while `PERSIST_STORAGE_MODE` is off).
+    * Where the plan's sources at each content address live NOW: a storage
+    * destination's name, or null for the source's own warehouse (a `storage=`
+    * source counts as null while `PERSIST_STORAGE_MODE` is off). Read from the
+    * run's instruction for the source when there is one (a host can imply a
+    * destination the annotation does not declare), else from `storage=`. A
+    * destination that is the source's own connection counts as null: the same
+    * database (see {@link normalizedTier}).
     * The address does not include the destination (P12), so a source that moved
     * tier keeps its address, and an entry for it may describe the table it had
     * before the move. {@link upstreamEntryIsCurrent} reads this. Absent without
     * a plan, which leaves every entry trusted, as before.
     */
    declaredTiersByAddress?: Record<string, readonly (string | null)[]>;
+   /** The plan's source names at each content address, for messages. */
+   namesByAddress?: Record<string, readonly string[]>;
 }
 
 /** A build with no plan to consult: nothing is known to be stored. */
@@ -307,6 +316,16 @@ export function compilerMissingUpstream(
 export function chainedPlanFacts(
    sources: Record<string, PersistSource>,
    connectionDigests: Record<string, string>,
+   /**
+    * The run's instruction for a source, when it has one: its `destination`
+    * decides the source's current tier over the `storage=` annotation, since a
+    * host can imply one (a source on a database connection built into that
+    * database). Absent outside an instructed run.
+    */
+   instructionFor?: (
+      sourceID: string,
+      sourceEntityId: string,
+   ) => { destination?: string } | undefined,
 ): ChainedPlanFacts {
    const planSources: { name: string; sourceEntityId?: string }[] = [];
    const planSourcesById: Record<
@@ -316,6 +335,7 @@ export function chainedPlanFacts(
    const addressBySourceId: Record<string, string | undefined> = {};
    const compilerKeyBySourceId: Record<string, string | undefined> = {};
    const declaredTiersByAddress: Record<string, (string | null)[]> = {};
+   const namesByAddress: Record<string, string[]> = {};
    const storageOn = getPersistStorageMode() !== "off";
    for (const [sourceID, source] of Object.entries(sources)) {
       let sourceEntityId: string | undefined;
@@ -334,13 +354,22 @@ export function chainedPlanFacts(
       addressBySourceId[sourceID] = sourceEntityId;
       if (sourceEntityId !== undefined) {
          let tier: string | null = null;
-         try {
-            tier = storageOn ? (declaredStorage(source) ?? null) : null;
-         } catch {
-            // Unreadable annotations: the colocated reading, as the build does.
+         if (storageOn) {
+            const instructed = instructionFor?.(sourceID, sourceEntityId);
+            if (instructed) {
+               tier = instructed.destination ?? null;
+            } else {
+               try {
+                  tier = declaredStorage(source) ?? null;
+               } catch {
+                  // Unreadable annotations: the colocated reading, as the build does.
+               }
+            }
+            tier = normalizedTier(tier, source.connectionName);
          }
          const tiers = (declaredTiersByAddress[sourceEntityId] ??= []);
          if (!tiers.includes(tier)) tiers.push(tier);
+         (namesByAddress[sourceEntityId] ??= []).push(source.name);
       }
    }
    return {
@@ -350,6 +379,7 @@ export function chainedPlanFacts(
       compilerKeyBySourceId,
       sourceIDsFor: planSourceIds(planSourcesById),
       declaredTiersByAddress,
+      namesByAddress,
    };
 }
 
@@ -366,12 +396,117 @@ export function chainedPlanFacts(
  */
 export function upstreamEntryIsCurrent(
    address: string,
-   entry: Pick<ManifestEntry, "storageDestinationName">,
+   entry: Pick<ManifestEntry, "storageDestinationName" | "connectionName">,
    planFacts: Pick<ChainedPlanFacts, "declaredTiersByAddress">,
 ): boolean {
    const tiers = planFacts.declaredTiersByAddress?.[address];
    if (!tiers || tiers.length === 0) return true;
-   return tiers.includes(entry.storageDestinationName ?? null);
+   return tiers.includes(entryTier(entry));
+}
+
+/**
+ * A tier as {@link upstreamEntryIsCurrent} compares it: a storage destination's
+ * name, or null for the source's own warehouse. A destination that IS the
+ * source's own connection is null too: a host that implies a destination for a
+ * source on a database connection builds into that same database, so its table
+ * is the warehouse table, not one that moved.
+ */
+export function normalizedTier(
+   destination: string | null | undefined,
+   connectionName: string | undefined,
+): string | null {
+   return destination && destination !== connectionName ? destination : null;
+}
+
+/** An entry's tier (see {@link normalizedTier}). */
+export function entryTier(
+   entry: Pick<ManifestEntry, "storageDestinationName" | "connectionName">,
+): string | null {
+   return normalizedTier(entry.storageDestinationName, entry.connectionName);
+}
+
+/**
+ * The entries a chained `storage=` build may stack on: only those at the tier
+ * their source is declared on now (see {@link upstreamEntryIsCurrent}).
+ */
+export function currentUpstreamEntries(
+   builtEntries: Record<string, ManifestEntry>,
+   planFacts: Pick<ChainedPlanFacts, "declaredTiersByAddress">,
+): Record<string, ManifestEntry> {
+   return Object.fromEntries(
+      Object.entries(builtEntries).filter(([address, entry]) =>
+         upstreamEntryIsCurrent(address, entry, planFacts),
+      ),
+   );
+}
+
+/** The phrase every wrong-tier detail carries, for a caller that classifies one. */
+export const WRONG_TIER_MARKER = "supplied at the wrong tier";
+
+function tierLabel(tier: string | null): string {
+   return tier === null ? "its warehouse" : `storage destination '${tier}'`;
+}
+
+/**
+ * Why an upstream's entry is not used because it is at the wrong tier: where
+ * the entry is, and where the upstream is declared now. An unlabeled entry (no
+ * `storageDestinationName`) is a warehouse table or a reference that does not
+ * say where it lives; until a host labels its references that is every
+ * reference to a stored table, so the message says so rather than calling it
+ * the table from before a move.
+ */
+export function wrongTierDetail(
+   name: string,
+   address: string,
+   entry: Pick<ManifestEntry, "storageDestinationName" | "connectionName">,
+   planFacts: Pick<ChainedPlanFacts, "declaredTiersByAddress">,
+): string {
+   const declared = planFacts.declaredTiersByAddress?.[address] ?? [];
+   const where = declared.length
+      ? declared.map(tierLabel).join(" or ")
+      : "another tier";
+   const tier = entryTier(entry);
+   const at =
+      tier === null
+         ? "a warehouse table, or a reference that does not say where it lives"
+         : `a table in ${tierLabel(tier)}`;
+   return (
+      `'${name}' is declared in ${where}, but its manifest entry is ${at}: ` +
+      `${WRONG_TIER_MARKER}, so this build does not use it`
+   );
+}
+
+/**
+ * Log, once per run per upstream, a build that recomputes an upstream from raw
+ * because the upstream's entry is at the wrong tier, and count it: a recompute
+ * reads the warehouse, which a reader of the entry fields alone would miss.
+ * Keyed by the run's plan facts, which a run computes once.
+ */
+const wrongTierNoted = new WeakMap<object, Set<string>>();
+export function noteWrongTierRecompute(params: {
+   planFacts: object;
+   build: "colocated" | "storage";
+   sourceName: string;
+   upstream: string;
+   detail: string;
+}): void {
+   let seen = wrongTierNoted.get(params.planFacts);
+   if (!seen) {
+      seen = new Set();
+      wrongTierNoted.set(params.planFacts, seen);
+   }
+   if (seen.has(params.upstream)) return;
+   seen.add(params.upstream);
+   recordStaleUpstreamEntry(params.build);
+   logger.warn(
+      "Recomputing an upstream from raw: its manifest entry is at the wrong tier",
+      {
+         sourceName: params.sourceName,
+         upstream: params.upstream,
+         build: params.build,
+         reason: params.detail,
+      },
+   );
 }
 
 /** An author model file's text by `file:` URL, or undefined when unreadable. */
@@ -494,6 +629,18 @@ export function manifestExcludingStorage(
          quoted[id] &&
          upstreamEntryIsCurrent(id, entry, planFacts)
       ) {
+         if (
+            planFacts.declaredTiersByAddress &&
+            !(id in planFacts.declaredTiersByAddress)
+         ) {
+            // Kept as before: the plan does not know this address, so nothing
+            // says whether it is current. Logged, since an unlabeled reference
+            // here could still be a stored table's name.
+            logger.debug(
+               "Kept an unlabeled manifest entry for an address the plan does not know",
+               { sourceEntityId: id, sourceName: entry.sourceName },
+            );
+         }
          reduced.update(id, { tableName: quoted[id].tableName });
       }
    }

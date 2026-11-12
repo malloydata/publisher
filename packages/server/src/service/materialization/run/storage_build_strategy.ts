@@ -67,7 +67,11 @@ import {
    partitionColumnsForBuild,
    readAuthorFile,
    redactConnectionSecrets,
+   currentUpstreamEntries,
+   noteWrongTierRecompute,
    upstreamEntryIsCurrent,
+   WRONG_TIER_MARKER,
+   wrongTierDetail,
 } from "./materialization_run_support";
 import { carriesAuthorSql, isSameCatalog } from "./same_catalog_build";
 import { destinationSchemaOf } from "./storage_table_path";
@@ -309,6 +313,22 @@ export class StorageBuildStrategy
                   reason: safeDetail,
                },
             );
+            // A recompute because a parent's entry is at the wrong tier reads
+            // the warehouse; counted once per run per parent (#7087).
+            if (
+               err instanceof ChainedUpstreamMissingError &&
+               safeDetail.includes(WRONG_TIER_MARKER)
+            ) {
+               for (const upstream of err.missing) {
+                  noteWrongTierRecompute({
+                     planFacts,
+                     build: "storage",
+                     sourceName: persistSource.name,
+                     upstream,
+                     detail: safeDetail,
+                  });
+               }
+            }
          }
       }
 
@@ -566,11 +586,7 @@ export class StorageBuildStrategy
       }
       // Only an entry at the destination its source is declared in NOW: a
       // stored table left from before the source moved is stale (#7087).
-      const currentEntries = Object.fromEntries(
-         Object.entries(builtEntries).filter(([address, entry]) =>
-            upstreamEntryIsCurrent(address, entry, planFacts),
-         ),
-      );
+      const currentEntries = currentUpstreamEntries(builtEntries, planFacts);
       const upstreams: ServeBinding[] = deriveServeBindings(
          currentEntries,
          aliasesForBinding,
@@ -645,11 +661,7 @@ export class StorageBuildStrategy
                address !== undefined &&
                !upstreamEntryIsCurrent(address, entry, planFacts)
             ) {
-               return (
-                  `'${name}' has only a table from before its destination ` +
-                  `changed (${entry.storageDestinationName ? `in '${entry.storageDestinationName}'` : "a warehouse table"}), ` +
-                  `which this build does not use`
-               );
+               return wrongTierDetail(name, address, entry, planFacts);
             }
             if (
                entry?.storageDestinationName === destinationName &&

@@ -280,6 +280,15 @@ const chainedStorageBuildCounter = lazyCounter(
       "parent_reuse share is the headline signal for how far the " +
       "stack-on-the-parent path gets us vs recompute-from-raw.",
 );
+const staleUpstreamEntryCounter = lazyCounter(
+   "publisher_materialization_stale_upstream_entry_total",
+   "Builds that could not use an upstream's manifest entry because it is at a " +
+      "different tier than the upstream is declared on now (ms2data/service#7087: " +
+      "a source moved to or from storage= keeps its content address). The build " +
+      "recomputes that upstream from raw instead, which reads the warehouse. " +
+      "Label: build ('colocated'|'storage'), the tier of the build that " +
+      "recomputed.",
+);
 const colocatedBindDroppedCounter = lazyCounter(
    "publisher_materialization_colocated_bind_dropped_total",
    "Colocated serve-manifest entries dropped by bindColocatedServeManifest. " +
@@ -668,6 +677,15 @@ export function recordChainedStorageBuild(
    outcome: ChainedStorageBuildOutcome,
 ): void {
    chainedStorageBuildCounter().add(1, { outcome });
+}
+
+/**
+ * Record a build that recomputed an upstream from raw because the upstream's
+ * manifest entry is at a different tier than it is declared on now (see
+ * {@link staleUpstreamEntryCounter}). Once per run per upstream.
+ */
+export function recordStaleUpstreamEntry(build: "colocated" | "storage"): void {
+   staleUpstreamEntryCounter().add(1, { build });
 }
 
 /**
