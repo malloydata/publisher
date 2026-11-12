@@ -1553,6 +1553,19 @@ export const CONTRACT: Record<string, Case[]> = {
          expect: fails("PERSIST_STORAGE_MODE"),
       },
    ],
+   "persist.addressIncludesDestination": [
+      { name: "unset", expect: value(false) },
+      {
+         name: "PUBLISHER_PERSIST_ADDRESS_INCLUDES_DESTINATION",
+         env: { PUBLISHER_PERSIST_ADDRESS_INCLUDES_DESTINATION: "true" },
+         expect: value(true),
+      },
+      {
+         name: "not a boolean",
+         env: { PUBLISHER_PERSIST_ADDRESS_INCLUDES_DESTINATION: "sometimes" },
+         expect: fails("PUBLISHER_PERSIST_ADDRESS_INCLUDES_DESTINATION"),
+      },
+   ],
    "persist.collisionEnforcementEnabled": [
       { name: "unset", expect: value(false) },
       {

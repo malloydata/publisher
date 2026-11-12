@@ -25,6 +25,7 @@ import {
    getMemoryGovernorConfig,
    getModelPageMode,
    getPartitionedWriteFlushThreshold,
+   getPersistAddressIncludesDestination,
    getPersistCollisionEnforce,
    getPersistStorageMode,
    getPostgresPoolMax,
@@ -155,6 +156,8 @@ export const PROBES: Record<string, (context: SettingsContext) => unknown> = {
       return getDuckLakeTargetFileSizeBytes();
    },
    "persist.storageMode": () => getPersistStorageMode(),
+   "persist.addressIncludesDestination": () =>
+      getPersistAddressIncludesDestination(),
    "persist.collisionEnforcementEnabled": () => getPersistCollisionEnforce(),
    "materialization.schedulerEnabled": () =>
       getMaterializationSchedulerConfig() !== null,

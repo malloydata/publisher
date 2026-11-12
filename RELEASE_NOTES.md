@@ -21,6 +21,14 @@ Give the heading a title — `## [Unreleased] — what changed`, with an em dash
 
 Two consequences worth knowing. A section merged to `main` ships in the **next** release, whenever that is, so do not write one for work that has not landed. And a heading already stamped with a version is history: a follow-up that changes that behaviour opens a **new** `[Unreleased]` section referencing the shipped version by number, rather than editing the old one.
 
+## [Unreleased] — A switch to address a `storage=` table by its destination (off by default)
+
+`PUBLISHER_PERSIST_ADDRESS_INCLUDES_DESTINATION=true` folds a `storage=` source's destination into its content address (`sourceEntityId`), so a source moved from colocated to `storage=`, or to another destination, gets a new table instead of reusing or resolving the old one (#7087's address half). Colocated addresses never move, and nothing moves while `PERSIST_STORAGE_MODE` is `off`.
+
+**Off by default, because turning it on re-addresses every `storage=` table once.** Reuse misses, an incremental source re-seeds, each table rebuilds under its new address on its next run, and a `storage=` source serves live until it has. A table Publisher names itself is rebuilt in place; a table a host instructed under a generational name is the host's to reclaim. Over the repo's persist corpus, every `storage=` source moves (190) and no colocated source does (31); a `#@ preaggregate storage=` rollup moves with them. The setting is read at startup, so set it the same on every worker serving an environment and restart them together: workers with different settings compute different addresses for the same source. Turn it on per deployment as a scheduled rollout, after checking the rebuild cost, and make the first run after it a full one so chained sources find their parents under the new address.
+
+The build plan's addressing, plan layers and eligibility collection moved out of `build_plan.ts` into their own modules; nothing else changes.
+
 ## [Unreleased] — Rollups behind an index.malloy report as served, an inherited #@ preaggregate no longer fails a load, and the preview reads a destination before its first build
 
 Three fixes found by walking one real package end to end, plus a test that checks the serve verdicts, the path report, the dry-run preview and the package warnings agree about it.

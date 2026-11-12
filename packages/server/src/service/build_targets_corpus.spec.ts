@@ -45,6 +45,8 @@ import {
    fixtureModels,
    hammerModels,
 } from "../test_helpers/persist_corpus";
+import { declaredStorage } from "./materialization/plan/persist_source_fields";
+import { installSettings } from "../test_helpers/settings_env";
 
 afterAll(closeCorpus);
 
@@ -172,6 +174,81 @@ describe("build-target addresses over the repo's persist corpus", () => {
             `build-target corpus: ${checked} sources compared across ${corpus.length - uncompiled.length} models`,
          );
          expect(moved).toEqual([]);
+      },
+      { timeout: 180000 },
+   );
+
+   // P12 behind PUBLISHER_PERSIST_ADDRESS_INCLUDES_DESTINATION: with the
+   // switch on, the sources that move must be exactly the ones that declare
+   // `storage=`, and each by the destination alone. Listed, so the rollout
+   // note can say what a deployment rebuilds.
+   it(
+      "with the destination switch on, exactly the storage= sources move",
+      async () => {
+         const hammer = await hammerModels();
+         const corpus = [...fixtureModels(), ...hammer.models];
+         const unexpected: string[] = [];
+         let storageSources = 0;
+         let colocatedSources = 0;
+         for (const model of corpus) {
+            let sources: PersistSource[];
+            let digests: Record<string, string>;
+            try {
+               const runtime = new Runtime({
+                  urlReader: new InMemoryURLReader(model.files),
+                  connections: new FixedConnectionMap(
+                     new Map([...model.connections]),
+                     [...model.connections.keys()][0],
+                  ),
+               });
+               const compiled = await runtime
+                  .loadModel(new URL(model.entry))
+                  .getModel();
+               const targets = await runtime.getBuildTargets(compiled);
+               const unbuildable = new Set(
+                  targets.unbuildable.map((u) => u.source),
+               );
+               sources = plannedSources(targets).filter(
+                  (s) => !unbuildable.has(s),
+               );
+               digests = {};
+               for (const [name, c] of model.connections)
+                  digests[name] = await c.getDigest();
+            } catch {
+               continue; // reported by the no-move test above
+            }
+            const addressUnder = (env: Record<string, string>) => {
+               const { restore } = installSettings({ env });
+               try {
+                  return sources.map((s) => computeSourceEntityId(s, digests));
+               } finally {
+                  restore();
+               }
+            };
+            const off = addressUnder({ PERSIST_STORAGE_MODE: "on" });
+            const on = addressUnder({
+               PERSIST_STORAGE_MODE: "on",
+               PUBLISHER_PERSIST_ADDRESS_INCLUDES_DESTINATION: "true",
+            });
+            sources.forEach((source, i) => {
+               const stored = declaredStorage(source) !== undefined;
+               if (stored) storageSources++;
+               else colocatedSources++;
+               const moved = off[i] !== on[i];
+               if (moved !== stored) {
+                  unexpected.push(
+                     `${model.label} ${source.name}: ${stored ? "storage= did not move" : "colocated moved"}`,
+                  );
+               }
+            });
+         }
+         console.log(
+            `destination switch: ${storageSources} storage= sources move, ` +
+               `${colocatedSources} colocated sources stay`,
+         );
+         expect(storageSources).toBeGreaterThan(0);
+         expect(colocatedSources).toBeGreaterThan(0);
+         expect(unexpected).toEqual([]);
       },
       { timeout: 180000 },
    );
