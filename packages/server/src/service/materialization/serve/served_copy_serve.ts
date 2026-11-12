@@ -63,6 +63,7 @@ import {
 } from "./served_copy";
 import { servedCopyConfig, servedCopyAlias } from "./served_copy_config";
 import { offsetOf } from "../malloy_lexer";
+import { classificationFindingsBySource } from "../../classification_findings";
 import {
    isCrossConnectionRefusal,
    leaveOutCrossConnectionJoins,
@@ -158,13 +159,22 @@ export interface ServedCopyProblem {
       | "definition_not_parsed"
       | "fields_not_carried"
       | "read_terms_not_kept"
-      | "cross_connection_join";
+      | "cross_connection_join"
+      | "classification_not_kept";
    /**
     * For `cross_connection_join`: the join the served copy leaves out, because
     * it reads a source on another connection than the destination its source
     * is stored in.
     */
    join?: string;
+   /**
+    * For `classification_not_kept`: the served copy's `#(carries)` leaks on
+    * the source, in the words the load would refuse it with, and its
+    * classification-coverage findings, which the compile of record does not
+    * have.
+    */
+   leaks?: string[];
+   coverage?: string[];
    /** The compiler's message, for logs and the package warning only. */
    detail?: string;
 }
@@ -187,6 +197,12 @@ interface Compiled {
    runtime?: GraftRuntime;
    /** The `sourceID`s of sources that opt out with `#@ -persist`. */
    optOutIDs?: ReadonlySet<string>;
+   /**
+    * The `sourceID`s of sources whose surface in the served copy has a
+    * `#(carries)` leak or an unclassified field that the compile of record
+    * does not: the served copy never answers a query on one.
+    */
+   unsafeIDs?: ReadonlySet<string>;
    /** Bindings actually re-rooted, with their destination under its alias. */
    rerooted: ServeBinding[];
    /**
@@ -373,13 +389,24 @@ export class ServedCopyServe {
       // the served copy every name reads its re-rooted base, so a query whose
       // source is an opted-out reader, or derives from one, is declined here
       // and answered by the next candidate (which never carries one).
-      if (compiled.optOutIDs && compiled.optOutIDs.size > 0) {
+      // A source whose served surface the load-time classification checks
+      // flag is declined the same way: answered live, or refused there.
+      if (
+         (compiled.optOutIDs && compiled.optOutIDs.size > 0) ||
+         (compiled.unsafeIDs && compiled.unsafeIDs.size > 0)
+      ) {
          const prepared = await compiling(() => readPreparedQuery(runnable));
          const struct = resolveStructRefSource<unknown>(
             prepared.structRef,
             compiled.modelDef as never,
          );
          const chain = SourceMap.of(compiled.modelDef).chainOf(struct);
+         if (chain.some((id) => compiled.unsafeIDs?.has(id))) {
+            decline(
+               "the query reads a source whose served copy exposes a field the compile of record does not classify or carry",
+               "not_served",
+            );
+         }
          if (chain.some((id) => compiled.optOutIDs?.has(id))) {
             decline(
                "the query reads a source that opts out of persist",
@@ -862,6 +889,13 @@ export class ServedCopyServe {
                join: l.name,
             });
          }
+         const unsafeIDs = classificationNotKept(
+            this.host.modelPath(),
+            modelDef,
+            servedDef,
+            servedMap,
+            problems,
+         );
          return {
             key,
             generation,
@@ -874,6 +908,7 @@ export class ServedCopyServe {
             modelDef: servedDef,
             runtime: servedRuntime,
             optOutIDs,
+            unsafeIDs,
             rerooted,
             aliased,
             problems,
@@ -882,6 +917,51 @@ export class ServedCopyServe {
       }
       return { key, generation, rerooted: [], aliased: [], problems };
    }
+}
+
+/**
+ * The load-time classification checks, run on the served copy's own compile:
+ * the compile that answers a query, which may reach fields the compile of
+ * record never had (a join #6982 left out of it, answered once both sides are
+ * built). A source whose served surface has a `#(carries)` leak, or an
+ * unclassified field, that the compile of record does not is never served
+ * from the copy, and a `classification_not_kept` problem names each finding.
+ * Returns those sources' `sourceID`s.
+ */
+function classificationNotKept(
+   modelPath: string,
+   recordDef: unknown,
+   servedDef: unknown,
+   servedMap: SourceMap,
+   problems: ServedCopyProblem[],
+): Set<string> {
+   const unsafe = new Set<string>();
+   const before = classificationFindingsBySource(
+      modelPath,
+      recordDef as ModelDef,
+   );
+   const after = classificationFindingsBySource(
+      modelPath,
+      servedDef as ModelDef,
+   );
+   for (const [source, found] of after) {
+      // A source the copy generates (a re-rooted base's) is reached only
+      // through the author's sources, which are checked.
+      const was = before.get(source);
+      if (!was) continue;
+      const leaks = found.leaks.filter((m) => !was?.leaks.includes(m));
+      const coverage = found.coverage.filter((m) => !was?.coverage.includes(m));
+      if (leaks.length === 0 && coverage.length === 0) continue;
+      const id = servedMap.sourceIDOf(source);
+      if (id) unsafe.add(id);
+      problems.push({
+         sourceName: source,
+         reason: "classification_not_kept",
+         leaks,
+         coverage,
+      });
+   }
+   return unsafe;
 }
 
 /**

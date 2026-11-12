@@ -302,3 +302,140 @@ describe("R4: a join across origin connections, stored in one destination (#6982
       ]);
    });
 });
+
+// The load-time classification checks run on the build view (#6982), which
+// has no `u`; the served copy, once both sides are built, answers through it.
+// So they run on the served copy's own compile too, and a source whose served
+// surface leaks past its #(carries), or publishes an unclassified field, is
+// never answered from the copy.
+/** `eventsClass` empty: `events` declares no class. */
+const classifiedModel = (eventsClass: string, carries = true) => {
+   const events = eventsClass
+      ? `#(classification) "${eventsClass}"\n  public: events`
+      : "public: events";
+   const ceiling = carries ? '#(carries) ["none"]\n' : "";
+   return `##! experimental.access_modifiers
+#(materialize) storage="lake"
+source: accounts is crm.table('accounts') include {
+  #(classification) "none"
+  public: id, account_name
+} extend { primary_key: id }
+
+#(materialize) storage="lake"
+source: usage is product.table('usage') include {
+  #(classification) "none"
+  public: account_id
+  ${events}
+}
+
+${ceiling}source: account_usage is accounts extend {
+  join_many: u is usage on u.account_id = id
+  #(classification) "none"
+  measure: n is count()
+  view: by_key is { aggregate: n }
+}
+`;
+};
+
+describe("R4: the served copy is held to the load's classification checks (#6982)", () => {
+   let restore: () => void;
+   beforeAll(() => {
+      restore = installSettings({
+         env: { PERSIST_STORAGE_MODE: "on", PUBLISHER_MATERIALIZE: "true" },
+      }).restore;
+   });
+   afterAll(async () => {
+      restore();
+      await disposeScenarios();
+   });
+
+   it("declines a source whose served copy reaches a field past its #(carries)", async () => {
+      const fixture = await buildScenario({
+         files: { "m.malloy": classifiedModel("phi") },
+         seedSql: [],
+         origins: crossOrigin,
+         materialize: true,
+      });
+      fixture.setBindings(fixture.bindings);
+      const problems = (await fixture.servedCopyProblems()).filter(
+         (p) => p.reason === "classification_not_kept",
+      );
+      expect(problems.map((p) => p.sourceName)).toEqual(["account_usage"]);
+      expect(problems[0].leaks?.join(" ")).toContain("u.events");
+      // Through the join: the copy declines, and live cannot answer.
+      await expect(
+         fixture.runAsIs("run: account_usage -> { group_by: u.events }"),
+      ).rejects.toThrow();
+      // Its other queries are not answered from the copy either.
+      const kept = await fixture.runAsIs("run: account_usage -> by_key");
+      expect(kept.servedFrom).not.toBe("storage");
+      // A source the copy leaks nothing on still reads its table.
+      const one = await fixture.runAsIs(
+         "run: accounts -> { aggregate: c is count() }",
+      );
+      expect(one.servedFrom).toBe("storage");
+   });
+
+   it("serves a source the checks pass on, through the join and not", async () => {
+      // Under #(carries), a clean copy keeps its source served.
+      const carried = await buildScenario({
+         files: { "m.malloy": classifiedModel("none") },
+         seedSql: [],
+         origins: crossOrigin,
+         materialize: true,
+      });
+      carried.setBindings(carried.bindings);
+      expect(
+         (await carried.servedCopyProblems()).filter(
+            (p) => p.reason === "classification_not_kept",
+         ),
+      ).toEqual([]);
+      expect(
+         (await carried.runAsIs("run: account_usage -> by_key")).servedFrom,
+      ).toBe("storage");
+      // Fully classified, the copy answers through the join. (Under
+      // #(carries) a caller's query through it is refused before routing:
+      // the per-request ceiling check reads it against the build view.)
+      const covered = await buildScenario({
+         files: { "m.malloy": classifiedModel("none", false) },
+         seedSql: [],
+         origins: crossOrigin,
+         materialize: true,
+      });
+      covered.setBindings(covered.bindings);
+      expect(
+         (await covered.servedCopyProblems()).filter(
+            (p) => p.reason === "classification_not_kept",
+         ),
+      ).toEqual([]);
+      const through = await covered.runAsIs(
+         "run: account_usage -> { group_by: u.events; aggregate: n }",
+      );
+      expect(through.servedFrom).toBe("storage");
+   });
+
+   it("declines a source whose served copy publishes an unclassified field", async () => {
+      const fixture = await buildScenario({
+         files: {
+            "m.malloy": classifiedModel("", false),
+         },
+         seedSql: [],
+         origins: crossOrigin,
+         materialize: true,
+      });
+      fixture.setBindings(fixture.bindings);
+      // The unclassified field is not served through the join.
+      await expect(
+         fixture.runAsIs(
+            "run: account_usage -> { group_by: u.events; aggregate: n }",
+         ),
+      ).rejects.toThrow();
+      const problems = (await fixture.servedCopyProblems()).filter(
+         (p) => p.reason === "classification_not_kept",
+      );
+      expect(problems.map((p) => p.sourceName)).toEqual(["account_usage"]);
+      expect(problems[0].coverage?.join(" ")).toContain("u.events");
+      const kept = await fixture.runAsIs("run: account_usage -> by_key");
+      expect(kept.servedFrom).not.toBe("storage");
+   });
+});

@@ -78,6 +78,7 @@ import {
 } from "./serve/serve_verdict";
 import { storageTablePath } from "./run/storage_table_path";
 import { structsReachedFrom } from "../governance/ir/source_graph";
+import { CLASSIFICATION_COVERAGE } from "../classification";
 import { reachableSourceIDs } from "./plan/source_map";
 import type {
    BuildManifest,
@@ -1236,8 +1237,18 @@ export class PackageMaterialization {
                ...(p.sourceName ? { subject: p.sourceName } : {}),
                code: SERVED_COPY_WARNING_CODE,
                severity: "warn",
-               message: servedCopyProblemMessage(p.reason, p.join),
+               message: servedCopyProblemMessage(p),
             });
+            // The coded warning the compile of record's own check raises.
+            for (const message of p.coverage ?? []) {
+               warnings.push({
+                  model: modelPath,
+                  ...(p.sourceName ? { subject: p.sourceName } : {}),
+                  code: CLASSIFICATION_COVERAGE,
+                  severity: "warn",
+                  message,
+               });
+            }
          }
       }
       return warnings;
@@ -1914,10 +1925,8 @@ function withoutChangedConnections(
  * A caller-safe sentence for why a served copy leaves a source unserved. The
  * compiler's own message stays in the logs: it can name the destination alias.
  */
-function servedCopyProblemMessage(
-   reason: ServedCopyProblem["reason"],
-   join?: string,
-): string {
+function servedCopyProblemMessage(problem: ServedCopyProblem): string {
+   const { reason, join } = problem;
    switch (reason) {
       case "compile_failed":
          return "This model's served copy does not compile, so its stored sources serve through the serve shape or live.";
@@ -1940,6 +1949,13 @@ function servedCopyProblemMessage(
             "the joined source reads another connection. Queries that use the join are answered live; " +
             "the others read the stored table. To serve them too, inline the join (inline=), " +
             "materialize the joined source into the same destination, or keep this source colocated."
+         );
+      case "classification_not_kept":
+         return (
+            "This source's served copy reaches fields its compile of record does not (a join left out " +
+            "across connections, answered once both sides are built), and the load's classification " +
+            "checks flag them there, so its queries are not answered from the stored tables: " +
+            [...(problem.leaks ?? []), ...(problem.coverage ?? [])].join(" ")
          );
    }
 }
