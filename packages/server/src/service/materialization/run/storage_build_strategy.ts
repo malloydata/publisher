@@ -29,11 +29,11 @@ import {
    documentFlagsForLifts,
    liftDerivedSources,
    missingPersistedTables,
-   reachedPersistedSources,
    REFINEMENT_TIER_KINDS,
    type ServeBinding,
    type SourceLocation,
 } from "../serve/materialization_serve_transform";
+import { reachPersisted } from "../plan/source_map";
 import {
    STORED_COLUMN_TYPE_MISMATCH_CODE,
    storageBuildCasts,
@@ -629,7 +629,7 @@ export class StorageBuildStrategy
       // Stored tables the downstream reads, directly or transitively. One absent
       // from this destination's parents is named here, before any compile, which
       // would report only "undefined object".
-      const reached = reachedPersistedSources(
+      const reached = reachPersisted(
          lift,
          persistSource.name,
          (_name, sourceID) => planFacts.persistSourceIds.has(sourceID),

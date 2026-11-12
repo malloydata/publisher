@@ -329,33 +329,3 @@ function verdictFor(
       message: `${subject} serves from its table.`,
    };
 }
-
-/**
- * Whether a source a package curates out of discovery is still read by a
- * published one: walk each published source's structure (declaration,
- * query-source base, composite member, the source it extends, joins) and
- * collect every sourceID it names. Conservative by design: a sourceID anywhere in a published source's
- * definition counts as reached, since a wrong `unreachable` is a false alarm
- * and a wrong `reached` only stays as quiet as today.
- */
-export function sourceIDsReachedFrom(roots: readonly unknown[]): Set<string> {
-   const ids = new Set<string>();
-   const seen = new Set<unknown>();
-   const visit = (node: unknown, depth: number): void => {
-      if (depth > 64 || node === null || typeof node !== "object") return;
-      if (seen.has(node)) return;
-      seen.add(node);
-      if (Array.isArray(node)) {
-         for (const item of node) visit(item, depth + 1);
-         return;
-      }
-      const record = node as Record<string, unknown>;
-      for (const key of ["sourceID", "referenceID", "extends"]) {
-         const value = record[key];
-         if (typeof value === "string") ids.add(value);
-      }
-      for (const value of Object.values(record)) visit(value, depth + 1);
-   };
-   for (const root of roots) visit(root, 0);
-   return ids;
-}

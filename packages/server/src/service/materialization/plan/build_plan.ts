@@ -1652,15 +1652,19 @@ export function collectIncrementalDeclarations(
  * compiled sources exist: binding a host's manifest skips the recompile, so the
  * serve side cannot re-derive this.
  *
- * Carries the ELIGIBLE names so the serve side requires a positive result.
+ * Carries the ELIGIBLE sources so the serve side requires a positive result.
  * Absence is not eligibility: a `#@ persist` filtered pass-through (the
  * row-level-access shape) never reaches this record, and a refusal-only view
- * would read that silence as consent. Keyed by source NAME, as serve bindings are.
+ * would read that silence as consent.
+ *
+ * Keyed by `sourceID`, never by name (the source map's keying rule): two models
+ * may declare same-named sources, and a synthesized rollup is recorded under
+ * its own `sourceID` rather than passing on its generated name.
  */
 export type SourceEligibility = {
-   /** Sources compiled, examined, and found eligible. */
+   /** sourceIDs compiled, examined, and found eligible. */
    eligible: string[];
-   /** Source name -> why it was refused; for the operator-facing log. */
+   /** sourceID -> why it was refused; for the operator-facing log. */
    refused: Record<string, string>;
 };
 
@@ -1670,13 +1674,13 @@ function collectSourceEligibility(
    const eligible: string[] = [];
    const refused: Record<string, string> = {};
    const gate = { collidingRollups: collidingRollups(compiled) };
-   for (const source of Object.values(compiled.sources)) {
+   for (const [sourceID, source] of Object.entries(compiled.sources)) {
       try {
          assertRollupNameUnshared(source, gate);
          assertMaterializationEligible(source, deriveAnnotationFields(source));
-         eligible.push(source.name);
+         eligible.push(sourceID);
       } catch (err) {
-         refused[source.name] = errMessage(err);
+         refused[sourceID] = errMessage(err);
       }
    }
    return { eligible, refused };

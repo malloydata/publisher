@@ -68,11 +68,11 @@ import {
    computeServeVerdicts,
    MATERIALIZATION_UNREACHABLE_CODE,
    type ServeVerdict,
-   sourceIDsReachedFrom,
    type ViewServeVerdict,
 } from "./serve/serve_verdict";
 import { storageTablePath } from "./run/storage_table_path";
 import { structsReachedFrom } from "../governance/ir/source_graph";
+import { reachableSourceIDs } from "./plan/source_map";
 import type {
    BuildManifest,
    BuildPlan,
@@ -733,18 +733,35 @@ export class PackageMaterialization {
          planSourceIds(plan?.sources ?? {}),
       );
       const eligibility = this.sourceEligibility;
-      // Keyed by NAME: a rollup passes only because `collectSourceEligibility`
-      // also records the synthesized rollups under their generated names.
-      // Scoping it to authored sources would silently switch off every storage
-      // rollup.
+      // Keyed by sourceID (the source map's keying rule): a binding passes when
+      // one of the plan sources it materializes was examined and found
+      // eligible. A rollup passes under its own synthesized sourceID.
       const eligible = new Set(eligibility?.eligible ?? []);
-      const allowed = derived.filter((binding) => {
-         if (eligible.has(binding.sourceName)) return true;
+      // A binding is kept for its ELIGIBLE sources only: two models may declare
+      // same-named sources with identical SQL (one table), one gated and
+      // refused. Narrowing the binding's sourceIDs keeps the refused one off
+      // the table in its own model, where admitting the binding whole would
+      // have served it (fails closed).
+      const allowed = derived.flatMap((binding) => {
+         const ids = binding.sourceIDs ?? [];
+         const admitted = ids.filter((id) => eligible.has(id));
+         if (admitted.length > 0) {
+            return [
+               admitted.length === ids.length
+                  ? binding
+                  : { ...binding, sourceIDs: admitted },
+            ];
+         }
+         const refusal = ids
+            .map((id) => eligibility?.refused[id])
+            .find((reason) => reason !== undefined);
          const reason =
             eligibility === undefined
                ? "the package build plan could not be computed, so no source was examined for eligibility"
-               : (eligibility.refused[binding.sourceName] ??
-                 "the source is not in the package build plan, so it was never examined (a `#@ persist` on a non-query-shaped source is dropped)");
+               : (refusal ??
+                 (ids.length === 0
+                    ? "the table names no source of this package's build plan, so none was examined"
+                    : "the source is not in the package build plan, so it was never examined (a `#@ persist` on a non-query-shaped source is dropped)"));
          logger.warn(
             "Refusing a storage serve binding: the source is not eligible to be served from a materialized table",
             {
@@ -757,7 +774,7 @@ export class PackageMaterialization {
                reason,
             },
          );
-         return false;
+         return [];
       });
       this.storageServeBindings = allowed;
       this.pushStorageServeBindingsToModels();
@@ -1265,8 +1282,8 @@ export class PackageMaterialization {
             );
             return reaching.length > 0 && reaching.every((root) => root.gated);
          },
-         refusedAtBind: (_sourceID, source, tier) =>
-            this.refusedAtBind(source, tier),
+         refusedAtBind: (sourceID, source, tier) =>
+            this.refusedAtBind(sourceID, source, tier),
          boundEntityIds: new Set(Object.keys(this.buildManifestEntries ?? {})),
          freshEntityIds: new Set(
             Object.keys(this.getFreshBuildManifest(now.getTime()) ?? {}),
@@ -1289,16 +1306,17 @@ export class PackageMaterialization {
     * authored source missing from it, or one it names as refused, counts.
     */
    private refusedAtBind(
+      sourceID: string,
       source: { name: string; sourceEntityId: string; origin?: string },
       tier: "colocated" | "storage",
    ): string | undefined {
       if (tier === "storage") {
          const eligibility = this.sourceEligibility;
-         if (!eligibility || eligibility.eligible.includes(source.name)) {
+         if (!eligibility || eligibility.eligible.includes(sourceID)) {
             return undefined;
          }
          return (
-            eligibility.refused[source.name] ??
+            eligibility.refused[sourceID] ??
             "the source was never examined for eligibility"
          );
       }
@@ -1481,7 +1499,10 @@ export class PackageMaterialization {
             if (!entry || !isSourceDef(entry)) return;
             roots.push({
                gated,
-               ids: sourceIDsReachedFrom(structsReachedFrom([entry], modelDef)),
+               ids: reachableSourceIDs(
+                  structsReachedFrom([entry], modelDef),
+                  modelDef,
+               ),
             });
          };
          for (const name of names) sourceRoot(name, gatedSources.has(name));
@@ -1497,10 +1518,11 @@ export class PackageMaterialization {
                typeof ref === "string"
                   ? modelDef.contents?.[ref]
                   : (ref as SourceDef | undefined);
-            const ids = sourceIDsReachedFrom([query]);
+            const ids = reachableSourceIDs([query], modelDef);
             if (base && isSourceDef(base)) {
-               for (const id of sourceIDsReachedFrom(
+               for (const id of reachableSourceIDs(
                   structsReachedFrom([base], modelDef),
+                  modelDef,
                )) {
                   ids.add(id);
                }

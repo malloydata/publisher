@@ -3,11 +3,8 @@
 
 import { describe, expect, it } from "bun:test";
 import type { components } from "../../../api";
-import {
-   computeServeVerdicts,
-   type ServeVerdictFacts,
-   sourceIDsReachedFrom,
-} from "./serve_verdict";
+import { computeServeVerdicts, type ServeVerdictFacts } from "./serve_verdict";
+import { reachableSourceIDs } from "../plan/source_map";
 
 type PersistSourcePlan = components["schemas"]["PersistSourcePlan"];
 
@@ -278,7 +275,7 @@ describe("computeServeVerdicts", () => {
    });
 });
 
-describe("sourceIDsReachedFrom", () => {
+describe("reachableSourceIDs", () => {
    it("collects every sourceID and referenceID in a structure, joins included, once", () => {
       const joined = { type: "table", sourceID: "dim@b", fields: [] };
       const root = {
@@ -289,7 +286,7 @@ describe("sourceIDsReachedFrom", () => {
       };
       // A cycle, as compiled structures can share nodes.
       (root as Record<string, unknown>).self = root;
-      expect([...sourceIDsReachedFrom([root])].sort()).toEqual([
+      expect([...reachableSourceIDs([root])].sort()).toEqual([
          "base@a",
          "dim@b",
          "fact@a",

@@ -202,7 +202,7 @@ export function fakeSource(opts: {
    columns?: string[];
    /**
     * The compiled model's `_modelDef`, for the walk that finds a source's
-    * stored upstreams (`reachedPersistedSources`). Absent, the walk finds
+    * stored upstreams (`reachPersisted` in plan/source_map). Absent, the walk finds
     * nothing, as for a source with no persisted upstream.
     */
    modelDef?: unknown;

@@ -19,10 +19,8 @@ import {
    projectToPublicColumns,
    resolveQueryMetadata,
 } from "../plan/build_plan";
-import {
-   authorModelLiftContext,
-   reachedPersistedSources,
-} from "../serve/materialization_serve_transform";
+import { authorModelLiftContext } from "../serve/materialization_serve_transform";
+import { reachPersisted } from "../plan/source_map";
 import { BuildInstruction, ManifestEntry } from "../types";
 import type { BuildStrategy, ColocatedBuildRequest } from "./build_strategy";
 import { ColocatedCtasStrategy } from "./colocated_build_strategy";
@@ -164,7 +162,7 @@ export class SourceBuilder {
          persistSource._model?._modelDef,
          readAuthorFile,
       );
-      const reached = reachedPersistedSources(
+      const reached = reachPersisted(
          lift,
          persistSource.name,
          (_name, sourceID) => planFacts.persistSourceIds.has(sourceID),
