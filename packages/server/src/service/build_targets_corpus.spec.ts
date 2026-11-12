@@ -212,7 +212,12 @@ interface Scenario {
 }
 
 function parseScenario(dir: string): Scenario {
-   const text = fs.readFileSync(path.join(dir, "scenario.md"), "utf8");
+   // A Windows checkout has CRLF line endings; the section and table parsing
+   // below splits on "\n", so a trailing "\r" would leave every header
+   // unmatched and the scenario's models silently out of the corpus.
+   const text = fs
+      .readFileSync(path.join(dir, "scenario.md"), "utf8")
+      .replace(/\r\n/g, "\n");
    const pkg = /^package:\s*(\S+)/m.exec(text)?.[1] ?? path.basename(dir);
    const models = new Map<string, string>();
    const data: Scenario["data"] = [];

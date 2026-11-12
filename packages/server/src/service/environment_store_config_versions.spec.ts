@@ -454,15 +454,23 @@ describe("retrying a refused configured package's publish", () => {
       let release!: () => void;
       const gate = new Promise<void>((resolve) => (release = resolve));
       let calls = 0;
+      let started!: () => void;
+      const publishStarted = new Promise<void>(
+         (resolve) => (started = resolve),
+      );
       const environment = await environmentWithRetry(async () => {
          calls++;
          events.push("publish start");
+         started();
          await gate;
          events.push("publish end");
          throw new Error("broken");
       });
       const read = environment.getPackage(ghost, false).catch(() => {});
-      await new Promise((resolve) => setTimeout(resolve, 10));
+      // Wait for the retry to be in flight, not a fixed time: on a slow runner
+      // 10ms was not enough, the delete landed first, and (correctly) no retry
+      // ran at all.
+      await publishStarted;
       const deleted = environment
          .deletePackage(ghost)
          .then(() => events.push("delete done"));
