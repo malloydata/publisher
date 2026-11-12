@@ -65,7 +65,11 @@ import {
 import { type RenderTagTarget, renderTagTargets } from "./render_tag_targets";
 import { modelInfoOf } from "./model_info";
 import { logger } from "../logger";
-import { summarizeQueryAccess, type QueryAudit } from "./access_record";
+import {
+   accessPathOf,
+   summarizeQueryAccess,
+   type QueryAudit,
+} from "./access_record";
 import {
    type ServeBinding,
    serveShapeDiagnostics,
@@ -3582,6 +3586,7 @@ export class Model {
       audit.servedFrom = servedFrom ?? null;
       audit.executionTimeMs = Math.round(executionTime);
       if (queryCostBytes !== undefined) audit.scannedBytes = queryCostBytes;
+      if (path) audit.path = accessPathOf(path);
       return {
          result: wrappedResult,
          serializedResult,

@@ -36,6 +36,11 @@ import {
    WRITES_TABLES_KEY,
 } from "../../versions/materialization_scope";
 import type { MaterializationEnvironment, MaterializationHost } from "../host";
+import { type ApiTableStats, computeTableStats } from "../table_stats";
+import {
+   type WorkloadTableUse,
+   workloadLogSink,
+} from "../../workload_log_store";
 import { CompiledBuildPlan } from "../plan/build_plan";
 import { compilePackageBuildPlan } from "../plan/build_plan_compile";
 import {
@@ -74,6 +79,11 @@ import {
    type StorageBuildRequest,
 } from "./storage_build_strategy";
 import { TableClaims } from "./table_claims";
+
+/** Recorded runs table stats read at most, newest first. */
+const TABLE_STATS_RUNS_READ = 100;
+/** The workload window table stats read when the request names none. */
+const TABLE_STATS_DEFAULT_WINDOW_HOURS = 24 * 7;
 
 /**
  * Orchestrates single-call materialization builds: the facade the controller,
@@ -187,6 +197,80 @@ export class MaterializationService {
          limit: options?.limit,
          offset: options?.offset,
          ...(version !== null ? { version, includeUnversioned: true } : {}),
+      });
+   }
+
+   /**
+    * Table statistics for a package's materialized tables (materialization v2,
+    * T2): size and build cost from the runs Publisher recorded, and use from
+    * the workload log's local store over the last `windowHours` hours (when
+    * the store is on). Reads no warehouse. See {@link computeTableStats}.
+    */
+   async tableStats(
+      environmentName: string,
+      packageName: string,
+      options: { versionId?: VersionRef; windowHours?: number } = {},
+   ): Promise<ApiTableStats> {
+      const versionId = options.versionId ?? VersionRef.LATEST;
+      const environment = await this.host.getEnvironment(
+         parseEnvironmentName(environmentName),
+         false,
+      );
+      // Resolved as a read is: 400 / 404 / 410 for a bad, unknown or archived version.
+      const versions = environment.getVersionService();
+      const version =
+         versionId.requested() === undefined &&
+         versions !== null &&
+         (await versions.latestOf(packageName)) === null
+            ? null
+            : await this.resolveRunVersion(
+                 environmentName,
+                 packageName,
+                 versionId,
+              );
+      const pkg = await environment.getPackage(
+         parsePackageName(packageName),
+         false,
+         version !== null ? { versionId: VersionRef.parse(version) } : {},
+      );
+      const runs = await this.listMaterializations(
+         environmentName,
+         packageName,
+         { versionId, limit: TABLE_STATS_RUNS_READ },
+      );
+      const until = new Date();
+      const windowHours =
+         options.windowHours ?? TABLE_STATS_DEFAULT_WINDOW_HOURS;
+      const since = new Date(until.getTime() - windowHours * 3_600_000);
+      const store = workloadLogSink();
+      let use: WorkloadTableUse | { unavailable: string };
+      if (!store) {
+         use = {
+            unavailable:
+               "The workload log's local store is off (PUBLISHER_WORKLOAD_LOG_STORE), so no query use was recorded here.",
+         };
+      } else {
+         try {
+            use = await store.tableUse({
+               environment: environmentName,
+               package: packageName,
+               since,
+            });
+         } catch (error) {
+            logger.warn("Could not read table use from the workload log", {
+               environmentName,
+               packageName,
+               error: error instanceof Error ? error.message : String(error),
+            });
+            use = { unavailable: "The workload log could not be read." };
+         }
+      }
+      return computeTableStats({
+         plan: pkg.getBuildPlan(),
+         runs,
+         since,
+         until,
+         use,
       });
    }
 

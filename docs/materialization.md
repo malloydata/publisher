@@ -698,6 +698,59 @@ Every query result carries `path`, the path report. It says which materialized t
 
 The report is assembled after the query runs and never changes which table answers. It is absent only if it could not be assembled.
 
+## Table stats
+
+`GET /api/v0/environments/{env}/packages/{pkg}/table-stats` answers, for each table the package's build plan materializes, what it costs and how it is used, from data Publisher already holds. It queries no warehouse.
+
+```json
+{
+  "measuredAt": "2026-11-11T12:00:00.000Z",
+  "window": {
+    "since": "2026-11-04T12:00:00.000Z",
+    "until": "2026-11-11T12:00:00.000Z"
+  },
+  "workload": {
+    "available": true,
+    "answeredQueries": 412,
+    "reportedQueries": 412
+  },
+  "runsRead": 9,
+  "tables": [
+    {
+      "tableId": "9f1c…",
+      "sourceName": "daily",
+      "sourceID": "daily@file:///…/model.malloy",
+      "origin": "persist",
+      "lastBuild": {
+        "materializationId": "1794…",
+        "builtAt": "2026-11-11T06:00:04.000Z",
+        "rowCount": 18250,
+        "buildDurationMs": 4120,
+        "scannedBytes": 7340032,
+        "storageDestinationName": "lake"
+      },
+      "builds": { "succeeded": 9, "failed": 0, "meanDurationMs": 3990 },
+      "columns": [
+        { "name": "order_date", "type": "DATE" },
+        { "name": "total", "type": "DOUBLE" }
+      ],
+      "columnsFrom": "stored",
+      "use": {
+        "considered": 160,
+        "hits": 151,
+        "skips": { "STALE": 6, "MISSING_FIELD": 3 }
+      }
+    }
+  ]
+}
+```
+
+- **Builds** come from the runs Publisher recorded (its `materializations`), newest first, at most 100. `lastBuild` is the newest run that built the table: its row count (a `storage=` build counts its table in the destination; a colocated build does not, since that would scan the warehouse), its build time, and the bytes its read scanned where the warehouse reports them. A table only another host built has no `lastBuild`. `builds` counts successes and failures across the runs read.
+- **Columns** are the schema the last build captured from the destination for a `storage=` table (`columnsFrom: "stored"`), else the columns the source declares (`"declared"`).
+- **Use** comes from the [workload log](access-record.md#the-workload-log)'s local store: each answered query's `path`, counted per table over the window (`windowHours`, 1 to 8760; a week by default). `hits` is how often the table answered; `skips` counts the rest by [skip reason](#which-table-answered-a-query-the-path-report). Tables are counted by `tableId`, so a table several versions share is counted once. With `PUBLISHER_WORKLOAD_LOG_STORE` off, `workload.available` is `false` and no table carries `use`: unknown, not zero. Records written before this release carry no path; `reportedQueries` says how many do.
+
+Table size in bytes, and row counts for colocated tables, need a warehouse read; they come with the cost estimates in a later phase.
+
 ## Standalone vs. hosted (control-plane) deployments
 
 The same package definition behaves differently depending on who drives materialization. Honest divergences to be aware of:

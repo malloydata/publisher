@@ -505,3 +505,31 @@ describe("MaterializationController responses", () => {
       }
    });
 });
+
+describe("MaterializationController.getTableStats", () => {
+   it("passes a whole number of hours from 1 to 8760, and the default when omitted", async () => {
+      const tableStats = sinon.stub().resolves({ tables: [] });
+      const controller = new MaterializationController({
+         tableStats,
+      } as unknown as MaterializationService);
+      await controller.getTableStats("env", "pkg", { windowHours: "24" });
+      await controller.getTableStats("env", "pkg", { windowHours: "8760" });
+      await controller.getTableStats("env", "pkg");
+      expect(tableStats.getCalls().map((c) => c.args[2].windowHours)).toEqual([
+         24,
+         8760,
+         undefined,
+      ]);
+   });
+
+   it("refuses any other window rather than reading it as the default", async () => {
+      const controller = new MaterializationController({
+         tableStats: sinon.stub().resolves({ tables: [] }),
+      } as unknown as MaterializationService);
+      for (const windowHours of ["0", "8761", "1.5", "-3", "week", "24,48"]) {
+         await expect(
+            controller.getTableStats("env", "pkg", { windowHours }),
+         ).rejects.toBeInstanceOf(BadRequestError);
+      }
+   });
+});

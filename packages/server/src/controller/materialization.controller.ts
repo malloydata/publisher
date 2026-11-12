@@ -423,6 +423,34 @@ export class MaterializationController {
       ).map(toWire);
    }
 
+   /**
+    * Table statistics for the package's materialized tables (materialization
+    * v2, T2). `windowHours` is the workload window, 1 to 8760 hours (a year);
+    * omitted, a week. Anything else is a 400, never read as the default.
+    */
+   async getTableStats(
+      environmentName: string,
+      packageName: string,
+      options: { versionId?: VersionRef; windowHours?: unknown } = {},
+   ) {
+      let windowHours: number | undefined;
+      if (options.windowHours !== undefined) {
+         const raw = String(options.windowHours);
+         const parsed = /^\d+$/.test(raw) ? Number(raw) : NaN;
+         if (!Number.isInteger(parsed) || parsed < 1 || parsed > 8760) {
+            throw new BadRequestError(
+               `windowHours must be a whole number of hours from 1 to 8760; got '${raw}'.`,
+            );
+         }
+         windowHours = parsed;
+      }
+      return this.materializationService.tableStats(
+         environmentName,
+         packageName,
+         { versionId: options.versionId, windowHours },
+      );
+   }
+
    async getMaterialization(
       environmentName: string,
       packageName: string,

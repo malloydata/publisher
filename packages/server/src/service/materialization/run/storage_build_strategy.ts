@@ -493,7 +493,7 @@ export class StorageBuildStrategy
          storageDestinationName: result.storageDestinationName,
          schema: result.schema,
          realization: instruction.realization,
-         rowCount: null,
+         rowCount: result.rowCount,
          // A refresh reports the APPLY's duration, not the session setup. A
          // SKIP reports null rather than skewing the series as a fast build.
          buildDurationMs: result.refresh

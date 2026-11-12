@@ -1091,6 +1091,8 @@ describe("buildSourceIntoStorage (happy path, real DuckDB file destination)", ()
          ]);
          expect(result.storageDestinationName).toBe("lake");
          expect(result.schema.map((c) => c.name)).toEqual(["id", "category"]);
+         // Counted in the destination, for table stats.
+         expect(result.rowCount).toBe(3);
          // A postgres read reports no cost; null is "not reported", never free.
          expect(result.readCost).toBeNull();
          // A rebuild reports where the new snapshot reaches, and no refresh.
