@@ -128,12 +128,20 @@ const LIVE_ACROSS_CONNECTIONS: Partial<Record<Variant, Expect>> = {
    materialize: "live",
 };
 
-/** Two sources whose tables take one name (#6644's class). */
-const SHARED_TABLE: Gap = {
-   kind: "wrong",
-   issue: "#6644",
-   reason:
-      "with no name=, both tables take the source's name in one destination (a warning only, unless PERSIST_COLLISION_ENFORCE is set): the later build overwrites the earlier, and a.malloy reads b.malloy's rows",
+/**
+ * Two sources whose tables take one name in one destination (#6644's class)
+ * are both refused rather than mis-served: v1 reads each as `live:refused`,
+ * and `#(materialize)` builds neither (materialize-not-built), so each
+ * answers live.
+ */
+const SHARED_TABLE_LIVE: Expect = "live";
+
+/**
+ * `#(materialize)` renders no `name=`, so two same-named sources both default
+ * to the table `summary` and are both refused (the shared-table class above).
+ */
+const SAME_NAMED_MATERIALIZE: Partial<Record<Variant, Expect>> = {
+   materialize: SHARED_TABLE_LIVE,
 };
 
 export const SHAPES: Shape[] = [
@@ -565,12 +573,6 @@ source: nested is orders_raw -> {
             reason:
                "the served copy does not compile with reserved-word names, and the serve shape answers them live",
          },
-         colocated: {
-            kind: "error",
-            issue: "#6738",
-            reason:
-               'the colocated manifest hands Malloy the unquoted table name (name="order"), so the served SQL is a syntax error',
-         },
          "materialize/on": {
             kind: "live",
             issue: "#6738",
@@ -656,18 +658,13 @@ import { shipped is summary } from "b.malloy"
             model: "a.malloy",
             malloy:
                "run: summary -> { group_by: region; aggregate: t is total.sum() }",
+            expect: SAME_NAMED_MATERIALIZE,
             gaps: {
                "storage/off": {
                   kind: "live",
                   issue: "#6644",
                   reason:
                      "the serve shape does not serve a source whose name another model also persists (the v1 fix refuses rather than mis-serves)",
-               },
-               "materialize/on": {
-                  kind: "wrong",
-                  issue: "#6644",
-                  reason:
-                     "both #(materialize) sources default to the table `summary` in one destination (a warning only): the later build overwrites the earlier",
                },
             },
          },
@@ -676,6 +673,7 @@ import { shipped is summary } from "b.malloy"
             model: "b.malloy",
             malloy:
                "run: summary -> { group_by: region; aggregate: t is total.sum() }",
+            expect: SAME_NAMED_MATERIALIZE,
             gaps: {
                "storage/off": {
                   kind: "live",
@@ -690,20 +688,14 @@ import { shipped is summary } from "b.malloy"
             model: "c.malloy",
             malloy:
                "run: placed -> { group_by: region; aggregate: t is total.sum() }",
-            gaps: {
-               "materialize/on": {
-                  kind: "wrong",
-                  issue: "#6644",
-                  reason:
-                     "both #(materialize) sources default to the table `summary` in one destination (a warning only): the later build overwrites the earlier",
-               },
-            },
+            expect: SAME_NAMED_MATERIALIZE,
          },
          {
             name: "b.malloy's summary imported as shipped",
             model: "c.malloy",
             malloy:
                "run: shipped -> { group_by: region; aggregate: t is total.sum() }",
+            expect: SAME_NAMED_MATERIALIZE,
          },
       ],
    },
@@ -739,17 +731,14 @@ source: summary is orders_raw -> {
             model: "a.malloy",
             malloy:
                "run: summary -> { group_by: region; aggregate: t is total.sum() }",
-            gaps: {
-               storage: SHARED_TABLE,
-               colocated: SHARED_TABLE,
-               "materialize/on": SHARED_TABLE,
-            },
+            expect: SHARED_TABLE_LIVE,
          },
          {
             name: "summary in b.malloy",
             model: "b.malloy",
             malloy:
                "run: summary -> { group_by: region; aggregate: t is total.sum() }",
+            expect: SHARED_TABLE_LIVE,
          },
       ],
    },
@@ -1076,18 +1065,6 @@ source: orders_b is orders_raw extend {
             name: "the persisted source alone",
             malloy:
                "run: cust_b -> { group_by: segment; aggregate: n is count() }",
-            gaps: {
-               "storage/on": {
-                  kind: "fallback",
-                  reason:
-                     "one join from a warehouse source to a stored one anywhere in the model stops the whole model's served copy compiling (served-copy-not-served); the serve shape answers",
-               },
-               "materialize/on": {
-                  kind: "live",
-                  reason:
-                     "one join from a warehouse source to a stored one anywhere in the model stops the whole model's served copy compiling (served-copy-not-served)",
-               },
-            },
          },
          {
             name: "the warehouse source through its join",
@@ -1140,25 +1117,11 @@ source: gated is orders_raw -> {
             name: "a per-caller where:, one caller",
             malloy: "run: scoped -> { group_by: status; aggregate: total }",
             givens: { REGION: "north" },
-            gaps: {
-               "materialize/on": {
-                  kind: "live",
-                  reason:
-                     "#(materialize) refuses a source whose where: reads a given (persist-source-refused: the generated build source applies the term at build), where v1 storage= applies it per caller at read",
-               },
-            },
          },
          {
             name: "a per-caller where:, another caller",
             malloy: "run: scoped -> { group_by: status; aggregate: total }",
             givens: { REGION: "east" },
-            gaps: {
-               "materialize/on": {
-                  kind: "live",
-                  reason:
-                     "#(materialize) refuses a source whose where: reads a given (persist-source-refused: the generated build source applies the term at build), where v1 storage= applies it per caller at read",
-               },
-            },
          },
          {
             // A gate is refused for storage= by design (docs/materialization.md).
@@ -1211,11 +1174,6 @@ source: summary_kept is summary extend {
                "run: summary_fresh -> { group_by: region; aggregate: grand }",
             expect: { storage: "live", colocated: "live" },
             gaps: {
-               colocated: {
-                  kind: "not-live",
-                  reason:
-                     "a colocated #@ -persist reader is answered from the stored table: the colocated manifest substitutes the base for every reader",
-               },
                "materialize/on": {
                   kind: "live",
                   reason:
@@ -1229,11 +1187,6 @@ source: summary_kept is summary extend {
                "run: summary_fresh_rollup -> { group_by: region; aggregate: t is g.sum() }",
             expect: { storage: "live", colocated: "live" },
             gaps: {
-               colocated: {
-                  kind: "not-live",
-                  reason:
-                     "a colocated #@ -persist reader is answered from the stored table: the colocated manifest substitutes the base for every reader",
-               },
                "materialize/on": {
                   kind: "live",
                   reason:
@@ -1380,13 +1333,6 @@ source: fact_joined is fact_s extend {
       name: "materialize: a refined source with an inline join",
       about: "#(materialize) on a source declared by refinement, with an inline-extended join_one and computed dimensions (v2 only: v1 persists query-shaped sources)",
       variants: ["materialize"],
-      gaps: {
-         "materialize/on": {
-            kind: "live",
-            reason:
-               "the inline join_one is not stored with the source yet (phase 3), so the model joins a warehouse source and its served copy does not compile",
-         },
-      },
       files: {
          "m.malloy": `${HEADER}
 import "raw.malloy"
@@ -1418,6 +1364,13 @@ source: enriched_ext is enriched extend {
             name: "the inline join's dimension",
             malloy:
                "run: enriched -> { group_by: c.seg_up, big; aggregate: total }",
+            gaps: {
+               "materialize/on": {
+                  kind: "live",
+                  reason:
+                     "the inline join_one is not stored with the source yet (phase 3), so a query through it reads a warehouse source the stored table cannot reach, and is answered live (served-copy-not-served)",
+               },
+            },
          },
          {
             name: "an extension",
