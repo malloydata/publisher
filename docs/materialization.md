@@ -751,6 +751,27 @@ A `#(materialize)` source's table is named by `name=` (or, for a `storage=` sour
 - **Dialects.** DuckDB (with MotherDuck and DuckLake), Postgres, BigQuery (a dataset-qualified name), Snowflake, Databricks, Trino and SQL Server (a name with at most a schema). MySQL views cannot carry a comment and Presto's `CREATE VIEW` takes none, so no view is made there (`unsupported`).
 - **Not v1.** A `#@ persist name=` source makes no view; its self-assigned table already carries the name.
 
+### Persisted views (in development, `PUBLISHER_MATERIALIZE`)
+
+With `PUBLISHER_MATERIALIZE=true`, `#@ persist` on a view stores the view's result, and that table answers a query only when the query calls the view exactly, or starts from it:
+
+```malloy
+source: flights is duckdb.table('flights') extend {
+  measure: flight_count is count()
+  #@ persist name="flights_by_carrier"
+  view: by_carrier is { group_by: carrier; aggregate: flight_count }
+}
+```
+
+- **What it answers.** `run: flights -> by_carrier`, and `run: flights -> by_carrier -> { … }`, whose later stages read the stored result. Not a refinement (`flights -> by_carrier + { limit: 3 }`, skipped `MISSING_FIELD`), a nest of the view, a hand-written query with the same SQL, or the view called on a source that extends `flights` (its own `where:` or gates could differ): those are answered as they would be without the annotation. The answer keeps the view's name, its columns in their order, its ordering and its render tags.
+- **Where it is stored.** Without `storage=`, in the source's own warehouse; with `storage=`, in that destination (needs `PERSIST_STORAGE_MODE=on`). The table is built from the source's own rows, never from a table the source itself is persisted to, and rebuilt whole: `watermark=`, `merge_key=` and `partition=` are refused on a view.
+- **Not built, with a warning** (`persist-view-not-built`, and the view is answered live): a view whose result reads a given or the current time (it differs per caller or per read); a view whose result nests, stored with `storage=` (persist it without `storage=` instead); an `@env.` reference on its line; and, on a source with a row-level gate (`#(access_filter)`, or an `#(authorize)` that filters rows), a view that does not group by every field the gate reads, under its own name, in one grouping stage with no `limit:`, no `all()` or `exclude()` and no `calculate:`. That last one is a warning, not an error, because the gate may be added later by another author.
+- **Gates.** A query on a gated source is answered from a persisted view only with `PUBLISHER_MATERIALIZE_GATED_SOURCES` on as well: the source's gates are written on the view's stored result and grafted and proven there exactly as on live, so each caller gets the groups the gate keeps. With the switch off, such a query is answered live and the path report skips the view with `CONTRACT`. Which gated sources may be stored at all follows the rules above for `#@ persist` (a gated `storage=` source is refused). Publisher does not authenticate callers: the gate holds only behind the gateway that sets the givens from a verified identity ([operating model](security-posture.md#operating-model-a-microservice-behind-your-gateway)).
+- **The path report.** A query that calls a persisted view lists its table first, as `kind: "view"`: `used` when it answered (`servedBy.kind` is `view`), else skipped with `NOT_BUILT`, `STALE`, `CONTRACT` or `MISSING_FIELD`. A query that calls no persisted view does not list one. A `storage=` view's answer reports `servedFrom: "storage"`.
+- **The build plan** lists each persisted view as a generated source named `<source>__<view>__view`; its serve verdict reads `The persisted view \`<view>\` of \`<source>\``, reached through the source.
+
+Off (the default), `#@ persist` on a view is ignored, as before.
+
 ## Standalone vs. hosted (control-plane) deployments
 
 The same package definition behaves differently depending on who drives materialization. Honest divergences to be aware of:
