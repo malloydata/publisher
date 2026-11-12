@@ -21,6 +21,16 @@ Give the heading a title — `## [Unreleased] — what changed`, with an em dash
 
 Two consequences worth knowing. A section merged to `main` ships in the **next** release, whenever that is, so do not write one for work that has not landed. And a heading already stamped with a version is history: a follow-up that changes that behaviour opens a **new** `[Unreleased]` section referencing the shipped version by number, rather than editing the old one.
 
+## [Unreleased] — In development: `#@ -persist` and `#@ preaggregate` are deprecated in materialization v2, with a migration recipe
+
+Materialization v2 deprecates two v1 forms. `#@ -persist` has no v2 form, because a materialized source serves every reader. `#@ preaggregate` is renamed `#(preaggregate)`, which phase 4 builds. Both follow the Publisher v1 plan's rule for a deprecated form: a package warning through 0.x, refused at 1.0.0, and the reader removed in 1.1. `#@ persist` itself is not deprecated, and moving to `#(materialize)` is optional.
+
+**The `#@ -persist` warning shows only while `PUBLISHER_MATERIALIZE` is on** (off by default, and still in development). It starts for everyone in the release that ships v2's annotations. With the switch on, a package gets `deprecated-persist-opt-out` once for each source that declares `#@ -persist`, naming its file (`model`) and its source (`subject`). A source that extends or imports an annotated one is not reported again. It is `warn`, and nothing about how the form builds or serves changes: an opted-out reader still recomputes live.
+
+**`#@ preaggregate` gets no warning yet, even with the switch on**, because `#(preaggregate)` is not read until phase 4; the warning would point at a spelling that does nothing. `#@ preaggregate` keeps working, and its rollups still build and serve; keep writing it. The `deprecated-preaggregate-annotation` code is reserved for when the warning turns on. `publisher_deprecated_usage_total` counts both forms (`persist_opt_out`, and `preaggregate_annotation` per measure) at every load, whether or not a warning shows.
+
+[docs/materialization-migration.md](docs/materialization-migration.md) maps each v1 form to its v2 form, with before and after Malloy, and marks which of them work today. It also covers the one rebuild a migrated source costs, because its content address moves, and what a control plane has to do.
+
 ## [Unreleased] — Stored tables no longer answer for another source, and the path report names only the tables a query read
 
 - **Behaviour change: a package whose persisted sources collide is refused at publish.** `PERSIST_COLLISION_ENFORCE` now defaults to `true`. A publish (`POST /packages`) in which two different `#@ persist` sources resolve to one table in one destination used to succeed with a warning; it now answers 400, naming the sources and the table, and a build of such a package that is already loaded is refused before anything is written. Loading a package at startup or reload still only warns. To fix a package, give each source a distinct `name=` (the same source reached from two models shares its table legitimately and is not a collision). A deployment that must keep publishing such packages while their authors fix them can opt out with `PERSIST_COLLISION_ENFORCE=false`, which restores the warning; the colliding sources are then answered live, as below.
