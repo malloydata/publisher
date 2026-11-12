@@ -490,7 +490,9 @@ learn what a change builds and serves without a publish and a build per attempt.
 A view that does not compile against the stored columns (it reaches through a join to a source
 that is not materialized, or reads a field the table does not hold) is answered live on its own:
 the serve shape drops just that view, and the source's other views, and every other source's, keep
-serving from storage. Its `views` entry is `live` with that view's compile error. An entry that
+serving from storage. Its `views` entry is `live` with that view's compile error. The shape finds
+such views by halving when it is built for a set of bindings, never per query, and spends at most 64
+compiles on it; a view it never reached says so and is answered live. An entry that
 says the shape left the source's views off means the shape could not single out a view at fault, so
 every view of the source is answered live.
 

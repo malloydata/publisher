@@ -124,6 +124,15 @@ export class StorageServeShape {
    /** Memoized serve-shape materializer, keyed by the bound source set. */
    serveShapeCache?: { key: string; materializer: ModelMaterializer };
    /**
+    * The shape compile in progress, by key, so queries that miss the cache
+    * together share one compile (and one set of drop logs) instead of each
+    * running the ladder.
+    */
+   private serveShapeInFlight?: {
+      key: string;
+      promise: Promise<ModelMaterializer>;
+   };
+   /**
     * The views the cached shape left off because each failed to compile
     * against the stored columns, by source then view, with the compile error.
     * Set when the shape is compiled; see {@link prunedViews}.
@@ -170,6 +179,8 @@ export class StorageServeShape {
     */
    public invalidateServeShapeCache(): void {
       this.serveShapeCache = undefined;
+      this.serveShapeInFlight = undefined;
+      this.prunedViewErrors = new Map();
    }
 
    /**
@@ -205,7 +216,7 @@ export class StorageServeShape {
          }
       }
       this.serveBindings = kept;
-      this.serveShapeCache = undefined;
+      this.invalidateServeShapeCache();
       try {
          this.typeMismatches = this.findTypeMismatches(kept);
       } catch (err) {
@@ -398,28 +409,24 @@ export class StorageServeShape {
          this.host.rollupPlans(),
       );
       if (!this.serveShapeCache || this.serveShapeCache.key !== key) {
-         for (const conflict of conflicts) {
-            // info, not debug: a dropped group is otherwise invisible (rows are
-            // correct, only acceleration is lost). Logged on cache miss only,
-            // because a conflict belongs to the binding set, not to a query.
-            this.log(
-               "info",
-               "Not serving a source's rollups from storage; queries are answered from the base",
-               {
-                  modelPath: this.host.modelPath(),
-                  source: conflict.baseSourceName,
-                  reason: conflict.reason,
-               },
+         let inFlight = this.serveShapeInFlight;
+         if (!inFlight || inFlight.key !== key) {
+            const started = {
+               key,
+               promise: this.compileServeShapeForKey(
+                  ordinary,
+                  groups,
+                  conflicts,
+               ),
+            };
+            this.serveShapeInFlight = started;
+            inFlight = started;
+            void started.promise.then(
+               () => this.clearInFlight(started),
+               () => this.clearInFlight(started),
             );
          }
-         this.prunedViewErrors = new Map();
-         this.serveShapeCache = {
-            key,
-            materializer: await this.compileServeShape(
-               this.serveBindingsWithRefinements(ordinary),
-               groups,
-            ),
-         };
+         this.serveShapeCache = { key, materializer: await inFlight.promise };
       }
       // Rollup members are not in `ordinary`; map their handles explicitly or the
       // composite resolves to nothing at run time.
@@ -468,6 +475,43 @@ export class StorageServeShape {
       };
    }
 
+   /** Forget `started` once it settles, unless a newer compile replaced it. */
+   private clearInFlight(started: {
+      key: string;
+      promise: Promise<ModelMaterializer>;
+   }): void {
+      if (this.serveShapeInFlight === started) {
+         this.serveShapeInFlight = undefined;
+      }
+   }
+
+   /** One cache miss's compile: its conflict logs, then the ladder. */
+   private async compileServeShapeForKey(
+      ordinary: ServeBinding[],
+      groups: RollupShapeGroup[],
+      conflicts: ReturnType<typeof rollupServeBindings>["conflicts"],
+   ): Promise<ModelMaterializer> {
+      for (const conflict of conflicts) {
+         // info, not debug: a dropped group is otherwise invisible (rows are
+         // correct, only acceleration is lost). Logged on cache miss only,
+         // because a conflict belongs to the binding set, not to a query.
+         this.log(
+            "info",
+            "Not serving a source's rollups from storage; queries are answered from the base",
+            {
+               modelPath: this.host.modelPath(),
+               source: conflict.baseSourceName,
+               reason: conflict.reason,
+            },
+         );
+      }
+      this.prunedViewErrors = new Map();
+      return this.compileServeShape(
+         this.serveBindingsWithRefinements(ordinary),
+         groups,
+      );
+   }
+
    /**
     * Compile the serve-shape materializer for a binding set, degrading
     * gracefully: one un-carriable refinement would otherwise fail the whole
@@ -494,6 +538,14 @@ export class StorageServeShape {
    ): Promise<ModelMaterializer> {
       // Reassigned once, when views that do not compile are pruned.
       let enriched = initialEnriched;
+      // Pruning compiles the shape without views first; when that fails, views
+      // are not the cause, so it is not worth trying again at the ladder.
+      let pruneTried = false;
+      const tryPrune = async (groups: RollupShapeGroup[]) => {
+         if (pruneTried) return undefined;
+         pruneTried = true;
+         return this.pruneUncompilableViews(enriched, groups);
+      };
       // Every tier keeps the never-thinned kinds, `filter` among them: a
       // source's `where:` is part of what it MEANS, so dropping it would answer
       // with rows the source excludes.
@@ -530,10 +582,7 @@ export class StorageServeShape {
          if (withNone instanceof Error) {
             // A view the stored columns cannot answer fails the shape on its
             // own; drop just that view, so the lifts and the other views stay.
-            const pruned = await this.pruneUncompilableViews(
-               enriched,
-               tiers[0].groups,
-            );
+            const pruned = await tryPrune(tiers[0].groups);
             if (pruned) {
                enriched = pruned.bindings;
                withNone = pruned.materializer;
@@ -550,20 +599,22 @@ export class StorageServeShape {
                best = attempt;
             }
          }
-         if (kept.length < lifts.length && !this.preview) {
-            recordServeShapeTierDrop("lifts");
+         // Only when a lift was dropped: if pruning a view was the whole fix,
+         // every lift compiles again and none of them serves live.
+         if (kept.length < lifts.length) {
+            if (!this.preview) recordServeShapeTierDrop("lifts");
+            this.log(
+               "warn",
+               "Storage serve shape failed to compile with its lifted entry points; the ones that do not compile serve live",
+               {
+                  model: this.host.modelPath(),
+                  dropped: lifts
+                     .filter((l) => !kept.includes(l))
+                     .map((l) => l.sourceName),
+                  error: withAll.message,
+               },
+            );
          }
-         this.log(
-            "warn",
-            "Storage serve shape failed to compile with its lifted entry points; the ones that do not compile serve live",
-            {
-               model: this.host.modelPath(),
-               dropped: lifts
-                  .filter((l) => !kept.includes(l))
-                  .map((l) => l.sourceName),
-               error: withAll.message,
-            },
-         );
          if (best) return best;
          lifts = [];
       }
@@ -650,10 +701,7 @@ export class StorageServeShape {
             // likeliest single cause: one view the stored columns cannot
             // answer. Dropping it alone keeps every other view serving.
             if (tier === 0) {
-               const pruned = await this.pruneUncompilableViews(
-                  enriched,
-                  groups,
-               );
+               const pruned = await tryPrune(groups);
                if (pruned) return pruned.materializer;
             }
             if (!this.preview) recordServeShapeTierDrop(tier);
@@ -728,42 +776,64 @@ export class StorageServeShape {
             (r) => !isView(r) || kept.has((r as { name: string }).name),
          ),
       });
-      const current: ServeBinding[] = enriched.map((b) =>
+      const viewless: ServeBinding[] = enriched.map((b) =>
          withViews(b, new Set()),
       );
-      let best = await compile(current);
-      if (best instanceof Error) return undefined;
-      const dropped: { source: string; view: string; error: string }[] = [];
-      for (const [i, binding] of enriched.entries()) {
-         const views = (binding.refinements ?? [])
+      const viewsOf = (b: ServeBinding) =>
+         (b.refinements ?? [])
             .filter(isView)
             .map((r) => (r as { name: string }).name);
-         if (views.length === 0) continue;
-         const all = await compile(
-            current.map((b, j) => (j === i ? binding : b)),
-         );
-         if (!(all instanceof Error)) {
-            current[i] = binding;
-            best = all;
-            continue;
-         }
-         const kept = new Set<string>();
-         for (const view of views) {
-            const candidate = withViews(binding, new Set([...kept, view]));
-            const attempt = await compile(
-               current.map((b, j) => (j === i ? candidate : b)),
+      const budget = { remaining: VIEW_ISOLATION_COMPILES - 1 };
+      let best: ModelMaterializer | Error = await compile(viewless);
+      if (best instanceof Error) return undefined;
+      // The last shape that compiled is the one returned: state only changes
+      // when a candidate compiles.
+      const fits = async (bindings: ServeBinding[]) => {
+         const attempt = await compile(bindings);
+         if (attempt instanceof Error) return attempt;
+         best = attempt;
+         return undefined;
+      };
+      // First the bindings whose views all compile, found by halving, so one
+      // bad view among many sources costs a few compiles, not one per source.
+      const withViewIndices = enriched
+         .map((_b, i) => i)
+         .filter((i) => viewsOf(enriched[i]).length > 0);
+      const byBinding = await isolateCompilable(
+         withViewIndices,
+         (candidate) => {
+            const full = new Set(candidate);
+            return fits(
+               enriched.map((b, j) => (full.has(j) ? b : viewless[j])),
             );
-            if (attempt instanceof Error) {
-               dropped.push({
-                  source: binding.sourceName,
-                  view,
-                  error: compileProblemText(attempt),
-               });
-               continue;
-            }
-            kept.add(view);
-            current[i] = candidate;
-            best = attempt;
+         },
+         budget,
+      );
+      const current = enriched.map((b, j) =>
+         byBinding.kept.includes(j) ? b : viewless[j],
+      );
+      // Then, in each binding whose views do not all compile, the views that
+      // do, again by halving, in declaration order so a view that nests an
+      // earlier one finds it kept.
+      const dropped: { source: string; view: string; error: string }[] = [];
+      for (const { item: i, error: bindingError } of byBinding.dropped) {
+         const binding = enriched[i];
+         const byView = await isolateCompilable(
+            viewsOf(binding),
+            (candidate) => {
+               const trial = withViews(binding, new Set(candidate));
+               return fits(current.map((b, j) => (j === i ? trial : b)));
+            },
+            budget,
+            bindingError,
+         );
+         current[i] = withViews(binding, new Set(byView.kept));
+         for (const { item: view, error } of byView.dropped) {
+            dropped.push({
+               source: binding.sourceName,
+               view,
+               error: error ? compileProblemText(error) : VIEW_NOT_ISOLATED,
+            });
          }
       }
       for (const { source, view, error } of dropped) {
@@ -1086,4 +1156,65 @@ function compileProblemText(err: Error): string {
       .map((p) => p.message)
       .filter((m): m is string => typeof m === "string" && m !== "");
    return messages.length > 0 ? messages.join("; ") : err.message;
+}
+
+/**
+ * The most shape compiles one prune spends isolating views: the view-less probe
+ * included. Halving keeps the usual case (one bad view among many) to a handful;
+ * this bounds the worst (many bad views, or many sources), and a view it never
+ * reached is answered live rather than checked.
+ */
+export const VIEW_ISOLATION_COMPILES = 64;
+
+/** A view the prune ran out of compiles before checking, so it serves live. */
+const VIEW_NOT_ISOLATED =
+   `Not checked: the serve shape stopped isolating views after ` +
+   `${VIEW_ISOLATION_COMPILES} compiles, so this view is answered live.`;
+
+/**
+ * Of `items`, in order, the ones that can be added together with the rest
+ * kept, found by halving: a candidate that `fits` (resolves undefined) is
+ * kept whole; one that fails is split, down to single items, which are dropped
+ * with their error. `fits` is called with every item kept so far plus the
+ * candidate, in order, so a later item can rely on an earlier kept one. Each
+ * call spends one unit of `budget`; once it is spent the items not yet checked
+ * are dropped with no error. `knownFailure` is the error from trying every
+ * item at once, when the caller already has it, which saves that compile.
+ */
+export async function isolateCompilable<T>(
+   items: readonly T[],
+   fits: (candidate: readonly T[]) => Promise<Error | undefined>,
+   budget: { remaining: number },
+   knownFailure?: Error,
+): Promise<{
+   kept: T[];
+   dropped: { item: T; error: Error | undefined }[];
+}> {
+   const kept: T[] = [];
+   const dropped: { item: T; error: Error | undefined }[] = [];
+   const visit = async (list: T[], failure?: Error): Promise<void> => {
+      if (list.length === 0) return;
+      let error = failure;
+      if (error === undefined) {
+         if (budget.remaining <= 0) {
+            for (const item of list) dropped.push({ item, error: undefined });
+            return;
+         }
+         budget.remaining--;
+         error = await fits([...kept, ...list]);
+         if (error === undefined) {
+            kept.push(...list);
+            return;
+         }
+      }
+      if (list.length === 1) {
+         dropped.push({ item: list[0], error });
+         return;
+      }
+      const mid = Math.ceil(list.length / 2);
+      await visit(list.slice(0, mid));
+      await visit(list.slice(mid));
+   };
+   await visit([...items], knownFailure);
+   return { kept, dropped };
 }
