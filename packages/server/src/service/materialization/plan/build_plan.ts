@@ -13,6 +13,13 @@ import type {
    SourceDef,
    UnbuildableSource,
 } from "@malloydata/malloy";
+import * as path from "path";
+import { fileURLToPath } from "url";
+import {
+   persistAnnotationFindings,
+   persistUnparseableFinding,
+   type PackageAnnotationFinding,
+} from "../../annotation_reader";
 import { parseRouteTag, routeHasKey } from "../../motly";
 import { Annotations } from "@malloydata/malloy";
 import { components } from "../../../api";
@@ -57,6 +64,7 @@ import {
    deriveColumns,
    type PersistSourceGateClassification,
    type PersistSourceGateOutcome,
+   declaredStorage,
 } from "./persist_source_fields";
 import { quoteIdentifier } from "../../quoting";
 
@@ -137,6 +145,8 @@ export interface CompiledBuildPlan {
     * silent no-op.
     */
    droppedPersistSources?: { name: string; modelPath: string }[];
+   /** Findings on the authored `#@` annotations (see annotation_reader). */
+   annotationFindings?: PackageAnnotationFinding[];
    /**
     * sourceID -> the rollup it was synthesized from; absent for an authored
     * `#@ persist` source. The provenance behind the wire plan's
@@ -742,6 +752,8 @@ export interface BuildPlanParts {
    droppedPersistSources: { name: string; modelPath: string }[];
    preaggregatePlans: Record<string, RollupPlan>;
    sourceGateOutcomes: Record<string, PersistSourceGateOutcome>;
+   /** Findings on the `#@` annotations of this model's sources (see annotation_reader). */
+   annotationFindings: PackageAnnotationFinding[];
 }
 
 export function emptyBuildPlanParts(): BuildPlanParts {
@@ -752,6 +764,7 @@ export function emptyBuildPlanParts(): BuildPlanParts {
       droppedPersistSources: [],
       preaggregatePlans: {},
       sourceGateOutcomes: {},
+      annotationFindings: [],
    };
 }
 
@@ -770,6 +783,79 @@ export function mergeBuildPlanParts(
    into.droppedPersistSources.push(...from.droppedPersistSources);
    Object.assign(into.preaggregatePlans, from.preaggregatePlans);
    Object.assign(into.sourceGateOutcomes, from.sourceGateOutcomes);
+   for (const finding of from.annotationFindings) {
+      addAnnotationFinding(into, finding);
+   }
+}
+
+/**
+ * Add a finding once. A model that imports another walks the imported persist
+ * sources again, and each walk would otherwise report the same finding, so a
+ * finding is keyed by what it says and where (findings are attributed to the
+ * DECLARING model, so both walks produce the same key).
+ */
+function addAnnotationFinding(
+   parts: Pick<BuildPlanParts, "annotationFindings">,
+   finding: PackageAnnotationFinding,
+): void {
+   const key = (f: PackageAnnotationFinding) =>
+      [f.code, f.model ?? "", f.subject ?? "", f.message].join("\u0000");
+   const k = key(finding);
+   if (!parts.annotationFindings.some((f) => key(f) === k)) {
+      parts.annotationFindings.push(finding);
+   }
+}
+
+/** Whether a parse error at `at` falls on `note`, a `#@` line of a source. */
+function noteCovers(
+   note: {
+      text: string;
+      at: { url: string; range: { start: { line: number } } };
+   },
+   at: { url: string; range: { start: { line: number } } },
+): boolean {
+   if (note.at.url !== at.url) return false;
+   const first = note.at.range.start.line;
+   const last = first + note.text.split("\n").length - 1;
+   return at.range.start.line >= first && at.range.start.line <= last;
+}
+
+/** Whether a persist source declares an incremental refresh, read like the planner does. */
+function isIncrementalSource(source: PersistSource): boolean {
+   try {
+      return deriveAnnotationFields(source).refresh === "incremental";
+   } catch {
+      return false;
+   }
+}
+
+/**
+ * The package-relative path of the file `url` names, for attributing a
+ * finding to the model that declares the annotation rather than one that
+ * imports it; `fallback` when the URL is not a file under the package.
+ */
+function declaringModelPath(
+   url: string | undefined,
+   packagePath: string,
+   fallback: string,
+): string {
+   if (!url?.startsWith("file:")) return fallback;
+   try {
+      const relative = path.relative(packagePath, fileURLToPath(url));
+      return relative &&
+         !relative.startsWith("..") &&
+         !path.isAbsolute(relative)
+         ? relative.split(path.sep).join("/")
+         : fallback;
+   } catch {
+      return fallback;
+   }
+}
+
+/** The declaring file's URL in a Malloy `sourceID` (`<name>@<url>`). */
+function sourceIDFileURL(sourceID: string): string | undefined {
+   const at = sourceID.indexOf("@file:");
+   return at >= 0 ? sourceID.slice(at + 1) : undefined;
 }
 
 /**
@@ -881,17 +967,44 @@ export async function collectModelBuildPlan(
    }
 
    const targets = await runtime.getBuildTargets(malloyModel);
-   for (const msg of targets.tagParseLog) {
+   const parseErrors = targets.tagParseLog.filter((msg) => {
       logger.warn("Persist annotation issue", {
          modelPath,
          message: msg.message,
          severity: msg.severity,
       });
-   }
+      return msg.severity === "error";
+   });
 
    // BEFORE the empty-plan `return`, so a model whose only persist source is
    // a dropped shape is still caught.
    const planned = plannedSources(targets);
+   // A `#@` line that does not parse is reported by what it cost. Malloy drops
+   // a source only when none of its `#@` lines parse; when another does, the
+   // source is still planned, built without the broken line's directives.
+   for (const msg of parseErrors) {
+      const at = msg.at;
+      const onPlanned = at
+         ? planned
+              .map((source) => ({
+                 source,
+                 note: source.annotations
+                    .forRoute("@")
+                    .find((note) => noteCovers(note, at)),
+              }))
+              .find((hit) => hit.note !== undefined)
+         : undefined;
+      addAnnotationFinding(
+         parts,
+         persistUnparseableFinding(
+            msg,
+            declaringModelPath(at?.url, packagePath, modelPath),
+            onPlanned?.note
+               ? { subject: onPlanned.source.name, line: onPlanned.note.text }
+               : undefined,
+         ),
+      );
+   }
    const recognizedNames = new Set(planned.map((s) => s.name));
    for (const name of detectDroppedPersistSources(
       malloyModel,
@@ -911,6 +1024,27 @@ export async function collectModelBuildPlan(
       const sourceID = source.sourceID;
       parts.sources[sourceID] = source;
       parts.sourceModelPaths[sourceID] = modelPath;
+      // Unknown and retired keys, on the lines that parsed (a line that did
+      // not is reported above). Attributed to the declaring model, so a model
+      // importing this source repeats nothing. Never lets the reader break the
+      // plan (mirrors deriveAnnotationFields).
+      try {
+         const declaredIn = declaringModelPath(
+            sourceIDFileURL(sourceID),
+            packagePath,
+            modelPath,
+         );
+         for (const finding of persistAnnotationFindings(
+            source.annotations,
+            source.name,
+            declaredIn,
+            { incremental: isIncrementalSource(source) },
+         )) {
+            addAnnotationFinding(parts, finding);
+         }
+      } catch {
+         // No findings for a source whose annotations cannot be read.
+      }
       if (!classificationCtx) {
          const givens = Array.from(
             malloyModel.givens.values(),
@@ -959,7 +1093,33 @@ export async function resolveConnectionDigests(
    return connectionDigests;
 }
 
-/** Project the compiled plan into the trimmed wire BuildPlan. */
+/**
+ * The base a `storage=` rollup is declared over, when that base is itself
+ * persisted with `storage=`; undefined for every other source. Such a rollup
+ * can neither build nor serve today (#6293): the chained storage build lifts a
+ * downstream's definition from its file, and a rollup lives in the
+ * synthesized companion, which is never written; and the base's own stored
+ * binding claims the name the rollup would be served under. So it is left out
+ * of the plan and every run, with a package warning, and the base still builds
+ * and serves from storage. Rollups over a stored base are materialization v2
+ * phase 4 (`#(preaggregate)`).
+ */
+export function storedBaseOfRollup(
+   compiled: {
+      sources: Record<string, PersistSource>;
+      preaggregatePlans?: Record<string, RollupPlan>;
+   },
+   sourceID: string,
+): PersistSource | undefined {
+   const plan = compiled.preaggregatePlans?.[sourceID];
+   const rollup = compiled.sources[sourceID];
+   if (!plan?.baseSourceID || !rollup || !declaredStorage(rollup)) {
+      return undefined;
+   }
+   const base = compiled.sources[plan.baseSourceID];
+   return base && declaredStorage(base) ? base : undefined;
+}
+
 /** Memo for {@link collidingRollups}, per compiled `sources` record. */
 const collidingRollupsBySources = new WeakMap<
    Record<string, PersistSource>,
@@ -989,6 +1149,8 @@ export function collidingRollups(compiled: {
    >();
    for (const [sourceID, source] of Object.entries(compiled.sources)) {
       if (!compiled.preaggregatePlans?.[sourceID]) continue;
+      // Left out of the plan entirely, so it shares no table with anyone.
+      if (storedBaseOfRollup(compiled, sourceID)) continue;
       let address: string;
       try {
          address = computeSourceEntityId(source, compiled.connectionDigests);
@@ -1038,6 +1200,7 @@ export function tierGateInputs(
    return { ...compiled, collidingRollups: collidingRollups(compiled) };
 }
 
+/** Project the compiled plan into the trimmed wire BuildPlan. */
 export function deriveBuildPlan(
    builds: SourceBuild[],
    sources: Record<string, PersistSource>,
@@ -1055,13 +1218,27 @@ export function deriveBuildPlan(
    // One level holding every source with every table it reads. A host walks
    // these edges for a rerun's upstream closure, freshness inheritance and
    // lineage, so none may be left out.
+   // A rollup over a stored base is left out of the plan (storedBaseOfRollup),
+   // so of its graph too: every node is in `sources` or `refusedSources`.
+   const leftOut = new Set(
+      Object.keys(sources).filter((sourceID) =>
+         storedBaseOfRollup(
+            { sources, preaggregatePlans: options?.preaggregatePlans },
+            sourceID,
+         ),
+      ),
+   );
    const wireGraphs: WireBuildGraph[] = builds.map((build) => ({
       connectionName: build.connectionName,
       nodes: [
-         build.order.map((sourceID) => ({
-            sourceID,
-            dependsOn: build.dependsOn[sourceID] ?? [],
-         })),
+         build.order
+            .filter((sourceID) => !leftOut.has(sourceID))
+            .map((sourceID) => ({
+               sourceID,
+               dependsOn: (build.dependsOn[sourceID] ?? []).filter(
+                  (upstream) => !leftOut.has(upstream),
+               ),
+            })),
       ],
    }));
 
@@ -1111,6 +1288,9 @@ export function deriveBuildPlan(
                continue;
             }
          } else {
+            // A storage rollup over a storage= base can neither build nor
+            // serve (see storedBaseOfRollup): out of the plan, warned on.
+            if (leftOut.has(sourceID)) continue;
             // Before the other gates: a rollup sharing its table with another
             // model's must neither build nor serve, so it leaves `sources`.
             try {
@@ -1223,6 +1403,13 @@ export function deriveBuildPlan(
 export interface BuildPlanOutcome {
    plan: BuildPlan | null;
    droppedPersistSources: { name: string; modelPath: string }[];
+   /**
+    * Storage rollups left out because their base is itself `storage=`
+    * persisted (see storedBaseOfRollup). Optional: a worker that predates it
+    * sends none.
+    */
+   rollupsOverStoredBase?: { baseName: string; modelPath?: string }[];
+   annotationFindings: PackageAnnotationFinding[];
    sourceEligibility: SourceEligibility;
    colocatedSourceEligibility: ColocatedSourceEligibility;
    incrementalDeclarations: Record<string, IncrementalDeclaration>;
@@ -1256,9 +1443,25 @@ export function deriveBuildPlanOutcome(
                  sourceGateOutcomes: compiled.sourceGateOutcomes,
               },
            );
+   // One entry per base: its grains share the reason.
+   const overStoredBase = new Map<
+      string,
+      { baseName: string; modelPath?: string }
+   >();
+   for (const sourceID of Object.keys(compiled.sources)) {
+      const base = storedBaseOfRollup(compiled, sourceID);
+      if (!base || overStoredBase.has(base.sourceID)) continue;
+      const modelPath = compiled.sourceModelPaths?.[base.sourceID];
+      overStoredBase.set(base.sourceID, {
+         baseName: base.name,
+         ...(modelPath ? { modelPath } : {}),
+      });
+   }
    return {
       plan,
       droppedPersistSources,
+      rollupsOverStoredBase: [...overStoredBase.values()],
+      annotationFindings: compiled.annotationFindings ?? [],
       sourceEligibility: collectSourceEligibility(compiled),
       colocatedSourceEligibility: collectColocatedSourceEligibility(compiled),
       incrementalDeclarations,

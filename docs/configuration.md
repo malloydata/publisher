@@ -51,21 +51,22 @@ The package directory format itself (`publisher.json` fields, models, data files
 [packages.md](packages.md).
 
 Do not author packages under `publisher_data/`. That is storage Publisher manages for itself: it
-copies each configured package in (or symlinks it, under `--watch-env`), and `--init` deletes the
-whole tree.
+publishes each configured package into it as a version (or symlinks it, under `--watch-env`), and
+`--init` deletes the whole tree.
 
-The copy is the part that surprises people: **without `--watch-env`, a local package is served
-from its boot-time copy, so edits to your source directory are never read**, however many times
-you save or reload — a `?reload=true` still answers 200, recompiled from the copy. Local authoring
-means starting the server with `--watch-env <env>`, which mounts the environment's local packages
-in place and live-reloads them.
+The publish is the part that surprises people: **without `--watch-env`, a package is served as
+the immutable version its `publisher.json` declares, so edits to your source directory are never
+read**, however many times you save or reload — a `?reload=true` still answers 200, with the
+version unchanged. Local authoring means starting the server with `--watch-env <env>`, which
+mounts the environment's local packages in place and live-reloads them. To ship an edit from a
+server that is not watching, bump the `version` and publish the package again.
 
 Adding `--watch-env` to a _later_ boot is not enough on its own, and this is the one to watch for:
-the mount is decided when an environment is first loaded from config, so a package already copied
-into `publisher_data/` stays a copy, and the boot still logs `Watch mode active` over it. Pass
-`--watch-env <env> --init` once to re-mount (`--init` alone re-copies). After that, plain
-`--watch-env` boots keep watching. `publisher_data/<env>/<pkg>` shows which you got: a symlink is
-mounted, a real directory is a copy.
+the mount is decided when an environment is first loaded from config, so a package already
+published into `publisher_data/` stays a version, and the boot still logs `Watch mode active` over
+it. Pass `--watch-env <env> --init` once to re-mount (`--init` alone publishes again). After that,
+plain `--watch-env` boots keep watching. `publisher_data/<env>/<pkg>` shows which you got: a
+symlink is mounted, a folder of versions is published.
 
 A `location` can also be a `https://github.com/...`, `gs://`, or `s3://` URL, which Publisher
 downloads. Only local directories are eligible for `--watch-env`.
@@ -93,7 +94,7 @@ and this table is generated from it. The names are today's; the configuration de
 | `rateLimit` | `PUBLISHER_RATE_LIMIT` |  | `0` (no limit) | Maximum requests per minute one client may make to the REST server; over it, requests get `429` with `RateLimit-*` headers until the minute rolls over. Unset or `0` means no limit; any other value must be a non-negative integer or startup fails. `/health*` and `/metrics` are never limited. Clients are told apart by the connection's peer address, so behind a reverse proxy every client shares one bucket: rate-limit at the proxy there, or leave this unset. The MCP port is not covered. |
 | `frameAncestors` | `PUBLISHER_FRAME_ANCESTORS` |  | `'self'` | `Content-Security-Policy: frame-ancestors` value sent on **every** document this server returns -- the Console and in-package `public/` files alike -- controlling which origins may embed a page in an iframe. Defaults to same-origin only; set it to the origins that embed you (`https://app.example.com`), or to `*` to restore the previous any-origin behaviour. |
 | `callerHeader` | `PUBLISHER_CALLER_HEADER` |  | `x-publisher-caller` | The request header whose value the per-query access record copies as `caller`: the identity the gateway in front of Publisher asserts. Opaque to Publisher; see [access-record.md](access-record.md). |
-| `packageVersioning` | `PUBLISHER_PACKAGE_VERSIONING` |  | `off` | `on` or `off`: whether a publish from a location publishes an immutable [package version](package-versions.md) numbered by its `publisher.json` `version` (a missing or non-semver `version` is then a 400), or installs the package in place as before versions. A transition setting: a future release removes it and requires a `version` ([#1381](https://github.com/malloydata/publisher/issues/1381)). Versions published while it was on keep serving when it is off. Any other value fails startup. |
+| `packageVersioning` | `PUBLISHER_PACKAGE_VERSIONING` |  | `on` | `on` or `off`: whether a publish from a location publishes an immutable [package version](package-versions.md) numbered by its `publisher.json` `version` (a missing or non-semver `version` is then a 400), or installs the package in place as before versions. A transition setting: a future release removes it and requires a `version` ([#1381](https://github.com/malloydata/publisher/issues/1381)). Versions published while it was on keep serving when it is off. Any other value fails startup. |
 | `versionPromotion` | `PUBLISHER_VERSION_PROMOTION` |  | `on-publish` | `on-publish` or `explicit`: what publishing a package version does to its `latest`. `on-publish` moves `latest` to the new version unless a higher one already is; `explicit` never moves it, so only `PUT .../packages/{package}/latest` does, for an orchestrator that decides when a version is ready. Also settable as `versionPromotion` in `publisher.config.json`; the variable wins. Any other value fails startup. See [package-versions.md](package-versions.md). |
 | `packageInlineFields` | `PUBLISHER_PACKAGE_INLINE_FIELDS` |  | `on` | `on` or `off`: whether a package response carries the deprecated fields `api-doc.yaml` marks on `Package`, and a `GET /status` entry the whole package response. Off, each is read only at its own route: the serving and manifest-binding fields (`status`, `loaded`, `archiveStatus`, `servedRevision`, `sourceContentSha`, `manifestBindingStatus`, `manifestEntryCount`, `boundManifestUri`, `storageServeBindings`) at `GET …/packages/{pkg}/status`, `buildPlan` at `…/build-plan`, `embeddingIndex` at `…/embedding-index`, `classification` at `…/classification`, `agents` at `…/agents`, and `secureGivens` as each model's `givens[].secure` at `…/entities`. `warnings` and `exploresWarnings` stay on the package either way. A transition flag: a later release turns it off by default and the one after removes it with the fields, so move readers to the new locations now. Any other value fails startup. |
 | `modelPage` | `PUBLISHER_MODEL_PAGE` |  | `explorer` | `explorer` or `viewer`: the page the Console shows for a model, reported on `/status` as `modelPage`. `explorer` is the [Explorer](explorer.md), which writes the queries it builds back to Malloy with string values unescaped (`escapeString` in `@malloydata/malloy-interfaces` is a TODO), so a drilled value holding a double quote rewrites its query; the server's restricted mode and `#(authorize)` still bound what that query can read. `viewer` shows the model viewer, which builds no query, and also takes the Explorer's "Data sources" dialog out of the legacy notebook; there a given's option list also quotes every name. The Console keeps both pages, and shows the viewer if `/status` cannot be read. Any other value fails startup. |

@@ -9,6 +9,7 @@ import {
 } from "../../../errors";
 import { logger } from "../../../logger";
 import {
+   recordStoredColumnTypeMismatch,
    recordChainedStorageBuild,
    recordSourceBuildDuration,
    recordStorageBuildFailure,
@@ -33,6 +34,11 @@ import {
    type ServeBinding,
    type SourceLocation,
 } from "../serve/materialization_serve_transform";
+import {
+   STORED_COLUMN_TYPE_MISMATCH_CODE,
+   storageBuildCasts,
+   storedColumnTypeMismatches,
+} from "../stored_column_types";
 import { BuildInstruction, ManifestEntry } from "../types";
 import type { BuildStrategy } from "./build_strategy";
 import {
@@ -203,6 +209,10 @@ export class StorageBuildStrategy
               })
             : undefined;
 
+      // Store each column as the type Malloy declares where one DuckDB type
+      // is faithful to it (ms2data/service#6642); checked again below.
+      const { declaredColumns, castOptions } = storageBuildCasts(persistSource);
+
       const startTime = performance.now();
       let result;
       // Set when stacking on the parents was declined and the recompute below
@@ -272,12 +282,17 @@ export class StorageBuildStrategy
             if (manifest.strict && pinnedRecompute) {
                recordChainedStorageBuild("strict_refused");
                recordStorageBuildFailure(destinationName);
-               throw new Error(
+               const message =
                   `Failed to materialize chained source '${persistSource.name}' ` +
-                     `into storage destination '${destinationName}' by reading ` +
-                     `its materialized upstream, and strict upstreams forbid ` +
-                     `recomputing it from raw: ${safeDetail}`,
-               );
+                  `into storage destination '${destinationName}' by reading ` +
+                  `its materialized upstream, and strict upstreams forbid ` +
+                  `recomputing it from raw: ${safeDetail}`;
+               // Re-raised as the same type, so the run can classify the
+               // failure (build_failure_class.ts): a missing upstream that
+               // failed earlier in the run, or a shape no retry can carry.
+               throw err instanceof ChainedUpstreamMissingError
+                  ? new ChainedUpstreamMissingError(err.missing, message)
+                  : new ChainedShapeNotCarriedError(message);
             }
             recordChainedStorageBuild(
                manifest.strict ? "strict_shape_fallback" : "inline_fallback",
@@ -311,6 +326,8 @@ export class StorageBuildStrategy
                   ),
                   physicalTableName,
                   partitionColumns: partitionColumnsForBuild(persistSource),
+                  declaredColumns,
+                  castOptions,
                   environmentPath: environment.getEnvironmentPath(),
                   queryMetadata,
                   incremental: refresh,
@@ -410,6 +427,32 @@ export class StorageBuildStrategy
             );
          }
          throw gateErr;
+      }
+
+      // What the cast could not make faithful (a number the warehouse returned
+      // as text), or a delta applied to a table an older build typed. Not a
+      // refusal: the serve shape leaves such a column off, so only queries
+      // that read it are answered live, and the package reports it.
+      const mistyped = storedColumnTypeMismatches(
+         result.schema.flatMap((c) =>
+            c.name && c.type ? [{ name: c.name, type: c.type }] : [],
+         ),
+         declaredColumns,
+      );
+      if (mistyped.length > 0) {
+         for (const m of mistyped) {
+            recordStoredColumnTypeMismatch("build", m.declaredType);
+         }
+         logger.warn(
+            "Storage build stored columns whose type does not serve as the declared Malloy type; queries reading them are answered live",
+            {
+               code: STORED_COLUMN_TYPE_MISMATCH_CODE,
+               sourceName: persistSource.name,
+               destinationName,
+               physicalTableName,
+               columns: mistyped,
+            },
+         );
       }
 
       // Make this table visible to downstream sources built later in this run,

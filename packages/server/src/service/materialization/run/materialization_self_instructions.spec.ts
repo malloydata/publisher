@@ -106,6 +106,60 @@ describe("deriveSelfInstructions", () => {
       ).toBeDefined();
    });
 
+   it("never instructs a storage rollup over a storage= base, and still builds the base (#6293)", () => {
+      const { restore } = installSettings({
+         env: { PERSIST_STORAGE_MODE: "on" },
+      });
+      try {
+         const compiled = compiledWith(
+            {
+               orders: fakeSource({
+                  name: "orders",
+                  sourceEntityId: "aa11aa11aa11aa11aa11",
+                  annotationFields: { storage: "lake" },
+               }),
+               rollup: fakeSource({
+                  name: "rollup",
+                  sourceEntityId: "cc33cc33cc33cc33cc33",
+                  annotationFields: { storage: "lake" },
+               }),
+            },
+            [["orders", "rollup"]],
+         );
+         (
+            compiled as unknown as {
+               preaggregatePlans: Record<string, unknown>;
+            }
+         ).preaggregatePlans = {
+            rollup: {
+               baseSourceName: "orders",
+               baseSourceID: "orders",
+               grainDimensions: ["category"],
+               measures: [],
+            },
+         };
+         const { instructions, refused } = (
+            ctx.service as unknown as {
+               deriveSelfInstructions: (
+                  c: unknown,
+                  n: string[] | undefined,
+                  p: unknown,
+               ) => {
+                  instructions: BuildInstruction[];
+                  refused: Record<string, unknown>;
+               };
+            }
+         ).deriveSelfInstructions(compiled, undefined, {});
+         expect(instructions.map((i) => i.sourceEntityId)).toEqual([
+            "aa11aa11aa11aa11aa11",
+         ]);
+         // Left out, not refused: the package warning reports it.
+         expect(refused).toEqual({});
+      } finally {
+         restore();
+      }
+   });
+
    it("self-assigns the name= verbatim for a storage= source, exactly as a colocated build", () => {
       const { restore } = installSettings({
          env: { PERSIST_STORAGE_MODE: "on" },

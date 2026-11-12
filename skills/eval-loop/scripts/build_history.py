@@ -29,7 +29,7 @@ sys.path.insert(0, str(HERE))
 
 import config  # noqa: E402
 import run_index  # noqa: E402
-from build_run_package import register, write_csv  # noqa: E402
+from build_run_package import register, stamp_version, write_csv  # noqa: E402
 from flip_table import verdicts  # noqa: E402
 from ledger import read_jsonl  # noqa: E402
 
@@ -86,6 +86,7 @@ def build(cfg: config.Config, out: pathlib.Path) -> dict[str, int]:
     write_csv(data / "tag_scores.csv", tags, TAG_COLUMNS)
     for name in ("publisher.json", "history.malloy", "history_report.malloy"):
         shutil.copy(TEMPLATE / name, out / name)
+    stamp_version(out / "publisher.json")   # a rebuild publishes as a new version
     return {"runs": len(runs), "versions": len(versions), "tag rows": len(tags)}
 
 

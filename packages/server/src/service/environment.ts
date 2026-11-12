@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 import type { GivenValue } from "@malloydata/malloy";
+import { recordAnnotationFindings } from "../materialization_metrics";
 import { type CompiledDocument } from "./compile_document";
 import { isUnderPublicDir, reportWritePathProblem } from "./report";
 import {
@@ -118,7 +119,7 @@ import {
  * Dot-prefixed so anything that walks an environment for packages never finds
  * a half-downloaded or superseded copy.
  */
-const STAGING_DIR_NAME = ".staging";
+export const STAGING_DIR_NAME = ".staging";
 const RETIRED_DIR_NAME = ".retired";
 
 // Binding happens before a package is SERVING, so a slow manifest store must
@@ -2504,6 +2505,10 @@ export class Environment {
          }
       }
       this.packages.set(packageName, pkg);
+      // Counted here, when a loaded package is accepted and served: once per
+      // load, after every gate and publish check, so a refused publish and a
+      // PATCH that re-runs the gates count nothing.
+      recordAnnotationFindings(pkg.annotationFindingWarnings());
       this.notifyPackageLoaded(pkg);
       // Serving, and a package that failed earlier is fixed without a restart.
       this.transition(packageName, { type: "loaded" });

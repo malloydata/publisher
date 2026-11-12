@@ -1513,7 +1513,7 @@ paths:
 
         ## Versioned publish
 
-        Package versioning is a server setting, `PUBLISHER_PACKAGE_VERSIONING` (`off` by
+        Package versioning is a server setting, `PUBLISHER_PACKAGE_VERSIONING` (`on` by
         default; `ServerStatus.packageVersioning` reports it), and a transition: a later release
         removes the setting and always publishes versions.
 
@@ -1811,8 +1811,8 @@ paths:
         Lists every version published to the package, highest version first, including archived
         ones (marked by `archiveStatus`). The entry marked `latest` is the version served when a
         request names no `versionId`. An unversioned package (one registered from a directory,
-        or loaded from `publisher.config.json` or published with versioning off) has no versions
-        and returns an empty list.
+        mounted in a watched environment, or loaded or published with versioning off) has no
+        versions and returns an empty list.
       parameters:
         - $ref: "#/components/parameters/environmentName"
         - $ref: "#/components/parameters/packageName"
@@ -4689,8 +4689,9 @@ components:
           readOnly: true
           description: >-
             "on" when a publish from a location publishes an immutable
-            version (`PUBLISHER_PACKAGE_VERSIONING=on`); "off" when it installs
-            the package in place, as before versions. Reads and the versions
+            version (`PUBLISHER_PACKAGE_VERSIONING=on`, the default); "off" when
+            it installs the package in place, as before versions
+            (`PUBLISHER_PACKAGE_VERSIONING=off`). Reads and the versions
             routes answer in both. Absent from a server that predates
             versions, which reads as "off": how an orchestrator talking to
             servers mid-rollout tells which ones publish native versions.
@@ -5744,10 +5745,37 @@ components:
                   cannot tell from a real de-identification, so a review has
                   to (one per field, `subject` the source; `warn`; a plain
                   copy under `#(carries)` refuses the load instead).
+                  `preaggregate-over-stored-base`: a source persisted with
+                  `#@ persist storage=` that also declares `#@ preaggregate
+                  storage=` rollups, which are left out of the build plan and
+                  every run because a rollup over a stored base can neither build
+                  nor serve yet (one per base, `subject` the base; `warn`; the
+                  base still builds and serves from storage).
+                  `persist-unparseable`: a `#@` annotation that does not
+                  parse, so Malloy drops its source from the build and it is
+                  served live (one per annotation, `model` its file; `error`;
+                  refused at publish, while a package already published keeps
+                  loading). `persist-retired-key`: a `#@ persist` key no longer
+                  read, `sharing=` or `schedule=`, with what to write instead
+                  (one per key, `subject` the source; `error`; refused at
+                  publish). `persist-unknown-key`: a `#@ persist` key Publisher
+                  does not read, such as a misspelled `merge_key=` (one per
+                  key, `subject` the source; `warn`).
+                  `persist-not-materializable`: a `#@ persist` source the build
+                  walk did not recognize, served live (`subject` the source;
+                  `warn`). `preaggregate-hidden-field`: a `#@ preaggregate` on a
+                  private or internal field or grain dimension (`warn`).
                   `join-bypass`: an author join from a published source to one
                   with a stricter gate, which the join does not carry (one per
                   join, or one for a walk cut short at the join bound; always
                   a `warn`, never a load refusal; see docs/authorize.md).
+                  `storage-column-type-mismatch`: a `storage=` table stores a
+                  column as a type other than the one Malloy declares for it.
+                  It is read through a cast to the declared type where that is
+                  faithful, and otherwise answered live (one per source and
+                  column, `model` the first model binding it, `subject` the
+                  source, the message naming the column, both types and which
+                  of the two applies; `warn`; see docs/materialization.md).
                   `entities-…` (`entities-not-a-dimension`,
                   `entities-parameterized-source`,
                   `entities-multiple-required-filters`,
@@ -9959,13 +9987,19 @@ components:
           description: Error message if the materialization failed
         metadata:
           type: ["object", "null"]
-          description:
+          description: >-
             Materialization metadata including build options, source counts,
             and durations. Free-form object — fields such as `trigger`
             (ON_DEMAND | SCHEDULER) live here deliberately, so a strict-schema
             client does not need to know them. Promoting any such field to a
             top-level `Materialization` property is a breaking schema change
             that orchestrated clients must adopt first; do not do it casually.
+            `errorRetryable` (boolean) is set on a FAILED run that built
+            nothing, which commits no manifest and so reports no per-source
+            `failures`: `false` when every source failed deterministically or
+            was refused, `true` when any failure was transient, with the same
+            rules as `SourceFailure.retryable`. Absent when unclassified, for a
+            cancelled run, and from a Publisher that predates it.
         createdAt:
           type: string
           format: date-time
@@ -10901,9 +10935,46 @@ components:
             True when the materialization-eligibility gate refused this source,
             so the build was never attempted and `reason` is the gate's message.
             A refusal is a property of the model, not of the run: retrying
-            returns the same answer until the model changes, unlike a warehouse
-            or compile failure, which may clear on its own. Absent for every
-            other failure.
+            returns the same answer until the model changes. Absent for every
+            other failure; see `retryable` for how those are classified.
+        retryable:
+          type: boolean
+          description: >-
+            Whether rebuilding this source unchanged could succeed, so an
+            orchestrator that retries failed builds can stop spending attempts
+            on one that cannot.
+
+
+            `false` is a deterministic failure: the same model, instructions
+            and bounds fail the same way on every attempt. It is reported for an
+            eligibility refusal (always, beside `refused`), a Malloy or SQL
+            compile defect (a syntax or parser error), a rejected credential or
+            missing grant (permission or access denied), and a source refused under
+            `strictUpstreams` because a persisted upstream it reads failed
+            deterministically earlier in the same run. That last source
+            inherits its upstream's classification (`true` when any such
+            upstream's failure is transient) and its `reason` names the
+            upstream's own failure.
+
+
+            `true` is a transient failure, not a property of the inputs: the
+            database could not be reached or reset the connection, a timeout,
+            a rate limit, the build session running out of memory (`Out of
+            Memory Error`, `could not allocate block`, `failed to pin block`:
+            a worker's builds share its memory, so a build that ran out beside
+            others can fit alone, and the consumer's retry cap bounds one that
+            never fits), or a cancellation.
+
+
+            Absent when Publisher does not recognize the error, and from
+            every Publisher that predates the field. A consumer treats absence
+            exactly as it did before this field existed. Deliberately absent: a
+            missing table or column (a binder error, an unrecognized name),
+            because a referenced upstream reclaimed mid-build reads the same as
+            a model defect; and a persisted upstream no manifest holds, on its
+            own, because it may be materialized in another destination or left
+            out of instructions an orchestrator fixed, so retrying the same
+            instructions would not supply it.
 
     ManifestEntry:
       type: object

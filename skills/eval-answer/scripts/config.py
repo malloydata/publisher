@@ -64,9 +64,9 @@ CLONE = pathlib.Path(__file__).resolve().parents[3]
 SCHEMA: dict[str, dict[str, Any]] = {
     "model": {"environment": str, "package": str, "repo": "path",
               "port": int, "mcp_port": int, "publisher": str, "mcp_url": str,
-              # Serve the package as immutable published versions
-              # (PUBLISHER_PACKAGE_VERSIONING=on); `eval.py publish` then
-              # publishes the version publisher.json names.
+              # PUBLISHER_PACKAGE_VERSIONING for the model server: true
+              # publishes each edit as the version publisher.json names,
+              # false installs it in place. Unset, the server's default (on).
               "versioning": bool},
     "truth": {"environment": str, "port": int, "mcp_port": int,
               "publisher": str, "package_dir": "path"},

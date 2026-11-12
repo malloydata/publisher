@@ -97,7 +97,7 @@ repo        = "<path to the model package>"   # relative to this file
 port        = 4811
 mcp_port    = 4812
 
-versioning  = true     # publish edits as package versions (recommended)
+versioning  = true     # the server's default; false installs edits in place
 
 [truth]                  # only with a truth package; an empty [truth] takes 4881/4882
 environment = "truth"
@@ -112,12 +112,13 @@ publisher_version = "0.12.6"   # the server npx runs when there is no built clon
 path = "<a shared folder outside the repository>"
 ```
 
-`versioning = true` publishes the package as the immutable version its
-`publisher.json` names, so every run records the real version it measured and
-`eval.py versions` lines runs up by it. An edit is then a version bump and
-`eval.py publish`. Without it the package is installed in place and runs record
-the `publisher.json` version as "unpublished". `[store]` is in
-`sharing-runs.md`.
+With versioning on (the server's default) the package is published as the
+immutable version its `publisher.json` names, so every run records the real
+version it measured and `eval.py versions` lines runs up by it. An edit is
+then a version bump and `eval.py publish`, or an experiment
+(`eval.py experiment start`), which needs no bump. `versioning = false`
+installs each publish in place, and runs record the `publisher.json` version
+as "unpublished". `[store]` is in `sharing-runs.md`.
 
 `package` here and `targetPackage` in `set.json` must name the same package.
 Where both are set, `eval.toml` wins, and `check` refuses the set until they

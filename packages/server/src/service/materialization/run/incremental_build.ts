@@ -2,6 +2,13 @@
 // SPDX-License-Identifier: MIT
 
 import { logger } from "../../../logger";
+import {
+   persistSourceDeclaredColumns,
+   persistSourceQueryTimezone,
+   rebuildWouldRecast,
+   STORED_COLUMN_TYPE_MISMATCH_CODE,
+   type StoredColumnTypeMismatch,
+} from "../stored_column_types";
 import type { PersistSource } from "@malloydata/malloy";
 import { Manifest } from "@malloydata/malloy";
 import {
@@ -803,13 +810,43 @@ export function storageRefreshFor(params: {
             buildSQL: params.buildSQL,
             queryMetadata: params.queryMetadata,
          });
-         const step = await planSourceRefresh({
+         // A table an older build typed (ms2data/service#6642): a delta only
+         // INSERTs into the columns it has, so only a re-seed's CTAS casts them.
+         const recast = await columnsARebuildWouldRecast(
+            session,
+            quotedTablePath,
+            persistSource,
+         );
+         let step = await planSourceRefresh({
             context,
             lineage,
             target,
             columns: deriveColumns(persistSource).map((c) => String(c.name)),
-            reseed: instruction.reseed,
+            reseed: instruction.reseed || recast.length > 0,
          });
+         if (
+            recast.length > 0 &&
+            step.mode === "seed" &&
+            step.reasonCode === "forced" &&
+            !instruction.reseed &&
+            !context.forceRefresh
+         ) {
+            step = {
+               ...step,
+               reason:
+                  `the stored table holds ${recast
+                     .map((m) => `\`${m.column}\` as ${m.storedType}`)
+                     .join(
+                        ", ",
+                     )}, which a rebuild stores as the declared type, ` +
+                  `and a delta cannot change a column's type`,
+            };
+            logger.info("Re-seeding to store declared column types", {
+               code: STORED_COLUMN_TYPE_MISMATCH_CODE,
+               sourceName: persistSource.name,
+               columns: recast,
+            });
+         }
          const outcome = await applyIncrementalStep({
             context,
             lineage,
@@ -840,4 +877,35 @@ export function storageRefreshFor(params: {
             runner: (sql) => session.runSQL(sql),
          }),
    };
+}
+
+/**
+ * The stored columns a rebuild would cast to their declared type, read from
+ * the destination table (see rebuildWouldRecast). None when the table cannot be
+ * described: a missing table seeds anyway.
+ */
+export async function columnsARebuildWouldRecast(
+   session: { runSQL(sql: string): Promise<unknown> },
+   quotedTablePath: string,
+   persistSource: PersistSource,
+): Promise<StoredColumnTypeMismatch[]> {
+   let rows: Record<string, unknown>[];
+   try {
+      const result = (await session.runSQL(`DESCRIBE ${quotedTablePath}`)) as
+         | Record<string, unknown>[]
+         | { rows?: Record<string, unknown>[] };
+      rows = Array.isArray(result) ? result : (result.rows ?? []);
+   } catch {
+      return [];
+   }
+   const schema = rows.flatMap((r) =>
+      typeof r.column_name === "string" && typeof r.column_type === "string"
+         ? [{ name: r.column_name, type: r.column_type }]
+         : [],
+   );
+   return rebuildWouldRecast(
+      schema,
+      persistSourceDeclaredColumns(persistSource),
+      { queryTimezone: persistSourceQueryTimezone(persistSource) },
+   );
 }

@@ -99,7 +99,7 @@ Frame each recommendation with the evidence from Step 2 (the run IDs, timings, b
   malloy-pub schedule clear --environment <env> --package <pkg>
   ```
 
-  `set` also sets `scope: version` (a schedule requires it) and **replaces the whole `materialization` block, dropping an existing `freshness` policy**; the server rejects an invalid cron or an illegal scope/freshness combination, so a rejection means the change was unsafe. `clear` leaves `scope: version` in place.
+  `set` also sets `scope: version` (a schedule requires it) and **replaces the whole `materialization` block, dropping an existing `freshness` policy**; the server rejects an invalid cron or an illegal scope/freshness combination, so a rejection means the change was unsafe. `clear` leaves `scope: version` in place. Both edit the package through a PATCH, which a published version (by default, any package outside a watched environment) refuses with 409 `PACKAGE_IS_VERSIONED`: there, set or remove `materialization.schedule` in `publisher.json` and publish a new version.
 
 - **Change the scope:** `scope` is declared in the package's `publisher.json` under `materialization` (`"scope": "package"` or `"version"`; the root-level form is deprecated but still read). Edit it there, then reload/republish the package. Remember a schedule pins scope to `version`, so clear the schedule first if moving to `package`.
 

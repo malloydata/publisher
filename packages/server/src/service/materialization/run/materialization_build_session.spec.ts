@@ -749,6 +749,41 @@ describe.skipIf(process.platform === "win32")(
          }
       });
 
+      // ms2data/service#6642: a chained build casts to the DOWNSTREAM's own
+      // declared types, as a recompute would. DuckDB answers `date + 1 day`
+      // with a timestamp, which Malloy declares a date.
+      it("stores the downstream's columns as the types the downstream declares", async () => {
+         const dir = mkdtempSync(join(tmpdir(), "t3-types-"));
+         try {
+            await seedLake(dir);
+            const result = await buildDownstreamIntoStorage({
+               destinationName: "lake",
+               destinationConnection: {
+                  name: "lake",
+                  type: "duckdb",
+               } as ApiConnection,
+               transientModel: buildChainedStorageBuildModel({
+                  upstreams: [parent],
+                  downstreamName: "next_days",
+                  downstreamDefText:
+                     "next_days is daily_orders -> {\n" +
+                     "  group_by: next_day is order_date + 1 day\n" +
+                     "  aggregate: t is total.sum()\n}",
+                  destinationName: "lake",
+               }),
+               downstreamName: "next_days",
+               virtualMap: buildVirtualMap([parent]),
+               physicalTableName: "next_days__m1",
+               environmentPath: dir,
+            });
+            expect(result.schema.find((c) => c.name === "next_day")?.type).toBe(
+               "DATE",
+            );
+         } finally {
+            rmSync(dir, { recursive: true, force: true });
+         }
+      });
+
       it("raises an infrastructure failure as itself, not as a shape refusal the caller would fall back on", async () => {
          // The model compiles, but the parent's stored table is not in the lake:
          // the CTAS fails against the destination, and recomputing from raw would
@@ -1064,6 +1099,74 @@ describe("buildSourceIntoStorage (happy path, real DuckDB file destination)", ()
             value: "3",
          });
          expect(result.refresh).toBeUndefined();
+      } finally {
+         lake.cleanup();
+      }
+   });
+
+   // ms2data/service#6642: the warehouse's types, cast in DuckDB around the
+   // passthrough, so the warehouse still runs exactly the build SQL.
+   it("stores each column as the type Malloy declares where one DuckDB type is faithful", async () => {
+      const lake = fileLakeBuild(
+         "SELECT TIMESTAMP '2026-02-01 00:00:00' AS order_month, 1 AS is_open, 2.5 AS amount",
+      );
+      try {
+         const result = await buildSourceIntoStorage({
+            ...lake.params,
+            declaredColumns: [
+               { name: "order_month", type: "date" },
+               { name: "is_open", type: "boolean" },
+               { name: "amount", type: "number" },
+            ],
+         });
+         expect(lake.reads).toEqual(["SELECT * FROM orders"]);
+         expect(result.schema).toEqual([
+            { name: "order_month", type: "DATE" },
+            { name: "is_open", type: "BOOLEAN" },
+            { name: "amount", type: "DECIMAL(2,1)" },
+         ]);
+      } finally {
+         lake.cleanup();
+      }
+   });
+
+   // A cast that cannot convert a value must not fail a build that used to
+   // succeed: it stores what the warehouse returned, never TRY_CAST's NULLs.
+   it("stores the warehouse's types when a declared-type cast cannot convert a value", async () => {
+      const lake = fileLakeBuild("SELECT 'open' AS is_open, 1 AS n");
+      try {
+         const result = await buildSourceIntoStorage({
+            ...lake.params,
+            declaredColumns: [{ name: "is_open", type: "boolean" }],
+         });
+         expect(result.schema).toEqual([
+            { name: "is_open", type: "VARCHAR" },
+            { name: "n", type: "INTEGER" },
+         ]);
+      } finally {
+         lake.cleanup();
+      }
+   });
+
+   // Under a query time zone a date is not cast at build: an instant's date in
+   // the build session's UTC can be the day before the zone's.
+   it("does not cast a date at build when the source has a query time zone", async () => {
+      const lake = fileLakeBuild(
+         "SELECT TIMESTAMPTZ '2024-03-04 15:00:00+00' AS d, 1 AS is_open",
+      );
+      try {
+         const result = await buildSourceIntoStorage({
+            ...lake.params,
+            declaredColumns: [
+               { name: "d", type: "date" },
+               { name: "is_open", type: "boolean" },
+            ],
+            castOptions: { queryTimezone: "Asia/Tokyo" },
+         });
+         expect(result.schema).toEqual([
+            { name: "d", type: "TIMESTAMP WITH TIME ZONE" },
+            { name: "is_open", type: "BOOLEAN" },
+         ]);
       } finally {
          lake.cleanup();
       }

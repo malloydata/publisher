@@ -110,6 +110,10 @@ const sourcesCounter = lazyCounter(
    "publisher_materialization_sources_total",
    "Persist sources processed by a materialization run. Labels: outcome ('built'|'reused'|'failed'|'refused'), mode ('auto'|'orchestrated').",
 );
+const annotationFindingsCounter = lazyCounter(
+   "publisher_annotation_findings_total",
+   "Coded findings on authored #@ annotations, counted once each time a package is loaded and accepted for serving (boot, add, publish, reload; a refused publish and a gate re-run count nothing). Labels: code (e.g. 'persist-unknown-key', 'persist-unparseable'), tier ('malformed' for an error-severity finding, 'unservable' for a warning).",
+);
 const incrementalStepCounter = lazyCounter(
    "publisher_materialization_incremental_step_total",
    'Refreshes of a source declared refresh="incremental". Labels: step ' +
@@ -252,6 +256,13 @@ const serveShapeTypeFallbackCounter = lazyCounter(
    "Captured DuckDB column types mapped to json in the serve shape (type " +
       "fidelity loss). Label: kind ('array'|'unrecognized').",
 );
+const storedColumnTypeMismatchCounter = lazyCounter(
+   "publisher_storage_column_type_mismatch_total",
+   "Stored columns whose DuckDB type does not serve as the type Malloy " +
+      "declares for them (ms2data/service#6642). Labels: stage ('build' = " +
+      "found after a storage build; 'serve' = left off a serve shape, so " +
+      "queries reading it are answered live), declared (the Malloy type).",
+);
 const chainedStorageBuildCounter = lazyCounter(
    "publisher_storage_chained_build_total",
    "Chained storage= source builds (a source reading a storage-materialized " +
@@ -309,6 +320,25 @@ export function recordSourcesOutcome(
 ): void {
    if (count <= 0) return;
    sourcesCounter().add(count, { outcome, mode });
+}
+
+/**
+ * Count the coded annotation findings of one package accepted for serving,
+ * one increment per finding: `code` is the warning's code, `tier` its
+ * severity (`error` is malformed, `warn` unservable). A `malformed` count can
+ * only come from a package published before its refusal existed, since
+ * publish refuses a malformed finding before the package is served.
+ */
+export function recordAnnotationFindings(
+   warnings: ReadonlyArray<{ code?: string; severity?: string }>,
+): void {
+   for (const { code, severity } of warnings) {
+      if (!code) continue;
+      annotationFindingsCounter().add(1, {
+         code,
+         tier: severity === "error" ? "malformed" : "unservable",
+      });
+   }
 }
 
 /**
@@ -529,6 +559,18 @@ export function recordServeShapeTypeFallback(
    kind: "array" | "unrecognized",
 ): void {
    serveShapeTypeFallbackCounter().add(1, { kind });
+}
+
+/**
+ * Record a stored column whose type does not serve as its declared Malloy type:
+ * at `build`, found in the landed table's schema; at `serve`, left off the
+ * serve shape (queries reading it are answered live).
+ */
+export function recordStoredColumnTypeMismatch(
+   stage: "build" | "serve",
+   declared: string,
+): void {
+   storedColumnTypeMismatchCounter().add(1, { stage, declared });
 }
 
 /**

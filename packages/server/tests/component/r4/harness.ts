@@ -37,6 +37,11 @@ import {
    planSourceIds,
    type ServeBinding,
 } from "../../../src/service/materialization/serve/materialization_serve_transform";
+import {
+   castToDeclaredTypes,
+   persistSourceDeclaredColumns,
+   persistSourceQueryTimezone,
+} from "../../../src/service/materialization/stored_column_types";
 import type { ManifestEntry } from "../../../src/service/materialization/types";
 import { Model } from "../../../src/service/model";
 import { QueryPrivileges } from "../../../src/service/model_query_request";
@@ -70,6 +75,12 @@ export interface R4Scenario {
    files: Record<string, string>;
    /** SQL that creates and fills the source tables, run once. */
    seedSql: string[];
+   /**
+    * Build as a storage build did before it cast columns to their declared
+    * types (ms2data/service#6642), to check what the serve side does with a
+    * table an older build typed. Default false: the build casts, as it does now.
+    */
+   uncast?: boolean;
 }
 
 export type Row = Record<string, unknown>;
@@ -93,6 +104,8 @@ export interface R4Fixture {
    setBindings(bindings: ServeBinding[]): void;
    /** One query under the bindings already set, with nothing around it. */
    runAsIs(malloy: string): Promise<{ rows: Row[]; servedFrom: string | null }>;
+   /** The bound columns the serve side leaves off for their stored type. */
+   typeMismatches(): ReturnType<Model["storedColumnTypeMismatches"]>;
 }
 
 /**
@@ -178,9 +191,15 @@ export async function buildScenario(scenario: R4Scenario): Promise<R4Fixture> {
    });
    for (const [i, source] of sources.entries()) {
       const table = `r4_${source.name}_${i}`;
-      await duckdb.runSQL(
-         `CREATE TABLE ${DESTINATION}.${table} AS ${source.getSQL()}`,
-      );
+      // Cast to the declared types as the storage build does.
+      const select = scenario.uncast
+         ? source.getSQL()
+         : castToDeclaredTypes(
+              source.getSQL(),
+              persistSourceDeclaredColumns(source),
+              { queryTimezone: persistSourceQueryTimezone(source) },
+           );
+      await duckdb.runSQL(`CREATE TABLE ${DESTINATION}.${table} AS ${select}`);
       const described = await duckdb.runSQL(`DESCRIBE ${DESTINATION}.${table}`);
       entries[`h${i}`] = {
          sourceEntityId: `h${i}`,
@@ -239,6 +258,10 @@ export async function buildScenario(scenario: R4Scenario): Promise<R4Fixture> {
          model.setServeBindings(next);
       },
       runAsIs: runOnce,
+      typeMismatches() {
+         model.setServeBindings(bindings);
+         return model.storedColumnTypeMismatches();
+      },
       async run(query: R4Query): Promise<R4Run> {
          model.setServeBindings([]);
          const live = await runOnce(query.malloy);

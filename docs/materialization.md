@@ -413,6 +413,42 @@ serves live and the package's warnings carry the refusal. A `storage=` destinati
 question — it reads from the source and writes elsewhere — and the storage build names the source
 types it can read.
 
+### Stored column types follow the model, not the warehouse
+
+A `storage=` table holds what the warehouse returned, and the warehouse's type for a column is not
+always the type Malloy declares for the field. Date arithmetic is the common case: Postgres answers
+a month truncation, and DuckDB answers `order_date + 1 month`, with a timestamp, though Malloy types
+the field as a date. A `sql_boolean` over a 0/1 integer, or a `sql_number` over text, keeps the
+warehouse's type too. Served as the stored type, such a column changes answers: a date compared
+with a date column no longer compiles, and a boolean groups as `0` and `1`.
+
+A storage build therefore casts each `string`, `boolean` and `date` column to its declared type
+(`VARCHAR`, `BOOLEAN`, `DATE`) in the destination, around the warehouse's result; the warehouse
+runs exactly the build SQL it ran before. Numbers and timestamps are not cast: every DuckDB numeric
+type serves a Malloy `number`, and either DuckDB timestamp type serves a `timestamp` or
+`timestamptz`, since builds and queries both run in UTC.
+Under a query time zone (`timezone:` in the source's query) a `date` is not cast at build: DuckDB
+would take an instant's date in the build session's UTC, not in that zone. A cast that cannot
+convert a value (a boolean the warehouse returned as `'open'`) retries the build without the casts
+and stores what the warehouse returned, rather than failing a build that used to succeed or storing
+`TRY_CAST`'s NULLs.
+
+A column whose stored type still does not serve as its declared type, such as any castable column of
+a table built before this cast, is read through a cast to its declared type where that is faithful:
+an integer flag as a `boolean`, a naive timestamp as a `date`, and an instant as a `date` when the
+source has no query time zone. Every field, join and view built on it still serves from storage. A
+column no cast reproduces faithfully (a `number` the warehouse returned as text, a `boolean` stored
+as text) is left off the shape when nothing on the shape names it, so only a query that reads it is
+answered live; when a dimension, measure, join, filter or view names it, that one source is served
+live instead, and the rest of the model keeps serving from storage. An incremental source whose
+table holds a type a rebuild would cast re-seeds on its next run, since a delta only inserts into
+the columns the table already has. The package reports each such column as a warning with code
+`storage-column-type-mismatch`, naming the source, the column, its stored and declared types, and
+whether it is cast or answered live. A rebuild stores the castable ones as declared. For the
+rest, give the field a native cast in the model so the warehouse returns the declared type, for
+example `amount_text::"double"`: a cast to a type Malloy already believes the field has, such as
+`::number` here, emits no SQL.
+
 ## The persistence policy (the publish gate)
 
 Package-level persistence policy lives at the root of `publisher.json`:
@@ -573,7 +609,9 @@ See [configuration.md](configuration.md) for the env vars. Fire semantics:
 ## Manage it with the CLI
 
 ```bash
-# View / set / clear a package's schedule (set also sets scope: version)
+# View / set / clear a package's schedule (set also sets scope: version). set and clear edit the
+# package, which a published version refuses with 409 PACKAGE_IS_VERSIONED: set the schedule in
+# its publisher.json and publish a new version instead.
 malloy-pub schedule view  --environment <env> --package <pkg>
 malloy-pub schedule set "0 6 * * *" --environment <env> --package <pkg>
 malloy-pub schedule clear --environment <env> --package <pkg>

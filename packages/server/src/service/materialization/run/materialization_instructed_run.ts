@@ -25,6 +25,11 @@ import {
 } from "../plan/build_plan";
 import type { IncrementalRunContext } from "./incremental_build";
 import {
+   classifySourceFailure,
+   failedUpstreamsOf,
+   type FailedUpstream,
+} from "./build_failure_class";
+import {
    declaredStorage,
    physicalTargetKey,
    redactConnectionSecrets,
@@ -62,6 +67,11 @@ export interface InstructedRun {
    // cannot say which of them is actually unreferenced.
    retainedThisRun: ManifestEntry[];
    failures: Record<string, SourceFailure>;
+   // The sources that failed (or were refused) so far, by sourceID, so a
+   // dependent refused for want of one inherits its classification.
+   failedBySourceID: Map<string, FailedUpstream>;
+   // sourceID -> the sourceIDs on the tables it reads, across every build.
+   upstreamsBySourceID: Map<string, string[]>;
    failedReasons: string[];
    refusals: MaterializationEligibilityError[];
    builtSources: string[];
@@ -326,6 +336,24 @@ export function recordInstructedBuildFailure(
    } catch {
       reason = redactPgSecrets(errMessage(buildErr));
    }
+   // Classified against the upstreams that already failed in this run: a
+   // dependent refused because its upstream failed fails for the upstream's
+   // reason, which it names, and inherits the upstream's classification.
+   const { retryable, upstreamDetail } = classifySourceFailure(
+      buildErr,
+      failedUpstreamsOf(
+         persistSource.sourceID,
+         buildErr,
+         run.upstreamsBySourceID,
+         run.failedBySourceID,
+      ),
+   );
+   if (upstreamDetail) reason = `${reason}; ${upstreamDetail}`;
+   run.failedBySourceID.set(persistSource.sourceID, {
+      name: persistSource.name,
+      reason,
+      retryable,
+   });
    // A build that lost a source does not throw, so without this log the
    // failure is invisible in the server's own output.
    logger.warn("Source failed to materialize", {
@@ -333,6 +361,7 @@ export function recordInstructedBuildFailure(
       sourceName: persistSource.name,
       physicalTableName: instruction.physicalTableName,
       reason,
+      retryable,
    });
    run.failedReasons.push(`${persistSource.name}: ${reason}`);
    run.failures[sourceEntityId] = {
@@ -341,6 +370,9 @@ export function recordInstructedBuildFailure(
       materializedTableId: instruction.materializedTableId,
       physicalTableName: instruction.physicalTableName,
       reason,
+      // Omitted when the error is not recognized, so the consumer keeps its
+      // own judgment, as for a Publisher that predates the field.
+      ...(retryable !== undefined ? { retryable } : {}),
       // Lets a consumer tell a colocated failure from a `storage=` one; it
       // keys by `storageDestinationName ?? connectionName`, like a
       // successful ManifestEntry.

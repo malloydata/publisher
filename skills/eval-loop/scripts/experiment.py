@@ -131,7 +131,8 @@ def start(cfg: config.Config, name: str, ref: str | None, given: pathlib.Path | 
         snapshot(src, dst)
         location, how = dst, "working tree"
     package = publish.experiment_package(pkg, name)
-    pub = publish.publish(cfg.model_publisher(), env, package, location, cfg.versioned())
+    pub = publish.publish(cfg.model_publisher(), env, package, location,
+                          publish.server_versioning(cfg.model_publisher()))
     rec = {"name": name, "package": package, "environment": env, "location": str(location),
            "worktree": str(dst) if ref else None, "from": how,
            "gitSha": git(src, "rev-parse", "HEAD") if not ref else git(location, "rev-parse", "HEAD"),

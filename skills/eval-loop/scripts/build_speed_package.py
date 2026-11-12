@@ -31,7 +31,7 @@ TEMPLATE = HERE.parent / "templates" / "speed-run-package"
 sys.path.insert(0, str(HERE.parent.parent / "eval-answer" / "scripts"))
 sys.path.insert(0, str(HERE))
 
-from build_run_package import read_json, read_jsonl, write_csv  # noqa: E402
+from build_run_package import read_json, read_jsonl, stamp_version, write_csv  # noqa: E402
 from query_replay import PHASE, compare  # noqa: E402
 from run_index import WORKING_COPY, version_label  # noqa: E402
 
@@ -100,5 +100,6 @@ def build(run_dirs: list[pathlib.Path], out: pathlib.Path) -> dict[str, int]:
     write_csv(data / "comparisons.csv", comparisons, COMPARISON_COLUMNS)
     for name in ("publisher.json", "speed_run.malloy", "speed_report.malloy"):
         shutil.copy(TEMPLATE / name, out / name)
+    stamp_version(out / "publisher.json")   # a rebuild publishes as a new version
     shutil.copytree(TEMPLATE / "public", out / "public", dirs_exist_ok=True)
     return {"replays": len(runs), "timings": len(timings), "comparisons": len(comparisons)}

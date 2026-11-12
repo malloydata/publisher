@@ -10,7 +10,8 @@ This replaces the steps that close that gap by hand:
 1. Publish the package directory (`POST …/environments/{env}/packages`). With
    `[model] versioning = true` the server publishes the version its
    publisher.json names, and a changed package under a published version is
-   refused (409): bump the version. Without versioning it is installed in place.
+   refused (409): bump the version. A server with versioning off (`[model]
+   versioning = false`) installs it in place.
 2. Read it back: the package loads, compiles, and is not serving an older
    model (`/status` `loadErrors`).
 3. Build, when the model persists or pre-aggregates anything. A load unbinds
@@ -80,6 +81,13 @@ def base_version(package_dir: pathlib.Path) -> str | None:
         return json.loads((package_dir / "publisher.json").read_text()).get("version")
     except (OSError, ValueError):
         return None
+
+
+def server_versioning(base: str) -> bool:
+    """Whether the server publishes packages as versions. Asked, not configured:
+    the default changed (on from 0.13), and the server is what decides."""
+    _, st = send(base, "GET", "api/v0/status")
+    return str((st or {}).get("packageVersioning", "off")).lower() == "on"
 
 
 def ensure_environment(base: str, env: str) -> None:
@@ -189,7 +197,7 @@ def main(argv: list[str] | None = None) -> int:
     name = experiment_package(pkg, a.as_name) if a.as_name else pkg
     if not (pathlib.Path(location) / "publisher.json").exists():
         raise SystemExit(f"no publisher.json in {location}: not a package directory")
-    out = publish(base, env, name, pathlib.Path(location), cfg.versioned())
+    out = publish(base, env, name, pathlib.Path(location), server_versioning(base))
     shown = out["version"] or f"{out['baseVersion'] or '?'} (unpublished, installed in place)"
     print(f"published {env}/{name} {shown} from {location}")
     if out.get("note"):
