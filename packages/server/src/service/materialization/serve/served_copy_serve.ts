@@ -492,6 +492,9 @@ export class ServedCopyServe {
                     .map((c) => c.dimension),
               }
             : {}),
+         ...(plan?.rollingWindow?.length
+            ? { rollingWindow: plan.rollingWindow }
+            : {}),
          sourceID: node.sourceID,
       } as Reroot & { sourceID: string };
    }

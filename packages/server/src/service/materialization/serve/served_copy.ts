@@ -34,7 +34,8 @@
  * `virtual()` handles the server mapped.
  */
 
-import { identifier, stringLiteral } from "../../malloy_text";
+import { identifier, nowComparison, stringLiteral } from "../../malloy_text";
+import type { RollingWindowTerm } from "../plan/rolling_window";
 import { duckdbTypeToMalloy } from "./materialization_serve_transform";
 
 /** A zero-based Malloy range, as a compiled source's `location.range` carries. */
@@ -78,6 +79,14 @@ export interface Reroot {
     * `internal` field.
     */
    reservedNames?: readonly string[];
+   /**
+    * For a `#(materialize)` re-root: its rolling-window terms, re-applied over
+    * the stored table at every read's clock. The table holds the window as of
+    * its build; a term inherited from a base is not in the source's own text,
+    * so the re-root writes every term again right on the stored table (one
+    * the source's own `extend` repeats is applied twice, which is harmless).
+    */
+   rollingWindow?: readonly RollingWindowTerm[];
 }
 
 /** One stored column of a re-rooted source. */
@@ -226,6 +235,7 @@ export function rerootDeclaration(
       | "typeName"
       | "storedDimensions"
       | "reservedNames"
+      | "rollingWindow"
    > & { columns?: Reroot["columns"] },
 ): string | undefined {
    const spans = declarationSpans(declaration);
@@ -272,7 +282,11 @@ export function rerootDeclaration(
       if (opened === undefined) return undefined;
       extend = opened;
    }
-   return `${name} is ${virtual}${extend ? ` ${extend}` : ""}`;
+   const window = r.rollingWindow
+      ?.map((t) => nowComparison(t.field, t.op, t.offset))
+      .join(", ");
+   const reread = window ? ` extend { where: ${window} }` : "";
+   return `${name} is ${virtual}${reread}${extend ? ` ${extend}` : ""}`;
 }
 
 /** A timeframe column with the internal name its stored value is renamed to. */

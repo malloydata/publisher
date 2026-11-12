@@ -4,6 +4,7 @@
 import type { PersistSource } from "@malloydata/malloy";
 import { RECOGNIZED_PERSIST_KEYS } from "../../annotation_reader";
 import { parseRouteTag } from "../../motly";
+import type { RollingWindowTerm } from "./rolling_window";
 import type { Tag } from "@malloydata/malloy-tag";
 
 import type { IncrementalStrategy } from "../types";
@@ -117,6 +118,12 @@ export interface IncrementalDeclaration {
    calculateFields: string[];
    /** Output column names, for "did you mean" context in messages. */
    outputColumns: string[];
+   /**
+    * A `#(materialize)` source's rolling-window terms (rolling_window.ts), set
+    * from its plan by {@link collectIncrementalDeclarations}: each refresh
+    * deletes the rows below every term's new lower bound.
+    */
+   rollingWindow?: RollingWindowTerm[];
 }
 
 /** The source's `#@` tag, or undefined when it does not parse. */

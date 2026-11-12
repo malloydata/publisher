@@ -43,16 +43,23 @@
  * - A materialized extension builds from its own source over the raw tables,
  *   not from its parent's build source (P10): building over the parent needs
  *   the rewriter's re-rooted copy, so it waits for it.
- * - Given-reading and current-time `where:` terms (P2, rolling windows) are
- *   not stripped from the build, and a dimension that reads a given is not
- *   left out of it: a source with either is refused by the same eligibility
- *   gates that refuse it under `#@ persist` today.
+ * - Given-reading `where:` terms (P2) are not stripped from the build, and a
+ *   dimension that reads a given is not left out of it: a source with either
+ *   is refused by the same eligibility gates that refuse it under `#@ persist`
+ *   today.
  * - A dimension that depends on the query time zone (`hour(ts)`) is stored as
  *   the build computes it; the plan computes it at read instead, which needs
  *   the rewriter's served copy to tell such a column apart.
  * - The build reads the author's file as written, not a copy with its
  *   `#@ persist` lines removed, so a source that also carries its own
  *   `#@ persist` is refused rather than stored twice.
+ *
+ * A current-time `where:` term is a rolling window (rolling_window.ts): a lower
+ * bound builds as written, since the build's own `now` is the widest-set
+ * literal, and is recorded on the plan so the served copy re-applies it at
+ * read and an incremental refresh deletes below it. Any other current-time
+ * term refuses the source. A dimension whose value depends on the current time
+ * is not stored: the served copy keeps its definition and computes it at read.
  *
  * A declaration that is not built is reported as a package warning
  * (`materialize-not-built`), so an author sees why, and the source serves live.
@@ -69,6 +76,11 @@ import {
 } from "../../annotation_reader";
 import { annotationValue, identifier, stringLiteral } from "../../malloy_text";
 import { parseRouteTag, routeHasKey } from "../../motly";
+import {
+   classifyRollingWindow,
+   currentTimeFields,
+   type RollingWindowTerm,
+} from "./rolling_window";
 
 /** The route `#(materialize)` is on. */
 export const MATERIALIZE_ROUTE = "materialize";
@@ -139,6 +151,12 @@ export interface MaterializePlan {
     * or `freshness.window` for a property of a carried group.
     */
    persist: Record<string, string>;
+   /**
+    * The source's rolling-window `where:` terms (rolling_window.ts): built at
+    * the build's own clock, re-applied by the served copy at every read, and
+    * the bound an incremental refresh deletes below. Absent when none.
+    */
+   rollingWindow?: RollingWindowTerm[];
 }
 
 /** A declaration the generator could not plan, and why. */
@@ -157,6 +175,7 @@ interface SourceDefLike {
    };
    annotations?: Parameters<typeof ownLevelNotes>[0];
    fields?: unknown[];
+   filterList?: unknown;
 }
 
 interface FieldLike {
@@ -301,9 +320,14 @@ function carriedPersistKeys(
    return { persist };
 }
 
-/** The stored columns of a source: its public atomic dimensions. */
+/**
+ * The stored columns of a source: its public atomic dimensions, except one
+ * whose value depends on the current time, which differs per read and so is
+ * computed at read from the stored columns it reads.
+ */
 export function materializeColumns(def: SourceDefLike): MaterializeColumn[] {
    const out: MaterializeColumn[] = [];
+   const perRead = currentTimeFields(def.fields);
    for (const raw of def.fields ?? []) {
       const field = raw as FieldLike;
       const dimension =
@@ -325,6 +349,7 @@ export function materializeColumns(def: SourceDefLike): MaterializeColumn[] {
          continue;
       }
       if (isHidden(field)) continue;
+      if (perRead.has(dimension)) continue;
       const computed = field.e !== undefined;
       out.push({
          dimension,
@@ -333,6 +358,18 @@ export function materializeColumns(def: SourceDefLike): MaterializeColumn[] {
       });
    }
    return out;
+}
+
+/** A dimension's Malloy type on a compiled source, or "" when unknown. */
+function columnType(def: SourceDefLike, dimension: string): string {
+   for (const raw of def.fields ?? []) {
+      const field = raw as FieldLike;
+      const name = typeof field.as === "string" ? field.as : field.name;
+      if (name === dimension && typeof field.type === "string") {
+         return field.type;
+      }
+   }
+   return "";
 }
 
 /**
@@ -413,6 +450,18 @@ export function planModelMaterialize(
          });
          continue;
       }
+      const window = classifyRollingWindow(
+         def,
+         new Map(columns.map((c) => [c.column, columnType(def, c.dimension)])),
+      );
+      if (!window.ok) {
+         refused.push({
+            sourceName: name,
+            sourceID: def.sourceID,
+            reason: window.detail,
+         });
+         continue;
+      }
       const carried = carriedPersistKeys(declaration);
       if ("reason" in carried) {
          refused.push({
@@ -456,6 +505,7 @@ export function planModelMaterialize(
          buildSourceName: buildSourceName(name),
          columns,
          persist,
+         ...(window.terms.length > 0 ? { rollingWindow: window.terms } : {}),
       });
    }
    return { plans, refused };
