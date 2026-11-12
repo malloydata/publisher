@@ -45,6 +45,19 @@ async function runOne(
    return result.data.toObject()[0] as Record<string, unknown>;
 }
 
+/** Compile `model + query` to SQL without running it. */
+async function compileOne(model: string, query: string): Promise<string> {
+   const url = "file:///m.malloy";
+   const runtime = new Runtime({
+      urlReader: new InMemoryURLReader(new Map([[url, model]])),
+      connections: new FixedConnectionMap(
+         new Map([["duckdb", duckdb]]),
+         "duckdb",
+      ),
+   });
+   return runtime.loadModel(new URL(url)).loadQuery(query).getSQL();
+}
+
 /** DuckDB SQL naming a column exactly `name`. */
 function sqlColumn(name: string): string {
    return `"${name.replace(/"/g, '""')}"`;
@@ -140,6 +153,46 @@ describe("string literals", () => {
    it("escapes with a backslash, never by doubling", () => {
       expect(escapeString("o'brien")).toBe("o\\'brien");
       expect(stringLiteral("a\\b")).toBe("'a\\\\b'");
+   });
+});
+
+describe("control characters", () => {
+   // Malloy's lexer refuses a raw line break or other control character
+   // inside a quoted string or identifier; written as an escape it reads back.
+   const VALUES = ["line1\nline2", "cr\rx", "bel\u0007", "tab\tstays"];
+
+   it("escapes all but a tab, which compiles raw and stays unchanged", () => {
+      expect(escapeString("a\nb")).toBe("a\\nb");
+      expect(escapeString("a\rb")).toBe("a\\rb");
+      expect(escapeString("a\u0001b")).toBe("a\\u0001b");
+      expect(escapeString("a\tb")).toBe("a\tb");
+      expect(quotedIdentifier("a\nb")).toBe("`a\\nb`");
+   });
+
+   for (const value of VALUES) {
+      it(`round-trips the string ${JSON.stringify(value)}`, async () => {
+         const row = await runOne(
+            `source: s is duckdb.sql('select 1 as one')`,
+            `run: s -> { select: v is ${stringLiteral(value)} }`,
+         );
+         expect(row.v).toBe(value);
+      });
+   }
+
+   // DuckDB itself refuses a NUL in a SQL string and mishandles a column name
+   // with a line break, so these two compile the Malloy rather than run it:
+   // the claim is only that the text is valid Malloy.
+   it("compiles a NUL in a string and a line break in a name", async () => {
+      const name = "two\nlines";
+      const model = `source: s is duckdb.sql(${stringLiteral(`select 1 as ${sqlColumn(name)}, ${stringLiteral("nul\u0000x")} as t`)})`;
+      for (const emit of [identifier, quotedIdentifier]) {
+         await expect(
+            compileOne(
+               model,
+               `run: s -> { select: v is ${emit(name)}, w is ${stringLiteral("nul\u0000x")} }`,
+            ),
+         ).resolves.toContain("SELECT");
+      }
    });
 });
 

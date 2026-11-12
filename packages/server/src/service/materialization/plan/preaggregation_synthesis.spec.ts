@@ -1325,3 +1325,38 @@ source: alpha is duckdb.sql("""${ROWS}""") extend {
       expect(plans.map((p) => p.baseSourceName)).toEqual(["alpha", "zulu"]);
    });
 });
+
+describe("the companion quotes every name it emits", () => {
+   // A measure or grain dimension named with a Malloy keyword (or anything
+   // that needs backticks) is legal in the author's model; emitted bare, the
+   // companion fails to compile and every rollup in the model serves live.
+   it("compiles for a keyword-named measure and grain dimension", async () => {
+      const body =
+         "  dimension: `date` is order_date\n" +
+         "  measure:\n" +
+         '    #@ preaggregate grain="date"\n' +
+         "    `count` is count()";
+      const plans = await planFor(body);
+      expect(plans).toHaveLength(1);
+      const companion = synthesizePreaggregationModel(
+         plans,
+         "file:///m.malloy",
+      )!;
+      expect(companion).toContain("`count`");
+      expect(companion).toContain("    `date`\n");
+      const runtime = new Runtime({
+         urlReader: new InMemoryURLReader(
+            new Map([
+               ["file:///m.malloy", authorModel(body)],
+               ["file:///m.malloy.preagg.malloy", companion],
+            ]),
+         ),
+         connections,
+      });
+      await expect(
+         runtime
+            .loadModel(new URL("file:///m.malloy.preagg.malloy"))
+            .getModel(),
+      ).resolves.toBeDefined();
+   });
+});

@@ -20,7 +20,7 @@
  */
 
 import { createHash } from "crypto";
-import { quotedPath } from "../malloy_text";
+import { quotedIdentifier, quotedPath } from "../malloy_text";
 
 /**
  * The definitional inputs reported for a single ``#(index)``-tagged
@@ -92,7 +92,7 @@ export function buildFingerprintQuery(
       `value is ${quotedPath(dimensionPath)}`,
    ];
    return (
-      `run: ${quotedPath(sourceName)} -> { ` +
+      `run: ${quotedIdentifier(sourceName)} -> { ` +
       `group_by: ${groupByColumns.join(", ")} ` +
       `aggregate: weight is count() ` +
       `order_by: value ` +

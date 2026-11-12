@@ -400,14 +400,17 @@ function splitSourceID(
 
 /** One rollup's `#@ persist source: …` declaration. */
 function emitRollup(plan: RollupPlan): string {
-   const alias = baseAlias(plan.baseSourceName);
+   const alias = identifier(baseAlias(plan.baseSourceName));
    const partials = plan.measures
-      .map((m) => `    ${m.partialName} is ${m.name}`)
+      .map((m) => `    ${identifier(m.partialName)} is ${identifier(m.name)}`)
       .join("\n");
    // The re-declared measure keeps the base's NAME, so a query asking for
    // `total` finds it on the member; only the stored column is renamed.
    const merged = plan.measures
-      .map((m) => `    ${m.name} is ${m.partialName}.${m.reaggregate}()`)
+      .map(
+         (m) =>
+            `    ${identifier(m.name)} is ${identifier(m.partialName)}.${m.reaggregate}()`,
+      )
       .join("\n");
    // The destination is QUOTED: unquoted, the tag parser silently splits at
    // the first non-identifier character (`storage=my-lake` becomes
@@ -426,9 +429,9 @@ function emitRollup(plan: RollupPlan): string {
         ? `#@ persist name=${annotationValue(`${plan.namespace}.${plan.rollupSourceName}`)}`
         : "#@ persist";
    return `${persist}
-source: ${plan.rollupSourceName} is ${alias} -> {
+source: ${identifier(plan.rollupSourceName)} is ${alias} -> {
   group_by:
-${plan.grainDimensions.map((d) => `    ${d}`).join("\n")}
+${plan.grainDimensions.map((d) => `    ${identifier(d)}`).join("\n")}
   aggregate:
 ${partials}
 } extend {
@@ -478,8 +481,8 @@ export function synthesizePreaggregationModel(
          // A re-exported base is imported under the name its own file gives
          // it, which an `index.malloy` rename (`o is orders`) does not change.
          return fromDeclaring
-            ? `import { ${baseAlias(base)} is ${identifier(declared.name)} } from ${JSON.stringify(fromDeclaring)}`
-            : `import { ${baseAlias(base)} is ${base} } from ${JSON.stringify(importPath)}`;
+            ? `import { ${identifier(baseAlias(base))} is ${identifier(declared.name)} } from ${JSON.stringify(fromDeclaring)}`
+            : `import { ${identifier(baseAlias(base))} is ${identifier(base)} } from ${JSON.stringify(importPath)}`;
       })
       .join("\n");
 
@@ -496,8 +499,8 @@ export function synthesizePreaggregationModel(
       .map((base) => {
          const members = plans
             .filter((p) => p.baseSourceName === base && !p.storage)
-            .map((p) => p.rollupSourceName);
-         return `source: ${base} is compose(${[...members, baseAlias(base)].join(", ")})`;
+            .map((p) => identifier(p.rollupSourceName));
+         return `source: ${identifier(base)} is compose(${[...members, identifier(baseAlias(base))].join(", ")})`;
       })
       .join("\n");
 

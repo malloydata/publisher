@@ -100,7 +100,25 @@ export const MALLOY_BARE_KEYWORDS: ReadonlySet<string> = new Set([
  * Mirrors Malloy's unexported `escapeIdentifier` (to_stable.ts).
  */
 function escapeIdentifierText(name: string): string {
-   return name.replace(/\\/g, "\\\\").replace(/`/g, "\\`");
+   return escapeControl(name.replace(/\\/g, "\\\\").replace(/`/g, "\\`"));
+}
+
+/**
+ * Escape the characters Malloy's lexer refuses raw inside a quoted string or
+ * identifier: a line break ends the token, and other control characters are
+ * not accepted. Malloy reads `\n`, `\r` and `\uXXXX` back (malloy-tag's
+ * `parseString`). A tab is accepted raw, so it is left alone and text that
+ * already compiled is unchanged.
+ */
+function escapeControl(text: string): string {
+   // eslint-disable-next-line no-control-regex
+   return text.replace(/[\u0000-\u0008\u000a-\u001f\u007f]/g, (c) =>
+      c === "\n"
+         ? "\\n"
+         : c === "\r"
+           ? "\\r"
+           : "\\u" + c.charCodeAt(0).toString(16).padStart(4, "0"),
+   );
 }
 
 /**
@@ -137,10 +155,11 @@ export function quotedPath(path: string | readonly string[]): string {
 /**
  * Escape a value for the inside of a single-quoted Malloy string. Malloy
  * escapes with a backslash, not by doubling the quote as SQL does, so
- * `o'brien` needs `\'`.
+ * `o'brien` needs `\'`; a line break or other control character is written
+ * as an escape, since Malloy's lexer refuses it raw.
  */
 export function escapeString(value: string): string {
-   return value.replace(/\\/g, "\\\\").replace(/'/g, "\\'");
+   return escapeControl(value.replace(/\\/g, "\\\\").replace(/'/g, "\\'"));
 }
 
 /** A value as a single-quoted Malloy string literal. */
