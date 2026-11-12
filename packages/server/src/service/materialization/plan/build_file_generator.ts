@@ -36,10 +36,23 @@
  * the source's own name, which for a source over `conn.table('orders')` is
  * very often the very table it reads, and the build would replace it.
  *
+ * Joins (phase 3 PR 4). A join is a reference by default: it is not stored,
+ * the served copy keeps it as written, and it reads the joined source (its own
+ * table, when that source is materialized) at query time. So a dimension whose
+ * value reads through a reference join is not stored either; the served copy
+ * computes it at read, through the join. `inline=["j"]` on a join_one stores
+ * the dimensions that read through `j` (one hop: not through a join of the
+ * joined source), and the joined source's own exposed dimensions as
+ * `j__<field>` columns for readers outside Malloy (the served source does not
+ * declare them; it reaches the joined source through the join, as written).
+ * An inlined join is checked unique at every build (P8): the plan carries a
+ * generated group-by over the joined source on the join's key, and a build
+ * whose check finds a key matched twice fails, naming the join.
+ *
  * Not yet (each is a later pull request's, and is refused or left out here
  * rather than built wrong):
- * - `inline=` (inlining a join into the stored row) is phase 3's joins pull
- *   request; a declaration naming it is refused.
+ * - `inline=` on a join_many or join_cross (pair tables) is phase 4's; a
+ *   declaration naming one is refused.
  * - A materialized extension builds from its own source over the raw tables,
  *   not from its parent's build source (P10): building over the parent needs
  *   the rewriter's re-rooted copy, so it waits for it.
@@ -78,6 +91,12 @@ import { annotationValue, identifier, stringLiteral } from "../../malloy_text";
 import { parseRouteTag, routeHasKey } from "../../motly";
 import { classifyWhereTerms, currentTimeFields } from "./persist_dynamic_terms";
 import { rollingWindowTerms, type CurrentTimeReadTerm } from "./rolling_window";
+import {
+   fieldJoinUsage,
+   sourceJoins,
+   type FieldJoinReads,
+   type SourceJoin,
+} from "../../governance/ir/source_graph";
 
 /** The route `#(materialize)` is on. */
 export const MATERIALIZE_ROUTE = "materialize";
@@ -115,10 +134,11 @@ const PLAIN_PROPERTY = /^[A-Za-z_][A-Za-z0-9_]*$/;
 /** A table name `#@ persist name=` accepts (see persist_annotation_validation.ts). */
 const PLAIN_TABLE_NAME = /^[A-Za-z0-9_-]+$/;
 
+/** Keys `#(materialize)` reads for the plan itself, not the persist line. */
+const PLANNED_KEYS = ["inline"] as const;
+
 /** Keys `#(materialize)` accepts but a later pull request implements. */
-const DEFERRED_KEYS: Readonly<Record<string, string>> = {
-   inline: "inlining a join (`inline=`) arrives with the joins pull request",
-};
+const DEFERRED_KEYS: Readonly<Record<string, string>> = {};
 
 /** One stored column of a materialized source. */
 export interface MaterializeColumn {
@@ -131,6 +151,31 @@ export interface MaterializeColumn {
     * the stored column stands in) or reads it from its table.
     */
    computed: boolean;
+   /**
+    * For a column of an inlined join's joined source: the join's name, with
+    * {@link dimension} the joined source's field. The served copy does not
+    * declare these; it reads the joined source through the join.
+    */
+   join?: string;
+}
+
+/** The P8 uniqueness check for one inlined join_one, run before each build. */
+export interface InlineUniquenessCheck {
+   /** The join's name on the materialized source. */
+   join: string;
+   /** The joined source's column the join is keyed on. */
+   keyColumn: string;
+   /** The generated query's name in the build companion. */
+   queryName: string;
+   /** The joined source's declaration, which the check groups. */
+   joinedSourceID: string;
+   /** The connection the check runs on: the joined source's. */
+   connectionName?: string;
+   /**
+    * The check's SQL, compiled with the companion (never run at plan time).
+    * Any row it returns is a key the joined source holds twice.
+    */
+   sql?: string;
 }
 
 /**
@@ -163,6 +208,10 @@ export interface MaterializePlan {
     * again over the stored table at every read. Absent when it has none.
     */
    readTimeTerms?: MaterializeReadTimeTerm[];
+   /** The joins the declaration inlines (`inline=[…]`), each a join_one. */
+   inline?: string[];
+   /** One uniqueness check per inlined join (P8). */
+   uniquenessChecks?: InlineUniquenessCheck[];
 }
 
 /** A declaration the generator could not plan, and why. */
@@ -179,6 +228,7 @@ interface SourceDefLike {
       url?: string;
       range?: { start?: { line: number; character: number } };
    };
+   connection?: unknown;
    annotations?: Parameters<typeof ownLevelNotes>[0];
    fields?: unknown[];
    filterList?: unknown;
@@ -286,6 +336,7 @@ function carriedPersistKeys(
    const accepted = new Set<string>([
       ...CARRIED_KEYS,
       ...CARRIED_GROUPS,
+      ...PLANNED_KEYS,
       ...Object.keys(DEFERRED_KEYS),
    ]);
    const unknown = declaration.keys.filter((key) => !accepted.has(key));
@@ -293,7 +344,7 @@ function carriedPersistKeys(
       return {
          reason:
             `#(materialize) does not accept ${unknown.map((k) => `\`${k}=\``).join(", ")}; ` +
-            `it reads ${[...CARRIED_KEYS, ...CARRIED_GROUPS].join(", ")}`,
+            `it reads ${[...CARRIED_KEYS, ...CARRIED_GROUPS, ...PLANNED_KEYS].join(", ")}`,
       };
    }
    const persist: Record<string, string> = {};
@@ -326,37 +377,64 @@ function carriedPersistKeys(
    return { persist };
 }
 
+/** Whether a compiled field is a public atomic dimension a table can hold. */
+function storableDimension(field: FieldLike): string | undefined {
+   const dimension =
+      typeof field.as === "string"
+         ? field.as
+         : typeof field.name === "string"
+           ? field.name
+           : undefined;
+   if (dimension === undefined) return undefined;
+   if (field.join !== undefined) return undefined;
+   if (typeof field.type !== "string" || !ATOMIC_TYPES.has(field.type)) {
+      return undefined;
+   }
+   if (
+      field.expressionType === "aggregate" ||
+      field.expressionType === "analytic" ||
+      field.expressionType === "ungrouped_aggregate"
+   ) {
+      return undefined;
+   }
+   if (isHidden(field)) return undefined;
+   return dimension;
+}
+
 /**
- * The stored columns of a source: its public atomic dimensions, except one
- * whose value depends on the current time, which differs per read and so is
- * computed at read from the stored columns it reads.
+ * The stored columns of a source: its public atomic dimensions, less any
+ * whose value reads through a join that is not inlined (a reference join is
+ * read at query time, so what reads through it is computed at read). A field
+ * whose join usage is unknown is stored only when the source has no join.
+ * `inline` names the inlined joins; `joins` comes from the source map.
  */
-export function materializeColumns(def: SourceDefLike): MaterializeColumn[] {
+export function materializeColumns(
+   def: SourceDefLike,
+   options: {
+      joinReads?: ReadonlyMap<string, FieldJoinReads | undefined>;
+      inline?: ReadonlySet<string>;
+      hasJoins?: boolean;
+   } = {},
+): MaterializeColumn[] {
    const out: MaterializeColumn[] = [];
    const perRead = currentTimeFields(def.fields);
    for (const raw of def.fields ?? []) {
       const field = raw as FieldLike;
-      const dimension =
-         typeof field.as === "string"
-            ? field.as
-            : typeof field.name === "string"
-              ? field.name
-              : undefined;
+      const dimension = storableDimension(field);
       if (dimension === undefined) continue;
-      if (field.join !== undefined) continue;
-      if (typeof field.type !== "string" || !ATOMIC_TYPES.has(field.type)) {
-         continue;
-      }
-      if (
-         field.expressionType === "aggregate" ||
-         field.expressionType === "analytic" ||
-         field.expressionType === "ungrouped_aggregate"
-      ) {
-         continue;
-      }
-      if (isHidden(field)) continue;
       if (perRead.has(dimension)) continue;
       const computed = field.e !== undefined;
+      if (computed && options.joinReads) {
+         const reads = options.joinReads.get(dimension);
+         if (reads === undefined) {
+            if (options.hasJoins) continue;
+         } else if (
+            reads.nested ||
+            [...reads.joins].some((j) => !options.inline?.has(j))
+         ) {
+            continue;
+         }
+      }
       out.push({
          dimension,
          column: dimension,
@@ -376,6 +454,81 @@ function columnType(def: SourceDefLike, dimension: string): string {
       }
    }
    return "";
+}
+
+/**
+ * The columns of one inlined join's joined source: its public atomic
+ * dimensions that read no join of their own (one hop), each stored as
+ * `<join>__<field>`.
+ */
+function inlinedJoinColumns(join: SourceJoin): MaterializeColumn[] {
+   const reads = fieldJoinUsage({ fields: join.fields });
+   const hasJoins = sourceJoins({ fields: join.fields }).length > 0;
+   const out: MaterializeColumn[] = [];
+   for (const raw of join.fields) {
+      const field = raw as FieldLike;
+      const dimension = storableDimension(field);
+      if (dimension === undefined) continue;
+      if (field.e !== undefined) {
+         const r = reads.get(dimension);
+         if (r === undefined ? hasJoins : r.joins.size > 0 || r.nested) {
+            continue;
+         }
+      }
+      out.push({
+         dimension,
+         column: `${join.name}__${dimension}`,
+         computed: true,
+         join: join.name,
+      });
+   }
+   return out;
+}
+
+/**
+ * Why `inline=` cannot inline the join named `name` on a source, or undefined
+ * when it can: a join_one on the source's own connection, keyed by one
+ * equality on a column of a declared source (what the uniqueness check groups
+ * by).
+ */
+function inlineRefusal(
+   name: string,
+   joins: readonly SourceJoin[],
+   connection: unknown,
+): string | undefined {
+   const join = joins.find((j) => j.name === name);
+   if (!join) {
+      return `inline= names \`${name}\`, which is not a join of this source`;
+   }
+   if (join.relationship !== "one") {
+      return (
+         `inline= names \`${name}\`, a join_${join.relationship}: inlining a ` +
+         "join_many or join_cross (a pair table) arrives in a later release"
+      );
+   }
+   if (
+      typeof connection === "string" &&
+      join.connection !== undefined &&
+      join.connection !== connection
+   ) {
+      return (
+         `inline= names \`${name}\`, which reads another connection than the ` +
+         "source, so one build query cannot read both"
+      );
+   }
+   if (!join.keyColumn) {
+      return (
+         `inline= names \`${name}\`, whose condition is not one equality on a ` +
+         "column of the joined source, so its uniqueness cannot be checked"
+      );
+   }
+   if (!join.sourceID || !splitSourceID(join.sourceID)) {
+      return (
+         `inline= names \`${name}\`, which joins a source defined in place; ` +
+         "declare it as a source so its uniqueness can be checked at build"
+      );
+   }
+   return undefined;
 }
 
 /**
@@ -447,7 +600,53 @@ export function planModelMaterialize(
          });
          continue;
       }
-      const columns = materializeColumns(def);
+      let inline: string[] = [];
+      if (declaration.keys.includes("inline")) {
+         const items = declaration.tag.array("inline")?.map((i) => i.text());
+         if (!items || items.some((i) => typeof i !== "string" || i === "")) {
+            refused.push({
+               sourceName: name,
+               sourceID: def.sourceID,
+               reason:
+                  'inline= must be a list of join names, such as inline=["carriers"]',
+            });
+            continue;
+         }
+         inline = [...new Set(items as string[])];
+      }
+      const joins = sourceJoins(def);
+      const inlineProblem = inline
+         .map((j) => inlineRefusal(j, joins, def.connection))
+         .find((r) => r !== undefined);
+      if (inlineProblem) {
+         refused.push({
+            sourceName: name,
+            sourceID: def.sourceID,
+            reason: inlineProblem,
+         });
+         continue;
+      }
+      const columns = materializeColumns(def, {
+         joinReads: fieldJoinUsage(def),
+         inline: new Set(inline),
+         hasJoins: joins.length > 0,
+      });
+      const ownColumns = new Set(columns.map((c) => c.column));
+      const joinedColumns = inline.flatMap((j) =>
+         inlinedJoinColumns(joins.find((x) => x.name === j) as SourceJoin),
+      );
+      const clash = joinedColumns.find((c) => ownColumns.has(c.column));
+      if (clash) {
+         refused.push({
+            sourceName: name,
+            sourceID: def.sourceID,
+            reason:
+               `the inlined column \`${clash.column}\` has the name of one of the ` +
+               "source's own dimensions",
+         });
+         continue;
+      }
+      columns.push(...joinedColumns);
       if (columns.length === 0) {
          refused.push({
             sourceName: name,
@@ -505,13 +704,25 @@ export function planModelMaterialize(
          }
          persist.name = tableName;
       }
+      const build = buildSourceName(name);
+      const uniquenessChecks = inline.map((j): InlineUniquenessCheck => {
+         const join = joins.find((x) => x.name === j) as SourceJoin;
+         return {
+            join: j,
+            keyColumn: join.keyColumn as string,
+            queryName: `${build}__unique__${j}`,
+            joinedSourceID: join.sourceID as string,
+            ...(join.connection ? { connectionName: join.connection } : {}),
+         };
+      });
       plans.push({
          sourceName: name,
          sourceID: def.sourceID,
-         buildSourceName: buildSourceName(name),
+         buildSourceName: build,
          columns,
          persist,
          ...(window.terms.length > 0 ? { readTimeTerms: window.terms } : {}),
+         ...(inline.length > 0 ? { inline, uniquenessChecks } : {}),
       });
    }
    return { plans, refused };
@@ -557,13 +768,37 @@ function persistLine(plan: MaterializePlan): string {
 /** One generated build source. */
 function emitBuildSource(plan: MaterializePlan): string {
    const select = plan.columns
-      .map((c) => `    ${identifier(c.dimension)}`)
+      .map((c) =>
+         c.join === undefined
+            ? `    ${identifier(c.dimension)}`
+            : `    ${identifier(c.column)} is ${identifier(c.join)}.${identifier(c.dimension)}`,
+      )
       .join(",\n");
    return `${persistLine(plan)}
 source: ${identifier(plan.buildSourceName)} is ${identifier(importAlias(plan))} -> {
   select:
 ${select}
 }`;
+}
+
+/**
+ * One inlined join's uniqueness check (P8): the joined source's keys that
+ * occur more than once. A build runs it first and fails on any row.
+ */
+function emitUniquenessCheck(check: InlineUniquenessCheck): string {
+   const key = identifier(check.keyColumn);
+   return `query: ${identifier(check.queryName)} is ${identifier(checkAlias(check))} -> {
+  where: ${key} is not null
+  group_by: ${key}
+  aggregate: matches is count()
+  having: matches > 1
+  limit: 1
+}`;
+}
+
+/** The alias a generated file imports a uniqueness check's joined source under. */
+function checkAlias(check: InlineUniquenessCheck): string {
+   return `${check.queryName}__source`;
 }
 
 /** The alias a generated file imports an author source under. */
@@ -575,23 +810,38 @@ function importAlias(plan: MaterializePlan): string {
  * The generated build companion for one author model, or undefined when the
  * model declares nothing. `importPath` resolves the author's model from the
  * companion's own URL; every planned source is declared there (see
- * {@link planModelMaterialize}). The experimental flag lives here, so the
+ * {@link planModelMaterialize}). A uniqueness check imports its joined source
+ * from the file that declares it, by its declared name, when
+ * `importPathForFile` resolves that file (it may be imported into the author's
+ * model under another name). The experimental flag lives here, so the
  * author's file needs none (D3).
  */
 export function generateBuildFile(
    plans: MaterializePlan[],
    importPath: string,
+   importPathForFile?: (url: string) => string | undefined,
 ): string | undefined {
    if (plans.length === 0) return undefined;
    const imports = plans
-      .map(
-         (plan) =>
-            `import { ${identifier(importAlias(plan))} is ${identifier(plan.sourceName)} } from ${stringLiteral(importPath)}`,
-      )
+      .map((plan) => {
+         const own = `import { ${identifier(importAlias(plan))} is ${identifier(plan.sourceName)} } from ${stringLiteral(importPath)}`;
+         const checks = (plan.uniquenessChecks ?? []).map((check) => {
+            const joined = splitSourceID(check.joinedSourceID);
+            const path =
+               (joined && importPathForFile?.(joined.url)) ?? importPath;
+            return `import { ${identifier(checkAlias(check))} is ${identifier(joined?.name ?? check.join)} } from ${stringLiteral(path)}`;
+         });
+         return [own, ...checks].join("\n");
+      })
       .join("\n");
    return `##! experimental.persistence
 ${imports}
 
-${plans.map((plan) => emitBuildSource(plan)).join("\n\n")}
+${plans
+   .flatMap((plan) => [
+      emitBuildSource(plan),
+      ...(plan.uniquenessChecks ?? []).map(emitUniquenessCheck),
+   ])
+   .join("\n\n")}
 `;
 }
