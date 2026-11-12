@@ -60,6 +60,19 @@ describe("PUT …/versions/{v}/manifest body", () => {
       expect(bound).toEqual([null, null]);
    });
 
+   it("refuses a body not sent as JSON, and binds nothing", async () => {
+      const { app, bound } = serverRecordingBinds();
+      const text = await request(app)
+         .put(URL)
+         .set("content-type", "text/plain")
+         .send('{"manifestLocation":"gs://bucket/pkg.manifest.json"}');
+      expect(text.status).toBe(400);
+      expect(JSON.stringify(text.body)).toContain("application/json");
+      const none = await request(app).put(URL);
+      expect(none.status).toBe(400);
+      expect(bound).toEqual([]);
+   });
+
    it("binds a location the loader reads", async () => {
       const { app, bound } = serverRecordingBinds();
       const res = await request(app)

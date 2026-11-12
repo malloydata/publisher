@@ -4625,8 +4625,10 @@ components:
             Where the build manifest to bind is: a gs:// or s3:// URI, a
             file:// URL, or an absolute path on this server (a mounted volume).
             Null, or leaving the field out, clears the binding and serves
-            live. An empty string or a relative path is refused with 400, and
-            so is any other field in the body.
+            live, so a client that drops a field it meant to send (a value
+            left undefined) clears the binding. An empty string or a relative
+            path is refused with 400, and so is any other field in the body
+            and a body not sent as application/json.
 
     PackageLatestVersion:
       type: object
