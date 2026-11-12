@@ -91,12 +91,7 @@ import { annotationValue, identifier, stringLiteral } from "../../malloy_text";
 import { parseRouteTag, routeHasKey } from "../../motly";
 import { classifyWhereTerms, currentTimeFields } from "./persist_dynamic_terms";
 import { rollingWindowTerms, type CurrentTimeReadTerm } from "./rolling_window";
-import {
-   fieldJoinUsage,
-   sourceJoins,
-   type FieldJoinReads,
-   type SourceJoin,
-} from "../../governance/ir/source_graph";
+import { SourceMap, type FieldJoinReads, type SourceJoin } from "./source_map";
 
 /** The route `#(materialize)` is on. */
 export const MATERIALIZE_ROUTE = "materialize";
@@ -461,14 +456,21 @@ function columnType(def: SourceDefLike, dimension: string): string {
  * dimensions that read no join of their own (one hop), each stored as
  * `<join>__<field>`.
  */
-function inlinedJoinColumns(join: SourceJoin): MaterializeColumn[] {
-   const reads = fieldJoinUsage({ fields: join.fields });
-   const hasJoins = sourceJoins({ fields: join.fields }).length > 0;
+function inlinedJoinColumns(
+   map: SourceMap,
+   join: SourceJoin,
+): MaterializeColumn[] {
+   const joined = map.joinedReadsOf(join);
+   const reads = joined.fieldJoins;
+   const hasJoins = joined.joins.length > 0;
+   // Computed at read, like the source's own (Rolling windows).
+   const perRead = currentTimeFields(join.fields);
    const out: MaterializeColumn[] = [];
    for (const raw of join.fields) {
       const field = raw as FieldLike;
       const dimension = storableDimension(field);
       if (dimension === undefined) continue;
+      if (perRead.has(dimension)) continue;
       if (field.e !== undefined) {
          const r = reads.get(dimension);
          if (r === undefined ? hasJoins : r.joins.size > 0 || r.nested) {
@@ -483,6 +485,11 @@ function inlinedJoinColumns(join: SourceJoin): MaterializeColumn[] {
       });
    }
    return out;
+}
+
+/** A name as a refusal message shows it, in backticks. */
+function quotedName(name: string): string {
+   return "`" + name + "`";
 }
 
 /**
@@ -514,6 +521,19 @@ function inlineRefusal(
       return (
          `inline= names \`${name}\`, which reads another connection than the ` +
          "source, so one build query cannot read both"
+      );
+   }
+   const through = join.condition
+      ? [...join.condition.joins].filter((j) => j !== name)
+      : undefined;
+   if (!through || through.length > 0 || join.condition?.nested) {
+      return (
+         `inline= names \`${name}\`, whose condition reads ` +
+         (through && through.length > 0
+            ? `another join (${through.map(quotedName).join(", ")})`
+            : "another join") +
+         ", so a source row could be stored once per row of that join; " +
+         "inline only a join keyed on the source's own columns"
       );
    }
    if (!join.keyColumn) {
@@ -552,6 +572,8 @@ export function planModelMaterialize(
 } {
    const plans: MaterializePlan[] = [];
    const refused: MaterializeRefusal[] = [];
+   // The joins each source has, read through the source map.
+   const map = SourceMap.of({ contents });
    // A plain code-unit order, not localeCompare: the generated text must not
    // depend on the host's locale.
    for (const [name, object] of Object.entries(contents).sort(([a], [b]) =>
@@ -614,7 +636,7 @@ export function planModelMaterialize(
          }
          inline = [...new Set(items as string[])];
       }
-      const joins = sourceJoins(def);
+      const joins = map.joinsOf(def.sourceID);
       const inlineProblem = inline
          .map((j) => inlineRefusal(j, joins, def.connection))
          .find((r) => r !== undefined);
@@ -627,13 +649,13 @@ export function planModelMaterialize(
          continue;
       }
       const columns = materializeColumns(def, {
-         joinReads: fieldJoinUsage(def),
+         joinReads: map.fieldJoinsOf(def.sourceID),
          inline: new Set(inline),
          hasJoins: joins.length > 0,
       });
       const ownColumns = new Set(columns.map((c) => c.column));
       const joinedColumns = inline.flatMap((j) =>
-         inlinedJoinColumns(joins.find((x) => x.name === j) as SourceJoin),
+         inlinedJoinColumns(map, joins.find((x) => x.name === j) as SourceJoin),
       );
       const clash = joinedColumns.find((c) => ownColumns.has(c.column));
       if (clash) {

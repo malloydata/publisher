@@ -33,12 +33,23 @@ export class InlinedJoinNotUniqueError extends Error {
       readonly sourceName: string,
       readonly join: string,
       readonly keyColumn: string,
+      /**
+       * True when the plan carries no compiled check for the join (a plan from
+       * a Publisher that did not compile one): refused rather than built
+       * unchecked, and said so rather than claimed a duplicate.
+       */
+      readonly unchecked = false,
    ) {
       super(
-         `'${sourceName}' is not built: it inlines the join_one '${join}', ` +
-            `but the joined source holds a '${keyColumn}' value more than once, ` +
-            `so a row would be stored once per match. Make '${keyColumn}' ` +
-            `unique in the joined source, or leave '${join}' out of inline=.`,
+         unchecked
+            ? `'${sourceName}' is not built: it inlines the join_one '${join}', ` +
+                 `and its build plan carries no uniqueness check for it, so a ` +
+                 `duplicate '${keyColumn}' could not be ruled out. Reload the ` +
+                 `package to plan the check.`
+            : `'${sourceName}' is not built: it inlines the join_one '${join}', ` +
+                 `but the joined source holds a '${keyColumn}' value more than once, ` +
+                 `so a row would be stored once per match. Make '${keyColumn}' ` +
+                 `unique in the joined source, or leave '${join}' out of inline=.`,
       );
       this.name = "InlinedJoinNotUniqueError";
    }
@@ -61,6 +72,7 @@ export async function assertInlinedJoinsUnique(
             plan?.sourceName ?? "",
             check.join,
             check.keyColumn,
+            true,
          );
       }
       const result = await connection.runSQL(check.sql);

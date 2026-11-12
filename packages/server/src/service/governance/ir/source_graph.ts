@@ -199,88 +199,16 @@ export interface SourceJoin {
     * undefined for any other condition.
     */
    keyColumn: string | undefined;
+   /**
+    * The source's other joins its condition reads, directly or through the
+    * source's fields (`join_one: c on c.id = s.carrier` reads `s`), and
+    * whether it reaches past one into a join of a joined source; undefined
+    * when the compiler did not record what a field it reads uses. A join
+    * whose condition reads a join_many is reached through that join_many.
+    */
+   condition: FieldJoinReads | undefined;
    /** The joined source's own fields, read-only. */
    fields: unknown[];
-}
-
-interface IrJoinField {
-   name?: unknown;
-   as?: unknown;
-   join?: unknown;
-   connection?: unknown;
-   sourceID?: unknown;
-   primaryKey?: unknown;
-   onExpression?: unknown;
-   fields?: unknown;
-}
-
-/** The joins `def` declares or inherits, in field order. */
-export function sourceJoins(def: unknown): SourceJoin[] {
-   const fields = (def as { fields?: unknown[] } | undefined)?.fields ?? [];
-   const out: SourceJoin[] = [];
-   for (const raw of fields) {
-      const f = raw as IrJoinField;
-      if (f.join !== "one" && f.join !== "many" && f.join !== "cross") continue;
-      const name =
-         typeof f.as === "string"
-            ? f.as
-            : typeof f.name === "string"
-              ? f.name
-              : undefined;
-      if (!name) continue;
-      out.push({
-         name,
-         relationship: f.join,
-         connection:
-            typeof f.connection === "string" ? f.connection : undefined,
-         sourceID: typeof f.sourceID === "string" ? f.sourceID : undefined,
-         primaryKey:
-            typeof f.primaryKey === "string" ? f.primaryKey : undefined,
-         keyColumn: joinKeyColumn(name, f.onExpression),
-         fields: Array.isArray(f.fields) ? f.fields : [],
-      });
-   }
-   return out;
-}
-
-interface IrExpr {
-   node?: unknown;
-   path?: unknown;
-   kids?: { left?: IrExpr; right?: IrExpr };
-}
-
-/** See {@link SourceJoin.keyColumn}. */
-function joinKeyColumn(join: string, on: unknown): string | undefined {
-   const expr = on as IrExpr | undefined;
-   if (expr?.node !== "=") return undefined;
-   const sides = [expr.kids?.left, expr.kids?.right];
-   const isJoined = (e: IrExpr | undefined) =>
-      e?.node === "field" &&
-      Array.isArray(e.path) &&
-      e.path.length === 2 &&
-      e.path[0] === join &&
-      typeof e.path[1] === "string";
-   const readsJoin = (e: IrExpr | undefined): boolean => {
-      if (!e || typeof e !== "object") return false;
-      if (Array.isArray(e.path) && e.path[0] === join) return true;
-      return Object.values(e.kids ?? {}).some((k) =>
-         Array.isArray(k) ? k.some(readsJoin) : readsJoin(k as IrExpr),
-      );
-   };
-   const joined = sides.filter(isJoined);
-   if (joined.length !== 1) return undefined;
-   const other = sides.find((s) => s !== joined[0]);
-   if (readsJoin(other)) return undefined;
-   return (joined[0]?.path as string[])[1];
-}
-
-interface IrField {
-   name?: unknown;
-   as?: unknown;
-   join?: unknown;
-   e?: unknown;
-   fields?: unknown;
-   refSummary?: { fieldUsage?: { path?: unknown }[] };
 }
 
 /** What one field's value reads through joins (see {@link fieldJoinUsage}). */
@@ -291,28 +219,63 @@ export interface FieldJoinReads {
    nested: boolean;
 }
 
+interface IrField {
+   name?: unknown;
+   as?: unknown;
+   join?: unknown;
+   e?: unknown;
+   connection?: unknown;
+   sourceID?: unknown;
+   primaryKey?: unknown;
+   onExpression?: unknown;
+   fields?: unknown;
+   refSummary?: { fieldUsage?: { path?: unknown }[] };
+}
+
+interface IrExpr {
+   node?: unknown;
+   path?: unknown;
+   kids?: { left?: IrExpr; right?: IrExpr };
+}
+
+function fieldName(f: IrField): string | undefined {
+   return typeof f.as === "string"
+      ? f.as
+      : typeof f.name === "string"
+        ? f.name
+        : undefined;
+}
+
+function isJoin(f: IrField | undefined): boolean {
+   return f?.join === "one" || f?.join === "many" || f?.join === "cross";
+}
+
+/** Every field path an expression reads (`{node: "field", path}`), in order. */
+function expressionPaths(e: unknown, out: unknown[][] = []): unknown[][] {
+   if (Array.isArray(e)) {
+      for (const k of e) expressionPaths(k, out);
+   } else if (e && typeof e === "object") {
+      const node = e as IrExpr;
+      if (node.node === "field" && Array.isArray(node.path)) {
+         out.push(node.path as unknown[]);
+      }
+      for (const v of Object.values(e)) {
+         if (v && typeof v === "object") expressionPaths(v, out);
+      }
+   }
+   return out;
+}
+
 /**
- * For each field of `def` that is not itself a join, the joins its value reads,
- * directly or through other fields of `def` (`dimension: a is carriers.name`
- * reads `carriers`; `dimension: b is upper(a)` reads it too), and whether it
- * reaches past one of them into a join of the joined source. A field whose
- * usage the compiler did not record reads `undefined`: unknown, so a caller
- * treats it as reading every join.
+ * The one walk behind {@link sourceJoins} and {@link fieldJoinUsage}: what a
+ * field of `def`, or a join's condition, reads through the source's joins.
  */
-export function fieldJoinUsage(
-   def: unknown,
-): Map<string, FieldJoinReads | undefined> {
+function joinReader(def: unknown) {
    const fields = ((def as { fields?: unknown[] } | undefined)?.fields ??
       []) as IrField[];
-   const nameOf = (f: IrField) =>
-      typeof f.as === "string"
-         ? f.as
-         : typeof f.name === "string"
-           ? f.name
-           : undefined;
    const byName = new Map<string, IrField>();
    for (const f of fields) {
-      const n = nameOf(f);
+      const n = fieldName(f);
       if (n !== undefined) byName.set(n, f);
    }
    const memo = new Map<string, FieldJoinReads | undefined>();
@@ -320,30 +283,25 @@ export function fieldJoinUsage(
       string,
       Map<string, FieldJoinReads | undefined>
    >();
-   const visit = (
-      name: string,
-      stack: Set<string>,
+   const stack = new Set<string>();
+
+   /** Fold the reads of `paths` (relative to `def`) into one result. */
+   const readsOf = (
+      self: string,
+      paths: readonly unknown[][],
    ): FieldJoinReads | undefined => {
-      if (memo.has(name)) return memo.get(name);
-      const f = byName.get(name);
-      if (!f) return { joins: new Set(), nested: false };
-      if (f.join !== undefined)
-         return { joins: new Set([name]), nested: false };
-      // A column read from the table has no expression and reads no join.
-      if (f.e === undefined) return { joins: new Set(), nested: false };
-      const usage = f.refSummary?.fieldUsage;
-      if (!Array.isArray(usage) || stack.has(name)) return undefined;
-      stack.add(name);
       const joins = new Set<string>();
       let nested = false;
-      let unknown = false;
-      for (const u of usage) {
-         const path = Array.isArray(u.path) ? (u.path as unknown[]) : [];
+      for (const path of paths) {
          const head = path[0];
-         if (typeof head !== "string" || head === name) continue;
+         if (typeof head !== "string" || head === self) continue;
          const target = byName.get(head);
-         if (target?.join !== undefined) {
-            joins.add(head);
+         if (isJoin(target)) {
+            // The join itself, and what its own condition reads.
+            const via = visit(head);
+            if (via === undefined) return undefined;
+            for (const j of via.joins) joins.add(j);
+            nested ||= via.nested;
             if (path.length > 2) {
                nested = true;
             } else if (typeof path[1] === "string") {
@@ -361,24 +319,132 @@ export function fieldJoinUsage(
             }
             continue;
          }
-         const reads = visit(head, stack);
-         if (reads === undefined) {
-            unknown = true;
-            break;
-         }
+         const reads = visit(head);
+         if (reads === undefined) return undefined;
          for (const j of reads.joins) joins.add(j);
          nested ||= reads.nested;
       }
+      return { joins, nested };
+   };
+
+   /** A join's condition: the other joins it reads (not the join itself). */
+   const conditionOf = (name: string): FieldJoinReads | undefined => {
+      const f = byName.get(name);
+      if (!f || f.onExpression === undefined) {
+         return { joins: new Set(), nested: false };
+      }
+      const paths = expressionPaths(f.onExpression);
+      return readsOf(name, paths);
+   };
+
+   const visit = (name: string): FieldJoinReads | undefined => {
+      if (memo.has(name)) return memo.get(name);
+      const f = byName.get(name);
+      if (!f) return { joins: new Set(), nested: false };
+      if (stack.has(name)) return undefined;
+      stack.add(name);
+      let result: FieldJoinReads | undefined;
+      if (isJoin(f)) {
+         const condition = conditionOf(name);
+         result = condition && {
+            joins: new Set([name, ...condition.joins]),
+            nested: condition.nested,
+         };
+      } else if (f.e === undefined) {
+         // A column read from the table has no expression and reads no join.
+         result = { joins: new Set(), nested: false };
+      } else {
+         const usage = f.refSummary?.fieldUsage;
+         result = Array.isArray(usage)
+            ? readsOf(
+                 name,
+                 usage.map((u) =>
+                    Array.isArray(u.path) ? (u.path as unknown[]) : [],
+                 ),
+              )
+            : undefined;
+      }
       stack.delete(name);
-      const result = unknown ? undefined : { joins, nested };
       memo.set(name, result);
       return result;
    };
-   const out = new Map<string, FieldJoinReads | undefined>();
-   for (const f of fields) {
-      const n = nameOf(f);
-      if (n === undefined || f.join !== undefined) continue;
-      out.set(n, visit(n, new Set()));
+
+   return { fields, visit, conditionOf };
+}
+
+/** The joins `def` declares or inherits, in field order. */
+export function sourceJoins(def: unknown): SourceJoin[] {
+   const reader = joinReader(def);
+   const out: SourceJoin[] = [];
+   for (const f of reader.fields) {
+      if (!isJoin(f)) continue;
+      const name = fieldName(f);
+      if (!name) continue;
+      out.push({
+         name,
+         relationship: f.join as SourceJoin["relationship"],
+         connection:
+            typeof f.connection === "string" ? f.connection : undefined,
+         sourceID: typeof f.sourceID === "string" ? f.sourceID : undefined,
+         primaryKey:
+            typeof f.primaryKey === "string" ? f.primaryKey : undefined,
+         keyColumn: joinKeyColumn(name, f.onExpression),
+         condition: reader.conditionOf(name),
+         fields: Array.isArray(f.fields) ? f.fields : [],
+      });
    }
    return out;
+}
+
+/** See {@link SourceJoin.keyColumn}. */
+function joinKeyColumn(join: string, on: unknown): string | undefined {
+   const expr = on as IrExpr | undefined;
+   if (expr?.node !== "=") return undefined;
+   const sides = [expr.kids?.left, expr.kids?.right];
+   const isJoined = (e: IrExpr | undefined) =>
+      e?.node === "field" &&
+      Array.isArray(e.path) &&
+      e.path.length === 2 &&
+      e.path[0] === join &&
+      typeof e.path[1] === "string";
+   const joined = sides.filter(isJoined);
+   if (joined.length !== 1) return undefined;
+   const other = sides.find((s) => s !== joined[0]);
+   if (expressionPaths(other).some((p) => p[0] === join)) return undefined;
+   return (joined[0]?.path as string[])[1];
+}
+
+/**
+ * For each field of `def` that is not itself a join, the joins its value reads,
+ * directly or through other fields of `def` (`dimension: a is carriers.name`
+ * reads `carriers`; `dimension: b is upper(a)` reads it too), including the
+ * joins a read join's condition reads (`c` keyed on `s.carrier` reads `s`), and
+ * whether it reaches past one of them into a join of the joined source. A
+ * field whose usage the compiler did not record reads `undefined`: unknown,
+ * so a caller treats it as reading every join.
+ */
+export function fieldJoinUsage(
+   def: unknown,
+): Map<string, FieldJoinReads | undefined> {
+   const reader = joinReader(def);
+   const out = new Map<string, FieldJoinReads | undefined>();
+   for (const f of reader.fields) {
+      const n = fieldName(f);
+      if (n === undefined || isJoin(f)) continue;
+      out.set(n, reader.visit(n));
+   }
+   return out;
+}
+
+/**
+ * The joined source of `join`, read as {@link sourceJoins} and
+ * {@link fieldJoinUsage} read a declared source: its joins, and what each of
+ * its fields reads through them.
+ */
+export function joinedSourceReads(join: SourceJoin): {
+   joins: SourceJoin[];
+   fieldJoins: Map<string, FieldJoinReads | undefined>;
+} {
+   const def = { fields: join.fields };
+   return { joins: sourceJoins(def), fieldJoins: fieldJoinUsage(def) };
 }

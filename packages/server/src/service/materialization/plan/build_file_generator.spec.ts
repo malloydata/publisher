@@ -479,6 +479,17 @@ source: orders is orders_raw extend {
          await expect(assertInlinedJoinsUnique(plan, duckdb)).rejects.toThrow(
             /inlines the join_one 'regions'/,
          );
+         // A plan with no compiled check refuses, and says why.
+         const unchecked = {
+            ...plan,
+            uniquenessChecks: (plan.uniquenessChecks ?? []).map((check) => ({
+               ...check,
+               sql: undefined,
+            })),
+         };
+         await expect(
+            assertInlinedJoinsUnique(unchecked, duckdb),
+         ).rejects.toThrow(/carries no uniqueness check/);
       },
       { timeout: 30000 },
    );
@@ -489,6 +500,17 @@ source: orders is orders_raw extend {
       ["a join defined in place", '["r2"]', /defined in place/],
       ["a list of something else", '"regions"', /list of join names/],
       ["a join with no single key", '["r3"]', /not one equality/],
+      // Keyed on a join_many's column: a build would store a row per line.
+      [
+         "a join keyed through a join_many",
+         '["r4"]',
+         /reads another join \(`lines`\)/,
+      ],
+      [
+         "a join keyed on a dimension that reads a join_many",
+         '["r5"]',
+         /reads another join \(`lines`\)/,
+      ],
    ] as const) {
       it(
          `refuses inline= naming ${name}, and plans nothing for it`,
@@ -500,6 +522,9 @@ source: orders is orders_raw extend {
   join_one: r2 is duckdb.sql("""select 'east' as code""") on r2.code = region
   join_many: lines on lines.order_id = id
   join_one: r3 is regions on r3.code = region and r3.label != 'x'
+  join_one: r4 is regions on r4.code = lines.line_id::string
+  dimension: line_sku is lines.line_id::string
+  join_one: r5 is regions on r5.code = line_sku
 }
 `);
             const c = await compilePackageBuildPlan(pkg);

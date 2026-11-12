@@ -22,6 +22,7 @@
 import { isSourceDef, type ModelDef, type SourceDef } from "@malloydata/malloy";
 import {
    fieldJoinUsage,
+   joinedSourceReads,
    resolveCompositeResolvedBase,
    resolveDeclaredSource,
    resolveExtendedSource,
@@ -295,6 +296,17 @@ export class SourceMap {
    fieldJoinsOf(sourceID: string): Map<string, FieldJoinReads | undefined> {
       const node = this.nodesById.get(sourceID);
       return node ? fieldJoinUsage(node.def) : new Map();
+   }
+
+   /**
+    * The joined side of one of a declaration's joins, as the join holds it:
+    * its own joins and what each of its fields reads through them.
+    */
+   joinedReadsOf(join: SourceJoin): {
+      joins: SourceJoin[];
+      fieldJoins: Map<string, FieldJoinReads | undefined>;
+   } {
+      return joinedSourceReads(join);
    }
 
    /** Every node, declaration order first, then imports the registry holds. */
