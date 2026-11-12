@@ -11,9 +11,12 @@ workflow owns what, and the publishing rules that bite.
 ## CI
 
 **Nothing runs on a push to `main`.** Each PR's checks run against its merge with `main` as of
-the PR's last push, and workflows trigger on `pull_request`, `schedule`, `workflow_dispatch`, and
-`workflow_run` only. The weekly scheduled runs of `security-scan.yml` and `image-scan.yml` are
-what refresh `main`'s Code Scanning results, and `k6-tests.yml` runs by hand. A merge commit on
+the PR's last push, and workflows trigger on `pull_request`, `schedule`, `workflow_dispatch`,
+`workflow_run`, and `workflow_call` only. Four workflows also run weekly against `main` (Mondays
+12:00 UTC): `security-scan.yml` and `image-scan.yml`, which is what refreshes `main`'s Code
+Scanning results; `connection-integration-tests.yml`, whose PR job skips fork PRs, so this is
+where a merged fork change meets the warehouse matrix; and `k6-tests.yml`, which has no PR
+trigger. A merge commit on
 `main` therefore carries no checks of its own, so anything that reads a result off `main` (the
 `publisher-release` skill's release-sync check) dispatches the workflow rather than reading the
 head commit's check runs. Every PR-triggered workflow carries the same `concurrency` block: runs
@@ -61,7 +64,7 @@ package can come from its own file rather than from `build.yml`.** Know which jo
 
 Two workflows hold real warehouse credentials, and both should be treated as such when edited:
 `connection-integration-tests.yml` (the full connection matrix) and `k6-tests.yml`, which passes
-`BQ_PRESTO_TRINO_KEY` and runs on demand only.
+`BQ_PRESTO_TRINO_KEY` and runs weekly and on demand.
 
 ## Publishing
 

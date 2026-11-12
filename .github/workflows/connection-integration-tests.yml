@@ -33,6 +33,11 @@ on:
       - "packages/server/package.json"
       - "bun.lock"
       - ".github/workflows/connection-integration-tests.yml"
+  # A fork PR's run skips this job (see the `if:` below), so the weekly run
+  # on main is what puts a merged fork change through the warehouse matrix.
+  schedule:
+    # Mondays 12:00 UTC, alongside the scans.
+    - cron: "0 12 * * 1"
   workflow_dispatch:
 
 env:
@@ -61,7 +66,8 @@ jobs:
     # `if [ -z ... ]; then exit 1; fi` checks below would hard-fail with
     # a confusing red CI for an external contributor whose change had
     # nothing to do with credentials. Same-repo PRs still run normally;
-    # workflow_dispatch bypasses the gate.
+    # a fork's change is covered by the weekly scheduled run on main once it
+    # merges, and workflow_dispatch bypasses the gate.
     if: >-
       github.event_name != 'pull_request'
       || github.event.pull_request.head.repo.full_name == github.repository

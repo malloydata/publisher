@@ -309,16 +309,22 @@ there is nothing to paste. Whether the last release merged back is CI's job:
 on every PR and after every release run. Nothing runs on a push to `main`, so
 `main`'s head commit usually carries no `Release sync` check: an empty check
 list there is not a pass. Dispatch it against `main` and read that run's
-result rather than repeating the comparison:
+result rather than repeating the comparison. `gh workflow run` prints the URL
+of the run it created, so the run id comes from there rather than from a
+search that could find someone else's run. The block's exit status is the
+answer: non-zero means do not dispatch.
 
 ```bash
-STARTED="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-gh workflow run release-sync.yml --repo malloydata/publisher --ref main
-until RUN_ID="$(gh run list --repo malloydata/publisher --workflow release-sync.yml \
-    --branch main --event workflow_dispatch --created ">=$STARTED" \
-    --json databaseId --jq '.[0].databaseId // empty')" && [ -n "$RUN_ID" ]; do sleep 3; done
-gh run watch "$RUN_ID" --repo malloydata/publisher --exit-status \
-  && echo "Release sync passed" || echo "Release sync FAILED: do not dispatch"
+OUT="$(gh workflow run release-sync.yml --repo malloydata/publisher --ref main 2>&1)"
+RUN_ID="$(printf '%s\n' "$OUT" | grep -oE 'actions/runs/[0-9]+' | head -1 | cut -d/ -f3)"
+if [ -z "$RUN_ID" ]; then
+  printf '%s\n' "$OUT"
+  echo "Release sync: no run URL from gh workflow run (output above): do not dispatch"; false
+elif gh run watch "$RUN_ID" --repo malloydata/publisher --exit-status; then
+  echo "Release sync passed"
+else
+  echo "Release sync FAILED: do not dispatch"; false
+fi
 # the narrative this release will stamp and ship
 git fetch origin
 NOTES="$(mktemp)" && git show origin/main:RELEASE_NOTES.md > "$NOTES"

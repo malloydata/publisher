@@ -6,7 +6,7 @@
 # dist/ as the `python-client-dist` artifact. It publishes nothing and tests
 # nothing against a server; those are its callers' jobs:
 #
-# - build.yml calls it on every PR into main and push to main, then its
+# - build.yml calls it on every PR, then its
 #   python_sdk_smoke_test drives a server built from the same checkout through
 #   the wheel, the way docker_smoke_test boots the image.
 # - release.yml calls it on the release branch, then its publish-python-sdk

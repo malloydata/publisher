@@ -3,8 +3,12 @@
 
 name: k6 Tests
 
-# Dispatch only: no workflow runs on a push to main.
+# Weekly and by hand, never on a push to main. The weekly run is what notices
+# a broken suite or an expired BQ_PRESTO_TRINO_KEY.
 on:
+  schedule:
+    # Mondays 12:00 UTC, alongside the scans.
+    - cron: "0 12 * * 1"
   workflow_dispatch:
 
 env:
