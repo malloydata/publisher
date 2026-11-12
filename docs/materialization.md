@@ -487,9 +487,12 @@ compiles each named view against a serve shape declared from the plan's output c
 no built table, and lists it under `views` as `serves` or `live` with the compile error. Use it to
 learn what a change builds and serves without a publish and a build per attempt.
 
-A `views` entry that says the shape left the source's views off is what serving does today: when
-one view of a stored source does not compile against its stored columns, the serve shape drops all
-of that source's views, and each is answered live.
+A view that does not compile against the stored columns (it reaches through a join to a source
+that is not materialized, or reads a field the table does not hold) is answered live on its own:
+the serve shape drops just that view, and the source's other views, and every other source's, keep
+serving from storage. Its `views` entry is `live` with that view's compile error. An entry that
+says the shape left the source's views off means the shape could not single out a view at fault, so
+every view of the source is answered live.
 
 ## The persistence policy (the publish gate)
 

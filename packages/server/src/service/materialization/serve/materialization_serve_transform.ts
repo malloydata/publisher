@@ -56,7 +56,8 @@ interface JoinRefinement {
  *
  * A view can reference anything on the source, so there is no cheap dependency
  * gate: it is emitted optimistically, and if the shape then fails to compile the
- * serve path's escalation drops the view category.
+ * serve path drops the views that do not compile, one at a time, and only if
+ * that does not help the view category.
  */
 interface ViewRefinement {
    kind: "view";

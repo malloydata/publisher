@@ -123,6 +123,12 @@ export class StorageServeShape {
    private readonly shadowedSourcesLogged = new Set<string>();
    /** Memoized serve-shape materializer, keyed by the bound source set. */
    serveShapeCache?: { key: string; materializer: ModelMaterializer };
+   /**
+    * The views the cached shape left off because each failed to compile
+    * against the stored columns, by source then view, with the compile error.
+    * Set when the shape is compiled; see {@link prunedViews}.
+    */
+   private prunedViewErrors = new Map<string, Map<string, string>>();
 
    /**
     * `preview`: a throwaway shape that only asks whether queries compile (a
@@ -406,6 +412,7 @@ export class StorageServeShape {
                },
             );
          }
+         this.prunedViewErrors = new Map();
          this.serveShapeCache = {
             key,
             materializer: await this.compileServeShape(
@@ -472,7 +479,7 @@ export class StorageServeShape {
     * {@link loadServeShapeQuery} remains the final net.
     */
    private async compileServeShape(
-      enriched: ServeBinding[],
+      initialEnriched: ServeBinding[],
       /**
        * Pre-aggregation groups, passed through every tier UNCHANGED: a rollup's
        * measures are the only reason its member exists, so dropping them would
@@ -485,6 +492,8 @@ export class StorageServeShape {
        */
       isRetry = false,
    ): Promise<ModelMaterializer> {
+      // Reassigned once, when views that do not compile are pruned.
+      let enriched = initialEnriched;
       // Every tier keeps the never-thinned kinds, `filter` among them: a
       // source's `where:` is part of what it MEANS, so dropping it would answer
       // with rows the source excludes.
@@ -517,7 +526,19 @@ export class StorageServeShape {
          };
          const withAll = await probe(lifts);
          if (!(withAll instanceof Error)) return withAll;
-         const withNone = await probe([]);
+         let withNone = await probe([]);
+         if (withNone instanceof Error) {
+            // A view the stored columns cannot answer fails the shape on its
+            // own; drop just that view, so the lifts and the other views stay.
+            const pruned = await this.pruneUncompilableViews(
+               enriched,
+               tiers[0].groups,
+            );
+            if (pruned) {
+               enriched = pruned.bindings;
+               withNone = pruned.materializer;
+            }
+         }
          const kept: DerivedSourceLift[] = [];
          let best: ModelMaterializer | undefined;
          if (!(withNone instanceof Error)) {
@@ -625,6 +646,16 @@ export class StorageServeShape {
             await materializer.getModel();
             return materializer;
          } catch (err) {
+            // Before thinning a whole category for every source, try the
+            // likeliest single cause: one view the stored columns cannot
+            // answer. Dropping it alone keeps every other view serving.
+            if (tier === 0) {
+               const pruned = await this.pruneUncompilableViews(
+                  enriched,
+                  groups,
+               );
+               if (pruned) return pruned.materializer;
+            }
             if (!this.preview) recordServeShapeTierDrop(tier);
             this.log(
                "warn",
@@ -647,6 +678,115 @@ export class StorageServeShape {
          })),
          [],
       );
+   }
+
+   /**
+    * The views the current shape left off because each failed to compile
+    * against the stored columns, by view name, with the compile error, for
+    * `sourceName`. Empty until the shape is compiled.
+    */
+   public prunedViews(sourceName: string): ReadonlyMap<string, string> {
+      return this.prunedViewErrors.get(sourceName) ?? new Map();
+   }
+
+   /**
+    * When the richest shape fails, find the views that cause it and drop just
+    * those: one view the stored columns cannot answer (a field the table does
+    * not hold) otherwise thins the view category for every source. Compiles
+    * the shape without any view; if that fails, views are not the cause and
+    * `undefined` hands back to the ladder. Otherwise each binding's views are
+    * re-added together, and where that fails one at a time in declaration
+    * order, keeping each that compiles. Runs only when the shape is compiled
+    * (once per binding set), never per query.
+    */
+   private async pruneUncompilableViews(
+      enriched: ServeBinding[],
+      groups: RollupShapeGroup[],
+   ): Promise<
+      { bindings: ServeBinding[]; materializer: ModelMaterializer } | undefined
+   > {
+      const isView = (r: { kind: string }) => r.kind === "view";
+      if (!enriched.some((b) => (b.refinements ?? []).some(isView))) {
+         return undefined;
+      }
+      const compile = async (bindings: ServeBinding[]) => {
+         const m = this.buildServeShapeMaterializer(bindings, groups);
+         try {
+            await m.getModel();
+            return m;
+         } catch (err) {
+            return err instanceof Error ? err : new Error(String(err));
+         }
+      };
+      /** `b` keeping its non-view refinements and only the views in `kept`. */
+      const withViews = (
+         b: ServeBinding,
+         kept: ReadonlySet<string>,
+      ): ServeBinding => ({
+         ...b,
+         refinements: (b.refinements ?? []).filter(
+            (r) => !isView(r) || kept.has((r as { name: string }).name),
+         ),
+      });
+      const current: ServeBinding[] = enriched.map((b) =>
+         withViews(b, new Set()),
+      );
+      let best = await compile(current);
+      if (best instanceof Error) return undefined;
+      const dropped: { source: string; view: string; error: string }[] = [];
+      for (const [i, binding] of enriched.entries()) {
+         const views = (binding.refinements ?? [])
+            .filter(isView)
+            .map((r) => (r as { name: string }).name);
+         if (views.length === 0) continue;
+         const all = await compile(
+            current.map((b, j) => (j === i ? binding : b)),
+         );
+         if (!(all instanceof Error)) {
+            current[i] = binding;
+            best = all;
+            continue;
+         }
+         const kept = new Set<string>();
+         for (const view of views) {
+            const candidate = withViews(binding, new Set([...kept, view]));
+            const attempt = await compile(
+               current.map((b, j) => (j === i ? candidate : b)),
+            );
+            if (attempt instanceof Error) {
+               dropped.push({
+                  source: binding.sourceName,
+                  view,
+                  error: compileProblemText(attempt),
+               });
+               continue;
+            }
+            kept.add(view);
+            current[i] = candidate;
+            best = attempt;
+         }
+      }
+      for (const { source, view, error } of dropped) {
+         const bySource = this.prunedViewErrors.get(source) ?? new Map();
+         bySource.set(view, error);
+         this.prunedViewErrors.set(source, bySource);
+      }
+      if (dropped.length > 0) {
+         if (!this.preview) recordServeShapeTierDrop("views");
+         this.log(
+            "warn",
+            "Storage serve shape left off views that do not compile against the stored columns; those views serve live, the rest from storage",
+            {
+               model: this.host.modelPath(),
+               dropped: dropped.map(({ source, view, error }) => ({
+                  source,
+                  view,
+                  error: error.split(/\r?\n/, 1)[0],
+               })),
+            },
+         );
+      }
+      return { bindings: current, materializer: best };
    }
 
    /**
@@ -932,4 +1072,18 @@ function refinementText(refinements: readonly unknown[]): string {
 function namesColumn(text: string, column: string): boolean {
    const escaped = column.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
    return new RegExp(`(^|[^A-Za-z0-9_])${escaped}([^A-Za-z0-9_]|$)`).test(text);
+}
+
+/**
+ * A shape compile error as the problems Malloy reported, joined: a
+ * `MalloyError`'s message opens with "Error(s) compiling model:", which names
+ * nothing. Falls back to the message.
+ */
+function compileProblemText(err: Error): string {
+   const problems = (err as { problems?: readonly { message?: unknown }[] })
+      .problems;
+   const messages = (problems ?? [])
+      .map((p) => p.message)
+      .filter((m): m is string => typeof m === "string" && m !== "");
+   return messages.length > 0 ? messages.join("; ") : err.message;
 }

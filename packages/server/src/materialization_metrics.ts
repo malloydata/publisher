@@ -553,8 +553,14 @@ export function setEligibilityRefusalSink(
  * carried onto the richest rung) did not compile and were dropped alone; it is
  * recorded only when a lift was actually dropped, not when the probe with every
  * lift failed and each was then kept.
+ *
+ * `"views"` records that one or more views did not compile against the stored
+ * columns and were dropped alone, each view on its own, while the source's other
+ * views kept serving.
  */
-export function recordServeShapeTierDrop(failedTier: number | "lifts"): void {
+export function recordServeShapeTierDrop(
+   failedTier: number | "lifts" | "views",
+): void {
    serveShapeTierDropCounter().add(1, { tier: String(failedTier) });
 }
 
