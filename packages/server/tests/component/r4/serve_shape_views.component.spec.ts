@@ -121,7 +121,7 @@ source: weekly is orders -> {
          String(call[0]).includes("left off views that do not compile"),
       );
       expect(dropped.length).toBeGreaterThan(0);
-      const meta = dropped[0][1] as {
+      const meta = (dropped[0] as unknown[])[1] as {
          dropped: { source: string; view: string }[];
       };
       expect(meta.dropped.map((d) => [d.source, d.view])).toEqual([
