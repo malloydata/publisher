@@ -9,6 +9,20 @@ import { afterEach, describe, expect, it } from "bun:test";
 import { DuckDBConnection } from "@malloydata/db-duckdb";
 import { applyDuckLakeRowGroupBound } from "./connection";
 import { assertDuckDBResourceConfig } from "../config";
+import { installSettings } from "../test_helpers/settings_env";
+
+let restoreSettings: (() => void) | undefined;
+
+/** Make `env` the only variables the settings were loaded from. */
+function installEnv(env: Record<string, string>): void {
+   restoreSettings?.();
+   restoreSettings = installSettings({ env }).restore;
+}
+
+afterEach(() => {
+   restoreSettings?.();
+   restoreSettings = undefined;
+});
 
 function recorder(): { conn: DuckDBConnection; sql: string[] } {
    const sql: string[] = [];
@@ -22,18 +36,15 @@ function recorder(): { conn: DuckDBConnection; sql: string[] } {
 }
 
 describe("applyDuckLakeRowGroupBound", () => {
-   afterEach(() => {
-      delete process.env.PUBLISHER_DUCKLAKE_ROW_GROUP_SIZE_BYTES;
-   });
-
    it("issues nothing when unset, so an existing deployment attaches exactly as before", async () => {
+      installEnv({});
       const { conn, sql } = recorder();
       await applyDuckLakeRowGroupBound(conn, "lake");
       expect(sql).toEqual([]);
    });
 
    it("clears preserve_insertion_order BEFORE the option, which DuckDB refuses without it", async () => {
-      process.env.PUBLISHER_DUCKLAKE_ROW_GROUP_SIZE_BYTES = "16MB";
+      installEnv({ PUBLISHER_DUCKLAKE_ROW_GROUP_SIZE_BYTES: "16MB" });
       const { conn, sql } = recorder();
       await applyDuckLakeRowGroupBound(conn, "lake");
       expect(sql).toEqual([
@@ -44,7 +55,7 @@ describe("applyDuckLakeRowGroupBound", () => {
 
    it("does not fail the attach when the catalog refuses the option", async () => {
       // A lake this deployment may read but not re-configure must still serve.
-      process.env.PUBLISHER_DUCKLAKE_ROW_GROUP_SIZE_BYTES = "16MB";
+      installEnv({ PUBLISHER_DUCKLAKE_ROW_GROUP_SIZE_BYTES: "16MB" });
       const conn = {
          runSQL: async () => {
             throw new Error("permission denied for table ducklake_metadata");
@@ -55,12 +66,8 @@ describe("applyDuckLakeRowGroupBound", () => {
 });
 
 describe("row group bound configuration", () => {
-   afterEach(() => {
-      delete process.env.PUBLISHER_DUCKLAKE_ROW_GROUP_SIZE_BYTES;
-   });
-
    it("rejects a byte size with no unit, which DuckDB cannot read", () => {
-      process.env.PUBLISHER_DUCKLAKE_ROW_GROUP_SIZE_BYTES = "16000000";
+      installEnv({ PUBLISHER_DUCKLAKE_ROW_GROUP_SIZE_BYTES: "16000000" });
       expect(() => assertDuckDBResourceConfig()).toThrow(
          /PUBLISHER_DUCKLAKE_ROW_GROUP_SIZE_BYTES/,
       );

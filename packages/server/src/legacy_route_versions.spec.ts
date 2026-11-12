@@ -11,7 +11,8 @@
 import { describe, expect, it } from "bun:test";
 import request from "supertest";
 import { PackageVersionError } from "./errors";
-import { buildRouteApp } from "./test_helpers/route_app";
+import type { VersionRef } from "./service/identity";
+import { buildRouteApp, namedVersions } from "./test_helpers/route_app";
 
 const PKG = "/api/v0/projects/env/packages/pkg";
 
@@ -21,7 +22,7 @@ function recordingApp() {
    const record =
       (name: string) =>
       async (...args: unknown[]) => {
-         calls[name] = args;
+         calls[name] = namedVersions(args);
          return {};
       };
    // The legacy notebook routes reach the package through the store.
@@ -31,9 +32,9 @@ function recordingApp() {
          getPackage: async (
             _packageName: string,
             _reload: boolean,
-            options: { versionId?: unknown },
+            options: { versionId?: VersionRef },
          ) => {
-            calls.storeGetPackage = [options.versionId];
+            calls.storeGetPackage = [options.versionId?.requested()];
             throw new PackageVersionError(
                "VERSION_NOT_FOUND",
                "No such version.",
@@ -132,7 +133,7 @@ describe("legacy /projects routes and versionId", () => {
          .post(path)
          .send({ query: "run: x -> y", ...extra });
       expect(res.status).toBe(200);
-      expect((calls.getQuery?.[10] as Versioned).versionId).toBe("1.2.0");
+      expect((calls.getQuery?.[0] as Versioned).versionId).toBe("1.2.0");
    });
 
    it("refuses a query whose body and URL name different versions", async () => {

@@ -2,23 +2,15 @@
 // SPDX-License-Identifier: MIT
 
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
-import { EnvironmentStore } from "../../service/environment_store";
-import { logger } from "../../logger";
-import { buildMalloyUri, classifyToolError } from "../handler_utils";
-import { jsonResource, jsonToolError } from "../tool_response";
-
-/** list_packages' counterpart: the error envelope matches its success shape. */
-function listPackagesError(uri: string, error: unknown) {
-   return jsonToolError(
-      uri,
-      classifyToolError("listPackages", "environments", error),
-      { environments: [] },
-   );
-}
+import type { EnvironmentCatalog } from "../../service/environment_ports";
+import { readPackageCatalog } from "../../retrieval/model/package_catalog";
+import { buildMalloyUri } from "../handler_utils";
+import { registerGuardedTool } from "../register_tool";
+import { jsonResource } from "../tool_response";
 
 const LIST_ENVIRONMENTS_DESCRIPTION = `List what this Publisher serves: every environment, and the packages in each.
 
-Call this when you do not already know an environment and package name. get_context requires one of each in its \`scopes\`, and those names come from here; never guess them.
+Call this when you do not already know an environment and package name, or to see a package that failed to load. get_context with no arguments lists the same names; never guess them.
 
 Each package reports \`name\`, its \`description\` where it has one, and two health facts that are otherwise invisible:
 - \`error\` with no \`stale\`: the package FAILED to load. It is not queryable, and it would otherwise simply be missing, which reads as "does not exist".
@@ -38,74 +30,20 @@ Takes no arguments.`;
  */
 export function registerListPackagesTool(
    mcpServer: McpServer,
-   environmentStore: EnvironmentStore,
+   environmentStore: EnvironmentCatalog,
 ): void {
-   mcpServer.tool(
-      "list_packages",
-      LIST_ENVIRONMENTS_DESCRIPTION,
-      {},
-      async () => {
-         const uri = buildMalloyUri({}, "list-environments");
-         try {
-            const environments = await environmentStore.listEnvironments();
-            const results = [];
-            for (const env of environments) {
-               const name = env.name;
-               if (!name) continue;
-               let packages: unknown[] = [];
-               let environmentError: string | undefined;
-               try {
-                  const environment = await environmentStore.getEnvironment(
-                     name,
-                     false,
-                  );
-                  const staleErrors = environment.getStaleCompileErrors();
-                  packages = (await environment.listPackages()).map((pkg) => {
-                     const stale = pkg.name
-                        ? staleErrors.get(pkg.name)
-                        : undefined;
-                     return {
-                        name: pkg.name,
-                        ...(pkg.description
-                           ? { description: pkg.description }
-                           : {}),
-                        ...(stale && { error: stale.message, stale: true }),
-                     };
-                  });
-                  for (const [
-                     failed,
-                     message,
-                  ] of environment.getFailedPackages()) {
-                     packages.push({ name: failed, error: message });
-                  }
-               } catch (error) {
-                  // One unreachable environment must not hide the others, but
-                  // must be reported too: an empty list would read as a
-                  // genuinely empty environment.
-                  environmentError =
-                     error instanceof Error ? error.message : String(error);
-                  logger.warn(
-                     "[MCP Tool listPackages] listing packages failed",
-                     {
-                        environmentName: name,
-                        error: environmentError,
-                     },
-                  );
-                  packages = [];
-               }
-               results.push({
-                  name,
-                  ...(environmentError ? { error: environmentError } : {}),
-                  packages,
-               });
-            }
-            return jsonResource(uri, { environments: results });
-         } catch (error) {
-            logger.warn("[MCP Tool listPackages] listing failed", {
-               error: error instanceof Error ? error.message : String(error),
-            });
-            return listPackagesError(uri, error);
-         }
-      },
-   );
+   registerGuardedTool(mcpServer, {
+      name: "list_packages",
+      description: LIST_ENVIRONMENTS_DESCRIPTION,
+      inputSchema: {},
+      op: "listPackages",
+      failed: "listing failed",
+      uri: () => buildMalloyUri({}, "list-environments"),
+      identifier: () => "environments",
+      errorPayload: { environments: [] },
+      run: async (_params, uri) =>
+         jsonResource(uri, {
+            environments: await readPackageCatalog(environmentStore),
+         }),
+   });
 }

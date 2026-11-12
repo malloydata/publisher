@@ -11,6 +11,8 @@
  * based on the provided filter values and the declared filter definitions.
  */
 
+import { escapeString, quotedIdentifier } from "./malloy_text";
+
 // ---------------------------------------------------------------------------
 // Types
 // ---------------------------------------------------------------------------
@@ -120,6 +122,28 @@ export function parseFilterAnnotation(
    };
 }
 
+/** The annotation chain a source's `#(filter)` notes are read from. */
+export interface FilterNoteSource {
+   blockNotes?: { text: string }[];
+   inherits?: FilterNoteSource;
+}
+
+/**
+ * A source's `blockNotes` texts across its `extend` chain, the inherited base's
+ * first, so {@link parseFilters} lets an extending source override its base by
+ * name. The query path reads filters from here and nowhere else.
+ */
+export function sourceFilterNotes(
+   annotations: FilterNoteSource | undefined,
+): string[] {
+   const collected: string[][] = [];
+   for (let cur = annotations; cur; cur = cur.inherits) {
+      if (cur.blockNotes)
+         collected.push(cur.blockNotes.map((note) => note.text));
+   }
+   return collected.reverse().flat();
+}
+
 /** Extract all `#(filter)` definitions from a source's `blockNotes`. */
 export function parseFilters(annotations: string[]): FilterDefinition[] {
    // Keyed by name so an extending source's annotations, which come after
@@ -137,10 +161,6 @@ export function parseFilters(annotations: string[]): FilterDefinition[] {
 // ---------------------------------------------------------------------------
 // Filter Clause Generation
 // ---------------------------------------------------------------------------
-
-function escapeMalloyString(value: string): string {
-   return value.replace(/\\/g, "\\\\").replace(/'/g, "\\'");
-}
 
 function isBooleanLiteral(v: string): boolean {
    const lower = v.toLowerCase();
@@ -162,14 +182,14 @@ function malloyLiteral(v: string): string {
    if (isDateLiteral(v)) {
       return `@${v.slice(0, 10)}`;
    }
-   return `'${escapeMalloyString(v)}'`;
+   return `'${escapeString(v)}'`;
 }
 
 function buildPredicate(
    filter: FilterDefinition,
    value: string | string[],
 ): string {
-   const dim = `\`${filter.dimension}\``;
+   const dim = quotedIdentifier(filter.dimension);
 
    switch (filter.type) {
       case "equal": {
@@ -186,7 +206,7 @@ function buildPredicate(
       }
       case "like": {
          const v = Array.isArray(value) ? value[0] : value;
-         const escaped = escapeMalloyString(v.toLowerCase());
+         const escaped = escapeString(v.toLowerCase());
          const pattern =
             escaped.startsWith("%") || escaped.endsWith("%")
                ? escaped
@@ -257,7 +277,9 @@ export function buildFilterClause(
  * the caller's query cannot swallow it and neutralize the filter.
  */
 export function injectFilterRefinement(
+   // malloy-text: the caller's own query, refined as written
    query: string,
+   // malloy-text: a filter clause the caller's request carries, Malloy as written
    filterClause: string,
 ): string {
    if (!filterClause) {
@@ -282,7 +304,7 @@ export class FilterValidationError extends Error {
 // ---------------------------------------------------------------------------
 
 /** Split on whitespace, respecting quotes: `name="Foo Bar" dimension=status`. */
-function tokenize(input: string): string[] {
+export function tokenize(input: string): string[] {
    const tokens: string[] = [];
    let current = "";
    let inQuote = false;

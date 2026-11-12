@@ -67,6 +67,22 @@ bun run load-test               # Standard test
 ./scripts/run-with-otel.sh load-test/load-test.ts  # With OTEL export
 ```
 
+### Package load and query performance (`perf/`)
+
+A self-contained harness that boots its own Publisher (port 4200, from `dist/`), generates a
+package of configurable size, and measures throughput and avg/p95 latency of package loads and
+queries, alone and concurrently. It targets the current `environments` API and needs neither the
+generated clients nor `malloy-samples`:
+
+```bash
+bun run perf:loads | perf:queries | perf:mixed | perf:all   # after `bun run build` at the repo root
+bun run perf:baseline                                       # the full baseline run
+bun run typecheck:perf
+```
+
+See [docs/performance.md](../../../docs/performance.md) for the scenarios, options and how to read
+the report.
+
 ## OpenTelemetry & Prometheus Integration
 
 Export k6 metrics to Prometheus via OpenTelemetry for visualization in Grafana.

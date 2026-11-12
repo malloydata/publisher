@@ -175,6 +175,30 @@ export class Rest {
       };
    }
 
+   /**
+    * POST …/packages?dryRun=true with a `location`: what a publish of that tree
+    * would answer (the build plan and the serve verdicts it predicts), with
+    * nothing installed.
+    */
+   async dryRunFrom(
+      pkg: string,
+      location: string,
+   ): Promise<{ ok: boolean; status: number; body: Record<string, unknown> }> {
+      const res = await fetch(
+         `${this.baseUrl}/api/v0/environments/${this.env}/packages?dryRun=true`,
+         {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({ name: pkg, location }),
+         },
+      );
+      return {
+         ok: res.ok,
+         status: res.status,
+         body: (await res.json()) as Record<string, unknown>,
+      };
+   }
+
    /** PUT …/latest: point the package's latest at a version. */
    async setLatestVersion(
       pkg: string,
@@ -364,6 +388,38 @@ export class Rest {
       if (!res.ok)
          throw new Error(
             `patchPackage ${pkg} ${res.status}: ${JSON.stringify(json)}`,
+         );
+      return json;
+   }
+
+   /**
+    * Clear a package's manifest binding so it serves live. A package with
+    * published versions clears through its latest version's manifest route
+    * (`PUT …/versions/{version}/manifest` with null): its PATCH reads a null
+    * `manifestLocation` as unset, since a generated client sends a field it
+    * was never given as null. An unversioned package clears with the PATCH.
+    */
+   async clearManifest(pkg: string): Promise<Record<string, unknown>> {
+      const current = await this.getPackage(pkg);
+      const versionId = current.versionId;
+      if (typeof versionId !== "string" || versionId === "") {
+         return this.patchPackage(pkg, { manifestLocation: null });
+      }
+      const res = await fetch(
+         this.pkgUrl(
+            pkg,
+            `/versions/${encodeURIComponent(versionId)}/manifest`,
+         ),
+         {
+            method: "PUT",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({ manifestLocation: null }),
+         },
+      );
+      const json = (await res.json()) as Record<string, unknown>;
+      if (!res.ok)
+         throw new Error(
+            `clearManifest ${pkg}@${versionId} ${res.status}: ${JSON.stringify(json)}`,
          );
       return json;
    }

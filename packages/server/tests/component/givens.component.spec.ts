@@ -1,6 +1,7 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
+import { unrecordedAudit } from "../../src/service/access_record";
 import { DuckDBConnection } from "@malloydata/db-duckdb";
 import { Connection } from "@malloydata/malloy";
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
@@ -234,17 +235,11 @@ describe("filter given values are checked on arrival", () => {
          "orders_filter_givens.malloy",
          getConnections(),
       );
-      return model.getQueryResults(
-         undefined,
-         undefined,
-         "run: orders -> filtered",
-         undefined,
-         undefined,
+      return model.runQuery(unrecordedAudit(), {
+         query: "run: orders -> filtered",
          givens,
-         undefined,
-         undefined,
-         shape,
-      );
+         responseShape: shape,
+      });
    };
    const count = async (givens: Record<string, string>) =>
       (
@@ -297,9 +292,15 @@ describe("filter given values are checked on arrival", () => {
             getConnections(),
          );
          await expect(
-            notebook.executeNotebookCell(1, undefined, undefined, {
-               BIG: "asdf",
-            }),
+            notebook.executeNotebookCell(
+               unrecordedAudit(),
+               1,
+               undefined,
+               undefined,
+               {
+                  BIG: "asdf",
+               },
+            ),
          ).rejects.toThrow("Invalid value for given BIG (filter<boolean>)");
       });
    });

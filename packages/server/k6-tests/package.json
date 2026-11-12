@@ -22,7 +22,16 @@
     "load-test-crud-projects": "k6 run load-test/load-test-crud-projects.ts",
     "load-test-crud-packages": "k6 run load-test/load-test-crud-packages.ts",
     "generate-clients": "openapi-to-k6 ../../../api-doc.yaml ./clients --mode tags --disable-analytics --verbose",
-    "clean": "rm -rf ./clients && rm -rf ./packages && rm -rf ./results"
+    "clean": "rm -rf ./clients && rm -rf ./packages && rm -rf ./results",
+    "perf": "bun perf/run.ts",
+    "perf:loads": "bun perf/run.ts loads",
+    "perf:queries": "bun perf/run.ts queries",
+    "perf:mixed": "bun perf/run.ts mixed",
+    "perf:all": "bun perf/run.ts all",
+    "perf:baseline": "bun perf/run.ts all --preset medium --duration 60 --warmup-rounds 3",
+    "perf:gen-package": "bun perf/gen-package.ts",
+    "perf:report": "bun perf/report.ts",
+    "typecheck:perf": "tsc --noEmit -p perf"
   },
   "resolutions": {
     "orval": "^7.21.0",

@@ -11,9 +11,9 @@
  */
 import { describe, expect, it, setDefaultTimeout } from "bun:test";
 import * as fs from "fs";
-import * as os from "os";
 import * as path from "path";
 import { Package } from "./package";
+import { writeTempPackage } from "../test_helpers/temp_package";
 
 setDefaultTimeout(30_000);
 
@@ -45,14 +45,11 @@ async function manifestOf(report: string) {
    malloyConfig.wrapConnections(
       () => new FixedConnectionMap(new Map([["duckdb", duckdb]]), "duckdb"),
    );
-   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "report-given-order-"));
+   const dir = writeTempPackage(
+      { "recalls.malloy": model, "r.malloy": report },
+      { prefix: "report-given-order-" },
+   ).dir;
    try {
-      fs.writeFileSync(
-         path.join(dir, "publisher.json"),
-         JSON.stringify({ name: "pkg" }),
-      );
-      fs.writeFileSync(path.join(dir, "recalls.malloy"), model);
-      fs.writeFileSync(path.join(dir, "r.malloy"), report);
       const pkg = await Package.create("env", "pkg", dir, malloyConfig);
       return await pkg.getReport("r.malloy");
    } finally {

@@ -1,0 +1,269 @@
+// Copyright (c) Credible Data Inc.
+// SPDX-License-Identifier: MIT
+
+import "@malloydata/malloy-explorer/styles.css";
+import LinkOutlinedIcon from "@mui/icons-material/LinkOutlined";
+import SearchIcon from "@mui/icons-material/Search";
+import {
+   Box,
+   IconButton,
+   Snackbar,
+   Stack,
+   Tooltip,
+   Typography,
+} from "@mui/material";
+import React, { useState } from "react";
+import { parseResourceUri } from "../../utils/formatting";
+import { ApiErrorDisplay } from "../ApiErrorDisplay";
+import { FloatingIconButton } from "../FloatingIconButton";
+import { Loading } from "../Loading";
+import { ModelCell } from "./ModelCell";
+import { ModelExplorer } from "./ModelExplorer";
+import type { ModelProps } from "./Model";
+import { ModelExplorerDialog } from "./ModelExplorerDialog";
+import { QueryExplorerResult } from "./SourcesExplorer";
+import { useModelData } from "./useModelData";
+
+// Note: For this to properly render outside of publisher,
+// you must explicitly import the styles from the package:
+// import "@malloy-publisher/sdk/malloy-explorer.css";
+
+/**
+ * The model page on a server whose `PUBLISHER_MODEL_PAGE` is `explorer`, the
+ * default: the Malloy Explorer over the model's sources, and its named
+ * queries. The Explorer writes the queries it builds back to Malloy text
+ * through `@malloydata/malloy-interfaces`, which puts a string value in
+ * unescaped, so a drilled value holding a double quote rewrites its query.
+ */
+export function ExplorerPage({
+   onChange,
+   resourceUri,
+   runOnDemand = false,
+   maxResultSize = 0,
+   givens,
+   onGivensChange,
+}: ModelProps) {
+   const { modelPath } = parseResourceUri(resourceUri);
+   const { data, isError, isLoading, error } = useModelData(resourceUri);
+   const [dialogOpen, setDialogOpen] = React.useState(false);
+   const [sharedQuery, setSharedQuery] = React.useState<
+      QueryExplorerResult | undefined
+   >();
+   const [sharedSourceIndex, setSharedSourceIndex] = React.useState(0);
+   const [copyMessage, setCopyMessage] = useState("");
+   // Held here only when the host passes neither prop, so the embedded
+   // explorer and the maximized dialog still agree on one set of values
+   // rather than each defaulting independently.
+   const [localGivens, setLocalGivens] = React.useState<Record<string, string>>(
+      {},
+   );
+   const effectiveGivens = givens ?? localGivens;
+   const effectiveOnGivensChange =
+      onGivensChange ??
+      ((applied: Record<string, string>) => setLocalGivens(applied));
+
+   // Whether the model imports other files — drives the empty-state hint for
+   // import-only models, whose discovery surface is legitimately empty (no
+   // local sources, no export{}) but whose page would otherwise render blank.
+   // `modelDef` is returned by the server but intentionally absent from the
+   // typed CompiledModel schema (internal compiler blob), hence the cast.
+   const modelDefJson = (data as { modelDef?: string } | undefined)?.modelDef;
+   const hasImports = React.useMemo(() => {
+      if (!modelDefJson) return false;
+      try {
+         const def = JSON.parse(modelDefJson) as { imports?: unknown[] };
+         return Array.isArray(def.imports) && def.imports.length > 0;
+      } catch {
+         return false;
+      }
+   }, [modelDefJson]);
+
+   if (isLoading) {
+      return <Loading text="Fetching Model..." />;
+   }
+
+   if (isError) {
+      console.log("error", error);
+      return <ApiErrorDisplay error={error} context={`Model > ${modelPath}`} />;
+   }
+
+   // Shared handlers for both embedded and dialog explorers
+   const handleQueryChange = (query: QueryExplorerResult) => {
+      setSharedQuery(query);
+      if (onChange) {
+         onChange(query);
+      }
+   };
+
+   const handleSourceChange = (index: number) => {
+      setSharedSourceIndex(index);
+   };
+
+   const copyToClipboard = () => {
+      const url = window.location.href;
+      navigator.clipboard
+         .writeText(url)
+         .then(() => setCopyMessage("URL copied to clipboard!"))
+         .catch(() => setCopyMessage("Failed to copy URL"));
+   };
+
+   return (
+      <>
+         <Box
+            sx={{
+               position: "relative",
+               maxWidth: "1200px",
+               margin: "0 auto",
+               paddingTop: "24px",
+            }}
+         >
+            {/* Sources Section */}
+            {Array.isArray(data?.sourceInfos) &&
+               data.sourceInfos.length > 0 && (
+                  <Stack spacing={2} component="section">
+                     {/* Sources Header */}
+                     <Box
+                        sx={{
+                           padding: "0 0 16px 0",
+                           display: "flex",
+                           alignItems: "center",
+                           justifyContent: "space-between",
+                        }}
+                     >
+                        <Typography
+                           variant="h1"
+                           sx={{
+                              fontSize: "28px",
+                              fontWeight: "600",
+                              color: "#1a1a1a",
+                              marginBottom: "8px",
+                              marginTop: "0",
+                              paddingLeft: "0",
+                           }}
+                        >
+                           Sources
+                        </Typography>
+                        <Tooltip title="Copy link">
+                           <IconButton
+                              size="small"
+                              aria-label="Copy link"
+                              onClick={copyToClipboard}
+                              sx={{ color: "text.secondary" }}
+                           >
+                              <LinkOutlinedIcon fontSize="small" />
+                           </IconButton>
+                        </Tooltip>
+                     </Box>
+
+                     <ModelExplorer
+                        data={data}
+                        onChange={handleQueryChange}
+                        onSourceChange={handleSourceChange}
+                        existingQuery={sharedQuery}
+                        initialSelectedSourceIndex={sharedSourceIndex}
+                        resourceUri={resourceUri}
+                        givens={effectiveGivens}
+                        onGivensChange={effectiveOnGivensChange}
+                     />
+
+                     {/* Magnifying glass icon */}
+                     <FloatingIconButton
+                        aria-label="Expand results"
+                        sx={{
+                           position: "absolute",
+                           top: "90px",
+                           right: "4px",
+                           zIndex: 2,
+                        }}
+                        onClick={() => setDialogOpen(true)}
+                     >
+                        <SearchIcon />
+                     </FloatingIconButton>
+                  </Stack>
+               )}
+
+            {/* Named Queries Section */}
+            {data?.queries?.length > 0 && (
+               <Stack
+                  spacing={2}
+                  component="section"
+                  sx={{ marginTop: "24px" }}
+               >
+                  {/* Named Queries Header */}
+                  <Box sx={{ padding: "0 0 16px 0" }}>
+                     <Typography
+                        variant="h2"
+                        sx={{
+                           fontSize: "24px",
+                           fontWeight: "600",
+                           color: "#1a1a1a",
+                           marginBottom: "0",
+                           marginTop: "8px",
+                           paddingLeft: "0",
+                        }}
+                     >
+                        Named Queries
+                     </Typography>
+                  </Box>
+
+                  {/* Render the named queries */}
+                  {data.queries.map((query) => (
+                     <ModelCell
+                        key={query.name}
+                        queryName={query.name}
+                        annotations={query.annotations}
+                        resourceUri={resourceUri}
+                        runOnDemand={runOnDemand}
+                        maxResultSize={maxResultSize}
+                     />
+                  ))}
+               </Stack>
+            )}
+
+            {/* Empty discovery surface: nothing exported, nothing to render.
+                For import-only models, say why and how to fix it — otherwise
+                the page reads as broken. */}
+            {(!Array.isArray(data?.sourceInfos) ||
+               data.sourceInfos.length === 0) &&
+               !(data?.queries && data.queries.length > 0) && (
+                  <Box sx={{ textAlign: "center", py: 6 }}>
+                     <Typography
+                        variant="body1"
+                        sx={{ color: "text.secondary", marginBottom: "8px" }}
+                     >
+                        This model exposes no sources or queries.
+                     </Typography>
+                     {hasImports && (
+                        <Typography variant="body2" color="text.secondary">
+                           It imports other files but re-exports nothing. Add{" "}
+                           <code>export {"{ source_name }"}</code> to surface
+                           imported sources here.
+                        </Typography>
+                     )}
+                  </Box>
+               )}
+
+            {/* Model Explorer Dialog */}
+            <ModelExplorerDialog
+               open={dialogOpen}
+               onClose={() => setDialogOpen(false)}
+               resourceUri={resourceUri}
+               data={data}
+               title={`Model: ${modelPath.split("/").pop()}`}
+               existingQuery={sharedQuery}
+               initialSelectedSourceIndex={sharedSourceIndex}
+               onChange={handleQueryChange}
+               onSourceChange={handleSourceChange}
+               givens={effectiveGivens}
+               onGivensChange={effectiveOnGivensChange}
+            />
+         </Box>
+         <Snackbar
+            open={copyMessage !== ""}
+            autoHideDuration={6000}
+            onClose={() => setCopyMessage("")}
+            message={copyMessage}
+         />
+      </>
+   );
+}

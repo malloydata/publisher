@@ -6,52 +6,38 @@
  * import-free), shared so the modern and legacy route sets cannot drift.
  */
 
-import type { Request, Response } from "express";
-import {
-   BadRequestError,
-   internalErrorToHttpError,
-   PackageVersionError,
-} from "./errors";
+import type { Request } from "express";
+import { BadRequestError, PackageVersionError } from "./errors";
 import { invalidBooleanMessage, parseBooleanParam } from "./query_param_utils";
+import { VersionRef } from "./service/identity";
 import { LATEST_VERSION_ALIAS } from "./service/versions/version_service";
 
 /**
- * Read a boolean query param, keeping absent distinct from `false`, and answer
- * 400 for an unusable value. Only for params that need the distinction, such
- * as `bypass_filters`, whose Deprecation header fires on `!== undefined`;
- * otherwise use {@link booleanParamOr400}.
+ * Read a boolean query param, keeping absent distinct from `false`, and throw
+ * a {@link BadRequestError} for an unusable value. Only for params that need
+ * the distinction, such as `bypass_filters`, whose Deprecation header fires on
+ * `!== undefined`; otherwise use {@link booleanParam}.
  */
-export function optionalBooleanParamOr400(
+export function optionalBooleanParam(
    req: Pick<Request, "query" | "path" | "method">,
-   res: Response,
-   name: string,
-): { ok: true; value: boolean | undefined } | { ok: false } {
-   const raw = req.query[name];
-   const parsed = parseBooleanParam(raw);
-   if (parsed.ok) {
-      return { ok: true, value: raw === undefined ? undefined : parsed.value };
-   }
-   const { json, status } = internalErrorToHttpError(
-      new BadRequestError(
-         invalidBooleanMessage(name, raw, req.method, req.path),
-      ),
-   );
-   res.status(status).json(json);
-   return { ok: false };
-}
-
-/**
- * Read a boolean query param (absent is `false`). Returns `undefined` only
- * after writing a 400, so the caller just returns:
- * `const v = booleanParamOr400(req, res, "reload"); if (v === undefined) return;`.
- */
-export function booleanParamOr400(
-   req: Pick<Request, "query" | "path" | "method">,
-   res: Response,
    name: string,
 ): boolean | undefined {
-   const outcome = optionalBooleanParamOr400(req, res, name);
-   return outcome.ok ? (outcome.value ?? false) : undefined;
+   const raw = req.query[name];
+   const parsed = parseBooleanParam(raw);
+   if (!parsed.ok) {
+      throw new BadRequestError(
+         invalidBooleanMessage(name, raw, req.method, req.path),
+      );
+   }
+   return raw === undefined ? undefined : parsed.value;
+}
+
+/** Read a boolean query param (absent is `false`); throw a 400 for an unusable value. */
+export function booleanParam(
+   req: Pick<Request, "query" | "path" | "method">,
+   name: string,
+): boolean {
+   return optionalBooleanParam(req, name) ?? false;
 }
 
 /**
@@ -59,17 +45,24 @@ export function booleanParamOr400(
  * single-resource route that honors it. Ignoring it would answer 200 with the
  * list, which reads as a reload that worked.
  */
-export function setCollectionReloadError(
-   res: Response,
+export function assertNoCollectionReload(
+   req: Pick<Request, "query">,
    perResourceRoute: string,
 ): void {
-   const { json, status } = internalErrorToHttpError(
-      new BadRequestError(
-         `Reload recompiles one named resource, and this endpoint lists them. ` +
-            `Use GET ${perResourceRoute}?reload=true instead.`,
-      ),
+   if (req.query.reload === undefined) return;
+   throw new BadRequestError(
+      `Reload recompiles one named resource, and this endpoint lists them. ` +
+         `Use GET ${perResourceRoute}?reload=true instead.`,
    );
-   res.status(status).json(json);
+}
+
+/**
+ * The version a package route names in its query string (`?versionId=`),
+ * parsed once here; absent means `latest`. Never throws: a malformed value is
+ * refused only where versions are consulted (see {@link VersionRef}).
+ */
+export function versionRefOf(req: Pick<Request, "query">): VersionRef {
+   return VersionRef.parse(req.query.versionId);
 }
 
 /**
@@ -77,6 +70,9 @@ export function setCollectionReloadError(
  * takes no version. An empty one is what a proxy forwarding a page's query
  * string may send: no version. `latest` is what the listing answers with
  * anyway.
+ *
+ * Takes the raw value, not a {@link VersionRef}: a malformed versionId is
+ * refused here too, which parsing would defer.
  */
 export function assertListingTakesNoVersionId(versionId: unknown): void {
    if (versionId && versionId !== LATEST_VERSION_ALIAS) {
@@ -90,9 +86,9 @@ export function assertListingTakesNoVersionId(versionId: unknown): void {
  * The version a model query names: in the body, or in the URL as on every
  * other package route. Both may be given only if they agree.
  */
-export function queryVersionIdOf(
+export function queryVersionRefOf(
    req: Pick<Request, "body" | "query">,
-): unknown {
+): VersionRef {
    const fromBody = req.body?.versionId;
    const fromUrl = req.query.versionId;
    const named = (value: unknown) =>
@@ -103,5 +99,5 @@ export function queryVersionIdOf(
          "The body and the URL name different versions; name one, or the same one.",
       );
    }
-   return named(fromBody) ? fromBody : fromUrl;
+   return VersionRef.parse(named(fromBody) ? fromBody : fromUrl);
 }

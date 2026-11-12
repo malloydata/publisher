@@ -20,10 +20,11 @@ import {
 import type { EnvironmentStore } from "../../service/environment_store";
 import { Package } from "../../service/package";
 import { registerExecuteQueryTool } from "./execute_query_tool";
+import { QuerySlots } from "../../query_concurrency";
+import { QueryUseCase } from "../../usecases/query";
 
 const REPORT = "models/flights_editable.malloy";
 const ORDERS_REPORT = "models/orders_report.malloy";
-const ORIGINAL_ENV = process.env.PACKAGE_LOAD_WORKERS;
 
 type Handler = (params: Record<string, unknown>) => Promise<{
    isError?: boolean;
@@ -36,7 +37,6 @@ describe("execute_query on a grid report's own source", () => {
    let duckdb: { close: () => Promise<void> };
 
    beforeAll(async () => {
-      process.env.PACKAGE_LOAD_WORKERS = "1";
       await __setPackageLoadPoolForTests(new PackageLoadPool(1));
       tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "publisher-mcp-rs-"));
       fs.writeFileSync(
@@ -67,6 +67,7 @@ export { flights, orders }`,
       fs.writeFileSync(
          path.join(tempDir, "orders.malloy"),
          `##! experimental.givens
+#(secure)
 given: GROUPS :: number[]
 
 #(access_filter) org_id in $GROUPS
@@ -131,18 +132,20 @@ query: inline_t is orders extend { where: org_id = 2 or true } -> { group_by: or
             }) as never,
       };
       const fakeServer = {
-         tool: (_name: string, _desc: string, _shape: unknown, h: Handler) => {
+         registerTool: (_name: string, _config: unknown, h: Handler) => {
             handler = h;
          },
       };
-      registerExecuteQueryTool(fakeServer as never, store as EnvironmentStore);
+      registerExecuteQueryTool(
+         fakeServer as never,
+         store as EnvironmentStore,
+         new QueryUseCase(store as EnvironmentStore, new QuerySlots()),
+      );
    });
 
    afterAll(async () => {
       await duckdb.close();
       await __setPackageLoadPoolForTests(null);
-      if (ORIGINAL_ENV === undefined) delete process.env.PACKAGE_LOAD_WORKERS;
-      else process.env.PACKAGE_LOAD_WORKERS = ORIGINAL_ENV;
       fs.rmSync(tempDir, { recursive: true, force: true });
    });
 

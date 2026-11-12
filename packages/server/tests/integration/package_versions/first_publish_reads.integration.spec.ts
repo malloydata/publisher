@@ -27,6 +27,7 @@ import os from "os";
 import path from "path";
 import { Package } from "../../../src/service/package";
 import { RestE2EEnv, startRestE2E } from "../../harness/rest_e2e";
+import { installVariables } from "../../../src/test_helpers/settings_env";
 
 const ENV_NAME = "versions-first-publish-reads-env";
 const FLAG = "PUBLISHER_PACKAGE_VERSIONING";
@@ -34,11 +35,19 @@ const FLAG = "PUBLISHER_PACKAGE_VERSIONING";
 let env: (RestE2EEnv & { stop(): Promise<void> }) | undefined;
 let baseUrl = "";
 let root = "";
-const savedFlag = process.env[FLAG];
+/** The variables this suite sets, installed over the process's own settings. */
+const variables: Record<string, string | undefined> = {};
+let restoreSettings: (() => void) | undefined;
+
+/** Give the in-process server `name` at `value`, or unset, as a restart with it would. */
+function setVariable(name: string, value: string | undefined): void {
+   variables[name] = value;
+   restoreSettings?.();
+   restoreSettings = installVariables(variables);
+}
 
 function versioning(on: boolean): void {
-   if (on) process.env[FLAG] = "on";
-   else delete process.env[FLAG];
+   setVariable(FLAG, on ? "on" : "off");
 }
 
 /** A package whose query reads its own data.csv, and whose page says `n`. */
@@ -150,8 +159,7 @@ describe("reads of an unversioned package during its first versioned publish", (
       }).catch(() => undefined);
       await env?.stop();
       fs.rmSync(root, { recursive: true, force: true });
-      if (savedFlag === undefined) delete process.env[FLAG];
-      else process.env[FLAG] = savedFlag;
+      restoreSettings?.();
    });
 
    it("a query and a page read inside the hold both answer, from the version", async () => {

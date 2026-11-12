@@ -22,10 +22,11 @@ import {
 } from "../../../src/service/catalog_admin";
 import {
    attachDuckLakeReadOnly,
+   attachDuckLakeReadWrite,
    recordedCatalogSettings,
    recordedSchemaPath,
 } from "../../../src/service/connection";
-import { listStorageTables } from "../../../src/service/materialization_build_session";
+import { listStorageTables } from "../../../src/service/materialization/run/materialization_build_session";
 import type { components } from "../../../src/api";
 
 const SUPERUSER = process.env.PUBLISHER_TEST_ADMIN_SUPERUSER;
@@ -403,6 +404,7 @@ describe.skipIf(!SUPERUSER)(
             "id",
             "amount",
          ]);
+         expect(copied.table.partitionedBy).toEqual([]);
          const again = await refusal(
             admin.putTable(
                "ds_owned",
@@ -512,6 +514,123 @@ describe.skipIf(!SUPERUSER)(
                (t) => t.name,
             ),
          ).toEqual(["legacy", "orders_copy"]);
+      });
+
+      it("copies a partitioned table with its partition spec and layout, and reports both", async () => {
+         // A legacy catalog's partitioned table, as a `partition=` build writes
+         // one: the spec set before the rows, so every file holds one partition.
+         const host = SUPERUSER!
+            .split(/\s+/)
+            .filter((kv) => /^(host|port)=/.test(kv))
+            .join(" ");
+         const session = new DuckDBConnection(
+            "partitioned_source",
+            ":memory:",
+            mkdtempSync(join(tmpdir(), "partitioned-")),
+         );
+         try {
+            await attachDuckLakeReadWrite(session, "ds_standalone", {
+               catalog: {
+                  postgresConnection: {
+                     connectionString: `${host} dbname=${DB} user=${DB}_admin password=${PASSWORD}`,
+                  },
+                  metadataSchema: "ds_standalone",
+               },
+            });
+            await session.runSQL(
+               "SET ducklake_default_data_inlining_row_limit = 0",
+            );
+            await session.runSQL(
+               "CREATE TABLE ds_standalone.main.events (id INTEGER, day DATE, category VARCHAR)",
+            );
+            await session.runSQL(
+               "ALTER TABLE ds_standalone.main.events SET PARTITIONED BY (year(day), category)",
+            );
+            await session.runSQL(
+               "INSERT INTO ds_standalone.main.events VALUES " +
+                  "(1, DATE '2025-03-01', 'a'), (2, DATE '2026-03-01', 'b'), " +
+                  "(3, DATE '2025-06-01', 'b'), (4, DATE '2026-06-01', 'a'), " +
+                  "(5, DATE '2025-09-01', 'a'), (6, DATE '2026-09-01', 'b')",
+            );
+         } finally {
+            await session.close();
+         }
+         // Later cases list the legacy stand-in's tables, so it is left as found.
+         try {
+            const spec = [
+               { column: "day", transform: "year" },
+               { column: "category", transform: "identity" },
+            ];
+            expect(
+               (await admin.getTable("ds_standalone", "main", "events"))
+                  .partitionedBy,
+            ).toEqual(spec);
+
+            const copied = keep(
+               await admin.putTable(
+                  "ds_owned",
+                  "materialized",
+                  "events",
+                  {
+                     source: {
+                        catalog: "ds_standalone",
+                        schema: "main",
+                        table: "events",
+                     },
+                  },
+                  true,
+               ),
+            );
+            expect(copied.table.partitionedBy).toEqual(spec);
+            expect(await writtenEncrypted("ds_owned", "events")).toEqual({
+               rows: 6,
+               encrypted: true,
+               inlined: 0,
+            });
+            // The layout, not only the spec: one file per (year, category), each
+            // recording its value for both keys.
+            const files = await superuserQuery(
+               "select f.data_file_id::int as file, count(v.partition_key_index)::int as keys " +
+                  "from ds_owned.ducklake_data_file f " +
+                  "left join ds_owned.ducklake_file_partition_value v on v.data_file_id = f.data_file_id " +
+                  "where f.end_snapshot is null and f.table_id = " +
+                  "(select table_id from ds_owned.ducklake_table where table_name = 'events' and end_snapshot is null) " +
+                  "group by f.data_file_id",
+            );
+            expect(files).toHaveLength(4);
+            expect(files.every((f) => Number(f.keys) === 2)).toBe(true);
+
+            // Onto itself, the partitioned write would replace the table empty
+            // before reading it. DuckDB resolves names case-insensitively, so
+            // another spelling of the same name is the same table.
+            for (const target of ["events", "Events", "EVENTS"]) {
+               const self = await refusal(
+                  admin.putTable(
+                     "ds_owned",
+                     "materialized",
+                     target,
+                     {
+                        source: {
+                           catalog: "ds_owned",
+                           schema: "materialized",
+                           table: "events",
+                        },
+                     },
+                     false,
+                  ),
+               );
+               expect([target, self.status, self.reason]).toEqual([
+                  target,
+                  400,
+                  "INVALID_REQUEST",
+               ]);
+               expect(
+                  await writtenEncrypted("ds_owned", "events"),
+               ).toMatchObject({ rows: 6 });
+            }
+         } finally {
+            await admin.deleteTable("ds_standalone", "main", "events");
+         }
       });
 
       it("refuses to copy an encrypted catalog's table into an unencrypted one", async () => {

@@ -126,7 +126,7 @@ For every rule, the linked instruction-skill section is the canonical source for
   - **`SUM(x) OVER (PARTITION BY ... ORDER BY ... ROWS UNBOUNDED PRECEDING)`** → `calculate: c is sum_cumulative(x) { partition_by: ...; order_by: ... asc }`
   - **`SUM(x) OVER (... ROWS BETWEEN UNBOUNDED PRECEDING AND 1 PRECEDING)`** (cumulative-excluding-current) → `sum_cumulative(x) - x` with the same `partition_by`/`order_by`
   - **Multi-CTE pipelines** → stacked query-based sources: `source: a is t -> {...}`; `source: b is a -> {...}`
-  - **UNNEST / array access** → an array of records is read by its field path (`group_by: ys.yr`, `aggregate: tv is ys.v.sum()`); an array of plain values is read with `.each` and nothing after it (`group_by: v is arr.each`). `array_column.each.field` does not exist ([data types docs](https://docs.malloydata.dev/documentation/language/datatypes#array-access))
+  - **UNNEST / array access** → an array of records is read by its field path (`group_by: ys.yr`, `aggregate: tv is ys.v.sum()`); an array of plain values is read with `.each` and nothing after it (`group_by: v is arr.each`). `array_column.each.field` does not exist. A measure meant to count elements must be `arr.count()`, not `count(arr.each)`, which is the distinct count; flag the swap ([data types docs](https://docs.malloydata.dev/documentation/language/datatypes#array-access))
   - **PIVOT / `SUM(CASE WHEN cat = 'a' THEN x END)`** → filtered aggregates: `aggregate: a is x.sum() { where: cat = 'a' }`
   - **`WHERE date = (SELECT max(date) FROM …)`** (latest snapshot) → `join_cross` to a one-row aggregate source, then filter on the joined `max_date` field
   - **Multi-key joins (`ON a.x = b.x AND a.y = b.y`)** → `join_one: b on x = b.x and y = b.y`

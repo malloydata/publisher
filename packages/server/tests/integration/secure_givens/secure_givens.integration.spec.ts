@@ -16,11 +16,23 @@ import * as fs from "fs";
 import * as os from "os";
 import * as path from "path";
 import type { Package } from "../../../src/service/package";
+import { installVariables } from "../../../src/test_helpers/settings_env";
 import { startRestE2E } from "../../harness/rest_e2e";
+import { bootMainServer } from "../../harness/main_server";
+import { writePackageFiles } from "../../../src/test_helpers/temp_package";
 
 const ENV_NAME = "secure-givens-env";
 const FLAG = "PUBLISHER_PACKAGE_VERSIONING";
-const savedFlag = process.env[FLAG];
+/** The variables this suite sets, installed over the process's own settings. */
+const variables: Record<string, string | undefined> = {};
+let restoreSettings: (() => void) | undefined;
+
+/** Give the in-process server `name` at `value`, or unset, as a restart with it would. */
+function setVariable(name: string, value: string | undefined): void {
+   variables[name] = value;
+   restoreSettings?.();
+   restoreSettings = installVariables(variables);
+}
 
 const ROWS = `duckdb.sql("select * from (values (1, 'a'), (2, 'b')) as t(id, role)")`;
 
@@ -39,6 +51,10 @@ import "shared.malloy"
 
 source: orders is base extend { dimension: tagged is concat(role, $REGION) }
 `;
+import {
+   parseEnvironmentName,
+   parsePackageName,
+} from "../../../src/service/identity";
 
 /** A notebook whose cells declare a secure given no model declares. */
 const NOTEBOOK_ONLY = `>>>malloy
@@ -75,10 +91,12 @@ describe("secureGivens on the package responses", () => {
       manifest: Record<string, unknown> = {},
    ): string {
       const dir = path.join(tempDir, name);
-      fs.mkdirSync(dir, { recursive: true });
-      fs.writeFileSync(
-         path.join(dir, "publisher.json"),
-         JSON.stringify({ name, ...manifest }),
+      writePackageFiles(
+         dir,
+         {},
+         {
+            manifest: { name, version: "1.0.0", ...manifest },
+         },
       );
       for (const [file, text] of Object.entries(files)) {
          fs.mkdirSync(path.dirname(path.join(dir, file)), { recursive: true });
@@ -106,12 +124,12 @@ describe("secureGivens on the package responses", () => {
    }
 
    async function getPackage(name: string): Promise<Package> {
-      const { environmentStore } = await import("../../../src/main_server");
+      const { environmentStore } = await bootMainServer();
       const environment = await environmentStore.getEnvironment(
-         ENV_NAME,
+         parseEnvironmentName(ENV_NAME),
          false,
       );
-      return environment.getPackage(name, false);
+      return environment.getPackage(parsePackageName(name), false);
    }
 
    async function get(
@@ -142,12 +160,14 @@ describe("secureGivens on the package responses", () => {
    }, 180_000);
 
    afterEach(() => {
-      delete process.env[FLAG];
+      // Back to the process's own settings (versioning on).
+      restoreSettings?.();
+      restoreSettings = undefined;
+      delete variables[FLAG];
    });
 
    afterAll(async () => {
-      if (savedFlag === undefined) delete process.env[FLAG];
-      else process.env[FLAG] = savedFlag;
+      restoreSettings?.();
       await fetch(`${baseUrl}/api/v0/environments/${ENV_NAME}`, {
          method: "DELETE",
       }).catch(() => undefined);
@@ -211,7 +231,6 @@ describe("secureGivens on the package responses", () => {
    }, 120_000);
 
    it("a versioned publish carries it too", async () => {
-      process.env[FLAG] = "on";
       const location = writePackage("versioned", SECURE_FILES, {
          version: "1.0.0",
       });
@@ -223,7 +242,7 @@ describe("secureGivens on the package responses", () => {
          EXPECTED,
       );
    }, 120_000);
-   it("follows the models through a reload in place and a reinstall", async () => {
+   it("follows the models through a reload in place and a new version", async () => {
       const location = writePackage("editable", {
          "shared.malloy": SHARED,
          "orders.malloy": ORDERS,
@@ -254,14 +273,18 @@ describe("secureGivens on the package responses", () => {
          withTenant,
       );
 
-      // A reinstall from the location: ROLES is no longer secure.
+      // A new version from the location: ROLES is no longer secure.
       fs.writeFileSync(
          path.join(location, "shared.malloy"),
          SHARED_WITHOUT_SECURE,
       );
-      expect(
-         (await get("editable", "?reload=true")).secureGivens as SecureGiven[],
-      ).toEqual([]);
+      fs.writeFileSync(
+         path.join(location, "publisher.json"),
+         JSON.stringify({ name: "editable", version: "1.1.0" }),
+      );
+      const next = await publish("editable", location);
+      expect(next.status).toBe(200);
+      expect(next.json.secureGivens).toEqual([]);
       expect((await get("editable")).secureGivens).toEqual([]);
    }, 120_000);
 
@@ -289,6 +312,9 @@ describe("secureGivens on the package responses", () => {
    }, 120_000);
 
    it("a PATCH body cannot set it", async () => {
+      // The package PATCH edits only a package installed in place, which a
+      // publish is only with versioning off.
+      setVariable(FLAG, "off");
       const location = writePackage("patched", {
          "shared.malloy": SHARED,
          "orders.malloy": ORDERS,
@@ -299,9 +325,10 @@ describe("secureGivens on the package responses", () => {
          {
             method: "PATCH",
             headers: { "content-type": "application/json" },
+            // Only the read-only field: a package installed from a location
+            // refuses a `description` change, which a reload would discard.
             body: JSON.stringify({
                name: "patched",
-               description: "edited",
                secureGivens: [
                   { name: "FORGED", type: "string", modelPaths: [] },
                ],
@@ -310,7 +337,6 @@ describe("secureGivens on the package responses", () => {
       );
       expect(res.status).toBe(200);
       const patched = (await res.json()) as Record<string, unknown>;
-      expect(patched.description).toBe("edited");
       expect(patched.secureGivens as SecureGiven[]).toEqual(ROLES_ONLY);
       expect((await get("patched")).secureGivens as SecureGiven[]).toEqual(
          ROLES_ONLY,

@@ -1,7 +1,7 @@
 ##! experimental.givens
 
-given:
-  GROUPS :: number[]
+#(secure)
+given: GROUPS :: number[]
 
 // `org_id`/`owner` are deliberately DIFFERENT per row so a misbound query
 // returns a DIFFERENT row set than the correctly-bound query, not merely an

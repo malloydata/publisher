@@ -69,7 +69,9 @@ export type EligibilityRefusalReason =
    | "authorize"
    | "not_duckdb_portable"
    | "public_surface_unknown"
-   | "read_only_dialect";
+   | "read_only_dialect"
+   | "env_reference"
+   | "rollup_name_collision";
 /**
  * How a chained `storage=` source (one that reads a storage-materialized
  * upstream) was built: `parent_reuse` = built by reading the upstream's stored
@@ -107,6 +109,10 @@ const runDuration = lazyHistogram(
 const sourcesCounter = lazyCounter(
    "publisher_materialization_sources_total",
    "Persist sources processed by a materialization run. Labels: outcome ('built'|'reused'|'failed'|'refused'), mode ('auto'|'orchestrated').",
+);
+const annotationFindingsCounter = lazyCounter(
+   "publisher_annotation_findings_total",
+   "Coded findings on authored annotations (the #@ route, and the near-miss and malformed-route scan over every route), counted once each time a package is loaded and accepted for serving (boot, add, publish, reload; a refused publish and a gate re-run count nothing). Labels: code (e.g. 'persist-unknown-key', 'persist-unparseable', 'annotation-near-miss'), tier ('malformed' for an error-severity finding, 'unservable' for a warning).",
 );
 const incrementalStepCounter = lazyCounter(
    "publisher_materialization_incremental_step_total",
@@ -169,9 +175,9 @@ const tableCollisionCounter = lazyCounter(
       "physical table. Each build overwrites the other's rows while both " +
       "addresses resolve to the table at serve time, so a query is answered " +
       "from another source's data. A wrong answer, not wasted work — page on " +
-      "this one. Refused instead of counted-and-continued when " +
-      "PERSIST_COLLISION_ENFORCE is set, so a non-zero rate here is also the " +
-      "measure of what flipping that flag would start refusing.",
+      "this one. Counted, then refused before any write, unless " +
+      "PERSIST_COLLISION_ENFORCE=false opts out, in which case the build " +
+      "continues.",
 );
 const sourceBuildDuration = lazyHistogram(
    "publisher_materialization_source_build_duration_ms",
@@ -194,6 +200,15 @@ const storageServeRoutingCounter = lazyCounter(
       "denominator. NOTE 'live_fallback' here means the transform was INELIGIBLE, " +
       "which QueryResult.servedFrom reports as null - that field's " +
       "'live_fallback' is this counter's 'runtime_live_fallback'.",
+);
+const queryVariantRoutingCounter = lazyCounter(
+   "publisher_query_variant_routing_total",
+   "The variant router's decision on each candidate it considered for a query, " +
+      "one count per candidate (materialization v2, #6272). Labels: variant " +
+      "('storage'|'rollup'), outcome ('used'|'skipped'), reason ('none' when used; " +
+      "'row_level_gate'|'not_applicable'|'does_not_answer' when skipped, and " +
+      "'run_failed' for a chosen variant whose run failed and fell back live). " +
+      "Counted once the query is answered. A query with no candidate records nothing.",
 );
 const storageTableRetainedCounter = lazyCounter(
    "publisher_storage_tables_retained_total",
@@ -250,6 +265,13 @@ const serveShapeTypeFallbackCounter = lazyCounter(
    "Captured DuckDB column types mapped to json in the serve shape (type " +
       "fidelity loss). Label: kind ('array'|'unrecognized').",
 );
+const storedColumnTypeMismatchCounter = lazyCounter(
+   "publisher_storage_column_type_mismatch_total",
+   "Stored columns whose DuckDB type does not serve as the type Malloy " +
+      "declares for them (ms2data/service#6642). Labels: stage ('build' = " +
+      "found after a storage build; 'serve' = left off a serve shape, so " +
+      "queries reading it are answered live), declared (the Malloy type).",
+);
 const chainedStorageBuildCounter = lazyCounter(
    "publisher_storage_chained_build_total",
    "Chained storage= source builds (a source reading a storage-materialized " +
@@ -257,6 +279,15 @@ const chainedStorageBuildCounter = lazyCounter(
       "'strict_shape_fallback'|'strict_refused'|'infra_failure'). The " +
       "parent_reuse share is the headline signal for how far the " +
       "stack-on-the-parent path gets us vs recompute-from-raw.",
+);
+const staleUpstreamEntryCounter = lazyCounter(
+   "publisher_materialization_stale_upstream_entry_total",
+   "Builds that could not use an upstream's manifest entry because it is at a " +
+      "different tier than the upstream is declared on now (ms2data/service#7087: " +
+      "a source moved to or from storage= keeps its content address). The build " +
+      "recomputes that upstream from raw instead, which reads the warehouse. " +
+      "Label: build ('colocated'|'storage'), the tier of the build that " +
+      "recomputed.",
 );
 const colocatedBindDroppedCounter = lazyCounter(
    "publisher_materialization_colocated_bind_dropped_total",
@@ -307,6 +338,25 @@ export function recordSourcesOutcome(
 ): void {
    if (count <= 0) return;
    sourcesCounter().add(count, { outcome, mode });
+}
+
+/**
+ * Count the coded annotation findings of one package accepted for serving,
+ * one increment per finding: `code` is the warning's code, `tier` its
+ * severity (`error` is malformed, `warn` unservable). A `malformed` count can
+ * only come from a package published before its refusal existed, since
+ * publish refuses a malformed finding before the package is served.
+ */
+export function recordAnnotationFindings(
+   warnings: ReadonlyArray<{ code?: string; severity?: string }>,
+): void {
+   for (const { code, severity } of warnings) {
+      if (!code) continue;
+      annotationFindingsCounter().add(1, {
+         code,
+         tier: severity === "error" ? "malformed" : "unservable",
+      });
+   }
 }
 
 /**
@@ -512,8 +562,14 @@ export function setEligibilityRefusalSink(
  * carried onto the richest rung) did not compile and were dropped alone; it is
  * recorded only when a lift was actually dropped, not when the probe with every
  * lift failed and each was then kept.
+ *
+ * `"views"` records that one or more views did not compile against the stored
+ * columns and were dropped alone, each view on its own, while the source's other
+ * views kept serving.
  */
-export function recordServeShapeTierDrop(failedTier: number | "lifts"): void {
+export function recordServeShapeTierDrop(
+   failedTier: number | "lifts" | "views",
+): void {
    serveShapeTierDropCounter().add(1, { tier: String(failedTier) });
 }
 
@@ -530,10 +586,23 @@ export function recordServeShapeTypeFallback(
 }
 
 /**
- * Record a `storage=` serve-routing decision: `storage` = the query was served
- * from the materialized table via the virtual-source transform; `live_fallback`
- * = the transform was ineligible for this query (a refinement it can't
- * reproduce, an unbound source, mode not `on`) so it was served live;
+ * Record a stored column whose type does not serve as its declared Malloy type:
+ * at `build`, found in the landed table's schema; at `serve`, left off the
+ * serve shape (queries reading it are answered live).
+ */
+export function recordStoredColumnTypeMismatch(
+   stage: "build" | "serve",
+   declared: string,
+): void {
+   storedColumnTypeMismatchCounter().add(1, { stage, declared });
+}
+
+/**
+ * Record a `storage=` serve-routing decision, once per query, from the router's
+ * decision: `storage` = the query was served from the materialized table via
+ * the virtual-source transform; `live_fallback` = the transform was ineligible
+ * for this query (a refinement it can't reproduce, a stale or unbound source),
+ * so the next candidate (a colocated rollup) or the live warehouse answered;
  * `runtime_live_fallback` = the query DID route to storage and the store then
  * failed underneath it, and every binding's `freshnessFallback=live` allowed it
  * to degrade. That last one is the operationally interesting label: it means the
@@ -581,6 +650,23 @@ export function recordStorageServeRouting(
 }
 
 /**
+ * One candidate of a routed query: what the router did with it, and why.
+ * `run_failed` is a chosen variant whose run failed and fell back live.
+ */
+export function recordQueryVariantRouting(
+   variant: "served" | "storage" | "rollup",
+   outcome: "used" | "skipped",
+   reason:
+      | "none"
+      | "row_level_gate"
+      | "not_applicable"
+      | "does_not_answer"
+      | "run_failed",
+): void {
+   queryVariantRoutingCounter().add(1, { variant, outcome, reason });
+}
+
+/**
  * Record how a chained `storage=` source was built (see
  * {@link ChainedStorageBuildOutcome}). Only fired for a source that actually
  * reads a storage-materialized upstream — a single-source build emits nothing
@@ -591,6 +677,15 @@ export function recordChainedStorageBuild(
    outcome: ChainedStorageBuildOutcome,
 ): void {
    chainedStorageBuildCounter().add(1, { outcome });
+}
+
+/**
+ * Record a build that recomputed an upstream from raw because the upstream's
+ * manifest entry is at a different tier than it is declared on now (see
+ * {@link staleUpstreamEntryCounter}). Once per run per upstream.
+ */
+export function recordStaleUpstreamEntry(build: "colocated" | "storage"): void {
+   staleUpstreamEntryCounter().add(1, { build });
 }
 
 /**

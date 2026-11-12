@@ -33,7 +33,7 @@ import {
    compilePersistSources,
    duckdbTestConnections,
 } from "../test_helpers/incremental_test_harness";
-import { classifyDynamicTerms } from "./persist_dynamic_terms";
+import { classifyDynamicTerms } from "./materialization/plan/persist_dynamic_terms";
 
 let connections: FixedConnectionMap;
 

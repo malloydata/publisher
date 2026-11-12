@@ -19,12 +19,14 @@
  * why this shipped broken. Every test here uses two files for that reason;
  * collapsing one into a single file makes it pass while testing nothing.
  */
+import { unrecordedAudit } from "../../../src/service/access_record";
 import { describe, expect, it } from "bun:test";
 import { loadAuthorizeModel } from "../../../src/test_helpers/authorize_fixture";
 
 /** The gated source, in its own file so importers get an UNEXPORTED entry. */
 const GIVEN_ONLY_GATE = `##! experimental.givens
 
+#(secure)
 given:
   ROLE :: string
 
@@ -36,6 +38,7 @@ source: gated is duckdb.table('orgtable') extend {
 
 const ROW_FIELD_GATE = `##! experimental.givens
 
+#(secure)
 given:
   GROUPS :: number[]
 
@@ -45,7 +48,7 @@ source: gated is duckdb.table('orgtable') extend {
 }
 `;
 
-/** `compactResult` rows from `getQueryResults`, as this file's count shape. */
+/** `compactResult` rows from `runQuery`, as this file's count shape. */
 function countRows(result: unknown): { c: number }[] {
    return (result as { compactResult?: unknown }).compactResult as {
       c: number;
@@ -99,9 +102,15 @@ run: gated -> { aggregate: c }
          "nb.malloynb",
       );
       try {
-         const result = await model.executeNotebookCell(0, undefined, false, {
-            ROLE: "analyst",
-         });
+         const result = await model.executeNotebookCell(
+            unrecordedAudit(),
+            0,
+            undefined,
+            false,
+            {
+               ROLE: "analyst",
+            },
+         );
          // 4, not 0: an admitted given-only gate filters nothing away.
          expect(notebookCell(result).count).toBe(4);
       } finally {
@@ -124,9 +133,15 @@ run: gated -> { aggregate: c }
       try {
          // 2, not 4: the `2` is what proves the condition bound to `org_id`
          // rather than merely attaching somewhere and admitting everything.
-         const mine = await model.executeNotebookCell(0, undefined, false, {
-            GROUPS: [1],
-         });
+         const mine = await model.executeNotebookCell(
+            unrecordedAudit(),
+            0,
+            undefined,
+            false,
+            {
+               GROUPS: [1],
+            },
+         );
          const mineCell = notebookCell(mine);
          expect(mineCell.count).toBe(2);
          // The gate reached the WAREHOUSE, not just the IR — the proof the
@@ -135,9 +150,15 @@ run: gated -> { aggregate: c }
          expect(mineCell.sql).toMatch(/org_id/i);
 
          // Empty membership matches no row — a 200 with zero, not a 403.
-         const none = await model.executeNotebookCell(0, undefined, false, {
-            GROUPS: [],
-         });
+         const none = await model.executeNotebookCell(
+            unrecordedAudit(),
+            0,
+            undefined,
+            false,
+            {
+               GROUPS: [],
+            },
+         );
          expect(notebookCell(none).count).toBe(0);
       } finally {
          await cleanup();
@@ -168,9 +189,15 @@ run: gated -> { aggregate: c }
       try {
          expect(
             notebookCell(
-               await model.executeNotebookCell(0, undefined, false, {
-                  GROUPS: [1],
-               }),
+               await model.executeNotebookCell(
+                  unrecordedAudit(),
+                  0,
+                  undefined,
+                  false,
+                  {
+                     GROUPS: [1],
+                  },
+               ),
             ).count,
          ).toBe(2);
          // Runs second, against the same memoized runnable. A stacked or
@@ -178,16 +205,28 @@ run: gated -> { aggregate: c }
          // 4, and a lost graft shows up as 4 instead of 2 on a repeat.
          expect(
             notebookCell(
-               await model.executeNotebookCell(0, undefined, false, {
-                  GROUPS: [1, 2],
-               }),
+               await model.executeNotebookCell(
+                  unrecordedAudit(),
+                  0,
+                  undefined,
+                  false,
+                  {
+                     GROUPS: [1, 2],
+                  },
+               ),
             ).count,
          ).toBe(4);
          expect(
             notebookCell(
-               await model.executeNotebookCell(0, undefined, false, {
-                  GROUPS: [1],
-               }),
+               await model.executeNotebookCell(
+                  unrecordedAudit(),
+                  0,
+                  undefined,
+                  false,
+                  {
+                     GROUPS: [1],
+                  },
+               ),
             ).count,
          ).toBe(2);
 
@@ -239,9 +278,15 @@ run: plain -> { aggregate: c }
       );
       try {
          const cell = notebookCell(
-            await model.executeNotebookCell(0, undefined, false, {
-               GROUPS: [1],
-            }),
+            await model.executeNotebookCell(
+               unrecordedAudit(),
+               0,
+               undefined,
+               false,
+               {
+                  GROUPS: [1],
+               },
+            ),
          );
          expect(cell.count).toBe(4);
          expect(cell.sql).not.toMatch(/org_id/i);
@@ -279,26 +324,18 @@ query: tile is per_org -> { aggregate: c is count() }
       );
       try {
          // Seed data holds two orgs. A caller scoped to one sees ONE group.
-         const one = await model.getQueryResults(
-            undefined,
-            "tile",
-            undefined,
-            undefined,
-            false,
-            { GROUPS: [1] },
-         );
+         const one = await model.runQuery(unrecordedAudit(), {
+            queryName: "tile",
+            givens: { GROUPS: [1] },
+         });
          expect(countRows(one)).toEqual([{ c: 1 }]);
 
          // Scoped to both, the same tile counts two -- so the number tracks
          // the caller rather than being uniformly filtered or uniformly not.
-         const both = await model.getQueryResults(
-            undefined,
-            "tile",
-            undefined,
-            undefined,
-            false,
-            { GROUPS: [1, 2] },
-         );
+         const both = await model.runQuery(unrecordedAudit(), {
+            queryName: "tile",
+            givens: { GROUPS: [1, 2] },
+         });
          expect(countRows(both)).toEqual([{ c: 2 }]);
       } finally {
          await cleanup();
@@ -324,14 +361,10 @@ query: tile is gated -> { aggregate: c }
          "dash.malloy",
       );
       try {
-         const result = await model.getQueryResults(
-            undefined,
-            "tile",
-            undefined,
-            undefined,
-            false,
-            { GROUPS: [2] },
-         );
+         const result = await model.runQuery(unrecordedAudit(), {
+            queryName: "tile",
+            givens: { GROUPS: [2] },
+         });
          expect(countRows(result)).toEqual([{ c: 2 }]);
       } finally {
          await cleanup();
@@ -360,14 +393,10 @@ query: plain_tile is plain -> { aggregate: c }
          "dash.malloy",
       );
       try {
-         const result = await model.getQueryResults(
-            undefined,
-            "plain_tile",
-            undefined,
-            undefined,
-            false,
-            { GROUPS: [1] },
-         );
+         const result = await model.runQuery(unrecordedAudit(), {
+            queryName: "plain_tile",
+            givens: { GROUPS: [1] },
+         });
          // All 4 rows: the gate on the sibling source must not reach here.
          expect(countRows(result)).toEqual([{ c: 4 }]);
       } finally {

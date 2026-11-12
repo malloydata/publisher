@@ -11,10 +11,10 @@ The runtime loads from the root-relative `<script src="/sdk/publisher.js">` and 
 
 ## The query contract
 
-| Call | Returns | Use for |
-|---|---|---|
-| `Publisher.query(modelPath, malloy, opts?)` | `Promise<Array>` of rows | driving your own charts and tables |
-| `Publisher.queryFull(modelPath, malloy, opts?)` | `Promise<MalloyResult>` | handing to `<malloy-render>` |
+| Call                                            | Returns                  | Use for                            |
+| ----------------------------------------------- | ------------------------ | ---------------------------------- |
+| `Publisher.query(modelPath, malloy, opts?)`     | `Promise<Array>` of rows | driving your own charts and tables |
+| `Publisher.queryFull(modelPath, malloy, opts?)` | `Promise<MalloyResult>`  | handing to `<malloy-render>`       |
 
 - `modelPath` is the model FILE path within the package, with `/` separators (`"subscriptions.malloy"`, `"models/events.malloy"`). It is not the source name.
 - `malloy` is any query string, written in standard Malloy. This skill covers only the JavaScript glue, not Malloy syntax.
@@ -28,7 +28,7 @@ Past a single tile, an inline `<script>` becomes unmaintainable and untestable. 
 <head>
   <!-- Start the chart library's download now, without making anything wait for it.
        Only on pages that draw a chart. -->
-  <link rel="preload" as="script" href="./vendor/chart.umd.js">
+  <link rel="preload" as="script" href="./vendor/chart.umd.js" />
 </head>
 ...
 <script src="/sdk/publisher.js"></script>
@@ -42,10 +42,10 @@ A separation that keeps each piece testable and changeable on its own:
 
 - **`format.js`**. Pure functions only: number/date formatting, a series-align-by-month helper, status thresholds. No DOM, no globals. This is the file `node --test` can cover directly.
 - **`charts.js`**. Turns a prepared data object into a drawn chart; the only file that touches the chart library, and the one that loads it.
-- **`tiles.js`**. Your tiles as *data*: for each, its model/source/view (and target source, if any), plus a pure `build(rows)` that shapes query rows for the chart. This is the single source of truth for what each tile queries.
+- **`tiles.js`**. Your tiles as _data_: for each, its model/source/view (and target source, if any), plus a pure `build(rows)` that shapes query rows for the chart. This is the single source of truth for what each tile queries.
 - **`app.js`**. The thin entry point: reads `tiles.js`, runs the queries, wires results to the DOM. Adding a tile means adding a `tiles.js` entry, not editing `app.js`.
 
-Declare each tile's source and view names once, in `tiles.js`, and have everything else (render code, any agent prompt, tests) read from there. A second copy of those names in another file is the classic drift bug, and a *derived* name (`okr_4_4_2_targets` invented from a tile code) is simply wrong: a target source may have an irregular name or not exist at all. Read the model; don't compute names.
+Declare each tile's source and view names once, in `tiles.js`, and have everything else (render code, any agent prompt, tests) read from there. A second copy of those names in another file is the classic drift bug, and a _derived_ name (`okr_4_4_2_targets` invented from a tile code) is simply wrong: a target source may have an irregular name or not exist at all. Read the model; don't compute names.
 
 ## Patterns that work
 
@@ -54,7 +54,10 @@ These assume a `subscriptions.malloy` model whose `subscriptions` source defines
 Run a named view:
 
 ```js
-const rows = await Publisher.query("subscriptions.malloy", "run: subscriptions -> plan_mix");
+const rows = await Publisher.query(
+  "subscriptions.malloy",
+  "run: subscriptions -> plan_mix",
+);
 ```
 
 Refine a view from UI state by appending a `where:`. Restrict the values to ones you control (for example a dropdown populated from the model's own distinct values) and escape each interpolated value with a backslash before quotes and backslashes (Malloy rejects the SQL-style `''` doubling). An unescaped apostrophe in a value breaks out of the literal:
@@ -73,13 +76,16 @@ const rows = await Publisher.query(
 );
 ```
 
-Do not interpolate free-text or otherwise untrusted input into the query string. Route parameterized input through `opts.givens` (or the legacy `opts.filterParams`) instead: Publisher binds those values server-side as typed parameters, so they are never concatenated into query text and can't inject query syntax. (One nuance: a `filter<T>`-typed given takes Malloy filter syntax as its value, so validate it against a known set like any other input; scalar givens carry no syntax at all.) `opts.givens` is safe *parameterization*, not an authorization boundary: a client-supplied given is client-trusted unless a trusted tier upstream sets it from verified identity. Publisher has no per-package control that strips or finalizes one; identity-bound givens are a planned milestone, not a shipped feature. Where you must build query text from input, constrain it to a known set and escape it, or keep the filtering in model-defined views.
+Do not interpolate free-text or otherwise untrusted input into the query string. Route parameterized input through `opts.givens` (or the legacy `opts.filterParams`) instead: Publisher binds those values server-side as typed parameters, so they are never concatenated into query text and can't inject query syntax. (One nuance: a `filter<T>`-typed given takes Malloy filter syntax as its value, so validate it against a known set like any other input; scalar givens carry no syntax at all.) `opts.givens` is safe _parameterization_, not an authorization boundary on its own: a plain given is whatever the request carries. A given the model declares `#(secure)` is the host's to set: the trusted tier in front of Publisher resolves it from the viewer's verified identity and replaces anything the page sent, which is what makes a gate on it a real boundary (`docs/authorize.md`). A page should never try to set a secure given itself in a deployed app; on a bare local server with no trusted tier in front, whatever the page sends is used, so say so in the app if it lets the viewer pick one. Where you must build query text from input, constrain it to a known set and escape it, or keep the filtering in model-defined views.
 
 KPI or single-row view. Destructure element zero:
 
 ```js
-const [kpis] = await Publisher.query("subscriptions.malloy", "run: subscriptions -> kpis");
-el.textContent = kpis.active_mrr;   // the result is an array; kpis.active_mrr, not rows.active_mrr
+const [kpis] = await Publisher.query(
+  "subscriptions.malloy",
+  "run: subscriptions -> kpis",
+);
+el.textContent = kpis.active_mrr; // the result is an array; kpis.active_mrr, not rows.active_mrr
 ```
 
 Refresh a dashboard. Fire the tiles together:
@@ -87,7 +93,10 @@ Refresh a dashboard. Fire the tiles together:
 ```js
 const [planMix, byIndustry, kpisRows] = await Promise.all([
   Publisher.query("subscriptions.malloy", "run: subscriptions -> plan_mix"),
-  Publisher.query("subscriptions.malloy", "run: subscriptions -> mrr_by_industry"),
+  Publisher.query(
+    "subscriptions.malloy",
+    "run: subscriptions -> mrr_by_industry",
+  ),
   Publisher.query("subscriptions.malloy", "run: subscriptions -> kpis"),
 ]);
 ```
@@ -106,11 +115,15 @@ Get the numbers right. The fastest way to ship a wrong-but-convincing dashboard 
   // monthKey/monthLabel are your own format.js helpers: monthKey normalizes a
   // date to a "YYYY-MM" string; monthLabel formats it for display.
   // target may not cover every actual month; an absent month stays null, never 0.
-  const target = new Map(planRows.map((r) => [monthKey(r.plan_month), Number(r.target_revenue)]));
+  const target = new Map(
+    planRows.map((r) => [monthKey(r.plan_month), Number(r.target_revenue)]),
+  );
   const data = actualRows.map((r) => ({
     label: monthLabel(r.order_month),
     actual: Number(r.revenue),
-    target: target.has(monthKey(r.order_month)) ? target.get(monthKey(r.order_month)) : null,
+    target: target.has(monthKey(r.order_month))
+      ? target.get(monthKey(r.order_month))
+      : null,
   }));
   ```
 
@@ -125,7 +138,10 @@ const el = document.getElementById("out");
 el.textContent = "Loading...";
 Publisher.query("subscriptions.malloy", "run: subscriptions -> plan_mix")
   .then((rows) => {
-    if (!rows.length) { el.textContent = "No data."; return; }
+    if (!rows.length) {
+      el.textContent = "No data.";
+      return;
+    }
     render(rows);
   })
   .catch((err) => {
@@ -137,7 +153,10 @@ Render through `<malloy-render>`. `queryFull` returns the full Malloy result env
 
 ```js
 const el = document.querySelector("malloy-render");
-el.result = await Publisher.queryFull("subscriptions.malloy", "run: subscriptions -> plan_mix");
+el.result = await Publisher.queryFull(
+  "subscriptions.malloy",
+  "run: subscriptions -> plan_mix",
+);
 ```
 
 Publisher does not serve or bundle `<malloy-render>`; you must obtain a built component bundle matched to your model's Malloy version and vendor it into `public/` yourself, then confirm it accepts the envelope as-is. The `storefront` example draws with Chart.js and has no `<malloy-render>` element in its pages, so the component itself is not exercised there. A view tagged in the model (for example `# bar_chart`) drives how it draws.
@@ -154,16 +173,16 @@ If you validate the rendered page in a headless browser (Playwright or Puppeteer
 
 ## When the app fails
 
-| Symptom | Likely cause and fix |
-|---|---|
-| 404 or "model not found" | `modelPath` wrong. It is the file path (`"subscriptions.malloy"`), with `/` separators, not the source name. |
-| "source/view not defined" | View or source name guessed. Read the model (your environment's context tool, or open the `.malloy` file) and use the real names. |
-| Promise rejects, message starts `Publisher.query:` | Read `error.status` and `error.response` for the server's reason (compile error, missing required parameter, permission). |
-| Empty array when you expect rows | Filter value mismatch (case, spelling, type, or a non-ASCII character like `≤` or an en-dash in the literal). Copy the literal verbatim from the model, do not retype the user's paraphrase, and confirm it with a distinct-values query (`run: src -> { group_by: the_dimension }`). Quote strings, use `@` for dates. |
-| 400 on a given (ungated source) | An unknown given name (check spelling; names are case-sensitive), a required given left unset, or a value that doesn't fit the declared type. Malloy rejects it when preparing the query; supply declared givens via `opts.givens` with the right shape (see the givens type table). |
-| 403 on a query that should be allowed, when passing givens to a gated source | On a gated source, a bad given (unknown name or wrong-typed value) fails closed, so it looks like access denied rather than validation. A `#(authorize)` lock also answers 403 for a caller it simply does not admit. Check the given names and values against the model. |
-| KPI shows `undefined` | The result is an array. Read `rows[0].field` (or destructure `const [k] = ...`), not `rows.field`. |
-| A NEW file under `public/` 404s while the rest of the app serves | The server loaded the package **before** `public/` existed, and it is not watching. Without `--watch-env` the package is COPIED into `publisher_data/<env>/<pkg>/` at load and static files are served from that copy, so a file you add afterwards is never seen. Restart with `--watch-env <env>`, or mirror the file into the served copy. Verified by writing a probe file into the real package and getting a 404 while the copy served fine - and note the existing row below sends you looking under `public/`, which is exactly the wrong place for this one. |
-| Page loads in dev but is not listed or not served | The file is not under the package's `public/` directory. Publisher serves only `public/`; a page written anywhere else (for example `/tmp`) is never reachable at `/environments/<env>/packages/<pkg>/<file>`. |
-| Queries fail only when embedded cross-origin | Cookies are not sent cross-site. Serve same-origin, or pass a bearer token. |
-| No live reload | Watch mode is off. Start with `--watch-env <env>`; without it the events stream reports `mode: disabled` and never reloads. |
+| Symptom                                                                      | Likely cause and fix                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
+| ---------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 404 or "model not found"                                                     | `modelPath` wrong. It is the file path (`"subscriptions.malloy"`), with `/` separators, not the source name.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                         |
+| "source/view not defined"                                                    | View or source name guessed. Read the model (your environment's context tool, or open the `.malloy` file) and use the real names.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    |
+| Promise rejects, message starts `Publisher.query:`                           | Read `error.status` and `error.response` for the server's reason (compile error, missing required parameter, permission).                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            |
+| Empty array when you expect rows                                             | Filter value mismatch (case, spelling, type, or a non-ASCII character like `≤` or an en-dash in the literal). Copy the literal verbatim from the model, do not retype the user's paraphrase, and confirm it with a distinct-values query (`run: src -> { group_by: the_dimension }`). Quote strings, use `@` for dates.                                                                                                                                                                                                                                                                                                                                              |
+| 400 on a given (ungated source)                                              | An unknown given name (check spelling; names are case-sensitive), a required given left unset, or a value that doesn't fit the declared type. Malloy rejects it when preparing the query; supply declared givens via `opts.givens` with the right shape (see the givens type table).                                                                                                                                                                                                                                                                                                                                                                                 |
+| 403 on a query that should be allowed, when passing givens to a gated source | On a gated source, a bad given (unknown name or wrong-typed value) fails closed, so it looks like access denied rather than validation. A `#(authorize)` lock also answers 403 for a caller it simply does not admit. Check the given names and values against the model.                                                                                                                                                                                                                                                                                                                                                                                            |
+| KPI shows `undefined`                                                        | The result is an array. Read `rows[0].field` (or destructure `const [k] = ...`), not `rows.field`.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   |
+| A NEW file under `public/` 404s while the rest of the app serves             | The server loaded the package **before** `public/` existed, and it is not watching. Without `--watch-env` the package is published at load as an immutable version under `publisher_data/<env>/<pkg>/<version>/` and static files are served from it, so a file you add afterwards is never seen. Restart with `--watch-env <env>`, or bump `version` in `publisher.json` and publish again; never write into `publisher_data/`. Verified by writing a probe file into the real package and getting a 404 while the served package answered fine - and note the existing row below sends you looking under `public/`, which is exactly the wrong place for this one. |
+| Page loads in dev but is not listed or not served                            | The file is not under the package's `public/` directory. Publisher serves only `public/`; a page written anywhere else (for example `/tmp`) is never reachable at `/environments/<env>/packages/<pkg>/<file>`.                                                                                                                                                                                                                                                                                                                                                                                                                                                       |
+| Queries fail only when embedded cross-origin                                 | Cookies are not sent cross-site. Serve same-origin, or pass a bearer token.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
+| No live reload                                                               | Watch mode is off. Start with `--watch-env <env>`; without it the events stream reports `mode: disabled` and never reloads.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          |

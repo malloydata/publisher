@@ -44,7 +44,11 @@ function specOperations(apiDoc: string): string[] {
 describe("REST route parity with api-doc.yaml", () => {
    const apiDoc = readFileSync(resolve(REPO_ROOT, "api-doc.yaml"), "utf8");
    const served = registeredRoutes(buildRouteApp())
-      .filter((route) => !route.path.startsWith("/api/v0/projects"))
+      .filter(
+         (route) =>
+            route.path.startsWith("/api/v0/") &&
+            !route.path.startsWith("/api/v0/projects"),
+      )
       .map((route) => `${route.method} ${shape(route.path)}`)
       .sort();
 

@@ -1,23 +1,26 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
+import { afterEach, beforeEach, describe, expect, it, spyOn } from "bun:test";
 import {
-   afterEach,
-   beforeEach,
-   describe,
-   expect,
-   it,
-   mock,
-   spyOn,
-} from "bun:test";
-import { existsSync, mkdirSync, rmSync, writeFileSync } from "fs";
+   existsSync,
+   promises as fsPromises,
+   mkdirSync,
+   rmSync,
+   writeFileSync,
+} from "fs";
 import * as path from "path";
 import { TEMP_DIR_PATH } from "../constants";
 import {
    emptyRepository,
    stubStorageManager,
 } from "../test_helpers/storage_manager_stub";
+import { inMemoryVersionRegistry } from "../test_helpers/in_memory_version_registry";
 import { logger } from "../logger";
+import { EnvironmentStore } from "./environment_store";
+import { GIT_CLONE_OPTIONS } from "./package_sources";
+import type { simpleGit } from "simple-git";
+import { startedStore } from "../test_helpers/started_store";
 
 /**
  * Wiring coverage for the package git clone: the shallow-clone options must
@@ -27,11 +30,7 @@ import { logger } from "../logger";
  * throttling, label text) are covered in environment_store.spec.ts; this file
  * proves the plumbing.
  *
- * simple-git is module-mocked BEFORE the store is imported (the anchoring
- * spec's ordering idiom). The mock leaks forward in bun's shared module cache,
- * which is safe here: environment_store.ts is the only importer, and the only
- * spec that performs a real clone (connection.spec.ts) is credential-gated and
- * runs in its own workflow process.
+ * A fake simple-git and storage manager are injected into each store.
  */
 
 const serverRootPath = path.join(TEMP_DIR_PATH, "clone-spec-server-root");
@@ -59,58 +58,64 @@ let storageInitFails = false;
 let storageInitMessage = "storage init failed (test)";
 let cloneFailure: Error | null = null;
 
-mock.module("simple-git", () => ({
-   simpleGit: (factoryOpts?: typeof lastFactoryOpts) => {
-      lastFactoryOpts = factoryOpts ?? null;
-      return {
-         clone: (
-            repoUrl: string,
-            dir: string,
-            opts: Record<string, unknown>,
-            cb: (err: Error | null) => void,
-         ) => {
-            recordedClones.push({ repoUrl, dir, opts });
-            if (cloneFailure) {
-               cb(cloneFailure);
-               return;
-            }
-            // Materialize the fixture the extraction step expects: the repo
-            // contains a subdirectory per package (pkg-a plus a sibling used
-            // by the shared-clone counter test). Extraction only copies the
-            // named subdir, so an unused one is harmless to single-package
-            // tests.
-            for (const name of [PKG_NAME, "pkg-b"]) {
-               const pkgDir = path.join(dir, name);
-               mkdirSync(pkgDir, { recursive: true });
-               writeFileSync(
-                  path.join(pkgDir, "publisher.json"),
-                  JSON.stringify({ name }),
-               );
-            }
-            // Drive the progress handler the way the real plugin would.
-            lastFactoryOpts?.progress?.({
-               method: "clone",
-               stage: "receiving",
-               progress: 50,
-               processed: 1,
-               total: 2,
-            });
-            cb(null);
-         },
-      };
-   },
-}));
+const fakeSimpleGit = ((factoryOpts?: typeof lastFactoryOpts) => {
+   lastFactoryOpts = factoryOpts ?? null;
+   return {
+      clone: (
+         repoUrl: string,
+         dir: string,
+         opts: Record<string, unknown>,
+         cb: (err: Error | null) => void,
+      ) => {
+         recordedClones.push({ repoUrl, dir, opts });
+         if (cloneFailure) {
+            cb(cloneFailure);
+            return;
+         }
+         // Materialize the fixture the extraction step expects: the repo
+         // contains a subdirectory per package (pkg-a plus a sibling used
+         // by the shared-clone counter test). Extraction only copies the
+         // named subdir, so an unused one is harmless to single-package
+         // tests.
+         for (const name of [PKG_NAME, "pkg-b"]) {
+            const pkgDir = path.join(dir, name);
+            mkdirSync(pkgDir, { recursive: true });
+            writeFileSync(
+               path.join(pkgDir, "publisher.json"),
+               JSON.stringify({ name, version: "1.0.0" }),
+            );
+         }
+         // Drive the progress handler the way the real plugin would.
+         lastFactoryOpts?.progress?.({
+            method: "clone",
+            stage: "receiving",
+            progress: 50,
+            processed: 1,
+            total: 2,
+         });
+         cb(null);
+      },
+   };
+}) as unknown as typeof simpleGit;
 
-stubStorageManager({
+const storageManager = stubStorageManager({
    initialize: async () => {
       if (storageInitFails) throw new Error(storageInitMessage);
    },
-   getRepository: () => emptyRepository(),
+   // A configured package is published as a version at boot, so the store
+   // records it in a registry: fresh for each test (beforeEach).
+   getRepository: () => emptyRepository(versionRegistry),
 });
 
-const { EnvironmentStore, GIT_CLONE_OPTIONS } = await import(
-   "./environment_store"
-);
+let versionRegistry = inMemoryVersionRegistry();
+
+const newStore = () =>
+   startedStore(
+      new EnvironmentStore(serverRootPath, {
+         storageManager,
+         simpleGit: fakeSimpleGit,
+      }),
+   );
 
 describe("git clone wiring", () => {
    let stderrWrites: string[];
@@ -120,6 +125,7 @@ describe("git clone wiring", () => {
       rmSync(serverRootPath, { recursive: true, force: true });
       mkdirSync(serverRootPath, { recursive: true });
       recordedClones = [];
+      versionRegistry = inMemoryVersionRegistry();
       lastFactoryOpts = null;
       storageInitFails = false;
       storageInitMessage = "storage init failed (test)";
@@ -159,7 +165,7 @@ describe("git clone wiring", () => {
       );
 
       const infoSpy = spyOn(logger, "info");
-      const store = new EnvironmentStore(serverRootPath);
+      const store = newStore();
       await store.finishedInitialization;
 
       // The options object reaches .clone verbatim.
@@ -183,7 +189,8 @@ describe("git clone wiring", () => {
          `[${ENV_NAME}] cloning example/repo (${PKG_NAME}): receiving 50% (1/2)`,
       );
 
-      // The package extracted from the (fake) clone and mounted.
+      // The package extracted from the (fake) clone and was published as
+      // the version its publisher.json declares.
       expect(
          existsSync(
             path.join(
@@ -191,6 +198,7 @@ describe("git clone wiring", () => {
                "publisher_data",
                ENV_NAME,
                PKG_NAME,
+               "1.0.0",
                "publisher.json",
             ),
          ),
@@ -234,7 +242,7 @@ describe("git clone wiring", () => {
       );
 
       const infoSpy = spyOn(logger, "info");
-      const store = new EnvironmentStore(serverRootPath);
+      const store = newStore();
       await store.finishedInitialization;
       const infoMessages = infoSpy.mock.calls.map((c) => String(c[0]));
       infoSpy.mockRestore();
@@ -248,14 +256,113 @@ describe("git clone wiring", () => {
       expect(stderrWrites.join("")).toContain("packages=2");
    });
 
+   it("publishes a local package from where it is and mounts only the remote one", async () => {
+      // A local location is copied once, into its version's own staging, as
+      // a publish from that location copies it. Only a remote location goes
+      // through the shared mount, under the environment's `.staging`.
+      const localSource = path.join(serverRootPath, "local-src");
+      mkdirSync(localSource, { recursive: true });
+      writeFileSync(
+         path.join(localSource, "publisher.json"),
+         JSON.stringify({ name: "pkg-local", version: "1.0.0" }),
+      );
+      writeFileSync(
+         path.join(serverRootPath, "publisher.config.json"),
+         JSON.stringify({
+            frozenConfig: false,
+            environments: [
+               {
+                  name: ENV_NAME,
+                  packages: [
+                     { name: "pkg-local", location: localSource },
+                     {
+                        name: PKG_NAME,
+                        location: `https://github.com/example/repo/tree/main/${PKG_NAME}`,
+                     },
+                  ],
+                  connections: [],
+               },
+            ],
+         }),
+      );
+
+      const fetchSpy = spyOn(EnvironmentStore.prototype, "downloadPackageInto");
+      const store = newStore();
+      await store.finishedInitialization;
+      const fetchedFrom = new Map(
+         fetchSpy.mock.calls.map((call) => [call[1], call[2]]),
+      );
+      fetchSpy.mockRestore();
+
+      const envPath = path.join(serverRootPath, "publisher_data", ENV_NAME);
+      expect(fetchedFrom.get("pkg-local")).toBe(localSource);
+      const remoteMount = fetchedFrom.get(PKG_NAME)!;
+      expect(
+         remoteMount.startsWith(path.join(envPath, ".staging") + path.sep),
+      ).toBe(true);
+      expect(recordedClones).toHaveLength(1);
+      for (const name of ["pkg-local", PKG_NAME]) {
+         expect(
+            existsSync(path.join(envPath, name, "1.0.0", "publisher.json")),
+         ).toBe(true);
+      }
+      expect(existsSync(remoteMount)).toBe(false);
+   });
+
+   it("the next boot removes a mount a server stopped mid-boot left behind", async () => {
+      writeFileSync(
+         path.join(serverRootPath, "publisher.config.json"),
+         JSON.stringify({
+            frozenConfig: false,
+            environments: [
+               {
+                  name: ENV_NAME,
+                  packages: [
+                     {
+                        name: PKG_NAME,
+                        location: `https://github.com/example/repo/tree/main/${PKG_NAME}`,
+                     },
+                  ],
+                  connections: [],
+               },
+            ],
+         }),
+      );
+
+      // The first boot never removes its mount, as a server killed mid-clone
+      // would not.
+      const realRm = fsPromises.rm;
+      const rmSpy = spyOn(fsPromises, "rm").mockImplementation(
+         async (target, options) => {
+            const holdsClone = recordedClones.some((clone) =>
+               clone.dir.startsWith(String(target) + path.sep),
+            );
+            if (!holdsClone) await realRm(target, options);
+         },
+      );
+      try {
+         await newStore().finishedInitialization;
+      } finally {
+         rmSpy.mockRestore();
+      }
+      expect(recordedClones).toHaveLength(1);
+      const leftover = path.dirname(recordedClones[0].dir);
+      expect(existsSync(leftover)).toBe(true);
+
+      await newStore().finishedInitialization;
+      expect(existsSync(leftover)).toBe(false);
+   });
+
    it("direct download extracts the subdirectory and labels by repo alone", async () => {
-      // The controller add-package path: downloadGitHubDirectory is called
+      // The controller add-package path: downloadPackageInto clones
       // with the raw /tree/... location and no progress context.
-      const store = new EnvironmentStore(serverRootPath);
+      const store = newStore();
       await store.finishedInitialization;
 
       const target = path.join(serverRootPath, "publisher_data", "direct");
-      await store.downloadGitHubDirectory(
+      await store.downloadPackageInto(
+         ENV_NAME,
+         PKG_NAME,
          `https://github.com/example/repo/tree/main/${PKG_NAME}`,
          target,
       );
@@ -272,7 +379,7 @@ describe("git clone wiring", () => {
    });
 
    it("a failed clone rejects with the progress noise stripped", async () => {
-      const store = new EnvironmentStore(serverRootPath);
+      const store = newStore();
       await store.finishedInitialization;
       cloneFailure = new Error(
          "Cloning into '/x'...\nReceiving objects: 50% (5/10)\nfatal: early EOF",
@@ -281,7 +388,9 @@ describe("git clone wiring", () => {
       const target = path.join(serverRootPath, "publisher_data", "direct");
       let caught: Error | undefined;
       try {
-         await store.downloadGitHubDirectory(
+         await store.downloadPackageInto(
+            ENV_NAME,
+            PKG_NAME,
             "https://github.com/example/repo",
             target,
          );
@@ -299,7 +408,7 @@ describe("git clone wiring", () => {
 
    it("prints the failure token instead of the readiness line when boot fails", async () => {
       storageInitFails = true;
-      const store = new EnvironmentStore(serverRootPath);
+      const store = newStore();
       // initialize() swallows the failure by design; the promise resolves.
       await store.finishedInitialization;
       const output = stderrWrites.join("");
@@ -321,7 +430,7 @@ describe("git clone wiring", () => {
       storageInitFails = true;
       storageInitMessage =
          "attach failed: host=db port=5432 password=supersecret dbname=x";
-      const store = new EnvironmentStore(serverRootPath);
+      const store = newStore();
       await store.finishedInitialization;
 
       const failLine = stderrWrites

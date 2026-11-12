@@ -7,12 +7,15 @@ import * as os from "os";
 import * as path from "path";
 import { internalErrorToHttpError, PackageVersionError } from "../errors";
 import { Environment } from "../service/environment";
-import type { EnvironmentStore } from "../service/environment_store";
 import { DuckDBConnection } from "../storage/duckdb/DuckDBConnection";
 import { createDuckDBRepository } from "../storage/duckdb/DuckDBRepository";
 import type { ResourceRepository } from "../storage/DatabaseInterface";
 import { initializeSchema } from "../storage/duckdb/schema";
 import { PackageController } from "./package.controller";
+import { parsePackageName, VersionRef } from "../service/identity";
+import { fakeOf } from "../test_helpers/store_fakes";
+import type { PackageAdmin } from "../service/environment_ports";
+import { testRetrieval } from "../test_helpers/test_retrieval";
 
 // A versioned package with no `latest` yet: published under explicit
 // promotion, and no version made latest. Through the package routes'
@@ -117,11 +120,18 @@ beforeEach(async () => {
          if (row) await repo.deletePackage(row.id);
       },
    });
-   controller = new PackageController({
-      publisherConfigIsFrozen: false,
-      serverRootPath: root,
-      getEnvironment: async () => env,
-   } as unknown as EnvironmentStore);
+   controller = new PackageController(
+      fakeOf<PackageAdmin>({
+         publisherConfigIsFrozen: false,
+         getEnvironment: async () => env,
+      }),
+      testRetrieval(
+         fakeOf<PackageAdmin>({
+            publisherConfigIsFrozen: false,
+            getEnvironment: async () => env,
+         }),
+      ),
+   );
 
    await publishExplicit("1.0.0", 1);
    await publishExplicit("2.0.0", 2);
@@ -142,7 +152,12 @@ describe("a versioned package with no latest yet", () => {
    it("answers a request that names no version with 404 VERSION_NOT_FOUND", async () => {
       for (const versionId of [undefined, null, ""]) {
          const refused = await answered(
-            controller.getPackage(ENV_NAME, PKG, false, versionId),
+            controller.getPackage(
+               ENV_NAME,
+               PKG,
+               false,
+               VersionRef.parse(versionId),
+            ),
          );
          expect(refused).toMatchObject({
             status: 404,
@@ -156,16 +171,25 @@ describe("a versioned package with no latest yet", () => {
       expect(
          await answered(controller.getPackage(ENV_NAME, PKG, true)),
       ).toMatchObject({ status: 404, reason: "VERSION_NOT_FOUND" });
-      expect(await answered(env.getPackage(PKG))).toMatchObject({
+      expect(
+         await answered(env.getPackage(parsePackageName(PKG))),
+      ).toMatchObject({
          status: 404,
          reason: "VERSION_NOT_FOUND",
       });
    });
 
    it("serves a request that names a version", async () => {
-      const named = await controller.getPackage(ENV_NAME, PKG, false, "1.0.0");
+      const named = await controller.getPackage(
+         ENV_NAME,
+         PKG,
+         false,
+         VersionRef.parse("1.0.0"),
+      );
       expect(named).toMatchObject({ versionId: "1.0.0", latestVersion: null });
-      const other = await env.getPackage(PKG, false, { versionId: "2.0.0" });
+      const other = await env.getPackage(parsePackageName(PKG), false, {
+         versionId: VersionRef.parse("2.0.0"),
+      });
       expect(other.getPackageMetadata().versionId).toBe("2.0.0");
    });
 

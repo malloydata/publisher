@@ -28,6 +28,7 @@ import fs from "fs";
 import os from "os";
 import path from "path";
 import { RestE2EEnv, startRestE2E } from "../../harness/rest_e2e";
+import { installVariables } from "../../../src/test_helpers/settings_env";
 
 const ENV_NAME = "empty-version-id-env";
 const FLAG = "PUBLISHER_PACKAGE_VERSIONING";
@@ -39,11 +40,19 @@ const JSON_HEADERS = { "content-type": "application/json" };
 let env: (RestE2EEnv & { stop(): Promise<void> }) | undefined;
 let baseUrl = "";
 let root = "";
-const savedFlag = process.env[FLAG];
+/** The variables this suite sets, installed over the process's own settings. */
+const variables: Record<string, string | undefined> = {};
+let restoreSettings: (() => void) | undefined;
+
+/** Give the in-process server `name` at `value`, or unset, as a restart with it would. */
+function setVariable(name: string, value: string | undefined): void {
+   variables[name] = value;
+   restoreSettings?.();
+   restoreSettings = installVariables(variables);
+}
 
 function setFlag(value: string | undefined): void {
-   if (value === undefined) delete process.env[FLAG];
-   else process.env[FLAG] = value;
+   setVariable(FLAG, value);
 }
 
 /**
@@ -348,7 +357,7 @@ describe("an empty versionId answers as no versionId", () => {
       expect(created.status).toBeLessThan(300);
 
       // Off: installed in place, with no versions.
-      setFlag(undefined);
+      setFlag("off");
       const plain = await publish(
          PLAIN,
          writePackage(path.join(root, "plain"), { name: PLAIN }, 0),
@@ -377,7 +386,7 @@ describe("an empty versionId answers as no versionId", () => {
             version,
          );
       }
-      setFlag(undefined);
+      setFlag("off");
    }, 180_000);
 
    afterAll(async () => {
@@ -386,7 +395,7 @@ describe("an empty versionId answers as no versionId", () => {
       }).catch(() => undefined);
       await env?.stop();
       fs.rmSync(root, { recursive: true, force: true });
-      setFlag(savedFlag);
+      restoreSettings?.();
    });
 
    for (const kind of KINDS) {
@@ -402,7 +411,7 @@ describe("an empty versionId answers as no versionId", () => {
             expect(built.status).toBe("MANIFEST_FILE_READY");
          }, 180_000);
 
-         afterAll(() => setFlag(undefined));
+         afterAll(() => setFlag("off"));
 
          it("answers each report, dashboard, notebook cell, skill, agent and connection-table read the same with versionId= as with none", async () => {
             await expectEmptyReadsAsNone(kind.pkg, kind.n);
@@ -572,11 +581,14 @@ describe("an empty versionId answers as no versionId", () => {
                "notes.malloynb",
             ]);
          } finally {
-            setFlag(undefined);
+            setFlag("off");
          }
       });
 
-      it("creates, then replaces, a report in a package with no versions the same with ?versionId= as with none", async () => {
+      it("answers a report write to a package with no versions the same with ?versionId= as with none", async () => {
+         // PLAIN is published from a location, so both writes are refused (409):
+         // a reload fetches it again and would discard the report. What this
+         // pins is that an empty versionId reads exactly as none.
          const results: Record<string, unknown> = {};
          for (const [label, stem, q] of [
             ["none", "written_with_none", ""],
@@ -604,9 +616,8 @@ describe("an empty versionId answers as no versionId", () => {
          }
          expect(results.empty).toEqual(results.none);
          expect(results.none).toMatchObject({
-            created: { status: 201, body: { created: true } },
-            replaced: { status: 200, body: { created: false } },
-            served: { status: 200, body: { title: "Second" } },
+            created: { status: 409 },
+            replaced: { status: 409 },
          });
       });
    });

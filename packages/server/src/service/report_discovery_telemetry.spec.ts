@@ -21,6 +21,7 @@ import {
 import { Environment } from "./environment";
 import type { Package } from "./package";
 import { linesMentioning } from "../test_helpers/log_lines";
+import { parsePackageName } from "./identity";
 
 const PACKAGE = "report-discovery-telemetry";
 
@@ -104,7 +105,7 @@ describe("report discovery telemetry", () => {
          for (const [name, text] of Object.entries(FILES))
             await fs.writeFile(path.join(stagingPath, name), text);
       });
-      return env.getPackage(PACKAGE, false);
+      return env.getPackage(parsePackageName(PACKAGE), false);
    };
 
    it("logs one info summary per load, and each finding once at debug", async () => {

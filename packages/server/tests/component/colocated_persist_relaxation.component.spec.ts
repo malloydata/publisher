@@ -26,6 +26,7 @@
 // either — a pre-existing property of how `run:` resolves a raw source type,
 // unrelated to this relaxation. Every persist fixture elsewhere in this
 // codebase already uses the query_source shape for exactly this reason.
+import { unrecordedAudit } from "../../src/service/access_record";
 import { DuckDBConnection } from "@malloydata/db-duckdb";
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import * as fs from "fs/promises";
@@ -35,6 +36,8 @@ import * as path from "path";
 import { AccessDeniedError } from "../../src/errors";
 import { Environment } from "../../src/service/environment";
 import type { Package } from "../../src/service/package";
+import { writePackageFiles } from "../../src/test_helpers/temp_package";
+import { parsePackageName } from "../../src/service/identity";
 
 let rootDir: string;
 let envPath: string;
@@ -55,17 +58,16 @@ async function loadPackageFiles(
    files: Record<string, string>,
 ): Promise<Package> {
    const dir = path.join(envPath, "pkg");
-   await fs.mkdir(dir, { recursive: true });
-   await fs.writeFile(
-      path.join(dir, "publisher.json"),
-      JSON.stringify({ name: "pkg", description: "fixture" }),
+   writePackageFiles(
+      dir,
+      {
+         ...files,
+      },
+      { manifest: { name: "pkg", description: "fixture" } },
    );
-   for (const [name, contents] of Object.entries(files)) {
-      await fs.writeFile(path.join(dir, name), contents);
-   }
    const env = await Environment.create("testEnv", envPath, []);
    await env.addPackage("pkg");
-   return env.getPackage("pkg", false);
+   return env.getPackage(parsePackageName("pkg"), false);
 }
 
 /** Run `query` against `model.malloy` with the given `givens` and return rows. */
@@ -76,14 +78,10 @@ async function run(
 ) {
    const model = pkg.getModel("model.malloy");
    if (!model) throw new Error("model.malloy did not load");
-   const { compactResult } = await model.getQueryResults(
-      undefined,
-      undefined,
+   const { compactResult } = await model.runQuery(unrecordedAudit(), {
       query,
-      undefined,
-      undefined,
-      givens as never,
-   );
+      givens: givens as never,
+   });
    return (compactResult as Record<string, unknown>[]).map((row) =>
       Object.fromEntries(
          Object.entries(row).map(([k, v]) => [
@@ -136,6 +134,7 @@ describe("colocated persist + row-level #(access_filter): compose end to end", (
             "model.malloy": `##! experimental.persistence
 ##! experimental.givens
 
+#(secure)
 given: ORG :: number
 
 source: base is duckdb.sql("""
@@ -197,6 +196,7 @@ source: orders is base -> { select: org_id, amount } extend {}
             "model.malloy": `##! experimental.persistence
 ##! experimental.givens
 
+#(secure)
 given: ORG :: number
 
 #(access_filter) org_id = $ORG
@@ -253,6 +253,7 @@ source: derived is locked extend {} -> { select: org_id, amount }
             "model.malloy": `##! experimental.persistence
 ##! experimental.givens
 
+#(secure)
 given: GROUPS :: number[]
 
 source: base is duckdb.sql("""
@@ -288,6 +289,7 @@ source: locked_out is base -> { select: org_id, amount } extend {}
             "model.malloy": `##! experimental.persistence
 ##! experimental.givens
 
+#(secure)
 given: ORG :: number
 
 source: base is duckdb.sql("""
@@ -317,7 +319,7 @@ source: orders is base -> { select: org_id, amount } extend {}
          // not fall through to serving every row unfiltered. It refuses
          // OPAQUELY — Malloy's own binding failure names the gate's given
          // ("Given 'ORG' has no value and no default"), which a denied caller
-         // must never learn (`docs/authorize.md`), so `getQueryResults` maps
+         // must never learn (`docs/authorize.md`), so `runQuery` maps
          // it back to the same 403 a whole-source gate always returned.
          const denial = await run(
             pkg,
@@ -345,6 +347,7 @@ source: orders is base -> { select: org_id, amount } extend {}
             "model.malloy": `##! experimental.persistence
 ##! experimental.givens
 
+#(secure)
 given: ORG :: number
 
 source: raw is duckdb.sql("""
@@ -400,6 +403,7 @@ source: rollup is base_orders -> { select: org_id, amount }
          const pkg = await loadPackageFiles({
             "model.malloy": `##! experimental { persistence composite_sources givens }
 
+#(secure)
 given:
   GROUPS :: number[]
 
@@ -459,6 +463,7 @@ source: comp is combo -> { select: org_id, amount }
          const pkg = await loadPackageFiles({
             "model.malloy": `##! experimental { persistence givens }
 
+#(secure)
 given: ORG :: string
 
 source: base is duckdb.sql("""
@@ -504,6 +509,7 @@ source: orders is base -> { select: id, org_id, amount } extend {
          const pkg = await loadPackageFiles({
             "model.malloy": `##! experimental { persistence givens }
 
+#(secure)
 given: GROUPS :: string[]
 
 source: base is duckdb.sql("""
@@ -556,6 +562,7 @@ source: orders is base -> { select: id, org_id, amount }
                "model.malloy": `##! experimental.persistence
 ##! experimental.givens
 
+#(secure)
 given: ORG :: number
 
 source: base is duckdb.sql("""

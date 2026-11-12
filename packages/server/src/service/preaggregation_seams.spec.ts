@@ -11,6 +11,7 @@
 // that routing a live query through the synthesized model does not change the
 // answer.
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
+import { unrecordedAudit } from "./access_record";
 import * as fs from "fs/promises";
 import * as os from "os";
 import * as path from "path";
@@ -23,6 +24,9 @@ import {
 import { AccessDeniedError } from "../errors";
 import { Environment } from "./environment";
 import type { Package } from "./package";
+import { writePackageFiles } from "../test_helpers/temp_package";
+import { governorOf } from "../test_helpers/governor";
+import { parsePackageName } from "./identity";
 
 let rootDir: string;
 let envPath: string;
@@ -68,17 +72,16 @@ async function loadPackageFiles(
    files: Record<string, string>,
 ): Promise<Package> {
    const dir = path.join(envPath, "pkg");
-   await fs.mkdir(dir, { recursive: true });
-   await fs.writeFile(
-      path.join(dir, "publisher.json"),
-      JSON.stringify({ name: "pkg", description: "fixture" }),
+   writePackageFiles(
+      dir,
+      {
+         ...files,
+      },
+      { manifest: { name: "pkg", description: "fixture" } },
    );
-   for (const [name, contents] of Object.entries(files)) {
-      await fs.writeFile(path.join(dir, name), contents);
-   }
    const env = await Environment.create("testEnv", envPath, []);
    await env.addPackage("pkg");
-   return env.getPackage("pkg", false);
+   return env.getPackage(parsePackageName("pkg"), false);
 }
 
 async function loadPackage(model = MODEL): Promise<Package> {
@@ -93,14 +96,10 @@ async function runGatedQuery(
 ) {
    const model = pkg.getModel("model.malloy");
    if (!model) throw new Error("model.malloy did not load");
-   const { compactResult } = await model.getQueryResults(
-      undefined,
-      undefined,
+   const { compactResult } = await model.runQuery(unrecordedAudit(), {
       query,
-      undefined,
-      undefined,
-      givens as never,
-   );
+      givens: givens as never,
+   });
    return (compactResult as Record<string, unknown>[]).map((row) =>
       Object.fromEntries(
          Object.entries(row).map(([k, v]) => [
@@ -271,14 +270,10 @@ describe("the serve seam", () => {
    ) {
       const model = pkg.getModel("model.malloy");
       if (!model) throw new Error("model.malloy did not load");
-      const { compactResult } = await model.getQueryResults(
-         undefined,
-         undefined,
+      const { compactResult } = await model.runQuery(unrecordedAudit(), {
          query,
-         undefined,
-         undefined,
-         givens as never,
-      );
+         givens: givens as never,
+      });
       // Numbers arrive as bigint from DuckDB sums; normalize so the assertions
       // read as the numbers an author would expect.
       return (compactResult as Record<string, unknown>[]).map((row) =>
@@ -421,6 +416,98 @@ source: regions is duckdb.sql("""
    );
 
    it(
+      "routes a query through index.malloy's re-export to the declaring model's rollup (#7096)",
+      async () => {
+         // The recommended curation: `index.malloy` imports the file that
+         // declares the rollup and re-exports `orders`. Both models plan the
+         // rollup, under one name and one address, so it is one table, not a
+         // collision, and the curated surface routes to it.
+         const pkg = await loadPackageFiles({
+            "sub/jaffle.malloy": `##! experimental { persistence composite_sources }
+source: orders is duckdb.sql("""
+  SELECT * FROM (VALUES (10, 'A'), (20, 'A'), (30, 'B')) AS t(amount, category)
+""") extend {
+  #@ preaggregate grain="category"
+  measure: total is amount.sum()
+}
+`,
+            "index.malloy": `import "sub/jaffle.malloy"
+export { orders }
+`,
+         });
+         // One content address for both models' rollups: one table.
+         const rollupIds = [...pkg.getPreaggregateEntityIds()];
+         expect(rollupIds).toHaveLength(1);
+         // Bound to a table that does not exist, so a routed query fails
+         // naming it, and a live one would quietly answer from the base.
+         pkg.bindColocatedServeManifest(
+            Object.fromEntries(
+               rollupIds.map((id) => [
+                  id,
+                  {
+                     tableName: "no_such_rollup_table",
+                     connectionName: "duckdb",
+                  },
+               ]),
+            ),
+         );
+         const query =
+            "run: orders -> { group_by: category; aggregate: total; order_by: category }";
+         // With an index.malloy, only it is queryable: the curated surface.
+         const model = pkg.getModel("index.malloy");
+         expect(model).toBeDefined();
+         await expect(
+            model!.runQuery(unrecordedAudit(), { query }),
+         ).rejects.toThrow(/no_such_rollup_table/);
+      },
+      { timeout: 60000 },
+   );
+
+   it(
+      "routes a query through a model that imports the rollup's base without re-exporting it (#6646)",
+      async () => {
+         // No index.malloy, so every model is queryable. `report.malloy`
+         // imports `orders` but exports only its own source.
+         // Its companion used to rename-import the base from report.malloy,
+         // which hands an importer only what it exports, so the companion
+         // failed to compile and every query here ran live.
+         const pkg = await loadPackageFiles({
+            "sub/jaffle.malloy": `##! experimental { persistence composite_sources }
+source: orders is duckdb.sql("""
+  SELECT * FROM (VALUES (10, 'A'), (20, 'A'), (30, 'B')) AS t(amount, category)
+""") extend {
+  #@ preaggregate grain="category"
+  measure: total is amount.sum()
+}
+`,
+            "report.malloy": `import { orders } from "sub/jaffle.malloy"
+source: notes is duckdb.sql("SELECT 1 AS id")
+export { notes }
+`,
+         });
+         const rollupIds = [...pkg.getPreaggregateEntityIds()];
+         expect(rollupIds).toHaveLength(1);
+         pkg.bindColocatedServeManifest(
+            Object.fromEntries(
+               rollupIds.map((id) => [
+                  id,
+                  {
+                     tableName: "no_such_rollup_table",
+                     connectionName: "duckdb",
+                  },
+               ]),
+            ),
+         );
+         await expect(
+            pkg.getModel("report.malloy")!.runQuery(unrecordedAudit(), {
+               query: "run: orders -> { group_by: category; aggregate: total; order_by: category }",
+            }),
+         ).rejects.toThrow(/no_such_rollup_table/);
+      },
+      { timeout: 60000 },
+   );
+
+   it(
       "answers a given-supplying query, which cannot route",
       async () => {
          // A model-level `given:` does not cross the companion's `import`, so the
@@ -461,14 +548,10 @@ source: orders is duckdb.sql("""
             ),
          );
          const model = pkg.getModel("model.malloy");
-         const { compactResult } = await model!.getQueryResults(
-            undefined,
-            undefined,
-            "run: orders -> { group_by: category; aggregate: total; order_by: category }",
-            undefined,
-            undefined,
-            { MIN_AMOUNT: 15 },
-         );
+         const { compactResult } = await model!.runQuery(unrecordedAudit(), {
+            query: "run: orders -> { group_by: category; aggregate: total; order_by: category }",
+            givens: { MIN_AMOUNT: 15 },
+         });
          // 15 excludes the amount-10 row, so this also proves the given was
          // applied rather than dropped on the way through.
          expect(
@@ -960,7 +1043,9 @@ source: ungated is duckdb.sql("""
          if (!model) throw new Error("model.malloy did not load");
          expect(
             (
-               model as unknown as { hasAnyAuthorizeNote(): boolean }
+               governorOf(model) as unknown as {
+                  hasAnyAuthorizeNote(): boolean;
+               }
             ).hasAnyAuthorizeNote(),
          ).toBe(true);
       },

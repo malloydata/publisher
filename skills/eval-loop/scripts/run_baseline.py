@@ -138,6 +138,12 @@ TOOL_ARM_TOOLS = ("mcp__publisher__get_skill",)
 # `get_status` and `list_packages` reveal the other packages on the server and
 # are no use to an answerer given its scope in the prompt.
 #
+#   report_api              a second query path, under REST rules rather than
+#                           execute_query's; its answer is not one about the model.
+#   show_report             draws a panel for a person; a headless answerer gets
+#   list_reports            only text, and report titles and descriptions are
+#                           discovery outside get_context, the thing measured.
+#
 # Enumerated, because deny beats allow: naming the server (`mcp__publisher`,
 # or `mcp__publisher__*`) removes ALL of its tools including the ones wanted,
 # verified 2026-09-08.
@@ -146,7 +152,10 @@ ANSWER_DENIED = ("mcp__publisher__compile_model",
                  "mcp__publisher__search_database_schema",
                  "mcp__publisher__reload_package",
                  "mcp__publisher__get_status",
-                 "mcp__publisher__list_packages")
+                 "mcp__publisher__list_packages",
+                 "mcp__publisher__list_reports",
+                 "mcp__publisher__show_report",
+                 "mcp__publisher__report_api")
 
 # Every tool this server exposes, so the two lists above can be checked to
 # PARTITION it rather than merely not overlap. That is the answer to the one
@@ -158,8 +167,9 @@ ANSWER_DENIED = ("mcp__publisher__compile_model",
 # a mismatch here is a decision, not a lint.
 PUBLISHER_MCP_TOOLS = ("compile_model", "execute_query", "get_agent",
                        "get_context", "get_skill", "get_status",
-                       "list_packages", "reload_package",
-                       "search_database_schema", "search_malloy_docs")
+                       "list_packages", "list_reports", "reload_package",
+                       "report_api", "search_database_schema",
+                       "search_malloy_docs", "show_report")
 # The platform target: a hosted MCP server exposing the same two operations
 # under its own names. The CLI addresses a tool as `mcp__<server>__<tool>`, so
 # both halves are configuration -- `--hosted-mcp-server` names the server (which
@@ -827,7 +837,7 @@ def server_alive(a: argparse.Namespace) -> bool:
 
     A dead Publisher returns an empty body that the answerer reads as a bad
     answer and the judge scores as a miss (Publisher's own friction log, item
-    7; the VideoAmp run's server died mid-session and a raw probe caught it,
+    7; a past run's server died mid-session and a raw probe caught it,
     not the harness). So every attempt asks first. Local: the REST root.
     Platform: any HTTP answer from the MCP URL -- it says 405 to a bare GET,
     which is fine; refusal or timeout is not.
@@ -3800,7 +3810,7 @@ def main(argv: list[str] | None = None) -> int:
 
     # Lint the set's expected entities before a dollar is spent: an id the
     # model does not declare is a stale set, not a retrieval miss, and both
-    # VideoAmp platform runs carried five of them (the set was written against
+    # platform runs of one set carried five of them (the set was written against
     # a later package) which read as misses until someone checked by hand.
     declared = None
     if a.target != "platform" and a.publisher:

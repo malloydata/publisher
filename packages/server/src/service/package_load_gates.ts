@@ -8,14 +8,36 @@ import {
    PackageManifestError,
    ServiceUnavailableError,
 } from "../errors";
+import { operatorLlmConfigured } from "../config";
 import { logger } from "../logger";
 import type { LoadPackageOutcome } from "../package_load/package_load_pool";
-import { llmConfigured } from "../providers/active";
-import type { Package } from "./package";
+import { PackageLoadProtocolError } from "../package_load/protocol_decode";
+import type { PreparedCeilingQueries } from "./classification_report";
+import type { components } from "../api";
 import {
    DEFAULT_PACKAGE_RETRIEVAL,
    assertRequiredStagesAvailable,
-} from "./package_retrieval";
+} from "./package_retrieval_settings";
+
+type ApiPackage = components["schemas"]["Package"];
+type ApiPackageWarning = NonNullable<ApiPackage["warnings"]>[number];
+/** The listing fields a load is judged under. */
+type Listing = Pick<ApiPackage, "explores" | "queryableSources">;
+
+/** What the load gates read from the package they judge; `Package` implements it. */
+export interface LoadGatedPackage {
+   getPackageName(): string;
+   prepareCeilingQueries(): Promise<PreparedCeilingQueries>;
+   underListing<T>(listing: Listing | undefined, judge: () => T): T;
+   formatInvalidExplores(exploresOverride?: string[]): string;
+   formatInvalidPersistencePolicy(): string;
+   formatInvalidIncrementalPolicy(): string;
+   formatInvalidPreaggregatePolicy(): string;
+   formatClassificationLeaks(): string;
+   formatCarriesCeilingLeaks(prepared: PreparedCeilingQueries): string;
+   preaggregateAccessWarnings(): ApiPackageWarning[];
+   persistenceCollisionWarnings(): string[];
+}
 
 /**
  * Await a package-load worker job, rewrapping a pool-infrastructure failure as
@@ -29,7 +51,9 @@ export async function loadOutcomeOrThrow(
    } catch (err: unknown) {
       // A pool rejection is an infra failure (shutdown, spawn, crash, RPC
       // timeout) the client should retry. Compile and manifest errors keep
-      // their class across the wire and bubble untouched for their 4xx.
+      // their class across the wire and bubble untouched for their 4xx. A
+      // protocol error is not retryable (the worker bundle disagrees with
+      // the server), so it bubbles untouched as an internal 500.
       const realError =
          err instanceof Error
             ? err
@@ -37,7 +61,8 @@ export async function loadOutcomeOrThrow(
       if (
          realError instanceof MalloyError ||
          realError instanceof ModelCompilationError ||
-         realError instanceof PackageManifestError
+         realError instanceof PackageManifestError ||
+         realError instanceof PackageLoadProtocolError
       ) {
          throw realError;
       }
@@ -59,7 +84,7 @@ export function assertOutcomeStagesAvailable(
 ): void {
    assertRequiredStagesAvailable(
       outcome.packageMetadata.retrieval ?? DEFAULT_PACKAGE_RETRIEVAL,
-      llmConfigured(),
+      operatorLlmConfigured(),
    );
 }
 
@@ -69,7 +94,7 @@ export function assertOutcomeStagesAvailable(
  * never falls back to listing everything). Warn so the misconfig is
  * visible; the publish path rejects it outright (see package.controller).
  */
-export function warnInvalidExplores(pkg: Package): void {
+export function warnInvalidExplores(pkg: LoadGatedPackage): void {
    const packageName = pkg.getPackageName();
    const invalidMsg = pkg.formatInvalidExplores();
    if (invalidMsg) {
@@ -83,9 +108,22 @@ export function warnInvalidExplores(pkg: Package): void {
 /**
  * The manifest and persistence policy gates a freshly loaded package passes
  * before it serves. Most warn; an invalid incremental refresh or
- * pre-aggregation declaration fails the load.
+ * pre-aggregation declaration fails the load. With a `listing`, the package is
+ * judged as that listing would serve it, and keeps its own.
  */
-export function applyLoadGates(pkg: Package): void {
+export async function applyLoadGates(
+   pkg: LoadGatedPackage,
+   listing?: Listing,
+): Promise<void> {
+   // The only await, ahead of the listing, so no request is served under one the gates have not judged.
+   const prepared = await pkg.prepareCeilingQueries();
+   pkg.underListing(listing, () => judgeLoadGates(pkg, prepared));
+}
+
+function judgeLoadGates(
+   pkg: LoadGatedPackage,
+   prepared: PreparedCeilingQueries,
+): void {
    const packageName = pkg.getPackageName();
    warnInvalidExplores(pkg);
    // Same fail-safe split: warn at load, reject at publish.
@@ -114,6 +152,25 @@ export function applyLoadGates(pkg: Package): void {
       );
       throw new BadRequestError(invalidIncremental);
    }
+   // A `#(carries)` ceiling is strict at load too: a surface that lists what
+   // it carries must not serve a field outside the list, and a warning would
+   // leave it serving. The message names every leak so one fix clears them.
+   const leaks = pkg.formatClassificationLeaks();
+   if (leaks) {
+      logger.error(
+         `Package ${packageName} exposes a field outside a source's #(carries)`,
+         { packageName, detail: leaks },
+      );
+      throw new BadRequestError(leaks);
+   }
+   const ceiling = pkg.formatCarriesCeilingLeaks(prepared);
+   if (ceiling) {
+      logger.error(
+         `Package ${packageName} has a query that reads past a source's #(carries)`,
+         { packageName, detail: ceiling },
+      );
+      throw new BadRequestError(ceiling);
+   }
    // `#@ preaggregate` is strict at load too (see
    // formatInvalidPreaggregatePolicy), except the access-modifier pair, which
    // only warns.
@@ -139,7 +196,8 @@ export function applyLoadGates(pkg: Package): void {
       throw new BadRequestError(invalidPreaggregate);
    }
    // Persist-target collisions only warn at load, whatever
-   // PERSIST_COLLISION_ENFORCE says; that flag governs publish rejection.
+   // PERSIST_COLLISION_ENFORCE says; that flag (on by default) governs publish
+   // and build rejection.
    const collisions = pkg.persistenceCollisionWarnings();
    if (collisions.length > 0) {
       logger.warn(`Package ${packageName} has persist-target collisions`, {

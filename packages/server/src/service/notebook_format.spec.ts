@@ -8,11 +8,11 @@
  * claim against the compiler, so a Malloy upgrade that breaks it fails here
  * rather than in the notebook reader built on it.
  *
- * Fixtures: `tests/fixtures/notebooks-malloyyo/`. Each is compiled through
- * `Model.create`, the server's in-process compile path. The rewritten
+ * Fixtures: `tests/fixtures/notebooks-malloyyo/`, loaded as a package through
+ * the package-load worker, the production compile path. The rewritten
  * variants compile on a bare `Runtime` instead, because they assert problems
- * and `Model.create` wraps a compile failure in an error that keeps the
- * message but drops them.
+ * and a load wraps a compile failure in an error that keeps the message but
+ * drops them.
  */
 import { DuckDBConnection } from "@malloydata/db-duckdb";
 import {
@@ -21,7 +21,6 @@ import {
    InMemoryURLReader,
    MalloyError,
    Runtime,
-   type Connection,
    type ModelDef,
 } from "@malloydata/malloy";
 import { parseTag } from "@malloydata/malloy-tag";
@@ -29,7 +28,12 @@ import { afterAll, beforeAll, describe, expect, it } from "bun:test";
 import * as fs from "fs";
 import * as path from "path";
 import { modelAnnotations, ownModelAnnotations } from "./annotations";
-import { Model } from "./model";
+import {
+   loadPackageCopy,
+   usePackageLoadPool,
+   type LoadedTempPackage,
+} from "../test_helpers/temp_package";
+import { type Model } from "./model";
 
 const FIXTURE_DIR = path.resolve(
    __dirname,
@@ -97,24 +101,26 @@ function docStringNotes(
 }
 
 describe("Malloyyo notebook format (compiler contract)", () => {
+   usePackageLoadPool();
+   let loaded: LoadedTempPackage;
    let duckdb: DuckDBConnection;
    const models = new Map<string, Model>();
 
    beforeAll(async () => {
-      // The include's `duckdb.table('data/orders.csv')` is package-root relative, like every fixture's.
+      // The rewritten variants compile here; the include's
+      // `duckdb.table('data/orders.csv')` is package-root relative.
       duckdb = new DuckDBConnection("duckdb", ":memory:", FIXTURE_DIR);
+      loaded = await loadPackageCopy(FIXTURE_DIR, {
+         name: "notebooks-malloyyo",
+      });
       for (const modelPath of Object.keys(EXPECTED_OWN_NOTES)) {
-         const model = await Model.create(
-            "notebooks-malloyyo",
-            FIXTURE_DIR,
-            modelPath,
-            new Map<string, Connection>([["duckdb", duckdb]]),
-         );
-         models.set(modelPath, model);
+         const model = loaded.pkg.getModel(modelPath);
+         if (model) models.set(modelPath, model);
       }
    });
 
    afterAll(async () => {
+      await loaded.cleanup();
       await duckdb.close();
    });
 
@@ -127,7 +133,7 @@ describe("Malloyyo notebook format (compiler contract)", () => {
    for (const [modelPath, expected] of Object.entries(EXPECTED_OWN_NOTES)) {
       describe(modelPath, () => {
          it("compiles with no errors", () => {
-            // `Model.create` throws on a problem of error severity and keeps it here.
+            // A model with a problem of error severity fails the package load.
             expect(
                models.get(modelPath)?.getCompilationError(),
             ).toBeUndefined();

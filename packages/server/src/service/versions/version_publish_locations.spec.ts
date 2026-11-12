@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 import { Mutex } from "async-mutex";
-import { afterEach, beforeEach, describe, expect, it, mock } from "bun:test";
+import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import * as fs from "fs";
 import * as os from "os";
 import * as path from "path";
@@ -11,6 +11,12 @@ import { DuckDBConnection } from "../../storage/duckdb/DuckDBConnection";
 import { createDuckDBRepository } from "../../storage/duckdb/DuckDBRepository";
 import type { ResourceRepository } from "../../storage/DatabaseInterface";
 import { initializeSchema } from "../../storage/duckdb/schema";
+import type { simpleGit } from "simple-git";
+import {
+   emptyRepository,
+   stubStorageManager,
+} from "../../test_helpers/storage_manager_stub";
+import { EnvironmentStore } from "../environment_store";
 import { VersionHost, VersionService } from "./version_service";
 import { VersionStore } from "./version_store";
 
@@ -28,50 +34,30 @@ import { VersionStore } from "./version_store";
  * content under it is 409 VERSION_CONFLICT, and the first publish's files
  * stay as they were.
  *
- * simple-git and the storage manager are module-mocked BEFORE the store is
- * imported, as in environment_store_clone.spec.ts and
- * environment_store_unzip.spec.ts.
+ * A fake simple-git and an empty storage manager are injected into the store.
  */
 
 /** What the fake clone writes: the repository's files, by relative path. */
 let repoFiles: Record<string, string> = {};
 let clones = 0;
 
-mock.module("simple-git", () => ({
-   simpleGit: () => ({
-      clone: (
-         _repoUrl: string,
-         dir: string,
-         _opts: unknown,
-         cb: (err: Error | null) => void,
-      ) => {
-         clones++;
-         writeTree(dir, repoFiles);
-         // Repository state differs on every clone, as a fresh clone's does.
-         writeTree(dir, {
-            ".git/HEAD": "ref: refs/heads/main",
-            [`.git/objects/pack/pack-${clones}.pack`]: `clone ${clones}`,
-         });
-         cb(null);
-      },
-   }),
-}));
-
-mock.module("../../storage/StorageManager", () => ({
-   StorageManager: class MockStorageManager {
-      async initialize(): Promise<void> {}
-      getRepository() {
-         return {
-            listEnvironments: async () => [],
-            listPackages: async () => [],
-            listConnections: async () => [],
-         };
-      }
+const fakeSimpleGit = (() => ({
+   clone: (
+      _repoUrl: string,
+      dir: string,
+      _opts: unknown,
+      cb: (err: Error | null) => void,
+   ) => {
+      clones++;
+      writeTree(dir, repoFiles);
+      // Repository state differs on every clone, as a fresh clone's does.
+      writeTree(dir, {
+         ".git/HEAD": "ref: refs/heads/main",
+         [`.git/objects/pack/pack-${clones}.pack`]: `clone ${clones}`,
+      });
+      cb(null);
    },
-   StorageConfig: {} as Record<string, unknown>,
-}));
-
-const { EnvironmentStore } = await import("../environment_store");
+})) as unknown as typeof simpleGit;
 
 const ENV_ID = "env-1";
 const ENV_NAME = "env";
@@ -291,10 +277,13 @@ beforeEach(async () => {
       host(),
    );
 
-   downloads = new EnvironmentStore(serverRoot);
-   Object.assign(downloads as unknown as Record<string, unknown>, {
-      gcsClient: fakeGcs,
-      s3Client: fakeS3,
+   downloads = new EnvironmentStore(serverRoot, {
+      storageManager: stubStorageManager({
+         getRepository: () => emptyRepository(),
+      }),
+      simpleGit: fakeSimpleGit,
+      gcsClient: fakeGcs as never,
+      s3Client: fakeS3 as never,
    });
    objects = new Map();
    repoFiles = {};

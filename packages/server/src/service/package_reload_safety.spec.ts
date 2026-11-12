@@ -6,7 +6,10 @@ import * as fs from "fs/promises";
 import * as os from "os";
 import * as path from "path";
 
-import { Environment, PackageStatus } from "./environment";
+import { Environment } from "./environment";
+import { PackageStatus } from "./package_lifecycle";
+import { writePackageFiles } from "../test_helpers/temp_package";
+import { parsePackageName } from "./identity";
 
 /**
  * Regression tests for RELOAD data loss.
@@ -32,12 +35,13 @@ describe("failed reload does not destroy a serving package", () => {
    const BROKEN_MODEL = `source: broken is @@@ not valid malloy !!!\n`;
 
    async function writePackageDir(dir: string, model: string): Promise<void> {
-      await fs.mkdir(dir, { recursive: true });
-      await fs.writeFile(
-         path.join(dir, "publisher.json"),
-         JSON.stringify({ name: "pkg", description: "reload fixture" }),
+      writePackageFiles(
+         dir,
+         {
+            "model.malloy": model,
+         },
+         { manifest: { name: "pkg", description: "reload fixture" } },
       );
-      await fs.writeFile(path.join(dir, "model.malloy"), model);
    }
 
    async function copyDir(src: string, dst: string): Promise<void> {
@@ -64,7 +68,9 @@ describe("failed reload does not destroy a serving package", () => {
       // The ordinary authoring mistake: save something that does not compile,
       // then reload.
       await fs.writeFile(path.join(pkgDir, "model.malloy"), BROKEN_MODEL);
-      await expect(env.getPackage("pkg", true)).rejects.toThrow();
+      await expect(
+         env.getPackage(parsePackageName("pkg"), true),
+      ).rejects.toThrow();
 
       // The directory and the file the user was editing both survive.
       const modelText = await fs.readFile(
@@ -80,17 +86,22 @@ describe("failed reload does not destroy a serving package", () => {
       await writePackageDir(pkgDir, GOOD_MODEL);
       await env.addPackage("pkg");
 
-      const servingBefore = await env.getPackage("pkg", false);
+      const servingBefore = await env.getPackage(
+         parsePackageName("pkg"),
+         false,
+      );
 
       await fs.writeFile(path.join(pkgDir, "model.malloy"), BROKEN_MODEL);
-      await expect(env.getPackage("pkg", true)).rejects.toThrow();
+      await expect(
+         env.getPackage(parsePackageName("pkg"), true),
+      ).rejects.toThrow();
 
       // The package is still loaded and answerable: a failed reload reports the
       // compile error, it does not take the package down. Assert the exact
       // state, not just that something is there: a status stranded at LOADING
       // would satisfy toBeDefined() while listPackages skips it, so the package
       // would answer getPackage and be invisible to listings and discovery.
-      const stillServing = await env.getPackage("pkg", false);
+      const stillServing = await env.getPackage(parsePackageName("pkg"), false);
       expect(stillServing).toBe(servingBefore);
       expect(env.getPackageStatus("pkg")?.status).toBe(PackageStatus.SERVING);
       expect((await env.listPackages()).map((p) => p.name)).toContain("pkg");
@@ -111,7 +122,10 @@ describe("failed reload does not destroy a serving package", () => {
       await env.installPackage("pkg", (stagingPath) =>
          copyDir(goodFixture, stagingPath),
       );
-      const servingBefore = await env.getPackage("pkg", false);
+      const servingBefore = await env.getPackage(
+         parsePackageName("pkg"),
+         false,
+      );
 
       await expect(
          env.installPackage("pkg", (stagingPath) =>
@@ -121,7 +135,9 @@ describe("failed reload does not destroy a serving package", () => {
 
       expect(env.getPackageStatus("pkg")?.status).toBe(PackageStatus.SERVING);
       expect((await env.listPackages()).map((p) => p.name)).toContain("pkg");
-      expect(await env.getPackage("pkg", false)).toBe(servingBefore);
+      expect(await env.getPackage(parsePackageName("pkg"), false)).toBe(
+         servingBefore,
+      );
       // The on-disk half of the same claim: the rejected tree is gone and the
       // user's is back. Without this, nothing pins "your files are left alone".
       expect(
@@ -170,7 +186,9 @@ describe("failed reload does not destroy a serving package", () => {
       );
       // Assert the packages map too, not just the status: asserting only the
       // status leaves the half that actually strands a package untested.
-      await expect(env.getPackage("pkg", false)).rejects.toThrow();
+      await expect(
+         env.getPackage(parsePackageName("pkg"), false),
+      ).rejects.toThrow();
 
       // Evicting must retire the old package's connections. Once it leaves
       // this.packages, closeAllConnections cannot reach its MalloyConfig, so
@@ -186,11 +204,13 @@ describe("failed reload does not destroy a serving package", () => {
       await env.addPackage("pkg");
 
       await fs.writeFile(path.join(pkgDir, "model.malloy"), BROKEN_MODEL);
-      await expect(env.getPackage("pkg", true)).rejects.toThrow();
+      await expect(
+         env.getPackage(parsePackageName("pkg"), true),
+      ).rejects.toThrow();
 
       // Because nothing was deleted, fixing the model and reloading is enough.
       await fs.writeFile(path.join(pkgDir, "model.malloy"), GOOD_MODEL);
-      const reloaded = await env.getPackage("pkg", true);
+      const reloaded = await env.getPackage(parsePackageName("pkg"), true);
       expect(reloaded).toBeDefined();
    });
 });

@@ -38,11 +38,12 @@ import { dirname, join } from "path";
 import { fileURLToPath, pathToFileURL } from "url";
 
 import { logger } from "../logger";
+import { Settings, settings } from "../settings";
 import type {
    PackageMaterializationConfig,
    PackageScope,
 } from "../service/package_manifest";
-import type { PackageRetrievalSettings } from "../service/package_retrieval";
+import type { PackageRetrievalSettings } from "../service/package_retrieval_settings";
 import type { DeprecatedManifestKey } from "../service/deprecated/manifest_keys";
 import type {
    ConnectionMetadataRequest,
@@ -62,64 +63,30 @@ import type {
    WorkerLogMessage,
    WorkerToMainMessage,
 } from "./protocol";
+import { checkLoadPackageResult } from "./protocol_decode";
 
 // ──────────────────────────────────────────────────────────────────────
 // Configuration
 // ──────────────────────────────────────────────────────────────────────
 
 /**
- * The configured pool size (`PACKAGE_LOAD_WORKERS`, default 1). Throws on 0 or
- * a non-positive / non-numeric value: compiling on the main event loop is what
- * fails the liveness probe, so there is deliberately no way to disable the pool.
+ * The configured pool size (`packageLoad.workers`, `PACKAGE_LOAD_WORKERS`,
+ * default 1). There is deliberately no way to turn the pool off: compiling on
+ * the main event loop is what fails the liveness probe.
  */
 export function getPackageLoadWorkerCount(): number {
-   const raw = process.env.PACKAGE_LOAD_WORKERS;
-   if (raw === undefined) return 1;
-   const parsed = Number.parseInt(raw, 10);
-   if (!Number.isFinite(parsed) || parsed < 1) {
-      throw new Error(
-         `PACKAGE_LOAD_WORKERS must be a positive integer (got ${JSON.stringify(raw)}). ` +
-            `Refusing to start without a package-load worker pool.`,
-      );
-   }
-   return parsed;
+   return settings.get("packageLoad.workers");
 }
 
-/** Default for {@link getPackageLoadSchemaCacheBytes}. */
-export const DEFAULT_PACKAGE_LOAD_SCHEMA_CACHE_BYTES = 16 * 1024 * 1024;
+export { DEFAULT_PACKAGE_LOAD_SCHEMA_CACHE_BYTES } from "../constants";
 
 /**
  * Serialized bytes of schema each worker caches across loads
- * (`PACKAGE_LOAD_SCHEMA_CACHE_BYTES`; see `schema_cache.ts`). Unset or empty
- * takes the default and 0 disables it; any other non-integer refuses to start
- * rather than be silently ignored.
+ * (`packageLoad.schemaCacheBytes`; see `schema_cache.ts`); 0 disables it.
  */
 export function getPackageLoadSchemaCacheBytes(): number {
-   const raw = process.env.PACKAGE_LOAD_SCHEMA_CACHE_BYTES;
-   if (raw === undefined || raw.trim() === "") {
-      return DEFAULT_PACKAGE_LOAD_SCHEMA_CACHE_BYTES;
-   }
-   const parsed = Number(raw.trim());
-   if (!Number.isInteger(parsed) || parsed < 0) {
-      throw new Error(
-         `PACKAGE_LOAD_SCHEMA_CACHE_BYTES must be a non-negative integer number of bytes (got ${JSON.stringify(raw)}).`,
-      );
-   }
-   return parsed;
+   return settings.get("packageLoad.schemaCacheBytes");
 }
-
-/**
- * Compile budget for one load-package job, so a hung worker cannot leak a
- * Promise forever. Generous enough for cold starts. Overridable via
- * `PACKAGE_LOAD_JOB_TIMEOUT_MS`.
- */
-const PACKAGE_LOAD_JOB_TIMEOUT_MS = (() => {
-   const raw = process.env.PACKAGE_LOAD_JOB_TIMEOUT_MS;
-   if (raw === undefined) return 120_000;
-   const parsed = Number.parseInt(raw, 10);
-   if (!Number.isFinite(parsed) || parsed <= 0) return 120_000;
-   return parsed;
-})();
 
 /**
  * The share of a job's timeout the worker spends on work for the main thread,
@@ -129,7 +96,7 @@ const PACKAGE_LOAD_JOB_TIMEOUT_MS = (() => {
 const MAIN_THREAD_WORK_BUDGET_SHARE = 0.75;
 
 /**
- * How many times `PACKAGE_LOAD_JOB_TIMEOUT_MS` the pool lets a job run. The
+ * How many times `packageLoad.jobTimeoutMs` the pool lets a job run. The
  * timeout bounds the compile; the main-thread work interleaved with it starts
  * no new piece past MAIN_THREAD_WORK_BUDGET_SHARE, so a job whose compile fits
  * the timeout finishes within twice it.
@@ -157,8 +124,41 @@ interface JobContext {
    timeout: ReturnType<typeof setTimeout>;
 }
 
+/**
+ * How long a background job may wait behind foreground jobs before a free
+ * worker takes it anyway, so sustained user load never starves a connection
+ * edit's re-derivation (whose readers would otherwise answer 503 forever).
+ */
+export const BACKGROUND_JOB_MAX_WAIT_MS = 30_000;
+
+/**
+ * Which queued job a free worker takes: the oldest background job once it has
+ * waited {@link BACKGROUND_JOB_MAX_WAIT_MS}, otherwise the oldest foreground
+ * job, or the oldest background job when no foreground job waits (see
+ * LoadPackageJob.background). A job without `enqueuedAt` never ages.
+ */
+export function nextQueuedJobIndex(
+   queue: readonly {
+      request: { background?: boolean };
+      enqueuedAt?: number;
+   }[],
+   now: number = Date.now(),
+   maxBackgroundWaitMs: number = BACKGROUND_JOB_MAX_WAIT_MS,
+): number {
+   const background = queue.findIndex((q) => q.request.background);
+   const waitedSince =
+      background >= 0 ? queue[background].enqueuedAt : undefined;
+   if (waitedSince !== undefined && now - waitedSince >= maxBackgroundWaitMs) {
+      return background;
+   }
+   const foreground = queue.findIndex((q) => !q.request.background);
+   return foreground >= 0 ? foreground : 0;
+}
+
 interface QueuedJob {
    request: LoadPackageJob;
+   /** When it was queued, for {@link nextQueuedJobIndex}'s aging. */
+   enqueuedAt?: number;
    resolve: (result: LoadPackageOutcome) => void;
    reject: (err: Error) => void;
 }
@@ -202,12 +202,22 @@ export interface LoadPackageJob {
    buildManifest?: unknown;
    /** Optional in-memory model replacement for a package compile dry-run. */
    replacement?: { modelPath: string; source: string };
+   /** More in-memory files for a package compile dry-run (a request's `files` overlay). */
+   overlay?: { modelPath: string; source: string }[];
    /** Return non-fatal compiler diagnostics for dry-run reporting. */
    collectProblems?: boolean;
    /** See {@link LoadPackageRequest.computeBuildPlan}. */
    computeBuildPlan?: boolean;
    /** See {@link LoadPackageRequest.withPreaggregateCompanions}. */
    withPreaggregateCompanions?: boolean;
+   /** See {@link LoadPackageRequest.withEntities}. */
+   withEntities?: boolean;
+   /**
+    * Background work (a connection edit's build-plan re-derivation): stays on
+    * this thread's queue behind every foreground job, so a publish or reload
+    * waits for at most the background job already running, never a backlog.
+    */
+   background?: boolean;
 }
 
 /**
@@ -293,7 +303,7 @@ export class PackageLoadPool {
       options: {
          /** See LoadPackageRequest.mainThreadWorkBudgetMs. */
          mainThreadWorkBudgetMs?: number;
-         /** Overrides PACKAGE_LOAD_JOB_TIMEOUT_MS. */
+         /** Overrides `packageLoad.jobTimeoutMs`. */
          jobTimeoutMs?: number;
       } = {},
    ) {
@@ -307,7 +317,10 @@ export class PackageLoadPool {
       this.maxWorkers = maxWorkers;
       this.workerScript = workerScript ?? resolveWorkerScript();
       this.schemaCacheBytes = getPackageLoadSchemaCacheBytes();
-      this.jobTimeoutMs = options.jobTimeoutMs ?? PACKAGE_LOAD_JOB_TIMEOUT_MS;
+      // The compile budget of one job, so a hung worker cannot leak a Promise
+      // forever. Generous enough for cold starts.
+      this.jobTimeoutMs =
+         options.jobTimeoutMs ?? settings.get("packageLoad.jobTimeoutMs");
       this.jobLimitMs = JOB_LIMIT_FACTOR * this.jobTimeoutMs;
       this.mainThreadWorkBudgetMs =
          options.mainThreadWorkBudgetMs ??
@@ -328,7 +341,7 @@ export class PackageLoadPool {
          throw new Error("PackageLoadPool is shutting down");
       }
       return new Promise<LoadPackageOutcome>((resolve, reject) => {
-         this.queue.push({ request, resolve, reject });
+         this.queue.push({ request, resolve, reject, enqueuedAt: Date.now() });
          this.tryDispatch();
       });
    }
@@ -376,7 +389,7 @@ export class PackageLoadPool {
       while (this.queue.length > 0) {
          const worker = this.findIdleOrSpawnable();
          if (!worker) return; // saturated; wait for a job to finish
-         const qj = this.queue.shift();
+         const [qj] = this.queue.splice(nextQueuedJobIndex(this.queue), 1);
          if (!qj) return;
          void this.dispatchToWorker(worker, qj);
       }
@@ -446,9 +459,11 @@ export class PackageLoadPool {
          defaultConnectionName: qj.request.defaultConnectionName,
          buildManifest: qj.request.buildManifest,
          replacement: qj.request.replacement,
+         overlay: qj.request.overlay,
          collectProblems: qj.request.collectProblems,
          computeBuildPlan: qj.request.computeBuildPlan,
          withPreaggregateCompanions: qj.request.withPreaggregateCompanions,
+         withEntities: qj.request.withEntities,
          mainThreadWorkBudgetMs: this.mainThreadWorkBudgetMs,
       };
       pw.worker.postMessage(message);
@@ -487,7 +502,12 @@ export class PackageLoadPool {
       );
       const worker = new Worker(this.workerScript, {
          name: `malloy-package-load-worker-${id}`,
-         workerData: { schemaCacheBytes: this.schemaCacheBytes },
+         // The worker reads its settings (the logger's, today) from these
+         // rather than from its copy of the environment, which no flag reaches.
+         workerData: {
+            schemaCacheBytes: this.schemaCacheBytes,
+            settings: Settings.current().toWorkerData(),
+         },
       });
 
       let readyResolve!: () => void;
@@ -621,7 +641,24 @@ export class PackageLoadPool {
       if (!ctx) return;
       this.jobs.delete(msg.requestId);
       pw.inFlight.delete(msg.requestId);
-      ctx.resolve(msg);
+      // The message is structured-clone data typed only by the union; check
+      // its protocol version and envelope before anything casts into it.
+      let checked: LoadPackageResult;
+      try {
+         checked = checkLoadPackageResult(msg);
+      } catch (error) {
+         logger.error(
+            `PackageLoadPool: worker #${pw.id} sent a result this server cannot read`,
+            {
+               requestId: msg.requestId,
+               error: error instanceof Error ? error.message : String(error),
+            },
+         );
+         ctx.reject(error as Error);
+         this.tryDispatch();
+         return;
+      }
+      ctx.resolve(checked);
       this.tryDispatch();
    }
 

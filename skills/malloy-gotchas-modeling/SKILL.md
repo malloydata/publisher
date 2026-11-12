@@ -190,7 +190,7 @@ Malloy has two field-management mechanisms for base sources. **`include {}` is t
 
 ### Default: `include {}` for documented, curated base sources
 
-Use `include {}` whenever the source doesn't need a `rename:`. It's the only way to attach `#(doc)` tags to raw columns, and it's the canonical way to hide empty/garbage/duplicate columns (`internal:`) and sensitive ones (`private:`). See `skill:malloy-model` § Access Modifiers.
+Use `include {}` whenever the source doesn't need a `rename:`. It's the only way to attach `#(doc)` tags to raw columns, and it's the canonical way to tidy away empty/garbage/duplicate columns (`internal:`, which a caller's query can still read through its own `extend` or `include`) and to block sensitive ones (`private:`). See `skill:malloy-model` § Access Modifiers.
 
 ```malloy
 ##! experimental.access_modifiers
@@ -289,7 +289,7 @@ source: facts is conn.table('orders') -> { group_by: user_id, aggregate: total i
 | Looks like it needs SQL | Malloy equivalent |
 |---|---|
 | Multi-CTE pipeline | Stacked query-based sources: `source: a is t -> {...}`; `source: b is a -> {...}`; `source: c is b -> {...}` |
-| UNNEST / array column access | An array of records is read by its field path: `group_by: ys.yr`, `aggregate: tv is ys.v.sum()`. An array of plain values is read with `.each` and nothing after it: `group_by: v is arr.each`. `arr.each.field` does not exist ([data types docs](https://docs.malloydata.dev/documentation/language/datatypes#array-access)) |
+| UNNEST / array column access | An array of records is read by its field path: `group_by: ys.yr`, `aggregate: tv is ys.v.sum()`. An array of plain values is read with `.each` and nothing after it: `group_by: v is arr.each`. `arr.each.field` does not exist. Counting: `count(arr.each)` is the distinct count, `arr.count()` the element count, and `arr.each.count()` does not compile ([data types docs](https://docs.malloydata.dev/documentation/language/datatypes#array-access)) |
 | PIVOT (conditional aggregation) | Filtered aggregates: `aggregate: a is x.sum() { where: cat = 'a' }, b is x.sum() { where: cat = 'b' }` |
 | Window functions (any frame, including custom) | `calculate:` with `sum_cumulative`, `lag`, `lead`, `rank`, `row_number`, `avg_moving`, `first_value`, `last_value`: supports `partition_by:` and `order_by:` ([window functions docs](https://docs.malloydata.dev/documentation/language/functions#window-functions)) |
 | `ROWS BETWEEN UNBOUNDED PRECEDING AND 1 PRECEDING` | `sum_cumulative(x) - x` (cumulative-including-current minus current = cumulative-excluding-current) |

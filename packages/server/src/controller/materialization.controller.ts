@@ -3,14 +3,22 @@
 
 import type { components } from "../api";
 import { BadRequestError, PackageVersionError } from "../errors";
+import { Materialization } from "../storage/DatabaseInterface";
 import {
    BuildInstruction,
    LedgerEntry,
    ManifestReference,
-   Materialization,
-} from "../storage/DatabaseInterface";
-import { MaterializationService } from "../service/materialization_service";
+} from "../service/materialization/types";
+import { MaterializationService } from "../service/materialization/run/materialization_service";
+import type { WarehouseReach } from "../service/materialization/run/materialization_run_support";
+import { VersionRef } from "../service/identity";
 import { queryMetadataViolations } from "../service/query_metadata";
+
+/** The values `buildInstructions.warehouseReach` accepts (ms2data/service#6756). */
+const WAREHOUSE_REACH_VALUES: readonly WarehouseReach[] = [
+   "recompute",
+   "refuse",
+];
 
 type RunContext = components["schemas"]["RunContext"];
 
@@ -54,9 +62,10 @@ export class MaterializationController {
       buildInstructions?: BuildInstruction[];
       referenceManifest?: ManifestReference[];
       strictUpstreams?: boolean;
+      warehouseReach?: WarehouseReach;
       ledger?: LedgerEntry[];
       runContext?: RunContext;
-      versionId?: string;
+      versionId?: VersionRef;
    } {
       const result: {
          forceRefresh?: boolean;
@@ -65,9 +74,10 @@ export class MaterializationController {
          buildInstructions?: BuildInstruction[];
          referenceManifest?: ManifestReference[];
          strictUpstreams?: boolean;
+         warehouseReach?: WarehouseReach;
          ledger?: LedgerEntry[];
          runContext?: RunContext;
-         versionId?: string;
+         versionId?: VersionRef;
       } = {};
       // The version to build. Its format, existence and archive state are
       // the service's to check, the way every read checks them; this only
@@ -79,7 +89,9 @@ export class MaterializationController {
                'versionId must be a string, such as "1.2.0".',
             );
          }
-         if (body.versionId !== "") result.versionId = body.versionId;
+         if (body.versionId !== "") {
+            result.versionId = VersionRef.parse(body.versionId);
+         }
       }
       if (body.runContext !== undefined && body.runContext !== null) {
          result.runContext = this.validateRunContext(body.runContext);
@@ -95,6 +107,9 @@ export class MaterializationController {
          }
          if (parsed.strictUpstreams !== undefined) {
             result.strictUpstreams = parsed.strictUpstreams;
+         }
+         if (parsed.warehouseReach !== undefined) {
+            result.warehouseReach = parsed.warehouseReach;
          }
          if (parsed.ledger !== undefined) {
             result.ledger = parsed.ledger;
@@ -181,6 +196,7 @@ export class MaterializationController {
       sources: BuildInstruction[];
       referenceManifest?: ManifestReference[];
       strictUpstreams?: boolean;
+      warehouseReach?: WarehouseReach;
       ledger?: LedgerEntry[];
    } {
       if (typeof raw !== "object" || raw === null) {
@@ -197,6 +213,7 @@ export class MaterializationController {
          sources: BuildInstruction[];
          referenceManifest?: ManifestReference[];
          strictUpstreams?: boolean;
+         warehouseReach?: WarehouseReach;
          ledger?: LedgerEntry[];
       } = {
          sources: sources.map((instruction) =>
@@ -223,6 +240,21 @@ export class MaterializationController {
             );
          }
          result.strictUpstreams = obj.strictUpstreams;
+      }
+      // Null is read as absent (the default, `recompute`): Credible's clients
+      // drop null fields, so null and absent must mean the same.
+      if (obj.warehouseReach !== undefined && obj.warehouseReach !== null) {
+         if (
+            typeof obj.warehouseReach !== "string" ||
+            !WAREHOUSE_REACH_VALUES.includes(
+               obj.warehouseReach as WarehouseReach,
+            )
+         ) {
+            throw new BadRequestError(
+               `buildInstructions.warehouseReach must be one of ${WAREHOUSE_REACH_VALUES.join(" | ")}`,
+            );
+         }
+         result.warehouseReach = obj.warehouseReach as WarehouseReach;
       }
       // Null is read as absent ("use the local store"), not as an empty ledger:
       // the two mean opposite things, and a caller that means "I own the ledger
@@ -394,7 +426,7 @@ export class MaterializationController {
       environmentName: string,
       packageName: string,
       materializationId: string,
-      versionId?: unknown,
+      versionId: VersionRef = VersionRef.LATEST,
    ) {
       return toWire(
          await this.materializationService.stopMaterialization(
@@ -409,7 +441,7 @@ export class MaterializationController {
    async listMaterializations(
       environmentName: string,
       packageName: string,
-      options?: { limit?: number; offset?: number; versionId?: unknown },
+      options?: { limit?: number; offset?: number; versionId?: VersionRef },
    ) {
       return (
          await this.materializationService.listMaterializations(
@@ -424,7 +456,7 @@ export class MaterializationController {
       environmentName: string,
       packageName: string,
       materializationId: string,
-      versionId?: unknown,
+      versionId: VersionRef = VersionRef.LATEST,
    ) {
       return toWire(
          await this.materializationService.getMaterialization(
@@ -440,7 +472,7 @@ export class MaterializationController {
       environmentName: string,
       packageName: string,
       materializationId: string,
-      options: { dropTables?: boolean; versionId?: unknown } = {},
+      options: { dropTables?: boolean; versionId?: VersionRef } = {},
    ) {
       return this.materializationService.deleteMaterialization(
          environmentName,

@@ -1,151 +1,161 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
-import { afterEach, beforeEach, describe, expect, it } from "bun:test";
-import * as fs from "fs";
-import * as os from "os";
-import * as path from "path";
+import { describe, expect, it } from "bun:test";
 import {
    getPersistStorageMode,
-   getPublisherConfig,
    getVersionPromotionMode,
+   isPackageInlineFieldsEnabled,
    isVersioningEnabled,
 } from "./config";
+import { Settings } from "./settings";
+import { withSettings } from "./test_helpers/settings_env";
 
 describe("versionPromotion setting", () => {
-   let root: string;
-   const saved = process.env.PUBLISHER_VERSION_PROMOTION;
-
-   beforeEach(() => {
-      root = fs.mkdtempSync(path.join(os.tmpdir(), "versioning-config-"));
-      delete process.env.PUBLISHER_VERSION_PROMOTION;
-   });
-
-   afterEach(() => {
-      fs.rmSync(root, { recursive: true, force: true });
-      if (saved === undefined) delete process.env.PUBLISHER_VERSION_PROMOTION;
-      else process.env.PUBLISHER_VERSION_PROMOTION = saved;
-   });
-
-   const writeConfig = (body: unknown) =>
-      fs.writeFileSync(
-         path.join(root, "publisher.config.json"),
-         JSON.stringify(body),
-      );
-
    it("defaults to promoting on publish", () => {
-      writeConfig({ frozenConfig: false, environments: [] });
-      expect(getVersionPromotionMode(root)).toBe("on-publish");
+      withSettings({ file: { frozenConfig: false, environments: [] } }, () =>
+         expect(getVersionPromotionMode()).toBe("on-publish"),
+      );
    });
 
    it("reads versionPromotion from publisher.config.json", () => {
-      writeConfig({
-         frozenConfig: false,
-         versionPromotion: "explicit",
-         environments: [],
-      });
-      expect(getVersionPromotionMode(root)).toBe("explicit");
-      expect(getPublisherConfig(root)).toMatchObject({
-         versionPromotion: "explicit",
-      });
+      withSettings(
+         {
+            file: {
+               frozenConfig: false,
+               versionPromotion: "explicit",
+               environments: [],
+            },
+         },
+         () => expect(getVersionPromotionMode()).toBe("explicit"),
+      );
    });
 
    it("lets PUBLISHER_VERSION_PROMOTION override the file", () => {
-      writeConfig({
-         frozenConfig: false,
-         versionPromotion: "explicit",
-         environments: [],
-      });
-      process.env.PUBLISHER_VERSION_PROMOTION = "on-publish";
-      expect(getVersionPromotionMode(root)).toBe("on-publish");
+      withSettings(
+         {
+            env: { PUBLISHER_VERSION_PROMOTION: "on-publish" },
+            file: {
+               frozenConfig: false,
+               versionPromotion: "explicit",
+               environments: [],
+            },
+         },
+         () => expect(getVersionPromotionMode()).toBe("on-publish"),
+      );
    });
 
    it("is case- and whitespace-insensitive", () => {
-      writeConfig({ frozenConfig: false, environments: [] });
-      process.env.PUBLISHER_VERSION_PROMOTION = " Explicit ";
-      expect(getVersionPromotionMode(root)).toBe("explicit");
+      withSettings({ env: { PUBLISHER_VERSION_PROMOTION: " Explicit " } }, () =>
+         expect(getVersionPromotionMode()).toBe("explicit"),
+      );
    });
 
    it("refuses a value outside the set, naming where it came from", () => {
-      writeConfig({
-         frozenConfig: false,
-         versionPromotion: "manual",
-         environments: [],
-      });
-      expect(() => getVersionPromotionMode(root)).toThrow(
-         '"versionPromotion" in publisher.config.json must be one of on-publish | explicit (got "manual")',
+      withSettings(
+         {
+            file: {
+               frozenConfig: false,
+               versionPromotion: "manual",
+               environments: [],
+            },
+         },
+         () =>
+            expect(() => getVersionPromotionMode()).toThrow(
+               /^versionPromotion from .*publisher\.config\.json: expected one of "on-publish" or "explicit", got "manual"$/,
+            ),
       );
-      process.env.PUBLISHER_VERSION_PROMOTION = "later";
-      expect(() => getVersionPromotionMode(root)).toThrow(
-         'PUBLISHER_VERSION_PROMOTION must be one of on-publish | explicit (got "later")',
+      withSettings({ env: { PUBLISHER_VERSION_PROMOTION: "later" } }, () =>
+         expect(() => getVersionPromotionMode()).toThrow(
+            'versionPromotion from PUBLISHER_VERSION_PROMOTION: expected one of "on-publish" or "explicit", got "later"',
+         ),
       );
    });
 
-   it("gives the default for a config file that cannot be parsed", () => {
-      fs.writeFileSync(path.join(root, "publisher.config.json"), "{ not json");
-      expect(getVersionPromotionMode(root)).toBe("on-publish");
+   it("fails startup, rather than giving the default, for a config file that cannot be parsed", () => {
+      withSettings({ file: "{ not json" }, () =>
+         expect(Settings.current().fileError?.message).toContain(
+            "Failed to parse",
+         ),
+      );
    });
 });
 
-// PERSIST_STORAGE_MODE goes through the same closed-set parser, so it keeps the
-// behaviour it had before sharing it: blank is off, case is ignored, and a typo
-// throws with the same message.
+// PERSIST_STORAGE_MODE: blank is off, case is ignored, and a typo throws.
 describe("PERSIST_STORAGE_MODE", () => {
-   const saved = process.env.PERSIST_STORAGE_MODE;
-
-   afterEach(() => {
-      if (saved === undefined) delete process.env.PERSIST_STORAGE_MODE;
-      else process.env.PERSIST_STORAGE_MODE = saved;
-   });
-
    it("defaults to off when unset or blank", () => {
-      delete process.env.PERSIST_STORAGE_MODE;
-      expect(getPersistStorageMode()).toBe("off");
-      process.env.PERSIST_STORAGE_MODE = "  ";
-      expect(getPersistStorageMode()).toBe("off");
+      withSettings({}, () => expect(getPersistStorageMode()).toBe("off"));
+      withSettings({ env: { PERSIST_STORAGE_MODE: "  " } }, () =>
+         expect(getPersistStorageMode()).toBe("off"),
+      );
    });
 
    it("ignores case and surrounding space", () => {
-      process.env.PERSIST_STORAGE_MODE = " Write-Only ";
-      expect(getPersistStorageMode()).toBe("write-only");
+      withSettings({ env: { PERSIST_STORAGE_MODE: " Write-Only " } }, () =>
+         expect(getPersistStorageMode()).toBe("write-only"),
+      );
    });
 
    it("refuses a value outside the set", () => {
-      process.env.PERSIST_STORAGE_MODE = "read-only";
-      expect(() => getPersistStorageMode()).toThrow(
-         'PERSIST_STORAGE_MODE must be one of off | write-only | on (got "read-only")',
+      withSettings({ env: { PERSIST_STORAGE_MODE: "read-only" } }, () =>
+         expect(() => getPersistStorageMode()).toThrow(
+            'persist.storageMode from PERSIST_STORAGE_MODE: expected one of "off", "write-only" or "on", got "read-only"',
+         ),
       );
    });
 });
 
-// The transition flag: off unless set to on, so a server that sets nothing
-// publishes as it did before versions.
+// The transition flag: on unless set to off, so a server that sets nothing
+// publishes versions.
 describe("PUBLISHER_PACKAGE_VERSIONING", () => {
-   const saved = process.env.PUBLISHER_PACKAGE_VERSIONING;
-
-   afterEach(() => {
-      if (saved === undefined) delete process.env.PUBLISHER_PACKAGE_VERSIONING;
-      else process.env.PUBLISHER_PACKAGE_VERSIONING = saved;
-   });
-
-   it("is off when unset or blank", () => {
-      delete process.env.PUBLISHER_PACKAGE_VERSIONING;
-      expect(isVersioningEnabled()).toBe(false);
-      process.env.PUBLISHER_PACKAGE_VERSIONING = " ";
-      expect(isVersioningEnabled()).toBe(false);
+   it("is on when unset or blank", () => {
+      withSettings({}, () => expect(isVersioningEnabled()).toBe(true));
+      withSettings({ env: { PUBLISHER_PACKAGE_VERSIONING: " " } }, () =>
+         expect(isVersioningEnabled()).toBe(true),
+      );
    });
 
    it("is on only for on, ignoring case and surrounding space", () => {
-      process.env.PUBLISHER_PACKAGE_VERSIONING = " On ";
-      expect(isVersioningEnabled()).toBe(true);
-      process.env.PUBLISHER_PACKAGE_VERSIONING = "off";
-      expect(isVersioningEnabled()).toBe(false);
+      withSettings({ env: { PUBLISHER_PACKAGE_VERSIONING: " On " } }, () =>
+         expect(isVersioningEnabled()).toBe(true),
+      );
+      withSettings({ env: { PUBLISHER_PACKAGE_VERSIONING: "off" } }, () =>
+         expect(isVersioningEnabled()).toBe(false),
+      );
    });
 
    it("refuses a value outside on and off, naming the setting", () => {
-      process.env.PUBLISHER_PACKAGE_VERSIONING = "true";
-      expect(() => isVersioningEnabled()).toThrow(
-         'PUBLISHER_PACKAGE_VERSIONING must be one of off | on (got "true")',
+      withSettings({ env: { PUBLISHER_PACKAGE_VERSIONING: "true" } }, () =>
+         expect(() => isVersioningEnabled()).toThrow(
+            'packageVersioning from PUBLISHER_PACKAGE_VERSIONING: expected one of "off" or "on", got "true"',
+         ),
+      );
+   });
+});
+
+// The transition flag for the fields that moved off Package: on unless set to
+// off, so a server that sets nothing answers as it did before they moved.
+describe("PUBLISHER_PACKAGE_INLINE_FIELDS", () => {
+   it("is on when unset, empty or on, in any case", () => {
+      withSettings({}, () => expect(isPackageInlineFieldsEnabled()).toBe(true));
+      for (const value of ["", "on", " ON "]) {
+         withSettings({ env: { PUBLISHER_PACKAGE_INLINE_FIELDS: value } }, () =>
+            expect(isPackageInlineFieldsEnabled()).toBe(true),
+         );
+      }
+   });
+
+   it("is off when off", () => {
+      withSettings({ env: { PUBLISHER_PACKAGE_INLINE_FIELDS: "off" } }, () =>
+         expect(isPackageInlineFieldsEnabled()).toBe(false),
+      );
+   });
+
+   it("refuses any other value, naming the setting and the choices", () => {
+      withSettings({ env: { PUBLISHER_PACKAGE_INLINE_FIELDS: "false" } }, () =>
+         expect(() => isPackageInlineFieldsEnabled()).toThrow(
+            'packageInlineFields from PUBLISHER_PACKAGE_INLINE_FIELDS: expected one of "off" or "on", got "false"',
+         ),
       );
    });
 });
