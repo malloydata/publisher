@@ -34,7 +34,8 @@ import type {
    QueryMaterializer,
    VirtualMap,
 } from "@malloydata/malloy";
-import { getPersistStorageMode } from "../config";
+import { getMaterializeGatedSources, getPersistStorageMode } from "../config";
+import type { GraftScope } from "./gate_classification";
 import { logger } from "../logger";
 import { recordStorageServeRouting } from "../materialization_metrics";
 import { sourceChain } from "./materialization/plan/source_map";
@@ -97,6 +98,8 @@ export type RoutedExtra =
         tablesRead: ServeBinding[];
         /** Set when the served copy on `virtual` answered, not the serve shape. */
         via?: "served_copy";
+        /** The served copy's graft scope, for `govern()` (see ServedCopyServe.loadQuery). */
+        graftScope?: GraftScope;
      }
    | {
         kind: "rollup";
@@ -127,6 +130,13 @@ export interface Answer {
    readonly storageTablesRead: readonly ServeBinding[] | undefined;
    /** For a storage answer: `served_copy` when the served copy on `virtual` answered rather than the serve shape. */
    readonly via: "served_copy" | undefined;
+   /** For a served-copy answer: where `govern()` grafts a row-level gate (R3). */
+   readonly graftScope: GraftScope | undefined;
+   /**
+    * The answering variant was let past an entry-point gate because it keeps
+    * the contracts (R3): `govern()` must find and enforce that gate on it.
+    */
+   readonly pastEntryPointGate: boolean;
    /** For a rollup answer: the composite member the compile resolved to. */
    readonly rollupMember: string | undefined;
    /** A storage read failed at run time and the query was answered live. */
@@ -144,6 +154,8 @@ export const LIVE_ANSWER: Answer = Object.freeze({
    serveShapeBindings: [],
    storageTablesRead: undefined,
    via: undefined,
+   graftScope: undefined,
+   pastEntryPointGate: false,
    rollupMember: undefined,
    runFailed: false,
    colocatedRead: new Set<string>(),
@@ -164,11 +176,14 @@ export function routedAnswer(route: RouteDecision<RoutedExtra>): Answer {
          serveShapeBindings: route.extra.bindings,
          storageTablesRead: route.extra.tablesRead,
          via: route.extra.via,
+         graftScope: route.extra.graftScope,
+         pastEntryPointGate: route.pastEntryPointGate === true,
       });
    }
    return Object.freeze({
       ...LIVE_ANSWER,
       considered: route.considered,
+      pastEntryPointGate: route.pastEntryPointGate === true,
       tier: "rollup",
       routedRunnable: route.runnable,
       rollupMember: route.extra.resolvedMember,
@@ -272,7 +287,11 @@ export function recordRoutingDecision(route: RouteDecision<RoutedExtra>): void {
    // The gate vetoes every applicable candidate at once, before any compile,
    // so it is recorded once per query whichever tiers were candidates: the
    // label's contract (see recordStorageServeRouting) covers both tiers.
-   if (route.considered.some((c) => c.reason === "row_level_gate")) {
+   // A served copy that keeps the contracts (R3) may still answer past it.
+   if (
+      route.served !== "variant" &&
+      route.considered.some((c) => c.reason === "row_level_gate")
+   ) {
       recordStorageServeRouting("blocked_by_row_level_gate");
       return;
    }
@@ -292,23 +311,67 @@ export function recordRoutingDecision(route: RouteDecision<RoutedExtra>): void {
 /**
  * The build manifest a run is handed, wrapped to record which entries Malloy
  * looked up and found: the colocated tables it substituted. Malloy looks a
- * persisted source up by its key in exactly one place (`persistedTableFor`),
- * so a hit is a table the SQL reads, with no reading of the SQL text.
+ * persisted source up by its key in exactly one place (`persistedTableFor`,
+ * `buildManifest.entries[buildId]`), so a hit is a table the SQL reads, with no
+ * reading of the SQL text.
+ *
+ * Malloy also ENUMERATES the entries before it compiles (it checks every
+ * entry's table path), and an enumeration reads each value too. Those reads
+ * are not lookups: recording them reported every bound table as having
+ * answered, including for a `#@ -persist` reader that recomputes and for a
+ * source Malloy never substitutes.
+ *
+ * The two are told apart by which object they read, not by the order of the
+ * reads. Every read of `manifest.entries` is handed a fresh view of the same
+ * entries, and a view's reads are lookups only while nothing has enumerated
+ * that view. Every enumeration (`Object.entries`, `Object.keys`,
+ * `Object.values`, spread, `for…in`, `JSON.stringify`, `Object.assign`) asks
+ * for the object's own keys first ([[OwnPropertyKeys]], the `ownKeys` trap),
+ * and a keyed lookup never does, whether it reads the value alone or checks
+ * `hasOwn` first (Malloy's `safeRecordGet`). So this holds for any enumeration
+ * and any lookup form, in any order, sync or async. (The order heuristic this
+ * replaced, "a read right after its own key's descriptor is an enumeration",
+ * missed `JSON.stringify`, which describes every key before reading any, and
+ * would have dropped every real lookup had Malloy guarded it with `hasOwn`, as
+ * its own `safeRecordGet` does.) It assumes only that Malloy reaches
+ * `entries` afresh for a lookup, as `persistedTableFor` does, rather than
+ * enumerating and then looking up through one held reference, or re-reading
+ * `entries` for each value of an enumeration (`for (k in m.entries)
+ * m.entries[k]`). `query_serving_malloy.spec.ts` runs a real compile against
+ * the pinned Malloy and fails loudly if either assumption stops holding.
  */
 export function recordingManifest(
    manifest: BuildManifest | undefined,
    read: Set<string>,
 ): BuildManifest | undefined {
    if (!manifest) return undefined;
-   const entries = new Proxy(manifest.entries, {
-      get(target, key, receiver) {
-         if (typeof key === "string" && Object.hasOwn(target, key)) {
-            read.add(key);
-         }
-         return Reflect.get(target, key, receiver);
-      },
+   const target = manifest.entries;
+   const view = (): BuildManifest["entries"] => {
+      let enumerated = false;
+      return new Proxy(target, {
+         ownKeys(t) {
+            enumerated = true;
+            return Reflect.ownKeys(t);
+         },
+         get(t, key, receiver) {
+            if (
+               !enumerated &&
+               typeof key === "string" &&
+               Object.hasOwn(t, key)
+            ) {
+               read.add(key);
+            }
+            return Reflect.get(t, key, receiver);
+         },
+      });
+   };
+   const wrapped = { ...manifest } as BuildManifest;
+   Object.defineProperty(wrapped, "entries", {
+      get: view,
+      enumerable: true,
+      configurable: true,
    });
-   return { ...manifest, entries };
+   return wrapped;
 }
 
 /**
@@ -377,6 +440,9 @@ export function routeCandidates(
       candidates.push({
          kind: "served",
          applicable: true,
+         // R3, behind its own switch until the managed-tier review (plan,
+         // question 14): a row-level gate is grafted on the served copy.
+         keepsContracts: getMaterializeGatedSources(),
          attempt: async () => {
             const served = await host.servedCopy.loadQuery(
                queryString,
@@ -395,12 +461,18 @@ export function routeCandidates(
                   origin: "persist",
                   tablesRead: served.tablesRead,
                   via: "served_copy",
+                  graftScope: served.graftScope,
                },
             };
          },
          explain: (err) =>
             err instanceof ServedCopyDecline
-               ? { code: `served_copy_${err.code}` }
+               ? {
+                    code: `served_copy_${err.code}`,
+                    ...(err.callerDetail
+                       ? { callerDetail: err.callerDetail }
+                       : {}),
+                 }
                : undefined,
          onSkip: (err) => {
             logger.debug("served copy cannot answer this query", {

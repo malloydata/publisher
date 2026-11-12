@@ -16,8 +16,15 @@ import {
    assertMaterializationEligible,
    assertRollupNameUnshared,
    assertTierEligible,
+   gateEnforcedAtRead,
    type TierGateInputs,
 } from "./materialization_eligibility";
+import type { PackageAnnotationFinding } from "../../annotation_reader";
+import type { SourceBuild } from "./addressing";
+import {
+   materializeRefusalFinding,
+   type MaterializePlan,
+} from "./build_file_generator";
 import type { RollupPlan } from "./preaggregation_synthesis";
 import {
    declaredStorage,
@@ -34,6 +41,8 @@ export interface EligibilityPlan {
    targets?: Record<string, BuildTarget>;
    connectionDigests: Record<string, string>;
    preaggregatePlans?: Record<string, RollupPlan>;
+   /** The `#(materialize)` plans, by the author's sourceID. */
+   materializePlans?: Record<string, unknown>;
    sourceModelPaths?: Record<string, string>;
    sourceGateOutcomes?: Record<string, PersistSourceGateOutcome>;
 }
@@ -143,6 +152,212 @@ export function collidingRollups(compiled: {
    return colliding;
 }
 
+/**
+ * The table a persist source writes: its destination and physical name, as
+ * the build names it, and the key two sources share exactly when they write
+ * one table. The one definition of a persist-target collision, read by the
+ * serve refusal ({@link sharedTables}), the `#(materialize)` refusal and the
+ * publish check (`persistenceCollisionWarnings`), so the three never disagree.
+ * Verbatim: names differing only by case or quoting may still fold to one
+ * table on some destinations, and normalizing is dialect-dependent.
+ */
+export function persistTableTarget(
+   fields: { name?: string; storage?: string },
+   sourceName: string,
+   connectionName: string,
+): { key: string; name: string; destination: string } {
+   const name = (fields.name || sourceName).trim();
+   const destination = fields.storage?.trim() || connectionName;
+   return { key: `${destination}\u0000${name}`, name, destination };
+}
+
+function physicalTarget(source: PersistSource) {
+   return persistTableTarget(
+      deriveAnnotationFields(source),
+      source.name,
+      source.connectionName,
+   );
+}
+
+/** One source sharing a table with another, for {@link sharedTables}. */
+interface SharedTableMember {
+   sourceID: string;
+   name: string;
+   address: string;
+   model?: string;
+}
+
+/**
+ * Sources that are not rollups, grouped by the table they write, keeping only
+ * the groups that hold two content addresses: two DIFFERENT sources writing
+ * one table, where the later build overwrites the earlier and each source's
+ * reader reads the other's rows (#6644). The same source reached through two
+ * models' imports is one address, and shares its table legitimately. Rollups
+ * are {@link collidingRollups}'.
+ */
+function sharedTableGroups(
+   compiled: EligibilityPlan,
+): { table: string; destination: string; members: SharedTableMember[] }[] {
+   const byTarget = new Map<
+      string,
+      { table: string; destination: string; members: SharedTableMember[] }
+   >();
+   for (const [sourceID, source] of Object.entries(compiled.sources)) {
+      if (compiled.preaggregatePlans?.[sourceID]) continue;
+      let address: string;
+      let target: ReturnType<typeof physicalTarget>;
+      try {
+         address = computeSourceEntityId(
+            source,
+            compiled.connectionDigests,
+            compiled.targets?.[sourceID],
+         );
+         target = physicalTarget(source);
+      } catch {
+         // No address: the other gates refuse it on their own.
+         continue;
+      }
+      const group = byTarget.get(target.key) ?? {
+         table: target.name,
+         destination: target.destination,
+         members: [],
+      };
+      group.members.push({
+         sourceID,
+         name: source.name,
+         address,
+         model: compiled.sourceModelPaths?.[sourceID],
+      });
+      byTarget.set(target.key, group);
+   }
+   return [...byTarget.values()].filter(
+      (g) => new Set(g.members.map((m) => m.address)).size > 1,
+   );
+}
+
+function describeMembers(members: readonly SharedTableMember[]): string {
+   return members
+      .map((m) => `"${m.name}"${m.model ? ` (${m.model})` : ""}`)
+      .sort()
+      .join(", ");
+}
+
+/** Memo for {@link sharedTables}, per compiled `sources` record. */
+const sharedTablesBySources = new WeakMap<
+   Record<string, PersistSource>,
+   ReadonlyMap<string, string>
+>();
+
+/**
+ * Sources that write one table with a DIFFERENT source (see
+ * {@link sharedTableGroups}), by sourceID, each with the refusal to report.
+ * Neither may be served from that table: it holds whichever build ran last,
+ * so serving it hands one source's readers the other's rows. Both are still
+ * planned and built, as before; a query on either is answered live until each
+ * has a `name=` of its own. Serving is refused whatever
+ * `PERSIST_COLLISION_ENFORCE` says: that flag (on by default) decides whether
+ * a publish is refused, and a wrong answer is never the alternative.
+ */
+export function sharedTables(
+   compiled: EligibilityPlan,
+): ReadonlyMap<string, string> {
+   const memo = sharedTablesBySources.get(compiled.sources);
+   if (memo) return memo;
+   const shared = new Map<string, string>();
+   for (const { table, destination, members } of sharedTableGroups(compiled)) {
+      for (const member of members) {
+         shared.set(
+            member.sourceID,
+            `Sources ${describeMembers(members)} all write the table ` +
+               `"${table}" in destination "${destination}", so it holds ` +
+               `whichever was built last; none is served from it, and queries ` +
+               `on them are answered live. Give each a distinct name=.`,
+         );
+      }
+   }
+   sharedTablesBySources.set(compiled.sources, shared);
+   return shared;
+}
+
+/**
+ * The compiled plan less every `#(materialize)` source whose table is also
+ * another source's table (same destination, same physical name, a different
+ * content address), each reported as `materialize-not-built` naming the
+ * others. Refused outright, not built, whether its name is the default (the
+ * source's own, with no `name=`) or a `name=` the author chose:
+ * `#(materialize)` has no packages to stay compatible with, and a build over
+ * another source's table would hand one source's readers the other's rows.
+ * The same source reached through two models is one address, and is no
+ * collision. What still shares a table afterwards (v1 sources only) is
+ * {@link sharedTables}', served live, and refused at publish under
+ * `PERSIST_COLLISION_ENFORCE`.
+ */
+export function refuseCollidingMaterialize<
+   T extends EligibilityPlan & {
+      builds: SourceBuild[];
+      materializePlans?: Record<string, MaterializePlan>;
+      annotationFindings?: PackageAnnotationFinding[];
+   },
+>(compiled: T): T {
+   const plans = compiled.materializePlans ?? {};
+   const refused = new Map<string, string>();
+   for (const { table, destination, members } of sharedTableGroups(compiled)) {
+      for (const member of members) {
+         const plan = plans[member.sourceID];
+         if (!plan) continue;
+         const others = members.filter((m) => m.address !== member.address);
+         const named = plan.nameDefaulted
+            ? `with no name=, its table takes the source's name \`${table}\``
+            : `its name= \`${table}\` is a table`;
+         refused.set(
+            member.sourceID,
+            `${named} in "${destination}", which ${describeMembers(others)} also ` +
+               `${others.length > 1 ? "write" : "writes"}, so each build would ` +
+               `overwrite the other and one source would read the other's rows; ` +
+               `give each source a distinct name=`,
+         );
+      }
+   }
+   if (refused.size === 0) return compiled;
+   const keep = (sourceID: string) => !refused.has(sourceID);
+   const without = <V>(record: Record<string, V> | undefined) =>
+      record &&
+      Object.fromEntries(Object.entries(record).filter(([id]) => keep(id)));
+   const findings = [...(compiled.annotationFindings ?? [])];
+   for (const [sourceID, reason] of refused) {
+      findings.push(
+         materializeRefusalFinding(
+            {
+               sourceName: compiled.sources[sourceID].name,
+               sourceID,
+               reason,
+            },
+            compiled.sourceModelPaths?.[sourceID] ?? "",
+         ),
+      );
+   }
+   return {
+      ...compiled,
+      builds: compiled.builds
+         .map((build) => ({
+            ...build,
+            order: build.order.filter(keep),
+            dependsOn: Object.fromEntries(
+               Object.entries(build.dependsOn)
+                  .filter(([id]) => keep(id))
+                  .map(([id, upstream]) => [id, upstream.filter(keep)]),
+            ),
+         }))
+         .filter((build) => build.order.length > 0),
+      sources: without(compiled.sources)!,
+      targets: without(compiled.targets),
+      sourceModelPaths: without(compiled.sourceModelPaths),
+      sourceGateOutcomes: without(compiled.sourceGateOutcomes),
+      materializePlans: without(compiled.materializePlans),
+      annotationFindings: findings,
+   };
+}
+
 /** A compiled plan as the tier gate reads it, rollup collisions included. */
 export function tierGateInputs(compiled: EligibilityPlan): TierGateInputs {
    return { ...compiled, collidingRollups: collidingRollups(compiled) };
@@ -175,10 +390,18 @@ export function collectSourceEligibility(
    const eligible: string[] = [];
    const refused: Record<string, string> = {};
    const gate = { collidingRollups: collidingRollups(compiled) };
+   const shared = sharedTables(compiled);
    for (const [sourceID, source] of Object.entries(compiled.sources)) {
+      const sharing = shared.get(sourceID);
+      if (sharing !== undefined) {
+         refused[sourceID] = sharing;
+         continue;
+      }
       try {
          assertRollupNameUnshared(source, gate);
-         assertMaterializationEligible(source, deriveAnnotationFields(source));
+         assertMaterializationEligible(source, deriveAnnotationFields(source), {
+            gateEnforcedAtRead: gateEnforcedAtRead(sourceID, compiled),
+         });
          eligible.push(sourceID);
       } catch (err) {
          refused[sourceID] = errMessage(err);
@@ -211,9 +434,12 @@ export function collectColocatedSourceEligibility(
 ): ColocatedSourceEligibility {
    const eligibleEntityIds = new Set<string>();
    const refused: Record<string, string> = {};
+   const shared = sharedTables(compiled);
    for (const [sourceID, source] of Object.entries(compiled.sources)) {
       try {
          assertTierEligible(source, false, tierGateInputs(compiled));
+         const sharing = shared.get(sourceID);
+         if (sharing !== undefined) throw new Error(sharing);
       } catch (err) {
          // Gated BEFORE computeSourceEntityId: the gate never addresses the
          // source, so it refuses cleanly even when addressing would throw.

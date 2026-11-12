@@ -1611,17 +1611,30 @@ export const CONTRACT: Record<string, Case[]> = {
          expect: fails("PUBLISHER_MATERIALIZE"),
       },
    ],
-   "persist.collisionEnforcementEnabled": [
+   "materialize.gatedSources": [
       { name: "unset", expect: value(false) },
       {
-         name: "PERSIST_COLLISION_ENFORCE",
-         env: { PERSIST_COLLISION_ENFORCE: "1" },
+         name: "PUBLISHER_MATERIALIZE_GATED_SOURCES",
+         env: { PUBLISHER_MATERIALIZE_GATED_SOURCES: "true" },
          expect: value(true),
+      },
+      {
+         name: "not a boolean",
+         env: { PUBLISHER_MATERIALIZE_GATED_SOURCES: "sometimes" },
+         expect: fails("PUBLISHER_MATERIALIZE_GATED_SOURCES"),
+      },
+   ],
+   "persist.collisionEnforcementEnabled": [
+      { name: "unset", expect: value(true) },
+      {
+         name: "PERSIST_COLLISION_ENFORCE",
+         env: { PERSIST_COLLISION_ENFORCE: "0" },
+         expect: value(false),
       },
       {
          name: "blank",
          env: { PERSIST_COLLISION_ENFORCE: "" },
-         expect: value(false),
+         expect: value(true),
       },
       {
          name: "not a boolean",

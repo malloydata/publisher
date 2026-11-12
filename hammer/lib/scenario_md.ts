@@ -149,6 +149,8 @@ type Step =
         mode: PersistStorageMode;
         refused: boolean;
         strict: boolean;
+        /** `(reach=recompute|refuse)`: the body's `warehouseReach`; omitted, absent. */
+        warehouseReach?: string;
         sources: {
            src: string;
            name: string;
@@ -420,7 +422,7 @@ const SECTION_SPEC: Record<string, { attrs?: string[]; keys?: string[] }> = {
       keys: ["deleted", "status"],
    },
    build: {
-      attrs: ["orchestrated", "strict", "pkg", "version"],
+      attrs: ["orchestrated", "strict", "reach", "pkg", "version"],
       // `reference:` is an orchestrated-build body line, not an assertion key.
       keys: ["cites", "excludes", "reference"],
    },
@@ -881,6 +883,9 @@ function parseMarkdown(text: string, fallbackId: string): ParsedMd {
                   mode,
                   refused,
                   strict: !!attrs.strict,
+                  ...(typeof attrs.reach === "string"
+                     ? { warehouseReach: attrs.reach }
+                     : {}),
                   sources,
                   references,
                   cites: firstKey(sec.body, "cites"),
@@ -1974,6 +1979,7 @@ interface OrchestratedBody {
          physicalTableName: string;
       }[];
       strictUpstreams: boolean;
+      warehouseReach?: string;
    };
 }
 
@@ -1989,6 +1995,7 @@ async function buildOrchestratedBody(
    step: {
       pkg: string;
       strict: boolean;
+      warehouseReach?: string;
       sources: {
          src: string;
          name: string;
@@ -2052,6 +2059,9 @@ async function buildOrchestratedBody(
             sources,
             ...(referenceManifest.length ? { referenceManifest } : {}),
             strictUpstreams: step.strict,
+            ...(step.warehouseReach
+               ? { warehouseReach: step.warehouseReach }
+               : {}),
          },
       },
       failedEids,

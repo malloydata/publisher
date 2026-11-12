@@ -960,6 +960,30 @@ export class ChainedShapeNotCarriedError extends Error {
 }
 
 /**
+ * A strict, orchestrated `storage=` build refused the warehouse recompute
+ * (ms2data/service#6756, publisher#1327): the source reaches the source
+ * warehouse through an intermediate no stored table stands in for, so its only
+ * build would recompute its stored upstreams from raw, and the orchestrator
+ * said `warehouseReach: "refuse"`. A property of the model and the
+ * instructions, so retrying the same ones fails the same way.
+ */
+export class WarehouseRecomputeRefusedError extends Error {
+   get kind(): "warehouse_recompute_refused" {
+      return "warehouse_recompute_refused";
+   }
+
+   constructor(sourceName: string, destinationName: string, reason: string) {
+      super(
+         `Failed to materialize source '${sourceName}' into storage ` +
+            `destination '${destinationName}': its only build recomputes its ` +
+            `stored upstreams from the source warehouse, and the build ` +
+            `instructions refuse that (warehouseReach: refuse): ${reason}`,
+      );
+      this.name = "WarehouseRecomputeRefusedError";
+   }
+}
+
+/**
  * The config file exists but cannot be read (malformed JSON, a rejected shape,
  * an unset `${VAR}`). Unlike an absent file, which falls back to the bundled
  * default, this must not degrade to serving nothing while reporting healthy.
@@ -1385,6 +1409,7 @@ interface ErrorByKind {
    materialization_eligibility: MaterializationEligibilityError;
    chained_upstream_missing: ChainedUpstreamMissingError;
    chained_shape_not_carried: ChainedShapeNotCarriedError;
+   warehouse_recompute_refused: WarehouseRecomputeRefusedError;
    publisher_config: PublisherConfigError;
    server_configuration: ServerConfigurationError;
    frozen_config: FrozenConfigError;
@@ -1467,6 +1492,7 @@ const ERROR_CLASSES: {
    materialization_eligibility: MaterializationEligibilityError,
    chained_upstream_missing: ChainedUpstreamMissingError,
    chained_shape_not_carried: ChainedShapeNotCarriedError,
+   warehouse_recompute_refused: WarehouseRecomputeRefusedError,
    publisher_config: PublisherConfigError,
    server_configuration: ServerConfigurationError,
    frozen_config: FrozenConfigError,
@@ -1908,6 +1934,7 @@ export const ERROR_TABLE: { [K in ErrorKind]: ErrorMapping<ErrorByKind[K]> } = {
    // No specific answer: a generalized 500, its detail only logged.
    chained_upstream_missing: UNHANDLED,
    chained_shape_not_carried: UNHANDLED,
+   warehouse_recompute_refused: UNHANDLED,
    publisher_config: UNHANDLED,
    write_verify: UNHANDLED,
    unknown: UNHANDLED,

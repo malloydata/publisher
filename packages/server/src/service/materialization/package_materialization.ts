@@ -12,6 +12,7 @@ import {
 } from "../annotation_reader";
 import { components } from "../../api";
 import {
+   getMaterializeGatedSources,
    getPersistCollisionEnforce,
    getPersistStorageMode,
 } from "../../config";
@@ -71,12 +72,15 @@ import {
 import { STORED_COLUMN_TYPE_MISMATCH_CODE } from "./stored_column_types";
 import {
    computeServeVerdicts,
-   MATERIALIZATION_UNREACHABLE_CODE,
+   VERDICT_WARNING_CODES,
    type ServeVerdict,
    type ViewServeVerdict,
 } from "./serve/serve_verdict";
 import { storageTablePath } from "./run/storage_table_path";
+import { persistTableTarget } from "./plan/eligibility_collect";
+import { quoteManifestTablePath } from "../quoting";
 import { structsReachedFrom } from "../governance/ir/source_graph";
+import { CLASSIFICATION_COVERAGE } from "../classification";
 import { reachableSourceIDs } from "./plan/source_map";
 import type {
    BuildManifest,
@@ -109,6 +113,18 @@ export function toTableNameManifest(
       out[sourceEntityId] = { tableName: entry.tableName };
    }
    return out;
+}
+
+/**
+ * What the environment answers about where a package's tables can be written
+ * (P13), read live. `undefined` from either means "not known", which never
+ * warns.
+ */
+export interface DeploymentFacts {
+   /** The configured storage destinations, or undefined when the list is not authoritative. */
+   destinationNames(): readonly string[] | undefined;
+   /** Whether a connection's configured type can create a table. */
+   connectionCanHoldTable(connectionName: string): boolean | undefined;
 }
 
 /** What a {@link PackageMaterialization} reads of the package that holds it. */
@@ -166,6 +182,8 @@ interface LiveVerdicts {
 export class PackageMaterialization {
    /** The environment's storage destinations for a serve-shape compile; see {@link setServeDestinationConfig}. */
    private serveDestinationConfig?: () => MalloyConfig;
+   /** The environment's deployment facts, read live; see {@link setDeploymentFacts}. */
+   private deploymentFacts?: DeploymentFacts;
    /** A destination's schema by name, resolved live; see {@link setServeDestinationSchema}. */
    private serveDestinationSchema?: (
       destinationName: string,
@@ -551,7 +569,9 @@ export class PackageMaterialization {
     * it on that tier is `live`. Staleness is left out, since the
     * report decides it per query from the window it reads now, and every other
     * reason reads no clock, so this is memoized on the facts the verdicts read
-    * (each replaced wholesale) and costs a query only a key compare.
+    * (each replaced wholesale, except the deployment facts, which key it by
+    * what they answer for this plan) and costs a query a key compare plus one
+    * fact read per planned source.
     */
    private liveVerdictsByTable(): LiveVerdicts | undefined {
       const models = this.owner.models();
@@ -565,6 +585,12 @@ export class PackageMaterialization {
          this.rollupsOverStoredBase,
          getPersistStorageMode(),
          models,
+         // The deployment facts are read live, not replaced wholesale, so
+         // they key the memo by what they answer for this plan.
+         this.deploymentSignature(),
+         // So is each model's served copy, which compiles after the bind and
+         // is dropped on invalidation; a `#(materialize)` verdict reads it.
+         this.servedCopyState(models).signature,
       ];
       const cached = this.liveVerdictCache;
       if (cached && cached.key.every((part, i) => part === key[i])) {
@@ -682,9 +708,21 @@ export class PackageMaterialization {
       const eligibleEntityIds = eligibility?.eligibleEntityIds;
       const allowed: FreshnessManifest = {};
       let dropped = 0;
+      const dialects = this.dialectsByEntityId();
       for (const [sourceEntityId, entry] of Object.entries(entries)) {
          if (eligibleEntityIds?.has(sourceEntityId)) {
-            allowed[sourceEntityId] = entry;
+            // Malloy pastes `tableName` into `FROM` verbatim, so a table named
+            // by a reserved word (`name="order"`) or needing case preserved
+            // reaches the warehouse only quoted, as the builder CREATEd it and
+            // as `Package.reloadAllModels` binds it. The dialect is the plan's
+            // for this content address; a quoted name passes through.
+            const dialect = dialects.get(sourceEntityId);
+            allowed[sourceEntityId] = dialect
+               ? {
+                    ...entry,
+                    tableName: quoteManifestTablePath(entry.tableName, dialect),
+                 }
+               : entry;
             continue;
          }
          dropped++;
@@ -713,6 +751,17 @@ export class PackageMaterialization {
          );
       }
       this.recordManifestBinding(allowed);
+   }
+
+   /** Each planned source's dialect, by its content address. */
+   private dialectsByEntityId(): Map<string, string> {
+      const out = new Map<string, string>();
+      for (const source of Object.values(this.buildPlan?.sources ?? {})) {
+         if (source.sourceEntityId && source.dialect) {
+            out.set(source.sourceEntityId, source.dialect);
+         }
+      }
+      return out;
    }
 
    /**
@@ -864,6 +913,17 @@ export class PackageMaterialization {
       resolver: (destinationName: string) => string | undefined,
    ): void {
       this.serveDestinationSchema = resolver;
+   }
+
+   /**
+    * Give the package the environment's deployment facts its publish warnings
+    * read (P13): which storage destinations exist, and which connections can
+    * hold a table. Read live on every package read, so a destination
+    * configured after the load clears its warning with no reload. Absent,
+    * nothing is warned.
+    */
+   setDeploymentFacts(facts: DeploymentFacts): void {
+      this.deploymentFacts = facts;
    }
 
    /**
@@ -1196,14 +1256,57 @@ export class PackageMaterialization {
    servedCopyWarnings(): ApiPackageWarning[] {
       const warnings: ApiPackageWarning[] = [];
       for (const [modelPath, model] of this.owner.models()) {
+         const leftOut = model.crossConnectionLeftOutDefinitions?.() ?? [];
+         // What read a left-out join goes with it; nothing leaves silently.
+         const readers = leftOut.filter((l) => !l.crossConnection);
+         if (readers.length > 0) {
+            warnings.push({
+               model: modelPath,
+               code: SERVED_COPY_WARNING_CODE,
+               severity: "warn",
+               message:
+                  "These definitions read a join left out across connections, so this model loads without them: " +
+                  readers
+                     .map((l) =>
+                        l.declaration
+                           ? `\`${l.declaration}.${l.name}\``
+                           : `\`${l.name}\``,
+                     )
+                     .join(", ") +
+                  ".",
+            });
+         }
+         for (const l of leftOut) {
+            if (!l.crossConnection) continue;
+            warnings.push({
+               model: modelPath,
+               subject: l.declaration ?? l.name,
+               code: SERVED_COPY_WARNING_CODE,
+               severity: "warn",
+               message:
+                  `This model joins sources on different connections (the join \`${l.name}\`), ` +
+                  "which does not compile live, so it loads without that join and what reads it. " +
+                  "Queries that need it are answered once both sides are built into one storage destination.",
+            });
+         }
          for (const p of model.servedCopyProblems?.() ?? []) {
             warnings.push({
                model: modelPath,
                ...(p.sourceName ? { subject: p.sourceName } : {}),
                code: SERVED_COPY_WARNING_CODE,
                severity: "warn",
-               message: servedCopyProblemMessage(p.reason),
+               message: servedCopyProblemMessage(p),
             });
+            // The coded warning the compile of record's own check raises.
+            for (const message of p.coverage ?? []) {
+               warnings.push({
+                  model: modelPath,
+                  ...(p.sourceName ? { subject: p.sourceName } : {}),
+                  code: CLASSIFICATION_COVERAGE,
+                  severity: "warn",
+                  message,
+               });
+            }
          }
       }
       return warnings;
@@ -1290,6 +1393,8 @@ export class PackageMaterialization {
             servedStorageNames.add(name);
          }
       }
+      const servedCopy = this.servedCopyState(models);
+      const materializeIDs = new Set(Object.keys(this.materializePlans));
       const now = new Date();
       const freshStorageNames = new Set(
          this.storageServeBindings
@@ -1327,6 +1432,7 @@ export class PackageMaterialization {
             );
             return reaching.length > 0 && reaching.every((root) => root.gated);
          },
+         servedCopyKeepsGates: getMaterializeGatedSources(),
          refusedAtBind: (sourceID, source, tier) =>
             this.refusedAtBind(sourceID, source, tier),
          boundEntityIds: new Set(Object.keys(this.buildManifestEntries ?? {})),
@@ -1339,8 +1445,71 @@ export class PackageMaterialization {
          servedStorageNames,
          freshStorageNames,
          rollupsOverStoredBase: this.rollupsOverStoredBase,
+         materialize: (sourceID) => {
+            if (!materializeIDs.has(sourceID)) return undefined;
+            if (!servedCopy.on) return "off";
+            return servedCopy.ids.has(sourceID) || servedCopy.pending
+               ? "serves"
+               : "not_served";
+         },
          views,
+         destinationConfigured: (name) => this.destinationConfigured(name),
+         connectionCanHoldTable: (name) =>
+            this.deploymentFacts?.connectionCanHoldTable(name),
       });
+   }
+
+   /** See {@link ServeVerdictFacts.destinationConfigured}. */
+   private destinationConfigured(name: string): boolean | undefined {
+      const names = this.deploymentFacts?.destinationNames();
+      return names === undefined ? undefined : names.includes(name);
+   }
+
+   /**
+    * What the deployment facts answer for this plan's sources, as a string:
+    * the {@link liveVerdictsByTable} memo's key part for facts the
+    * environment can change under a loaded package.
+    */
+   /**
+    * What the models' served copies answer from storage, by author
+    * `sourceID`: every model's, since a source is re-rooted in each model that
+    * reads it. `on` when any model's served copy is enabled, `pending` when one
+    * has yet to compile, and a `signature` that changes whenever either does.
+    */
+   private servedCopyState(models: ReadonlyMap<string, Model>): {
+      on: boolean;
+      pending: boolean;
+      ids: ReadonlySet<string>;
+      signature: string;
+   } {
+      let on = false;
+      let pending = false;
+      const ids = new Set<string>();
+      for (const model of models.values()) {
+         const reread = model.servedCopySourceIDs?.();
+         if (reread === undefined) continue;
+         on = true;
+         if (reread === "pending") pending = true;
+         else for (const id of reread) ids.add(id);
+      }
+      const signature = on
+         ? `${pending ? "pending" : "compiled"}:${[...ids].sort().join(",")}`
+         : "off";
+      return { on, pending, ids, signature };
+   }
+
+   private deploymentSignature(): string {
+      if (!this.deploymentFacts) return "";
+      const parts: string[] = [];
+      for (const source of Object.values(this.buildPlan?.sources ?? {})) {
+         const destination = source.annotationFields?.storage?.trim();
+         parts.push(
+            destination
+               ? `d:${destination}=${this.destinationConfigured(destination)}`
+               : `c:${source.connectionName}=${this.deploymentFacts.connectionCanHoldTable(source.connectionName)}`,
+         );
+      }
+      return parts.join("|");
    }
 
    /**
@@ -1453,22 +1622,34 @@ export class PackageMaterialization {
    }
 
    /**
-    * Warnings for materialized sources whose verdict is `unreachable`: nothing
-    * on the published surface reads them, so their tables are built for no
-    * query (ms2data/service#6277). The other live verdicts already carry a
-    * warning of their own (storage mode, refusals, rollups over a stored base).
+    * The publish warnings a serve verdict carries, from one verdict pass:
+    * `unreachable` (`materialization-unreachable`: nothing on the published
+    * surface reads the source, so its table is built for no query;
+    * ms2data/service#6277), and the deployment facts (P13): a `storage=`
+    * destination the environment does not configure
+    * (`materialization-destination-missing`), or a colocated source on a
+    * connection that cannot create tables
+    * (`materialization-connection-cannot-hold-table`). Unservable, not
+    * malformed: the package loads, the source serves live, and a deployment
+    * warning clears once the deployment changes, with no reload. The other
+    * live verdicts already carry a warning of their own (storage mode,
+    * refusals, rollups over a stored base).
     */
-   unreachableMaterializationWarnings(): ApiPackageWarning[] {
+   verdictWarnings(): ApiPackageWarning[] {
       // serveVerdicts degrades to none on a throw, so a package read never fails here.
-      return this.serveVerdicts()
-         .filter((v) => v.reason === "unreachable")
-         .map((v) => ({
-            model: v.modelPath ?? "",
-            subject: v.sourceName,
-            code: MATERIALIZATION_UNREACHABLE_CODE,
-            severity: "warn" as const,
-            message: v.message + " " + (v.fixes ?? []).join(" "),
-         }));
+      return this.serveVerdicts().flatMap((v) => {
+         const code = v.reason ? VERDICT_WARNING_CODES[v.reason] : undefined;
+         if (!code) return [];
+         return [
+            {
+               model: v.modelPath ?? "",
+               subject: v.sourceName,
+               code,
+               severity: "warn" as const,
+               message: v.message + " " + (v.fixes ?? []).join(" "),
+            },
+         ];
+      });
    }
 
    /** Memo for {@link entryPointIndex}, keyed on the models map it read. */
@@ -1761,9 +1942,11 @@ export class PackageMaterialization {
     * not flagged. The destination comes from the DECLARED annotation, so the
     * storage kill switch never hides a collision.
     *
-    * Warn-only unless `PERSIST_COLLISION_ENFORCE` is set, so packages published
-    * before this check still republish. Cross-version and cross-package
-    * collisions need the host's global view.
+    * A publish refusal unless `PERSIST_COLLISION_ENFORCE=false` opts out, and
+    * a warning at load either way. Either way none of them is served
+    * from the shared table (`sharedTables` in eligibility_collect.ts): it
+    * holds whichever build ran last, so each answers live. Cross-version and
+    * cross-package collisions need the host's global view.
     */
    persistenceCollisionWarnings(): string[] {
       const sources = this.buildPlan?.sources
@@ -1774,14 +1957,16 @@ export class PackageMaterialization {
          { name: string; destination: string; sources: Map<string, string> }
       >();
       for (const source of sources) {
-         const fields = source.annotationFields ?? {};
-         const physicalName = (fields.name || source.name).trim();
-         const storage = fields.storage?.trim();
-         const destination = storage ? storage : source.connectionName;
-         // Verbatim key: names differing only by case or quoting may still fold
-         // to one table on some destinations. Normalizing is dialect-dependent,
-         // so the host's naming is the backstop.
-         const key = `${destination} ${physicalName}`;
+         // The one definition of a collision, shared with the serve refusal.
+         const {
+            key,
+            name: physicalName,
+            destination,
+         } = persistTableTarget(
+            source.annotationFields ?? {},
+            source.name,
+            source.connectionName,
+         );
          const bucket = targets.get(key) ?? {
             name: physicalName,
             destination,
@@ -1806,16 +1991,25 @@ export class PackageMaterialization {
                `"${name}" in destination "${destination}". Distinct sources ` +
                `must not share a physical target — the second build would ` +
                `overwrite the first, and a serve binding or GC drop for one ` +
-               `would affect the other. Give each a distinct #@ persist name=.`,
+               `would affect the other, so none is served from it and queries ` +
+               `on them are answered live. Give each a distinct #@ persist name=.`,
          );
       }
       return warnings;
    }
 
-   /** Collisions as a publish rejection; "" unless `PERSIST_COLLISION_ENFORCE` is set. */
+   /** Collisions as a publish rejection; "" when `PERSIST_COLLISION_ENFORCE=false`. */
    formatPersistenceCollisionRejections(): string {
       if (!getPersistCollisionEnforce()) return "";
-      return this.persistenceCollisionWarnings().join("\n");
+      const collisions = this.persistenceCollisionWarnings();
+      if (collisions.length === 0) return "";
+      // The operator's opt-out, named once, after the author's fix.
+      return [
+         ...collisions,
+         "A deployment that must publish such a package anyway can set " +
+            "PERSIST_COLLISION_ENFORCE=false, which warns instead and serves " +
+            "the colliding sources live.",
+      ].join("\n");
    }
 }
 
@@ -1879,7 +2073,8 @@ function withoutChangedConnections(
  * A caller-safe sentence for why a served copy leaves a source unserved. The
  * compiler's own message stays in the logs: it can name the destination alias.
  */
-function servedCopyProblemMessage(reason: ServedCopyProblem["reason"]): string {
+function servedCopyProblemMessage(problem: ServedCopyProblem): string {
+   const { reason, join } = problem;
    switch (reason) {
       case "compile_failed":
          return "This model's served copy does not compile, so its stored sources serve through the serve shape or live.";
@@ -1896,5 +2091,19 @@ function servedCopyProblemMessage(reason: ServedCopyProblem["reason"]): string {
          return "This source filters by a given in a place its stored table cannot keep, so the served copy leaves it as written rather than answer every caller alike.";
       case "fields_not_carried":
          return "This source inherits fields (a measure, view or join declared on the source it is built from) that its stored table does not carry, so the served copy leaves it as written.";
+      case "cross_connection_join":
+         return (
+            `This source is stored in a destination its join${join ? ` \`${join}\`` : ""} cannot reach: ` +
+            "the joined source reads another connection. Queries that use the join are answered live; " +
+            "the others read the stored table. To serve them too, inline the join (inline=), " +
+            "materialize the joined source into the same destination, or keep this source colocated."
+         );
+      case "classification_not_kept":
+         return (
+            "This source's served copy reaches fields its compile of record does not (a join left out " +
+            "across connections, answered once both sides are built), and the load's classification " +
+            "checks flag them there, so its queries are not answered from the stored tables: " +
+            [...(problem.leaks ?? []), ...(problem.coverage ?? [])].join(" ")
+         );
    }
 }

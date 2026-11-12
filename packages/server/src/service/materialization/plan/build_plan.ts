@@ -20,7 +20,7 @@ import {
    type PackageAnnotationFinding,
 } from "../../annotation_reader";
 import { routeHasKey } from "../../motly";
-import { Annotations } from "@malloydata/malloy";
+import { Annotations, isSourceDef } from "@malloydata/malloy";
 import { components } from "../../../api";
 import { MaterializationEligibilityError } from "../../../errors";
 import { logger } from "../../../logger";
@@ -85,6 +85,7 @@ import {
    collectColocatedSourceEligibility,
    collectSourceEligibility,
    collidingRollups,
+   refuseCollidingMaterialize,
    storedBaseOfRollup,
    type ColocatedSourceEligibility,
    type SourceEligibility,
@@ -406,7 +407,7 @@ function detectDroppedPersistSources(
  * only warnings).
  */
 export async function classifyPersistSourceGate(
-   persistSource: PersistSource,
+   persistSource: { _sourceDef: SourceDef; sourceID: string },
    modelDef: ModelDef,
    materializer: ModelMaterializer,
    deps: GateClassificationDeps,
@@ -587,10 +588,17 @@ async function collectGeneratedMaterialize(
       modelPath: string;
       packagePath: string;
       getRuntime: SynthesizedRuntimeFactory;
-      contents: Record<string, unknown>;
+      /** The author's compiled model, and the materializer that compiled it. */
+      malloyModel: MalloyModel;
+      materializer: ModelMaterializer;
    },
 ): Promise<void> {
-   const { generated, refused } = await tryCompileMaterializeCompanion(args);
+   const authorDef: ModelDef = args.malloyModel._modelDef;
+   const { generated, refused } = await tryCompileMaterializeCompanion({
+      ...args,
+      contents: authorDef.contents ?? {},
+      givens: authorDef.givens ?? {},
+   });
    for (const refusal of refused) {
       addAnnotationFinding(
          parts,
@@ -617,12 +625,15 @@ async function collectGeneratedMaterialize(
    parts.builds.push(
       ...sourceBuildsOf(targets).map((b) => renameBuildSourceIDs(b, rename)),
    );
+   // The gate is the author's, on the author's source, reading the author's
+   // givens: classified there. The companion imports the source but declares
+   // none of its givens, so a gate reading one never lifts in it.
    const givens = Array.from(
-      generated.model.givens.values(),
+      args.malloyModel.givens.values(),
    ) as unknown as MalloyGiven[];
    const deps = createGateClassificationDeps(
       givens.map(malloyGivenToApi),
-      `${args.modelPath}#materialize`,
+      args.modelPath,
    );
    for (const [generatedSource, plan] of generatedPlans) {
       const source = presentAs(generatedSource, {
@@ -634,15 +645,20 @@ async function collectGeneratedMaterialize(
       recordTarget(parts, sourceID, source);
       parts.sourceModelPaths[sourceID] = args.modelPath;
       parts.materializePlans[sourceID] = plan;
-      // Classified as compiled: the companion's model declares it by its own
-      // sourceID.
-      parts.sourceGateOutcomes[sourceID] = await classifyPersistSourceGate(
-         generatedSource,
-         generated.model._modelDef,
-         generated.materializer,
-         deps,
-         `${args.modelPath}#materialize`,
+      // By sourceID (the keying rule), never by name.
+      const authorSource = Object.values(authorDef.contents ?? {}).find(
+         (object): object is SourceDef =>
+            isSourceDef(object) && object.sourceID === sourceID,
       );
+      parts.sourceGateOutcomes[sourceID] = authorSource
+         ? await classifyPersistSourceGate(
+              { _sourceDef: authorSource, sourceID },
+              authorDef,
+              args.materializer,
+              deps,
+              args.modelPath,
+           )
+         : { classification: "rejected", attributed: false };
    }
 }
 
@@ -750,8 +766,8 @@ export async function collectModelBuildPlan(
          modelPath,
          packagePath,
          getRuntime,
-         // eslint-disable-next-line @typescript-eslint/no-explicit-any
-         contents: (malloyModel as any)._modelDef?.contents ?? {},
+         malloyModel,
+         materializer,
       });
    }
 
@@ -882,6 +898,7 @@ export function deriveBuildPlan(
    packageMaterialization?: WirePackageMaterialization | null,
    options?: {
       preaggregatePlans?: Record<string, RollupPlan>;
+      materializePlans?: Record<string, MaterializePlan>;
       sourceGateOutcomes?: Record<string, PersistSourceGateOutcome>;
    },
 ): BuildPlan {
@@ -1107,9 +1124,12 @@ export interface BuildPlanOutcome {
  * package-load worker as on the main thread.
  */
 export function deriveBuildPlanOutcome(
-   compiled: Omit<CompiledBuildPlan, "connections">,
+   collected: Omit<CompiledBuildPlan, "connections">,
    materializationConfig: WirePackageMaterialization | null,
 ): BuildPlanOutcome {
+   // Before anything reads the plan: a refused source is neither built nor
+   // served, and its warning replaces it (#6644).
+   const compiled = refuseCollidingMaterialize(collected);
    const droppedPersistSources = compiled.droppedPersistSources ?? [];
    const incrementalDeclarations = collectIncrementalDeclarations(
       compiled.sources,
@@ -1127,6 +1147,7 @@ export function deriveBuildPlanOutcome(
               materializationConfig,
               {
                  preaggregatePlans: compiled.preaggregatePlans,
+                 materializePlans: compiled.materializePlans,
                  sourceGateOutcomes: compiled.sourceGateOutcomes,
               },
            );

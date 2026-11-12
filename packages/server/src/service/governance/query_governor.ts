@@ -232,6 +232,14 @@ export interface GovernRequest {
    proveGraft?: (recompiled: QueryMaterializer) => Promise<void>;
    /** See `authorizeAndBindRunnable`'s options. */
    graftScope?: GraftScope;
+   /**
+    * The router let `compiled.runnable`, a variant that keeps the author's
+    * text (the served copy, R3), past a gate on the query's entry point. The
+    * veto read the gate off the LIVE compile; this re-proves it on the routed
+    * one: the request must carry that variant's own `graftScope`, and
+    * governing must find and enforce a gate there, or the query is denied.
+    */
+   routedPastEntryPointGate?: boolean;
    /** See `authorizeAndBindRunnable`'s options. */
    bypassAlreadyNoted?: boolean;
    /**
@@ -618,6 +626,15 @@ export class QueryGovernor {
             await this.assertCallerJoinsQueryable(live, request.callerRegion);
          }
       }
+      if (
+         request.routedPastEntryPointGate &&
+         !request.bypassAuthorize &&
+         !request.graftScope
+      ) {
+         // Grafting on the author's scope would recompile against the live
+         // model and silently answer live under a routed answer record.
+         await this.denyRoutedPastGate(compiled.runnable, "no_graft_scope");
+      }
       const runnable = await this.authorizeAndBindRunnable(
          compiled.runnable,
          request.givens ?? {},
@@ -637,6 +654,17 @@ export class QueryGovernor {
             bypassAlreadyNoted: request.bypassAlreadyNoted,
          },
       );
+      if (request.routedPastEntryPointGate && !request.bypassAuthorize) {
+         const enforced = this.enforcedGatesByRunnable.get(runnable);
+         if (
+            !enforced ||
+            enforced.authorize.length + enforced.accessFilter.length === 0
+         ) {
+            // The live entry point is gated but no gate was found on the
+            // routed compile: it lost the author's gate text. Never answer.
+            await this.denyRoutedPastGate(compiled.runnable, "no_gate_found");
+         }
+      }
       if (request.ceiling && !request.bypassAuthorize) {
          await this.assertWithinCarriesCeiling(
             request.ceiling.audit,
@@ -657,6 +685,23 @@ export class QueryGovernor {
    }
 
    /**
+    * Deny a routed answer that {@link GovernRequest.routedPastEntryPointGate}
+    * could not re-prove; opaque to the caller, like every gate denial.
+    */
+   private async denyRoutedPastGate(
+      routed: QueryMaterializer,
+      why: "no_graft_scope" | "no_gate_found",
+   ): Promise<never> {
+      const source = await this.resolveAuthorizeSourceFromRunnable(routed);
+      recordRowLevelGateDecision("denied_by_gate", "entry_point");
+      logger.warn(
+         "A routed answer past an entry-point gate could not be re-proven on its own compile; denying",
+         { modelPath: this.modelPath, source, why },
+      );
+      throw AccessDeniedError.forSource(source ?? "unknown");
+   }
+
+   /**
     * The graft scope for the query path and the compile-time probe backstop:
     * this model's cumulative (modelDef, modelMaterializer), scoped `"model"`.
     * `undefined` for a compilation-failure placeholder (callers fail closed).
@@ -671,6 +716,7 @@ export class QueryGovernor {
          modelDef: this.modelDef,
          materializer: this.modelMaterializer,
          cacheScope: "model",
+         runtime: this.gateRuntime,
       };
    }
 
@@ -700,6 +746,7 @@ export class QueryGovernor {
                modelDef: prior.modelDef,
                materializer: prior.modelMaterializer,
                cacheScope: `cell:${i}`,
+               runtime: this.gateRuntime,
             };
          }
       }
@@ -721,6 +768,7 @@ export class QueryGovernor {
          modelDef: cell.modelDef,
          materializer: cell.modelMaterializer,
          cacheScope: `cell-self:${cellIndex}`,
+         runtime: this.gateRuntime,
       };
    }
 
@@ -1506,6 +1554,24 @@ export class QueryGovernor {
       /** Where caller text sits, so a caller join into a gated source counts. */
       callerRegion?: CallerRegion,
    ): Promise<boolean> {
+      return (await this.rowLevelGateVeto(runnable, callerRegion)) !== "none";
+   }
+
+   /**
+    * {@link queryEntryPointHasRowLevelGate}, saying which gate it found:
+    * `entry_point` when only the run target's own chain is gated, so a
+    * routed shape that keeps the author's gates (the served copy, R3) can
+    * have them grafted and proven by `govern()`; `caller_join` when a caller
+    * join reaches a gated source, which `govern()` refuses on any routed
+    * compile (`routed_past_caller_join_gate`); `unproven` when the walk could
+    * not decide. Only `entry_point` may let a routed shape through.
+    */
+   public async rowLevelGateVeto(
+      runnable: {
+         getPreparedQuery(): Promise<unknown>;
+      },
+      callerRegion?: CallerRegion,
+   ): Promise<"none" | "entry_point" | "caller_join" | "unproven"> {
       try {
          const { struct, modelDef, compositeResolvedSourceDef } =
             await this.resolveRunTargetStruct(runnable);
@@ -1513,7 +1579,7 @@ export class QueryGovernor {
          // swallows a live compile failure as `modelDef: undefined`, while the
          // annotation-free serve shape may still compile and answer from
          // unfiltered rows.
-         if (!modelDef) return true;
+         if (!modelDef) return "unproven";
          const seen = new Set<SourceDef>();
          const gates = this.collectEntryPointGates(
             struct,
@@ -1536,18 +1602,20 @@ export class QueryGovernor {
                ),
             );
          }
-         if (gates.length > 0) return true;
-         if (!callerRegion) return false;
+         const entryGated = gates.length > 0;
+         if (!callerRegion) return entryGated ? "entry_point" : "none";
          // The serve shape carries no annotation for a caller join's gate
-         // either, so the same route-blind question is asked of each one.
+         // either, so the same route-blind question is asked of each one,
+         // even when the entry point is gated too: the served copy may answer
+         // past an entry-point gate, never past a caller join's.
          const callerJoins = await this.resolvedCallerJoins(
             runnable,
             callerRegion,
          );
-         if (!callerJoins) return true;
+         if (!callerJoins) return "unproven";
          const gated = (name: string) =>
             (this.entryPointGatesBySource.get(name)?.length ?? 0) > 0;
-         return callerJoins.some(
+         const joinGated = callerJoins.some(
             ({ resolution, compiledModelDef }) =>
                resolution.kind === "unproven" ||
                Array.from(resolution.names).some(gated) ||
@@ -1563,10 +1631,11 @@ export class QueryGovernor {
                      ).length > 0,
                ),
          );
+         return joinGated ? "caller_join" : entryGated ? "entry_point" : "none";
       } catch {
          // Fail closed: a false positive costs a live query; a false negative
          // serves unfiltered rows with nothing downstream to catch it.
-         return true;
+         return "unproven";
       }
    }
 
@@ -2752,7 +2821,7 @@ export class QueryGovernor {
          this.graftedMaterializerCache.set(key, materializer);
          return materializer;
       }
-      const built = this.buildGraftedMaterializer(grafts, graftScope.modelDef);
+      const built = this.buildGraftedMaterializer(grafts, graftScope);
       this.graftedMaterializerCache.set(key, built);
       // Evict after inserting, so the entry just built is never dropped.
       while (
@@ -2768,7 +2837,8 @@ export class QueryGovernor {
 
    /**
     * Deep-copy `modelDef`, append each grafted condition to its target's
-    * `filterList`, and reload the copy through {@link gateRuntime}.
+    * `filterList`, and reload the copy through the scope's own runtime
+    * ({@link GraftScope.runtime}).
     *
     * `modelDef` itself is NEVER mutated (concurrent requests with other gate
     * sets keep compiling against it).
@@ -2785,9 +2855,9 @@ export class QueryGovernor {
          graftTarget: string;
          condition: FilterCondition;
       }>,
-      modelDef: ModelDef,
+      { modelDef, runtime }: GraftScope,
    ): ModelMaterializer {
-      if (!this.gateRuntime) {
+      if (!runtime) {
          throw new Error(
             "no retained runtime to graft a row-level gate through",
          );
@@ -2811,7 +2881,7 @@ export class QueryGovernor {
             condition,
          );
       }
-      return this.gateRuntime._loadModelFromModelDef(copy);
+      return runtime._loadModelFromModelDef(copy);
    }
 
    /**

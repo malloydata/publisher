@@ -433,7 +433,8 @@ source: scoped is base -> { where: category = $TENANT; group_by: category }
             // model_a's eligibility. Keying by each source's own sourceEntityId
             // (computed from ITS OWN connection digest + SQL, never looked up by
             // name) cannot make that mistake — the two sources are examined,
-            // and recorded, independently.
+            // and recorded, independently. Each has a table of its own: two
+            // sources writing one table are refused for that alone.
             const pkg = await packages.create({
                "model_a.malloy": `##! experimental.persistence
 ##! experimental.givens
@@ -444,7 +445,7 @@ given:
 source: base_a is duckdb.sql("select 1 as org_id")
 
 #(access_filter) org_id = $ORG
-#@ persist name="s"
+#@ persist name="s_a"
 source: s is base_a -> { select: org_id } extend {}
 `,
                "model_b.malloy": `##! experimental.persistence
@@ -456,7 +457,7 @@ given:
 #(authorize) "org_id = 999"
 source: base_b is duckdb.sql("select 2 as org_id")
 
-#@ persist name="s"
+#@ persist name="s_b"
 source: s is base_b -> { select: org_id }
 `,
             });

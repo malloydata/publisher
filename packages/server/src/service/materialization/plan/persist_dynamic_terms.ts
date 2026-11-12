@@ -540,6 +540,65 @@ export function readTimeDynamicTerms(
    }
 }
 
+/** A zero-based range in a Malloy file, as the compiler reports one. */
+export interface MalloyRange {
+   start: { line: number; character: number };
+   end: { line: number; character: number };
+}
+
+/** Where a term reads a field or a given, as its `refSummary` records it. */
+export interface TermUse {
+   url: string;
+   range: MalloyRange;
+}
+
+function termUse(use: unknown): TermUse | undefined {
+   const at = (use as { at?: { url?: unknown; range?: unknown } } | null)?.at;
+   const range = at?.range as MalloyRange | undefined;
+   if (
+      typeof at?.url !== "string" ||
+      typeof range?.start?.line !== "number" ||
+      typeof range?.start?.character !== "number" ||
+      typeof range?.end?.line !== "number" ||
+      typeof range?.end?.character !== "number"
+   ) {
+      return undefined;
+   }
+   return { url: at.url, range };
+}
+
+/**
+ * Every place a filter entry reads a field or a given, as its `refSummary`
+ * records them, and the compiler's ids of the givens it reads (keys of
+ * `ModelDef.givens`). `at` is empty when any use carries no location: such a
+ * term cannot be placed, and a caller that must remove it from the build has
+ * to refuse rather than guess.
+ */
+function termLocations(entry: object): { at: TermUse[]; givenIds: string[] } {
+   const summary = (
+      entry as {
+         refSummary?: { fieldUsage?: unknown; givenUsage?: unknown };
+      }
+   ).refSummary;
+   const givenUsage = Array.isArray(summary?.givenUsage)
+      ? summary.givenUsage
+      : [];
+   const uses = [
+      ...(Array.isArray(summary?.fieldUsage) ? summary.fieldUsage : []),
+      ...givenUsage,
+   ].map(termUse);
+   const givenIds = givenUsage
+      .map((use) => (use as { id?: unknown } | null)?.id)
+      .filter((id): id is string => typeof id === "string");
+   return {
+      givenIds: [...new Set(givenIds)],
+      at:
+         uses.length > 0 && uses.every((u) => u !== undefined)
+            ? (uses as TermUse[])
+            : [],
+   };
+}
+
 /**
  * The extend-block `where:` conjuncts that reference a given, each classified
  * whole (an `or` or range re-applies whole at read).
@@ -611,8 +670,16 @@ export interface RollingWindow {
 export type WhereTermDependency =
    /** Neither a given nor the current time: built once, never re-applied. */
    | { kind: "fixed" }
-   /** A given (P2): {@link DynamicTerm} as {@link collectDynamicTerms} reads it. */
-   | { kind: "given"; term: DynamicTerm }
+   /**
+    * A given (P2): {@link DynamicTerm} as {@link collectDynamicTerms} reads
+    * it, with where it reads each field and given (see {@link termLocations}).
+    */
+   | {
+        kind: "given";
+        term: DynamicTerm;
+        at: TermUse[];
+        givenIds: string[];
+     }
    /**
     * The current time, directly or through a field or join that reads it.
     * `window` is set only when the term is a {@link RollingWindow}.
@@ -656,7 +723,10 @@ export function classifyWhereTerms(def: {
          out.push({ code, dependsOn: { kind: "given_and_current_time" } });
       } else if (readsGiven) {
          const [term] = collectDynamicTerms([entry]);
-         out.push({ code, dependsOn: { kind: "given", term } });
+         out.push({
+            code,
+            dependsOn: { kind: "given", term, ...termLocations(entry) },
+         });
       } else if (readsTime) {
          // A window over a per-read field reads no stored column; the
          // caller's stored-column check refuses it.

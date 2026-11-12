@@ -100,6 +100,10 @@ import { type InFlightAnswer, SchemaCache } from "./schema_cache";
 import { plainLogEntry } from "./worker_log";
 import { renderTagTargets } from "../service/render_tag_targets";
 import {
+   loadLeavingOutCrossConnectionJoins,
+   type LeftOutDefinition,
+} from "../service/materialization/plan/cross_connection_joins";
+import {
    collectModelBuildPlan,
    deriveBuildPlanOutcome,
    emptyBuildPlanParts,
@@ -843,6 +847,21 @@ function captureReadText(inner: { readURL: (url: URL) => Promise<string> }): {
    };
 }
 
+/** `reader`, with `overlay`'s files (by URL) read in place of the ones it holds. */
+function overlaidReader(
+   reader: { readURL: (url: URL) => Promise<string> },
+   overlay: ReadonlyMap<string, string>,
+): { readURL: (url: URL) => Promise<string> } {
+   return {
+      readURL: (url: URL) => {
+         const text = overlay.get(url.href) ?? overlay.get(url.toString());
+         return text !== undefined
+            ? Promise.resolve(text)
+            : reader.readURL(url);
+      },
+   };
+}
+
 /** A Runtime for the job: its connections and its build manifest. */
 function jobRuntime(
    job: LoadPackageRequest,
@@ -959,14 +978,40 @@ async function compileMalloyModel(
    const modelURL = pathToFileURL(fullPath);
    const importBaseURL = new URL(".", modelURL);
 
-   const { runtime, textFor, fileTexts } = sharedRuntimeForModel(
-      job,
-      malloyConfig,
-      files,
-      modelURL,
-   );
-   const mm = runtime.loadModel(modelURL, { importBaseURL });
-   const compiled = await mm.getModel();
+   const shared = sharedRuntimeForModel(job, malloyConfig, files, modelURL);
+   const { textFor, fileTexts } = shared;
+   let runtime = shared.runtime;
+   let mm = runtime.loadModel(modelURL, { importBaseURL });
+   let compiled: Awaited<ReturnType<ModelMaterializer["getModel"]>>;
+   // Files the build view serves in place of the author's (#6982), by URL.
+   let buildView: ReadonlyMap<string, string> | undefined;
+   let crossConnectionLeftOut: LeftOutDefinition[] | undefined;
+   try {
+      compiled = await mm.getModel();
+   } catch (first) {
+      const reader = makeWorkerUrlReader(job);
+      const view = await loadLeavingOutCrossConnectionJoins({
+         firstError: first,
+         // The text the failed compile read (the job's replacement or
+         // overlay, else the file), which its problems' positions index.
+         readText: (url) => textFor(new URL(url)),
+         load: async (overlay) => {
+            const rt = jobRuntime(
+               job,
+               malloyConfig,
+               overlaidReader(reader, overlay),
+            );
+            const m = rt.loadModel(modelURL, { importBaseURL });
+            return { rt, m, model: await m.getModel() };
+         },
+      });
+      if (!view) throw first;
+      runtime = view.result.rt;
+      mm = view.result.m;
+      compiled = view.result.model;
+      buildView = view.overlay;
+      crossConnectionLeftOut = view.leftOut;
+   }
    const modelDef = compiled._modelDef;
 
    const { sources, queries, filterMap, givens, sourceInfos, warnings } =
@@ -982,6 +1027,7 @@ async function compileMalloyModel(
          importBaseURL,
          queries,
          sources,
+         buildView,
       });
    const entities = await planEntitiesForMainThread(job, malloyConfig, load, {
       relativePath: modelPath,
@@ -1008,6 +1054,7 @@ async function compileMalloyModel(
       // DocumentLocation out of them is cutting the same snapshot the
       // coordinates were computed against. See SerializedModel.
       modelSourceText: textFor(modelURL),
+      ...(crossConnectionLeftOut ? { crossConnectionLeftOut } : {}),
       dataStyles: dataStylesForModel(
          files,
          modelURL.toString(),
@@ -1089,6 +1136,8 @@ async function prepareForMainThread(
       importBaseURL: URL;
       queries: Parameters<typeof renderTagTargets>[0];
       sources: Parameters<typeof renderTagTargets>[1];
+      /** The build view's files (#6982), read in place of the author's. */
+      buildView?: ReadonlyMap<string, string>;
    },
 ): Promise<{
    renderTagResults?: { label: string; result?: Malloy.Result }[];
@@ -1145,7 +1194,10 @@ async function prepareForMainThread(
    // The runtime the companion compiles in: the model's own, reading the
    // synthesized model's text from the overlay.
    const companionRuntime: SynthesizedRuntimeFactory = async (overlay) => {
-      const files = makeWorkerUrlReader(job);
+      const files = overlaidReader(
+         makeWorkerUrlReader(job),
+         model.buildView ?? new Map(),
+      );
       return {
          runtime: jobRuntime(job, malloyConfig, {
             readURL: (url: URL) => {

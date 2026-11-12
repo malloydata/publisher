@@ -166,6 +166,7 @@ export const PROBES: Record<string, (context: SettingsContext) => unknown> = {
       getPersistAddressIncludesDestination(),
    "persist.collisionEnforcementEnabled": () => getPersistCollisionEnforce(),
    "materialize.enabled": () => getMaterializeEnabled(),
+   "materialize.gatedSources": () => settings.get("materialize.gatedSources"),
    "materialization.schedulerEnabled": () =>
       getMaterializationSchedulerConfig() !== null,
    "materialization.schedulerIntervalMs": () =>

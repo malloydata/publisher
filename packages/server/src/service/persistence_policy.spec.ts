@@ -428,18 +428,18 @@ source: b is duckdb.sql("SELECT 2 as y")
    );
 
    it(
-      "gates the publish rejection behind PERSIST_COLLISION_ENFORCE",
+      "refuses the publish by default; PERSIST_COLLISION_ENFORCE=false opts out",
       async () => {
          const pkg = await loadPackage(COLLIDING_MODEL);
-         // Default: warn-only, so the publish gate string is empty.
+         // Default: the collision is a publish rejection, naming the opt-out.
          withSettings({}, () => {
-            expect(pkg.formatPersistenceCollisionRejections()).toBe("");
+            const rejection = pkg.formatPersistenceCollisionRejections();
+            expect(rejection).toContain('"dup"');
+            expect(rejection).toContain("PERSIST_COLLISION_ENFORCE=false");
          });
-         // Enforced: the collision becomes a publish rejection.
-         withSettings({ env: { PERSIST_COLLISION_ENFORCE: "true" } }, () => {
-            expect(pkg.formatPersistenceCollisionRejections()).toContain(
-               '"dup"',
-            );
+         // Opted out: warn-only, so the publish gate string is empty.
+         withSettings({ env: { PERSIST_COLLISION_ENFORCE: "false" } }, () => {
+            expect(pkg.formatPersistenceCollisionRejections()).toBe("");
          });
       },
       { timeout: 30000 },
