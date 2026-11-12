@@ -95,6 +95,13 @@ export interface ServeVerdictFacts {
       modelPath?: string,
    ): boolean;
    /**
+    * Storage: the served copy keeps the author's gates and answers a gated
+    * entry point over a stored table, the gate grafted on it (R3,
+    * `materialize.gatedSources`), so {@link gated} no longer means live.
+    * Rollups are never served past a gate.
+    */
+   servedCopyKeepsGates?: boolean;
+   /**
     * Why the bind refuses this source although the plan holds it (the
     * eligibility gate the bind applies, such as a rollup name two models
     * share), or undefined when the bind keeps it.
@@ -236,9 +243,11 @@ function verdictFor(
    }
 
    // Colocated persist is substituted inside Malloy, gates and all; storage
-   // and rollups go through the router, which skips a gated entry point.
+   // and rollups go through the router, which skips a gated entry point,
+   // unless the served copy keeps the gates (R3), which it does for storage.
    if (
-      (tier === "storage" || origin === "preaggregate") &&
+      (origin === "preaggregate" ||
+         (tier === "storage" && !facts.servedCopyKeepsGates)) &&
       facts.gated(readID, readName, source.modelPath)
    ) {
       return live(

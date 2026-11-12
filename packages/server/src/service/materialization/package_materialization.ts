@@ -12,6 +12,7 @@ import {
 } from "../annotation_reader";
 import { components } from "../../api";
 import {
+   getMaterializeGatedSources,
    getPersistCollisionEnforce,
    getPersistStorageMode,
 } from "../../config";
@@ -1327,6 +1328,7 @@ export class PackageMaterialization {
             );
             return reaching.length > 0 && reaching.every((root) => root.gated);
          },
+         servedCopyKeepsGates: getMaterializeGatedSources(),
          refusedAtBind: (sourceID, source, tier) =>
             this.refusedAtBind(sourceID, source, tier),
          boundEntityIds: new Set(Object.keys(this.buildManifestEntries ?? {})),
