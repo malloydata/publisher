@@ -24,6 +24,7 @@ import {
    preflightNameView,
    probeNameView,
    publishNameViews,
+   restoreNameViews,
    settleNameViewsBeforeDrop,
    storageNameViewSite,
    swapDependentsFor,
@@ -35,6 +36,11 @@ import {
 import { nameViewComment } from "./name_view_sql";
 
 type ApiConnection = components["schemas"]["Connection"];
+
+/** The package every view here is made by. */
+const OWNER = "env/pkg";
+const mark = (target: string, owner = OWNER) =>
+   nameViewComment({ target, owner });
 
 /**
  * The `name=` view's mechanics against real engines: a plain-DuckDB `storage=`
@@ -73,10 +79,12 @@ describe("which builds call for a name= view", () => {
             source("flights@m"),
             { physicalTableName: "flights_all_g7", destination: "lake" },
             "addr",
+            OWNER,
          ),
       ).toEqual({
          sourceEntityId: "addr",
          sourceName: "flights",
+         owner: OWNER,
          viewName: "flights_all",
          physicalTableName: "flights_all_g7",
          connectionName: "wh",
@@ -92,6 +100,7 @@ describe("which builds call for a name= view", () => {
             source("flights@m"),
             { physicalTableName: "flights_all" },
             "addr",
+            OWNER,
          ),
       ).toBeUndefined();
       expect(
@@ -100,6 +109,7 @@ describe("which builds call for a name= view", () => {
             source("v1@m"),
             { physicalTableName: "flights_all_g7" },
             "addr",
+            OWNER,
          ),
       ).toBeUndefined();
       expect(
@@ -108,6 +118,7 @@ describe("which builds call for a name= view", () => {
             source("bare@m"),
             { physicalTableName: "flights_all_g7" },
             "addr",
+            OWNER,
          ),
       ).toBeUndefined();
       on("false");
@@ -117,6 +128,7 @@ describe("which builds call for a name= view", () => {
             source("flights@m"),
             { physicalTableName: "flights_all_g7" },
             "addr",
+            OWNER,
          ),
       ).toBeUndefined();
    });
@@ -139,25 +151,36 @@ describe("a Postgres swap of the table the view reads", () => {
    const intent: NameViewIntent = {
       sourceEntityId: "a",
       sourceName: "flights",
+      owner: OWNER,
       viewName: "mz.flights_all",
       physicalTableName: "mz.flights_all_v1",
       connectionName: "pg",
    };
 
-   it("drops and remakes the view, mark and all, inside the swap", () => {
+   it("repoints the view at staging first, and drops and remakes it only when that is refused", () => {
+      const comment = `COMMENT ON VIEW "mz"."flights_all" IS '${mark("mz.flights_all_v1")}'`;
       expect(
          swapDependentsFor(
             intent,
             { state: "ours", target: "mz.flights_all_v1" },
             "postgres",
-         ),
-      ).toEqual({
-         before: [`DROP VIEW "mz"."flights_all"`],
-         after: [
-            `CREATE VIEW "mz"."flights_all" AS SELECT * FROM "mz"."flights_all_v1"`,
-            `COMMENT ON VIEW "mz"."flights_all" IS '${nameViewComment("mz.flights_all_v1")}'`,
-         ],
-      });
+         )?.attempts("mz.flights_all_v1_s"),
+      ).toEqual([
+         {
+            before: [
+               `CREATE OR REPLACE VIEW "mz"."flights_all" AS SELECT * FROM "mz"."flights_all_v1_s"`,
+               comment,
+            ],
+            after: [],
+         },
+         {
+            before: [`DROP VIEW "mz"."flights_all"`],
+            after: [
+               `CREATE VIEW "mz"."flights_all" AS SELECT * FROM "mz"."flights_all_v1"`,
+               comment,
+            ],
+         },
+      ]);
    });
 
    it("not when the view reads another table, is absent, or the dialect does not bind views", () => {
@@ -182,13 +205,19 @@ describe("a Postgres swap of the table the view reads", () => {
 });
 
 describe("where a view could point instead", () => {
-   const record = (table: string, viewName = "v"): NameViewRecord => ({
+   const record = (
+      table: string,
+      viewName = "v",
+      outcome = "created",
+      owner = OWNER,
+   ): NameViewRecord => ({
       sourceEntityId: "a",
       sourceName: "s",
+      owner,
       viewName,
       physicalTableName: table,
       connectionName: "wh",
-      outcome: "created",
+      outcome,
    });
    const run = (table: string, at: number, recorded = [record(table)]) => ({
       metadata: { nameViews: recorded },
@@ -220,6 +249,16 @@ describe("where a view could point instead", () => {
       ]);
       expect(successorFor(record("t3"))).toBeUndefined();
    });
+
+   it("never a record whose view was not made, nor another package's", () => {
+      const successorFor = nameViewSuccessors([
+         run("t1", 1),
+         run("t2", 2, [record("t2", "v", "conflict")]),
+         run("t3", 3, [record("t3", "v", "name_taken")]),
+         run("t4", 4, [record("t4", "v", "created", "env/other")]),
+      ]);
+      expect(successorFor(record("t9"))?.physicalTableName).toBe("t1");
+   });
 });
 
 describe("in a plain-DuckDB storage= destination", () => {
@@ -250,6 +289,7 @@ describe("in a plain-DuckDB storage= destination", () => {
    const intent = (table: string): NameViewIntent => ({
       sourceEntityId: "addr",
       sourceName: "flights",
+      owner: OWNER,
       viewName: "flights_all",
       physicalTableName: table,
       connectionName: "wh",
@@ -291,7 +331,7 @@ describe("in a plain-DuckDB storage= destination", () => {
       ).toEqual([{ ...intent("flights_all_g1"), outcome: "created" }]);
       expect(await view()).toEqual({
          x: 1,
-         comment: nameViewComment("flights_all_g1"),
+         comment: mark("flights_all_g1"),
       });
       expect(
          (await publishNameViews([intent("flights_all_g2")], context))[0]
@@ -299,8 +339,54 @@ describe("in a plain-DuckDB storage= destination", () => {
       ).toBe("repointed");
       expect(await view()).toEqual({
          x: 2,
-         comment: nameViewComment("flights_all_g2"),
+         comment: mark("flights_all_g2"),
       });
+   });
+
+   it("another package's view at the name is refused and never touched", async () => {
+      await publishNameViews(
+         [{ ...intent("flights_all_g1"), owner: "env/other" }],
+         context,
+      );
+      await expect(
+         preflightNameView(intent("flights_all_g2"), context),
+      ).rejects.toThrow(/package 'env\/other'/);
+      expect(
+         (await publishNameViews([intent("flights_all_g2")], context))[0]
+            .outcome,
+      ).toBe("name_taken");
+      await settleNameViewsBeforeDrop(
+         { ...intent("flights_all_g1") },
+         [recordFor("flights_all_g1")],
+         () => undefined,
+         context,
+      );
+      expect(await view()).toEqual({
+         x: 1,
+         comment: mark("flights_all_g1", "env/other"),
+      });
+   });
+
+   it("a run that does not commit puts each view back: repointed back, or dropped", async () => {
+      await publishNameViews([intent("flights_all_g1")], context);
+      const repointed = await publishNameViews(
+         [intent("flights_all_g2")],
+         context,
+      );
+      expect(repointed[0]).toMatchObject({
+         outcome: "repointed",
+         previousTarget: "flights_all_g1",
+      });
+      await restoreNameViews(repointed, context);
+      expect(await view()).toEqual({ x: 1, comment: mark("flights_all_g1") });
+
+      await onLake((run) => run("DROP VIEW flights_all"));
+      const created = await publishNameViews(
+         [intent("flights_all_g2")],
+         context,
+      );
+      await restoreNameViews(created, context);
+      expect(await view()).toBeUndefined();
    });
 
    it("is never listed as a table, and a sweep's table drop never removes it", async () => {
@@ -332,7 +418,7 @@ describe("in a plain-DuckDB storage= destination", () => {
          () => recordFor("flights_all_g1"),
          context,
       );
-      expect((await view())?.comment).toBe(nameViewComment("flights_all_g1"));
+      expect((await view())?.comment).toBe(mark("flights_all_g1"));
       await settleNameViewsBeforeDrop(
          { ...intent("flights_all_g1") },
          [recordFor("flights_all_g1")],
@@ -359,7 +445,7 @@ describe("in a plain-DuckDB storage= destination", () => {
          () => undefined,
          context,
       );
-      expect((await view())?.comment).toBe(nameViewComment("flights_all_g2"));
+      expect((await view())?.comment).toBe(mark("flights_all_g2"));
    });
 
    it("a name held by a table or an unmarked view is refused, reported, and never touched", async () => {
@@ -433,15 +519,23 @@ describe("in a DuckLake catalog", () => {
       expect(await probeNameView(site, "flights_all")).toEqual({
          state: "empty",
       });
-      await pointNameView(site, "flights_all", "flights_all_g1");
+      await pointNameView(site, "flights_all", {
+         target: "flights_all_g1",
+         owner: OWNER,
+      });
       expect(await probeNameView(site, "flights_all")).toEqual({
          state: "ours",
          target: "flights_all_g1",
+         owner: OWNER,
       });
-      await pointNameView(site, "flights_all", "flights_all_g2");
+      await pointNameView(site, "flights_all", {
+         target: "flights_all_g2",
+         owner: OWNER,
+      });
       expect(await probeNameView(site, "flights_all")).toEqual({
          state: "ours",
          target: "flights_all_g2",
+         owner: OWNER,
       });
 
       // A reader attaching the catalog under its own name still resolves it.
@@ -480,10 +574,11 @@ describe("on a colocated DuckDB connection", () => {
    it("lives beside its table in the table's schema, and reads it", async () => {
       const site = colocatedNameViewSite(connection);
       const viewName = nameViewName("flights_all", "mz.t_g1");
-      await pointNameView(site, viewName, "mz.t_g1");
+      await pointNameView(site, viewName, { target: "mz.t_g1", owner: OWNER });
       expect(await probeNameView(site, viewName)).toEqual({
          state: "ours",
          target: "mz.t_g1",
+         owner: OWNER,
       });
       expect(
          (await connection.runSQL("SELECT x FROM mz.flights_all")).rows,
@@ -493,5 +588,47 @@ describe("on a colocated DuckDB connection", () => {
          state: "taken",
          kind: "TABLE",
       });
+   });
+});
+
+describe("a view whose mark does not read back", () => {
+   it("is dropped again and reported, so the next build does not find its own view taken", async () => {
+      const statements: string[] = [];
+      let made = false;
+      // A warehouse that keeps the view but loses its comment.
+      const connection = {
+         name: "wh",
+         dialectName: "duckdb",
+         runSQL: async (sql: string) => {
+            statements.push(sql);
+            if (sql.startsWith("SELECT 'VIEW'")) {
+               return { rows: made ? [{ kind: "VIEW", comment: null }] : [] };
+            }
+            if (sql.includes("CREATE OR REPLACE VIEW")) made = true;
+            if (sql.startsWith("DROP VIEW")) made = false;
+            return { rows: [] };
+         },
+      };
+      const records = await publishNameViews(
+         [
+            {
+               sourceEntityId: "addr",
+               sourceName: "flights",
+               owner: OWNER,
+               viewName: "mz.flights_all",
+               physicalTableName: "mz.flights_all_g1",
+               connectionName: "wh",
+            },
+         ],
+         {
+            connectionFor: () => connection as never,
+            destinationFor: () => undefined,
+            environmentPath: "",
+         },
+      );
+      expect(records[0].outcome).toBe("failed");
+      expect(records[0].message).toMatch(/did not read back/);
+      expect(made).toBe(false);
+      expect(statements.at(-1)).toBe(`DROP VIEW IF EXISTS "mz"."flights_all"`);
    });
 });

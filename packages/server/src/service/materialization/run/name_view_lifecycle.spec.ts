@@ -24,7 +24,7 @@ import {
 } from "../../versions/materialization_scope";
 import { MaterializationService } from "./materialization_service";
 import { NAME_VIEWS_KEY, nameViewsIn } from "./name_view";
-import { nameViewComment } from "./name_view_sql";
+import { nameViewComment, nameViewOwner } from "./name_view_sql";
 
 /**
  * The `name=` view through real builds (materialization v2, phase 3, table
@@ -38,6 +38,8 @@ import { nameViewComment } from "./name_view_sql";
 const ENV = "testEnv";
 const ENV_ID = "env-1";
 const PKG = "sales";
+const mark = (target: string) =>
+   nameViewComment({ target, owner: nameViewOwner(ENV, PKG) });
 
 type Scope = "version" | "package";
 
@@ -301,7 +303,7 @@ describe("the name= view through real builds", () => {
          expect(await tables()).toEqual([versionTable("1.0.0")]);
          expect(await summaryView()).toEqual({
             answer: 1,
-            comment: nameViewComment(versionTable("1.0.0")),
+            comment: mark(versionTable("1.0.0")),
          });
          expect(nameViewsIn(v1.metadata)).toEqual([
             expect.objectContaining({
@@ -336,7 +338,7 @@ describe("the name= view through real builds", () => {
          expect(await tables()).toEqual([versionTable("1.0.0")]);
          expect(await summaryView()).toEqual({
             answer: 1,
-            comment: nameViewComment(versionTable("1.0.0")),
+            comment: mark(versionTable("1.0.0")),
          });
 
          // And it goes with the last generation.
@@ -355,13 +357,11 @@ describe("the name= view through real builds", () => {
          expect(g1.status).toBe("MANIFEST_FILE_READY");
          expect(await summaryView()).toEqual({
             answer: 1,
-            comment: nameViewComment("summary_g1"),
+            comment: mark("summary_g1"),
          });
          const g2 = await buildInstructed("1.0.0", "summary_g2");
          expect(g2.status).toBe("MANIFEST_FILE_READY");
-         expect((await summaryView())?.comment).toBe(
-            nameViewComment("summary_g2"),
-         );
+         expect((await summaryView())?.comment).toBe(mark("summary_g2"));
 
          // Deleting the run the view reads, with its tables, repoints it to
          // the standing generation.
@@ -370,9 +370,7 @@ describe("the name= view through real builds", () => {
             versionId: VersionRef.parse("1.0.0"),
          });
          expect(await tables()).toEqual(["summary_g1"]);
-         expect((await summaryView())?.comment).toBe(
-            nameViewComment("summary_g1"),
-         );
+         expect((await summaryView())?.comment).toBe(mark("summary_g1"));
 
          // Deleting the last drops it.
          await service.deleteMaterialization(ENV, PKG, g1.id, {
@@ -381,6 +379,32 @@ describe("the name= view through real builds", () => {
          });
          expect(await tables()).toEqual([]);
          expect(await summaryView()).toBeUndefined();
+      },
+      { timeout: 60_000 },
+   );
+
+   it(
+      "a run whose commit fails puts the view back on the table it read",
+      async () => {
+         await publish("1.0.0", 1, "package");
+         await buildInstructed("1.0.0", "summary_g1");
+         const committing = service as unknown as {
+            commitManifest: (...args: unknown[]) => Promise<void>;
+         };
+         const commit = committing.commitManifest;
+         committing.commitManifest = async () => {
+            throw new Error("commit lost");
+         };
+         try {
+            const g2 = await buildInstructed("1.0.0", "summary_g2");
+            expect(g2.status).toBe("FAILED");
+         } finally {
+            committing.commitManifest = commit;
+         }
+         expect(await summaryView()).toEqual({
+            answer: 1,
+            comment: mark("summary_g1"),
+         });
       },
       { timeout: 60_000 },
    );
@@ -396,9 +420,7 @@ describe("the name= view through real builds", () => {
             versionId: VersionRef.parse("1.0.0"),
          });
          expect(await tables()).toEqual(["summary_g2"]);
-         expect((await summaryView())?.comment).toBe(
-            nameViewComment("summary_g2"),
-         );
+         expect((await summaryView())?.comment).toBe(mark("summary_g2"));
       },
       { timeout: 60_000 },
    );

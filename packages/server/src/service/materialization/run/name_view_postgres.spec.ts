@@ -6,6 +6,7 @@ import { afterAll, beforeAll, describe, expect, it } from "bun:test";
 import { swapIntoPlace } from "./colocated_build_strategy";
 import {
    colocatedNameViewSite,
+   ownedSlot,
    pointNameView,
    probeNameView,
    settleNameViewsBeforeDrop,
@@ -30,6 +31,7 @@ describe.skipIf(!url)("the name= view on Postgres", () => {
    const intent: NameViewIntent = {
       sourceEntityId: "addr",
       sourceName: "flights",
+      owner: "env/pkg",
       viewName: "name_view_test.flights_all",
       physicalTableName: "name_view_test.flights_g1",
       connectionName: "pg",
@@ -58,22 +60,35 @@ describe.skipIf(!url)("the name= view on Postgres", () => {
 
    it("is made, and repointed to a table of another shape", async () => {
       const site = colocatedNameViewSite(pg);
-      await pointNameView(site, intent.viewName, "name_view_test.flights_g1");
+      await pointNameView(site, intent.viewName, {
+         target: "name_view_test.flights_g1",
+         owner: intent.owner,
+      });
       expect(await answer()).toEqual([{ x: 1 }]);
       // CREATE OR REPLACE refuses a column of another type: the view is
       // dropped and made again in one transaction.
-      await pointNameView(site, intent.viewName, "name_view_test.flights_g2");
+      await pointNameView(site, intent.viewName, {
+         target: "name_view_test.flights_g2",
+         owner: intent.owner,
+      });
       expect(await answer()).toEqual([{ x: "two", y: 2 }]);
       expect(await probeNameView(site, intent.viewName)).toEqual({
          state: "ours",
          target: "name_view_test.flights_g2",
+         owner: intent.owner,
       });
-      await pointNameView(site, intent.viewName, "name_view_test.flights_g1");
+      await pointNameView(site, intent.viewName, {
+         target: "name_view_test.flights_g1",
+         owner: intent.owner,
+      });
    });
 
    it("a rebuild of the table the view reads keeps the view, through the swap", async () => {
       const site = colocatedNameViewSite(pg);
-      const slot = await probeNameView(site, intent.viewName);
+      const slot = ownedSlot(
+         await probeNameView(site, intent.viewName),
+         intent.owner,
+      );
       const swapDependents = swapDependentsFor(intent, slot, "postgres");
       expect(swapDependents).toBeDefined();
       const swap = (staging: string, dependents?: typeof swapDependents) =>
@@ -95,13 +110,47 @@ describe.skipIf(!url)("the name= view on Postgres", () => {
       );
       expect(await answer()).toEqual([{ x: 1 }]);
 
+      // A reader's own view over ours: the swap repoints ours at staging
+      // rather than dropping it, so the reader's view survives the rebuild.
+      await run(
+         "CREATE VIEW name_view_test.readers AS SELECT * FROM name_view_test.flights_all",
+      );
       await run("CREATE TABLE name_view_test.flights_g1_s AS SELECT 11 AS x");
       await swap("name_view_test.flights_g1_s", swapDependents);
       expect(await answer()).toEqual([{ x: 11 }]);
+      expect(
+         (
+            await run(
+               'SELECT row_to_json(r) AS "row" FROM name_view_test.readers r',
+            )
+         ).rows,
+      ).toEqual([{ x: 11 }]);
       expect(await probeNameView(site, intent.viewName)).toEqual({
          state: "ours",
          target: "name_view_test.flights_g1",
+         owner: intent.owner,
       });
+
+      // A rebuild that changes the column type: the repoint is refused, and
+      // the second attempt drops and remakes the view, which the reader's
+      // view refuses, so the build fails with everything as it was.
+      await run("CREATE TABLE name_view_test.flights_g1_s AS SELECT 'z' AS x");
+      await expect(
+         swap("name_view_test.flights_g1_s", swapDependents),
+      ).rejects.toThrow(/depend/);
+      expect(await answer()).toEqual([{ x: 11 }]);
+      await run("DROP VIEW name_view_test.readers");
+      await run("CREATE TABLE name_view_test.flights_g1_s AS SELECT 'z' AS x");
+      await swap("name_view_test.flights_g1_s", swapDependents);
+      expect(await answer()).toEqual([{ x: "z" }]);
+      expect(await probeNameView(site, intent.viewName)).toEqual({
+         state: "ours",
+         target: "name_view_test.flights_g1",
+         owner: intent.owner,
+      });
+      // Back to the shape the next test reads.
+      await run("CREATE TABLE name_view_test.flights_g1_s AS SELECT 11 AS x");
+      await swap("name_view_test.flights_g1_s", swapDependents);
    });
 
    it("before its table's drop the view is repointed, so the drop succeeds", async () => {

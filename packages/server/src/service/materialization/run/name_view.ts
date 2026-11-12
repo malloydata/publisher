@@ -27,6 +27,7 @@ import {
    NameViewUnsupportedError,
    pathSegments,
    sqlString,
+   type NameViewMark,
    type NameViewSlot,
 } from "./name_view_sql";
 import { destinationSchemaOf, storageTablePath } from "./storage_table_path";
@@ -42,14 +43,17 @@ import { destinationSchemaOf, storageTablePath } from "./storage_table_path";
  * tables by (sourceEntityId, destination). The view is recorded on the run
  * that pointed it (run metadata, {@link NAME_VIEWS_KEY}) so the dropper and
  * the reclaimers can find it, and recognized in the warehouse by its comment
- * mark (name_view_sql.ts), never by its name alone.
+ * mark (name_view_sql.ts), which names the package that made it and the table
+ * it reads, never by its name alone.
  *
  * Lifecycle:
  * - before a source builds, its `name=` is probed: a name held by anything
- *   Publisher did not mark fails that source's build (nothing is written);
+ *   Publisher did not mark, or by another package's view, fails that source's
+ *   build (nothing is written);
  * - once every source of the run has built, each view is created or
- *   repointed, view and mark in one statement or transaction, and the
- *   outcome recorded on the run;
+ *   repointed, view and mark in one statement or transaction, the mark read
+ *   back, and the outcome recorded on the run; a run whose commit then fails
+ *   puts each view back as it found it ({@link restoreNameViews});
  * - when a table is dropped (a deleted run's tables, a reclaimed version's),
  *   a view that still reads it is repointed to the newest other committed
  *   run's table for the same view, or dropped with its last generation. A
@@ -66,6 +70,8 @@ export const NAME_VIEWS_KEY = "nameViews";
 export interface NameViewIntent {
    sourceEntityId: string;
    sourceName: string;
+   /** The package that makes the view, as its mark names it (nameViewOwner). */
+   owner: string;
    /**
     * The view, unquoted: `name=` as written when it names a container, else
     * in the container of the table it reads.
@@ -87,7 +93,16 @@ export interface NameViewIntent {
 export interface NameViewRecord extends NameViewIntent {
    outcome: string;
    message?: string;
+   /** On `repointed`: the table the view read before. */
+   previousTarget?: string;
 }
+
+/** The outcomes after which the view reads the record's table. */
+const POINTED_OUTCOMES: ReadonlySet<string> = new Set([
+   "created",
+   "repointed",
+   "unchanged",
+]);
 
 /** A `name=` held by something Publisher did not make: the build is refused. */
 export class NameViewTakenError extends BadRequestError {}
@@ -114,6 +129,7 @@ export function nameViewIntentFor(
    persistSource: Pick<PersistSource, "sourceID" | "name" | "connectionName">,
    instruction: Pick<BuildInstruction, "physicalTableName" | "destination">,
    sourceEntityId: string,
+   owner: string,
 ): NameViewIntent | undefined {
    if (!getMaterializeEnabled()) return undefined;
    const name =
@@ -124,6 +140,7 @@ export function nameViewIntentFor(
    return {
       sourceEntityId,
       sourceName: persistSource.name,
+      owner,
       viewName,
       physicalTableName: instruction.physicalTableName,
       connectionName: persistSource.connectionName,
@@ -144,6 +161,7 @@ export function nameViewsIn(
          typeof r === "object" &&
          r !== null &&
          typeof (r as NameViewRecord).viewName === "string" &&
+         typeof (r as NameViewRecord).owner === "string" &&
          typeof (r as NameViewRecord).physicalTableName === "string" &&
          typeof (r as NameViewRecord).connectionName === "string",
    );
@@ -281,16 +299,41 @@ export async function probeNameView(
    );
 }
 
-/** Make or repoint the view to read `physicalTableName`, mark and all. */
+/** What holds a name, as `owner` sees it: another package's view is taken. */
+export type OwnedSlot =
+   | { state: "empty" }
+   | { state: "ours"; target: string }
+   | { state: "taken"; holder: string };
+
+export function ownedSlot(slot: NameViewSlot, owner: string): OwnedSlot {
+   switch (slot.state) {
+      case "empty":
+         return slot;
+      case "ours":
+         return slot.owner === owner
+            ? { state: "ours", target: slot.target }
+            : {
+                 state: "taken",
+                 holder: `a view package '${slot.owner}' made`,
+              };
+      case "taken":
+         return {
+            state: "taken",
+            holder: `a ${slot.kind.toLowerCase()} Publisher did not create`,
+         };
+   }
+}
+
+/** Make or repoint the view to read `mark.target`, mark and all. */
 export async function pointNameView(
    site: NameViewSite,
    viewName: string,
-   physicalTableName: string,
+   mark: NameViewMark,
 ): Promise<void> {
    const ddl = nameViewReplaceDdl(
       site.segments(viewName),
-      site.targetSql(physicalTableName),
-      physicalTableName,
+      site.targetSql(mark.target),
+      mark,
       site.dialect,
    );
    try {
@@ -317,55 +360,80 @@ export async function dropNameView(
 }
 
 /**
- * Statements a Postgres swap brackets its DROP and RENAME with, so a rebuild
- * of the very table the `name=` view reads is not refused by the view that
- * depends on it: the view is dropped and made again, mark and all, inside
- * the swap's transaction, so a reader never finds it missing. Undefined on
- * every other dialect, whose views do not bind to a table: the swap leaves
- * them reading the name, which the new table takes.
+ * What a Postgres swap does with a `name=` view over the very table it
+ * replaces, which would otherwise refuse the swap's `DROP TABLE` (a Postgres
+ * view binds to its table). Each attempt is run as the swap's whole
+ * transaction, in order; staging is given back only once the last fails.
+ *
+ * 1. The view is repointed at the staging table (`CREATE OR REPLACE`), the
+ *    old table dropped, and staging renamed into place, which the view
+ *    follows. The view is never dropped, so views a reader built over it
+ *    survive, and its mark (the physical name) stays true.
+ * 2. When the column list changed so `CREATE OR REPLACE` refuses: the view is
+ *    dropped and made again, mark and all, after the rename. A reader's own
+ *    view over it refuses that drop, and the build fails with both intact.
+ *
+ * Undefined on every other dialect, whose views do not bind to a table: the
+ * swap leaves them reading the name, which the new table takes.
  */
 export interface SwapDependents {
-   before: string[];
-   after: string[];
+   attempts(stagingTableName: string): { before: string[]; after: string[] }[];
 }
 
 export function swapDependentsFor(
    intent: NameViewIntent,
-   slot: NameViewSlot,
+   slot: OwnedSlot,
    dialect: string,
 ): SwapDependents | undefined {
    if (dialect !== "postgres") return undefined;
    if (slot.state !== "ours" || slot.target !== intent.physicalTableName) {
       return undefined;
    }
-   const segments = pathSegments(intent.viewName);
-   const view = quoteTablePath(segments.join("."), dialect);
+   const view = quoteTablePath(intent.viewName, dialect);
+   const comment = `COMMENT ON VIEW ${view} IS ${sqlString(
+      nameViewComment({
+         target: intent.physicalTableName,
+         owner: intent.owner,
+      }),
+      dialect,
+   )}`;
+   const select = (table: string) =>
+      `VIEW ${view} AS SELECT * FROM ${quoteTablePath(table, dialect)}`;
    return {
-      before: [`DROP VIEW ${view}`],
-      after: [
-         `CREATE VIEW ${view} AS SELECT * FROM ${quoteTablePath(intent.physicalTableName, dialect)}`,
-         `COMMENT ON VIEW ${view} IS ${sqlString(nameViewComment(intent.physicalTableName), dialect)}`,
+      attempts: (stagingTableName) => [
+         {
+            before: [`CREATE OR REPLACE ${select(stagingTableName)}`, comment],
+            after: [],
+         },
+         {
+            before: [`DROP VIEW ${view}`],
+            after: [`CREATE ${select(intent.physicalTableName)}`, comment],
+         },
       ],
    };
 }
 
 /**
  * Before a source builds: what holds its `name=`. Throws
- * {@link NameViewTakenError} when something Publisher did not mark holds it,
- * so the source fails before any table is written. Undefined when the name
- * could not be probed (an unsupported dialect, an unreachable site, a failed
- * probe): the build goes ahead and the view step after it reports why.
+ * {@link NameViewTakenError} when something Publisher did not mark, or
+ * another package's view, holds it, so the source fails before any table is
+ * written. Undefined when the name could not be probed (an unsupported
+ * dialect, an unreachable site, a failed probe): the build goes ahead and the
+ * view step after it reports why.
  */
 export async function preflightNameView(
    intent: NameViewIntent,
    context: NameViewContext,
-): Promise<{ slot: NameViewSlot; dialect: string } | undefined> {
-   let probed: { slot: NameViewSlot; dialect: string } | undefined;
+): Promise<{ slot: OwnedSlot; dialect: string } | undefined> {
+   let probed: { slot: OwnedSlot; dialect: string } | undefined;
    try {
       probed = await atNameViewSite(intent, context, async (site) =>
          nameViewDialectSupported(site.dialect)
             ? {
-                 slot: await probeNameView(site, intent.viewName),
+                 slot: ownedSlot(
+                    await probeNameView(site, intent.viewName),
+                    intent.owner,
+                 ),
                  dialect: site.dialect,
               }
             : undefined,
@@ -381,9 +449,9 @@ export async function preflightNameView(
    if (probed?.slot.state === "taken") {
       throw new NameViewTakenError(
          `'${intent.sourceName}' is not built: its name= '${intent.viewName}' is ` +
-            `held by a ${probed.slot.kind.toLowerCase()} Publisher did not create, ` +
-            `and the view naming the source's current table never replaces one. ` +
-            `Drop or rename that object, or give #(materialize) another name=.`,
+            `held by ${probed.slot.holder}, and the view naming the source's ` +
+            `current table never replaces one. Drop or rename that object, or ` +
+            `give #(materialize) another name=.`,
       );
    }
    return probed;
@@ -428,9 +496,7 @@ export async function publishNameViews(
       records.push(await publishNameView(group[0], context));
    }
    for (const record of records) {
-      const failed = !["created", "repointed", "unchanged"].includes(
-         record.outcome,
-      );
+      const failed = !POINTED_OUTCOMES.has(record.outcome);
       logger[failed ? "warn" : "info"](
          failed ? "A name= view was not made" : "Pointed a name= view",
          {
@@ -449,36 +515,68 @@ async function publishNameView(
    intent: NameViewIntent,
    context: NameViewContext,
 ): Promise<NameViewRecord> {
+   const mark = { target: intent.physicalTableName, owner: intent.owner };
    try {
-      const record = await atNameViewSite(intent, context, async (site) => {
-         if (!nameViewDialectSupported(site.dialect)) {
-            return {
-               ...intent,
-               outcome: "unsupported",
-               message: `a view in dialect '${site.dialect}' cannot carry Publisher's mark`,
-            };
-         }
-         const slot = await probeNameView(site, intent.viewName);
-         if (slot.state === "taken") {
-            return {
-               ...intent,
-               outcome: "name_taken",
-               message: `'${intent.viewName}' is held by a ${slot.kind.toLowerCase()} Publisher did not create`,
-            };
-         }
-         // Already reading this table (a rebuild in place): nothing to do.
-         if (
-            slot.state === "ours" &&
-            slot.target === intent.physicalTableName
-         ) {
-            return { ...intent, outcome: "unchanged" };
-         }
-         await pointNameView(site, intent.viewName, intent.physicalTableName);
-         return {
-            ...intent,
-            outcome: slot.state === "ours" ? "repointed" : "created",
-         };
-      });
+      const record = await atNameViewSite(
+         intent,
+         context,
+         async (site): Promise<NameViewRecord> => {
+            if (!nameViewDialectSupported(site.dialect)) {
+               return {
+                  ...intent,
+                  outcome: "unsupported",
+                  message: `a view in dialect '${site.dialect}' cannot carry Publisher's mark`,
+               };
+            }
+            const slot = ownedSlot(
+               await probeNameView(site, intent.viewName),
+               intent.owner,
+            );
+            if (slot.state === "taken") {
+               return {
+                  ...intent,
+                  outcome: "name_taken",
+                  message: `'${intent.viewName}' is held by ${slot.holder}`,
+               };
+            }
+            // Already reading this table (a rebuild in place): nothing to do.
+            if (
+               slot.state === "ours" &&
+               slot.target === intent.physicalTableName
+            ) {
+               return { ...intent, outcome: "unchanged" };
+            }
+            await pointNameView(site, intent.viewName, mark);
+            // The mark must read back, or the next build would find its own
+            // view "taken" and refuse the source. A view this call made whose
+            // mark does not read back is dropped again; one that was already
+            // Publisher's read back before, so the dialect round-trips.
+            const after = ownedSlot(
+               await probeNameView(site, intent.viewName),
+               intent.owner,
+            );
+            if (
+               after.state !== "ours" ||
+               after.target !== intent.physicalTableName
+            ) {
+               if (slot.state === "empty") {
+                  await dropNameView(site, intent.viewName);
+               }
+               return {
+                  ...intent,
+                  outcome: "failed",
+                  message: `the view's mark did not read back from '${intent.viewName}'`,
+               };
+            }
+            return slot.state === "ours"
+               ? {
+                    ...intent,
+                    outcome: "repointed",
+                    previousTarget: slot.target,
+                 }
+               : { ...intent, outcome: "created" };
+         },
+      );
       return (
          record ?? {
             ...intent,
@@ -497,11 +595,57 @@ async function publishNameView(
 }
 
 /**
+ * Undo {@link publishNameViews} for a run that did not commit, so no view
+ * is left reading a table no committed manifest names (and which the failed
+ * run's cleanup may drop): a view the run created is dropped, one it
+ * repointed is pointed back. Only a view that is still this package's and
+ * still reads the run's table is touched. Never throws.
+ */
+export async function restoreNameViews(
+   records: NameViewRecord[],
+   context: NameViewContext,
+): Promise<void> {
+   for (const record of records) {
+      if (record.outcome !== "created" && record.outcome !== "repointed") {
+         continue;
+      }
+      try {
+         await atNameViewSite(record, context, async (site) => {
+            const slot = ownedSlot(
+               await probeNameView(site, record.viewName),
+               record.owner,
+            );
+            if (
+               slot.state !== "ours" ||
+               slot.target !== record.physicalTableName
+            ) {
+               return;
+            }
+            if (record.previousTarget) {
+               await pointNameView(site, record.viewName, {
+                  target: record.previousTarget,
+                  owner: record.owner,
+               });
+            } else {
+               await dropNameView(site, record.viewName);
+            }
+         });
+      } catch (err) {
+         logger.warn("Failed to put back a name= view after a failed commit", {
+            viewName: record.viewName,
+            physicalTableName: record.physicalTableName,
+            error: errMessage(err),
+         });
+      }
+   }
+}
+
+/**
  * Before a table is dropped: settle every recorded view that reads it. A view
- * the probe shows is Publisher's and still reads `entry`'s table is repointed
+ * the probe shows is this package's and still reads `entry`'s table is repointed
  * to `successorFor`'s table, or dropped when there is none. A view that reads
- * another table, or that is not Publisher's, is left alone. Done BEFORE the
- * table's drop because a Postgres view refuses its table's drop.
+ * another table, or that is not this package's, is left alone. Done BEFORE
+ * the table's drop because a Postgres view refuses its table's drop.
  *
  * Never throws: a view that cannot be settled is logged, and the table's own
  * drop goes ahead (and on Postgres fails, so the table is owed, not lost).
@@ -530,7 +674,10 @@ export async function settleNameViewsBeforeDrop(
       try {
          await atNameViewSite(view, context, async (site) => {
             if (!nameViewDialectSupported(site.dialect)) return;
-            const slot = await probeNameView(site, view.viewName);
+            const slot = ownedSlot(
+               await probeNameView(site, view.viewName),
+               view.owner,
+            );
             if (
                slot.state !== "ours" ||
                slot.target !== view.physicalTableName
@@ -539,11 +686,10 @@ export async function settleNameViewsBeforeDrop(
             }
             const successor = successorFor(view);
             if (successor) {
-               await pointNameView(
-                  site,
-                  view.viewName,
-                  successor.physicalTableName,
-               );
+               await pointNameView(site, view.viewName, {
+                  target: successor.physicalTableName,
+                  owner: view.owner,
+               });
                logger.info("Repointed a name= view off a table being dropped", {
                   viewName: view.viewName,
                   from: view.physicalTableName,
@@ -570,8 +716,9 @@ export async function settleNameViewsBeforeDrop(
 /**
  * The newest other table each recorded view could read instead: among the
  * runs given (committed, and not being reclaimed), newest first, the first
- * record of the same view for a different table that the run's manifest
- * still names.
+ * record of the same view, by the same package, that pointed the view at a
+ * different table the run's manifest still names. A record whose view was
+ * never made (`conflict`, `name_taken`, `failed`, ...) is not a candidate.
  */
 export function nameViewSuccessors(
    runs: {
@@ -595,6 +742,8 @@ export function nameViewSuccessors(
          const found = nameViewsIn(run.metadata).find(
             (r) =>
                nameViewKey(r) === key &&
+               r.owner === view.owner &&
+               POINTED_OUTCOMES.has(r.outcome) &&
                r.physicalTableName !== view.physicalTableName &&
                tables.has(r.physicalTableName),
          );

@@ -12,9 +12,16 @@ import { quoteIdentifier, quoteTablePath } from "../../quoting";
  * Every view Publisher makes carries a COMMENT MARK, the string
  * {@link nameViewComment} writes: the orphan sweeper, the table dropper, the
  * tier reclaimer and package delete recognize a Publisher-owned view by it,
- * and the build refuses a `name=` held by anything without it. The mark names
- * the table the view reads, so a reclaim can tell whether the view still
- * reads the table it is dropping.
+ * and the build refuses a `name=` held by anything without it, or by another
+ * package's view. The mark names the package that made the view and the
+ * table it reads, so a reclaim can tell whether the view is still this
+ * package's and still reads the table it is dropping.
+ *
+ * The mark is the warehouse half of ownership: it is what a sweep that sees
+ * only the warehouse (the control plane's orphan sweeper, another server) can
+ * read. The Publisher half is the run record (`metadata.nameViews`), which
+ * says which views a run pointed and so which a drop must settle. Neither is
+ * a key: a view is acted on only when both agree.
  *
  * Pure: SQL text in, SQL text out. Every identifier is quoted by the shared
  * helpers in quoting.ts, and every string by {@link sqlString}.
@@ -49,39 +56,77 @@ export function nameViewDialectSupported(dialect: string): boolean {
 }
 
 /**
- * The comment mark for a view reading `target` (the physical table name, as
- * recorded on the manifest). The target is URI-encoded so the mark carries no
- * quote, backslash or space whatever the table is called, and survives every
- * dialect's string literal and BigQuery's quoted option value.
+ * What a Publisher `name=` view's comment says: the table it reads (`target`,
+ * the physical table name as the manifest records it) and the package that
+ * made it (`owner`, `<environment>/<package>`). The owner is what lets one
+ * package refuse a `name=` another package's view holds, rather than
+ * silently repointing a stable name an outside reader relies on.
  */
-export function nameViewComment(target: string): string {
+export interface NameViewMark {
+   target: string;
+   owner: string;
+}
+
+/** The `owner` a mark carries for a package. */
+export function nameViewOwner(
+   environmentName: string,
+   packageName: string,
+): string {
+   return `${environmentName}/${packageName}`;
+}
+
+/** URI-encoded, the single quote included, so no value needs escaping. */
+function encodeMarkValue(value: string): string {
    // encodeURIComponent leaves the single quote alone.
-   const encoded = encodeURIComponent(target).replace(/'/g, "%27");
-   return `${NAME_VIEW_MARK} target=${encoded}`;
+   return encodeURIComponent(value).replace(/'/g, "%27");
 }
 
 /**
- * The table a Publisher `name=` view reads, read from its comment, or
- * undefined when the comment is not Publisher's mark. Accepts BigQuery's
- * TABLE_OPTIONS spelling, a double-quoted literal.
+ * The comment mark for a view. Each value is URI-encoded so the mark carries
+ * no quote, backslash or space whatever the table or package is called, and
+ * survives every dialect's string literal and BigQuery's quoted option value.
+ */
+export function nameViewComment(mark: NameViewMark): string {
+   return (
+      `${NAME_VIEW_MARK} owner=${encodeMarkValue(mark.owner)} ` +
+      `target=${encodeMarkValue(mark.target)}`
+   );
+}
+
+/**
+ * The mark read back from a view's comment, or undefined when the comment is
+ * not Publisher's mark: exactly the prefix, then `owner=` and `target=` once
+ * each and nothing else. Accepts BigQuery's TABLE_OPTIONS spelling, a
+ * double-quoted literal.
  */
 export function parseNameViewComment(
    comment: unknown,
-): { target: string } | undefined {
+): NameViewMark | undefined {
    if (typeof comment !== "string") return undefined;
    let text = comment.trim();
    if (text.length >= 2 && text.startsWith('"') && text.endsWith('"')) {
       text = text.slice(1, -1);
    }
-   const prefix = `${NAME_VIEW_MARK} target=`;
-   if (!text.startsWith(prefix)) return undefined;
-   const encoded = text.slice(prefix.length);
-   if (encoded === "" || /\s/.test(encoded)) return undefined;
-   try {
-      return { target: decodeURIComponent(encoded) };
-   } catch {
-      return undefined;
+   const [prefix, ...fields] = text.split(" ");
+   if (prefix !== NAME_VIEW_MARK || fields.length !== 2) return undefined;
+   const values = new Map<string, string>();
+   for (const field of fields) {
+      const eq = field.indexOf("=");
+      if (eq <= 0) return undefined;
+      const key = field.slice(0, eq);
+      const encoded = field.slice(eq + 1);
+      if (encoded === "" || values.has(key)) return undefined;
+      try {
+         values.set(key, decodeURIComponent(encoded));
+      } catch {
+         return undefined;
+      }
    }
+   const target = values.get("target");
+   const owner = values.get("owner");
+   return target !== undefined && owner !== undefined
+      ? { target, owner }
+      : undefined;
 }
 
 /** Whether a relation's comment is a Publisher `name=` view's mark. */
@@ -235,21 +280,21 @@ export function nameViewProbeSql(segments: string[], dialect: string): string {
 /** What holds a `name=`: nothing, a Publisher view (and the table it reads), or something else. */
 export type NameViewSlot =
    | { state: "empty" }
-   | { state: "ours"; target: string }
+   | { state: "ours"; target: string; owner: string }
    | { state: "taken"; kind: string };
 
 /** Read {@link nameViewProbeSql}'s rows. */
 export function nameViewSlotOf(rows: Record<string, unknown>[]): NameViewSlot {
    if (rows.length === 0) return { state: "empty" };
-   let target: string | undefined;
+   let found: NameViewMark | undefined;
    for (const row of rows) {
       const kind = String(field(row, "kind") ?? "").toUpperCase();
       if (kind !== "VIEW") return { state: "taken", kind: kind || "TABLE" };
       const mark = parseNameViewComment(field(row, "comment"));
       if (!mark) return { state: "taken", kind: "VIEW" };
-      target ??= mark.target;
+      found ??= mark;
    }
-   return { state: "ours", target: target! };
+   return { state: "ours", ...found! };
 }
 
 /** A column of a result row, whatever case the driver reports it in. */
@@ -274,16 +319,16 @@ export interface NameViewDdl {
 
 /**
  * The DDL that points the view `segments` names at `targetSql` (an already
- * quoted table reference), marked as reading `target`.
+ * quoted table reference), carrying `mark`.
  */
 export function nameViewReplaceDdl(
    segments: string[],
    targetSql: string,
-   target: string,
+   mark: NameViewMark,
    dialect: string,
 ): NameViewDdl {
    const view = quotedPath(segments, dialect);
-   const comment = sqlString(nameViewComment(target), dialect);
+   const comment = sqlString(nameViewComment(mark), dialect);
    const select = `SELECT * FROM ${targetSql}`;
    switch (dialect) {
       case "duckdb":

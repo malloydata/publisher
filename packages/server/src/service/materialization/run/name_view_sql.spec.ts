@@ -8,6 +8,7 @@ import {
    nameViewComment,
    nameViewDialectSupported,
    nameViewDropSql,
+   nameViewOwner,
    nameViewProbeSql,
    nameViewReplaceDdl,
    nameViewSlotOf,
@@ -22,25 +23,36 @@ import {
  * identifier goes through the shared quoting helpers.
  */
 
+const OWNER = nameViewOwner("env", "pkg");
+const markOf = (target: string, owner = OWNER) =>
+   nameViewComment({ target, owner });
+
 describe("the name= view's comment mark", () => {
-   it("names the table the view reads, and reads back", () => {
-      const comment = nameViewComment("analytics.flights_g7");
-      expect(comment).toBe(`${NAME_VIEW_MARK} target=analytics.flights_g7`);
+   it("names the package that made the view and the table it reads, and reads back", () => {
+      const comment = markOf("analytics.flights_g7");
+      expect(comment).toBe(
+         `${NAME_VIEW_MARK} owner=env%2Fpkg target=analytics.flights_g7`,
+      );
       expect(parseNameViewComment(comment)).toEqual({
          target: "analytics.flights_g7",
+         owner: "env/pkg",
       });
    });
 
-   it("carries no quote, backslash or space whatever the table is called", () => {
+   it("carries no quote, backslash or space whatever the table or package is called", () => {
       const target = `my-proj.ds.it's a "t"\\x`;
-      const comment = nameViewComment(target);
-      expect(comment.slice(NAME_VIEW_MARK.length + 1)).not.toMatch(/['"\\ ]/);
-      expect(parseNameViewComment(comment)).toEqual({ target });
+      const owner = `it's "my" env/a\\b c`;
+      const comment = markOf(target, owner);
+      const values = comment.slice(NAME_VIEW_MARK.length + 1);
+      expect(values.split(" ")).toHaveLength(2);
+      expect(values).not.toMatch(/['"\\]/);
+      expect(parseNameViewComment(comment)).toEqual({ target, owner });
    });
 
    it("reads BigQuery's TABLE_OPTIONS spelling, a double-quoted literal", () => {
-      expect(parseNameViewComment(`"${nameViewComment("ds.t")}"`)).toEqual({
+      expect(parseNameViewComment(`"${markOf("ds.t")}"`)).toEqual({
          target: "ds.t",
+         owner: OWNER,
       });
    });
 
@@ -53,8 +65,15 @@ describe("the name= view's comment mark", () => {
          "a user's view",
          NAME_VIEW_MARK,
          `${NAME_VIEW_MARK} target=`,
-         `${NAME_VIEW_MARK}x target=t`,
-         `prefix ${nameViewComment("t")}`,
+         `${NAME_VIEW_MARK} target=t`,
+         `${NAME_VIEW_MARK} owner=o`,
+         `${NAME_VIEW_MARK} owner=o target=`,
+         `${NAME_VIEW_MARK} owner=o target=t extra=x`,
+         `${NAME_VIEW_MARK} owner=o owner=p`,
+         `${NAME_VIEW_MARK} owner=o target=%E0%A4%A`,
+         `${NAME_VIEW_MARK}x owner=o target=t`,
+         `${NAME_VIEW_MARK}  owner=o target=t`,
+         `prefix ${markOf("t")}`,
       ]) {
          expect(isNameViewComment(comment)).toBe(false);
       }
@@ -94,9 +113,14 @@ describe("which dialects can hold a marked view", () => {
          expect(() => nameViewProbeSql(["v"], dialect)).toThrow(
             NameViewUnsupportedError,
          );
-         expect(() => nameViewReplaceDdl(["v"], "t", "t", dialect)).toThrow(
-            NameViewUnsupportedError,
-         );
+         expect(() =>
+            nameViewReplaceDdl(
+               ["v"],
+               "t",
+               { target: "t", owner: OWNER },
+               dialect,
+            ),
+         ).toThrow(NameViewUnsupportedError);
          expect(() => nameViewDropSql(["v"], dialect)).toThrow(
             NameViewUnsupportedError,
          );
@@ -105,14 +129,13 @@ describe("which dialects can hold a marked view", () => {
 });
 
 describe("pointing the view, per dialect", () => {
-   const mark = (dialect: string) =>
-      sqlString(nameViewComment("s.t_g2"), dialect);
+   const mark = (dialect: string) => sqlString(markOf("s.t_g2"), dialect);
 
    it("DuckDB (and MotherDuck, DuckLake): view and mark in one transaction", () => {
       const ddl = nameViewReplaceDdl(
          ["s", "v"],
          `"s"."t_g2"`,
-         "s.t_g2",
+         { target: "s.t_g2", owner: OWNER },
          "duckdb",
       );
       expect(ddl.primary).toBe(
@@ -131,7 +154,7 @@ describe("pointing the view, per dialect", () => {
       const ddl = nameViewReplaceDdl(
          ["s", "v"],
          `"s"."t_g2"`,
-         "s.t_g2",
+         { target: "s.t_g2", owner: OWNER },
          "postgres",
       );
       expect(ddl.primary).toBe(
@@ -154,7 +177,7 @@ describe("pointing the view, per dialect", () => {
       const ddl = nameViewReplaceDdl(
          ["my-proj", "ds", "v"],
          "`my-proj`.`ds`.`t_g2`",
-         "s.t_g2",
+         { target: "s.t_g2", owner: OWNER },
          "standardsql",
       );
       expect(ddl.primary).toBe(
@@ -169,7 +192,7 @@ describe("pointing the view, per dialect", () => {
          nameViewReplaceDdl(
             ["DB", "S", "V"],
             `"DB"."S"."T"`,
-            "s.t_g2",
+            { target: "s.t_g2", owner: OWNER },
             "snowflake",
          ).primary,
       ).toBe(
@@ -179,15 +202,19 @@ describe("pointing the view, per dialect", () => {
          nameViewReplaceDdl(
             ["c", "s", "v"],
             "`c`.`s`.`t`",
-            "s.t_g2",
+            { target: "s.t_g2", owner: OWNER },
             "databricks",
          ).primary,
       ).toBe(
          `CREATE OR REPLACE VIEW \`c\`.\`s\`.\`v\` COMMENT ${mark("databricks")} AS SELECT * FROM \`c\`.\`s\`.\`t\``,
       );
       expect(
-         nameViewReplaceDdl(["c", "s", "v"], `"c"."s"."t"`, "s.t_g2", "trino")
-            .primary,
+         nameViewReplaceDdl(
+            ["c", "s", "v"],
+            `"c"."s"."t"`,
+            { target: "s.t_g2", owner: OWNER },
+            "trino",
+         ).primary,
       ).toBe(
          `CREATE OR REPLACE VIEW "c"."s"."v" COMMENT ${mark("trino")} AS SELECT * FROM "c"."s"."t"`,
       );
@@ -197,7 +224,7 @@ describe("pointing the view, per dialect", () => {
       const ddl = nameViewReplaceDdl(
          ["dbo", "v"],
          `"dbo"."t_g2"`,
-         "s.t_g2",
+         { target: "s.t_g2", owner: OWNER },
          "sqlserver",
       );
       expect(ddl.primary).toContain("SET XACT_ABORT ON;");
@@ -215,11 +242,21 @@ describe("pointing the view, per dialect", () => {
       expect(ddl.primary.trim().endsWith("COMMIT TRANSACTION;")).toBe(true);
       // A bare name is in the caller's default schema.
       expect(
-         nameViewReplaceDdl(["v"], `"t"`, "t", "sqlserver").primary,
+         nameViewReplaceDdl(
+            ["v"],
+            `"t"`,
+            { target: "t", owner: OWNER },
+            "sqlserver",
+         ).primary,
       ).toContain("DECLARE @schema sysname = SCHEMA_NAME();");
       // CREATE VIEW takes no database.
       expect(() =>
-         nameViewReplaceDdl(["db", "dbo", "v"], "t", "t", "sqlserver"),
+         nameViewReplaceDdl(
+            ["db", "dbo", "v"],
+            "t",
+            { target: "t", owner: OWNER },
+            "sqlserver",
+         ),
       ).toThrow(NameViewUnsupportedError);
    });
 
@@ -227,7 +264,7 @@ describe("pointing the view, per dialect", () => {
       const ddl = nameViewReplaceDdl(
          ["s", `we"ird`],
          `"s"."t"`,
-         "s.t",
+         { target: "s.t", owner: OWNER },
          "postgres",
       );
       expect(ddl.primary).toContain(`VIEW "s"."we""ird" AS`);
@@ -322,12 +359,12 @@ describe("reading what holds a name", () => {
 
    it("a Publisher view, and the table it reads", () => {
       expect(
-         nameViewSlotOf([{ kind: "VIEW", comment: nameViewComment("t_g1") }]),
-      ).toEqual({ state: "ours", target: "t_g1" });
+         nameViewSlotOf([{ kind: "VIEW", comment: markOf("t_g1") }]),
+      ).toEqual({ state: "ours", target: "t_g1", owner: OWNER });
       // Snowflake reports upper-case columns unless aliased; any case reads.
       expect(
-         nameViewSlotOf([{ KIND: "view", COMMENT: nameViewComment("t_g1") }]),
-      ).toEqual({ state: "ours", target: "t_g1" });
+         nameViewSlotOf([{ KIND: "view", COMMENT: markOf("t_g1") }]),
+      ).toEqual({ state: "ours", target: "t_g1", owner: OWNER });
    });
 
    it("a table, or a view Publisher did not mark, is taken", () => {
@@ -342,8 +379,8 @@ describe("reading what holds a name", () => {
       // A marked view beside a table of the same name is still taken.
       expect(
          nameViewSlotOf([
-            { kind: "VIEW", comment: nameViewComment("t") },
-            { kind: "TABLE", comment: nameViewComment("t") },
+            { kind: "VIEW", comment: markOf("t") },
+            { kind: "TABLE", comment: markOf("t") },
          ]),
       ).toEqual({ state: "taken", kind: "TABLE" });
    });

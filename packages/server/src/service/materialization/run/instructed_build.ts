@@ -72,6 +72,7 @@ import {
    type NameViewRecord,
    type SwapDependents,
 } from "./name_view";
+import { nameViewOwner } from "./name_view_sql";
 import type { SourceBuilder } from "./source_build";
 
 /** sourceID -> the sourceIDs it reads, merged across every connection's build. */
@@ -317,10 +318,7 @@ export class InstructedBuild {
       // Only once every source built, so a run that fails part-way never
       // points a view at a table its manifest will not name. Never throws.
       const nameViews = run.nameViewIntents?.length
-         ? await publishNameViews(
-              run.nameViewIntents,
-              nameViewContext(run, undefined),
-           )
+         ? await publishNameViews(run.nameViewIntents, nameViewContext(run))
          : [];
 
       return {
@@ -472,6 +470,7 @@ export class InstructedBuild {
          persistSource,
          instruction,
          sourceEntityId,
+         nameViewOwnerOf(run),
       );
       let entry;
       try {
@@ -632,13 +631,23 @@ export class InstructedBuild {
    }
 }
 
+/** The package a run's `name=` views are marked as made by. */
+function nameViewOwnerOf(run: InstructedRun): string {
+   return nameViewOwner(
+      run.buildMetadata?.context.environment ??
+         run.environment.getEnvironmentName?.() ??
+         "",
+      run.buildMetadata?.context.package ?? run.owner?.packageName ?? "",
+   );
+}
+
 /**
  * How a run reaches the site of a `name=` view: the source's connection (the
  * one this build holds, when given), or the destination the run builds into.
  */
-function nameViewContext(
-   run: InstructedRun,
-   connection: MalloyConnection | undefined,
+export function nameViewContext(
+   run: Pick<InstructedRun, "compiled" | "environment">,
+   connection?: MalloyConnection,
 ): NameViewContext {
    return {
       connectionFor: (name) =>
