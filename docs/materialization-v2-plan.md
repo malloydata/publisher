@@ -536,6 +536,8 @@ Every point in the Nov 5 design review, "Review: Materialization v2", is answere
 
 Inventory of `packages/server/src` (non-test) on 2026-11-12, read file by file: 63 files mention the IR types (`ModelDef`, `StructDef`, `SourceDef`, `FieldDef`, pipeline segments, `structRef`). 42 walk or interpret the IR; 18 only pass a model definition through; 3 are false positives (`db_utils.ts`, `connection.ts`, `controller/connection.controller.ts` read warehouse schema fields, not the IR). The package-load worker (`package_load_worker.ts`, and `source_extraction.ts`, which it shares with `Model.create`) runs in a worker thread, so whatever replaces those readers must be importable there.
 
+**The layering (decided 2026-11-12).** Two layers, one shared at the bottom. `governance/ir/source_graph.ts` (with `prepared_query.ts`) is the one reader of a source's segments: its extends chain, renames, query bases, composites, joins and reachability. Every part of Publisher that needs segments reads it. The source map is materialization's view over that structure and adds only what materialization needs (keying by `sourceID`, stored tables, addresses, which annotations apply where); it never walks segments itself, and a walk it lacks is added to `source_graph.ts` first. Gates, classification, extraction and retrieval read `source_graph.ts`, not the source map, so they never depend on materialization concepts.
+
 Dispositions: **shared reader** is the target; **phase 5** moves onto `governance/ir` or the source map; **phase 3** or **phase 4** is replaced or absorbed by that phase's work; **as is** reads a narrow, stable signal or is trivial.
 
 | Area | File | What it reads | Uses `governance/ir` | Disposition |
