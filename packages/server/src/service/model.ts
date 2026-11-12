@@ -60,7 +60,7 @@ import {
    OffSurfaceError,
    PayloadTooLargeError,
 } from "../errors";
-import { getPersistStorageMode } from "../config";
+import { getMaterializeEnabled, getPersistStorageMode } from "../config";
 import {
    planModelPreaggregation,
    type RollupPlan,
@@ -210,6 +210,11 @@ import {
    StorageServeShape,
    type SourceTypeMismatches,
 } from "./materialization/serve/model_serve_shape";
+import type { MaterializePlan } from "./materialization/plan/build_file_generator";
+import {
+   ServedCopyServe,
+   type ServedCopyProblem,
+} from "./materialization/serve/served_copy_serve";
 import { type ApiQueryPath } from "./materialization/serve/query_path";
 import { sourceChain } from "./materialization/plan/source_map";
 import type { ViewServeVerdict } from "./materialization/serve/serve_verdict";
@@ -389,6 +394,16 @@ export class Model {
    private modelDef: ModelDef | undefined;
    private modelInfo: Malloy.ModelInfo | undefined;
    private storageServe = new StorageServeShape(this.serveShapeHost());
+   /**
+    * The served copy on `virtual` (materialization v2, phase 3): the author's
+    * own files with each stored source re-rooted on its table. A router
+    * candidate only when `materialize.enabled` (`PUBLISHER_MATERIALIZE`) is on.
+    */
+   private servedCopy = new ServedCopyServe({
+      modelPath: () => this.modelPath,
+      modelDef: () => this.modelDef,
+      serveDestinationConfig: () => this.storageServe.serveDestinationConfig,
+   });
    /**
     * The synthesized pre-aggregation model for this model, compiled once per load
     * by the owning Package (see Package.pushPreaggregateServeModels) and reused by
@@ -2611,16 +2626,43 @@ export class Model {
    /** See {@link StorageServeShape.setServeDestinationConfig}. */
    public setServeDestinationConfig(provider: () => MalloyConfig): void {
       this.storageServe.setServeDestinationConfig(provider);
+      this.servedCopy.invalidate();
+   }
+
+   /**
+    * The package directory and connections this model's served copy compiles
+    * with. Set by the owning package with its bindings.
+    */
+   public setServedCopyContext(
+      packagePath: string,
+      malloyConfig: ModelConnectionInput,
+      materializePlans: Readonly<Record<string, MaterializePlan>> = {},
+   ): void {
+      this.servedCopy.setContext(packagePath, malloyConfig, materializePlans);
+   }
+
+   /** Compile the served copy now, when it is enabled, so its warnings exist. */
+   public async prepareServedCopy(): Promise<void> {
+      if (!getMaterializeEnabled()) return;
+      await this.servedCopy.prepare();
+   }
+
+   /** Why this model's served copy leaves sources unserved (empty when off). */
+   public servedCopyProblems(): readonly ServedCopyProblem[] {
+      if (!getMaterializeEnabled()) return [];
+      return this.servedCopy.problems();
    }
 
    /** See {@link StorageServeShape.invalidateServeShapeCache}. */
    public invalidateServeShapeCache(): void {
       this.storageServe.invalidateServeShapeCache();
+      this.servedCopy.invalidate();
    }
 
    /** See {@link StorageServeShape.setServeBindings}. */
    public setServeBindings(bindings: ServeBinding[]): void {
       this.storageServe.setServeBindings(bindings);
+      this.servedCopy.setBindings(bindings);
    }
 
    /** See {@link StorageServeShape.storedColumnTypeMismatches}. */
@@ -2987,6 +3029,13 @@ export class Model {
             getPersistStorageMode() === "on" &&
             this.storageServe.serveBindings.length > 0 &&
             !!this.storageServe.serveDestinationConfig;
+         // The served copy holds bindings the serve shape drops (a
+         // `#(materialize)` build source is no source of this model by name).
+         const servedCopyPossible =
+            getMaterializeEnabled() &&
+            getPersistStorageMode() === "on" &&
+            this.servedCopy.hasBindings() &&
+            !!this.storageServe.serveDestinationConfig;
          // Captured once so the guard and the use below see the same companion.
          const preaggServeMaterializer = this.preaggregateServeMaterializer;
          const route = await routeQuery<RoutedExtra>(
@@ -2995,6 +3044,7 @@ export class Model {
                surfaceGivens: querySurfaceGivens,
                buildManifest,
                storageRoutingPossible,
+               servedCopyPossible,
                preaggServeMaterializer,
             }),
             async () => {
@@ -3486,6 +3536,7 @@ export class Model {
       return {
          modelPath: this.modelPath,
          storageServe: this.storageServe,
+         servedCopy: this.servedCopy,
          rollupPlans: () => this.preaggregateRollupPlans,
          modelDef: () => this.modelDef,
          materializedTables: () => this.policy.materializedTables(),

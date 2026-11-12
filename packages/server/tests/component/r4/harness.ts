@@ -17,6 +17,8 @@
  * rewriter is checked against the same scenarios when it lands (phase 3).
  */
 
+import { tryCompileMaterializeCompanion } from "../../../src/service/materialization/plan/materialize_compile";
+import type { MaterializePlan } from "../../../src/service/materialization/plan/build_file_generator";
 import { DuckDBConnection } from "@malloydata/db-duckdb";
 import * as fs from "fs";
 import * as os from "os";
@@ -85,6 +87,12 @@ export interface R4Scenario {
     * table an older build typed. Default false: the build casts, as it does now.
     */
    uncast?: boolean;
+   /**
+    * Build the generated `#(materialize)` sources (`<src>__mat`, in the
+    * companion model) instead of the author's `#@ persist` sources, and hand
+    * the model their plans, as a package with PUBLISHER_MATERIALIZE on does.
+    */
+   materialize?: boolean;
 }
 
 export type Row = Record<string, unknown>;
@@ -93,6 +101,8 @@ export interface R4Run {
    live: Row[];
    served: Row[];
    servedFrom: string | null;
+   /** `served_copy` when the served copy on `virtual` answered. */
+   servedVia?: string;
    truth?: Row[];
 }
 
@@ -114,6 +124,10 @@ export interface R4Fixture {
    }>;
    /** The bound columns the serve side leaves off for their stored type. */
    typeMismatches(): ReturnType<Model["storedColumnTypeMismatches"]>;
+   /** The served copy's problems after compiling it over {@link bindings}. */
+   servedCopyProblems(): Promise<ReturnType<Model["servedCopyProblems"]>>;
+   /** The annotation lines on a field of a source in the compiled served copy. */
+   servedFieldNotes(source: string, field: string): Promise<string[]>;
 }
 
 /**
@@ -193,7 +207,45 @@ export async function buildScenario(scenario: R4Scenario): Promise<R4Fixture> {
    // Build each persist source with its real SQL.
    const entries: Record<string, ManifestEntry> = {};
    const plan: Record<string, { name: string; sourceEntityId: string }> = {};
-   const sources = plannedSources(await runtime.getBuildTargets(compiled));
+   // eslint-disable-next-line @typescript-eslint/no-explicit-any
+   const authorDef = (compiled as any)._modelDef;
+   const companion = scenario.materialize
+      ? await tryCompileMaterializeCompanion({
+           packagePath: dir,
+           modelPath: entry,
+           contents: authorDef.contents,
+           getRuntime: async (overlay) => ({
+              runtime: new Runtime({
+                 urlReader: new InMemoryURLReader(
+                    new Map([
+                       ...Object.entries(scenario.files).map(
+                          ([file, text]) => [urlOf(file), text] as const,
+                       ),
+                       ...overlay,
+                    ]),
+                 ),
+                 connections: authorConnections,
+              }),
+              importBaseURL: new URL(root),
+           }),
+        })
+      : undefined;
+   if (scenario.materialize && !companion) {
+      throw new Error("the #(materialize) companion did not compile");
+   }
+   const materializeByName = new Map(
+      (companion?.plans ?? []).map((p) => [p.buildSourceName, p]),
+   );
+   const sources = companion
+      ? plannedSources(
+           await companion.runtime.getBuildTargets(companion.model),
+        ).filter((s) => materializeByName.has(s.name))
+      : plannedSources(await runtime.getBuildTargets(compiled));
+   const materializePlans: Record<string, MaterializePlan> = {};
+   for (const source of sources) {
+      const plan = materializeByName.get(source.name);
+      if (plan) materializePlans[source.sourceID] = plan;
+   }
    sources.forEach((source, i) => {
       plan[source.sourceID] = { name: source.name, sourceEntityId: `h${i}` };
    });
@@ -229,8 +281,7 @@ export async function buildScenario(scenario: R4Scenario): Promise<R4Fixture> {
       planSourceIds(plan),
    );
 
-   // eslint-disable-next-line @typescript-eslint/no-explicit-any
-   const modelDef = (compiled as any)._modelDef;
+   const modelDef = authorDef;
    // The plan's catalog, as a package hands it to its models, so the path
    // report names each stored table by its content address.
    const policy = ModelPolicy.fixed({
@@ -266,6 +317,13 @@ export async function buildScenario(scenario: R4Scenario): Promise<R4Fixture> {
          new FixedConnectionMap(new Map([[DESTINATION, duckdb]]), DESTINATION),
    );
    model.setServeDestinationConfig(() => serveConfig);
+   // The served copy (materialization v2) compiles the author's own files with
+   // the package's connections; only routed when its setting is on.
+   model.setServedCopyContext(
+      dir,
+      new Map([["duckdb", duckdb]]),
+      materializePlans,
+   );
 
    const runOnce = async (malloy: string) => {
       const result = await model.runQuery(
@@ -286,6 +344,37 @@ export async function buildScenario(scenario: R4Scenario): Promise<R4Fixture> {
          model.setServeBindings(next);
       },
       runAsIs: runOnce,
+      async servedFieldNotes(source, field) {
+         model.setServeBindings(bindings);
+         const servedCopy = (
+            model as unknown as {
+               servedCopy: { compiledModelDef(): Promise<unknown> };
+            }
+         ).servedCopy;
+         const servedDef = (await servedCopy.compiledModelDef()) as {
+            contents?: Record<
+               string,
+               {
+                  fields?: {
+                     name?: string;
+                     annotations?: { notes?: { text: string }[] };
+                     annotation?: { notes?: { text: string }[] };
+                  }[];
+               }
+            >;
+         };
+         const f = servedDef?.contents?.[source]?.fields?.find(
+            (x) => x.name === field,
+         );
+         return ((f?.annotations ?? f?.annotation)?.notes ?? []).map((n) =>
+            n.text.trim(),
+         );
+      },
+      async servedCopyProblems() {
+         model.setServeBindings(bindings);
+         await model.prepareServedCopy();
+         return model.servedCopyProblems();
+      },
       typeMismatches() {
          model.setServeBindings(bindings);
          return model.storedColumnTypeMismatches();
@@ -302,6 +391,9 @@ export async function buildScenario(scenario: R4Scenario): Promise<R4Fixture> {
             live: live.rows,
             served: served.rows,
             servedFrom: served.servedFrom,
+            ...(served.path?.servedBy?.via
+               ? { servedVia: served.path.servedBy.via }
+               : {}),
             ...(truth ? { truth } : {}),
          };
       },

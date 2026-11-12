@@ -36,6 +36,7 @@ import type {
    SourceEligibility,
 } from "./plan/build_plan";
 import { computePackageBuildPlan } from "./plan/build_plan_compile";
+import type { MaterializePlan } from "./plan/build_file_generator";
 import {
    incrementalPolicyAdvisories,
    incrementalPolicyRejections,
@@ -63,6 +64,10 @@ import {
    planSourceIds,
    type ServeBinding,
 } from "./serve/materialization_serve_transform";
+import {
+   SERVED_COPY_WARNING_CODE,
+   type ServedCopyProblem,
+} from "./serve/served_copy_serve";
 import { STORED_COLUMN_TYPE_MISMATCH_CODE } from "./stored_column_types";
 import {
    computeServeVerdicts,
@@ -190,6 +195,12 @@ export class PackageMaterialization {
    // it is stable per (package version, connection config). Null when the
    // package declares no persist source.
    buildPlan: BuildPlan | null = null;
+   /**
+    * The plan's generated `#(materialize)` build sources, by sourceID, pushed
+    * to each model's served copy with the bindings. Kept across a failed
+    * re-derivation, like the plan's last good bindings.
+    */
+   materializePlans: Record<string, MaterializePlan> = {};
    /** The build plan could not be derived at load (see applyLoadBuildPlan). */
    private buildPlanFailed = false;
    /**
@@ -360,10 +371,12 @@ export class PackageMaterialization {
             colocatedSourceEligibility,
             incrementalDeclarations,
             buildConnectionNames,
+            materializePlans,
          } = workerPlan
             ? workerPlan.outcome
             : await computePackageBuildPlan(this.owner.buildPlanPackage);
          this.buildPlan = plan;
+         this.materializePlans = materializePlans ?? {};
          this.buildPlanFailed = false;
          this.servingPlanWhileUnavailable = null;
          this.droppedPersistSources = droppedPersistSources;
@@ -829,7 +842,16 @@ export class PackageMaterialization {
    /** Push the current storage serve bindings onto every loaded model. */
    pushStorageServeBindingsToModels(): void {
       for (const model of this.owner.models().values()) {
+         // Optional: a model a spec stands in for need not implement them.
+         model.setServedCopyContext?.(
+            this.owner.packagePath(),
+            this.owner.malloyConfig(),
+            this.materializePlans,
+         );
          model.setServeBindings(this.storageServeBindings);
+         // Compiled at bind so a served copy that does not compile is a
+         // package warning before any query; never throws.
+         void model.prepareServedCopy?.();
       }
    }
 
@@ -1173,6 +1195,29 @@ export class PackageMaterialization {
     * by the source's sourceID, so two models' same-named sources both report,
     * and a source several models import reports once.
     */
+   /**
+    * Warnings for a model whose served copy (materialization v2) leaves
+    * sources unserved: it did not compile, a cross-connection join waits for
+    * the other side to build, or a source could not be re-rooted. Those
+    * sources serve through today's serve shape, or live. Empty when the served
+    * copy is off.
+    */
+   servedCopyWarnings(): ApiPackageWarning[] {
+      const warnings: ApiPackageWarning[] = [];
+      for (const [modelPath, model] of this.owner.models()) {
+         for (const p of model.servedCopyProblems?.() ?? []) {
+            warnings.push({
+               model: modelPath,
+               ...(p.sourceName ? { subject: p.sourceName } : {}),
+               code: SERVED_COPY_WARNING_CODE,
+               severity: "warn",
+               message: servedCopyProblemMessage(p.reason),
+            });
+         }
+      }
+      return warnings;
+   }
+
    storedColumnTypeWarnings(): ApiPackageWarning[] {
       const warnings: ApiPackageWarning[] = [];
       const seen = new Set<string>();
@@ -1828,4 +1873,26 @@ function withoutChangedConnections(
       ),
       refused,
    };
+}
+
+/**
+ * A caller-safe sentence for why a served copy leaves a source unserved. The
+ * compiler's own message stays in the logs: it can name the destination alias.
+ */
+function servedCopyProblemMessage(reason: ServedCopyProblem["reason"]): string {
+   switch (reason) {
+      case "compile_failed":
+         return "This model's served copy does not compile, so its stored sources serve through the serve shape or live.";
+      case "cross_connection_unbuilt":
+         return "This model joins sources from different connections; its served copy compiles once both sides are built into one destination, and serves live until then.";
+      case "column_types":
+         return "This source's stored column types differ from the types the model declares, so the served copy leaves it to the serve shape.";
+      case "no_declaration":
+         return "This source's declaration was not found in the compiled model, so the served copy leaves it to the serve shape.";
+      case "range_not_found":
+      case "definition_not_parsed":
+         return "This source's declaration could not be re-rooted on its table, so the served copy leaves it to the serve shape.";
+      case "fields_not_carried":
+         return "This source inherits fields (a measure, view or join declared on the source it is built from) that its stored table does not carry, so the served copy leaves it as written.";
+   }
 }

@@ -185,6 +185,8 @@ export interface QueryPathInput {
    considered: readonly ConsideredVariant[];
    /** For a storage answer: the bindings whose tables the routed query read. */
    storageTablesRead?: readonly StorageTable[];
+   /** For a storage answer: `served_copy` when the served copy on `virtual` answered. */
+   via?: "served_copy";
    /**
     * The routed storage read failed at run time and the query ran live. Its
     * error is logged, never reported: it can carry storage paths.
@@ -220,7 +222,12 @@ export interface QueryPathInput {
 export function buildQueryPath(input: QueryPathInput): ApiQueryPath {
    const onChain = new Set(input.chain);
    const decided = new Map(input.considered.map((c) => [c.kind, c]));
-   const storageDecision = decided.get("storage");
+   // The served copy on `virtual` reads the same stored tables as the serve
+   // shape; when it answered, its decision is the storage tier's.
+   const servedCopyAnswered = input.via === "served_copy";
+   const storageDecision = servedCopyAnswered
+      ? decided.get("served")
+      : decided.get("storage");
    const rollupDecision = decided.get("rollup");
    // Computed once per report.
    const freshStorage = new Set(input.storage.fresh.map((b) => b.tablePath));
@@ -359,7 +366,10 @@ export function buildQueryPath(input: QueryPathInput): ApiQueryPath {
 
    return {
       query: input.shape,
-      servedBy,
+      servedBy:
+         servedCopyAnswered && servedBy.kind === "materialized"
+            ? { ...servedBy, via: "served_copy" }
+            : servedBy,
       considered,
       notConsidered: nearbyTables(
          input,

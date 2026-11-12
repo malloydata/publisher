@@ -8704,6 +8704,14 @@ components:
           description: >-
             The moment the table's rows reflect, as on its manifest entry. Absent
             when `kind` is `live`, or when the manifest entry does not record it.
+        via:
+          type: string
+          description: >-
+            How a `materialized` table was read, when it was not today's serve
+            shape: `served_copy` means the model's served copy answered (the
+            author's own files with each stored source re-rooted on its table,
+            behind `PUBLISHER_MATERIALIZE`). An open string; absent
+            otherwise.
 
     QueryPathCandidate:
       type: object

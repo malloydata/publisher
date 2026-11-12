@@ -1071,6 +1071,13 @@ export interface BuildPlanOutcome {
     * that predates it sends none.
     */
    buildConnectionNames?: string[];
+   /**
+    * The generated `#(materialize)` build sources, by their sourceID (see
+    * {@link CompiledBuildPlan.materializePlans}), for the served copy to
+    * re-root each author source on its build source's table. Optional: a
+    * worker that predates it sends none.
+    */
+   materializePlans?: Record<string, MaterializePlan>;
 }
 
 /**
@@ -1126,6 +1133,7 @@ export function deriveBuildPlanOutcome(
       buildConnectionNames: [
          ...new Set(compiled.builds.map((b) => b.connectionName)),
       ].sort(),
+      materializePlans: compiled.materializePlans ?? {},
    };
 }
 
