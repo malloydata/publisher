@@ -49,6 +49,11 @@ async function compiled(text: string) {
    return compilePackageBuildPlan(pkg);
 }
 
+async function compiledFiles(files: Record<string, string>) {
+   const pkg = await packages.create(files);
+   return compilePackageBuildPlan(pkg);
+}
+
 function viewSources(c: Awaited<ReturnType<typeof compiled>>): string[] {
    return Object.values(c.sources)
       .map((s) => s.name)
@@ -204,5 +209,106 @@ source: ops is ${TABLE} extend {
          expect(findings.some((m) => m.includes("limit:"))).toBe(true);
          expect(findings.some((m) => m.includes("all()"))).toBe(true);
       });
+   });
+});
+
+describe("which source declares a persisted view", () => {
+   // Malloy copies a view, with its notes, onto every extension, rename and
+   // import of its source. Only the statement that annotates the view
+   // declares it (governance/ir/declared_notes.ts, declaredFieldNotes).
+   const persisted = `#@ persist
+  view: v is { group_by: carrier; aggregate: n }`;
+   const base = (name: string) =>
+      `source: ${name} is ${TABLE} extend {
+  measure: n is count()
+  ${persisted}
+}`;
+
+   it("plans same-named views on two sources in one file, one each", async () => {
+      const c = await compiled(`##! experimental.persistence
+${base("a")}
+${base("b")}
+`);
+      expect(viewSources(c)).toEqual(["a__v__view", "b__v__view"]);
+   });
+
+   it("plans a view an extension redefines, on the extension too", async () => {
+      const c = await compiled(`##! experimental.persistence
+${base("a")}
+source: b is a extend {
+  except: v
+  #@ persist
+  view: v is { group_by: tenant; aggregate: n }
+}
+`);
+      expect(viewSources(c)).toEqual(["a__v__view", "b__v__view"]);
+   });
+
+   it("plans an imported source's view only in its own file", async () => {
+      const c = await compiledFiles({
+         "f.malloy": `##! experimental.persistence
+${base("a")}
+source: c is a extend { where: carrier = 'aa' }
+`,
+         "m.malloy": `##! experimental.persistence
+import { c } from "f.malloy"
+source: b is c extend { dimension: x is 1 }
+`,
+      });
+      expect(viewSources(c)).toEqual(["a__v__view"]);
+   });
+
+   it("plans a view declared in an extend of a rename on that extension alone", async () => {
+      const c = await compiled(`##! experimental.persistence
+${base("a")}
+source: r is a
+source: re is r extend {
+  #@ persist
+  view: w is { group_by: tenant; aggregate: n }
+}
+`);
+      expect(viewSources(c)).toEqual(["a__v__view", "re__w__view"]);
+   });
+
+   it("plans a view once for a multi-definition statement", async () => {
+      const c = await compiled(`##! experimental.persistence
+${base("a")}, b is a extend { dimension: x is 1 }
+`);
+      expect(viewSources(c)).toEqual(["a__v__view"]);
+   });
+
+   it("does not plan a view an extension renames (its notes are the base's)", async () => {
+      const c = await compiled(`##! experimental.persistence
+${base("a")}
+source: b is a extend { rename: v2 is v }
+`);
+      expect(viewSources(c)).toEqual(["a__v__view"]);
+   });
+
+   it("plans an alias that carries its own #@ persist", async () => {
+      const c = await compiled(`##! experimental.persistence
+${base("a")}
+source: b is a extend {
+  #@ persist
+  view: v2 is v
+}
+`);
+      expect(viewSources(c)).toEqual(["a__v__view", "b__v2__view"]);
+   });
+
+   it("plans a view an include: re-annotates with #@ persist, on the including source", async () => {
+      const c =
+         await compiled(`##! experimental { persistence access_modifiers }
+source: a is ${TABLE} extend {
+  measure: n is count()
+  view: v is { group_by: carrier; aggregate: n }
+}
+source: b is a include {
+  #@ persist
+  public: v
+  public: *
+}
+`);
+      expect(viewSources(c)).toEqual(["b__v__view"]);
    });
 });

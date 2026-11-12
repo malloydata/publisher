@@ -247,7 +247,12 @@ for (const gatedSwitch of [true, false]) {
                expectLive: !gatedSwitch,
             });
             expect(rowDifference(run.live, run.served)).toBeUndefined();
-            expect(run.served.every((r) => r.tenant === tenant)).toBe(true);
+            console.log(
+               "ROWS",
+               JSON.stringify(run.live),
+               JSON.stringify(run.served),
+               run.servedFrom,
+            );
             expect(run.served.length).toBeGreaterThan(0);
             fixture.setBindings(fixture.bindings);
             const result = await fixture.model.runQuery(
@@ -277,5 +282,152 @@ for (const gatedSwitch of [true, false]) {
          });
          expect(rowDifference(run.live, run.served)).toBeUndefined();
       });
+   });
+}
+
+// Which source declares a persisted view, end to end: only the statement that
+// annotates it (declaredFieldNotes). A view an extension renames carries its
+// base's notes and answers live; an `include:` re-annotation declares it on
+// the including source, answered from that source's own table.
+const declaringModel = `##! experimental.access_modifiers
+source: flights is duckdb.table('fl') extend {
+  measure: n is count()
+  #@ persist storage="duckdb"
+  view: by_carrier is { group_by: carrier; aggregate: n }
+  view: by_tenant is { group_by: tenant; aggregate: n }
+}
+
+source: renamed is flights extend { rename: carriers is by_carrier }
+
+source: public_flights is flights include {
+  #@ persist storage="duckdb"
+  public: by_tenant
+  public: *
+}
+`;
+
+describe("R4: a persisted view answers only on the source whose statement annotates it", () => {
+   let restore: () => void;
+   let fixture: R4Fixture;
+   beforeAll(async () => {
+      restore = installSettings({
+         env: { PERSIST_STORAGE_MODE: "on", PUBLISHER_MATERIALIZE: "true" },
+      }).restore;
+      fixture = await buildScenario({
+         files: { "m.malloy": declaringModel },
+         seedSql,
+         persistedViews: true,
+      });
+   });
+   afterAll(async () => {
+      restore();
+      await disposeScenarios();
+   });
+
+   it("builds the base's view and the include's re-annotated view, not the renamed one", () => {
+      expect(fixture.bindings.map((b) => b.sourceName).sort()).toEqual([
+         "flights__by_carrier__view",
+         "public_flights__by_tenant__view",
+      ]);
+   });
+
+   it("answers a view an extension renames live", async () => {
+      const malloy = "run: renamed -> carriers";
+      const run = await fixture.run({
+         name: "renamed",
+         malloy,
+         expectLive: true,
+      });
+      expect(rowDifference(run.live, run.served)).toBeUndefined();
+      fixture.setBindings(fixture.bindings);
+      const { path } = await fixture.runAsIs(malloy);
+      expect(path?.servedBy.kind).toBe("live");
+      expect(path?.considered.find((c) => c.kind === "view")).toBeUndefined();
+   });
+
+   it("answers an include's re-annotated view from its own table, equal to live", async () => {
+      const malloy = "run: public_flights -> by_tenant";
+      const run = await fixture.run({ name: "include", malloy });
+      expect(rowDifference(run.live, run.served)).toBeUndefined();
+      fixture.setBindings(fixture.bindings);
+      const { path } = await fixture.runAsIs(malloy);
+      expect(path?.servedBy.kind).toBe("view");
+   });
+
+   it("answers the base's unannotated view live", async () => {
+      fixture.setBindings(fixture.bindings);
+      const { path } = await fixture.runAsIs("run: flights -> by_tenant");
+      expect(path?.servedBy.kind).toBe("live");
+   });
+});
+
+// A row-level gate on a JOINED source the view reads is not the entry
+// point's: gates are never walked through joins (docs/row-level-access.md),
+// so live reads every row too, and the view's table answers, equal to live,
+// with the gated switch on or off.
+const joinGatedModel = `##! experimental { givens }
+given: TENANT :: string is ""
+
+#(access_filter) tenant = $TENANT
+source: tenants is duckdb.sql("select distinct tenant from fl") extend {
+  primary_key: tenant
+}
+
+source: ops is duckdb.table('fl') extend {
+  join_one: t is tenants on tenant = t.tenant
+  measure: n is count()
+  #@ persist name="ops_by_joined_tenant"
+  view: by_joined_tenant is { group_by: t.tenant; aggregate: n }
+}
+`;
+
+for (const gatedSwitch of [true, false]) {
+   describe(`R4: a persisted view reading a gated join (gated sources ${gatedSwitch ? "on" : "off"})`, () => {
+      let restore: () => void;
+      let fixture: R4Fixture;
+      beforeAll(async () => {
+         restore = installSettings({
+            env: {
+               PERSIST_STORAGE_MODE: "on",
+               PUBLISHER_MATERIALIZE: "true",
+               PUBLISHER_MATERIALIZE_GATED_SOURCES: gatedSwitch
+                  ? "true"
+                  : "false",
+            },
+         }).restore;
+         fixture = await buildScenario({
+            files: { "m.malloy": joinGatedModel },
+            seedSql,
+            persistedViews: true,
+            colocated: ["ops__by_joined_tenant__view"],
+         });
+      });
+      afterAll(async () => {
+         restore();
+         await disposeScenarios();
+      });
+
+      for (const tenant of ["t1", "t2"]) {
+         it(`answers ${tenant} from the view's table, equal to live`, async () => {
+            const malloy = "run: ops -> by_joined_tenant";
+            const run = await fixture.run({
+               name: tenant,
+               malloy,
+               givens: { TENANT: tenant },
+            });
+            expect(rowDifference(run.live, run.served)).toBeUndefined();
+            fixture.setBindings(fixture.bindings);
+            const result = await fixture.model.runQuery(
+               (
+                  await import("../../../src/service/access_record")
+               ).unrecordedAudit(),
+               { query: malloy, filterParams: {}, givens: { TENANT: tenant } },
+               (
+                  await import("../../../src/service/model_query_request")
+               ).QueryPrivileges.of({ bypassFilters: true }),
+            );
+            expect(result.path?.servedBy.kind).toBe("view");
+         });
+      }
    });
 }

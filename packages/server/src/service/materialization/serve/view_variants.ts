@@ -81,11 +81,10 @@ import {
    splitSourceID,
    type PersistedViewPlan,
 } from "../plan/persisted_view";
-import {
-   blankedPersistFiles,
-   viewNoteTexts,
-} from "../plan/persisted_view_compile";
+import { persistBlankedFiles } from "../persist_blanking";
+import { viewNoteTexts } from "../plan/persisted_view_compile";
 import { SourceMap } from "../plan/source_map";
+import { authorNameImports } from "./author_imports";
 import type { ServeBinding } from "./materialization_serve_transform";
 import type { MaterializedTableCatalog } from "./query_path";
 import { typeDeclaration } from "./served_copy";
@@ -508,7 +507,8 @@ export class PersistedViewServe {
       };
       // The author's files with source-level `#@` lines blanked (a view never
       // chains onto its source's table), the declaring file's under the copy.
-      const blanked = await blankedPersistFiles(modelDef, readText);
+      const blanked = await persistBlankedFiles(modelDef, readText);
+      if (!blanked) return { error: "a source-level #@ line not set aside" };
       const overlay = new Map<string, string>();
       for (const [url, text] of blanked) {
          if (url !== overlayKey(declaringURL)) overlay.set(url, text);
@@ -572,18 +572,25 @@ ${importOthers}
 ${declaration}
 `,
       );
-      overlay.set(
-         overlayKey(queryModelURL.href),
-         queryModelText(
-            modelDef,
-            queryModelURL,
-            pathToFileURL(modelFile).href,
-            {
+      // The query model: the author's model's names, each from the file that
+      // declares it (the view's source from its declaring file's overlay).
+      const imports = authorNameImports(
+         modelDef,
+         queryModelURL,
+         pathToFileURL(modelFile).href,
+         {
+            redirect: {
                from: overlayKey(declaringURL),
                to: copyURL.href,
                keep: source,
             },
-         ),
+         },
+      );
+      overlay.set(
+         overlayKey(queryModelURL.href),
+         `${VARIANT_FLAGS}
+${imports}
+`,
       );
       const destinations = this.host.serveDestinationConfig();
       const config =
@@ -822,92 +829,4 @@ function gateLines(modelDef: ModelDef, sourceID: string): string {
       }
    }
    return lines.map((l) => `${l}\n`).join("");
-}
-
-/** `url` relative to the query model's directory, for an `import`. */
-function relativeImport(from: URL, url: string): string | undefined {
-   try {
-      return path
-         .relative(path.dirname(fileURLToPath(from)), fileURLToPath(url))
-         .split(path.sep)
-         .join("/");
-   } catch {
-      return undefined;
-   }
-}
-
-/**
- * The query model: the author's model's names, each imported from the file
- * that declares it (the view's source from its declaring file's overlay).
- */
-function queryModelText(
-   modelDef: unknown,
-   queryModelURL: URL,
-   modelURL: string,
-   /**
-    * Names declared in `from` (the view's declaring file) other than `keep`
-    * are imported from `to` (its copy): a name a file imports is not exported
-    * again, so only the view's source comes from the declaring file's overlay.
-    */
-   redirect: { from: string; to: string; keep: string },
-): string {
-   const model = modelDef as {
-      contents?: Record<string, unknown>;
-      exports?: string[];
-      givens?: Record<string, { name?: unknown; location?: { url?: unknown } }>;
-   };
-   const exported = new Set(model.exports ?? []);
-   const byFile = new Map<string, string[]>();
-   const add = (url: string, item: string, declaredName?: string) => {
-      const target =
-         overlayKey(url) === redirect.from && declaredName !== redirect.keep
-            ? redirect.to
-            : url;
-      byFile.set(target, [...(byFile.get(target) ?? []), item]);
-   };
-   for (const [name, entry] of Object.entries(model.contents ?? {})) {
-      if (exported.has(name)) {
-         add(modelURL, identifier(name), name);
-         continue;
-      }
-      const e = entry as {
-         sourceID?: unknown;
-         name?: unknown;
-         location?: { url?: unknown };
-      };
-      const declared =
-         typeof e.sourceID === "string" ? splitSourceID(e.sourceID) : undefined;
-      const url =
-         declared?.url ??
-         (typeof e.location?.url === "string" ? e.location.url : undefined);
-      const declaredName =
-         declared?.name ?? (typeof e.name === "string" ? e.name : name);
-      if (!url) continue;
-      add(
-         url,
-         declaredName === name
-            ? identifier(name)
-            : `${identifier(name)} is ${identifier(declaredName)}`,
-         declaredName,
-      );
-   }
-   // Givens are not in `contents`; each comes from the file declaring it.
-   for (const given of Object.values(model.givens ?? {})) {
-      const url = given.location?.url;
-      if (typeof given.name === "string" && typeof url === "string") {
-         add(url, identifier(given.name), given.name);
-      }
-   }
-   const imports = [...byFile.entries()]
-      .map(([url, items]) => {
-         const from = relativeImport(queryModelURL, url);
-         if (from === undefined) return "";
-         // malloy-text: each item is identifier(name) or identifier(name) is identifier(declared)
-         return `import { ${items.join(", ")} } from ${doubleQuotedString(from)}`;
-      })
-      .filter((line) => line !== "")
-      .join("\n");
-   return `${VARIANT_FLAGS}
-${imports}
-`;
 }

@@ -22,8 +22,8 @@
  *   by another author.
  *
  * The companion reads the author's files with every source-level `#@` line
- * blanked (positions kept), so a view never chains onto its source's own
- * table.
+ * blanked (positions kept; `persist_blanking.ts`), so a view never chains
+ * onto its source's own table.
  */
 
 import type {
@@ -45,6 +45,7 @@ import { collectEntryPointGates } from "../../gate_classification";
 import { readPreparedQuery } from "../../governance/ir/prepared_query";
 import { identifier } from "../../malloy_text";
 import { overlayKey } from "../../overlay_key";
+import { persistBlankedFiles } from "../persist_blanking";
 import { currentTimeFields, readsCurrentTime } from "./persist_dynamic_terms";
 import {
    generatePersistedViewFile,
@@ -63,85 +64,6 @@ export interface GeneratedPersistedViews {
    materializer: ModelMaterializer;
    runtime: Runtime;
    text: string;
-}
-
-/** A zero-based range, as a note's `at.range` carries it. */
-interface NoteRange {
-   start: { line: number; character: number };
-   end: { line: number; character: number };
-}
-
-interface NoteLike {
-   text: string;
-   at?: { url: string; range: NoteRange };
-}
-
-/** Every source-level note on an annotation chain, inherited levels included. */
-function sourceNotes(annotations: unknown, depth = 0): NoteLike[] {
-   if (!annotations || typeof annotations !== "object" || depth > 64) return [];
-   const a = annotations as {
-      notes?: NoteLike[];
-      blockNotes?: NoteLike[];
-      inherits?: unknown;
-   };
-   return [
-      ...(a.blockNotes ?? []),
-      ...(a.notes ?? []),
-      ...sourceNotes(a.inherits, depth + 1),
-   ];
-}
-
-/** `text` with each range replaced by spaces, line breaks kept. */
-function blankRanges(text: string, ranges: readonly NoteRange[]): string {
-   const lines = text.split("\n");
-   for (const r of ranges) {
-      for (let line = r.start.line; line <= r.end.line; line++) {
-         const current = lines[line];
-         if (current === undefined) continue;
-         const from = line === r.start.line ? r.start.character : 0;
-         const to = line === r.end.line ? r.end.character : current.length;
-         lines[line] =
-            current.slice(0, from) +
-            " ".repeat(Math.max(0, to - from)) +
-            current.slice(to);
-      }
-   }
-   return lines.join("\n");
-}
-
-/** Each file of `modelDef` carrying a source-level `#@` note, by URL, with its ranges. */
-function persistNoteRanges(modelDef: unknown): Map<string, NoteRange[]> {
-   const byFile = new Map<string, NoteRange[]>();
-   const seen = new Set<string>();
-   for (const node of SourceMap.of(modelDef).nodes()) {
-      const annotations = (node.def as { annotations?: unknown }).annotations;
-      for (const note of sourceNotes(annotations)) {
-         if (!note.at || routeOfNote(note.text) !== "@") continue;
-         const r = note.at.range;
-         const key = `${note.at.url}#${r.start.line}:${r.start.character}`;
-         if (seen.has(key)) continue;
-         seen.add(key);
-         byFile.set(note.at.url, [...(byFile.get(note.at.url) ?? []), r]);
-      }
-   }
-   return byFile;
-}
-
-/**
- * The author's files with every source-level `#@` note blanked, keyed for an
- * overlay, read through `readText` (the reader the companion compiles with).
- */
-export async function blankedPersistFiles(
-   modelDef: unknown,
-   readText: (url: string) => Promise<string | undefined>,
-): Promise<Map<string, string>> {
-   const out = new Map<string, string>();
-   for (const [url, ranges] of persistNoteRanges(modelDef)) {
-      const text = await readText(url);
-      if (text !== undefined)
-         out.set(overlayKey(url), blankRanges(text, ranges));
-   }
-   return out;
 }
 
 interface StageLike {
@@ -338,7 +260,7 @@ export async function tryCompilePersistedViewCompanion(args: {
       );
       if (!text) return { refused };
       const { runtime: reader } = await args.getRuntime(new Map());
-      const overlay = await blankedPersistFiles(args.modelDef, async (url) => {
+      const overlay = await persistBlankedFiles(args.modelDef, async (url) => {
          try {
             const read = await reader.urlReader.readURL(new URL(url));
             return typeof read === "string" ? read : read.contents;
@@ -346,6 +268,17 @@ export async function tryCompilePersistedViewCompanion(args: {
             return undefined;
          }
       });
+      if (!overlay) {
+         // A stored base must never stand in for the rows a view reads.
+         for (const plan of plans) {
+            refused.push({
+               ...plan,
+               reason:
+                  "a source-level `#@` line in its files could not be set aside, so the view's build would read a stored table",
+            });
+         }
+         return { refused };
+      }
       const url = new URL(
          persistedViewCompanionHref(pathToFileURL(modelFile).href),
       );

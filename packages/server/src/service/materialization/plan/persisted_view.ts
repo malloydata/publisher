@@ -50,16 +50,17 @@
  */
 
 import { Annotations } from "@malloydata/malloy";
-import {
-   ownLevelNotes,
-   type AnnotationNote,
-   type AnnotationsDef,
-} from "../../annotations";
+import { type AnnotationNote, type AnnotationsDef } from "../../annotations";
 import {
    byCodepoint,
    routeOfNote,
    type PackageAnnotationFinding,
 } from "../../annotation_reader";
+import {
+   declaredFieldNotes,
+   type NotedSourceDef,
+   type SourceScope,
+} from "../../governance/ir/declared_notes";
 import { doubleQuotedString, identifier } from "../../malloy_text";
 import { hasEnvReference, parseRouteTag } from "../../motly";
 import { SourceMap, type SourceNode } from "./source_map";
@@ -124,48 +125,11 @@ function baseAlias(source: string): string {
    return `${source}__pv_base`;
 }
 
-interface Located {
-   url?: unknown;
-   range?: {
-      start?: { line?: unknown; character?: unknown };
-      end?: { line?: unknown; character?: unknown };
-   };
-}
-
 interface FieldLike {
    type?: unknown;
    name?: unknown;
    as?: unknown;
    annotations?: AnnotationsDef;
-   location?: Located;
-}
-
-/** `[line, character]` of a position, or undefined. */
-function pos(p: { line?: unknown; character?: unknown } | undefined) {
-   return typeof p?.line === "number" && typeof p.character === "number"
-      ? [p.line, p.character]
-      : undefined;
-}
-
-function before(a: number[], b: number[]): boolean {
-   return a[0] < b[0] || (a[0] === b[0] && a[1] <= b[1]);
-}
-
-/**
- * Whether `inner` lies within `outer` in the same file. Malloy copies a
- * source's fields onto every source that extends it (an extension compiles to
- * a table source with no base edge), so where the view is WRITTEN is what
- * says which source declared it.
- */
-function within(inner: Located | undefined, outer: Located | undefined) {
-   if (!inner || !outer || inner.url !== outer.url) return false;
-   const [is, ie, os, oe] = [
-      pos(inner.range?.start),
-      pos(inner.range?.end),
-      pos(outer.range?.start),
-      pos(outer.range?.end),
-   ];
-   return !!(is && ie && os && oe && before(os, is) && before(ie, oe));
 }
 
 function fieldName(f: FieldLike): string | undefined {
@@ -176,9 +140,17 @@ function fieldName(f: FieldLike): string | undefined {
         : undefined;
 }
 
-/** The `#@` notes on a view. */
-function persistNotesOf(view: FieldLike): AnnotationNote[] {
-   return ownLevelNotes(view.annotations).filter(
+/**
+ * The `#@` notes the source's own statement declared on a view: never those
+ * of a view it inherits (Malloy copies a view onto every extension, rename
+ * and import of its source; see {@link declaredFieldNotes}).
+ */
+function persistNotesOf(
+   def: SourceNode["def"],
+   view: FieldLike,
+   scope: SourceScope,
+): AnnotationNote[] {
+   return declaredFieldNotes(def as NotedSourceDef, view, scope).filter(
       (n) => routeOfNote(n.text) === "@",
    );
 }
@@ -234,8 +206,15 @@ function storageOf(notes: readonly AnnotationNote[]): string | undefined {
    }
 }
 
-/** The persisted views one source declares itself. */
-export function planSourcePersistedViews(node: SourceNode): {
+/**
+ * The persisted views one source declares itself. `scope` holds every source
+ * of the compiled model (see {@link declaredFieldNotes}), which tells a view
+ * the source's statement annotated from one it inherited.
+ */
+export function planSourcePersistedViews(
+   node: SourceNode,
+   scope: SourceScope,
+): {
    plans: PersistedViewPlan[];
    refused: PersistedViewRefusal[];
 } {
@@ -243,15 +222,14 @@ export function planSourcePersistedViews(node: SourceNode): {
    const refused: PersistedViewRefusal[] = [];
    const declared = splitSourceID(node.sourceID);
    if (!declared) return { plans, refused };
-   const declaredAt = (node.def as { location?: Located }).location;
    for (const f of (node.def.fields ?? []) as FieldLike[]) {
       if (f.type !== "turtle") continue;
       const viewName = fieldName(f);
       if (viewName === undefined) continue;
-      const notes = persistNotesOf(f);
+      // Planned on the source whose statement annotates the view, never one
+      // that inherits it.
+      const notes = persistNotesOf(node.def, f, scope);
       if (notes.length === 0) continue;
-      // Planned on the source that writes the view, never one that inherits it.
-      if (!within(f.location, declaredAt)) continue;
       const refuse = (reason: string) =>
          refused.push({
             sourceID: node.sourceID,
@@ -305,11 +283,12 @@ export function planModelPersistedViews(
    const nodes = [...SourceMap.of(modelDef).nodes()].sort((a, b) =>
       byCodepoint(a.sourceID, b.sourceID),
    );
+   const scope = nodes.map((n) => n.def);
    for (const node of nodes) {
       const declaredIn = splitSourceID(node.sourceID)?.url;
       if (!declaredIn) continue;
       if (declaredHere && !declaredHere(declaredIn)) continue;
-      const planned = planSourcePersistedViews(node);
+      const planned = planSourcePersistedViews(node, scope);
       plans.push(...planned.plans);
       refused.push(...planned.refused);
    }
