@@ -17,7 +17,6 @@ import {
    recordManifestBindDegraded,
 } from "../../../materialization_metrics";
 import { getPersistStorageMode } from "../../../config";
-import type { EligibilityRefusalReason } from "../../../materialization_metrics";
 import { withSpan } from "../../../telemetry";
 import { errMessage } from "../../../utils";
 import { quoteManifestTablePath } from "../../quoting";
@@ -46,8 +45,10 @@ import {
    indexInstructions,
    recordInstructedBuildFailure,
    resolveInstruction,
+   type ColocatedRefusal,
    type EligibilityTier,
    type InstructedRun,
+   type PendingRefusal,
    type ResolvedInstruction,
 } from "./materialization_instructed_run";
 import {
@@ -251,8 +252,16 @@ export class InstructedBuild {
                ]),
             );
          }
-         // Every instructed source was refused: the refusal is the answer.
-         if (run.builtSources.length === 0 && run.refusals.length > 0) {
+         // Every instructed source was refused by its own gate: the refusal is
+         // the answer. Not when a source its own gate admits was held back only
+         // because a colocated sibling on its table is refused: the address
+         // fails in `failures`, as an address with a refused source always
+         // has, and the run is not failed for it (ms2data/service#7078).
+         if (
+            run.builtSources.length === 0 &&
+            run.refusals.length > 0 &&
+            !run.heldBackBySibling
+         ) {
             throw allSourcesRefusedError(run.refusals);
          }
       } catch (err) {
@@ -374,7 +383,9 @@ export class InstructedBuild {
                      `table is served to every source on it. ` +
                      sibling.message,
                }),
+               false,
             );
+            run.heldBackBySibling = true;
             return;
          }
       }
@@ -536,6 +547,7 @@ export class InstructedBuild {
             // content address (getSQL throws for a given or free parameter).
             failedKey,
             err,
+            true,
          );
          return true;
       }
@@ -560,6 +572,7 @@ function settleRefusals(run: InstructedRun): {
 } {
    let refusalsInFailures = 0;
    const refusedBesideBuilt: Record<string, RefusedSource> = {};
+   const unbuilt = new Map<string, PendingRefusal[]>();
    for (const pending of run.pendingRefusals) {
       if (run.builtAddresses.has(pending.failedKey)) {
          refusedBesideBuilt[pending.refused.sourceID] = pending.refused;
@@ -574,11 +587,23 @@ function settleRefusals(run: InstructedRun): {
          );
          continue;
       }
+      const onAddress = unbuilt.get(pending.failedKey);
+      if (onAddress) onAddress.push(pending);
+      else unbuilt.set(pending.failedKey, [pending]);
+   }
+   for (const [address, pendings] of unbuilt) {
       // Once per address, as before; a build failure already there stands.
-      if (run.failures[pending.failedKey]) continue;
+      if (run.failures[address]) continue;
+      // The same failure whatever the run order: a source its own gate refused
+      // before one refused only for sharing the table, then by sourceID.
+      const chosen = [...pendings].sort(
+         (a, b) =>
+            Number(b.own) - Number(a.own) ||
+            (a.sourceID < b.sourceID ? -1 : a.sourceID > b.sourceID ? 1 : 0),
+      )[0];
       refusalsInFailures++;
-      run.failures[pending.failedKey] = pending.failure;
-      run.entries[pending.failedKey] = pending.errorEntry;
+      run.failures[address] = chosen.failure;
+      run.entries[address] = chosen.errorEntry;
    }
    run.pendingRefusals = [];
    return { refusalsInFailures, refusedBesideBuilt };
@@ -595,6 +620,7 @@ function recordPendingRefusal(
    instruction: BuildInstruction,
    failedKey: string,
    err: MaterializationEligibilityError,
+   own: boolean,
 ): void {
    const reason = errMessage(err);
    run.refusals.push(err);
@@ -645,64 +671,78 @@ function recordPendingRefusal(
               : "colocated",
          run.compiled.sourceModelPaths?.[persistSource.sourceID],
       ),
+      sourceID: persistSource.sourceID,
+      own,
    });
 }
 
 /**
  * Another planned source on `address` that the colocated gate refuses, or
- * undefined. Computed once per run, over every planned source, as the bind's
- * colocated eligibility is.
+ * undefined. Only the sources on that address are gated, once per address per
+ * run, so an unrelated source can never fail this build. Any error from the
+ * gate refuses, as the bind's collectColocatedSourceEligibility treats it, so
+ * build and serve agree on the address. The first refused source in sourceID
+ * order is named, so the reason never depends on run order.
  */
 function colocatedRefusalOn(
    run: InstructedRun,
    address: string,
    sourceID: string,
-):
-   | {
-        name: string;
-        reason: EligibilityRefusalReason | undefined;
-        message: string;
-     }
-   | undefined {
-   if (!run.colocatedRefusedAddresses) {
-      const refused = new Map<
-         string,
-         {
-            sourceID: string;
-            name: string;
-            reason: EligibilityRefusalReason | undefined;
-            message: string;
-         }
-      >();
-      const { compiled } = run;
+): ColocatedRefusal | undefined {
+   const { compiled } = run;
+   if (!run.sourceIDsByAddress) {
+      const byAddress = new Map<string, string[]>();
       for (const [id, source] of Object.entries(compiled.sources)) {
+         let sourceAddress: string;
+         try {
+            sourceAddress = computeSourceEntityId(
+               source,
+               compiled.connectionDigests,
+               compiled.targets?.[id],
+            );
+         } catch {
+            // No address, so no table it could share.
+            continue;
+         }
+         const ids = byAddress.get(sourceAddress);
+         if (ids) ids.push(id);
+         else byAddress.set(sourceAddress, [id]);
+      }
+      run.sourceIDsByAddress = byAddress;
+   }
+   run.colocatedRefusalsByAddress ??= new Map();
+   let refusals = run.colocatedRefusalsByAddress.get(address);
+   if (!refusals) {
+      refusals = [];
+      const ids = [...(run.sourceIDsByAddress.get(address) ?? [])].sort();
+      for (const id of ids) {
+         const source = compiled.sources[id];
+         if (!source) continue;
          try {
             assertTierEligible(source, false, tierGateInputs(compiled));
-            continue;
          } catch (err) {
-            if (!(err instanceof MaterializationEligibilityError)) throw err;
-            let sourceAddress: string;
-            try {
-               sourceAddress = computeSourceEntityId(
-                  source,
-                  compiled.connectionDigests,
-                  compiled.targets?.[id],
+            if (!(err instanceof MaterializationEligibilityError)) {
+               logger.warn(
+                  "The colocated gate could not decide a source; refusing its address, as the bind does",
+                  {
+                     packageName: run.owner?.packageName,
+                     sourceName: source.name,
+                     error: errMessage(err),
+                  },
                );
-            } catch {
-               continue;
             }
-            if (!refused.has(sourceAddress)) {
-               refused.set(sourceAddress, {
-                  sourceID: id,
-                  name: source.name,
-                  reason: err.reason,
-                  message: errMessage(err),
-               });
-            }
+            refusals.push({
+               sourceID: id,
+               name: source.name,
+               reason:
+                  err instanceof MaterializationEligibilityError
+                     ? err.reason
+                     : undefined,
+               message: errMessage(err),
+            });
          }
       }
-      run.colocatedRefusedAddresses = refused;
+      run.colocatedRefusalsByAddress.set(address, refusals);
    }
-   const found = run.colocatedRefusedAddresses.get(address);
-   return found && found.sourceID !== sourceID ? found : undefined;
+   return refusals.find((refusal) => refusal.sourceID !== sourceID);
 }

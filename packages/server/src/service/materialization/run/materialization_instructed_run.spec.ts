@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 import type { Connection as MalloyConnection } from "@malloydata/malloy";
+import { DuckDBConnection } from "@malloydata/db-duckdb";
 import { BuildRunFailedError } from "./build_failure_class";
 import { Manifest } from "@malloydata/malloy";
 import { beforeEach, describe, expect, it } from "bun:test";
@@ -1508,7 +1509,13 @@ describe("executeInstructedBuild", () => {
                refused: true,
                retryable: false,
                physicalTableName: "shared_v1",
+               // The gated source, by its own reason, in both orders: never
+               // the ungated base with a borrowed reason.
+               sourceName: "ext",
             });
+            expect(result.failures["bshared7078aaaaa"].reason).not.toContain(
+               "is not built",
+            );
             expect(result.refusalsInFailures).toBe(1);
             expect(result.sourcesRefused).toBe(2);
             expect(result.refusedBesideBuilt).toEqual({});
@@ -1518,6 +1525,248 @@ describe("executeInstructedBuild", () => {
             ).toBe(false);
          });
       }
+
+      // Before #7078's fix a base and its gated extension built the base and
+      // left failed entries; the run was not failed. With the address now
+      // refused whole, nothing is built on it, and the run must still not be
+      // failed as one whose every source was refused: the base's own gate
+      // admits it.
+      for (const [label, order] of [
+         ["the base comes first", [["base"], ["ext"]]],
+         ["the extension comes first", [["ext"], ["base"]]],
+      ] as const) {
+         it(`does not fail a run whose only sources are a colocated base and its refused extension when ${label}`, async () => {
+            const runSQL = sinon.stub().resolves();
+            const connection = { runSQL } as unknown as MalloyConnection;
+            const base = fakeSource({
+               name: "base",
+               sourceEntityId: "bpair7078aaaaaaa",
+            });
+            const ext = fakeSource({
+               name: "ext",
+               sourceEntityId: "bpair7078aaaaaaa",
+               sourceDef: { blockNotes: ["#(authorize) true"] },
+            });
+            const compiled = compiledWith(
+               { base, ext },
+               order.map((o) => [...o]),
+               new Map([["duckdb", connection]]),
+            );
+            const result = (await callExecute(
+               compiled,
+               [
+                  {
+                     sourceEntityId: "bpair7078aaaaaaa",
+                     materializedTableId: "mt-pair",
+                     physicalTableName: "pair_v1",
+                     realization: "COPY",
+                  },
+               ],
+               {},
+            )) as ExecuteResult & { refusalsInFailures: number };
+            expect(result.failures["bpair7078aaaaaaa"]).toMatchObject({
+               refused: true,
+               sourceName: "ext",
+            });
+            expect(result.entries["bpair7078aaaaaaa"]).toMatchObject({
+               sourceName: "ext",
+            });
+            expect(result.refusalsInFailures).toBe(1);
+            expect(runSQL.called).toBe(false);
+         });
+      }
+
+      it("builds the eligible table and nothing on a refused colocated address, on a real DuckDB connection", async () => {
+         // No stubbed build: the real colocated build runs against DuckDB.
+         const duckdb = new DuckDBConnection("duckdb");
+         try {
+            const ok = fakeSource({
+               name: "ok",
+               sourceEntityId: "b0k0k0k0k0k0k0k0",
+               sql: "SELECT 1 AS n",
+            });
+            const base = fakeSource({
+               name: "base",
+               sourceEntityId: "breal7078aaaaaaa",
+               sql: "SELECT 2 AS n",
+            });
+            const ext = fakeSource({
+               name: "ext",
+               sourceEntityId: "breal7078aaaaaaa",
+               sql: "SELECT 2 AS n",
+               sourceDef: { blockNotes: ["#(authorize) true"] },
+            });
+            const compiled = compiledWith(
+               { ok, base, ext },
+               [["ok"], ["base"], ["ext"]],
+               new Map([["duckdb", duckdb as unknown as MalloyConnection]]),
+            );
+            const result = await callExecute(
+               compiled,
+               [
+                  {
+                     sourceEntityId: "b0k0k0k0k0k0k0k0",
+                     materializedTableId: "mt-ok",
+                     physicalTableName: "real_ok_v1",
+                     realization: "COPY",
+                  },
+                  {
+                     sourceEntityId: "breal7078aaaaaaa",
+                     materializedTableId: "mt-real",
+                     physicalTableName: "real_shared_v1",
+                     realization: "COPY",
+                  },
+               ],
+               {},
+            );
+            expect(result.failures["breal7078aaaaaaa"]).toMatchObject({
+               sourceName: "ext",
+            });
+            const tables = (
+               await duckdb.runSQL(
+                  "SELECT table_name FROM information_schema.tables WHERE table_name LIKE 'real_%'",
+               )
+            ).rows.map((r) =>
+               String((r as { table_name: unknown }).table_name),
+            );
+            expect(tables).toContain("real_ok_v1");
+            expect(tables).not.toContain("real_shared_v1");
+         } finally {
+            await duckdb.close();
+         }
+      });
+
+      it("never fails a colocated run on an unrelated source whose gate throws", async () => {
+         // The colocated sibling check gates only the sources on the address
+         // it is asked about. An unrelated planned source whose gate walk
+         // throws something other than a refusal used to fail every colocated
+         // run in the package.
+         const runSQL = sinon.stub().resolves();
+         const connection = { runSQL } as unknown as MalloyConnection;
+         const ok = fakeSource({
+            name: "ok",
+            sourceEntityId: "b0k0k0k0k0k0k0k0",
+         });
+         const odd = fakeSource({
+            name: "odd",
+            sourceEntityId: "boddoddoddoddodd",
+         });
+         Object.defineProperty(odd, "annotations", {
+            get() {
+               throw new TypeError("the gate walk broke");
+            },
+         });
+         const compiled = compiledWith(
+            { ok, odd },
+            [["ok"], ["odd"]],
+            new Map([["duckdb", connection]]),
+         );
+         const result = await callExecute(
+            compiled,
+            [
+               {
+                  sourceEntityId: "b0k0k0k0k0k0k0k0",
+                  materializedTableId: "mt-ok",
+                  physicalTableName: "ok_v1",
+                  realization: "COPY",
+               },
+            ],
+            {},
+         );
+         expect(result.entries["b0k0k0k0k0k0k0k0"].physicalTableName).toBe(
+            "ok_v1",
+         );
+         expect(result.failures).toEqual({});
+      });
+
+      it("holds back a colocated base whose extension auto-run already refused", async () => {
+         // Auto-run refused the extension (deriveSelfInstructions) and cleared
+         // the base; the base's instruction still names the shared address.
+         // The extension is not refused twice, and the base is not built onto
+         // a table the bind would refuse to serve.
+         const runSQL = sinon.stub().resolves();
+         const connection = { runSQL } as unknown as MalloyConnection;
+         const ok = fakeSource({
+            name: "ok",
+            sourceEntityId: "b0k0k0k0k0k0k0k0",
+         });
+         const base = fakeSource({
+            name: "base",
+            sourceEntityId: "bauto7078aaaaaaa",
+         });
+         const ext = fakeSource({
+            name: "ext",
+            sourceEntityId: "bauto7078aaaaaaa",
+            sourceDef: { blockNotes: ["#(authorize) true"] },
+         });
+         const compiled = compiledWith(
+            { ok, base, ext },
+            [["ok"], ["base"], ["ext"]],
+            new Map([["duckdb", connection]]),
+         );
+         const environment = {
+            getApiConnection: () => {
+               throw new Error("no connection config in this test");
+            },
+            getEnvironmentPath: () => "/tmp/env",
+         };
+         const service = ctx.service as unknown as {
+            executeInstructedBuild: (
+               ...args: unknown[]
+            ) => Promise<ExecuteResult & { refusalsInFailures: number }>;
+         };
+         const result = await service.executeInstructedBuild(
+            compiled,
+            environment,
+            [
+               {
+                  sourceEntityId: "b0k0k0k0k0k0k0k0",
+                  materializedTableId: "mt-ok",
+                  physicalTableName: "ok_v1",
+                  realization: "COPY",
+               },
+               {
+                  sourceEntityId: "bauto7078aaaaaaa",
+                  materializedTableId: "mt-auto",
+                  physicalTableName: "auto_v1",
+                  realization: "COPY",
+               },
+            ],
+            {},
+            new AbortController().signal,
+            false,
+            undefined,
+            undefined,
+            undefined,
+            [
+               {
+                  name: "ext",
+                  sourceID: "ext",
+                  tier: "colocated",
+                  reason: "authorize",
+                  message: "Source 'ext' cannot be materialized",
+               },
+            ],
+            new Map([
+               ["ok", "colocated"],
+               ["base", "colocated"],
+            ]),
+         );
+         expect(result.entries["b0k0k0k0k0k0k0k0"].physicalTableName).toBe(
+            "ok_v1",
+         );
+         expect(result.failures["bauto7078aaaaaaa"]).toMatchObject({
+            refused: true,
+            sourceName: "base",
+         });
+         expect(result.failures["bauto7078aaaaaaa"].reason).toContain("ext");
+         // Only the base's hold-back is counted here; auto-run counted ext.
+         expect(result.sourcesRefused).toBe(1);
+         expect(
+            createsFrom(runSQL).some((sql) => sql.includes("auto_v1")),
+            "nothing is built on a refused colocated address",
+         ).toBe(false);
+      });
 
       it("still fails an address only refused sources reach", async () => {
          const runSQL = sinon.stub().resolves();

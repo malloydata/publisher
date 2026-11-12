@@ -94,18 +94,21 @@ export interface InstructedRun {
     */
    priorRefusedIDs: ReadonlySet<string>;
    /**
-    * Addresses some planned source on which the colocated gate refuses, by
-    * address, computed on first use (see colocatedRefusalOn).
+    * The planned sources on each content address, computed on first use (see
+    * colocatedRefusalOn). A source whose address cannot be computed is absent.
     */
-   colocatedRefusedAddresses?: Map<
-      string,
-      {
-         sourceID: string;
-         name: string;
-         reason: EligibilityRefusalReason | undefined;
-         message: string;
-      }
-   >;
+   sourceIDsByAddress?: Map<string, string[]>;
+   /**
+    * Per content address, the sources on it the colocated gate refuses, in
+    * sourceID order; decided on first use (see colocatedRefusalOn).
+    */
+   colocatedRefusalsByAddress?: Map<string, ColocatedRefusal[]>;
+   /**
+    * Set when a source its own gate admits was not built because a colocated
+    * sibling on its table is refused; such a run is not failed as one whose
+    * every source was refused.
+    */
+   heldBackBySibling?: boolean;
    /** Content addresses a source of this run built (not carried, not failed). */
    builtAddresses: Set<string>;
    builtSources: string[];
@@ -113,6 +116,14 @@ export interface InstructedRun {
    // table CONTAINS, the coordinate says which table it IS, and only the latter
    // answers "have I written this already".
    writtenTargets: Map<string, { sourceEntityId: string; sourceName: string }>;
+}
+
+/** One source the colocated gate refuses, as colocatedRefusalOn reports it. */
+export interface ColocatedRefusal {
+   sourceID: string;
+   name: string;
+   reason: EligibilityRefusalReason | undefined;
+   message: string;
 }
 
 /** One gate refusal, held until the run knows whether its address was built. */
@@ -124,6 +135,18 @@ export interface PendingRefusal {
    errorEntry: ManifestEntry;
    /** The same refusal, per source, for the run's `refusedSources` metadata. */
    refused: RefusedSource;
+   /**
+    * The refused source's sourceID, so an address's recorded failure is
+    * chosen in a stable order.
+    */
+   sourceID: string;
+   /**
+    * True when the source's own gate refused it; false when it is refused only
+    * because a sibling on its colocated address is. An address's recorded
+    * failure prefers an own refusal, so it names the gated source whatever the
+    * run order.
+    */
+   own: boolean;
 }
 
 /** A run's instructions, indexed both ways a source can find its own. */
