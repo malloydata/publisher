@@ -26,6 +26,16 @@ export const storage = [
       aliases: { env: ["PUBLISHER_DUCKDB_MEMORY_LIMIT"] },
    }),
    setting({
+      key: "duckdb.threads",
+      // A thread count or `off`.
+      type: string(),
+      default: "4",
+      description:
+         "Threads each DuckDB instance starts with, unless its connection sets threads, or off.",
+      notes: "The size of the thread pool each DuckDB instance Publisher opens starts with, unless the connection sets its own `threads`. DuckDB's own default is one thread per core **per instance**, and Publisher opens many instances in one process: one sandbox per loaded package (and per version), one per file-backed DuckDB, DuckLake or Azure connection, one per in-flight materialization build, plus the metadata store. Measured on an 18-core host: about 15 threads per loaded package. The pools are fixed when each instance opens, so they add up, and the process fails when they reach the thread limit (`kern.num_taskthreads`, 12,288 per process on macOS; on Linux the cgroup `pids.max`, which Kubernetes and `docker run --pids-limit` often set to a few thousand): DuckDB reports `thread constructor failed: Resource temporarily unavailable`, and under Bun the process aborts with `panic: A C++ exception occurred`, taking every package with it. **Sizing:** count the instances as for `PUBLISHER_DUCKDB_MEMORY_LIMIT` and keep (instances × this) well under the limit. A higher value buys parallelism within one large local query (a scan of package-local Parquet or CSV); a dashboard's small queries rarely use more than a few threads. `off` restores DuckDB's one-per-core default, the behaviour before this setting existed. Applies at instance open, so a change takes effect for instances opened after a restart. A materialization build that lowers threads for a partitioned write (`PUBLISHER_PARTITIONED_WRITE_FLUSH_THRESHOLD`) still does so. Validated at startup.",
+      aliases: { env: ["PUBLISHER_DUCKDB_THREADS"] },
+   }),
+   setting({
       key: "duckdb.tempDirectory",
       type: string(),
       description: "Directory DuckDB spills to.",

@@ -9,15 +9,22 @@ import {
 } from "@duckdb/node-api";
 import * as path from "path";
 import { logger } from "../../logger";
-import { getDuckDBMemoryLimit, getDuckDBTempDirectory } from "../../config";
+import {
+   getDuckDBMemoryLimit,
+   getDuckDBTempDirectory,
+   getDuckDBThreads,
+} from "../../config";
 
 /**
- * The `memory_limit` / `temp_directory` instance options, when configured.
- * Empty when neither is set, so a deployment that has not opted in gets
- * DuckDB's defaults.
+ * The `memory_limit` / `temp_directory` / `threads` instance options, when
+ * configured; each one unset leaves DuckDB's default.
  */
 function duckDBInstanceResourceOptions(): Record<string, string> {
    const options: Record<string, string> = {};
+   const threads = getDuckDBThreads();
+   if (threads !== undefined) {
+      options["threads"] = threads;
+   }
    const memoryLimit = getDuckDBMemoryLimit();
    if (memoryLimit !== undefined) {
       options["memory_limit"] = memoryLimit;

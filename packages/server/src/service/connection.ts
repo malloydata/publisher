@@ -6,7 +6,12 @@ import "@malloydata/db-bigquery";
 import type { BigQueryConnection } from "@malloydata/db-bigquery";
 import "@malloydata/db-databricks";
 import { DuckDBConnection } from "@malloydata/db-duckdb";
-import { installDuckDBInstanceSharing } from "./duckdb_instance_sharing";
+import {
+   installDuckDBInstanceSharing,
+   mayHoldAttachments,
+   recordAttachments,
+   recordedAttachments,
+} from "./duckdb_instance_sharing";
 import "@malloydata/db-duckdb/native";
 import "@malloydata/db-mysql";
 import type { MySQLConnection } from "@malloydata/db-mysql";
@@ -2359,9 +2364,21 @@ async function doesSecretExistInDuckDB(
    return Number(rows?.[0]?.count ?? 0) > 0;
 }
 
+/** A digest of the settings one database is attached with. */
+function attachmentDigest(attachedDb: AttachedDatabase): string {
+   return createHash("sha256").update(JSON.stringify(attachedDb)).digest("hex");
+}
+
+/**
+ * @param connectionName The Publisher connection the databases belong to. An
+ *   earlier generation of it on the same DuckDB instance may have attached
+ *   some already (duckdb_instance_sharing.ts, `recordedAttachments`): one whose
+ *   settings changed is re-attached, and one no longer declared is detached.
+ */
 async function attachDatabasesToDuckDB(
    duckdbConnection: DuckDBConnection,
    attachedDatabases: AttachedDatabase[],
+   connectionName: string,
 ): Promise<void> {
    const attachHandlers = {
       bigquery: attachBigQuery,
@@ -2381,39 +2398,66 @@ async function attachDatabasesToDuckDB(
       await installAndLoadExtension(duckdbConnection, "httpfs");
    }
 
-   for (const attachedDb of attachedDatabases) {
-      try {
-         if (
-            await isDatabaseAttached(duckdbConnection, attachedDb.name || "")
-         ) {
-            logger.info(
-               `Database ${attachedDb.name} is already attached, skipping`,
-            );
-            continue;
-         }
+   const previous = recordedAttachments(duckdbConnection, connectionName);
+   const attached = new Map<string, string>();
+   const declared = new Set(attachedDatabases.map((db) => db.name || ""));
+   for (const name of previous?.keys() ?? []) {
+      if (declared.has(name)) continue;
+      // An earlier generation attached it and this one no longer declares it.
+      await duckdbConnection
+         .runSQL(
+            `DETACH DATABASE IF EXISTS ${quoteIdentifier(name, "duckdb")};`,
+         )
+         .catch(() => {});
+   }
 
-         const handler =
-            attachHandlers[attachedDb.type as keyof typeof attachHandlers];
-         if (!handler) {
-            throw new Error(`Unsupported database type: ${attachedDb.type}`);
-         }
-
+   try {
+      for (const attachedDb of attachedDatabases) {
+         const name = attachedDb.name || "";
+         const digest = attachmentDigest(attachedDb);
          try {
-            await handler(duckdbConnection, attachedDb);
-         } catch (attachError) {
-            handleAlreadyAttachedError(attachError, attachedDb.name || "");
+            const recorded = previous?.get(name);
+            if (recorded !== undefined && recorded !== digest) {
+               // Attached by an earlier generation with other settings: replace
+               // it, or the edit would not take effect until a restart.
+               await duckdbConnection.runSQL(
+                  `DETACH DATABASE IF EXISTS ${quoteIdentifier(name, "duckdb")};`,
+               );
+            } else if (await isDatabaseAttached(duckdbConnection, name)) {
+               attached.set(name, recorded ?? digest);
+               logger.info(
+                  `Database ${attachedDb.name} is already attached, skipping`,
+               );
+               continue;
+            }
+
+            const handler =
+               attachHandlers[attachedDb.type as keyof typeof attachHandlers];
+            if (!handler) {
+               throw new Error(`Unsupported database type: ${attachedDb.type}`);
+            }
+
+            try {
+               await handler(duckdbConnection, attachedDb);
+            } catch (attachError) {
+               handleAlreadyAttachedError(attachError, attachedDb.name || "");
+            }
+            attached.set(name, digest);
+         } catch (error) {
+            // Attach errors echo the connection string (DuckDB embeds the DSN).
+            logger.error(`Failed to attach database ${attachedDb.name}`, {
+               error: redactPgSecrets(
+                  error instanceof Error ? error.message : String(error),
+               ),
+            });
+            throw new Error(
+               `Failed to attach database ${attachedDb.name}: ${(error as Error).message}`,
+            );
          }
-      } catch (error) {
-         // Attach errors echo the connection string (DuckDB embeds the DSN).
-         logger.error(`Failed to attach database ${attachedDb.name}`, {
-            error: redactPgSecrets(
-               error instanceof Error ? error.message : String(error),
-            ),
-         });
-         throw new Error(
-            `Failed to attach database ${attachedDb.name}: ${(error as Error).message}`,
-         );
       }
+   } finally {
+      // Whatever this generation holds now, so the next one replaces it.
+      recordAttachments(duckdbConnection, connectionName, attached);
    }
 }
 
@@ -3149,9 +3193,12 @@ export function buildEnvironmentMalloyConfig(
       connection: Connection,
       metadata: EnvironmentConnectionMetadata,
    ): Promise<void> {
+      const connectionName = metadata.apiConnection.name ?? "";
       if (
-         metadata.attachedDatabases.length === 0 ||
-         !isDuckDBConnection(connection)
+         !isDuckDBConnection(connection) ||
+         // Declaring none still detaches what an earlier generation attached.
+         (metadata.attachedDatabases.length === 0 &&
+            !mayHoldAttachments(connectionName))
       ) {
          return;
       }
@@ -3162,6 +3209,7 @@ export function buildEnvironmentMalloyConfig(
          attachPromise = attachDatabasesToDuckDB(
             connection,
             metadata.attachedDatabases,
+            connectionName,
          );
          // Evict a rejected run so a later lookup can retry: every attach handler
          // reaches the network, and a cached failure would make one transient

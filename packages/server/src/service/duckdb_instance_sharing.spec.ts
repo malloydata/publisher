@@ -12,6 +12,9 @@ import {
    installDuckDBInstanceSharing,
    instanceKeyOf,
    openDuckDBFilesForTesting,
+   recordAttachments,
+   recordedAttachments,
+   withThreadCap,
 } from "./duckdb_instance_sharing";
 import { Environment } from "./environment";
 import { installSettings } from "../test_helpers/settings_env";
@@ -163,6 +166,16 @@ describe("one DuckDB instance per file", () => {
       expect(openFilesHere()).toEqual([]);
    });
 
+   it("opens one instance when two connections to a file open at once", async () => {
+      const file = path.join(dir, "concurrent.duckdb");
+      const a = open({ databasePath: file, setupSQL: "SELECT 1" });
+      const b = open({ databasePath: file, setupSQL: "SELECT 2" });
+      // Neither open has finished when the other starts.
+      await Promise.all([a.runSQL("SELECT 1"), b.runSQL("SELECT 1")]);
+      expect(instanceOf(b)).toBe(instanceOf(a));
+      expect(openFilesHere()).toEqual([canonicalDuckDBFile(file)!]);
+   });
+
    it("does not share between different files", async () => {
       const a = open({ databasePath: path.join(dir, "a.duckdb") });
       const b = open({ databasePath: path.join(dir, "b.duckdb") });
@@ -185,6 +198,42 @@ describe("one DuckDB instance per file", () => {
       if (!canReopenAfterClose) return;
       const c = open({ databasePath: file, threads: 2 });
       expect((await c.runSQL("SELECT 1 AS one")).rows).toEqual([{ one: 1 }]);
+   });
+});
+
+describe("the per-instance thread cap", () => {
+   let restore: (() => void) | undefined;
+   afterEach(() => {
+      restore?.();
+      restore = undefined;
+   });
+
+   it("defaults each instance to four threads", () => {
+      restore = installSettings({ env: {} }).restore;
+      expect(withThreadCap({})).toEqual({ threads: "4" });
+   });
+
+   it("keeps a connection's own threads setting", () => {
+      restore = installSettings({
+         env: { PUBLISHER_DUCKDB_THREADS: "8" },
+      }).restore;
+      expect(withThreadCap({ threads: "1" })).toEqual({ threads: "1" });
+      expect(withThreadCap({})).toEqual({ threads: "8" });
+   });
+
+   it("leaves DuckDB's one-per-core default under off", () => {
+      restore = installSettings({
+         env: { PUBLISHER_DUCKDB_THREADS: "off" },
+      }).restore;
+      expect(withThreadCap({})).toEqual({});
+   });
+
+   it("opens an instance with the threads its connection asks for", async () => {
+      const a = open({ databasePath: path.join(dir, "t.duckdb"), threads: 1 });
+      expect(
+         (await a.runSQL("SELECT current_setting('threads')::INTEGER AS n"))
+            .rows,
+      ).toEqual([{ n: 1 }]);
    });
 });
 
@@ -239,6 +288,40 @@ describe("a connection edit to a file-backed DuckDB connection", () => {
          ]);
          expect(now.rows).toEqual([{ v: 7 }]);
          expect(draining.rows).toEqual([{ v: 7 }]);
+      } finally {
+         await env.closeAllConnections();
+      }
+   });
+
+   it("detaches a database an earlier generation attached and the edit removed", async () => {
+      const env = await Environment.create("testEnv", envPath, [
+         duck("SELECT 1"),
+      ]);
+      try {
+         const before = (await env.getMalloyConnection(
+            "duck",
+         )) as unknown as DuckDBConnection;
+         // Stands in for an attached warehouse: attachments belong to the
+         // instance, so they outlive the generation that made them.
+         await before.runSQL("ATTACH ':memory:' AS warehouse");
+         recordAttachments(before, "duck", new Map([["warehouse", "digest"]]));
+
+         await env.update({
+            name: "testEnv",
+            connections: [duck("SELECT 2")],
+         } as never);
+         const after = (await env.getMalloyConnection(
+            "duck",
+         )) as unknown as DuckDBConnection;
+
+         expect(instanceOf(after)).toBe(instanceOf(before));
+         const databases = await after.runSQL(
+            "SELECT database_name FROM duckdb_databases()",
+         );
+         expect(
+            databases.rows.map((row) => row["database_name"]),
+         ).not.toContain("warehouse");
+         expect(recordedAttachments(after, "duck")?.size).toBe(0);
       } finally {
          await env.closeAllConnections();
       }

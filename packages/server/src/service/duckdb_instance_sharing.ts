@@ -37,6 +37,8 @@
 import { DuckDBConnection } from "@malloydata/db-duckdb";
 import * as fs from "fs";
 import * as path from "path";
+import { getDuckDBThreads } from "../config";
+import { logger } from "../logger";
 
 /** A connection's settings, as `@malloydata/db-duckdb` normalized them. */
 interface NormalizedDuckDBConfig {
@@ -53,6 +55,7 @@ interface DuckDBConnectionInternals {
    setupError?: Error;
    init(): Promise<void>;
    detachInstance(): void;
+   buildInstanceOptions(opts?: unknown): Record<string, string>;
 }
 
 type ActiveDB = (typeof DuckDBConnection.activeDBs)[string];
@@ -64,6 +67,22 @@ interface OpenFile {
 }
 
 const openFiles = new Map<string, OpenFile>();
+/**
+ * A first open of a file in flight. A second connection to the same file waits
+ * for it rather than opening the file again: both would otherwise find no open
+ * instance and each create one.
+ */
+const pendingOpens = new Map<string, Promise<void>>();
+/**
+ * The databases Publisher ATTACHed on each instance, by the connection name
+ * that attached them: attached name to a digest of the settings it was
+ * attached with. ATTACHed catalogs belong to the instance, not to a session,
+ * so a later generation of the same connection on the same instance must
+ * replace what an earlier one attached (see {@link recordedAttachments}).
+ */
+const attachmentsOn = new WeakMap<ActiveDB, Map<string, Map<string, string>>>();
+/** Connection names that have recorded an attachment on any instance. */
+const namesWithAttachments = new Set<string>();
 let installed = false;
 
 /**
@@ -139,7 +158,8 @@ function isLive(open: OpenFile): boolean {
 
 /**
  * Point every later connection to a file an open instance already holds at
- * that instance. Idempotent; installed once per process (connection.ts).
+ * that instance, and cap each new instance's thread pool. Idempotent;
+ * installed once per process (connection.ts).
  */
 export function installDuckDBInstanceSharing(): void {
    if (installed) return;
@@ -148,6 +168,27 @@ export function installDuckDBInstanceSharing(): void {
       DuckDBConnection.prototype as unknown as DuckDBConnectionInternals;
    const init = proto.init;
    const detachInstance = proto.detachInstance;
+   const buildInstanceOptions = proto.buildInstanceOptions;
+   // This patches `@malloydata/db-duckdb` internals. If a release reshapes
+   // them, sharing is skipped (the second-instance limitation returns) rather
+   // than guessed at; duckdb_instance_sharing.spec.ts fails on the upgrade.
+   if (!dbDuckDBInternalsMatch()) {
+      logger.warn(
+         "DuckDB instance sharing is off: @malloydata/db-duckdb's internals changed shape",
+      );
+      return;
+   }
+
+   // DuckDB starts one thread per core per instance, and a process holds many
+   // instances: cap each pool unless the connection sets its own `threads`
+   // (config.ts, getDuckDBThreads). The shareable-mode `:memory:` primary
+   // passes through here too.
+   proto.buildInstanceOptions = function (
+      this: DuckDBConnectionInternals,
+      opts?: unknown,
+   ): Record<string, string> {
+      return withThreadCap(buildInstanceOptions.call(this, opts));
+   };
 
    proto.init = function (this: DuckDBConnectionInternals): Promise<void> {
       const normalized = this.normalized;
@@ -157,6 +198,16 @@ export function installDuckDBInstanceSharing(): void {
          ? undefined
          : canonicalDuckDBFile(normalized.databasePath);
       if (!file) return init.call(this);
+
+      const pending = pendingOpens.get(file);
+      if (pending) {
+         // Another connection is opening this file right now: wait for it,
+         // then join its instance (or be refused) as any later open would.
+         return pending.then(
+            () => proto.init.call(this),
+            () => proto.init.call(this),
+         );
+      }
 
       const instanceKey = instanceKeyOf(normalized);
       let open = openFiles.get(file);
@@ -183,7 +234,7 @@ export function installDuckDBInstanceSharing(): void {
          open.activeDB.connections.push(pin);
       }
       const shared = open?.activeDB;
-      return init.call(this).then(() => {
+      const opened = init.call(this).then(() => {
          if (shared && pin) {
             shared.connections = shared.connections.filter((c) => c !== pin);
             if (shared.connections.length === 0) {
@@ -198,6 +249,15 @@ export function installDuckDBInstanceSharing(): void {
             openFiles.set(file, { instanceKey, activeDB });
          }
       });
+      if (!open) {
+         // A first open: hold later opens of this file until it settles.
+         const settled = opened.finally(() => {
+            if (pendingOpens.get(file) === settled) pendingOpens.delete(file);
+         });
+         pendingOpens.set(file, settled);
+         return settled;
+      }
+      return opened;
    };
 
    proto.detachInstance = function (this: DuckDBConnectionInternals): void {
@@ -230,6 +290,93 @@ function releaseInstance(activeDB: ActiveDB): void {
       // nothing this module can recover.
    }
    dropAliases(activeDB);
+}
+
+/**
+ * `options` with `threads` set to the configured cap (PUBLISHER_DUCKDB_THREADS)
+ * when the connection set none; unchanged under `off`.
+ */
+export function withThreadCap(
+   options: Record<string, string>,
+): Record<string, string> {
+   const threads = getDuckDBThreads();
+   if (options["threads"] === undefined && threads !== undefined) {
+      options["threads"] = threads;
+   }
+   return options;
+}
+
+/**
+ * Whether `@malloydata/db-duckdb` still has the internals this module patches:
+ * an instance cache keyed by share key, and the per-connection `init` and
+ * `detachInstance` it wraps.
+ */
+export function dbDuckDBInternalsMatch(): boolean {
+   const proto = DuckDBConnection.prototype as unknown as Partial<
+      Record<keyof DuckDBConnectionInternals, unknown>
+   >;
+   const activeDBs = (DuckDBConnection as unknown as { activeDBs?: unknown })
+      .activeDBs;
+   return (
+      typeof proto.init === "function" &&
+      typeof proto.detachInstance === "function" &&
+      typeof proto.buildInstanceOptions === "function" &&
+      typeof activeDBs === "object" &&
+      activeDBs !== null
+   );
+}
+
+/** The shared instance a connection is on, if it holds one. */
+function activeDBOf(connection: unknown): ActiveDB | undefined {
+   const shareKey = (connection as Partial<DuckDBConnectionInternals>).shareKey;
+   return shareKey ? DuckDBConnection.activeDBs[shareKey] : undefined;
+}
+
+/**
+ * What an earlier generation of `connectionName` ATTACHed on the instance
+ * `connection` is on, as attached name to settings digest, or undefined when
+ * no generation of it has attached anything there in this process.
+ *
+ * A connection edit keeps the instance (the file stays open, and an edit to
+ * the attached databases alone does not even change the share key), so its
+ * attachments outlive the generation that made them. A new generation
+ * re-ATTACHes each database whose settings changed and DETACHes each one it
+ * no longer declares; skipping an already-attached name would keep serving
+ * the old credentials, project or host after an edit, and keep a removed
+ * attachment queryable, until a restart.
+ */
+export function recordedAttachments(
+   connection: unknown,
+   connectionName: string,
+): ReadonlyMap<string, string> | undefined {
+   const activeDB = activeDBOf(connection);
+   if (!activeDB) return undefined;
+   return attachmentsOn.get(activeDB)?.get(connectionName);
+}
+
+/**
+ * Whether any generation of `connectionName` has ATTACHed a database in this
+ * process, so a generation that declares none still has some to detach.
+ */
+export function mayHoldAttachments(connectionName: string): boolean {
+   return namesWithAttachments.has(connectionName);
+}
+
+/** Record what `connectionName` has ATTACHed on its instance. */
+export function recordAttachments(
+   connection: unknown,
+   connectionName: string,
+   attached: ReadonlyMap<string, string>,
+): void {
+   const activeDB = activeDBOf(connection);
+   if (!activeDB) return;
+   let byConnection = attachmentsOn.get(activeDB);
+   if (!byConnection) {
+      byConnection = new Map();
+      attachmentsOn.set(activeDB, byConnection);
+   }
+   byConnection.set(connectionName, new Map(attached));
+   if (attached.size > 0) namesWithAttachments.add(connectionName);
 }
 
 /** Test seam: the files this process holds open through shared instances. */

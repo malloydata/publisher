@@ -1447,6 +1447,34 @@ export const CONTRACT: Record<string, Case[]> = {
          expect: fails("PUBLISHER_DUCKDB_MEMORY_LIMIT"),
       },
    ],
+   "duckdb.threads": [
+      { name: "unset", expect: value("4") },
+      {
+         name: "PUBLISHER_DUCKDB_THREADS",
+         env: { PUBLISHER_DUCKDB_THREADS: "8" },
+         expect: value("8"),
+      },
+      {
+         name: "off leaves DuckDB's default",
+         env: { PUBLISHER_DUCKDB_THREADS: "OFF" },
+         expect: value(undefined),
+      },
+      {
+         name: "blank",
+         env: { PUBLISHER_DUCKDB_THREADS: "" },
+         expect: value("4"),
+      },
+      {
+         name: "0 is refused",
+         env: { PUBLISHER_DUCKDB_THREADS: "0" },
+         expect: fails("PUBLISHER_DUCKDB_THREADS"),
+      },
+      {
+         name: "not a count",
+         env: { PUBLISHER_DUCKDB_THREADS: "many" },
+         expect: fails("PUBLISHER_DUCKDB_THREADS"),
+      },
+   ],
    "duckdb.tempDirectory": [
       { name: "unset", expect: value(undefined) },
       {

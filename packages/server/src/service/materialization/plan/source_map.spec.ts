@@ -19,6 +19,7 @@ import {
    closeCorpus,
    fixtureModels,
    hammerModels,
+   releasingEach,
 } from "../../../test_helpers/persist_corpus";
 import { reachableSourceIDs, SourceMap, sourceChain } from "./source_map";
 
@@ -262,7 +263,7 @@ describe("reachableSourceIDs over the repo's persist corpus", () => {
          const corpus = [...fixtureModels(), ...hammer.models];
          const missed: string[] = [];
          let roots = 0;
-         for (const model of corpus) {
+         for await (const model of releasingEach(corpus)) {
             let modelDef: ModelDef;
             try {
                const runtime = new Runtime({
