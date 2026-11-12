@@ -249,7 +249,10 @@ for (const shape of SHAPES) {
          function report() {
             const row = (on: string, query: string, outcome: string) =>
                reportRows.push(
-                  `| ${shape.name} | ${variant} | ${on} | ${query} | ${outcome.replace(/\|/g, "\\|").replace(/\n/g, " ")} |`,
+                  `| ${shape.name} | ${variant} | ${on} | ${query} | ${outcome
+                     .replace(/\\/g, "\\\\")
+                     .replace(/\|/g, "\\|")
+                     .replace(/\n/g, " ")} |`,
                );
             if (loadError) {
                row("-", "(load)", `load error: ${loadError}`);
