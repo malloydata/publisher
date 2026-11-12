@@ -1,0 +1,846 @@
+// Copyright (c) Credible Data Inc.
+// SPDX-License-Identifier: MIT
+
+/**
+ * The path report (materialization v2, D1): what answered a query and why.
+ *
+ * Built after the query runs, from three things Publisher already has:
+ *
+ * - the router's decision ({@link routeQuery}'s `considered`), which says how
+ *   each candidate variant (the `storage=` serve shape, the pre-aggregation
+ *   companion) fared;
+ * - the build-manifest entries the run that answered actually read, which say
+ *   which colocated table answered: a colocated `#@ persist` table (or rollup)
+ *   Malloy substituted through the manifest, a tier that never reaches the
+ *   router. Read from Malloy's own lookup, never from the SQL text;
+ * - the package's catalog of materialized tables (its build plan, bound
+ *   manifest and `storage=` bindings), read against the queried source's
+ *   chain.
+ *
+ * Reporting only: nothing here changes which table answers, and a report that
+ * cannot be assembled is left off the result rather than failing the query.
+ *
+ * Tables are named by `tableId`, the source's content address
+ * (`sourceEntityId`), which the build plan, the manifest and every build
+ * instruction already key on.
+ *
+ * Pure apart from the IR reads: no I/O, so it is unit-tested on fixtures and
+ * on real compiled queries.
+ */
+
+import type { components } from "../../../api";
+import type { ConsideredVariant } from "../../query_router";
+
+export type ApiQueryPath = components["schemas"]["QueryPath"];
+export type ApiQueryShape = components["schemas"]["QueryShape"];
+type ApiCandidate = components["schemas"]["QueryPathCandidate"];
+type ApiNearby = components["schemas"]["QueryPathNearby"];
+type ApiServer = components["schemas"]["QueryPathServer"];
+type SkipReason = components["schemas"]["SkipReason"];
+
+/** At most this many nearby tables are reported, nearest first. */
+export const MAX_NOT_CONSIDERED = 10;
+
+/** One source the package's build plan materializes. */
+export interface PlannedTable {
+   /** `<declared name>@<file URL>`; never sent on the wire (it is a file path). */
+   sourceID: string;
+   name: string;
+   /** The content address: the table's `tableId` in the path report. */
+   sourceEntityId: string;
+   origin: "persist" | "preaggregate";
+   /**
+    * The model the plan entry came from. A rollup has no stable `sourceID` on
+    * the model side, so it is matched to its plan by name within its model.
+    */
+   modelPath?: string;
+}
+
+/** A colocated table the package has bound, from its manifest. */
+export interface BoundTable {
+   tableName: string;
+   dataAsOf?: string;
+}
+
+/**
+ * The package's materialized tables, as the path report reads them. Read per
+ * query from the package, so a rebind or a new plan is seen at once.
+ */
+export interface MaterializedTableCatalog {
+   /** Every planned source, keyed by `sourceID`. */
+   planned: ReadonlyMap<string, PlannedTable>;
+   /** The colocated tables bound now, keyed by `sourceEntityId`. */
+   bound: Readonly<Record<string, BoundTable>>;
+}
+
+/** A `storage=` serve binding, as the report reads it. */
+export interface StorageTable {
+   /** The source it materializes, or a rollup's synthesized name. */
+   sourceName: string;
+   sourceIDs?: readonly string[];
+   origin?: "persist" | "preaggregate";
+   tablePath: string;
+   freshAsOf?: string;
+}
+
+/** A rollup this model's pre-aggregation plans. */
+export interface ModelRollup {
+   rollupSourceName: string;
+   baseSourceName: string;
+   baseSourceID?: string;
+}
+
+/** One table the report can name, with what is known about it now. */
+interface TableState {
+   /** Internal identity, for de-duplication; never sent. */
+   key: string;
+   /**
+    * The content address. Absent for a storage binding the plan does not know
+    * (a plan that failed to compute): such a table is never named on the wire,
+    * since its only other name is a physical storage path.
+    */
+   tableId?: string;
+   kind: "materialized" | "rollup";
+   tier: "storage" | "colocated";
+   /** Built and bound, but withheld by its freshness window. */
+   stale: boolean;
+   /** Not bound to the package at all. */
+   unbuilt: boolean;
+   /**
+    * A `storage=` table the serve path is not routing to: the storage tier is
+    * off or write-only, which the package reports as a warning.
+    */
+   warned?: boolean;
+   dataAsOf?: string;
+   /** For a colocated table: the name the SQL substitutes. */
+   tableName?: string;
+   /** For a storage table: the binding. */
+   binding?: StorageTable;
+   /** For a rollup: its synthesized source name (the composite member). */
+   rollupName?: string;
+}
+
+/** What happened to the query, as the model saw it. */
+export interface QueryPathInput {
+   shape: ApiQueryShape;
+   /** The model the query ran in, to match a rollup to its plan. */
+   modelPath?: string;
+   /** The queried source's `sourceID`s, nearest first (see {@link sourceChainOf}). */
+   chain: readonly string[];
+   catalog: MaterializedTableCatalog | undefined;
+   /**
+    * The colocated tables inside their freshness window now (the per-query
+    * build manifest's keys). Undefined treats every bound table as fresh.
+    */
+   freshColocated?: ReadonlySet<string>;
+   /** This model's `storage=` bindings, and the fresh subset of them. */
+   storage: { all: readonly StorageTable[]; fresh: readonly StorageTable[] };
+   /**
+    * The storage tier is not routed (`PERSIST_STORAGE_MODE` off or write-only),
+    * and the package warns about every `storage=` source for it. Its tables are
+    * then reported `WARNED`.
+    */
+   storageWarned?: boolean;
+   rollups: readonly ModelRollup[];
+   /** The router's decision; empty when no candidate existed. */
+   considered: readonly ConsideredVariant[];
+   /** For a storage answer: the bindings whose tables the routed query read. */
+   storageTablesRead?: readonly StorageTable[];
+   /**
+    * The routed storage read failed at run time and the query ran live. Its
+    * error is logged, never reported: it can carry storage paths.
+    */
+   runFailed?: boolean;
+   /**
+    * The manifest keys (`sourceEntityId`s) the run that answered read, from
+    * Malloy's manifest lookup: the colocated tables it substituted.
+    */
+   colocatedRead?: ReadonlySet<string>;
+   /**
+    * For a query the pre-aggregation companion answered: the composite member
+    * its compile resolved to (a rollup's name, or the base's). A composite
+    * looks every member up in the manifest, so the manifest's reads cannot
+    * say which rollup answered; the compiled query can.
+    */
+   rollupMember?: string;
+   /** The `sourceID` chain of every source in the model, for `notConsidered`. */
+   chains: ReadonlyMap<string, readonly string[]>;
+   /**
+    * Whether the caller may see a source by this name: the discovery surface
+    * (export curation and the package's query boundary), or everything when
+    * the caller may see hidden sources. Absent admits every name.
+    */
+   isVisibleSource?: (sourceName: string) => boolean;
+}
+
+/**
+ * Assemble the path report. Order in `considered` follows the order Publisher
+ * tries the tiers: `storage=` tables, then colocated rollups, then colocated
+ * `#@ persist` tables nearest first.
+ */
+export function buildQueryPath(input: QueryPathInput): ApiQueryPath {
+   const onChain = new Set(input.chain);
+   const decided = new Map(input.considered.map((c) => [c.kind, c]));
+   const storageDecision = decided.get("storage");
+   const rollupDecision = decided.get("rollup");
+   // Computed once per report.
+   const freshStorage = new Set(input.storage.fresh.map((b) => b.tablePath));
+   const tables = tablesFor(input, onChain, freshStorage, !!storageDecision);
+   const considered: ApiCandidate[] = [];
+   let servedBy: ApiServer = { kind: "live" };
+   const markUsed = (t: TableState) => {
+      if (t.tableId) {
+         considered.push({ tableId: t.tableId, kind: t.kind, outcome: "used" });
+      }
+      servedBy = {
+         kind: t.kind,
+         ...(t.tableId ? { tableId: t.tableId } : {}),
+         ...(t.dataAsOf ? { dataAsOf: t.dataAsOf } : {}),
+      };
+   };
+   const skip = (t: TableState, reason: SkipReason, detail?: string) => {
+      if (!t.tableId) return;
+      considered.push({
+         tableId: t.tableId,
+         kind: t.kind,
+         outcome: "skipped",
+         reason,
+         ...(detail ? { detail } : {}),
+      });
+   };
+
+   // `storage=`: tried only when the tier was a candidate at all (mode on,
+   // bindings and a destination present).
+   const storageTables = tables.filter((t) => t.tier === "storage");
+   let storageAnswered = false;
+   if (storageDecision) {
+      const read = new Set(
+         (input.storageTablesRead ?? []).map((b) => b.tablePath),
+      );
+      for (const t of storageTables) {
+         if (t.stale) {
+            skip(t, "STALE");
+         } else if (storageDecision.reason === "row_level_gate") {
+            skip(t, "CONTRACT");
+         } else if (storageDecision.outcome === "used") {
+            if (!t.binding || !read.has(t.binding.tablePath)) continue;
+            if (input.runFailed) {
+               skip(t, "RUN_FAILED");
+            } else {
+               markUsed(t);
+               storageAnswered = true;
+            }
+         } else {
+            skip(
+               t,
+               skipReasonOf(storageDecision),
+               storageDecision.callerDetail,
+            );
+         }
+      }
+      // The shape answered from a table the chain walk did not place (an IR
+      // shape it does not follow): still name it, so `servedBy` never says
+      // `live` for a storage answer.
+      const first = input.storageTablesRead?.[0];
+      const placed =
+         storageAnswered ||
+         considered.some(
+            (c) => c.outcome === "used" || c.reason === "RUN_FAILED",
+         );
+      if (storageDecision.outcome === "used" && first && !placed) {
+         const t = stateOfBinding(input, first, freshStorage);
+         if (input.runFailed) {
+            skip(t, "RUN_FAILED");
+         } else {
+            markUsed(t);
+            storageAnswered = true;
+         }
+      }
+   } else {
+      // Not routed at all (the tier is off or write-only): every storage table
+      // carries the package's warning, and the query reads its own warehouse.
+      for (const t of storageTables) if (t.warned) skip(t, "WARNED");
+   }
+
+   // Colocated rollups, through the pre-aggregation companion.
+   const colocatedRollups = tables.filter(
+      (t) => t.tier === "colocated" && t.kind === "rollup" && !t.unbuilt,
+   );
+   let rollupAnswered = false;
+   if (rollupDecision && !storageAnswered) {
+      const used =
+         rollupDecision.outcome === "used"
+            ? colocatedRollups.find(
+                 (t) => !t.stale && t.rollupName === input.rollupMember,
+              )
+            : undefined;
+      for (const t of colocatedRollups) {
+         if (t.stale) {
+            skip(t, "STALE");
+         } else if (rollupDecision.reason === "row_level_gate") {
+            skip(t, "CONTRACT");
+         } else if (rollupDecision.reason === "not_applicable") {
+            continue;
+         } else if (rollupDecision.outcome === "used") {
+            if (t === used) {
+               markUsed(t);
+               rollupAnswered = true;
+            } else if (!used && input.rollupMember !== undefined) {
+               // The companion compiled, but Malloy's composite chose the base.
+               skip(t, "GRAIN_TOO_COARSE");
+            }
+         } else {
+            skip(t, skipReasonOf(rollupDecision), rollupDecision.callerDetail);
+         }
+      }
+   }
+
+   // Colocated `#@ persist`: Malloy substitutes the bound table into whatever
+   // runnable answered, unless a stored variant replaced the source.
+   if (!storageAnswered && !rollupAnswered) {
+      let answered = false;
+      for (const t of tables) {
+         if (t.tier !== "colocated" || t.kind !== "materialized" || t.unbuilt)
+            continue;
+         if (t.stale) {
+            skip(t, "STALE");
+         } else if (!answered && readByRun(input, t)) {
+            markUsed(t);
+            answered = true;
+         }
+      }
+   }
+
+   for (const t of tables) if (t.unbuilt) skip(t, "NOT_BUILT");
+
+   return {
+      query: input.shape,
+      servedBy,
+      considered,
+      notConsidered: nearbyTables(
+         input,
+         onChain,
+         new Set(tables.map((t) => t.tableId)),
+      ),
+   };
+}
+
+/**
+ * The codes a variant's {@link Variant.explain} gives, mapped to skip reasons.
+ * Anything unexplained is a compile failure against the stored form: almost
+ * always a field or refinement the stored form does not carry.
+ */
+export const VARIANT_SKIP_CODES = {
+   rollup_missing_field: "MISSING_FIELD",
+   rollup_count_semantics: "COUNT_SEMANTICS",
+} as const satisfies Record<string, SkipReason>;
+
+/** The reason for a variant the router skipped because it did not answer. */
+function skipReasonOf(decision: ConsideredVariant): SkipReason {
+   const code = decision.code as keyof typeof VARIANT_SKIP_CODES | undefined;
+   return (code && VARIANT_SKIP_CODES[code]) ?? "MISSING_FIELD";
+}
+
+/** Whether the run that answered read this colocated table from the manifest. */
+function readByRun(input: QueryPathInput, t: TableState): boolean {
+   return !!t.tableId && !!input.colocatedRead?.has(t.tableId);
+}
+
+/**
+ * The tables that could answer a query on the chain, nearest first: a persist
+ * table whose source is on the chain, and a rollup whose base is.
+ */
+function tablesFor(
+   input: QueryPathInput,
+   onChain: ReadonlySet<string>,
+   fresh: ReadonlySet<string>,
+   /** The router tried the `storage=` tier for this query. */
+   storageCandidate: boolean,
+): TableState[] {
+   const out: TableState[] = [];
+   const seen = new Set<string>();
+   const add = (t: TableState) => {
+      if (seen.has(t.key)) return;
+      seen.add(t.key);
+      out.push(t);
+   };
+   const planned = input.catalog?.planned;
+   // A storage table, then (unless the storage tier answers for it) the
+   // source's own colocated table, which Malloy substitutes when the tier is
+   // not routed. An unbuilt colocated twin of a storage table is not reported:
+   // the source was never meant to build there.
+   const addSource = (
+      binding: StorageTable | undefined,
+      plan: PlannedTable | undefined,
+      kind: TableState["kind"],
+      rollupName?: string,
+   ) => {
+      const named = rollupName ? { rollupName } : {};
+      if (binding) {
+         if (storageCandidate) {
+            add({ ...storageState(binding, plan, kind, fresh), ...named });
+            return;
+         }
+         if (input.storageWarned) {
+            add({
+               ...storageState(binding, plan, kind, fresh),
+               ...named,
+               warned: true,
+            });
+         }
+      }
+      if (!plan) return;
+      const colocated = { ...colocatedState(plan, kind, input), ...named };
+      if (!binding || !colocated.unbuilt) add(colocated);
+   };
+
+   // Persist tables, in chain order.
+   for (const sourceID of input.chain) {
+      const plan = planned?.get(sourceID);
+      const binding = input.storage.all.find(
+         (b) => b.origin !== "preaggregate" && b.sourceIDs?.includes(sourceID),
+      );
+      addSource(
+         binding,
+         plan?.origin === "persist" ? plan : undefined,
+         "materialized",
+      );
+   }
+
+   // Rollups of a source on the chain.
+   for (const rollup of input.rollups) {
+      const baseOnChain = rollup.baseSourceID
+         ? onChain.has(rollup.baseSourceID)
+         : input.chain.some((id) => nameOf(id) === rollup.baseSourceName);
+      if (!baseOnChain) continue;
+      const binding = input.storage.all.find(
+         (b) =>
+            b.origin === "preaggregate" &&
+            b.sourceName === rollup.rollupSourceName,
+      );
+      addSource(
+         binding,
+         planForRollup(input, rollup.rollupSourceName),
+         "rollup",
+         rollup.rollupSourceName,
+      );
+   }
+   // Storage first, then colocated; chain order within each.
+   return [
+      ...out.filter((t) => t.tier === "storage"),
+      ...out.filter((t) => t.tier === "colocated"),
+   ];
+}
+
+/**
+ * The plan of a rollup this model synthesized, by its name within this model.
+ * A rollup's synthesized name is unique only per model, so a name planned in
+ * several models is matched to this model's entry, and an ambiguous match
+ * names nothing rather than another model's table.
+ */
+function planForRollup(
+   input: Pick<QueryPathInput, "catalog" | "modelPath">,
+   rollupSourceName: string,
+): PlannedTable | undefined {
+   const named = [...(input.catalog?.planned.values() ?? [])].filter(
+      (p) => p.origin === "preaggregate" && p.name === rollupSourceName,
+   );
+   if (named.length <= 1) return named[0];
+   const own = named.filter((p) => p.modelPath === input.modelPath);
+   return own.length === 1 ? own[0] : undefined;
+}
+
+/** A storage binding's state, named through the plan where it knows it. */
+function stateOfBinding(
+   input: QueryPathInput,
+   binding: StorageTable,
+   fresh: ReadonlySet<string>,
+): TableState {
+   const rollup = binding.origin === "preaggregate";
+   const plan = rollup
+      ? planForRollup(input, binding.sourceName)
+      : binding.sourceIDs
+           ?.map((id) => input.catalog?.planned.get(id))
+           .find((p) => p !== undefined);
+   return storageState(
+      binding,
+      plan,
+      rollup ? "rollup" : "materialized",
+      fresh,
+   );
+}
+
+function storageState(
+   binding: StorageTable,
+   plan: PlannedTable | undefined,
+   kind: TableState["kind"],
+   fresh: ReadonlySet<string>,
+): TableState {
+   return {
+      key: `storage:${binding.tablePath}`,
+      ...(plan ? { tableId: plan.sourceEntityId } : {}),
+      kind,
+      tier: "storage",
+      stale: !fresh.has(binding.tablePath),
+      unbuilt: false,
+      ...(binding.freshAsOf ? { dataAsOf: binding.freshAsOf } : {}),
+      binding,
+   };
+}
+
+function colocatedState(
+   plan: PlannedTable,
+   kind: TableState["kind"],
+   input: Pick<QueryPathInput, "catalog" | "freshColocated">,
+): TableState {
+   const bound = input.catalog?.bound[plan.sourceEntityId];
+   return {
+      key: `colocated:${plan.sourceEntityId}`,
+      tableId: plan.sourceEntityId,
+      kind,
+      tier: "colocated",
+      // Bound, but left out of this query's build manifest by its window.
+      stale:
+         !!bound &&
+         !!input.freshColocated &&
+         !input.freshColocated.has(plan.sourceEntityId),
+      unbuilt: !bound,
+      ...(bound?.dataAsOf ? { dataAsOf: bound.dataAsOf } : {}),
+      ...(bound ? { tableName: bound.tableName } : {}),
+   };
+}
+
+/**
+ * Materialized tables near the queried source that the query cannot use:
+ * `below`, on a source that extends the queried one; `sibling`, on a source
+ * sharing an ancestor with it, off its chain. Nearest first, at most
+ * {@link MAX_NOT_CONSIDERED}.
+ */
+function nearbyTables(
+   input: QueryPathInput,
+   onChain: ReadonlySet<string>,
+   /** Tables already on the chain: a source that shares one is no neighbour. */
+   chainTables: ReadonlySet<string | undefined>,
+): ApiNearby[] {
+   const queried = input.chain[0];
+   if (!queried || !input.catalog) return [];
+   const builtStorage = new Set(
+      input.storage.all.flatMap((b) =>
+         b.origin === "preaggregate"
+            ? [b.sourceName]
+            : [...(b.sourceIDs ?? [])],
+      ),
+   );
+   const found: (ApiNearby & { distance: number })[] = [];
+   const consider = (
+      tableSourceID: string,
+      table: PlannedTable,
+      kind: ApiNearby["kind"],
+      sourceName: string,
+   ) => {
+      if (onChain.has(tableSourceID)) return;
+      if (chainTables.has(table.sourceEntityId)) return;
+      // A source hidden from this caller is never named, not even as a
+      // neighbour: the report would disclose that it exists.
+      if (input.isVisibleSource && !input.isVisibleSource(sourceName)) return;
+      const chain = input.chains.get(tableSourceID);
+      if (!chain) return;
+      let relationship: ApiNearby["relationship"] | undefined;
+      let distance = Infinity;
+      const below = chain.indexOf(queried);
+      if (below > 0) {
+         relationship = "below";
+         distance = below;
+      } else {
+         for (const [i, id] of chain.entries()) {
+            const j = input.chain.indexOf(id);
+            if (j >= 0 && i + j < distance) {
+               relationship = "sibling";
+               distance = i + j;
+            }
+         }
+      }
+      if (!relationship) return;
+      found.push({
+         tableId: table.sourceEntityId,
+         kind,
+         sourceName,
+         relationship,
+         built:
+            !!input.catalog?.bound[table.sourceEntityId] ||
+            builtStorage.has(
+               table.origin === "preaggregate" ? table.name : table.sourceID,
+            ),
+         distance,
+      });
+   };
+   for (const p of input.catalog.planned.values()) {
+      if (p.origin === "persist") {
+         consider(p.sourceID, p, "materialized", p.name);
+      }
+   }
+   for (const rollup of input.rollups) {
+      const plan = planForRollup(input, rollup.rollupSourceName);
+      const base =
+         rollup.baseSourceID ??
+         [...input.chains.keys()].find(
+            (id) => nameOf(id) === rollup.baseSourceName,
+         );
+      if (plan && base) consider(base, plan, "rollup", rollup.baseSourceName);
+   }
+   // Sources with one content address share one table: name it once, by its
+   // nearest source.
+   const byTable = new Map<string, ApiNearby & { distance: number }>();
+   for (const f of found.sort(nearestFirst)) {
+      if (!byTable.has(f.tableId)) byTable.set(f.tableId, f);
+   }
+   return [...byTable.values()]
+      .sort(nearestFirst)
+      .slice(0, MAX_NOT_CONSIDERED)
+      .map(({ distance: _distance, ...nearby }) => nearby);
+}
+
+/** Nearest first, then by source name, so the order is stable. */
+function nearestFirst(
+   a: { distance: number; sourceName: string },
+   b: { distance: number; sourceName: string },
+): number {
+   return (
+      a.distance - b.distance ||
+      (a.sourceName < b.sourceName ? -1 : a.sourceName > b.sourceName ? 1 : 0)
+   );
+}
+
+/** A `sourceID`'s declared name (`name@<url>`). */
+function nameOf(sourceID: string): string {
+   const at = sourceID.lastIndexOf("@");
+   return at > 0 ? sourceID.slice(0, at) : sourceID;
+}
+
+// --- Reading the compiled IR ---------------------------------------------
+
+/** The IR fragments read below; everything else is walked generically. */
+interface IrSource {
+   type?: string;
+   as?: string;
+   name?: string;
+   sourceID?: string;
+   referenceID?: string;
+   extends?: string;
+   fields?: readonly IrField[];
+   query?: { structRef?: unknown };
+}
+
+interface IrField {
+   type?: string;
+   name?: string;
+   as?: string;
+   join?: string;
+   expressionType?: string;
+   fields?: readonly IrField[];
+   path?: readonly string[];
+   e?: unknown;
+   pipeline?: readonly IrStage[];
+}
+
+interface IrStage {
+   type?: string;
+   queryFields?: readonly IrField[];
+   filterList?: readonly { e?: unknown }[];
+   queryTimezone?: unknown;
+}
+
+interface IrModel {
+   contents?: Record<string, unknown>;
+   sourceRegistry?: Record<
+      string,
+      { entry?: { type?: string; name?: string } & IrSource }
+   >;
+}
+
+/**
+ * The `sourceID`s a source derives from, itself first: through `extends` (an
+ * `extend`), `referenceID` (a rename) and a query source's base. Persistence is
+ * inherited along exactly these hops, so a table on any of them can answer a
+ * query on the source.
+ */
+export function sourceChainOf(struct: unknown, modelDef: unknown): string[] {
+   const model = modelDef as IrModel | undefined;
+   const out: string[] = [];
+   const seen = new Set<unknown>();
+   const byId = (id: string): IrSource | undefined => {
+      const entry = model?.sourceRegistry?.[id]?.entry;
+      if (!entry) return undefined;
+      if (entry.type === "source_registry_reference" && entry.name) {
+         return model?.contents?.[entry.name] as IrSource | undefined;
+      }
+      return entry;
+   };
+   let current = struct as IrSource | undefined;
+   for (let hops = 0; current && hops < 64; hops++) {
+      if (seen.has(current)) break;
+      seen.add(current);
+      const id = current.sourceID;
+      if (typeof id === "string" && !out.includes(id)) out.push(id);
+      const next: IrSource | undefined =
+         (typeof current.extends === "string"
+            ? byId(current.extends)
+            : undefined) ??
+         (typeof current.referenceID === "string" && current.referenceID !== id
+            ? byId(current.referenceID)
+            : undefined) ??
+         querySourceBase(current, model);
+      // A hop that resolves to nothing still names the source it points at.
+      if (!next) {
+         for (const ref of [current.extends, current.referenceID]) {
+            if (typeof ref === "string" && !out.includes(ref)) out.push(ref);
+         }
+      }
+      current = next;
+   }
+   return out;
+}
+
+function querySourceBase(
+   struct: IrSource,
+   model: IrModel | undefined,
+): IrSource | undefined {
+   if (struct.type !== "query_source") return undefined;
+   const ref = struct.query?.structRef;
+   if (typeof ref !== "string") {
+      return ref && typeof ref === "object" ? (ref as IrSource) : undefined;
+   }
+   // A name in the model, or a `sourceID` in its registry.
+   const byName = model?.contents?.[ref] as IrSource | undefined;
+   if (byName && typeof byName === "object") return byName;
+   const entry = model?.sourceRegistry?.[ref]?.entry;
+   if (entry?.type === "source_registry_reference" && entry.name) {
+      return model?.contents?.[entry.name] as IrSource | undefined;
+   }
+   return entry;
+}
+
+/**
+ * The query's shape from its compiled first stage: what it groups by (or
+ * selects), filters on and aggregates, as dotted paths from the source. A
+ * field the query defines inline lists the fields it reads.
+ */
+export function queryShapeOf(
+   query: unknown,
+   struct: unknown,
+   names: { sourceName: string; viewName?: string },
+): ApiQueryShape {
+   const grouped = new Set<string>();
+   const filtered = new Set<string>();
+   const measures = new Set<string>();
+   const source = struct as IrSource | undefined;
+   const stage = (query as { pipeline?: readonly IrStage[] } | undefined)
+      ?.pipeline?.[0];
+   // Named views already followed, so a view nesting itself cannot loop.
+   const followed = new Set<IrField>();
+   /**
+    * One stage, read against `root` (the source, or the join a view nested
+    * through a join path lives on), with `prefix` prepended to every path so
+    * each is dotted from the queried source.
+    */
+   const visitStage = (
+      s: IrStage | undefined,
+      root: { fields?: readonly IrField[] } | undefined,
+      prefix: readonly string[],
+   ) => {
+      const at = (path: readonly string[]) => [...prefix, ...path].join(".");
+      for (const f of s?.queryFields ?? []) {
+         if (f.type === "fieldref" && f.path) {
+            const def = resolvePath(root, f.path);
+            if (def?.type === "turtle") {
+               // A nested named view (`nest: by_category`): its own groups,
+               // filters and measures are part of what the query reads. (Malloy
+               // refuses a view through a join today; the prefix keeps paths
+               // dotted from the queried source if that changes.)
+               if (followed.has(def)) continue;
+               followed.add(def);
+               const owner = f.path.slice(0, -1);
+               visitStage(def.pipeline?.[0], resolveStruct(root, owner), [
+                  ...prefix,
+                  ...owner,
+               ]);
+               continue;
+            }
+            (isAggregate(def) ? measures : grouped).add(at(f.path));
+         } else if (f.type === "turtle") {
+            visitStage(f.pipeline?.[0], root, prefix);
+         } else if (f.e !== undefined) {
+            const into = isAggregate(f) ? measures : grouped;
+            for (const path of fieldPathsIn(f.e)) into.add(at(path.split(".")));
+         }
+      }
+      for (const filter of s?.filterList ?? []) {
+         for (const path of fieldPathsIn(filter.e)) {
+            filtered.add(at(path.split(".")));
+         }
+      }
+   };
+   visitStage(stage, source, []);
+   const tz = stage?.queryTimezone;
+   return {
+      sourceName: names.sourceName,
+      ...(names.viewName ? { viewName: names.viewName } : {}),
+      groupedBy: [...grouped],
+      filteredBy: [...filtered],
+      measures: [...measures],
+      ...(typeof tz === "string" && tz !== "" ? { timeZone: tz } : {}),
+   };
+}
+
+function isAggregate(field: IrField | undefined): boolean {
+   const t = field?.expressionType;
+   return t === "aggregate" || t === "ungrouped_aggregate";
+}
+
+/** The struct a path of joins leads to (the root itself for an empty path). */
+function resolveStruct(
+   root: { fields?: readonly IrField[] } | undefined,
+   path: readonly string[],
+): { fields?: readonly IrField[] } | undefined {
+   return path.length === 0 ? root : resolvePath(root, path);
+}
+
+/** The field a dotted path names, through the joins on the way. */
+function resolvePath(
+   source: { fields?: readonly IrField[] } | undefined,
+   path: readonly string[],
+): IrField | undefined {
+   let fields = source?.fields;
+   let found: IrField | undefined;
+   for (const name of path) {
+      found = fields?.find((f) => (f.as ?? f.name) === name);
+      if (!found) return undefined;
+      fields = found.fields;
+   }
+   return found;
+}
+
+/** Every `{ node: "field", path }` reference in an expression, as a dotted path. */
+function fieldPathsIn(e: unknown): string[] {
+   const out: string[] = [];
+   const walk = (n: unknown) => {
+      if (!n || typeof n !== "object") return;
+      if (Array.isArray(n)) {
+         for (const item of n) walk(item);
+         return;
+      }
+      const node = n as { node?: unknown; path?: unknown };
+      if (node.node === "field" && Array.isArray(node.path)) {
+         const path = (node.path as unknown[]).join(".");
+         if (!out.includes(path)) out.push(path);
+         return;
+      }
+      for (const [key, value] of Object.entries(n)) {
+         // A function's per-dialect templates, not this call's arguments.
+         if (key === "overload" || key === "at") continue;
+         walk(value);
+      }
+   };
+   walk(e);
+   return out;
+}

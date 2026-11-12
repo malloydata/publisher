@@ -61,6 +61,18 @@ export interface Variant<Extra = unknown> {
    attempt(): Promise<VariantAnswer<Extra>>;
    /** Told why the attempt failed, for the candidate's own logs and metrics. */
    onSkip?(error: unknown): void;
+   /**
+    * Classify a failed attempt for the path report: a code, and a detail safe
+    * to show the caller (in the caller's own terms, never an internal message).
+    * Undefined leaves the skip unexplained beyond `does_not_answer`.
+    */
+   explain?(error: unknown): VariantSkipExplanation | undefined;
+}
+
+/** A candidate's own account of why it did not answer (see {@link Variant.explain}). */
+export interface VariantSkipExplanation {
+   code: string;
+   callerDetail?: string;
 }
 
 /** What the router decided about one candidate. */
@@ -68,8 +80,16 @@ export interface ConsideredVariant {
    kind: VariantKind;
    outcome: "used" | "skipped";
    reason?: RouterSkipReason;
-   /** The compile or coverage error's message, for a `does_not_answer` skip. */
+   /**
+    * The compile or coverage error's message, for a `does_not_answer` skip.
+    * Internal: for logs only, never the wire (it can name storage paths and
+    * synthesized sources).
+    */
    detail?: string;
+   /** The candidate's classification of a `does_not_answer` skip, if it gave one. */
+   code?: string;
+   /** With {@link code}: a detail safe to show the caller. */
+   callerDetail?: string;
 }
 
 /** The router's decision for one query. */
@@ -85,16 +105,17 @@ export type RouteDecision<Extra> =
 
 /**
  * Route one query over `variants`, in order. `blockedByGate` is asked at most
- * once, and only when there is a candidate at all (it can cost an entry-point
- * walk and a probe compile); the caller lists a candidate only when its
- * variant exists for this model, and marks it inapplicable for this request.
+ * once, and only when some candidate applies to this request (it can cost an
+ * entry-point walk and a probe compile); the caller lists a candidate only when
+ * its variant exists for this model, and marks it inapplicable for this request.
  */
 export async function routeQuery<Extra>(
    variants: ReadonlyArray<Variant<Extra>>,
    blockedByGate: () => Promise<boolean>,
 ): Promise<RouteDecision<Extra>> {
    const considered: ConsideredVariant[] = [];
-   const blocked = variants.length > 0 && (await blockedByGate());
+   const blocked =
+      variants.some((v) => v.applicable) && (await blockedByGate());
    for (const variant of variants) {
       if (!variant.applicable) {
          considered.push({
@@ -128,9 +149,29 @@ export async function routeQuery<Extra>(
             outcome: "skipped",
             reason: "does_not_answer",
             detail: error instanceof Error ? error.message : String(error),
+            ...explanationOf(variant, error),
          });
          variant.onSkip?.(error);
       }
    }
    return { served: "live", considered };
+}
+
+/** A variant's {@link Variant.explain}, never throwing into the router. */
+function explanationOf(
+   variant: Variant<unknown>,
+   error: unknown,
+): Partial<Pick<ConsideredVariant, "code" | "callerDetail">> {
+   try {
+      const explained = variant.explain?.(error);
+      if (!explained) return {};
+      return {
+         code: explained.code,
+         ...(explained.callerDetail
+            ? { callerDetail: explained.callerDetail }
+            : {}),
+      };
+   } catch {
+      return {};
+   }
 }

@@ -106,12 +106,18 @@ describe("routeQuery", () => {
       ]);
    });
 
-   it("asks about the gate once when a candidate exists, even an inapplicable one, and never when none does", async () => {
+   it("asks about the gate once when a candidate applies, and never when none does", async () => {
       let asked = 0;
       const gate = async () => {
          asked++;
          return false;
       };
+      await routeQuery(
+         [variant("storage", "misses", []), variant("rollup", "answers", [])],
+         gate,
+      );
+      expect(asked).toBe(1);
+      // An inapplicable candidate cannot route, so the gate's answer is moot.
       await routeQuery([variant("rollup", "inapplicable", [])], gate);
       expect(asked).toBe(1);
       const none = await routeQuery<string>([], gate);
@@ -128,6 +134,36 @@ describe("routeQuery", () => {
       expect(calls).toEqual([]);
       expect(decision.considered).toEqual([
          { kind: "rollup", outcome: "skipped", reason: "not_applicable" },
+      ]);
+   });
+
+   it("records a candidate's own explanation of its skip, and survives one that throws", async () => {
+      const explained: Variant<string> = {
+         ...variant("storage", "misses", []),
+         explain: () => ({ code: "rollup_missing_field", callerDetail: "x" }),
+      };
+      const broken: Variant<string> = {
+         ...variant("rollup", "misses", []),
+         explain: () => {
+            throw new Error("boom");
+         },
+      };
+      const decision = await routeQuery([explained, broken], async () => false);
+      expect(decision.considered).toEqual([
+         {
+            kind: "storage",
+            outcome: "skipped",
+            reason: "does_not_answer",
+            detail: "storage cannot answer",
+            code: "rollup_missing_field",
+            callerDetail: "x",
+         },
+         {
+            kind: "rollup",
+            outcome: "skipped",
+            reason: "does_not_answer",
+            detail: "rollup cannot answer",
+         },
       ]);
    });
 });

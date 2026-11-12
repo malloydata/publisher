@@ -8333,8 +8333,10 @@ components:
                declined it — a storage-tier miss, reported identically to "no
                materialization exists anywhere."
 
-            Case 3 is the one that costs time, because nothing about the response
-            distinguishes it from case 1. The server does log it: one
+            Case 3 is the one that costs time, because nothing about this field
+            distinguishes it from case 1. `path`, the path report, does: it names
+            the table that answered in every tier, and why each table that could
+            have answered did not. The server does log it: one
             `storage serve-shape ineligible for this query; serving live` line at
             INFO per routed query, carrying the compile error that made the shape
             ineligible, plus `shapeSources` (what the shape offered) and
@@ -8413,6 +8415,198 @@ components:
             query is indistinguishable here from a backend that cannot say. Free
             and unknown are the same value, and a savings calculation built on
             this will treat free queries as unmeasured rather than as free.
+        path:
+          $ref: "#/components/schemas/QueryPath"
+          description: >-
+            The path report: what answered this query and why. It names the
+            materialized table that served it (or `live`), every materialized
+            table on the queried source's chain with the reason each one that
+            did not answer was skipped, and nearby tables the query could not
+            use. Unlike `servedFrom`, it covers the colocated `#@ persist` tier
+            and pre-aggregation rollups as well as `storage=`, so a null
+            `servedFrom` no longer hides whether a table answered.
+
+            Absent only when the report could not be assembled; the query's
+            answer never depends on it.
+
+    QueryPath:
+      type: object
+      description: >-
+        The path report: what answered a query and why. Agents read it to learn
+        whether a materialized table answered, and if not, what would let one.
+        Tables are named by `tableId`, the source's content address
+        (`sourceEntityId` in the build plan and manifest), because a source name
+        alone is ambiguous across a package's models.
+      required: [query, servedBy, considered, notConsidered]
+      properties:
+        query:
+          $ref: "#/components/schemas/QueryShape"
+        servedBy:
+          $ref: "#/components/schemas/QueryPathServer"
+        considered:
+          type: array
+          description: >-
+            Every materialized table on the queried source's chain, and every
+            rollup of a source on it, that could have answered this query: the
+            one that served it marked `used`, the rest `skipped` with a reason.
+            In the order Publisher tries them: `storage=` tables, then colocated
+            rollups, then colocated `#@ persist` tables nearest first. A table
+            that was not tried because an earlier one answered is left out.
+            Empty when the queried source has no materialized table.
+          items:
+            $ref: "#/components/schemas/QueryPathCandidate"
+        notConsidered:
+          type: array
+          description: >-
+            Materialized tables near the queried source that this query cannot
+            use: a sibling's (a source sharing an ancestor, off the queried
+            source's chain), or one on a source that extends the queried one.
+            Nearest first, at most ten. They say what the model has that this
+            query cannot use, and where moving the query, or an annotation, would
+            let a table answer.
+          items:
+            $ref: "#/components/schemas/QueryPathNearby"
+
+    QueryShape:
+      type: object
+      description: >-
+        The query's shape, as routing reads it: the stage that touches the
+        source's data.
+      required: [sourceName, groupedBy, filteredBy, measures]
+      properties:
+        sourceName:
+          type: string
+          description: The source the query reads.
+        viewName:
+          type: string
+          description: >-
+            The view the request named (`queryName` with `sourceName`). Absent
+            for a query written inline, including one written as `run: source ->
+            view`.
+        groupedBy:
+          type: array
+          description: >-
+            The dimensions the query groups by (or selects), as dotted paths from
+            `sourceName`. A dimension defined in the query lists the fields it
+            reads.
+          items:
+            type: string
+        filteredBy:
+          type: array
+          description: The fields the query's filters read, as dotted paths from `sourceName`.
+          items:
+            type: string
+        measures:
+          type: array
+          description: >-
+            The measures the query aggregates, as dotted paths from
+            `sourceName`. A measure defined in the query lists the fields it
+            aggregates.
+          items:
+            type: string
+        timeZone:
+          type: string
+          description: The query's time zone, when it sets one.
+
+    QueryPathServer:
+      type: object
+      description: What answered the query.
+      required: [kind]
+      properties:
+        kind:
+          $ref: "#/components/schemas/QueryPathTableKind"
+        tableId:
+          type: string
+          description: The table that answered. Absent when `kind` is `live`.
+        dataAsOf:
+          type: string
+          format: date-time
+          description: >-
+            The moment the table's rows reflect, as on its manifest entry. Absent
+            when `kind` is `live`, or when the manifest entry does not record it.
+
+    QueryPathCandidate:
+      type: object
+      description: A materialized table that could have answered the query.
+      required: [tableId, kind, outcome]
+      properties:
+        tableId:
+          type: string
+        kind:
+          $ref: "#/components/schemas/QueryPathTableKind"
+        outcome:
+          type: string
+          enum: [used, skipped]
+          description: "`used`, the table answered; `skipped`, it could not, and `reason` says why."
+        reason:
+          $ref: "#/components/schemas/SkipReason"
+        detail:
+          type: string
+          description: >-
+            For a skip, the specifics, for a person, in the caller's own terms:
+            for example the field path or aggregate in the query that a rollup
+            cannot reproduce. Never an internal error message (a compile error
+            against the stored form, a run-time storage error), which can name
+            storage paths or synthesized sources; those skips carry no detail.
+            Absent when `outcome` is `used`.
+
+    QueryPathNearby:
+      type: object
+      description: A materialized table near the queried source that this query cannot use.
+      required: [tableId, kind, sourceName, relationship, built]
+      properties:
+        tableId:
+          type: string
+        kind:
+          $ref: "#/components/schemas/QueryPathTableKind"
+        sourceName:
+          type: string
+          description: The source the table materializes; for a rollup, the source it rolls up.
+        relationship:
+          type: string
+          enum: [sibling, below]
+          description: >-
+            `sibling`, its source shares an ancestor with the queried source but
+            is off its chain; `below`, its source extends the queried one.
+        built:
+          type: boolean
+          description: Whether the table is bound to this package.
+
+    QueryPathTableKind:
+      type: string
+      enum: [view, rollup, materialized, live]
+      description: >-
+        What kind of answer: `view`, a persisted view's table; `rollup`, a
+        pre-aggregation; `materialized`, a materialized source's table; `live`,
+        the source's own warehouse.
+
+    SkipReason:
+      type: string
+      enum:
+        - NOT_BUILT
+        - WARNED
+        - MISSING_FIELD
+        - CONTRACT
+        - GRAIN_TOO_COARSE
+        - TIME_ZONE
+        - CROSS_CONNECTION
+        - COUNT_SEMANTICS
+        - STALE
+        - RUN_FAILED
+      description: >-
+        Why a table could not answer a query. `NOT_BUILT`, it is not bound to
+        this package; `WARNED`, its annotation carries a publish warning and
+        serves live; `MISSING_FIELD`, the query reads a field the table lacks (or
+        otherwise does not compile against it); `CONTRACT`, answering from it
+        would bypass an access control on the queried source; `GRAIN_TOO_COARSE`,
+        a rollup's grain does not cover the query's groups or filters;
+        `TIME_ZONE`, it was built in another time zone than the query's;
+        `CROSS_CONNECTION`, the query needs a join the table's connection cannot
+        reach; `COUNT_SEMANTICS`, an aggregate the table cannot reproduce as the
+        live query computes it; `STALE`, it is past its freshness window;
+        `RUN_FAILED`, it was chosen but reading it failed at run time, and its
+        freshness fallback allowed live. A closed list to which codes may be
+        added, so a client treats an unknown one as a skip it cannot explain.
 
     LogMessage:
       type: object

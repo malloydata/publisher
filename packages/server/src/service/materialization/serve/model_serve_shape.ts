@@ -21,6 +21,7 @@ import {
    recordStoredColumnTypeMismatch,
 } from "../../../materialization_metrics";
 import { restrictMalloyConfigToConnections } from "../../connection";
+import { quoteManifestTablePath } from "../../quoting";
 import { evaluateManifestFreshness } from "../run/freshness";
 import {
    authorModelLiftContext,
@@ -334,6 +335,12 @@ export class StorageServeShape {
        * that touched an ordinary stored source in the same package.
        */
       origin: "persist" | "preaggregate";
+      /**
+       * The bindings whose stored table the compiled query reads, read from the
+       * probe SQL as {@link origin} is. The path report names the one that
+       * answered from these.
+       */
+      tablesRead: ServeBinding[];
    }> {
       // Keying the cache on the FRESH subset makes it recompile when a binding
       // crosses its freshness window.
@@ -414,7 +421,19 @@ export class StorageServeShape {
       const origin = rollupPaths.some((path) => probeSQL.includes(path))
          ? ("preaggregate" as const)
          : ("persist" as const);
-      return { runnable, virtualMap, bindings: freshBindings, origin };
+      const tablesRead = [
+         ...ordinary,
+         ...groups.flatMap((g) => g.members),
+      ].filter((b) =>
+         probeSQL.includes(quoteManifestTablePath(b.tablePath, "duckdb")),
+      );
+      return {
+         runnable,
+         virtualMap,
+         bindings: freshBindings,
+         origin,
+         tablesRead,
+      };
    }
 
    /**

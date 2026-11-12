@@ -21,6 +21,19 @@ Give the heading a title — `## [Unreleased] — what changed`, with an em dash
 
 Two consequences worth knowing. A section merged to `main` ships in the **next** release, whenever that is, so do not write one for work that has not landed. And a heading already stamped with a version is history: a follow-up that changes that behaviour opens a **new** `[Unreleased]` section referencing the shipped version by number, rather than editing the old one.
 
+## [Unreleased] — Every query result says which materialized table answered, and why the others did not
+
+`QueryResult` gains an optional `path`, the path report. `servedFrom` reports the `storage=` tier only, so a null read the same for a live answer, an answer from a colocated `#@ persist` table and a `storage=` table the query could not use. `path` separates them, across `storage=`, colocated `#@ persist` and pre-aggregation rollups:
+
+- `servedBy`: the table that answered (`kind` `materialized` or `rollup`, its `tableId` and `dataAsOf`), or `kind: live`.
+- `considered`: every table on the queried source's chain, and every rollup of a source on it, that could have answered, with the one that did marked `used` and each other one `skipped` with a `reason`: `NOT_BUILT`, `STALE`, `CONTRACT` (a row-level gate), `MISSING_FIELD` (with the compiler's message in `detail`), `COUNT_SEMANTICS`, `GRAIN_TOO_COARSE` or `RUN_FAILED`.
+- `notConsidered`: up to ten tables near the queried source that the query cannot use, on a source that extends it or shares an ancestor with it.
+- `query`: the query's shape (source, grouped and filtered fields, measures, time zone).
+
+A table is named by its `sourceEntityId`, the content address the build plan and manifest already use. The field is additive: no existing field or enum changes, and `servedFrom` keeps its meaning. The report never changes which table answers. See [Which table answered a query](docs/materialization.md#which-table-answered-a-query-the-path-report).
+
+The `publisher_storage_serve_routing_total` metric is now recorded once per query, from the routing decision: a `storage=` miss still counts as `live_fallback` when a rollup then answers the query, and the row-level gate is no longer evaluated for a query whose only candidate cannot apply.
+
 ## [Unreleased] — The access record carries each query's workload shape, and an opt-in store keeps them
 
 Every access record of an answered query now carries `shape`: what the query asked of its source with every literal replaced, so a hundred runs of one dashboard tile with different filter values read as one shape. It names the source and, when the request named one, the view, then the dimensions the first stage groups by, the measures it aggregates, the fields its `where:` reads, its `where:` and `having:` expressions with every value as `?`, its time zone, and a 16-character `key` that two runs of the same question share. A record also gains `scannedBytes` where the warehouse reports bytes inline (BigQuery today; absent is not zero). Both are new optional fields: a refusal carries no shape, since nothing compiled for the caller, and nothing existing changed. A consumer that parses the log line strictly should allow them.
