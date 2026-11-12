@@ -110,17 +110,44 @@ describe("workloadShapeOf", () => {
       }
    });
 
-   it("names a view the request named, and keys it apart from the same fields asked directly", async () => {
-      const viaView = await shapeOf("run: orders -> by_region", "by_region");
+   it("names a view the request named, and keys it with the same fields asked directly", async () => {
+      const viaQueryName = await shapeOf(
+         "run: orders -> by_region",
+         "by_region",
+      );
+      const viaRun = await shapeOf("run: orders -> by_region");
       const direct = await shapeOf(
          "run: orders -> { group_by: region; aggregate: total }",
       );
-      expect(viaView).toMatchObject({
+      expect(viaQueryName).toMatchObject({
          view: "by_region",
          dimensions: ["region"],
          measures: ["total"],
       });
-      expect(viaView?.key).not.toBe(direct?.key);
+      // However the request was phrased, one compiled stage is one shape.
+      expect(viaQueryName?.key).toBe(viaRun?.key);
+      expect(viaQueryName?.key).toBe(direct?.key);
+   });
+
+   it("gives one key to a multi-select however many values it has", async () => {
+      const two = await shapeOf(
+         "run: orders -> { where: region ? 'a' | 'b'; aggregate: total }",
+      );
+      const three = await shapeOf(
+         "run: orders -> { where: region ? 'a' | 'b' | 'c'; aggregate: total }",
+      );
+      expect(two?.key).toBe(three?.key);
+   });
+
+   it("flags a nested named view, and does not count it as a dimension", async () => {
+      const shape = await shapeOf(
+         "run: orders -> { group_by: dt; nest: by_region }",
+      );
+      expect(shape).toMatchObject({
+         dimensions: ["dt"],
+         nested: true,
+         complete: true,
+      });
    });
 
    it("flags a nest, and keeps only the outer stage", async () => {
@@ -177,5 +204,75 @@ describe("canonicalExpression", () => {
       });
       expect(text).not.toContain("secret");
       expect(text).toContain("x");
+   });
+
+   it("collapses a list of values to one ?, and keeps `not in` apart from `in`", () => {
+      const inList = (n: number, not = false) =>
+         canonicalExpression({
+            node: "in",
+            not,
+            kids: {
+               e: { node: "field", path: ["region"] },
+               oneOf: Array.from({ length: n }, (_, i) => ({
+                  node: "stringLiteral",
+                  literal: `v${i}`,
+               })),
+            },
+         });
+      expect(inList(2)).toBe(inList(5));
+      expect(inList(2)).toBe("in(region,[?])");
+      expect(inList(2, true)).toBe("in:not(region,[?])");
+   });
+
+   it("renders a function call by its name and arguments, never its overload, and keeps its partition", () => {
+      const call = (dialectSql: string) =>
+         canonicalExpression({
+            node: "function_call",
+            name: "rank",
+            overload: {
+               returnType: { type: "number" },
+               dialect: {
+                  duckdb: { e: { node: "genericSQLExpr", src: [dialectSql] } },
+               },
+            },
+            kids: { args: [{ node: "field", path: ["amt"] }] },
+            partitionBy: ["region"],
+            structPath: ["orders"],
+         });
+      expect(call("RANK()")).toBe(call("RANK() OVER ()"));
+      expect(call("RANK()")).toContain("rank");
+      expect(call("RANK()")).toContain("partitionBy=[region]");
+      expect(call("RANK()")).not.toContain("RANK");
+   });
+
+   it("renders a node the compiler shares between branches in both", () => {
+      const x = { node: "field", path: ["x"] };
+      expect(
+         canonicalExpression({
+            node: "and",
+            kids: {
+               left: {
+                  node: ">=",
+                  kids: {
+                     left: x,
+                     right: { node: "numberLiteral", literal: "1" },
+                  },
+               },
+               right: {
+                  node: "<",
+                  kids: {
+                     left: x,
+                     right: { node: "numberLiteral", literal: "5" },
+                  },
+               },
+            },
+         }),
+      ).toBe("and(>=(x,?),<(x,?))");
+   });
+
+   it("still ends on a true cycle", () => {
+      const loop: Record<string, unknown> = { node: "+", kids: {} };
+      (loop.kids as Record<string, unknown>).left = loop;
+      expect(() => canonicalExpression(loop)).not.toThrow();
    });
 });

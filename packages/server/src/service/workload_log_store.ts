@@ -10,15 +10,20 @@
  *
  * Writes are buffered and flushed on a timer, so a query never waits on the
  * store, and the store never fails a query: a failed flush drops that batch
- * and logs once per failure. Bounded by age and by row count, pruned on
- * flush. A process that exits loses at most the records of one flush
- * interval.
+ * and logs once per failure. One multi-row INSERT per flush, so the shared
+ * metadata connection is held briefly. Bounded by age and by row count,
+ * pruned at most once a minute. A graceful shutdown writes what is buffered;
+ * a process that dies loses at most the records of one flush interval.
  *
- * The record is stored as the logger writes it, with one exception: the
- * values of `#(secure)` givens are dropped (their names stay in
- * `givenNames`). Those values are the caller's verified attributes, which an
- * audit line carries on purpose; a workload store has no use for them, and
- * keeping them would make it a second copy of identity data.
+ * The record is stored as the logger writes it, with two exceptions:
+ *
+ * - The values of `#(secure)` givens are dropped (their names stay in
+ *   `givenNames`). Those values are the caller's verified attributes, which an
+ *   audit line carries on purpose; a workload store has no use for them, and
+ *   keeping them would make it a second copy of identity data.
+ * - The error text has every quoted string and number replaced by `?`. A
+ *   driver's error quotes the statement back, and a row filter from a
+ *   `#(secure)` given is a literal in that statement.
  */
 
 import { logger } from "../logger";
@@ -47,6 +52,10 @@ export interface WorkloadLogStoreOptions {
    flushIntervalMs?: number;
    /** Records buffered before a flush is forced. */
    maxBuffered?: number;
+   /** Records held at most; past this the oldest are dropped and counted. */
+   maxHeld?: number;
+   /** Milliseconds between prunes; a flush prunes only when this has passed. */
+   pruneIntervalMs?: number;
    /** The clock, for tests. */
    now?: () => Date;
 }
@@ -74,8 +83,15 @@ const droppedCounter = lazyCounter(
 
 const DEFAULT_FLUSH_INTERVAL_MS = 2000;
 const DEFAULT_MAX_BUFFERED = 1000;
-/** Records held while storage is still opening; past this the oldest are dropped. */
-const MAX_PENDING_BEFORE_READY = 10_000;
+const DEFAULT_PRUNE_INTERVAL_MS = 60_000;
+/**
+ * Records held at most, whether storage is still opening or a write is slow;
+ * past this the oldest are dropped and counted, so the buffer never grows
+ * without bound.
+ */
+const DEFAULT_MAX_HELD = 10_000;
+/** Rows per INSERT statement; a flush writes its batch in as few as fit. */
+const ROWS_PER_INSERT = 250;
 
 const COLUMNS = [
    "recorded_at",
@@ -92,18 +108,37 @@ const COLUMNS = [
    "record",
 ];
 
-/** The record as the store keeps it: without the `#(secure)` given values. */
+/**
+ * An error's text with every quoted string and number replaced by `?`, so a
+ * literal the driver quoted back (a secure given's value in a row filter)
+ * is not kept.
+ */
+export function redactErrorLiterals(text: string): string {
+   return text
+      .replace(/'(?:[^']|'')*'/g, "?")
+      .replace(/"(?:[^"\\]|\\.)*"/g, "?")
+      .replace(/\b\d+(?:\.\d+)?\b/g, "?");
+}
+
+/**
+ * The record as the store keeps it: without the `#(secure)` given values, and
+ * with the error's literals redacted.
+ */
 export function storedRecordOf(record: AccessRecord): AccessRecord {
    const { secureGivens: _secure, ...kept } = record;
-   return kept;
+   return kept.error === undefined
+      ? kept
+      : { ...kept, error: redactErrorLiterals(kept.error) };
 }
 
 export class WorkloadLogStore implements AccessRecordSink {
    private buffer: { at: Date; record: AccessRecord }[] = [];
    private timer: ReturnType<typeof setInterval> | undefined;
    private flushing: Promise<void> | undefined;
+   private lastPrunedAt: number | undefined;
    private readonly now: () => Date;
    private readonly maxBuffered: number;
+   private readonly maxHeld: number;
 
    constructor(
       private readonly storage: WorkloadLogStorage,
@@ -111,6 +146,10 @@ export class WorkloadLogStore implements AccessRecordSink {
    ) {
       this.now = options.now ?? (() => new Date());
       this.maxBuffered = options.maxBuffered ?? DEFAULT_MAX_BUFFERED;
+      this.maxHeld = Math.max(
+         options.maxHeld ?? DEFAULT_MAX_HELD,
+         this.maxBuffered,
+      );
    }
 
    /** Start the flush timer; unref'd, so it never keeps the process alive. */
@@ -123,11 +162,18 @@ export class WorkloadLogStore implements AccessRecordSink {
       this.timer.unref?.();
    }
 
-   /** Stop the timer and write what is buffered. */
+   /**
+    * Stop the timer and write everything buffered, including records that
+    * arrive while a write is in flight. Stops early only when storage is not
+    * open, since nothing can be written then.
+    */
    async stop(): Promise<void> {
       if (this.timer) clearInterval(this.timer);
       this.timer = undefined;
-      await this.flush();
+      while (this.flushing || this.buffer.length > 0) {
+         if (!this.flushing && !this.storage.isInitialized()) return;
+         await this.flush();
+      }
    }
 
    /** Buffer one record. Never throws. */
@@ -137,28 +183,41 @@ export class WorkloadLogStore implements AccessRecordSink {
             at: this.now(),
             record: storedRecordOf(record as AccessRecord),
          });
-         if (
-            !this.storage.isInitialized() &&
-            this.buffer.length > MAX_PENDING_BEFORE_READY
-         ) {
-            const over = this.buffer.length - MAX_PENDING_BEFORE_READY;
+         if (this.buffer.length > this.maxHeld) {
+            const over = this.buffer.length - this.maxHeld;
             this.buffer.splice(0, over);
-            droppedCounter().add(over, { reason: "not_ready" });
+            droppedCounter().add(over, {
+               reason: this.storage.isInitialized()
+                  ? "buffer_full"
+                  : "not_ready",
+            });
          }
-         if (this.buffer.length >= this.maxBuffered) void this.flush();
+         // A write in flight takes the next batch when it finishes.
+         if (this.buffer.length >= this.maxBuffered && !this.flushing) {
+            void this.flush();
+         }
       } catch {
          // Best effort: the record is already in the log.
       }
    }
 
-   /** Write the buffer, then prune. Never throws; one flush at a time. */
+   /**
+    * Write the buffer, then prune when due. Never throws; one write at a time.
+    * Called while a write is in flight, it waits for that write and then
+    * writes what arrived meanwhile, so a caller that awaits it never leaves a
+    * record behind that was buffered when it was called.
+    */
    async flush(): Promise<void> {
+      if (this.flushing) await this.flushing;
+      // Another caller woken by the same write may have started the next one.
       if (this.flushing) return this.flushing;
       if (this.buffer.length === 0 || !this.storage.isInitialized()) return;
       const batch = this.buffer;
       this.buffer = [];
       this.flushing = this.write(batch).finally(() => {
          this.flushing = undefined;
+         // Under load the buffer refilled during the write: take it now.
+         if (this.buffer.length >= this.maxBuffered) void this.flush();
       });
       return this.flushing;
    }
@@ -168,12 +227,15 @@ export class WorkloadLogStore implements AccessRecordSink {
    ): Promise<void> {
       try {
          const db = this.storage.getDuckDbConnection();
-         const placeholders = `(${COLUMNS.map(() => "?").join(", ")})`;
+         const row = `(${COLUMNS.map(() => "?").join(", ")})`;
          await db.transaction(async (tx) => {
-            for (const { at, record } of batch) {
+            for (let i = 0; i < batch.length; i += ROWS_PER_INSERT) {
+               const chunk = batch.slice(i, i + ROWS_PER_INSERT);
                await tx.run(
-                  `INSERT INTO workload_log (${COLUMNS.join(", ")}) VALUES ${placeholders}`,
-                  [
+                  `INSERT INTO workload_log (${COLUMNS.join(", ")}) VALUES ${chunk
+                     .map(() => row)
+                     .join(", ")}`,
+                  chunk.flatMap(({ at, record }) => [
                      at.toISOString(),
                      record.environment,
                      record.package,
@@ -186,11 +248,20 @@ export class WorkloadLogStore implements AccessRecordSink {
                      record.rowCount ?? null,
                      record.scannedBytes ?? null,
                      JSON.stringify(record),
-                  ],
+                  ]),
                );
             }
          });
-         await this.prune(db);
+         const nowMs = this.now().getTime();
+         const pruneEvery =
+            this.options.pruneIntervalMs ?? DEFAULT_PRUNE_INTERVAL_MS;
+         if (
+            this.lastPrunedAt === undefined ||
+            nowMs - this.lastPrunedAt >= pruneEvery
+         ) {
+            this.lastPrunedAt = nowMs;
+            await this.prune(db);
+         }
       } catch (error) {
          droppedCounter().add(batch.length, { reason: "write_failed" });
          logger.warn("Could not write the workload log batch; dropped it", {
@@ -266,12 +337,30 @@ export function setWorkloadLogSink(store: WorkloadLogStore | undefined): void {
 }
 
 /**
+ * Stop the store the access record writes to, writing what it buffered, and
+ * remove it. The server's shutdown runs it after the listeners close.
+ */
+export async function stopWorkloadLogSink(): Promise<void> {
+   const store = workloadLogSink();
+   if (!store) return;
+   setWorkloadLogSink(undefined);
+   await store.stop();
+}
+
+/**
  * Start the store when `PUBLISHER_WORKLOAD_LOG_STORE` is `on`, installed as the
- * access record's sink; `undefined` when it is off.
+ * access record's sink; `undefined` when it is off. A store an earlier build
+ * installed is stopped and removed either way, so a rebuild with the setting
+ * off writes nowhere.
  */
 export function startWorkloadLogFromSettings(
    storage: WorkloadLogStorage,
 ): WorkloadLogStore | undefined {
+   const previous = workloadLogSink();
+   if (previous) {
+      setWorkloadLogSink(undefined);
+      void previous.stop();
+   }
    if (settings.get("workloadLog.store") !== "on") return undefined;
    const store = new WorkloadLogStore(storage, {
       retentionDays: settings.get("workloadLog.retentionDays"),

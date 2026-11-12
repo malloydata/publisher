@@ -24,13 +24,18 @@ import { resolveStructRef } from "./governance/ir/prepared_query";
 /** One query's shape. */
 export interface WorkloadShape {
    /**
-    * A stable digest of the fields below except `complete`: two queries with
-    * the same key ask the same thing of the same source.
+    * A stable digest of the fields below except `view` and `complete`: two
+    * queries with the same key ask the same thing of the same source, however
+    * the request was phrased.
     */
    key: string;
    /** The source the query entered. */
    source?: string;
-   /** The view the request named, when it named one (`queryName` on a source). */
+   /**
+    * The view the request named, when it named one (`queryName` on a source).
+    * Not in the key: `run: s -> v` and `queryName: v` compile to the same
+    * stage, and are one shape.
+    */
    view?: string;
    /** `reduce` (group_by / aggregate), `project` (select) or `index`. */
    kind: string;
@@ -46,7 +51,10 @@ export interface WorkloadShape {
    filters: string[];
    /** The query time zone the stage runs in, when it sets one. */
    timezone?: string;
-   /** True when the first stage nests a query; its nests are not in the shape. */
+   /**
+    * True when the first stage nests a query, inline or a named view; its
+    * nests are not in the shape, and a nested view is not a dimension.
+    */
    nested?: boolean;
    /** False when a field could not be placed as a dimension or a measure. */
    complete: boolean;
@@ -54,7 +62,12 @@ export interface WorkloadShape {
 
 /** Keys whose string values are structure, kept in an expression; any other string is a value and becomes `?`. */
 const STRUCTURE_KEYS = new Set(["node", "function", "units", "name"]);
-/** Keys that are positions or carried type information, never expression. */
+/**
+ * Keys that are positions, carried type information or compiler internals,
+ * never expression. `overload` is a function's whole definition (every
+ * dialect's implementation), which would make a key change on every Malloy
+ * upgrade; the call is identified by its `name`.
+ */
 const SKIPPED_KEYS = new Set([
    "at",
    "location",
@@ -63,7 +76,21 @@ const SKIPPED_KEYS = new Set([
    "function",
    "units",
    "literal",
+   "overload",
+   "structPath",
+   "partitionBy",
+   "not",
 ]);
+
+/** A list of values is one `?`, however long, so a multi-select is one shape. */
+const collapseValues = (items: readonly string[]): string[] => {
+   const out: string[] = [];
+   for (const item of items) {
+      if (item === "?" && out.includes("?")) continue;
+      out.push(item);
+   }
+   return out;
+};
 
 /**
  * An expression as text with every value replaced by `?`: a field reference
@@ -72,7 +99,9 @@ const SKIPPED_KEYS = new Set([
  * plain container (`kids`, `args`) its children alone.
  */
 export function canonicalExpression(e: unknown): string {
-   const seen = new Set<object>();
+   // The nodes on the path being rendered: a true cycle renders empty, while
+   // a node the compiler shares between two branches renders in both.
+   const ancestors = new Set<object>();
    const render = (n: unknown, key?: string): string => {
       if (n === null || n === undefined) return "";
       if (typeof n !== "object") {
@@ -80,10 +109,18 @@ export function canonicalExpression(e: unknown): string {
             ? n
             : "?";
       }
-      if (seen.has(n)) return "";
-      seen.add(n);
+      if (ancestors.has(n)) return "";
+      ancestors.add(n);
+      try {
+         return renderObject(n, key);
+      } finally {
+         ancestors.delete(n);
+      }
+   };
+   const renderObject = (n: object, key?: string): string => {
       if (Array.isArray(n)) {
-         return `[${n.map((item) => render(item)).join(",")}]`;
+         const items = n.map((item) => render(item));
+         return `[${(key === "oneOf" ? collapseValues(items) : items).join(",")}]`;
       }
       const obj = n as Record<string, unknown>;
       if (obj.node === "field" && Array.isArray(obj.path)) {
@@ -93,7 +130,12 @@ export function canonicalExpression(e: unknown): string {
          return obj.name;
       }
       if ("literal" in obj) return "?";
-      const head = [obj.node, obj.function, obj.units]
+      const head = [
+         obj.node,
+         obj.function,
+         obj.units,
+         obj.node === "in" && obj.not === true ? "not" : undefined,
+      ]
          .filter((part): part is string => typeof part === "string" && !!part)
          .join(":");
       const kids = Object.keys(obj)
@@ -101,6 +143,11 @@ export function canonicalExpression(e: unknown): string {
          .sort()
          .map((k) => render(obj[k], k))
          .filter((text) => text !== "");
+      // A window function's partition is structure: the field names it
+      // partitions by.
+      if (Array.isArray(obj.partitionBy) && obj.partitionBy.length > 0) {
+         kids.push(`partitionBy=[${obj.partitionBy.map(String).join(",")}]`);
+      }
       // A plain container (`kids`, `args`) adds no structure of its own.
       return head ? `${head}(${kids.join(",")})` : kids.join(",");
    };
@@ -134,6 +181,7 @@ function fieldPaths(e: unknown): string[] {
 
 interface FieldLike {
    name?: string;
+   type?: string;
    as?: string;
    expressionType?: string;
    fields?: FieldLike[];
@@ -207,6 +255,11 @@ export function workloadShapeOf(args: {
       if (qf.type === "fieldref" && Array.isArray(qf.path)) {
          const path = qf.path.map(String);
          const field = fieldAt(fields, path);
+         // `nest: by_category`: a named view, nested, not a dimension.
+         if (field?.type === "turtle") {
+            nested = true;
+            continue;
+         }
          if (!field) complete = false;
          (isAggregate(field?.expressionType) ? measures : dimensions).push(
             path.join("."),
@@ -235,9 +288,9 @@ export function workloadShapeOf(args: {
          ? stage.queryTimezone
          : undefined;
 
+   // `view` stays out of the key (see WorkloadShape.view).
    const keyed = {
       source: args.source,
-      view: args.view,
       kind: stage.type ?? "reduce",
       stages: stages.length,
       dimensions: sortedUnique(dimensions),
@@ -254,7 +307,7 @@ export function workloadShapeOf(args: {
    return {
       key,
       ...(keyed.source ? { source: keyed.source } : {}),
-      ...(keyed.view ? { view: keyed.view } : {}),
+      ...(args.view ? { view: args.view } : {}),
       kind: keyed.kind,
       stages: keyed.stages,
       dimensions: keyed.dimensions,

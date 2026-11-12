@@ -4332,6 +4332,11 @@ export class Model {
                   error: (err as Error).message,
                });
             }
+            // As in runQuery: only when reported, absent is not zero.
+            const cellScannedBytes = result?.runStats?.queryCostBytes;
+            if (cellScannedBytes !== undefined) {
+               audit.scannedBytes = cellScannedBytes;
+            }
             // As in runQuery.
             if (
                result?._queryResult &&

@@ -6,9 +6,14 @@ import { logger } from "../logger";
 import { DuckDBConnection } from "../storage/duckdb/DuckDBConnection";
 import { initializeSchema } from "../storage/duckdb/schema";
 import { emitAccessRecord, type AccessRecord } from "./access_record";
+import { settings } from "../settings";
 import {
+   redactErrorLiterals,
    setWorkloadLogSink,
+   startWorkloadLogFromSettings,
+   stopWorkloadLogSink,
    storedRecordOf,
+   workloadLogSink,
    WorkloadLogStore,
 } from "./workload_log_store";
 
@@ -46,12 +51,47 @@ describe("WorkloadLogStore", () => {
       isInitialized: () => ready,
       getDuckDbConnection: () => db,
    };
-   const store = (over: { retentionDays?: number; maxRows?: number } = {}) =>
+   const store = (
+      over: {
+         retentionDays?: number;
+         maxRows?: number;
+         maxBuffered?: number;
+         maxHeld?: number;
+         pruneIntervalMs?: number;
+      } = {},
+   ) =>
       new WorkloadLogStore(storage, {
          retentionDays: over.retentionDays ?? 30,
          maxRows: over.maxRows ?? 1000,
+         maxBuffered: over.maxBuffered,
+         maxHeld: over.maxHeld,
+         pruneIntervalMs: over.pruneIntervalMs,
          now: () => clock,
       });
+
+   /** Count the statements a transaction runs, by their first word. */
+   function countTransactionStatements(): {
+      inserts: () => number;
+      restore: () => void;
+   } {
+      let inserts = 0;
+      const original = db.transaction.bind(db);
+      const spy = spyOn(db, "transaction").mockImplementation(((
+         fn: (tx: {
+            run: (q: string, p?: unknown[]) => Promise<void>;
+         }) => Promise<unknown>,
+      ) =>
+         original((tx) =>
+            fn({
+               ...tx,
+               run: (q: string, p?: unknown[]) => {
+                  if (q.trimStart().startsWith("INSERT")) inserts++;
+                  return tx.run(q, p);
+               },
+            } as typeof tx),
+         )) as typeof db.transaction);
+      return { inserts: () => inserts, restore: () => spy.mockRestore() };
+   }
 
    beforeEach(async () => {
       db = new DuckDBConnection(":memory:");
@@ -169,6 +209,134 @@ describe("WorkloadLogStore", () => {
          ]);
       } finally {
          info.mockRestore();
+      }
+   });
+
+   it("writes a flush's batch in multi-row INSERTs, not one statement per record", async () => {
+      const counter = countTransactionStatements();
+      try {
+         const s = store({ maxBuffered: 10_000 });
+         for (let i = 0; i < 600; i++) s.add(record({ source: `s${i}` }));
+         await s.flush();
+         expect(await s.rows(1000)).toHaveLength(600);
+         // 250 rows per statement.
+         expect(counter.inserts()).toBe(3);
+      } finally {
+         counter.restore();
+      }
+   });
+
+   it("prunes at most once per prune interval, not on every flush", async () => {
+      const all = spyOn(db, "all");
+      try {
+         const s = store({ pruneIntervalMs: 60_000 });
+         const counts = () =>
+            all.mock.calls.filter(([q]) => String(q).includes("count(*)"))
+               .length;
+         s.add(record());
+         await s.flush();
+         expect(counts()).toBe(1);
+         clock = new Date(clock.getTime() + 2_000);
+         s.add(record());
+         await s.flush();
+         expect(counts()).toBe(1);
+         clock = new Date(clock.getTime() + 60_000);
+         s.add(record());
+         await s.flush();
+         expect(counts()).toBe(2);
+      } finally {
+         all.mockRestore();
+      }
+   });
+
+   it("on stop, writes records that arrived while a write was in flight", async () => {
+      const s = store();
+      s.add(record({ source: "first" }));
+      const inFlight = s.flush();
+      s.add(record({ source: "during" }));
+      await s.stop();
+      await inFlight;
+      expect((await s.rows()).map((r) => r.source).sort()).toEqual([
+         "during",
+         "first",
+      ]);
+   });
+
+   it("a flush called during a write also writes what was buffered when it was called", async () => {
+      const s = store();
+      s.add(record({ source: "first" }));
+      const inFlight = s.flush();
+      s.add(record({ source: "during" }));
+      await s.flush();
+      await inFlight;
+      expect(await s.rows()).toHaveLength(2);
+   });
+
+   it("holds at most maxHeld records under load, dropping the oldest", async () => {
+      ready = false;
+      const s = store({ maxBuffered: 5, maxHeld: 5 });
+      for (let i = 0; i < 8; i++) s.add(record({ source: `s${i}` }));
+      ready = true;
+      await s.stop();
+      expect((await s.rows()).map((r) => r.source).sort()).toEqual([
+         "s3",
+         "s4",
+         "s5",
+         "s6",
+         "s7",
+      ]);
+   });
+
+   it("redacts the literals an error quotes back, and keeps its words", async () => {
+      const s = store();
+      s.add(
+         record({
+            outcome: "error",
+            status: 500,
+            error: `Conversion Error: invalid input "acme" for tenant = 'acme' LINE 1: WHERE x > 42`,
+         }),
+      );
+      await s.flush();
+      const [row] = await s.rows();
+      expect(row.record.error).toBe(
+         "Conversion Error: invalid input ? for tenant = ? LINE ?: WHERE x > ?",
+      );
+      expect(redactErrorLiterals("name = 'o''brien'")).toBe("name = ?");
+   });
+
+   it("stopWorkloadLogSink writes what is buffered and removes the sink", async () => {
+      const s = store();
+      setWorkloadLogSink(s);
+      s.add(record());
+      await stopWorkloadLogSink();
+      expect(workloadLogSink()).toBeUndefined();
+      expect(await s.rows()).toHaveLength(1);
+   });
+
+   it("a rebuild with the store off removes the sink an earlier build installed", async () => {
+      const original = settings.get("workloadLog.store");
+      const get = spyOn(settings, "get");
+      try {
+         get.mockImplementation(((key: string) =>
+            key === "workloadLog.store"
+               ? "on"
+               : key === "workloadLog.retentionDays"
+                 ? 30
+                 : key === "workloadLog.maxRows"
+                   ? 1000
+                   : original) as typeof settings.get);
+         const info = spyOn(logger, "info").mockImplementation(() => logger);
+         const first = startWorkloadLogFromSettings(storage);
+         info.mockRestore();
+         expect(workloadLogSink()).toBe(first);
+         get.mockImplementation(((key: string) =>
+            key === "workloadLog.store"
+               ? "off"
+               : original) as typeof settings.get);
+         expect(startWorkloadLogFromSettings(storage)).toBeUndefined();
+         expect(workloadLogSink()).toBeUndefined();
+      } finally {
+         get.mockRestore();
       }
    });
 });
