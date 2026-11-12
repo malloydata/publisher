@@ -2777,8 +2777,14 @@ export class Model {
       const out = new Map<string, ViewServeVerdict[]>();
       const destinations = this.storageServe.serveDestinationConfig;
       if (!destinations || bindings.length === 0 || !this.modelDef) return out;
-      const shape = new StorageServeShape(this.serveShapeHost());
+      const shape = new StorageServeShape(this.serveShapeHost(), {
+         preview: true,
+      });
       shape.setServeDestinationConfig(destinations);
+      // A view reading a given with no default serves once the caller
+      // supplies it; the preview compiles with a placeholder in its place, so
+      // it judges the stored columns, not the request.
+      const placeholders = placeholderGivens(this.givens);
       shape.setServeBindings(bindings);
       for (const binding of shape.serveBindings) {
          if (binding.origin === "preaggregate") continue;
@@ -2799,7 +2805,8 @@ export class Model {
          for (const view of views) {
             try {
                await shape.loadServeShapeQuery(
-                  `run: ${malloyQuote(binding.sourceName)} -> ${malloyQuote(view)}`,
+                  `run: ${quoteMalloyIdentifier(binding.sourceName)} -> ${quoteMalloyIdentifier(view)}`,
+                  placeholders,
                );
                verdicts.push({ view, verdict: "serves" });
             } catch (error) {
@@ -2818,7 +2825,9 @@ export class Model {
                });
             }
          }
-         out.set(binding.sourceName, verdicts);
+         // By the plan's sourceID: two models' same-named stored sources are
+         // different sources with different views.
+         out.set(binding.sourceIDs?.[0] ?? binding.sourceName, verdicts);
       }
       return out;
    }
@@ -4818,9 +4827,23 @@ const VIEWS_DROPPED_DETAIL =
    "or a file the shape could not read), " +
    "and the shape then drops all of them, so each is answered live.";
 
-/** A Malloy identifier, backquoted so any name reads as one. */
-function malloyQuote(name: string): string {
-   return `\`${name.replace(/`/g, "\\`")}\``;
+/**
+ * A value for each given with no default, for a compile that only asks
+ * whether a query compiles: `null`, or an empty filter for a `filter<T>`
+ * given, whose SQL needs a filter literal (as model_info.ts does for the same
+ * reason).
+ */
+function placeholderGivens(
+   givens:
+      | readonly { name?: string; type?: string; default?: unknown }[]
+      | undefined,
+): Record<string, GivenValue> {
+   const out: Record<string, GivenValue> = {};
+   for (const given of givens ?? []) {
+      if (!given.name || given.default !== undefined) continue;
+      out[given.name] = /^filter\b/i.test(given.type ?? "") ? "" : null;
+   }
+   return out;
 }
 
 /** The first line of an error message, which is where Malloy says what failed. */

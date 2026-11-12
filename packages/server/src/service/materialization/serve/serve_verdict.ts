@@ -38,6 +38,8 @@ export type ServeVerdictReason =
    | "unreachable"
    /** Every entry point over it carries a row-level gate the tier cannot keep. */
    | "row_level_gate"
+   /** Its table is past its freshness window, and its fallback does not serve stale. */
+   | "stale"
    /** Its storage table is bound, but every model's source of that name is another source. */
    | "shadowed";
 
@@ -82,21 +84,42 @@ export interface ServeVerdictFacts {
     * rollup asks about its base, by name: no sourceID of the base is planned.
     */
    reachable(sourceID: string | undefined, sourceName: string): boolean;
-   /** Whether querying this source runs through a row-level gate. */
+   /**
+    * Whether every published entry point that reads this source carries a
+    * row-level gate, so the router skips the tier for every query that could
+    * reach it (route, then govern: a gated entry point is answered live).
+    */
    gated(
       sourceID: string | undefined,
       sourceName: string,
       modelPath?: string,
    ): boolean;
+   /**
+    * Why the bind refuses this source although the plan holds it (the
+    * eligibility gate the bind applies, such as a rollup name two models
+    * share), or undefined when the bind keeps it.
+    */
+   refusedAtBind?(
+      sourceID: string,
+      source: PersistSourcePlan,
+      tier: "colocated" | "storage",
+   ): string | undefined;
    /** Colocated: the plan's sourceEntityIds the bound manifest has a table for. */
    boundEntityIds: ReadonlySet<string>;
+   /**
+    * Colocated: the bound sourceEntityIds still within their freshness window
+    * (or whose fallback serves stale). Absent: every bound one is.
+    */
+   freshEntityIds?: ReadonlySet<string>;
    /** Storage: the source names the package holds a serve binding for. */
    boundStorageNames: ReadonlySet<string>;
    /** Storage: the source names some model kept a binding for. */
    servedStorageNames: ReadonlySet<string>;
+   /** Storage: the bound source names still fresh. Absent: every bound one is. */
+   freshStorageNames?: ReadonlySet<string>;
    /** Rollups over a stored base (#6293), left out of the plan. */
    rollupsOverStoredBase?: readonly { baseName: string; modelPath?: string }[];
-   /** Per stored source name, its views' verdicts (a preview). */
+   /** Per stored source's plan sourceID, its views' verdicts (a preview). */
    views?: ReadonlyMap<string, ViewServeVerdict[]>;
 }
 
@@ -219,18 +242,41 @@ function verdictFor(
    ) {
       return live(
          "row_level_gate",
-         `${subject} sits under a row-level gate (#(authorize) or ` +
-            `#(access_filter)), which ${tier === "storage" ? "the storage tier" : "a rollup"} ` +
-            `cannot keep yet, so every query through it is answered live.`,
+         `Every published entry point that reads ${subject} carries a ` +
+            `row-level gate (#(authorize) or #(access_filter)), which ` +
+            `${tier === "storage" ? "the storage tier" : "a rollup"} cannot keep ` +
+            `yet, so every query that reaches it is answered live.`,
          [
             "Materialize the source without storage= (colocated), where the gate is kept.",
-            "Or move the gate to an entry point built on the materialized source.",
+            "Or publish an ungated entry point over it, for the queries that need no gate.",
          ],
       );
    }
 
+   const refusedAtBind = facts.refusedAtBind?.(sourceID, source, tier);
+   if (refusedAtBind !== undefined) {
+      return live(
+         "refused",
+         `${subject} is planned, but the bind refuses to serve it, so queries ` +
+            `on it are answered live: ${refusedAtBind}`,
+         [
+            "Remove what the refusal names, or drop the annotation if the source is not meant to be materialized.",
+         ],
+      );
+   }
+
+   const stale = (): ServeVerdict =>
+      live(
+         "stale",
+         `${subject}'s table is past its freshness window, so no query is ` +
+            `answered from it until a build refreshes it.`,
+         [
+            "Run a build, or widen the freshness window, or set its fallback to stale_ok.",
+         ],
+      );
+
    if (tier === "storage") {
-      const views = facts.views?.get(source.name);
+      const views = facts.views?.get(sourceID);
       const withViews = views && views.length > 0 ? { views } : {};
       if (!facts.boundStorageNames.has(source.name)) {
          return {
@@ -250,6 +296,12 @@ function verdictFor(
             ],
          );
       }
+      if (
+         facts.freshStorageNames &&
+         !facts.freshStorageNames.has(source.name)
+      ) {
+         return stale();
+      }
       return {
          ...base,
          ...withViews,
@@ -264,6 +316,12 @@ function verdictFor(
          verdict: "not_built",
          message: `${subject} will serve from its table once a build binds it.`,
       };
+   }
+   if (
+      facts.freshEntityIds &&
+      !facts.freshEntityIds.has(source.sourceEntityId)
+   ) {
+      return stale();
    }
    return {
       ...base,

@@ -124,7 +124,28 @@ export class StorageServeShape {
    /** Memoized serve-shape materializer, keyed by the bound source set. */
    serveShapeCache?: { key: string; materializer: ModelMaterializer };
 
-   constructor(private readonly host: ServeShapeHost) {}
+   /**
+    * `preview`: a throwaway shape that only asks whether queries compile (a
+    * dry run's view verdicts). It records no serve metric, and logs at debug
+    * what a served shape logs at info or warn, since nothing is served.
+    */
+   constructor(
+      private readonly host: ServeShapeHost,
+      options: { preview?: boolean } = {},
+   ) {
+      this.preview = options.preview ?? false;
+   }
+
+   private readonly preview: boolean;
+
+   /** A served shape's info or warn; debug for a preview. */
+   private log(
+      level: "info" | "warn",
+      message: string,
+      meta?: Record<string, unknown>,
+   ): void {
+      logger[this.preview ? "debug" : level](message, meta);
+   }
 
    /**
     * Set the connections a transient serve-shape model compiles against. Pushed
@@ -167,7 +188,8 @@ export class StorageServeShape {
          } else if (!this.shadowedSourcesLogged.has(binding.sourceName)) {
             // Once per source per model: bindings are re-pushed on every bind.
             this.shadowedSourcesLogged.add(binding.sourceName);
-            logger.info(
+            this.log(
+               "info",
                "Serving a source live: its storage table materializes a same-named source declared elsewhere",
                {
                   modelPath: this.host.modelPath(),
@@ -232,9 +254,11 @@ export class StorageServeShape {
          // Once per table per model: bindings are re-pushed on every bind.
          this.typeMismatchesLogged.add(key);
          for (const m of plan.mismatches) {
-            recordStoredColumnTypeMismatch("serve", m.declaredType);
+            if (!this.preview)
+               recordStoredColumnTypeMismatch("serve", m.declaredType);
          }
-         logger.warn(
+         this.log(
+            "warn",
             "Stored column types do not match the declared Malloy types; casting where faithful, serving the rest live",
             {
                code: STORED_COLUMN_TYPE_MISMATCH_CODE,
@@ -346,7 +370,7 @@ export class StorageServeShape {
       // crosses its freshness window.
       const freshBindings = this.freshServeBindings(Date.now());
       const withheld = this.serveBindings.length - freshBindings.length;
-      if (withheld > 0) staleBindingsWithheld().add(withheld);
+      if (withheld > 0 && !this.preview) staleBindingsWithheld().add(withheld);
       if (freshBindings.length === 0) {
          // The caller catches this and serves live.
          throw new Error("no fresh storage serve bindings for this query");
@@ -372,7 +396,8 @@ export class StorageServeShape {
             // info, not debug: a dropped group is otherwise invisible (rows are
             // correct, only acceleration is lost). Logged on cache miss only,
             // because a conflict belongs to the binding set, not to a query.
-            logger.info(
+            this.log(
+               "info",
                "Not serving a source's rollups from storage; queries are answered from the base",
                {
                   modelPath: this.host.modelPath(),
@@ -504,8 +529,11 @@ export class StorageServeShape {
                best = attempt;
             }
          }
-         if (kept.length < lifts.length) recordServeShapeTierDrop("lifts");
-         logger.warn(
+         if (kept.length < lifts.length && !this.preview) {
+            recordServeShapeTierDrop("lifts");
+         }
+         this.log(
+            "warn",
             "Storage serve shape failed to compile with its lifted entry points; the ones that do not compile serve live",
             {
                model: this.host.modelPath(),
@@ -560,7 +588,8 @@ export class StorageServeShape {
                   // Nothing left to serve, or every binding compiles alone so the
                   // failure is in their COMBINATION (e.g. a duplicate source
                   // name). Either way the model is served live.
-                  logger.warn(
+                  this.log(
+                     "warn",
                      "Storage serve shape failed at its floor and no binding could be isolated; serving live",
                      {
                         model: this.host.modelPath(),
@@ -569,7 +598,8 @@ export class StorageServeShape {
                   );
                   return materializer;
                }
-               logger.warn(
+               this.log(
+                  "warn",
                   "Withheld storage serve bindings whose filters cannot be reproduced; those sources serve live",
                   {
                      model: this.host.modelPath(),
@@ -595,8 +625,9 @@ export class StorageServeShape {
             await materializer.getModel();
             return materializer;
          } catch (err) {
-            recordServeShapeTierDrop(tier);
-            logger.warn(
+            if (!this.preview) recordServeShapeTierDrop(tier);
+            this.log(
+               "warn",
                "Storage serve shape failed to compile; dropping the riskiest refinement category and retrying",
                {
                   model: this.host.modelPath(),
@@ -854,7 +885,8 @@ export class StorageServeShape {
          ];
       });
       if (typeWithheld.length > 0) {
-         logger.warn(
+         this.log(
+            "warn",
             "Withheld storage serve bindings whose mistyped column a refinement names; those sources serve live",
             {
                code: STORED_COLUMN_TYPE_MISMATCH_CODE,
@@ -869,7 +901,8 @@ export class StorageServeShape {
          sourceNameById,
       );
       if (withheld.length > 0) {
-         logger.warn(
+         this.log(
+            "warn",
             "Withheld storage serve bindings whose caller-scoped join cannot be reproduced; those sources serve live",
             { model: this.host.modelPath(), withheld },
          );

@@ -45,7 +45,10 @@ import type {
    PreaggregateViolationCode,
 } from "./plan/preaggregation_validation";
 import { CronEvaluator } from "./run/cron_evaluator";
-import { filterFreshManifest } from "./run/freshness";
+import {
+   evaluateManifestFreshness,
+   filterFreshManifest,
+} from "./run/freshness";
 import type {
    BoundTable,
    MaterializedTableCatalog,
@@ -118,7 +121,9 @@ export interface PackageMaterializationOwner {
     * undefined when every source is queryable. Optional: a spec's owner need
     * not curate.
     */
-   publishedSurface?(): { modelPath: string; names: string[] }[] | undefined;
+   publishedSurface?():
+      | { modelPath: string; names: string[]; queries?: string[] }[]
+      | undefined;
 }
 
 /**
@@ -865,32 +870,115 @@ export class PackageMaterialization {
       views?: ReadonlyMap<string, ViewServeVerdict[]>,
    ): ServeVerdict[] {
       if (!this.buildPlan && this.rollupsOverStoredBase.length === 0) return [];
+      try {
+         return this.computeVerdicts(views);
+      } catch (error) {
+         // Reporting only: a verdict that cannot be computed must not fail
+         // the dry run, the package read or the status poll that carries it.
+         logger.warn("Could not compute serve verdicts", {
+            packageName: this.owner.packageName(),
+            error: errMessage(error),
+         });
+         return [];
+      }
+   }
+
+   private computeVerdicts(
+      views?: ReadonlyMap<string, ViewServeVerdict[]>,
+   ): ServeVerdict[] {
       const models = this.owner.models();
-      const reached = this.reachedSourceIDs(models);
+      const index = this.entryPointIndex(models);
       const servedStorageNames = new Set<string>();
       for (const model of models.values()) {
          for (const name of model.servedStorageSourceNames?.() ?? []) {
             servedStorageNames.add(name);
          }
       }
+      const now = new Date();
+      const freshStorageNames = new Set(
+         this.storageServeBindings
+            .filter(
+               (b) =>
+                  evaluateManifestFreshness(
+                     {
+                        tableName: b.tablePath,
+                        dataAsOf: b.freshAsOf,
+                        freshnessWindowSeconds: b.freshnessWindowSeconds,
+                        freshnessFallback: b.freshnessFallback,
+                     },
+                     now,
+                  ) === "serve_table",
+            )
+            .map((b) => b.sourceName),
+      );
+      const reads = (
+         ids: ReadonlySet<string>,
+         sourceID: string | undefined,
+         sourceName: string,
+      ) =>
+         sourceID !== undefined
+            ? ids.has(sourceID)
+            : [...ids].some((id) => id.startsWith(`${sourceName}@`));
       return computeServeVerdicts({
          plan: this.buildPlan,
          storageMode: getPersistStorageMode(),
          reachable: (sourceID, sourceName) =>
-            reached === undefined ||
-            (sourceID !== undefined
-               ? reached.has(sourceID)
-               : [...reached].some((id) => id.startsWith(`${sourceName}@`))),
-         gated: (sourceID, sourceName, modelPath) =>
-            this.entryPointGated(models, sourceID, sourceName, modelPath),
+            index?.reached === undefined ||
+            reads(index.reached, sourceID, sourceName),
+         gated: (sourceID, sourceName) => {
+            const reaching = (index?.roots ?? []).filter((root) =>
+               reads(root.ids, sourceID, sourceName),
+            );
+            return reaching.length > 0 && reaching.every((root) => root.gated);
+         },
+         refusedAtBind: (_sourceID, source, tier) =>
+            this.refusedAtBind(source, tier),
          boundEntityIds: new Set(Object.keys(this.buildManifestEntries ?? {})),
+         freshEntityIds: new Set(
+            Object.keys(this.getFreshBuildManifest(now.getTime()) ?? {}),
+         ),
          boundStorageNames: new Set(
             this.storageServeBindings.map((b) => b.sourceName),
          ),
          servedStorageNames,
+         freshStorageNames,
          rollupsOverStoredBase: this.rollupsOverStoredBase,
          views,
       });
+   }
+
+   /**
+    * Why the bind refuses a planned source, as {@link bindStorageServeBindings}
+    * and {@link bindColocatedServeManifest} decide it, or undefined when it
+    * keeps it. Storage requires a positive eligibility, as the bind does.
+    * Colocated rollups need not appear in the colocated record, so only an
+    * authored source missing from it, or one it names as refused, counts.
+    */
+   private refusedAtBind(
+      source: { name: string; sourceEntityId: string; origin?: string },
+      tier: "colocated" | "storage",
+   ): string | undefined {
+      if (tier === "storage") {
+         const eligibility = this.sourceEligibility;
+         if (!eligibility || eligibility.eligible.includes(source.name)) {
+            return undefined;
+         }
+         return (
+            eligibility.refused[source.name] ??
+            "the source was never examined for eligibility"
+         );
+      }
+      const eligibility = this.colocatedSourceEligibility;
+      if (!eligibility) return undefined;
+      const refused = eligibility.refused[source.sourceEntityId];
+      if (refused !== undefined) return refused;
+      if (
+         source.origin !== "preaggregate" &&
+         !eligibility.eligibleEntityIds.has(source.sourceEntityId)
+      ) {
+         return "the source was never examined for eligibility";
+      }
+      return undefined;
    }
 
    /**
@@ -901,14 +989,25 @@ export class PackageMaterialization {
     * compile per view, so it runs only where a caller asks for a preview.
     */
    async previewServeVerdicts(): Promise<ServeVerdict[]> {
-      const bindings = this.previewServeBindings();
+      let bindings: ServeBinding[];
+      try {
+         bindings = this.previewServeBindings();
+      } catch (error) {
+         logger.warn("Could not declare the preview's serve bindings", {
+            packageName: this.owner.packageName(),
+            error: errMessage(error),
+         });
+         bindings = [];
+      }
       const views = new Map<string, ViewServeVerdict[]>();
       if (bindings.length > 0) {
          for (const model of this.owner.models().values()) {
             try {
                const found = await model.previewStorageViews(bindings);
-               for (const [name, verdicts] of found) {
-                  if (!views.has(name)) views.set(name, verdicts);
+               // Keyed by sourceID: a model that imports the source reports
+               // the same views as the one that declares it.
+               for (const [sourceID, verdicts] of found) {
+                  if (!views.has(sourceID)) views.set(sourceID, verdicts);
                }
             } catch (error) {
                logger.debug("Could not preview a model's storage views", {
@@ -963,6 +1062,7 @@ export class PackageMaterialization {
     * warning of their own (storage mode, refusals, rollups over a stored base).
     */
    unreachableMaterializationWarnings(): ApiPackageWarning[] {
+      // serveVerdicts degrades to none on a throw, so a package read never fails here.
       return this.serveVerdicts()
          .filter((v) => v.reason === "unreachable")
          .map((v) => ({
@@ -974,98 +1074,114 @@ export class PackageMaterialization {
          }));
    }
 
-   /** Memo for {@link reachedSourceIDs}, keyed on the models it read. */
-   private reachedMemo:
-      | {
-           models: Map<string, Model>;
-           surface: string;
-           ids: Set<string> | undefined;
-        }
+   /** Memo for {@link entryPointIndex}, keyed on the models map it read. */
+   private entryPointMemo:
+      | { models: Map<string, Model>; index: EntryPointIndex | undefined }
       | undefined;
 
    /**
-    * Every sourceID a published source reads, across the surface's models, or
-    * undefined when every source is reached: the package curates nothing, or
-    * which sources the surface reads cannot be told (a model with no compiled
-    * definition). A false `unreachable` is a false alarm, so unknown stays
-    * quiet.
+    * The package's entry points (what callers may query) and what each
+    * reads, or undefined when that cannot be told. Memoized on the models
+    * map, which a load or reload replaces wholesale along with the surface it
+    * curates, so the status poll does no walk of its own.
     */
-   private reachedSourceIDs(
+   private entryPointIndex(
       models: Map<string, Model>,
-   ): Set<string> | undefined {
-      const surface = this.owner.publishedSurface?.();
-      if (
-         this.reachedMemo?.models === models &&
-         this.reachedMemo.surface === JSON.stringify(surface)
-      ) {
-         return this.reachedMemo.ids;
+   ): EntryPointIndex | undefined {
+      if (this.entryPointMemo?.models === models) {
+         return this.entryPointMemo.index;
       }
-      // Nothing curated: every source is queryable by its own name.
-      let ids: Set<string> | undefined =
-         surface === undefined ? undefined : new Set<string>();
+      let index: EntryPointIndex | undefined;
       try {
-         for (const { modelPath, names } of surface ?? []) {
-            const modelDef = models.get(modelPath)?.getModelDef?.();
-            if (!modelDef) {
-               ids = undefined;
-               break;
-            }
-            const roots: SourceDef[] = [];
-            for (const name of names) {
-               const entry = modelDef.contents?.[name];
-               if (entry && isSourceDef(entry)) roots.push(entry);
-            }
-            for (const id of sourceIDsReachedFrom(
-               structsReachedFrom(roots, modelDef),
-            )) {
-               ids?.add(id);
-            }
-         }
+         index = this.buildEntryPointIndex(models);
       } catch (error) {
-         logger.debug("Could not read which sources the surface reaches", {
+         logger.debug("Could not read which sources the entry points reach", {
             packageName: this.owner.packageName(),
             error: errMessage(error),
          });
-         ids = undefined;
+         index = undefined;
       }
-      this.reachedMemo = { models, surface: JSON.stringify(surface), ids };
-      return ids;
+      this.entryPointMemo = { models, index };
+      return index;
    }
 
    /**
-    * Whether querying the source runs through a row-level gate, read from the
-    * entry-point gates its own model resolved (`sources[].authorize` and
-    * `accessFilter`, which include inherited gates).
+    * Each entry point a caller may query (a published source or named query,
+    * or every model's when the package curates nothing), the sourceIDs it
+    * reads, and whether it carries a row-level gate, the question routing
+    * asks of a query's entry point. Undefined when a model has no compiled
+    * definition: a false `unreachable` or `row_level_gate` is a false alarm,
+    * so unknown stays quiet.
     */
-   private entryPointGated(
+   private buildEntryPointIndex(
       models: Map<string, Model>,
-      sourceID: string | undefined,
-      sourceName: string,
-      modelPath?: string,
-   ): boolean {
-      for (const [path, model] of models) {
-         const def = model.getModelDef?.()?.contents?.[sourceName] as
-            | { sourceID?: string }
-            | undefined;
-         if (!def) continue;
-         // By identity when there is one; a rollup's base, by its model.
-         if (
-            sourceID !== undefined
-               ? def.sourceID !== sourceID
-               : modelPath !== undefined && path !== modelPath
-         ) {
-            continue;
-         }
-         const source = model
-            .getSources?.(true)
-            ?.find((s) => s.name === sourceName);
-         if (!source) continue;
-         return (
-            (source.authorize?.length ?? 0) > 0 ||
-            (source.accessFilter?.length ?? 0) > 0
+   ): EntryPointIndex | undefined {
+      const surface = this.owner.publishedSurface?.();
+      const entries =
+         surface ??
+         [...models].map(([modelPath, model]) => ({
+            modelPath,
+            names: (model.getSources?.() ?? []).flatMap((source) =>
+               source.name ? [source.name] : [],
+            ),
+            queries: (model.getQueries?.() ?? []).flatMap((query) =>
+               query.name ? [query.name] : [],
+            ),
+         }));
+      const roots: EntryPointIndex["roots"] = [];
+      for (const { modelPath, names, queries } of entries) {
+         const model = models.get(modelPath);
+         const modelDef = model?.getModelDef?.();
+         if (!model || !modelDef) return undefined;
+         const gatedSources = new Set(
+            (model.getSources?.(true) ?? []).flatMap((source) =>
+               source.name &&
+               ((source.authorize?.length ?? 0) > 0 ||
+                  (source.accessFilter?.length ?? 0) > 0)
+                  ? [source.name]
+                  : [],
+            ),
          );
+         const sourceRoot = (name: string, gated: boolean): void => {
+            const entry = modelDef.contents?.[name];
+            if (!entry || !isSourceDef(entry)) return;
+            roots.push({
+               gated,
+               ids: sourceIDsReachedFrom(structsReachedFrom([entry], modelDef)),
+            });
+         };
+         for (const name of names) sourceRoot(name, gatedSources.has(name));
+         // A published named query reads its source, and whatever its
+         // pipeline names; it is gated as that source is.
+         for (const name of queries ?? []) {
+            const query = modelDef.contents?.[name] as
+               | { type?: string; structRef?: unknown }
+               | undefined;
+            if (query?.type !== "query") continue;
+            const ref = query.structRef;
+            const base =
+               typeof ref === "string"
+                  ? modelDef.contents?.[ref]
+                  : (ref as SourceDef | undefined);
+            const ids = sourceIDsReachedFrom([query]);
+            if (base && isSourceDef(base)) {
+               for (const id of sourceIDsReachedFrom(
+                  structsReachedFrom([base], modelDef),
+               )) {
+                  ids.add(id);
+               }
+            }
+            roots.push({
+               gated: typeof ref === "string" && gatedSources.has(ref),
+               ids,
+            });
+         }
       }
-      return false;
+      const reached =
+         surface === undefined
+            ? undefined
+            : new Set(roots.flatMap((root) => [...root.ids]));
+      return { roots, reached };
    }
 
    /**
@@ -1300,6 +1416,14 @@ export class PackageMaterialization {
       if (!getPersistCollisionEnforce()) return "";
       return this.persistenceCollisionWarnings().join("\n");
    }
+}
+
+/** See PackageMaterialization's entry-point index. */
+interface EntryPointIndex {
+   /** Each entry point: the sourceIDs it reads, and whether a row-level gate sits on it. */
+   roots: { gated: boolean; ids: Set<string> }[];
+   /** Every sourceID an entry point reads; undefined when the package curates nothing. */
+   reached: Set<string> | undefined;
 }
 
 /**

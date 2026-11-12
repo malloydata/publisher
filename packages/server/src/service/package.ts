@@ -702,12 +702,13 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
     * not its reports, each with the names its export closure lists.
     */
    private publishedSurface():
-      | { modelPath: string; names: string[] }[]
+      | { modelPath: string; names: string[]; queries: string[] }[]
       | undefined {
       if (this.packageMetadata.queryableSources === "all") return undefined;
       const exploreSet = this.exploreSet();
       if (!this.exploresDeclared() || !exploreSet) return undefined;
-      const out: { modelPath: string; names: string[] }[] = [];
+      const out: { modelPath: string; names: string[]; queries: string[] }[] =
+         [];
       for (const [modelPath, model] of this.models) {
          if (!modelPath.endsWith(MODEL_FILE_SUFFIX)) continue;
          if (!exploreSet.has(modelPath) || this.isServedReport(modelPath)) {
@@ -717,6 +718,10 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
             modelPath,
             names: (model.getSources() ?? []).flatMap((source) =>
                source.name ? [source.name] : [],
+            ),
+            // Named queries are published too (packageCuratedQueries).
+            queries: (model.getQueries() ?? []).flatMap((query) =>
+               query.name ? [query.name] : [],
             ),
          });
       }
@@ -2223,7 +2228,8 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
          ...this.materialization.droppedPersistWarnings(),
          ...this.materialization.annotationFindingWarnings(),
          ...this.materialization.rollupsOverStoredBaseWarnings(),
-         ...this.materialization.unreachableMaterializationWarnings(),
+         // Not materialization-unreachable: it reports what the surface
+         // curates, not an annotation finding.
          ...this.preaggregateAccessWarnings(),
          ...this.annotationNearMissWarnings(),
       ].filter((warning) => warning.code !== undefined);
@@ -2259,7 +2265,8 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
    /**
     * Each materialized source's serve verdict, as the binding stands now (see
     * {@link PackageMaterialization.serveVerdicts}). Served at
-    * `GET …/packages/{pkg}/status`; cheap enough to read on every poll.
+    * `GET …/packages/{pkg}/status`: the entry-point walk is memoized per load,
+    * so a poll only loops over the plan.
     */
    public getServeVerdicts(): ApiServeVerdict[] {
       return this.materialization.serveVerdicts();

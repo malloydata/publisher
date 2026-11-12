@@ -5372,9 +5372,6 @@ components:
             treating a row as evidence that queries are being accelerated.
           items:
             $ref: "#/components/schemas/StorageServeBinding"
-
-    PackageStatusEntry:
-      description: |
         serveVerdicts:
           type: array
           readOnly: true
@@ -5396,6 +5393,9 @@ components:
             views checked as well.
           items:
             $ref: "#/components/schemas/ServeVerdict"
+
+    PackageStatusEntry:
+      description: |
         A package's entry in `GET /status`, carrying what an orchestrator reconciles
         a server from: which package or version it is, whether it is serving or
         loading, and which manifest is bound. The rest of the package's serving

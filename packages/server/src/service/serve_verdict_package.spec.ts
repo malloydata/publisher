@@ -7,13 +7,18 @@
  * and not another, the storage mode, a bind, and the publish warning that
  * names a materialized source nothing can query.
  */
-import { afterEach, describe, expect, it } from "bun:test";
+import { afterEach, describe, expect, it, spyOn } from "bun:test";
+import { logger } from "../logger";
 import { installSettings } from "../test_helpers/settings_env";
 import {
    loadTempPackage,
    usePackageLoadPool,
    type LoadedTempPackage,
 } from "../test_helpers/temp_package";
+import {
+   PackageMaterialization,
+   type PackageMaterializationOwner,
+} from "./materialization/package_materialization";
 import { MATERIALIZATION_UNREACHABLE_CODE } from "./materialization/serve/serve_verdict";
 
 const ROWS = `duckdb.sql("select * from (values (1, 'east', 10), (2, 'west', 20)) as t(id, region, amount)")`;
@@ -69,12 +74,12 @@ describe("a package's serve verdicts", () => {
       );
       expect(warnings.map((w) => w.subject)).toEqual(["staging"]);
       expect(warnings[0].message).toContain("index.malloy");
-      // Counted with the other coded #@ findings.
+      // Not an annotation finding: the surface curates it out, the #@ is fine.
       expect(
          loaded.pkg
             .annotationFindingWarnings()
             .some((w) => w.code === MATERIALIZATION_UNREACHABLE_CODE),
-      ).toBe(true);
+      ).toBe(false);
    });
 
    it("finds every source reached when nothing is curated", async () => {
@@ -109,6 +114,87 @@ export { by_region, joined }
       expect(verdicts.orders.verdict).toBe("not_built");
    });
 
+   it("reaches a source only a published named query reads", async () => {
+      loaded = await loadTempPackage({
+         "orders.malloy": ORDERS,
+         "index.malloy": `import "orders.malloy"
+query: top_regions is staging -> { group_by: region; aggregate: t is total.sum() }
+export { orders_public, top_regions }
+`,
+      });
+      const verdicts = byName(loaded.pkg.getServeVerdicts());
+      expect(verdicts.staging.verdict).toBe("not_built");
+      expect(
+         (loaded.pkg.getPackageMetadata().warnings ?? []).some(
+            (w) => w.code === MATERIALIZATION_UNREACHABLE_CODE,
+         ),
+      ).toBe(false);
+   });
+
+   describe("under a row-level gate, as routing judges a query's entry point", () => {
+      const GATED = `##! experimental { persistence givens }
+given: ROLE :: string[]
+
+#@ persist name="orders_t" storage="lake"
+source: orders is ${ROWS} -> { select: * }
+
+#(authorize) 'finance' in $ROLE
+source: secure_orders is orders extend {}
+`;
+
+      it("sends a stored source live when every published entry point over it is gated", async () => {
+         restoreSettings = installSettings({
+            env: { PERSIST_STORAGE_MODE: "on" },
+         }).restore;
+         loaded = await loadTempPackage({
+            "orders.malloy": GATED,
+            "index.malloy": `import "orders.malloy"\nexport { secure_orders }\n`,
+         });
+         expect(byName(loaded.pkg.getServeVerdicts()).orders).toMatchObject({
+            tier: "storage",
+            verdict: "live",
+            reason: "row_level_gate",
+         });
+      });
+
+      it("serves it when an ungated entry point reaches it too", async () => {
+         restoreSettings = installSettings({
+            env: { PERSIST_STORAGE_MODE: "on" },
+         }).restore;
+         // Nothing curated: `orders` itself is queryable, with no gate.
+         loaded = await loadTempPackage({ "orders.malloy": GATED });
+         expect(byName(loaded.pkg.getServeVerdicts()).orders.verdict).toBe(
+            "not_built",
+         );
+      });
+   });
+
+   // GET …/status reads the verdicts on every poll: the entry-point walk is
+   // done once per load, not once per read.
+   it("walks the entry points once per load, however often the verdicts are read", async () => {
+      loaded = await loadTempPackage({
+         "orders.malloy": ORDERS,
+         "index.malloy": `import "orders.malloy"\nexport { orders_public }\n`,
+      });
+      const first = loaded.pkg.getServeVerdicts();
+      const models = [
+         ...(
+            loaded.pkg as unknown as { models: Map<string, object> }
+         ).models.values(),
+      ];
+      const spies = models.map((model) =>
+         spyOn(model as { getModelDef(): unknown }, "getModelDef"),
+      );
+      try {
+         for (let i = 0; i < 3; i++) {
+            expect(loaded.pkg.getServeVerdicts()).toEqual(first);
+         }
+         for (const spy of spies) expect(spy).not.toHaveBeenCalled();
+      } finally {
+         for (const spy of spies) spy.mockRestore();
+      }
+   });
+
    it("follows a bind: a colocated source serves once its table is bound", async () => {
       loaded = await loadTempPackage({ "orders.malloy": ORDERS });
       const plan = loaded.pkg.getBuildPlan();
@@ -141,5 +227,38 @@ export { by_region, joined }
          reason: "storage_mode",
       });
       expect(verdicts.staging.tier).toBe("colocated");
+   });
+});
+
+describe("a serve verdict that cannot be computed", () => {
+   // Reporting only: the dry run, the package read and the status poll all
+   // carry verdicts, and none of them may fail because one could not be made.
+   it("degrades to none instead of throwing", async () => {
+      const broken = {
+         servedStorageSourceNames: () => {
+            throw new Error("boom");
+         },
+      };
+      const materialization = new PackageMaterialization({
+         models: () => new Map([["m.malloy", broken]]),
+         packageName: () => "pkg",
+      } as unknown as PackageMaterializationOwner);
+      (materialization as unknown as { buildPlan: unknown }).buildPlan = {
+         graphs: [],
+         sources: {},
+      };
+      const warn = spyOn(logger, "warn");
+      try {
+         expect(materialization.serveVerdicts()).toEqual([]);
+         // The computation ran and threw, rather than returning early.
+         expect(warn).toHaveBeenCalledWith(
+            "Could not compute serve verdicts",
+            expect.anything(),
+         );
+      } finally {
+         warn.mockRestore();
+      }
+      expect(materialization.unreachableMaterializationWarnings()).toEqual([]);
+      expect(await materialization.previewServeVerdicts()).toEqual([]);
    });
 });

@@ -206,7 +206,7 @@ describe("computeServeVerdicts", () => {
    it("carries a stored source's view verdicts", () => {
       const views = new Map([
          [
-            "orders",
+            "orders@file:///pkg/m.malloy",
             [
                { view: "by_region", verdict: "serves" as const },
                {
@@ -221,7 +221,56 @@ describe("computeServeVerdicts", () => {
          facts([plan("orders", STORAGE)], { views }),
       );
       expect(verdict.verdict).toBe("not_built");
-      expect(verdict.views).toEqual(views.get("orders"));
+      expect(verdict.views).toEqual(views.get("orders@file:///pkg/m.malloy"));
+   });
+
+   it("keys view verdicts by sourceID, so two models' same-named sources keep their own", () => {
+      const [aID, a] = plan("orders", STORAGE);
+      const bID = "orders@file:///pkg/other.malloy";
+      const b = { ...a, sourceID: bID, modelPath: "other.malloy" };
+      const views = new Map([
+         [aID, [{ view: "by_region", verdict: "serves" as const }]],
+         [bID, [{ view: "by_day", verdict: "live" as const, detail: "x" }]],
+      ]);
+      const verdicts = computeServeVerdicts(
+         facts(
+            [
+               [aID, a],
+               [bID, b],
+            ],
+            { views },
+         ),
+      );
+      expect(verdicts.map((v) => v.views?.[0]?.view)).toEqual([
+         "by_region",
+         "by_day",
+      ]);
+   });
+
+   it("sends a planned source the bind refuses live, naming why", () => {
+      const [verdict] = computeServeVerdicts(
+         facts([plan("orders", STORAGE)], {
+            refusedAtBind: () => "two models' rollups share this name",
+         }),
+      );
+      expect(verdict).toMatchObject({ verdict: "live", reason: "refused" });
+      expect(verdict.message).toContain("two models' rollups share this name");
+   });
+
+   it("says a bound table past its freshness window is not served", () => {
+      const verdicts = computeServeVerdicts(
+         facts([plan("orders"), plan("events", STORAGE)], {
+            boundEntityIds: new Set(["entity-orders"]),
+            freshEntityIds: new Set(),
+            boundStorageNames: new Set(["events"]),
+            servedStorageNames: new Set(["events"]),
+            freshStorageNames: new Set(),
+         }),
+      );
+      expect(verdicts.map((v) => [v.sourceName, v.verdict, v.reason])).toEqual([
+         ["orders", "live", "stale"],
+         ["events", "live", "stale"],
+      ]);
    });
 
    it("is empty for a package that materializes nothing", () => {

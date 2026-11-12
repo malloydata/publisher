@@ -15,12 +15,15 @@ import {
    modelDefToModelInfo,
    Runtime,
 } from "@malloydata/malloy";
-import { afterAll, describe, expect, it } from "bun:test";
+import { afterAll, describe, expect, it, spyOn } from "bun:test";
 import * as fs from "fs";
 import * as os from "os";
 import * as path from "path";
 import { pathToFileURL } from "url";
 import type { ServeBinding } from "./materialization/serve/materialization_serve_transform";
+import { logger } from "../logger";
+import { resetMaterializationTelemetryForTesting } from "../materialization_metrics";
+import { startMetricsHarness } from "../test_helpers/metrics_harness";
 import { Model } from "./model";
 
 // On disk: the serve shape lifts a source's views verbatim from its file.
@@ -52,34 +55,39 @@ afterAll(async () => {
    fs.rmSync(DIR, { recursive: true, force: true });
 });
 
-async function buildModel(withDestinations: boolean): Promise<Model> {
+async function buildModel(
+   withDestinations: boolean,
+   text: string = MODEL,
+   file = "m.malloy",
+   givens?: { name: string; type: string }[],
+): Promise<Model> {
+   fs.writeFileSync(path.join(DIR, file), text);
    const connections = new FixedConnectionMap(
       new Map([["duckdb", duckdb]]),
       "duckdb",
    );
    const runtime = new Runtime({
       urlReader: new InMemoryURLReader(
-         new Map([[pathToFileURL(path.join(DIR, "m.malloy")).href, MODEL]]),
+         new Map([[pathToFileURL(path.join(DIR, file)).href, text]]),
       ),
       connections,
    });
-   const materializer = runtime.loadModel(
-      pathToFileURL(path.join(DIR, "m.malloy")),
-      {
-         importBaseURL: new URL(ROOT),
-      },
-   );
+   const materializer = runtime.loadModel(pathToFileURL(path.join(DIR, file)), {
+      importBaseURL: new URL(ROOT),
+   });
    // eslint-disable-next-line @typescript-eslint/no-explicit-any
    const modelDef = ((await materializer.getModel()) as any)._modelDef;
    const model = new Model({
       packageName: "pkg",
-      modelPath: "m.malloy",
+      modelPath: file,
       dataStyles: {},
       modelType: "model",
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       modelMaterializer: materializer as any,
       modelDef,
       modelInfo: modelDefToModelInfo(modelDef),
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      ...(givens ? { givens: givens as any } : {}),
    });
    if (withDestinations) {
       const serveConfig = new MalloyConfig({ connections: {} });
@@ -120,5 +128,60 @@ describe("previewing a stored source's views", () => {
    it("says nothing without a storage destination, since nothing serves from storage then", async () => {
       const model = await buildModel(false);
       expect((await model.previewStorageViews([BINDING])).size).toBe(0);
+   });
+
+   // A given with no default (every #(secure) attribute) is required to run a
+   // query, not to say whether a view compiles against the stored columns: a
+   // view that reads one serves once the caller supplies it.
+   it("serves a view that reads a given with no default", async () => {
+      const model = await buildModel(
+         true,
+         `##! experimental.givens\n#(secure)\ngiven:\n  TENANTS :: string[]\ngiven:\n  REGION :: string\ngiven:\n  REGIONS :: filter<string>\n\n${MODEL.replace(
+            "view: totals",
+            "view: in_region is { where: region = $REGION; aggregate: total }\n   view: in_regions is { where: region ~ $REGIONS; aggregate: total }\n   view: totals",
+         )}`,
+         "given.malloy",
+         [
+            { name: "TENANTS", type: "string[]" },
+            { name: "REGION", type: "string" },
+            { name: "REGIONS", type: "filter<string>" },
+         ],
+      );
+      const full: ServeBinding = {
+         ...BINDING,
+         schema: [...BINDING.schema, { name: "region", type: "VARCHAR" }],
+      };
+      expect((await model.previewStorageViews([full])).get("X")).toEqual([
+         { view: "in_region", verdict: "serves" },
+         { view: "in_regions", verdict: "serves" },
+         { view: "totals", verdict: "serves" },
+         { view: "by_region", verdict: "serves" },
+      ]);
+   });
+
+   // Nothing is served, so a preview must not look like serve traffic.
+   it("records no serve metric and logs no serve warning", async () => {
+      const harness = await startMetricsHarness();
+      resetMaterializationTelemetryForTesting();
+      const warn = spyOn(logger, "warn");
+      const info = spyOn(logger, "info");
+      try {
+         const model = await buildModel(true);
+         // BINDING lacks `region`, so the shape drops a tier compiling it.
+         await model.previewStorageViews([BINDING]);
+         expect(warn).not.toHaveBeenCalled();
+         expect(info).not.toHaveBeenCalled();
+         expect(
+            await harness.collectCounter(
+               "publisher_storage_serve_shape_tier_drop_total",
+               {},
+            ),
+         ).toBe(0);
+      } finally {
+         warn.mockRestore();
+         info.mockRestore();
+         resetMaterializationTelemetryForTesting();
+         await harness.shutdown();
+      }
    });
 });
