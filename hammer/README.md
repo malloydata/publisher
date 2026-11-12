@@ -208,15 +208,21 @@ bun hammer/run.ts --reuse-pg               # reuse a hammer pg container a --kee
 `--scenarios` and `--tags` narrow together (a scenario must match both).
 
 Flags: `--pg-port` (default: a free port Docker assigns), `--pg-container`
-(default `publisher-hammer-pg-<run id>`), `--port` (14000), `--mcp-port`
-(14040), `--quiet`. Exit code is nonzero if any scenario fails; Ctrl-C or
+(default `publisher-hammer-pg-<run id>`), `--port` and `--mcp-port`
+(default: free ports the OS assigns; see below), `--quiet`. Exit code is nonzero if any scenario fails; Ctrl-C or
 SIGTERM tears the run down (its publishers, container and workdir, unless
 `--keep`) and exits 130 or 143, and a second Ctrl-C exits at once.
 
 Set `HAMMER_STEP_TIMING=1` to report any step over 500ms — how you localise a
 scenario that is slow only inside a full run.
 
-The harness picks non-default ports so it won't collide with your own stacks.
+Every Publisher the harness starts gets its own REST and MCP ports, asked of
+the OS (a bind to port 0) when the server is booted, so it never collides with
+your own stacks or with another hammer run. A port is free only until something
+binds it, so a server that exits because one was taken in the meantime is booted
+again on fresh ports. A restarted publisher keeps its ports. `--port N` (and
+`--mcp-port N`, which defaults to `--port`) instead takes the free ports walking
+upward from N, for when you want them predictable.
 If you used `--keep`, the run prints the container's name; tear it down with:
 
 ```bash
@@ -242,14 +248,13 @@ the pid's start time.
 - `--pg-container NAME` uses that container: reused when it is running and no
   live run owns it, replaced when it is stopped or stale, created when absent.
 
-Build the server once first (`bun run build:server-only`): two runs that both
-find no build start building at once and collide. Then give the second run its
-own Publisher ports, since each worker's servers sit at fixed offsets from
-`--port` and `--mcp-port`:
+Publisher ports are allocated per server (above), so concurrent runs need no
+flags. Build the server once first (`bun run build:server-only`): two runs that
+both find no build start building at once and collide.
 
 ```bash
 bun hammer/run.ts --tags security &
-bun hammer/run.ts --tags orchestration --port 24000 --mcp-port 24040
+bun hammer/run.ts --tags orchestration
 ```
 
 ## Each scenario is a clean room

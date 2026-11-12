@@ -35,13 +35,14 @@ export const log = {
 export async function waitFor<T>(
    what: string,
    fn: () => Promise<T | undefined | null | false>,
-   opts: { timeoutMs?: number; intervalMs?: number } = {},
+   opts: { timeoutMs?: number; intervalMs?: number; signal?: AbortSignal } = {},
 ): Promise<T> {
    const timeoutMs = opts.timeoutMs ?? 60_000;
    const intervalMs = opts.intervalMs ?? 500;
    const deadline = Date.now() + timeoutMs;
    let lastErr: unknown;
    while (Date.now() < deadline) {
+      if (opts.signal?.aborted) throw new Error(`stopped waiting for ${what}`);
       try {
          const v = await fn();
          if (v) return v as T;
