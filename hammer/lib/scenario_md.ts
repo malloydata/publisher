@@ -2900,7 +2900,9 @@ export async function parseScenarioFile(dir: string): Promise<Scenario> {
                if (step.variant === "clear") {
                   // manifestLocation:null → drop the orchestrator binding; the publisher
                   // reverts to its own local-store rebind (from the latest build).
-                  await rest.patchPackage(step.pkg, { manifestLocation: null });
+                  // A versioned package clears through its version's manifest
+                  // route (see RestClient.clearManifest).
+                  await rest.clearManifest(step.pkg);
                } else if (step.variant === "bad") {
                   // Bind an unreachable manifestLocation (a file:// URI that does
                   // not exist). The publisher must fetch-fail and fall back to

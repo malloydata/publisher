@@ -322,6 +322,16 @@ export class Environment {
     * getPackage's lock-free fast path does not serve them until it settles.
     */
    private unversionedReadsHeld = new Set<string>();
+   /** See {@link setConfiguredPublishRetry}. */
+   private readonly configuredPublishRetries = new Map<
+      string,
+      () => Promise<unknown>
+   >();
+   /** A retry in flight, per package, shared by the callers waiting on it. */
+   private readonly configuredPublishRetriesRunning = new Map<
+      string,
+      Promise<void>
+   >();
    /**
     * The version rules for this environment's packages, bound by the
     * EnvironmentStore once the environment has a registry row. Versioned
@@ -630,6 +640,16 @@ export class Environment {
             // when none), resolved through the registry.
             versionedPackage: async (name, version, underLock) => {
                if (!this.versionService) return undefined;
+               // See getPackage: a refused configured package is published
+               // again before it compiles, outside the lock its first version
+               // takes.
+               if (
+                  !underLock &&
+                  !this.packages.has(name) &&
+                  this.configuredPublishRetries.has(name)
+               ) {
+                  await this.retryConfiguredPublish(name);
+               }
                if (
                   this.packages.has(name) &&
                   (underLock || version.requested() === undefined)
@@ -2361,6 +2381,19 @@ export class Environment {
                requested,
             );
             if (versioned) return versioned.loaded;
+            // A configured package whose boot publish was refused: publish it
+            // again now, which serves it or answers why it still cannot.
+            if (
+               !this.packages.has(packageName) &&
+               this.configuredPublishRetries.has(packageName)
+            ) {
+               await this.retryConfiguredPublish(packageName);
+               const published = await this.versionService.getLoaded(
+                  packageName,
+                  requested,
+               );
+               if (published) return published.loaded;
+            }
          }
       }
       // Lock-free fast path: `Package` references are immutable, and
@@ -3602,6 +3635,74 @@ export class Environment {
    }
 
    /**
+    * How to publish a configured package again after its boot-time publish
+    * was refused. A refused publish places nothing, so without it the package
+    * had no files at all: `/compile` could not report why it failed, a
+    * failure that clears on its own (a table created after boot) could never
+    * recover, and every request answered a misleading "manifest does not
+    * exist". Its next access runs this instead: a publish that now succeeds
+    * serves the version, and one that still fails answers its own error.
+    */
+   public setConfiguredPublishRetry(
+      packageName: string,
+      retry: () => Promise<unknown>,
+   ): void {
+      this.configuredPublishRetries.set(packageName, retry);
+   }
+
+   /**
+    * Run a refused configured package's publish again (see
+    * {@link setConfiguredPublishRetry}). One run at a time per package; the
+    * callers waiting on it share its outcome. Holds no package lock: a
+    * package's first version takes that lock itself. Resolves when there is
+    * nothing to retry, or the retry published a version; rejects with the
+    * publish's own error otherwise.
+    */
+   /**
+    * {@link retryConfiguredPublish} for callers that resolve a version before
+    * they read the package (a materialization run). Resolves at once when the
+    * package is loaded, or has no refused publish to retry.
+    */
+   public async publishRefusedConfiguredPackage(
+      packageName: string,
+   ): Promise<void> {
+      if (this.packages.has(packageName)) return;
+      if (!this.configuredPublishRetries.has(packageName)) return;
+      if (this.versionService) {
+         const loaded = await this.versionService.getLoaded(packageName);
+         if (loaded) return;
+      }
+      await this.retryConfiguredPublish(packageName);
+   }
+
+   private async retryConfiguredPublish(packageName: string): Promise<void> {
+      const retry = this.configuredPublishRetries.get(packageName);
+      if (!retry) return;
+      let running = this.configuredPublishRetriesRunning.get(packageName);
+      if (!running) {
+         running = (async () => {
+            try {
+               await retry();
+               this.configuredPublishRetries.delete(packageName);
+               this.clearPackageLoadFailure(packageName);
+            } catch (error) {
+               this.setPackageMountError(
+                  packageName,
+                  redactPgSecrets(
+                     error instanceof Error ? error.message : String(error),
+                  ),
+               );
+               throw error;
+            } finally {
+               this.configuredPublishRetriesRunning.delete(packageName);
+            }
+         })();
+         this.configuredPublishRetriesRunning.set(packageName, running);
+      }
+      await running;
+   }
+
+   /**
     * Record a runtime add that failed before the package could serve, for
     * /status. Skipped while the name is registered (a failed re-install
     * rolled back, so nothing failed). Names are the caller's, so the record
@@ -3613,6 +3714,7 @@ export class Environment {
 
    /** Forget any recorded failure for a package, whatever its cause. */
    private clearPackageLoadFailure(packageName: string): void {
+      this.configuredPublishRetries.delete(packageName);
       this.transition(packageName, { type: "clearProblems" });
    }
 

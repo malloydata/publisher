@@ -59,6 +59,12 @@ export interface MaterializationVersions {
  * where a source is READ, `getStorageDestination` where a table is WRITTEN.
  */
 export interface MaterializationEnvironment {
+   /**
+    * Publish again a configured package whose boot publish was refused, so a
+    * run resolves the version it makes (Environment.setConfiguredPublishRetry).
+    * Optional: a test double need not implement it.
+    */
+   publishRefusedConfiguredPackage?(packageName: string): Promise<void>;
    getEnvironmentName(): string;
    getEnvironmentPath(): string;
    getApiConnection(connectionName: string): ApiConnection;

@@ -231,3 +231,73 @@ describe("configured packages with package versioning off", () => {
       expect(served.getVersionId()).toBeUndefined();
    });
 });
+
+/**
+ * A configured package whose boot-time publish is refused places nothing, so
+ * it used to have no files at all: compiling it, building it and reading it all
+ * answered "manifest does not exist", and a failure that clears on its own
+ * could never recover until `--init`. Its next access publishes it again.
+ */
+describe("a configured package whose boot publish was refused", () => {
+   function writeModel(dir: string, text: string) {
+      fs.writeFileSync(path.join(dir, "model.malloy"), text);
+   }
+
+   it("answers its compile error when read again, not a missing manifest", async () => {
+      env.PUBLISHER_PACKAGE_VERSIONING = "on";
+      const dir = source("broken", "1.0.0");
+      writeModel(dir, `source: numbers is duckdb.table('no_such_table_xyz')\n`);
+      configure([{ name: "broken", location: dir }]);
+
+      const s = await openStore();
+      expect(await versionsOf(s, "broken")).toEqual({ latest: null, ids: [] });
+      const environment = await s.getEnvironment(
+         parseEnvironmentName(ENV),
+         false,
+      );
+      const read = environment.getPackage(parsePackageName("broken"), false);
+      await expect(read).rejects.toThrow(/no_such_table_xyz/);
+      await expect(read).rejects.not.toThrow(/manifest/i);
+
+      const compiled = environment.compileSource(
+         "broken",
+         "model.malloy",
+         "",
+         false,
+         undefined,
+         "file",
+      );
+      await expect(compiled).rejects.toThrow(/no_such_table_xyz/);
+   });
+
+   it("is published as its version once the cause clears, with no restart", async () => {
+      env.PUBLISHER_PACKAGE_VERSIONING = "on";
+      const dir = source("late", "1.0.0");
+      writeModel(dir, `source: numbers is duckdb.table('late_table_xyz')\n`);
+      configure([{ name: "late", location: dir }]);
+
+      const s = await openStore();
+      expect(await versionsOf(s, "late")).toEqual({ latest: null, ids: [] });
+      const environment = await s.getEnvironment(
+         parseEnvironmentName(ENV),
+         false,
+      );
+      await expect(
+         environment.getPackage(parsePackageName("late"), false),
+      ).rejects.toThrow(/late_table_xyz/);
+
+      // What the model needed now exists: here, the model no longer reads the
+      // missing table, as a warehouse table created after boot would.
+      writeModel(dir, `source: numbers is duckdb.sql("SELECT 1 AS answer")\n`);
+      const served = await environment.getPackage(
+         parsePackageName("late"),
+         false,
+      );
+      expect(served.getVersionId()).toBe("1.0.0");
+      expect(await versionsOf(s, "late")).toEqual({
+         latest: "1.0.0",
+         ids: ["1.0.0"],
+      });
+      expect(environment.getFailedPackages().has("late")).toBe(false);
+   });
+});

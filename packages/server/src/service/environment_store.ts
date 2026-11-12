@@ -652,21 +652,37 @@ export class EnvironmentStore
                const fetchFrom = local
                   ? sourceLocation
                   : safeJoinUnderRoot(mountRoot, configured.name);
-               await versions.publish(
-                  configured.name,
-                  (stagingPath) =>
-                     this.downloadPackageInto(
-                        environmentName,
+               const publish = () =>
+                  versions.publish(
+                     configured.name,
+                     (stagingPath) =>
+                        this.downloadPackageInto(
+                           environmentName,
+                           configured.name,
+                           fetchFrom,
+                           stagingPath,
+                        ),
+                     {
+                        sourceLocation,
+                        promotion: getVersionPromotionMode(),
+                        validate: (loaded) => formatPublishRejections(loaded),
+                     },
+                  );
+               try {
+                  await publish();
+               } catch (error) {
+                  // A refused publish places nothing. A local location can be
+                  // read again, so the package's next access publishes it
+                  // again (Environment.setConfiguredPublishRetry); a remote
+                  // one's mount is removed below.
+                  if (local) {
+                     environment.setConfiguredPublishRetry(
                         configured.name,
-                        fetchFrom,
-                        stagingPath,
-                     ),
-                  {
-                     sourceLocation,
-                     promotion: getVersionPromotionMode(),
-                     validate: (loaded) => formatPublishRejections(loaded),
-                  },
-               );
+                        publish,
+                     );
+                  }
+                  throw error;
+               }
             } catch (error) {
                const message = redactPgSecrets(
                   error instanceof Error ? error.message : String(error),

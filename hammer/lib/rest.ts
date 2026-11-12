@@ -369,6 +369,38 @@ export class Rest {
    }
 
    /**
+    * Clear a package's manifest binding so it serves live. A package with
+    * published versions clears through its latest version's manifest route
+    * (`PUT …/versions/{version}/manifest` with null): its PATCH reads a null
+    * `manifestLocation` as unset, since a generated client sends a field it
+    * was never given as null. An unversioned package clears with the PATCH.
+    */
+   async clearManifest(pkg: string): Promise<Record<string, unknown>> {
+      const current = await this.getPackage(pkg);
+      const versionId = current.versionId;
+      if (typeof versionId !== "string" || versionId === "") {
+         return this.patchPackage(pkg, { manifestLocation: null });
+      }
+      const res = await fetch(
+         this.pkgUrl(
+            pkg,
+            `/versions/${encodeURIComponent(versionId)}/manifest`,
+         ),
+         {
+            method: "PUT",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({ manifestLocation: null }),
+         },
+      );
+      const json = (await res.json()) as Record<string, unknown>;
+      if (!res.ok)
+         throw new Error(
+            `clearManifest ${pkg}@${versionId} ${res.status}: ${JSON.stringify(json)}`,
+         );
+      return json;
+   }
+
+   /**
     * The `entries` map of the package's most recent successful materialization
     * (MANIFEST_FILE_READY). This is the manifest the orchestrator would stamp
     * and distribute; the harness re-serves it via `writeManifest` + a
