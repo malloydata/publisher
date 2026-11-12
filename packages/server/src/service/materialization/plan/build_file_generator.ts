@@ -16,14 +16,25 @@
  * incremental and hosted builds all apply unchanged, and `addressing.ts`
  * addresses the generated target like any other persist source.
  *
- * What is stored: every public atomic dimension of `src`. A column the table
- * already holds (a field with no expression of its own) is selected under its
- * own name; a computed dimension is stored as `<name>__s`, so the served copy
- * (the re-root rewriter) can redefine the dimension as a read of that column
- * without its name colliding with the column's. Measures, views and joins are
- * not stored: the served copy keeps them as written, re-bound over the stored
- * columns. A field that is not public (`internal`, `private`) is never stored,
- * matching today's narrowing of a `storage=` table to the public surface.
+ * What is stored: every public atomic dimension of `src`, each under its own
+ * name, computed or not (decided 2026-11-12), so the stored table carries the
+ * author's names and an outside reader sees `order_month`, not a suffixed
+ * column. The served copy (the re-root rewriter) drops a stored computed
+ * dimension's definition, so the column stands in for it, and carries the
+ * dimension's annotations onto the served `type:` declaration. Measures, views
+ * and joins are not stored: the served copy keeps them as written, re-bound
+ * over the stored columns. A field that is not public (`internal`, `private`)
+ * is never stored, matching today's narrowing of a `storage=` table to the
+ * public surface.
+ *
+ * The table: named after the author's source (`src`), or the declaration's
+ * `name=`. `src__mat` is only the generated build source's internal name in
+ * the companion model. Without a `name=`, a `storage=` source's table defaults
+ * to the source's own name (the destination is Publisher's, and the existing
+ * collision checks refuse two sources on one table). A colocated source, built
+ * into the author's own warehouse, must name its table: its default would be
+ * the source's own name, which for a source over `conn.table('orders')` is
+ * very often the very table it reads, and the build would replace it.
  *
  * Not yet (each is a later pull request's, and is refused or left out here
  * rather than built wrong):
@@ -56,11 +67,6 @@ export function buildSourceName(declaredName: string): string {
    return `${declaredName}__mat`;
 }
 
-/** The stored column for a computed dimension (see the module doc). */
-export function storedDimensionColumn(dimension: string): string {
-   return `${dimension}__s`;
-}
-
 /** The `#(materialize)` keys this pull request reads. */
 const CARRIED_KEYS = [
    "name",
@@ -72,6 +78,9 @@ const CARRIED_KEYS = [
    "partition",
 ] as const;
 
+/** A table name `#@ persist name=` accepts (see persist_annotation_validation.ts). */
+const PLAIN_TABLE_NAME = /^[A-Za-z0-9_-]+$/;
+
 /** Keys `#(materialize)` accepts but a later pull request implements. */
 const DEFERRED_KEYS: Readonly<Record<string, string>> = {
    inline: "inlining a join (`inline=`) arrives with the joins pull request",
@@ -81,9 +90,12 @@ const DEFERRED_KEYS: Readonly<Record<string, string>> = {
 export interface MaterializeColumn {
    /** The dimension's name on the author's source. */
    dimension: string;
-   /** The column the build stores it as. */
+   /** The column the build stores it as: the dimension's own name. */
    column: string;
-   /** Whether the source computes it (stored as `<name>__s`) or reads it from its table. */
+   /**
+    * Whether the source computes it (the served copy drops its definition so
+    * the stored column stands in) or reads it from its table.
+    */
    computed: boolean;
 }
 
@@ -202,7 +214,7 @@ export function materializeColumns(def: SourceDefLike): MaterializeColumn[] {
       const computed = field.e !== undefined;
       out.push({
          dimension,
-         column: computed ? storedDimensionColumn(dimension) : dimension,
+         column: dimension,
          computed,
       });
    }
@@ -271,6 +283,31 @@ export function planModelMaterialize(
          if (value !== undefined) persist[key] = value;
       }
       const declared = splitSourceID(def.sourceID);
+      const tableName = declared?.name ?? name;
+      if (persist.name === undefined) {
+         if (persist.storage === undefined) {
+            refused.push({
+               sourceName: name,
+               sourceID: def.sourceID,
+               reason:
+                  "a #(materialize) source built into its own warehouse needs name=: " +
+                  `without one its table would be \`${tableName}\`, which may be the very ` +
+                  "table it reads",
+            });
+            continue;
+         }
+         if (!PLAIN_TABLE_NAME.test(tableName)) {
+            refused.push({
+               sourceName: name,
+               sourceID: def.sourceID,
+               reason:
+                  `the source's name \`${tableName}\` is not a plain table name; ` +
+                  "give #(materialize) a name=",
+            });
+            continue;
+         }
+         persist.name = tableName;
+      }
       plans.push({
          sourceName: name,
          sourceID: def.sourceID,
@@ -294,11 +331,7 @@ function persistLine(plan: MaterializePlan): string {
 /** One generated build source. */
 function emitBuildSource(plan: MaterializePlan, alias: string): string {
    const select = plan.columns
-      .map((c) =>
-         c.computed
-            ? `    ${identifier(c.column)} is ${identifier(c.dimension)}`
-            : `    ${identifier(c.dimension)}`,
-      )
+      .map((c) => `    ${identifier(c.dimension)}`)
       .join(",\n");
    return `${persistLine(plan)}
 source: ${identifier(plan.buildSourceName)} is ${alias} -> {

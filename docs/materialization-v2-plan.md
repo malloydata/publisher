@@ -32,15 +32,16 @@ import "flights.copy.malloy"   // the user's file, its own #@ persist lines remo
 source: flights__mat is flights -> {
   select:
     id2, carrier, origin, distance, cancelled, dep_time,  // primary key and raw columns
-    route__s is route,                                    // row-level dimension
-    carrier_name__s is carrier_name,                      // through carriers, inlined
-    origin_region__s is origin_region,                    // through origin_airport, inlined
+    route,                                                // row-level dimension, under its own name
+    carrier_name,                                         // through carriers, inlined
+    origin_region,                                        // through origin_airport, inlined
     carriers.code, carriers.nickname,                     // the inlined source's exposed dimensions
     origin_airport.code, origin_airport.faa_region
   // dep_hour depends on the query time zone: not stored, computed at read
 }
 ```
 
+- Every stored column keeps the author's name, computed or not, so the table reads as the author's source to anything outside Malloy. The table is named by `name=`; without one, a `storage=` source's table is the source's own name, and a source built into its own warehouse is refused, since its default could be the very table it reads. `flights__mat` is only the build source's name inside the generated file (decided 2026-11-12).
 - The experimental flag lives in the generated file, so the user's file needs none (D3).
 - The build runs over a copy of the chain with access-modifier statements removed, because a query can't select internal or private fields; the served copy re-applies them as written (P3).
 - A materialized extension builds from its parent's build source, so Malloy's planner orders the builds (P10).
@@ -49,7 +50,7 @@ source: flights__mat is flights -> {
 **Serve: re-root the source in place.** In an in-memory copy of the user's file, `flights` keeps its name and is redefined over the stored table.
 
 - The extend blocks from the root table up to `flights` are copied verbatim, each inside its own file's copy, so names resolve where they were written.
-- Each stored dimension's expression becomes a column read (`route` reads `route__s`); annotations stay attached.
+- Each stored dimension's definition is dropped, so the stored column of the same name stands in for it. Its annotations move onto that column's entry in the served `type:` declaration, where Malloy keeps them (probed: `#(doc)` on a `type:` field survives; redefining or renaming a field to its own name does not compile).
 - Fixed `where:` terms, `rename:`, `except:` and `accept:` are dropped, since the build applied them. Given-reading and current-time terms, `primary_key:`, joins, measures, views and access modifiers are kept.
 - A reference join stays as written; its target is re-rooted on the joined source's own table when that source is materialized. An inlined join stays as a definition for anything not stored, such as a measure through it.
 - The served model compiles at load against `conn.virtual('<handle>')::T`, with `T` a `type:` declared from the build query's output, so compile errors show before any table exists. It needs `##! experimental.virtual_source` in the served copy (flags don't cross an import) and a per-query `virtualMap` entry, which may name a table not built yet (Evidence). Today's storage serve shape works the same way.
@@ -422,7 +423,7 @@ All 41 requirements land in Publisher, with C1, C3, T1 and T2 shared with the co
 | --- | --- | --- |
 | P1 any source | Build-source generator emits the desugaring in a generated file that imports a copy of the user's file; re-root rewriter serves it. The conformance fixture (#7098) compares the served answers with the hand-written `->` form. `compose()` is a compile error that says to materialize the members. | 3 |
 | P2 rows after `where:` | Fixed terms in the build query. Given terms left out of it and kept in the served copy. Current-time terms written with a literal `now` and kept in the served copy; incremental deletes rows below the new bound (Rolling windows). | 3 |
-| P3 row-level dimensions as columns | Build selects each visible row-level dimension as `name__s` over the chain with access modifiers stripped; the served copy re-applies them. Ancestor-private and `except:`'d fields never selected, on every storage path. | 3 |
+| P3 row-level dimensions as columns | Build selects each visible row-level dimension under its own name over the chain with access modifiers stripped; the served copy re-applies them. Ancestor-private and `except:`'d fields never selected, on every storage path. | 3 |
 | P4 reference by default | Join kept as written in the served copy; its target re-rooted on the joined source's own table when there is one. | 3 |
 | P5 `inline=` | join_one: the joined source's exposed dimensions and both keys as columns. join_many and join_cross: pair rows, served through a parent derivation joined back to them so Malloy's symmetric aggregates apply (Joins). | 3 (join_one), 4 (join_many) |
 | P6 reserved | `nest=` deferred. | — |

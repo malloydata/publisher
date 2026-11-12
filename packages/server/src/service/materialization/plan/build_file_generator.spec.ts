@@ -10,7 +10,6 @@ import {
    buildSourceName,
    generateBuildFile,
    planModelMaterialize,
-   storedDimensionColumn,
    type MaterializePlan,
 } from "./build_file_generator";
 
@@ -64,11 +63,7 @@ describe("planModelMaterialize and generateBuildFile", () => {
       buildSourceName: buildSourceName("orders"),
       columns: [
          { dimension: "id", column: "id", computed: false },
-         {
-            dimension: "big",
-            column: storedDimensionColumn("big"),
-            computed: true,
-         },
+         { dimension: "big", column: "big", computed: true },
       ],
       persist: {},
       declaringURL: "file:///pkg/m.malloy",
@@ -84,7 +79,7 @@ import { orders__mat__base is orders } from 'm.malloy'
 source: orders__mat is orders__mat__base -> {
   select:
     id,
-    big__s is big
+    big
 }
 `,
       );
@@ -118,18 +113,14 @@ source: orders__mat is orders__mat__base -> {
                buildSourceName: buildSourceName("source"),
                columns: [
                   { dimension: "date", column: "date", computed: false },
-                  {
-                     dimension: "count",
-                     column: storedDimensionColumn("count"),
-                     computed: true,
-                  },
+                  { dimension: "count", column: "count", computed: true },
                ],
             }),
          ],
          "m.malloy",
       );
       expect(text).toContain("import { source__mat__base is `source` }");
-      expect(text).toContain("    `date`,\n    count__s is `count`");
+      expect(text).toContain("    `date`,\n    `count`");
    });
 
    it("imports a source declared in another file from that file, by its declared name", () => {
@@ -157,14 +148,14 @@ source: orders__mat is orders__mat__base -> {
 
 describe("the generated companion, compiled into the build plan", () => {
    it(
-      "plans orders__mat: public dimensions stored, computed ones as __s, measures, views, joins and private fields left out",
+      "plans orders__mat: public dimensions stored under their own names, measures, views, joins and private fields left out",
       async () => {
          const c = await compiled(`${BASE}
 source: regions is duckdb.sql("select 'east' as region, 'East' as label") extend {
   primary_key: region
 }
 
-#(materialize)
+#(materialize) name="orders_all"
 source: orders is orders_raw extend {
   primary_key: id
   dimension: big is amount > 10
@@ -181,7 +172,7 @@ source: orders is orders_raw extend {
             { dimension: "region", column: "region", computed: false },
             { dimension: "amount", column: "amount", computed: false },
             { dimension: "order_date", column: "order_date", computed: false },
-            { dimension: "big", column: "big__s", computed: true },
+            { dimension: "big", column: "big", computed: true },
          ]);
          const [sourceID, source] = Object.entries(c.sources).find(
             ([, s]) => s.name === "orders__mat",
@@ -206,7 +197,7 @@ source: orders is orders_raw extend {
       "builds exactly what the source computes",
       async () => {
          const pkg = await packages.create(`${BASE}
-#(materialize)
+#(materialize) name="orders_all"
 source: orders is orders_raw extend { dimension: big is amount > 10 }
 `);
          const c = await compilePackageBuildPlan(pkg);
@@ -217,16 +208,11 @@ source: orders is orders_raw extend { dimension: big is amount > 10 }
          const duckdb = await pkg.getMalloyConnection!("duckdb");
          const rows = (
             await duckdb.runSQL(
-               `SELECT id, region, amount, big__s FROM (${sql}) t ORDER BY id`,
+               `SELECT id, region, amount, big FROM (${sql}) t ORDER BY id`,
             )
          ).rows;
          expect(
-            rows.map((r) => [
-               Number(r.id),
-               r.region,
-               Number(r.amount),
-               r.big__s,
-            ]),
+            rows.map((r) => [Number(r.id), r.region, Number(r.amount), r.big]),
          ).toEqual([
             [1, "east", 10.5, true],
             [2, "west", 20, true],
@@ -245,6 +231,7 @@ source: orders is orders_raw
 `);
          const [p] = generatedPlans(c);
          expect(p.persist).toEqual({
+            name: "orders",
             refresh: "incremental",
             watermark: "order_date",
             partition: "order_date",
@@ -261,10 +248,10 @@ source: orders is orders_raw
       "builds a materialized extension from its own source, beside its parent's",
       async () => {
          const c = await compiled(`${BASE}
-#(materialize)
+#(materialize) name="orders_all"
 source: orders is orders_raw
 
-#(materialize)
+#(materialize) name="orders_east"
 source: orders_ext is orders extend { dimension: east is region = 'east' }
 `);
          expect(
@@ -275,7 +262,7 @@ source: orders_ext is orders extend { dimension: east is region = 'east' }
          const ext = generatedPlans(c).find(
             (p) => p.buildSourceName === "orders_ext__mat",
          )!;
-         expect(ext.columns.map((col) => col.column)).toContain("east__s");
+         expect(ext.columns.map((col) => col.column)).toContain("east");
       },
       { timeout: 30000 },
    );
@@ -285,7 +272,7 @@ source: orders_ext is orders extend { dimension: east is region = 'east' }
       async () => {
          const c = await compiled({
             "base.malloy": `${BASE}
-#(materialize)
+#(materialize) name="orders_all"
 source: orders is orders_raw
 `,
             "index.malloy": `import { o is orders } from "base.malloy"
@@ -304,7 +291,7 @@ source: o2 is o
       "refuses inline= until the joins pull request, and plans nothing for it",
       async () => {
          const c = await compiled(`${BASE}
-#(materialize) inline=["regions"]
+#(materialize) name="orders_all" inline=["regions"]
 source: orders is orders_raw
 `);
          expect(generatedPlans(c)).toEqual([]);
@@ -317,7 +304,7 @@ source: orders is orders_raw
       async () => {
          const files = `##! experimental.persistence
 ${BASE}
-#(materialize)
+#(materialize) name="orders_all"
 source: orders is orders_raw
 
 #@ persist name="by_region"
@@ -345,6 +332,54 @@ source: by_region is orders_raw -> { group_by: region; aggregate: n is count() }
       },
       { timeout: 30000 },
    );
+
+   it(
+      "names a storage= table after the author's source when name= is absent",
+      async () => {
+         const c = await compiled(`${BASE}
+#(materialize) storage="lake"
+source: orders is orders_raw
+`);
+         const [p] = generatedPlans(c);
+         expect(p.persist.name).toBe("orders");
+         expect(p.buildSourceName).toBe("orders__mat");
+      },
+      { timeout: 30000 },
+   );
+
+   it("refuses a colocated source with no name=, since its default could be the table it reads", () => {
+      const notes = (text: string) => ({
+         notes: [
+            {
+               text,
+               at: {
+                  url: "file:///pkg/m.malloy",
+                  range: {
+                     start: { line: 0, character: 0 },
+                     end: { line: 0, character: text.length },
+                  },
+               },
+            },
+         ],
+      });
+      const field = { name: "id", type: "number" };
+      const { plans, refused } = planModelMaterialize({
+         orders: {
+            sourceID: "orders@file:///pkg/m.malloy",
+            annotations: notes("#(materialize)\n"),
+            fields: [field],
+         },
+         named: {
+            sourceID: "named@file:///pkg/m.malloy",
+            annotations: notes('#(materialize) name="orders_all"\n'),
+            fields: [field],
+         },
+      });
+      expect(plans.map((p) => p.persist.name)).toEqual(["orders_all"]);
+      expect(refused).toHaveLength(1);
+      expect(refused[0].sourceName).toBe("orders");
+      expect(refused[0].reason).toContain("needs name=");
+   });
 
    it("reads planModelMaterialize's refusals for a source with nothing to store", () => {
       const { plans, refused } = planModelMaterialize({
