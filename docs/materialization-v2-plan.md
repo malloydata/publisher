@@ -475,7 +475,7 @@ The plan accounts for all 60 open issues under [ms2data/service#6647](https://gi
 | #7090 | P2 | Preview what a package builds and serves | D2 preview | 1 |
 | #7092 | P2 | `search_malloy_docs` says `storage=` and `#@ preaggregate` don't exist | The docs index learns the v2 spellings | 5 |
 | #6734 | P2 | Reference manifests omit a storage upstream's destination | C2: derived tables pinned to their upstream | 5 |
-| #7078 | P2 | A source the eligibility gate refuses fails the built source that shares its address | Per-annotation outcomes: a refused source serves live without failing the target it shares | 1 |
+| #7078 | P2 | A source the eligibility gate refuses fails the built source that shares its address | For `storage=`, a refused source fails alone and serves live while the table it shares is built (fixed in phase 2). Colocated refuses the whole table, matching colocated serving, which substitutes a table for every source on its address; per-source refusal there arrives with phase 3's serving, which re-roots each source by name | 2, 3 |
 | #6645 | P2 | The next Publisher bump must carry malloy-tag ≥ 0.0.434 | Verify on the next bump | — |
 | #5557 | P2 | KR1 serve-path measured proof | T6 `compare` produces the measurement | 6 |
 | #6300 | P3 | `ServeBinding.sourceName` means two things | Retired with serve bindings | 3 |
