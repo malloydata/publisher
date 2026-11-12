@@ -50,29 +50,30 @@
  * whose check finds a key matched twice fails, naming the join.
  *
  * `inline=["j"]` on a join_many (phase 4, P5) stores a pair table: one row per
- * parent and child the join pairs, as `select:` through the join reads them,
+ * row of live's LEFT JOIN through the join, as `select:` through it reads them,
  * so a parent with no child keeps one row with null child columns. The build
  * is a `group_by:` of the source's own stored columns and the joined source's
  * `j__<field>` columns, whose rows are distinct because the pair's keys (the
- * source's primary key and the joined source's) are among them, and two flags
- * written by a window over them (Evidence 8):
+ * source's primary key and the joined source's) are among them, and one flag
+ * written by a window over them (Evidence 8): {@link PAIR_PARENT_ROW}, true on
+ * exactly one row per parent, childless parents included.
  *
- * - {@link PAIR_PARENT_ROW}: true on exactly one row per parent, childless
- *   parents included. The served source is those rows, so a parent-level
- *   aggregate never reads a parent twice.
- * - {@link PAIR_CHILD_ROW}: true on exactly one row per child the join pairs
- *   with any parent, false on a childless parent's row. The served copy joins
- *   those rows back with the author's own `join_many` condition, so the join
- *   is live's own LEFT JOIN and Malloy applies its symmetric aggregates as it
- *   does live (malloydata/malloy#1762's count of a childless parent included).
+ * The served copy reads the table as the source itself, with no join (see
+ * served_copy.ts): the join's name is a record of the `j__<field>` columns, a
+ * measure over the source's own fields aggregates the rows the flag marks, and
+ * an aggregate through the join reads every row, which are exactly the rows
+ * live aggregates through it (malloydata/malloy#1762's count of a childless
+ * parent included). One flag is enough: a second, child-row flag would mark
+ * every row but a childless parent's, and live counts that row too.
  *
  * What reads through the join_many on the source itself is not stored (a
  * dimension through it has one value per pair, not per parent): the served
- * copy computes it at read through the served join. One join_many per source,
+ * copy computes it at read, over the record. One join_many per source,
  * declared on the same connection, its condition reading no other join, both
  * sides with a declared primary key that is stored, the joined source with no
- * joins of its own (one hop), and no incremental refresh (the flags are
- * written over the whole table); anything else is refused.
+ * joins of its own (one hop), and no incremental refresh (the flag is written
+ * over the whole table: an increment that adds a child to a parent already
+ * stored would mark that parent twice); anything else is refused.
  *
  * Not yet (each is a later pull request's, and is refused or left out here
  * rather than built wrong):
@@ -208,15 +209,6 @@ const DEFERRED_KEYS: Readonly<Record<string, string>> = {};
  */
 export const PAIR_PARENT_ROW = "__parent_row";
 
-/**
- * A pair table's child-row flag column: true on exactly one row per child the
- * inlined join_many pairs with a parent, false on a childless parent's row.
- */
-export const PAIR_CHILD_ROW = "__child_row";
-
-/** The build's rank of a pair row within its child key, never stored. */
-const PAIR_CHILD_RANK = "__child_rank";
-
 /** How a pair table (an inlined join_many, P5) is laid out. */
 export interface MaterializePair {
    /** The inlined join_many's name on the materialized source. */
@@ -229,8 +221,6 @@ export interface MaterializePair {
    childSourceID: string;
    /** The parent-row flag's column ({@link PAIR_PARENT_ROW}). */
    parentRowColumn: string;
-   /** The child-row flag's column ({@link PAIR_CHILD_ROW}). */
-   childRowColumn: string;
 }
 
 /** One stored column of a materialized source. */
@@ -748,14 +738,13 @@ function pairRefusal(
       return {
          reason:
             `inline= names ${name}, a join_many, on an incremental source; a ` +
-            "pair table's parent-row and child-row flags are written over " +
-            "the whole table, so it is rebuilt in full",
+            "pair table's parent-row flag is written over the whole table " +
+            "(an increment that adds a child to a stored parent would mark " +
+            "that parent twice), so it is rebuilt in full",
       };
    }
    const taken = new Set([...columns, ...joined].map((c) => c.column));
-   const clash = [PAIR_PARENT_ROW, PAIR_CHILD_ROW, PAIR_CHILD_RANK].find((c) =>
-      taken.has(c),
-   );
+   const clash = [PAIR_PARENT_ROW].find((c) => taken.has(c));
    if (clash) {
       return {
          reason:
@@ -770,7 +759,6 @@ function pairRefusal(
          childKey,
          childSourceID: join.sourceID as string,
          parentRowColumn: PAIR_PARENT_ROW,
-         childRowColumn: PAIR_CHILD_ROW,
       },
    };
 }
@@ -1229,7 +1217,7 @@ function emitBuildSource(plan: MaterializePlan): string {
       )
       .join(",\n");
    const body = plan.pair
-      ? pairBody(plan, plan.pair, select)
+      ? pairBody(plan.pair, select)
       : `  select:\n${select}`;
    const given = givenReadTerms(plan);
    // malloy-text: each term is the author's own given-reading where:, re-applied as written on its own declaration
@@ -1242,41 +1230,18 @@ function emitBuildSource(plan: MaterializePlan): string {
 
 /**
  * A pair table's build: a `group_by:` of every stored column (distinct rows,
- * since both keys are among them) that ranks each row within its parent key
- * and its child key, then a stage that writes the two flags (see the module
- * comment) from those ranks. A window cannot be combined with a scalar test
- * in one expression, so the child-row flag, false where there is no child,
- * needs the second stage. The rows are written in parent-key order: a
- * warehouse that keeps insertion order (DuckDB) then joins a parent's rows to
- * its children faster (2M parents, fan-out up to 5: a child-measure query
- * from 2.0 to 1.6 times live, a mixed one from 1.3 to 1.1), for about 15%
- * more build time.
+ * since both keys are among them) that writes the parent-row flag (see the
+ * module comment) by ranking each row within its parent key. The rows are
+ * written in parent-key order, so a warehouse that keeps insertion order
+ * (DuckDB) reads a parent's rows together.
  */
-function pairBody(
-   plan: MaterializePlan,
-   pair: MaterializePair,
-   columns: string,
-): string {
-   const childColumn = plan.columns.find(
-      (c) => c.join === pair.join && c.dimension === pair.childKey,
-   )?.column as string;
+function pairBody(pair: MaterializePair, columns: string): string {
    const parent = identifier(pair.parentKey);
-   const child = identifier(childColumn);
-   const rank = identifier(PAIR_CHILD_RANK);
-   const kept = plan.columns
-      .map((c) => `    ${identifier(c.column)}`)
-      .join(",\n");
    // malloy-text: columns is emitBuildSource's select list, every name through identifier
    return `  group_by:
 ${columns}
   calculate:
     ${identifier(pair.parentRowColumn)} is row_number() { partition_by: ${parent} } = 1
-    ${rank} is row_number() { partition_by: ${child} }
-} -> {
-  select:
-${kept},
-    ${identifier(pair.parentRowColumn)},
-    ${identifier(pair.childRowColumn)} is ${child} is not null and ${rank} = 1
   order_by: ${parent}`;
 }
 

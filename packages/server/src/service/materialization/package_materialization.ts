@@ -2010,9 +2010,9 @@ function servedCopyProblemMessage(problem: ServedCopyProblem): string {
       case "definition_not_parsed":
          return "This source's declaration could not be re-rooted on its table, so the served copy leaves it to the serve shape.";
       case "pair_join_not_found":
-         return "This source inlines a join_many that is not declared in its own trailing `extend` (a source it is built from declares it), so its pair table cannot be read back as the join and the served copy leaves it as written.";
+         return "This source inlines a join_many that is not declared on its own in its own trailing `extend` (a source it is built from declares it, or its `join_many:` statement declares other joins too), so its pair table cannot be read with the join as a record and the served copy leaves it as written.";
       case "pair_not_compiled":
-         return "This source's pair table (an inlined join_many) could not be read back as the source and its join, so the served copy leaves it as written.";
+         return "This source's pair table (an inlined join_many) could not be read as the source with its join as a record (its text reads a measure or view of the joined source through the join, which the record does not carry), so the served copy leaves it as written.";
       case "read_terms_not_kept":
          return "This source filters by a given in a place its stored table cannot keep, so the served copy leaves it as written rather than answer every caller alike.";
       case "fields_not_carried":

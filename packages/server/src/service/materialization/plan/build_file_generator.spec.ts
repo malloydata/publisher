@@ -506,7 +506,7 @@ source: lines is duckdb.sql("""
 `;
 
    it(
-      "inlines a join_many as a pair table: parent and child columns, and a parent-row and child-row flag written at build",
+      "inlines a join_many as a pair table: parent and child columns, and a parent-row flag written at build",
       async () => {
          const pkg = await packages.create(`${PAIRED}
 #(materialize) name="orders_all" inline=["lines"]
@@ -541,7 +541,6 @@ source: orders is orders_raw extend {
             childKey: "line_id",
             childSourceID: expect.stringMatching(/^lines@/),
             parentRowColumn: "__parent_row",
-            childRowColumn: "__child_row",
          });
          const [sourceID, source] = Object.entries(c.sources).find(
             ([, s]) => s.name === "orders",
@@ -550,20 +549,19 @@ source: orders is orders_raw extend {
          const duckdb = await pkg.getMalloyConnection("duckdb");
          const rows = (
             await duckdb.runSQL(
-               `SELECT id, lines__line_id, __parent_row, __child_row FROM (${sql}) t ORDER BY id, lines__line_id`,
+               `SELECT id, lines__line_id, __parent_row FROM (${sql}) t ORDER BY id, lines__line_id`,
             )
          ).rows.map((r) => [
             Number(r.id),
             r.lines__line_id === null ? null : Number(r.lines__line_id),
             r.__parent_row,
-            r.__child_row,
          ]);
          // Order 3 has no line and keeps one row; line 4 pairs with no order.
-         expect(rows.map(([id, line, , child]) => [id, line, child])).toEqual([
-            [1, 1, true],
-            [1, 2, true],
-            [2, 3, true],
-            [3, null, false],
+         expect(rows.map(([id, line]) => [id, line])).toEqual([
+            [1, 1],
+            [1, 2],
+            [2, 3],
+            [3, null],
          ]);
          // Exactly one parent row per order.
          for (const id of [1, 2, 3]) {
@@ -576,7 +574,7 @@ source: orders is orders_raw extend {
    );
 
    it(
-      "stores a many-to-many pair once per pair, and flags each child once",
+      "stores a many-to-many pair once per pair, and flags each parent once",
       async () => {
          const pkg = await packages.create(`${BASE}
 source: notes is duckdb.sql("""
@@ -596,12 +594,12 @@ source: orders is orders_raw extend {
          const duckdb = await pkg.getMalloyConnection("duckdb");
          const rows = (
             await duckdb.runSQL(
-               `SELECT id, notes__note_id AS n, __child_row AS c FROM (${sql}) t ORDER BY id, n`,
+               `SELECT id, notes__note_id AS n, __parent_row AS p FROM (${sql}) t ORDER BY id, n`,
             )
          ).rows.map((r) => [
             Number(r.id),
             r.n === null ? null : Number(r.n),
-            r.c,
+            r.p,
          ]);
          expect(rows.map(([id, n]) => [id, n])).toEqual([
             [1, 1],
@@ -610,9 +608,11 @@ source: orders is orders_raw extend {
             [3, 1],
             [3, 2],
          ]);
-         for (const note of [1, 2]) {
+         // A note shared by two orders is stored with each, as live's LEFT
+         // JOIN pairs it with each; each order is flagged once.
+         for (const id of [1, 2, 3]) {
             expect(
-               rows.filter(([, n, flag]) => n === note && flag === true),
+               rows.filter(([o, , flag]) => o === id && flag === true),
             ).toHaveLength(1);
          }
       },

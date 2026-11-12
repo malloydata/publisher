@@ -3,22 +3,37 @@
 
 /**
  * R4 for an inlined join_many (materialization v2, phase 4, P5): the pair
- * table, served through its parent-row flag (the served source) and its
- * child-row flag (the join's rows, joined back with the author's condition).
- * Every answer equals live row for row: parent-level and child-level measures,
- * both together, filters on either side, nests, childless parents, fan-out up
- * to 5 and past it, and live's count of a childless parent through a
- * join_many (malloydata/malloy#1762), which the served copy reproduces because
- * its query is live's own LEFT JOIN.
+ * table, served flat. The served source reads the table itself, with no join:
+ * the join's name is a record of the child's columns, a measure over the
+ * source's own fields aggregates the rows the parent-row flag marks, and an
+ * aggregate through the join reads every row, which are live's LEFT JOIN rows.
+ * Every accepted shape equals live row for row: parent-level and child-level
+ * measures, both together, ratios and measures that read measures, filtered
+ * measures, nests, filters on either side, childless parents, fan-out up to 5
+ * and past it, a many-to-many join_many, and live's count of a childless
+ * parent through a join_many (malloydata/malloy#1762). Every shape the flat
+ * table cannot reproduce is answered live, and equals live there too.
  */
 
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
+import { mkdtempSync, rmSync } from "fs";
+import { tmpdir } from "os";
+import path from "path";
+import { SingleConnectionRuntime } from "@malloydata/malloy";
+import { DuckDBConnection } from "@malloydata/db-duckdb";
 import { installSettings } from "../../../src/test_helpers/settings_env";
+import {
+   rerootDeclaration,
+   typeDeclaration,
+   type PairReroot,
+} from "../../../src/service/materialization/serve/served_copy";
+import { flatPairQueryRefusal } from "../../../src/service/governance/ir/pair_flat_query";
 import {
    buildScenario,
    disposeScenarios,
    rowDifference,
    type R4Fixture,
+   type Row,
 } from "./harness";
 
 // Flights 1–12 with 0 to 12 segments each: four childless (4, 5, 9, 11), fan-out
@@ -59,22 +74,7 @@ const seedSql = [
     ) AS t(note_id, carrier, topic)`,
 ];
 
-const model = `source: segments is duckdb.table('segments') extend {
-  primary_key: seg_id
-  dimension: long_leg is miles > 200
-  measure:
-    seg_miles is miles.sum()
-    seg_count is count()
-    longest is miles.max()
-}
-
-source: notes is duckdb.table('notes') extend {
-  primary_key: note_id
-  measure: note_count is count()
-}
-
-#(materialize) storage="lake" inline=["segments"]
-source: flights is duckdb.table('flights') extend {
+const flightsDeclaration = `flights is duckdb.table('flights') extend {
   primary_key: id
   join_many: segments on segments.flight_id = id
   dimension:
@@ -84,11 +84,38 @@ source: flights is duckdb.table('flights') extend {
     flight_count is count()
     total_distance is distance.sum()
     avg_distance is distance.avg()
+    longest_flight is distance.max()
+    carrier_count is count(carrier)
+    distance_per_flight is total_distance / flight_count
+    long_flights is flight_count { where: long_haul }
+    seg_total is segments.miles.sum()
+    seg_n is segments.count()
+    seg_longest is segments.miles.max()
+    seg_avg is segments.miles.avg()
+    seg_ids is count(segments.seg_id)
+    long_legs is segments.count() { where: segments.long_leg }
+    miles_per_flight is seg_total / flight_count
+    mixed_inline is segments.miles.sum() / count()
   view: by_carrier is {
     group_by: carrier
-    aggregate: flight_count, total_distance, segments.seg_miles
+    aggregate: flight_count, total_distance, seg_total, seg_n
   }
+}`;
+
+const model = `source: segments is duckdb.table('segments') extend {
+  primary_key: seg_id
+  dimension: long_leg is miles > 200
+  measure:
+    seg_miles is miles.sum()
+    seg_count is count()
 }
+
+source: notes is duckdb.table('notes') extend {
+  primary_key: note_id
+}
+
+#(materialize) storage="lake" inline=["segments"]
+source: ${flightsDeclaration}
 
 #(materialize) storage="lake" inline=["notes"]
 source: flights_notes is duckdb.table('flights') extend {
@@ -97,6 +124,7 @@ source: flights_notes is duckdb.table('flights') extend {
   measure:
     flight_count is count()
     total_distance is distance.sum()
+    note_n is notes.count()
 }
 
 #(materialize) storage="lake" inline=["segments"]
@@ -104,9 +132,15 @@ source: flights_unkeyed is duckdb.table('flights') extend {
   join_many: segments on segments.flight_id = id
   measure: flight_count is count()
 }
+
+#(materialize) storage="lake"
+source: carriers is duckdb.table('notes') extend {
+  primary_key: note_id
+  join_many: flights on flights.carrier = carrier
+}
 `;
 
-describe("R4: an inlined join_many, served from its pair table, answers equal to live", () => {
+describe("R4: an inlined join_many, served flat from its pair table, answers equal to live", () => {
    let restore: () => void;
    let fixture: R4Fixture;
    beforeAll(async () => {
@@ -124,15 +158,13 @@ describe("R4: an inlined join_many, served from its pair table, answers equal to
       await disposeScenarios();
    });
 
-   it("stores one parent row per flight, childless flights included", async () => {
+   it("stores one row per row of live's LEFT JOIN, and one parent row per flight", async () => {
       const rows = await fixture.storedSQL(
          (t) =>
-            `SELECT count(*) AS n, count(*) FILTER (WHERE __parent_row) AS parents, count(*) FILTER (WHERE __child_row) AS children FROM ${t("flights")}`,
+            `SELECT count(*) AS n, count(*) FILTER (WHERE __parent_row) AS parents FROM ${t("flights")}`,
       );
       // 30 paired segments, one row each for the 4 childless flights.
-      expect(rows.map((r) => [r.n, r.parents, r.children].map(Number))).toEqual(
-         [[34, 12, 30]],
-      );
+      expect(rows.map((r) => [r.n, r.parents].map(Number))).toEqual([[34, 12]]);
    });
 
    const served = [
@@ -141,45 +173,57 @@ describe("R4: an inlined join_many, served from its pair table, answers equal to
          "run: flights -> { group_by: carrier; aggregate: flight_count, total_distance, avg_distance }",
       ],
       [
+         "non-additive parent measures: avg, max, a distinct count",
+         "run: flights -> { group_by: long_haul; aggregate: avg_distance, longest_flight, carrier_count }",
+      ],
+      [
+         "a ratio of measures, and a filtered measure that reads a measure",
+         "run: flights -> { group_by: carrier; aggregate: distance_per_flight, long_flights }",
+      ],
+      [
          "a parent-level filter",
          "run: flights -> { where: long_haul; group_by: carrier; aggregate: flight_count, total_distance }",
       ],
       [
          "child-level measures",
-         "run: flights -> { group_by: carrier; aggregate: segments.seg_miles, segments.longest }",
+         "run: flights -> { group_by: carrier; aggregate: seg_total, seg_longest, seg_avg, seg_ids }",
+      ],
+      [
+         "child-level aggregates written in the query",
+         "run: flights -> { group_by: carrier; aggregate: m is segments.miles.sum(), n is segments.count(), a is segments.miles.avg(), d is count(segments.seg_id) }",
       ],
       [
          "live's count of a childless parent through a join_many (malloydata/malloy#1762)",
-         "run: flights -> { group_by: carrier; aggregate: segments.seg_count, n is count(segments.seg_id) }",
+         "run: flights -> { group_by: id; aggregate: seg_n, n is segments.count() }",
       ],
       [
-         "parent and child measures together",
-         "run: flights -> { group_by: carrier; aggregate: flight_count, total_distance, segments.seg_miles, segments.seg_count }",
+         "parent and child measures together, and a ratio across them",
+         "run: flights -> { group_by: carrier; aggregate: flight_count, total_distance, seg_total, seg_n, miles_per_flight }",
       ],
       ["the source's own view", "run: flights -> by_carrier"],
       [
-         "grouped by a child dimension the pair table stores",
-         "run: flights -> { group_by: segments.long_leg; aggregate: flight_count, total_distance, segments.seg_miles }",
+         "child measures grouped by a child dimension the pair table stores",
+         "run: flights -> { group_by: segments.long_leg; aggregate: seg_total, seg_n }",
       ],
       [
          "grouped by a dimension through the join, computed at read",
-         "run: flights -> { group_by: leg_miles; aggregate: flight_count }",
+         "run: flights -> { group_by: leg_miles; aggregate: seg_n }",
       ],
       [
-         "a filter on the child side",
-         "run: flights -> { where: segments.miles > 150; group_by: carrier; aggregate: flight_count, total_distance, segments.seg_miles }",
+         "a filter on the child side, child measures",
+         "run: flights -> { where: segments.miles > 150; group_by: carrier; aggregate: seg_total, seg_n }",
       ],
       [
-         "childless parents found through the join",
-         "run: flights -> { where: segments.seg_id = null; group_by: carrier; aggregate: flight_count }",
+         "filtered child measures, filtered by either side",
+         "run: flights -> { group_by: carrier; aggregate: long_legs, c is seg_n { where: long_haul }, m is seg_total { where: segments.long_leg } }",
       ],
       [
-         "filtered measures on both sides",
-         "run: flights -> { group_by: carrier; aggregate: d is total_distance { where: segments.long_leg }, c is segments.seg_count { where: long_haul } }",
+         "a nest of child aggregates under parent ones",
+         "run: flights -> { group_by: carrier; aggregate: flight_count, total_distance; nest: legs is { group_by: segments.long_leg; aggregate: seg_total, seg_n; order_by: long_leg } }",
       ],
       [
-         "a nest of parent and child aggregates",
-         "run: flights -> { group_by: carrier; aggregate: flight_count; nest: legs is { group_by: segments.long_leg; aggregate: total_distance, segments.seg_miles } }",
+         "a nest of parent aggregates by a parent dimension",
+         "run: flights -> { group_by: carrier; aggregate: seg_n; nest: haul is { group_by: long_haul; aggregate: flight_count, total_distance; order_by: long_haul } }",
       ],
       [
          "one row per pair",
@@ -187,15 +231,19 @@ describe("R4: an inlined join_many, served from its pair table, answers equal to
       ],
       [
          "a fan-out past 5 (flight 7, 12 segments)",
-         "run: flights -> { where: id = 7 | 6; group_by: id; aggregate: total_distance, segments.seg_miles, segments.seg_count }",
+         "run: flights -> { where: id = 7 | 6; group_by: id; aggregate: total_distance, seg_total, seg_n }",
+      ],
+      [
+         "a having on a parent measure",
+         "run: flights -> { group_by: carrier; aggregate: flight_count, seg_total; having: flight_count > 2 }",
       ],
       [
          "a many-to-many join_many (each note pairs with several flights)",
-         "run: flights_notes -> { group_by: carrier; aggregate: flight_count, total_distance, notes.note_count }",
+         "run: flights_notes -> { group_by: carrier; aggregate: flight_count, total_distance, note_n }",
       ],
       [
-         "a many-to-many join_many, grouped by the child",
-         "run: flights_notes -> { group_by: notes.topic; aggregate: flight_count, total_distance, notes.note_count }",
+         "a many-to-many join_many, child grouped",
+         "run: flights_notes -> { group_by: notes.topic; aggregate: note_n }",
       ],
    ] as const;
    for (const [name, malloy] of served) {
@@ -211,13 +259,13 @@ describe("R4: an inlined join_many, served from its pair table, answers equal to
       const run = await fixture.run({
          name: "count",
          malloy:
-            "run: flights -> { where: id = 4 | 6; group_by: id; aggregate: segments.seg_count }",
+            "run: flights -> { where: id = 4 | 6; group_by: id; aggregate: seg_n }",
       });
       expect(run.servedVia).toBe("served_copy");
       // Live counts childless flight 4 as one segment; so does the served copy.
       expect(
          run.served
-            .map((r) => [Number(r.id), Number(r.seg_count)])
+            .map((r) => [Number(r.id), Number(r.seg_n)])
             .sort((a, b) => a[0] - b[0]),
       ).toEqual([
          [4, 1],
@@ -226,12 +274,87 @@ describe("R4: an inlined join_many, served from its pair table, answers equal to
       expect(rowDifference(run.live, run.served)).toBeUndefined();
    });
 
+   // Each answered live, equal to live: the flat table cannot reproduce it.
+   const declined = [
+      [
+         "a parent aggregate written in the query",
+         "run: flights -> { group_by: carrier; aggregate: c is count(), d is distance.sum() }",
+         "COUNT_SEMANTICS",
+      ],
+      [
+         "a parent measure grouped by a child dimension",
+         "run: flights -> { group_by: segments.long_leg; aggregate: flight_count, total_distance }",
+         "COUNT_SEMANTICS",
+      ],
+      [
+         "a parent measure under a child filter",
+         "run: flights -> { where: segments.miles > 150; group_by: carrier; aggregate: flight_count }",
+         "COUNT_SEMANTICS",
+      ],
+      [
+         "a parent measure filtered by a child field",
+         "run: flights -> { group_by: carrier; aggregate: d is total_distance { where: segments.long_leg } }",
+         "COUNT_SEMANTICS",
+      ],
+      [
+         "childless parents found through the join, counted at the parent",
+         "run: flights -> { where: segments.seg_id = null; group_by: carrier; aggregate: flight_count }",
+         "COUNT_SEMANTICS",
+      ],
+      [
+         "a measure mixing both sides in one expression",
+         "run: flights -> { group_by: carrier; aggregate: mixed_inline }",
+         "COUNT_SEMANTICS",
+      ],
+      [
+         "a parent measure in a nest grouped by a child dimension",
+         "run: flights -> { group_by: carrier; nest: legs is { group_by: segments.long_leg; aggregate: flight_count; order_by: long_leg } }",
+         "COUNT_SEMANTICS",
+      ],
+      [
+         "a window function",
+         "run: flights -> { group_by: carrier; aggregate: flight_count; calculate: r is rank() }",
+         "COUNT_SEMANTICS",
+      ],
+      [
+         "an ungrouped aggregate",
+         "run: flights -> { group_by: carrier; aggregate: seg_n, t is all(seg_n) }",
+         "COUNT_SEMANTICS",
+      ],
+      [
+         "a select: over the source",
+         "run: flights -> { select: id, carrier }",
+         "COUNT_SEMANTICS",
+      ],
+      [
+         "the joined source's own measure, which the record cannot carry",
+         "run: flights -> { group_by: carrier; aggregate: segments.seg_miles }",
+         "MISSING_FIELD",
+      ],
+      [
+         "a join to the pair source from another source",
+         "run: carriers -> { group_by: carrier; aggregate: flights.flight_count }",
+         "COUNT_SEMANTICS",
+      ],
+   ] as const;
+   for (const [name, malloy, reason] of declined) {
+      it(`answers live: ${name}`, async () => {
+         const run = await fixture.run({ name, malloy, expectLive: true });
+         expect(run.servedVia).toBeUndefined();
+         expect(rowDifference(run.live, run.served)).toBeUndefined();
+         fixture.setBindings(fixture.bindings);
+         const { path } = await fixture.runAsIs(malloy);
+         expect(path?.considered?.map((c) => c.reason)).toContain(reason);
+      });
+   }
+
    it("leaves no problem on the served copy", async () => {
       expect(await fixture.servedCopyProblems()).toEqual([]);
    });
 
    it("answers a refused inline= (no primary key) live", async () => {
       expect(fixture.bindings.map((b) => b.sourceName).sort()).toEqual([
+         "carriers",
          "flights",
          "flights_notes",
       ]);
@@ -244,11 +367,123 @@ describe("R4: an inlined join_many, served from its pair table, answers equal to
       expect(run.servedVia).toBeUndefined();
       expect(rowDifference(run.live, run.served)).toBeUndefined();
    });
+
+   // Mutation: the same served source with its parent measures left as the
+   // author wrote them (no parent-row filter) reads each flight once per
+   // segment. The answer is wrong, and the query check refuses it.
+   it("a parent measure without the parent-row filter answers wrong, and is refused", async () => {
+      const malloy =
+         "run: flights -> { group_by: carrier; aggregate: flight_count, total_distance }";
+      const live = (await fixture.run({ name: "mutation", malloy })).live;
+      const dir = mkdtempSync(path.join(tmpdir(), "pair-mutation-"));
+      try {
+         const file = path.join(dir, "pair.parquet");
+         await fixture.storedSQL(
+            (t) => `COPY (SELECT * FROM ${t("flights")}) TO '${file}'`,
+         );
+         const duckdb = new DuckDBConnection("duckdb", ":memory:");
+         await duckdb.runSQL(`CREATE TABLE pair AS SELECT * FROM '${file}'`);
+         const described = (await duckdb.runSQL("DESCRIBE pair")).rows as Row[];
+         const types = new Map(
+            described.map((r) => [
+               String(r.column_name),
+               String(r.column_type),
+            ]),
+         );
+         const own = ["id", "carrier", "distance", "long_haul"].map((name) => ({
+            name,
+            type: types.get(name) as string,
+         }));
+         const pair = (
+            parentMeasures: PairReroot["parentMeasures"],
+         ): PairReroot => ({
+            join: "segments",
+            parentRowColumn: { name: "__parent_row", type: "BOOLEAN" },
+            parentRowField: "__parent_row__pair",
+            childColumns: ["seg_id", "flight_id", "miles", "long_leg"].map(
+               (name) => ({
+                  name,
+                  column: `segments__${name}`,
+                  internalName: `segments__${name}__pair`,
+                  type: types.get(`segments__${name}`) as string,
+               }),
+            ),
+            parentMeasures,
+            childStoredDimensions: ["long_leg"],
+         });
+         const servedText = (p: PairReroot) =>
+            `##! experimental { virtual_source }
+${typeDeclaration({
+   typeName: "flights__served",
+   columns: [
+      ...own,
+      p.parentRowColumn,
+      ...p.childColumns.map((c) => ({ name: c.column, type: c.type })),
+   ],
+})}
+source: ${rerootDeclaration(flightsDeclaration, {
+               sourceName: "flights",
+               connectionAlias: "duckdb",
+               virtualHandle: "pair",
+               typeName: "flights__served",
+               columns: own,
+               storedDimensions: ["long_haul"],
+               pair: p,
+            })}`;
+         const runtime = new SingleConnectionRuntime({ connection: duckdb });
+         const virtualMap = new Map([["duckdb", new Map([["pair", "pair"]])]]);
+         const answer = async (p: PairReroot) => {
+            const query = runtime.loadModel(servedText(p)).loadQuery(malloy);
+            const sql = await query.getSQL({ virtualMap } as never);
+            const prepared = (await query.getPreparedQuery()) as unknown as {
+               _query: { pipeline?: unknown; structRef?: unknown };
+               _modelDef: { contents: Record<string, unknown> };
+            };
+            const refusal = flatPairQueryRefusal(
+               prepared._query,
+               prepared._modelDef.contents.flights as never,
+               {
+                  join: "segments",
+                  parentRowField: "__parent_row__pair",
+                  annotatedChildFields: new Set(),
+               },
+            );
+            // Raw DuckDB returns a DOUBLE sum as text; Malloy's run, a number.
+            const rows = ((await duckdb.runSQL(sql)).rows as Row[]).map((r) =>
+               Object.fromEntries(
+                  Object.entries(r).map(([k, v]) => [
+                     k,
+                     typeof v === "string" && /^-?[\d.]+$/.test(v)
+                        ? Number(v)
+                        : v,
+                  ]),
+               ),
+            );
+            return { rows, refusal };
+         };
+         const flagged = await answer(
+            pair(
+               ["flight_count", "total_distance"].map((name) => ({
+                  name,
+                  internalName: `${name}__pair`,
+               })),
+            ),
+         );
+         expect(rowDifference(live, flagged.rows)).toBeUndefined();
+         expect(flagged.refusal).toBeUndefined();
+         const mutated = await answer(pair([]));
+         expect(rowDifference(live, mutated.rows)).toBeDefined();
+         expect(mutated.refusal).toMatch(/not one of its measures/);
+         await duckdb.close();
+      } finally {
+         rmSync(dir, { recursive: true, force: true });
+      }
+   });
 });
 
 // The load's classification checks run on the served copy's own compile, so
 // the joined source's fields must keep their classes through the pair table:
-// each is written on the field the child rows are renamed back to.
+// each is written on its stored column, which the record's field reads.
 const classified = `##! experimental.access_modifiers
 source: segments is duckdb.table('segments') include {
   #(classification) "none"
@@ -294,9 +529,19 @@ describe("R4: a pair table keeps the joined source's classifications", () => {
       const run = await fixture.run({
          name: "classified",
          malloy:
-            "run: flights -> { group_by: carrier; aggregate: flight_count, segments.seg_miles }",
+            "run: flights -> { group_by: carrier; aggregate: flight_count, m is segments.miles.sum() }",
       });
       expect(run.servedVia).toBe("served_copy");
       expect(rowDifference(run.live, run.served)).toBeUndefined();
+      // A classified child field as an output: the record cannot carry its
+      // annotations onto the result, so live answers it, with them.
+      const out = await fixture.run({
+         name: "annotated output",
+         malloy:
+            "run: flights -> { group_by: segments.miles; aggregate: n is segments.count() }",
+         expectLive: true,
+      });
+      expect(out.servedVia).toBeUndefined();
+      expect(rowDifference(out.live, out.served)).toBeUndefined();
    });
 });

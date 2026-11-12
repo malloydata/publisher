@@ -93,40 +93,61 @@ export interface Reroot {
    readTimeTerms?: readonly MaterializeReadTimeTerm[];
    /**
     * For a `#(materialize)` source that inlines a join_many: its stored table
-    * is a pair table (P5), so the source is re-rooted on its parent rows and
-    * the join re-pointed at its child rows ({@link PairReroot}).
+    * is a pair table (P5), read as the source itself with no join
+    * ({@link PairReroot}).
     */
    pair?: PairReroot;
 }
 
 /**
- * How the served copy reads a pair table (an inlined join_many, P5). The
- * source is the rows the parent-row flag marks, one per parent, so it is the
- * author's source over its own columns. Its join_many keeps the author's
- * condition but joins the rows the child-row flag marks, one per child,
- * renamed back to the joined source's own fields and extended with the joined
- * source's own trailing `extend` blocks, so the query is live's LEFT JOIN and
- * Malloy's symmetric aggregates (and its count of a childless parent,
- * malloydata/malloy#1762) apply exactly as they do live.
+ * How the served copy reads a pair table (an inlined join_many, P5): as the
+ * source itself, one row per row of live's LEFT JOIN, with no join at read.
+ * The join's name is a record of the joined source's stored columns, so
+ * `<join>.<field>` reads the column on the same row; the join_many statement
+ * is replaced by that record. Each measure over the source's own fields is
+ * re-declared to aggregate only the rows the parent-row flag marks (one per
+ * parent), and an aggregate through the join reads every row, as live's does.
+ * The stored flag and child columns are renamed internally, so no query reads
+ * them. What the record cannot carry (the joined source's measures and views,
+ * its fields' annotations) is not in the served source; a query that needs it
+ * is answered live (governance/ir/pair_flat_query.ts says which).
  */
 export interface PairReroot {
    /** The join_many's name on the re-rooted source. */
    join: string;
    /** The parent-row flag's stored column. */
    parentRowColumn: ServedColumn;
-   /** The child-row flag's stored column. */
-   childRowColumn: ServedColumn;
-   /** The `type:` the child rows are read as; unique in the file. */
-   childTypeName: string;
+   /** The internal name the flag is read under. */
+   parentRowField: string;
    /**
     * The joined source's stored fields: `name` its field, `column` the pair
-    * table's `<join>__<field>` column, and the field's own annotations.
+    * table's `<join>__<field>` column, `internalName` what the column is
+    * renamed to, and the field's timeframe, if it has one.
     */
-   childColumns: readonly (ServedColumn & { column: string })[];
-   /** The joined source's declaration, `<name> is <definition>`, verbatim. */
-   childDeclaration: string;
-   /** The joined source's computed dimensions the pair table stores. */
+   childColumns: readonly (ServedColumn & {
+      column: string;
+      internalName: string;
+   })[];
+   /**
+    * The source's measures over its own fields only, re-declared over the
+    * parent rows: each renamed internally to `internalName` and declared again
+    * under its name with the author's annotations and access.
+    */
+   parentMeasures: readonly PairMeasure[];
+   /**
+    * The joined source's computed dimensions the pair table stores, evaluated
+    * at build (so a query that sets a timezone over them is answered live).
+    */
    childStoredDimensions: readonly string[];
+}
+
+/** One measure a pair table's served source re-declares over its parent rows. */
+export interface PairMeasure {
+   name: string;
+   internalName: string;
+   notes?: readonly string[];
+   /** The author's access modifier; absent for a public measure. */
+   access?: "internal";
 }
 
 /** One stored column of a re-rooted source. */
@@ -249,7 +270,8 @@ export function buildServedCopy(
          const replaced = rerootDeclaration(declaration, r);
          if (replaced === undefined && r.pair && spans) {
             // The pair's join is not in the source's own `extend` text (a base
-            // the re-root replaces declares it), so it cannot be re-pointed.
+            // the re-root replaces declares it, or it shares its statement),
+            // so it cannot be replaced by its record.
             refused.push({
                sourceName: r.sourceName,
                url,
@@ -278,7 +300,7 @@ export function buildServedCopy(
  * The re-rooted declaration text for one source: `<name> is <virtual>` plus the
  * author's trailing `extend { … }` blocks, verbatim. Undefined when the
  * declaration text does not parse as `<name> is <definition>`, or, for a pair
- * table, when the join_many it re-points is not in that text.
+ * table, when the join_many it replaces is not in that text on its own.
  */
 export function rerootDeclaration(
    declaration: string,
@@ -296,18 +318,9 @@ export function rerootDeclaration(
 ): string | undefined {
    const spans = declarationSpans(declaration);
    if (!spans) return undefined;
-   const virtualOf = (typeName: string) =>
+   const virtual =
       `${identifier(r.connectionAlias)}.virtual(${stringLiteral(r.virtualHandle)})` +
-      `::${identifier(typeName)}`;
-   let virtual = virtualOf(r.typeName);
-   if (r.pair) {
-      // The parent rows, over the source's own columns only: the flag and
-      // the child columns are not fields of the served source.
-      const own = (r.columns ?? []).map((c) => `    ${identifier(c.name)}`);
-      virtual =
-         `${virtual} -> {\n  where: ${identifier(r.pair.parentRowColumn.name)}\n` +
-         `  select:\n${own.join(",\n")}\n}`;
-   }
+      `::${identifier(r.typeName)}`;
    const name = declaration.slice(0, spans.nameEnd).trimEnd();
    let extend = servedExtend(
       spans.extendStart === undefined
@@ -318,20 +331,18 @@ export function rerootDeclaration(
       r.reservedNames ?? [],
    );
    if (extend === undefined) return undefined;
+   let pairHead = "";
    if (r.pair) {
-      const child = pairChildSource(r.pair, virtualOf(r.pair.childTypeName), [
-         ...(r.reservedNames ?? []),
-      ]);
-      if (child === undefined) return undefined;
-      const repointed = repointJoin(extend, r.pair.join, child);
-      if (repointed === undefined) return undefined;
-      extend = repointed;
+      const replaced = replacePairJoin(extend, r.pair.join, pairRecord(r.pair));
+      if (replaced === undefined) return undefined;
+      pairHead = ` ${pairRenames(r.pair)}`;
+      extend = `${replaced}${pairMeasures(r.pair)}`;
    }
    const terms = (r.readTimeTerms ?? [])
       .map(readTimeTermText)
       .filter((t) => t !== undefined);
    const reread = terms.length ? ` extend { where: ${terms.join(", ")} }` : "";
-   return `${name} is ${virtual}${reread}${extend ? ` ${extend}` : ""}`;
+   return `${name} is ${virtual}${reread}${pairHead}${extend ? ` ${extend}` : ""}`;
 }
 
 /**
@@ -384,53 +395,85 @@ function servedExtend(
 }
 
 /**
- * The source a pair table's join_many reads in the served copy: the rows the
- * child-row flag marks, each stored column renamed back to the joined
- * source's field (with that field's annotations), then the joined source's
- * own trailing `extend` blocks over them. Undefined when its declaration does
- * not parse.
+ * The extend block that opens a pair table's served source: the flag and each
+ * child column renamed internally, so the record and the re-declared measures
+ * read them and no query does.
  */
-function pairChildSource(
-   pair: PairReroot,
-   virtual: string,
-   reservedNames: readonly string[],
-): string | undefined {
-   const spans = declarationSpans(pair.childDeclaration);
-   if (!spans) return undefined;
-   // malloy-text: the author's own notes, then names through identifier
-   const select = pair.childColumns
-      .map(
-         (c) =>
-            (c.notes ?? []).map((n) => `      ${n.trimEnd()}\n`).join("") +
-            `      ${identifier(c.name)} is ${identifier(c.column)}`,
-      )
-      .join(",\n");
-   const extend = servedExtend(
-      spans.extendStart === undefined
-         ? ""
-         : pair.childDeclaration.slice(spans.extendStart).trimEnd(),
-      pair.childColumns,
-      pair.childStoredDimensions,
-      reservedNames,
-   );
-   if (extend === undefined) return undefined;
-   const base =
-      // malloy-text: virtual is the caller's virtual() reference, through identifier and stringLiteral
-      `(${virtual} -> {\n    where: ${identifier(pair.childRowColumn.name)}\n` +
-      `    select:\n${select}\n  })`;
-   return extend ? `${base} ${extend}` : base;
+function pairRenames(pair: PairReroot): string {
+   const renames = [
+      `    ${identifier(pair.parentRowField)} is ${identifier(pair.parentRowColumn.name)}`,
+      ...pair.childColumns.map(
+         (c) => `    ${identifier(c.internalName)} is ${identifier(c.column)}`,
+      ),
+   ].join("\n");
+   return `extend {\n  internal rename:\n${renames}\n}`;
 }
 
 /**
- * In a run of `extend { … }` blocks, point the `join_many:` definition named
- * `join` at `source` (`<join> is <source>`), keeping its name, its condition
- * and its annotations. Undefined when the text does not lex or declares no
- * such join_many: one inherited from a base the re-root replaces is not in it.
+ * The record a pair table's join_many is replaced by: `<join> is { <field> is
+ * <internal column>, … }`, a timeframe field truncated again as its stored
+ * value was.
  */
-export function repointJoin(
+function pairRecord(pair: PairReroot): string {
+   // malloy-text: names through identifier and a timeframe from TIMEFRAMES
+   const kids = pair.childColumns
+      .map(
+         (c) =>
+            `    ${identifier(c.name)} is ${identifier(c.internalName)}` +
+            (c.timeframe && TIMEFRAMES.has(c.timeframe)
+               ? `.${c.timeframe}`
+               : ""),
+      )
+      .join(",\n");
+   return `dimension: ${identifier(pair.join)} is {\n${kids}\n  }`;
+}
+
+/**
+ * The extend block that closes a pair table's served source: each measure
+ * over the source's own fields renamed internally and declared again, under
+ * its own name, annotations and access, over the rows the parent-row flag
+ * marks. A measure that reads it by name (a ratio of two, a view) reads the
+ * re-declared one. Empty when there is none.
+ */
+function pairMeasures(pair: PairReroot): string {
+   if (pair.parentMeasures.length === 0) return "";
+   const flag = identifier(pair.parentRowField);
+   const renames = pair.parentMeasures
+      .map((m) => `    ${identifier(m.internalName)} is ${identifier(m.name)}`)
+      .join("\n");
+   const notes = (m: PairMeasure) =>
+      // malloy-text: the author's own notes, as written on the measure
+      (m.notes ?? []).map((n) => `    ${n.trimEnd()}\n`).join("");
+   const definitions = (list: readonly PairMeasure[]) =>
+      list
+         .map(
+            (m) =>
+               notes(m) +
+               `    ${identifier(m.name)} is ${identifier(m.internalName)} { where: ${flag} }`,
+         )
+         .join("\n");
+   const visible = pair.parentMeasures.filter((m) => m.access === undefined);
+   const internal = pair.parentMeasures.filter((m) => m.access === "internal");
+   const blocks = [`  internal rename:\n${renames}`];
+   if (visible.length > 0) blocks.push(`  measure:\n${definitions(visible)}`);
+   if (internal.length > 0) {
+      blocks.push(`  internal measure:\n${definitions(internal)}`);
+   }
+   return ` extend {\n${blocks.join("\n")}\n}`;
+}
+
+/**
+ * In a run of `extend { … }` blocks, replace the `join_many:` statement that
+ * declares `join` (and nothing else) with `statement`, from its keyword on, so
+ * the annotations and access label written before it stay on the statement
+ * that replaces it. Undefined when the text does not lex, declares no such
+ * join_many (one inherited from a base the re-root replaces is not in it), or
+ * declares it in a statement with other joins.
+ */
+export function replacePairJoin(
    text: string,
    join: string,
-   source: string,
+   statement: string,
 ): string | undefined {
    const tokens = lexAll(text);
    if (!tokens) return undefined;
@@ -451,31 +494,25 @@ export function repointJoin(
       const body = level.filter(
          (t) => t.start > colon.start && t.start < stmtEnd,
       );
-      for (let k = 0; k + 1 < body.length; k++) {
-         if (!isName(body[k]) || nameOf(body[k]) !== join) continue;
-         // A definition opens the statement, follows a comma, or starts a
-         // new line after the previous one.
-         if (
+      const first = body[0];
+      if (!first || !isName(first) || nameOf(first) !== join) continue;
+      // One definition: no comma at the statement's own level, and no second
+      // `<name> on`/`<name> is` opening a line of its own.
+      const another = body.some(
+         (t, k) =>
             k > 0 &&
-            body[k - 1].text !== "," &&
-            !text.slice(body[k - 1].end, body[k].start).includes("\n")
-         ) {
-            continue;
-         }
-         const next = body[k + 1];
-         if (next.text === "on") {
-            return (
-               text.slice(0, body[k].end) +
-               ` is ${source}` +
-               text.slice(body[k].end)
-            );
-         }
-         if (next.text !== "is") continue;
-         // `<join> is <source> on …`: replace what it joins, up to `on`.
-         const on = body.slice(k + 2).find((t) => t.text === "on");
-         if (!on) return undefined;
-         return text.slice(0, next.end) + ` ${source} ` + text.slice(on.start);
-      }
+            (t.text === "," ||
+               (isName(t) &&
+                  (body[k + 1]?.text === "on" || body[k + 1]?.text === "is") &&
+                  text.slice(body[k - 1].end, t.start).includes("\n"))),
+      );
+      if (another) return undefined;
+      const inStatement = tokens.filter(
+         (t) => t.start >= kw.start && t.end <= stmtEnd,
+      );
+      const end = inStatement[inStatement.length - 1]?.end;
+      if (end === undefined) return undefined;
+      return text.slice(0, kw.start) + statement + text.slice(end);
    }
    return undefined;
 }
@@ -785,26 +822,27 @@ function withTypes(text: string, applied: readonly Reroot[]): string {
       break;
    }
    const types = applied
-      .flatMap((r) =>
-         r.pair
-            ? [
-                 typeDeclaration({
+      .map((r) =>
+         typeDeclaration(
+            r.pair
+               ? {
                     typeName: r.typeName,
-                    columns: [...r.columns, r.pair.parentRowColumn],
-                 }),
-                 typeDeclaration({
-                    typeName: r.pair.childTypeName,
-                    // The child's annotations go on its renamed field instead.
+                    // Each child column carries its field's annotations, so
+                    // the record's fields, derived from it, keep its
+                    // classification (a record's own fields cannot be
+                    // annotated).
                     columns: [
+                       ...r.columns,
+                       r.pair.parentRowColumn,
                        ...r.pair.childColumns.map((c) => ({
                           name: c.column,
                           type: c.type,
+                          ...(c.notes ? { notes: c.notes } : {}),
                        })),
-                       r.pair.childRowColumn,
                     ],
-                 }),
-              ]
-            : [typeDeclaration(r)],
+                 }
+               : r,
+         ),
       )
       .join("\n");
    const head = lines.slice(0, i).join("\n");

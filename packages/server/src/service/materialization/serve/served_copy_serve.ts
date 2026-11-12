@@ -50,6 +50,11 @@ import {
    resolveStructRefSource,
 } from "../../governance/ir/prepared_query";
 import {
+   flatPairQueryRefusal,
+   pairMeasureLevels,
+   type FlatPair,
+} from "../../governance/ir/pair_flat_query";
+import {
    authorModelLiftContext,
    buildVirtualMap,
    narrowSchemaToPublic,
@@ -60,6 +65,7 @@ import {
 import {
    buildServedCopy,
    declaredBaseName,
+   type PairMeasure,
    type PairReroot,
    type Reroot,
    type ServedColumn,
@@ -82,13 +88,16 @@ type VirtualMap = Map<string, Map<string, string>>;
  * the copy waits on a join across connections, or the query reads a join it
  * leaves out across connections; `not_served`, the copy (or the
  * queried source in it) carries a `served-copy-not-served` warning;
- * `opt_out`, the queried source opts out with `#@ -persist`.
+ * `opt_out`, the queried source opts out with `#@ -persist`; `pair_shape`,
+ * the query aggregates a pair table (an inlined join_many, served flat) in a
+ * way that table does not reproduce exactly.
  */
 export type ServedCopyDeclineCode =
    | "time_zone"
    | "cross_connection"
    | "not_served"
-   | "opt_out";
+   | "opt_out"
+   | "pair_shape";
 
 /** A query the served copy declines, with why. */
 export class ServedCopyDecline extends Error {
@@ -227,6 +236,15 @@ interface Compiled {
     * (decision 6). Dropped with the compile: a rebind or reload starts empty.
     */
    declined?: Map<string, ServedCopyDecline>;
+   /**
+    * The pair tables (inlined join_many, P5) the copy reads flat: a query that
+    * reads one is checked against it (governance/ir/pair_flat_query.ts).
+    */
+   pairs?: readonly {
+      sourceID: string;
+      tablePath: string;
+      pair: FlatPair;
+   }[];
    /**
     * Definitions left out because a join they read crosses connections in the
     * served copy (question 11): a query that reads one skips the served copy
@@ -438,6 +456,35 @@ export class ServedCopyServe {
          // left unserved, with a package warning saying why.
          decline("the query reads no re-rooted table", "not_served");
       }
+      // A pair table (an inlined join_many) is read flat: exact only for the
+      // aggregates pair_flat_query.ts proves, and only as the queried
+      // source's own table, never through a join to it (its rows would fan
+      // out the joining source).
+      const pairsRead = (compiled.pairs ?? []).filter((p) =>
+         tablesRead.some((b) => b.tablePath === p.tablePath),
+      );
+      if (pairsRead.length > 0) {
+         const prepared = await readPreparedQuery(runnable);
+         const struct = resolveStructRefSource<{
+            fields?: unknown;
+            filterList?: unknown;
+         }>(prepared.structRef, compiled.modelDef as never);
+         const chain = struct
+            ? SourceMap.of(compiled.modelDef).chainOf(struct as never)
+            : [];
+         const own = pairsRead.find((p) => chain.includes(p.sourceID));
+         const refusal =
+            pairsRead.length > 1 || !own
+               ? "the query reads a pair table through a join to it, whose rows would fan out the joining source"
+               : flatPairQueryRefusal(prepared.query, struct, own.pair);
+         if (refusal !== undefined) {
+            decline(
+               `the pair table cannot answer this query exactly: ${refusal}`,
+               "pair_shape",
+               `The table stores an inlined join_many flat, which cannot answer this query exactly (${refusal}), so it is answered live.`,
+            );
+         }
+      }
       // A query that sets a timezone is answered live when it reads either
       // of two tables. A stored computed dimension (`order_ts.day`,
       // `day_of_week(order_ts)`) was evaluated at build in the default
@@ -555,7 +602,6 @@ export class ServedCopyServe {
       map: SourceMap,
       problems: ServedCopyProblem[],
       reservedNames: readonly string[],
-      fileText: (url: string) => string | undefined,
    ): Reroot | undefined {
       // `#(materialize)`: the binding is the generated build source's; its
       // plan names the author's source, by sourceID.
@@ -648,10 +694,10 @@ export class ServedCopyServe {
          pair = pairRerootOf(
             plan,
             plan.pair,
-            sourceName,
+            def.fields ?? [],
             new Map(binding.schema.map((c) => [c.name, c.type])),
             map,
-            fileText,
+            [...reservedNames, ...plan.columns.map((c) => c.column)],
          );
          if (!pair) {
             problems.push({ sourceName, reason: "column_types" });
@@ -707,13 +753,7 @@ export class ServedCopyServe {
          }
       });
       for (const binding of bindings) {
-         const reroot = this.rerootFor(
-            binding,
-            map,
-            problems,
-            reservedNames,
-            (u) => lift.fileText(u),
-         );
+         const reroot = this.rerootFor(binding, map, problems, reservedNames);
          if (reroot) {
             candidates.push({
                binding,
@@ -823,10 +863,11 @@ export class ServedCopyServe {
                   await load(keyedOverlay(files));
                },
             }).catch(() => undefined);
-            // A pair table's re-pointed join is the one text the served copy
-            // writes from another declaration (the joined source's); when the
-            // copy does not compile, try again without the pair tables first,
-            // so the model's other tables still serve.
+            // A pair table's served source drops what its record cannot carry
+            // (the joined source's measures and views): author text that reads
+            // one through the join does not compile there. When the copy does
+            // not compile, try again without the pair tables first, so the
+            // model's other tables still serve.
             const withoutPairs = (detail: string): boolean => {
                const pairs = candidates.filter((c) => c.reroot.pair);
                if (pairs.length === 0) return false;
@@ -964,6 +1005,27 @@ export class ServedCopyServe {
             rerooted,
             aliased,
             problems,
+            pairs: candidates.flatMap((c) =>
+               c.reroot.pair
+                  ? [
+                       {
+                          sourceID: c.reroot.sourceID,
+                          tablePath: c.binding.tablePath,
+                          pair: {
+                             join: c.reroot.pair.join,
+                             parentRowField: c.reroot.pair.parentRowField,
+                             annotatedChildFields: new Set(
+                                c.reroot.pair.childColumns
+                                   .filter(
+                                      (col) => (col.notes ?? []).length > 0,
+                                   )
+                                   .map((col) => col.name),
+                             ),
+                          },
+                       },
+                    ]
+                  : [],
+            ),
             ...(leftOut.length > 0 ? { leftOut } : {}),
          };
       }
@@ -973,37 +1035,33 @@ export class ServedCopyServe {
 
 /**
  * How the served copy reads one pair table (P5), from its plan, the stored
- * schema and the joined source's declaration; undefined when the table does
- * not store what the plan says (a column missing) or the joined source's
- * declaration cannot be read.
+ * schema, the author's compiled source (`sourceFields`) and the joined
+ * source's: each stored child column renamed internally under a name no
+ * field of the model has (`taken`), and each measure over the source's own
+ * fields only re-declared over the parent rows. Undefined when the table does
+ * not store what the plan says (a column missing).
  */
 function pairRerootOf(
    plan: MaterializePlan,
    pair: MaterializePair,
-   sourceName: string,
+   sourceFields: readonly unknown[],
    stored: ReadonlyMap<string, string>,
    map: SourceMap,
-   fileText: (url: string) => string | undefined,
+   taken: readonly string[],
 ): PairReroot | undefined {
    const parentRow = stored.get(pair.parentRowColumn);
-   const childRow = stored.get(pair.childRowColumn);
-   if (!parentRow || !childRow) return undefined;
-   const child = map.node(pair.childSourceID)?.def as
-      | {
-           fields?: unknown[];
-           location?: { url?: string; range?: ServedCopyRange };
-        }
-      | undefined;
-   const url = child?.location?.url;
-   const range = child?.location?.range;
-   const text = url ? fileText(url) : undefined;
-   if (!text || !range) return undefined;
-   const start = offsetOf(text, range.start);
-   const end = offsetOf(text, range.end);
-   if (start < 0 || end < start) return undefined;
-   const fields = new Map(
+   if (!parentRow) return undefined;
+   const used = new Set(taken);
+   const fresh = (base: string) => {
+      let name = `${base}__pair`;
+      for (let n = 2; used.has(name); n++) name = `${base}__pair_${n}`;
+      used.add(name);
+      return name;
+   };
+   const childFields = new Map(
       (
-         (child?.fields ?? []) as {
+         ((map.node(pair.childSourceID)?.def as { fields?: unknown[] })
+            ?.fields ?? []) as {
             name?: unknown;
             as?: unknown;
             e?: unknown;
@@ -1017,11 +1075,12 @@ function pairRerootOf(
       if (c.join !== pair.join) continue;
       const type = stored.get(c.column);
       if (type === undefined) return undefined;
-      const field = fields.get(c.dimension);
+      const field = childFields.get(c.dimension);
       const notes = fieldNotes(field);
       childColumns.push({
          name: c.dimension,
          column: c.column,
+         internalName: fresh(c.column),
          type,
          ...(notes.length > 0 ? { notes } : {}),
          ...(typeof field?.timeframe === "string"
@@ -1030,13 +1089,40 @@ function pairRerootOf(
       });
       if (field?.e !== undefined) childStoredDimensions.push(c.dimension);
    }
+   const parentRowField = fresh(pair.parentRowColumn);
+   // A measure over the source's own fields only is re-declared over the
+   // parent rows; one through the join reads every row as it stands, and one
+   // reading both (or anything else) is left as it is, so a query that reads
+   // it is answered live (pair_flat_query.ts).
+   const levels = pairMeasureLevels(sourceFields, pair.join);
+   const parentMeasures: PairMeasure[] = [];
+   for (const f of sourceFields as {
+      name?: unknown;
+      as?: unknown;
+      accessModifier?: unknown;
+   }[]) {
+      const name = String(f.as ?? f.name);
+      const level = levels.get(name);
+      if (!level || level.size !== 1 || !level.has("parent")) continue;
+      // A private measure cannot be renamed by an extension; a public one
+      // that reads it carries the flag to it.
+      if (f.accessModifier === "private") continue;
+      const notes = fieldNotes(f);
+      parentMeasures.push({
+         name,
+         internalName: fresh(name),
+         ...(notes.length > 0 ? { notes } : {}),
+         ...(f.accessModifier === "internal"
+            ? { access: "internal" as const }
+            : {}),
+      });
+   }
    return {
       join: pair.join,
       parentRowColumn: { name: pair.parentRowColumn, type: parentRow },
-      childRowColumn: { name: pair.childRowColumn, type: childRow },
-      childTypeName: `${sourceName}__${pair.join}__pair_served`,
+      parentRowField,
       childColumns,
-      childDeclaration: text.slice(start, end),
+      parentMeasures,
       childStoredDimensions,
    };
 }
