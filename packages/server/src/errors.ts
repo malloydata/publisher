@@ -1737,7 +1737,15 @@ export const ERROR_TABLE: { [K in ErrorKind]: ErrorMapping<ErrorByKind[K]> } = {
       status: 503,
       reason: "BUILD_PLAN_REFRESHING",
       headers: (error) => ({ "Retry-After": String(error.retryAfterSeconds) }),
-      mcp: { advice: "internal" },
+      // Transient: a connection edit's re-derivation is running. Retryable
+      // advice, not "internal", so an agent waits and retries.
+      mcp: {
+         advice: "fixed",
+         suggestions: [
+            "Retry in a few seconds: the build plan is being re-derived after a connection change.",
+         ],
+      },
+      mcpSetup: "package",
    },
    // Otherwise reported as internal, and an agent retries it forever.
    connection_not_found: NOT_FOUND,

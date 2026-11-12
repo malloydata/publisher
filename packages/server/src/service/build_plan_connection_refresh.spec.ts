@@ -365,6 +365,102 @@ describe("re-deriving after a connection edit", () => {
    });
 });
 
+describe("a failed re-derivation", () => {
+   /** Fail the next re-derivation, as a load-worker timeout would. */
+   function failNextRefresh() {
+      spyOn(Package.prototype, "refreshBuildPlan").mockImplementationOnce(
+         function (this: Package) {
+            return (
+               this as unknown as {
+                  materialization: {
+                     refreshBuildPlan(
+                        d: () => Promise<unknown>,
+                     ): Promise<boolean>;
+                  };
+               }
+            ).materialization.refreshBuildPlan(async () => {
+               throw new Error("load worker timed out");
+            });
+         },
+      );
+   }
+
+   type Internals = {
+      materialization: {
+         sourceEligibility: unknown;
+         colocatedSourceEligibility: unknown;
+         servingPlanWhileUnavailable: unknown;
+         buildConnectionNames: ReadonlySet<string>;
+      };
+   };
+
+   it("keeps what serving reads, so bindings and a host's rebind keep serving while run creation is refused", async () => {
+      const env = await newEnvironment();
+      const v1 = (await publish(env, source("1.0.0"))).loaded;
+      const internals = (v1 as unknown as Internals).materialization;
+      const planBefore = v1.getBuildPlan();
+      const storageBefore = internals.sourceEligibility;
+      const colocatedBefore = internals.colocatedSourceEligibility;
+      expect(storageBefore).toBeDefined();
+
+      failNextRefresh();
+      await editConnection(env, "SELECT 9");
+      await v1.whenBuildPlanCurrent();
+
+      expect(v1.isBuildPlanUnavailable()).toBe(true);
+      // No route or run sees the pre-edit plan...
+      expect(v1.getBuildPlan()).toBeNull();
+      // ...but binding still matches entries as it did before the edit.
+      expect(internals.sourceEligibility).toBe(storageBefore);
+      expect(internals.colocatedSourceEligibility).toBe(colocatedBefore);
+      expect(internals.servingPlanWhileUnavailable).toBe(planBefore);
+   });
+
+   it("is retried with backoff, and a successful retry clears the 409", async () => {
+      const env = await newEnvironment();
+      const v1 = (await publish(env, source("1.0.0"))).loaded;
+
+      failNextRefresh();
+      await editConnection(env, "SELECT 8");
+      await v1.whenBuildPlanCurrent();
+      expect(v1.isBuildPlanUnavailable()).toBe(true);
+
+      // The first retry waits 2s (backoffAfter(1)); no edit or reload needed.
+      const deadline = Date.now() + 15_000;
+      while (v1.isBuildPlanUnavailable() && Date.now() < deadline) {
+         await new Promise((resolve) => setTimeout(resolve, 100));
+      }
+      expect(v1.isBuildPlanUnavailable()).toBe(false);
+      expect(planned(v1)).toEqual(await compiled(v1));
+      expect(
+         (v1 as unknown as Internals).materialization
+            .servingPlanWhileUnavailable,
+      ).toBeNull();
+   }, 30_000);
+
+   it("re-derives when a connection a skipped source needed is created", async () => {
+      const env = await newEnvironment();
+      const v1 = (await publish(env, source("1.0.0"))).loaded;
+      // As a source whose connection did not resolve leaves it: named in the
+      // plan's build connections, absent from its sources.
+      (v1 as unknown as Internals).materialization.buildConnectionNames =
+         new Set(["duck", "late"]);
+      const refreshes = spyOn(Package.prototype, "refreshBuildPlan");
+
+      await editConnection(env, "SELECT 1", [
+         {
+            name: "late",
+            type: "duckdb",
+            duckdbConnection: { setupSQL: "SELECT 1" },
+         },
+      ]);
+      await v1.whenBuildPlanCurrent();
+
+      expect(refreshes).toHaveBeenCalled();
+      refreshes.mockRestore();
+   });
+});
+
 describe("changedConnectionNames", () => {
    it("names added, removed and reconfigured connections, and nothing else", () => {
       const a = { name: "a", type: "duckdb", duckdbConnection: {} };
@@ -380,5 +476,34 @@ describe("changedConnectionNames", () => {
          ...changedConnectionNames([a, b] as never, [a] as never),
       ]).toEqual(["b"]);
       expect(changedConnectionNames([a] as never, [a] as never).size).toBe(0);
+   });
+
+   it("compares fingerprinted connections by fingerprint, so a credential rotation changes nothing", () => {
+      const pg = {
+         name: "wh",
+         type: "postgres",
+         fingerprint: "fp-1",
+         postgresConnection: { host: "h", password: "old" },
+      };
+      const rotated = {
+         ...pg,
+         postgresConnection: { host: "h", password: "new" },
+      };
+      expect(
+         changedConnectionNames([pg] as never, [rotated] as never).size,
+      ).toBe(0);
+      // A new fingerprint is a change (the digest is the fingerprint).
+      expect([
+         ...changedConnectionNames(
+            [pg] as never,
+            [{ ...rotated, fingerprint: "fp-2" }] as never,
+         ),
+      ]).toEqual(["wh"]);
+      // Without a fingerprint the whole config is compared, secrets included.
+      const bare = { ...pg, fingerprint: undefined };
+      const bareRotated = { ...rotated, fingerprint: undefined };
+      expect([
+         ...changedConnectionNames([bare] as never, [bareRotated] as never),
+      ]).toEqual(["wh"]);
    });
 });

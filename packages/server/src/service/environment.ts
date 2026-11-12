@@ -104,6 +104,7 @@ import {
    type ConfiguredPublishRetry,
 } from "./configured_publish_retry";
 import { VersionRegistry, VersionService } from "./versions/version_service";
+import { getPackageLoadWorkerCount } from "../package_load/package_load_pool";
 import { readManifestVersion, VersionStore } from "./versions/version_store";
 import {
    ownedVersionOf,
@@ -318,25 +319,45 @@ export type PackageListingOptions = {
    operational?: boolean;
 };
 
-/** At most this many build plans re-derive at once after a connection edit. */
-const PLAN_REFRESH_CONCURRENCY = 2;
+/**
+ * At most this many build plans re-derive at once after a connection edit:
+ * two, and never more than the load pool has workers, so with the default
+ * single worker they run one at a time (each at background priority, behind
+ * publishes and reloads; see LoadPackageJob.background).
+ */
+function planRefreshConcurrency(): number {
+   return Math.max(1, Math.min(2, getPackageLoadWorkerCount()));
+}
 
 /**
  * The connection names an edit changed: added, removed, or with a different
- * configuration. Compared on the stored config (secrets included), so any
- * input a connection digest could read counts as a change.
+ * digest-relevant configuration. A connection that carries a `fingerprint` is
+ * digested by that fingerprint alone (applyConnectionFingerprint in
+ * connection.ts), so when both sides carry one only the fingerprints are
+ * compared: rotating a secret behind a stable fingerprint moves no address and
+ * re-derives nothing. Without a fingerprint the stored config is compared
+ * whole (secrets included), since a connector's own digest may read any of it.
  */
 export function changedConnectionNames(
    before: readonly ApiConnection[],
    after: readonly ApiConnection[],
 ): Set<string> {
+   const digestInput = (c: ApiConnection): string =>
+      c.fingerprint ? `fingerprint:${c.fingerprint}` : JSON.stringify(c);
    const byName = (list: readonly ApiConnection[]) =>
-      new Map(list.map((c) => [c.name ?? "", JSON.stringify(c)]));
+      new Map(list.map((c) => [c.name ?? "", c]));
    const previous = byName(before);
    const next = byName(after);
    const changed = new Set<string>();
    for (const [name, config] of next) {
-      if (previous.get(name) !== config) changed.add(name);
+      const prior = previous.get(name);
+      if (!prior) {
+         changed.add(name);
+      } else if (prior.fingerprint && config.fingerprint) {
+         if (prior.fingerprint !== config.fingerprint) changed.add(name);
+      } else if (digestInput(prior) !== digestInput(config)) {
+         changed.add(name);
+      }
    }
    for (const name of previous.keys()) {
       if (!next.has(name)) changed.add(name);
@@ -391,8 +412,18 @@ export class Environment {
    private lastChangedConnections: string[] = [];
    /** Packages waiting to re-derive their build plan (see schedulePlanRefresh). */
    private readonly planRefreshQueue = new Set<Package>();
-   /** Re-derivations running now, bounded by PLAN_REFRESH_CONCURRENCY. */
+   /** Re-derivations running now, bounded by planRefreshConcurrency(). */
    private planRefreshesRunning = 0;
+   /** Queued packages whose plan a failed re-derivation left unavailable. */
+   private readonly planRefreshRetrying = new Set<Package>();
+   /**
+    * Per package, failed re-derivations in a row and the timer of the next
+    * retry (backoffAfter: 2s doubling to 60s). Cleared when one succeeds.
+    */
+   private readonly planRefreshBackoff = new Map<
+      Package,
+      { failures: number; timer?: ReturnType<typeof setTimeout> }
+   >();
    private malloyConfig: EnvironmentMalloyConfig;
    private connectionMutex = new Mutex();
    private retiredConnectionGenerations =
@@ -904,36 +935,86 @@ export class Environment {
     */
    private schedulePlanRefresh(_package: Package): void {
       _package.markBuildPlanStale();
+      // This edit's refresh supersedes a pending retry.
+      const backoff = this.planRefreshBackoff.get(_package);
+      if (backoff?.timer) clearTimeout(backoff.timer);
+      if (backoff) backoff.timer = undefined;
       if (this.planRefreshQueue.has(_package)) return;
       this.planRefreshQueue.add(_package);
       this.pumpPlanRefreshes();
    }
 
+   /**
+    * After a failed re-derivation, retry it with backoff: a transient failure
+    * (a load-worker timeout or crash) must not leave the package refusing runs
+    * until someone reloads it. A retry does not mark the plan stale, so
+    * readers get the 409 at once rather than wait; it stops once the package
+    * is reloaded, replaced or deleted (it is then not a loaded copy).
+    */
+   private schedulePlanRetry(_package: Package): void {
+      const backoff = this.planRefreshBackoff.get(_package) ?? { failures: 0 };
+      backoff.failures++;
+      if (backoff.timer) clearTimeout(backoff.timer);
+      backoff.timer = setTimeout(() => {
+         backoff.timer = undefined;
+         if (!this.isLoadedCopy(_package)) {
+            this.planRefreshBackoff.delete(_package);
+            return;
+         }
+         if (!_package.isBuildPlanUnavailable()) return;
+         if (this.planRefreshQueue.has(_package)) return;
+         this.planRefreshRetrying.add(_package);
+         this.planRefreshQueue.add(_package);
+         this.pumpPlanRefreshes();
+      }, backoffAfter(backoff.failures));
+      backoff.timer.unref?.();
+      this.planRefreshBackoff.set(_package, backoff);
+   }
+
+   /** Whether `_package` is the copy this environment serves (unversioned or a cached version). */
+   private isLoadedCopy(_package: Package): boolean {
+      if (this.packages.get(_package.getPackageName()) === _package)
+         return true;
+      return (this.versionService?.cache.entries() ?? []).some(
+         ([, , version]) => version === _package,
+      );
+   }
+
    private pumpPlanRefreshes(): void {
       while (
-         this.planRefreshesRunning < PLAN_REFRESH_CONCURRENCY &&
+         this.planRefreshesRunning < planRefreshConcurrency() &&
          this.planRefreshQueue.size > 0
       ) {
          const [next] = this.planRefreshQueue;
          this.planRefreshQueue.delete(next);
+         const retryFailed = this.planRefreshRetrying.delete(next);
          this.planRefreshesRunning++;
          const connections = this.lastChangedConnections;
          next
-            .refreshBuildPlan()
+            .refreshBuildPlan({ retryFailed })
             .then((derived) => {
-               if (!derived) {
-                  logger.warn(
-                     "Build plan could not be re-derived after a connection change; reads of it answer 409 until the package reloads",
-                     {
-                        environmentName: this.environmentName,
-                        packageName: next.getPackageName(),
-                        versionId: next.getVersionId(),
-                        changedConnections: connections,
-                     },
-                  );
+               if (derived) {
+                  const backoff = this.planRefreshBackoff.get(next);
+                  if (backoff?.timer) clearTimeout(backoff.timer);
+                  this.planRefreshBackoff.delete(next);
+                  return;
                }
+               this.schedulePlanRetry(next);
+               logger.warn(
+                  "Build plan could not be re-derived after a connection change; run creation answers 409 and the re-derivation is retried with backoff",
+                  {
+                     environmentName: this.environmentName,
+                     packageName: next.getPackageName(),
+                     versionId: next.getVersionId(),
+                     changedConnections: connections,
+                     failures: this.planRefreshBackoff.get(next)?.failures,
+                  },
+               );
             })
             .catch((err: unknown) => {
+               // Not expected (refreshBuildPlan resolves false on failure),
+               // but an unexpected throw retries the same way.
+               this.schedulePlanRetry(next);
                logger.warn(
                   "Build plan re-derivation after a connection change failed",
                   {

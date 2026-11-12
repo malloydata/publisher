@@ -423,23 +423,21 @@
       "logs": []
     },
     "mcp": {
-      "message": "An unexpected internal error occurred during executeQuery.: build plan is being re-derived",
+      "message": "build plan is being re-derived",
       "suggestions": [
-        "Try the request again later.",
-        "If the problem persists, check server logs or contact support."
+        "Retry in a few seconds: the build plan is being re-derived after a connection change."
       ],
       "logs": []
     },
     "mcpSetup": {
-      "message": "An unexpected internal error occurred during executeQuery (Setup).: build plan is being re-derived",
+      "message": "build plan is being re-derived",
       "suggestions": [
-        "Try the request again later.",
-        "If the problem persists, check server logs or contact support."
+        "Retry in a few seconds: the build plan is being re-derived after a connection change."
       ],
       "logs": [
         [
-          "error",
-          "[MCP Server Error] Error accessing package/model for query"
+          "warn",
+          "[MCP Tool executeQuery] model setup refused"
         ]
       ]
     }

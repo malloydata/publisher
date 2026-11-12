@@ -124,6 +124,18 @@ interface JobContext {
    timeout: ReturnType<typeof setTimeout>;
 }
 
+/**
+ * Which queued job a free worker takes: the oldest foreground job, or the
+ * oldest background job when no foreground job waits (see
+ * LoadPackageJob.background).
+ */
+export function nextQueuedJobIndex(
+   queue: readonly { request: { background?: boolean } }[],
+): number {
+   const foreground = queue.findIndex((q) => !q.request.background);
+   return foreground >= 0 ? foreground : 0;
+}
+
 interface QueuedJob {
    request: LoadPackageJob;
    resolve: (result: LoadPackageOutcome) => void;
@@ -179,6 +191,12 @@ export interface LoadPackageJob {
    withPreaggregateCompanions?: boolean;
    /** See {@link LoadPackageRequest.withEntities}. */
    withEntities?: boolean;
+   /**
+    * Background work (a connection edit's build-plan re-derivation): stays on
+    * this thread's queue behind every foreground job, so a publish or reload
+    * waits for at most the background job already running, never a backlog.
+    */
+   background?: boolean;
 }
 
 /**
@@ -350,7 +368,7 @@ export class PackageLoadPool {
       while (this.queue.length > 0) {
          const worker = this.findIdleOrSpawnable();
          if (!worker) return; // saturated; wait for a job to finish
-         const qj = this.queue.shift();
+         const [qj] = this.queue.splice(nextQueuedJobIndex(this.queue), 1);
          if (!qj) return;
          void this.dispatchToWorker(worker, qj);
       }
