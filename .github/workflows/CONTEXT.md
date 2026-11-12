@@ -12,12 +12,15 @@ workflow owns what, and the publishing rules that bite.
 
 **Nothing runs on a push to `main`.** Each PR's checks run against its merge with `main` as of
 the PR's last push, and workflows trigger on `pull_request`, `schedule`, `workflow_dispatch`, and
-`workflow_run` only. The weekly scheduled runs of `security-scan.yml` and `image-scan.yml` are what
-refresh `main`'s Code Scanning results, and `k6-tests.yml` runs by hand. Every PR-triggered workflow carries the same
-`concurrency` block: runs for one PR share a group, so a new push cancels the superseded run, and
-any other event is grouped by its own run id so it is never cancelled. Do not add a `concurrency`
-block to a `workflow_call` workflow: there `github.workflow` is the caller's name, so it would
-share, and cancel, its caller's group.
+`workflow_run` only. The weekly scheduled runs of `security-scan.yml` and `image-scan.yml` are
+what refresh `main`'s Code Scanning results, and `k6-tests.yml` runs by hand. A merge commit on
+`main` therefore carries no checks of its own, so anything that reads a result off `main` (the
+`publisher-release` skill's release-sync check) dispatches the workflow rather than reading the
+head commit's check runs. Every PR-triggered workflow carries the same `concurrency` block: runs
+for one PR share a group, so a new push cancels the superseded run, and any other event is
+grouped by its own run id so it is never cancelled. Do not add a `concurrency` block to a
+`workflow_call` workflow: there `github.workflow` is the caller's name, so it would share, and
+cancel, its caller's group.
 
 `build.yml` is the entry point (every PR). It does not run the test suites itself: it holds
 `lint` (typecheck), `lint_format` (prettier, eslint, and the DuckDB/pg version-consistency guards),

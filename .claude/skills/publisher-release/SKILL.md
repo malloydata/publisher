@@ -306,12 +306,19 @@ failed jobs), not the whole release.
 `prepare` stamps `RELEASE_NOTES.md` itself and `gh-release` reads it back, so
 there is nothing to paste. Whether the last release merged back is CI's job:
 `release-sync.yml` compares npm's `latest` with `packages/sdk/package.json`
-on every PR, every push to `main`, and after every release run. Read its
+on every PR and after every release run. Nothing runs on a push to `main`, so
+`main`'s head commit usually carries no `Release sync` check: an empty check
+list there is not a pass. Dispatch it against `main` and read that run's
 result rather than repeating the comparison:
 
 ```bash
-gh api repos/malloydata/publisher/commits/main/check-runs \
-  --jq '.check_runs[] | select(.name == "Release sync") | "\(.conclusion) \(.html_url)"'
+STARTED="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+gh workflow run release-sync.yml --repo malloydata/publisher --ref main
+until RUN_ID="$(gh run list --repo malloydata/publisher --workflow release-sync.yml \
+    --branch main --event workflow_dispatch --created ">=$STARTED" \
+    --json databaseId --jq '.[0].databaseId // empty')" && [ -n "$RUN_ID" ]; do sleep 3; done
+gh run watch "$RUN_ID" --repo malloydata/publisher --exit-status \
+  && echo "Release sync passed" || echo "Release sync FAILED: do not dispatch"
 # the narrative this release will stamp and ship
 git fetch origin
 NOTES="$(mktemp)" && git show origin/main:RELEASE_NOTES.md > "$NOTES"
