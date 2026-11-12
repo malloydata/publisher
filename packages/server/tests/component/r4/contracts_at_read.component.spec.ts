@@ -121,7 +121,7 @@ for (const gated of [true, false]) {
          it("answers from the stored table, with the gate grafted on it", async () => {
             const truth = await fixture.storedSQL(
                (t) =>
-                  `SELECT org_id, sum(amount)::DOUBLE AS total, count(*) AS n FROM ${t("orders__mat")}
+                  `SELECT org_id, sum(amount)::DOUBLE AS total, count(*) AS n FROM ${t("orders")}
                    WHERE org_id IN ('globex') GROUP BY 1`,
             );
             await fixture.storedSQL(() => "DELETE FROM orders");
@@ -179,7 +179,7 @@ describe("R3: a gated read whose stored table fails at run time falls back live"
          givens: { GROUPS: ["acme"] },
       });
       expect(before.servedVia).toBe("served_copy");
-      await fixture.storedSQL((t) => `DROP TABLE ${t("orders__mat")}`);
+      await fixture.storedSQL((t) => `DROP TABLE ${t("orders")}`);
       const run = await fixture.run({
          name: "after the table is gone",
          malloy: byOrg,
