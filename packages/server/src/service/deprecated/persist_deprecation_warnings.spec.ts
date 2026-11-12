@@ -6,9 +6,11 @@
 
 /**
  * With materialization v2 switched on (`PUBLISHER_MATERIALIZE`), a package
- * that declares `#@ -persist` or `#@ preaggregate` gets one coded warning per
- * declaration, in the file that declares it, naming the v2 rewrite. Off, it
- * gets none. Either way the package loads and builds as before. Drives
+ * that declares `#@ -persist` gets one coded warning per declaration, in the
+ * file that declares it, naming the v2 rewrite. Off, it gets none. The
+ * `#@ preaggregate` warning is held back even with the switch on, until
+ * `#(preaggregate)` is read (materialization v2 phase 4), but its usage is
+ * still counted. Either way the package loads and builds as before. Drives
  * `Package.create` on the worker path, as the other warnings specs do.
  */
 import { DuckDBConnection } from "@malloydata/db-duckdb";
@@ -28,6 +30,11 @@ import {
    PackageLoadPool,
    __setPackageLoadPoolForTests,
 } from "../../package_load/package_load_pool";
+import { resetDeprecatedUsageMetricsForTest } from "../../deprecated_usage_metrics";
+import {
+   startMetricsHarness,
+   type MetricsHarness,
+} from "../../test_helpers/metrics_harness";
 import { installSettings } from "../../test_helpers/settings_env";
 import { writeTempPackage } from "../../test_helpers/temp_package";
 import { Package } from "../package";
@@ -130,19 +137,35 @@ describe("deprecation warnings for #@ -persist and #@ preaggregate", () => {
 
       expect(found.map((w) => [w.model, w.subject, w.code])).toEqual([
          ["models/v1.malloy", "summary_fresh", "deprecated-persist-opt-out"],
-         ["models/v1.malloy", "orders", "deprecated-preaggregate-annotation"],
       ]);
-      for (const w of found) {
-         expect(w.severity).toBe("warn");
-         expect(w.message).toContain("docs/materialization-migration.md");
-      }
+      expect(found[0].severity).toBe("warn");
+      expect(found[0].message).toContain("docs/materialization-migration.md");
       expect(found[0].message).toContain(
          "Source summary_fresh uses #@ -persist, which is deprecated",
       );
       expect(found[0].message).toContain("#(materialize)");
-      expect(found[1].message).toContain(
-         "Measure total on source orders uses #@ preaggregate, which is deprecated: its v2 spelling is #(preaggregate) grain=[…]",
-      );
+   });
+
+   it("holds back the #@ preaggregate warning with the switch on, but still counts it", async () => {
+      write("models/v1.malloy", MODEL);
+      const harness: MetricsHarness = await startMetricsHarness();
+      resetDeprecatedUsageMetricsForTest();
+      try {
+         const found = await deprecations(true);
+
+         expect(
+            found.some((w) => w.code === "deprecated-preaggregate-annotation"),
+         ).toBe(false);
+         // One per measure, however many grains it declares.
+         expect(
+            await harness.collectCounter("publisher_deprecated_usage_total", {
+               feature: "preaggregate_annotation",
+            }),
+         ).toBe(1);
+      } finally {
+         resetDeprecatedUsageMetricsForTest();
+         await harness.shutdown();
+      }
    });
 
    it("warns about nothing while materialization v2 is switched off", async () => {

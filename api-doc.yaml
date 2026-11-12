@@ -5857,11 +5857,11 @@ components:
                   declaring source, `model` its file and `subject` the source;
                   `warn`; only while `PUBLISHER_MATERIALIZE` is on; see
                   docs/materialization-migration.md).
-                  `deprecated-preaggregate-annotation`: a measure declaring
-                  `#@ preaggregate`, whose v2 spelling is `#(preaggregate)` (one
-                  per measure, `model` its file, `subject` the source and the
-                  message the measure; `warn`; only while
-                  `PUBLISHER_MATERIALIZE` is on).
+                  `deprecated-preaggregate-annotation`: reserved, not yet
+                  emitted. It will name a measure declaring `#@ preaggregate`,
+                  whose v2 spelling is `#(preaggregate)` (one per measure,
+                  `model` its file, `subject` the source and the message the
+                  measure; `warn`), once `#(preaggregate)` is read.
                   `report-name-ambiguous`: two or more grid reports share a
                   basename, so the deprecated `GET …/dashboards/{name}` route
                   answers 409 for it (one per name, `subject` naming it and the

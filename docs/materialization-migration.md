@@ -29,10 +29,13 @@ v2:
 
 Both follow the Publisher v1 plan's rule for a deprecated form: a package warning through 0.x,
 refused at 1.0.0, and the reader removed in 1.1. The warnings start in the release that ships v2's
-annotations. Until then they show only with `PUBLISHER_MATERIALIZE` on:
+annotations:
 
-- `deprecated-persist-opt-out`, one per source that declares `#@ -persist`.
-- `deprecated-preaggregate-annotation`, one per measure that declares `#@ preaggregate`.
+- `deprecated-persist-opt-out`, one per source that declares `#@ -persist`. Until that release it
+  shows only with `PUBLISHER_MATERIALIZE` on.
+- `deprecated-preaggregate-annotation`, one per measure that declares `#@ preaggregate`. **There is
+  no warning yet**, even with the switch on: it is held back until `#(preaggregate)` is read
+  (phase 4), so it never points at a spelling that does nothing. `#@ preaggregate` keeps working.
 
 Each names the source (`subject`) and the file that declares it (`model`). A source that extends or
 imports an annotated one is not reported again. Neither warning changes what the package builds or
@@ -214,8 +217,8 @@ warehouse. Callers keep the same source names.
 
 ### `#@ preaggregate`
 
-**Deprecated. The v2 form is not available yet (phase 4).** Keep `#@ preaggregate` until
-`#(preaggregate)` ships. The v2 spelling takes the grain as a list:
+**Deprecated. The v2 form is not available yet (phase 4).** `#@ preaggregate` keeps working, and
+there is no deprecation warning for it yet; keep writing it until `#(preaggregate)` ships. The v2 spelling takes the grain as a list:
 
 ```malloy
 // v1, works today
@@ -277,9 +280,9 @@ it. The build plan, the manifest and reuse all key on it.
 - **Set the switch the same on every worker.** `PUBLISHER_MATERIALIZE` and
   `PUBLISHER_PERSIST_ADDRESS_INCLUDES_DESTINATION` are read at startup. Workers that disagree plan
   different sources or compute different addresses for one source.
-- **Read warning codes as open strings.** This page adds `deprecated-persist-opt-out` and
-  `deprecated-preaggregate-annotation`, beside `materialize-not-built` and `served-copy-not-served`.
-  None is an error, and the package loads.
+- **Read warning codes as open strings.** This page adds `deprecated-persist-opt-out`, and reserves
+  `deprecated-preaggregate-annotation` (not emitted until phase 4), beside `materialize-not-built` and
+  `served-copy-not-served`. None is an error, and the package loads.
 - **Later phases add more to watch.** The `name=` view is a new, comment-marked warehouse object, and
   the sweeper, the table dropper and package delete must recognize it. A rolling window adds a delete
   to the incremental ledger. Both arrive in phase 3.
