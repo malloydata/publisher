@@ -21,6 +21,14 @@ installDuckDBInstanceSharing();
 type Internals = { shareKey: string };
 const shareKeyOf = (connection: DuckDBConnection) =>
    (connection as unknown as Internals).shareKey;
+/**
+ * Whether this process can open a file again after closing it. Not on Windows:
+ * db-duckdb's close is a refcount decrement that keeps the OS file lock while
+ * its C++ connections live (its own note in `detachInstance`), so a reopen in
+ * the same process is refused there until they are collected. Sharing means an
+ * edit never needs that reopen; it is checked where the platform allows it.
+ */
+const canReopenAfterClose = process.platform !== "win32";
 const instanceOf = (connection: DuckDBConnection) =>
    DuckDBConnection.activeDBs[shareKeyOf(connection)]?.instance;
 /** The open files under this test's directory; other specs share the process. */
@@ -69,8 +77,9 @@ describe("canonicalDuckDBFile", () => {
    });
 
    it("resolves a file not created yet through its directory", () => {
-      expect(canonicalDuckDBFile(path.join(dir, "new.duckdb"))).toBe(
-         path.join(dir, "new.duckdb"),
+      const expected = path.join(dir, "new.duckdb");
+      expect(canonicalDuckDBFile(expected)).toBe(
+         process.platform === "win32" ? expected.toLowerCase() : expected,
       );
    });
 
@@ -132,6 +141,7 @@ describe("one DuckDB instance per file", () => {
       ).toEqual([]);
 
       // A later connection opens the file afresh, not a closed instance.
+      if (!canReopenAfterClose) return;
       const c = open({ databasePath: file, setupSQL: "SELECT 3" });
       expect(
          (await c.runSQL("SELECT count(*)::INTEGER AS n FROM t")).rows,
@@ -157,6 +167,7 @@ describe("one DuckDB instance per file", () => {
 
       // Once the file is released, the new settings open it.
       await a.close();
+      if (!canReopenAfterClose) return;
       const c = open({ databasePath: file, threads: 2 });
       expect((await c.runSQL("SELECT 1 AS one")).rows).toEqual([{ one: 1 }]);
    });
