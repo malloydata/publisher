@@ -3075,16 +3075,23 @@ export class Model {
                preaggServeMaterializer,
             }),
             async () => {
-               const blocked =
-                  !bypassAuthorize &&
-                  // Cheap short-circuit for gate-free models. Safe, unlike
-                  // `hasAuthorize()`: see `hasAnyAuthorizeNote`.
-                  this.governor.hasAnyAuthorizeNote() &&
-                  (await this.governor.queryEntryPointHasRowLevelGate(
-                     runnable,
-                     callerRegion,
-                  ));
-               return blocked;
+               // Cheap short-circuit for gate-free models. Safe, unlike
+               // `hasAuthorize()`: see `hasAnyAuthorizeNote`.
+               if (bypassAuthorize || !this.governor.hasAnyAuthorizeNote()) {
+                  return false;
+               }
+               const veto = await this.governor.rowLevelGateVeto(
+                  runnable,
+                  callerRegion,
+               );
+               // Only an entry-point gate can be grafted on a routed compile
+               // (the served copy, R3); a caller join's gate, or one the walk
+               // could not decide, keeps every routed shape away.
+               return veto === "none"
+                  ? false
+                  : veto === "entry_point"
+                    ? "entry_point"
+                    : true;
             },
             { recordMetrics: false },
          );
@@ -3398,14 +3405,16 @@ export class Model {
          answer = liveFallbackAnswer(answer);
          // The retry runs the LIVE compile, which `governed` is not (it is the
          // serve shape), so it is governed in its own right here: the same
-         // bind, on the runnable that will execute. Today routing already
-         // refuses any gated entry point (`queryEntryPointHasRowLevelGate`),
-         // so this decides nothing new; it is what keeps an ungoverned live
-         // runnable from ever running if that refusal narrows. Outside the
-         // retry's try, so a denial answers 403, not a mapped run error.
+         // bind, on the runnable that will execute. A gated entry point
+         // reaches here only through the served copy (R3), whose answer's
+         // graft scope is the served copy's: the retry grafts on the author's
+         // own scope, or the graft would recompile against the stored table
+         // that just failed. Outside the retry's try, so a denial answers
+         // 403, not a mapped run error.
          const { runnable: governedLive } = await this.governor.govern(
             {
                ...governRequest,
+               graftScope: undefined,
                boundary: undefined,
                ceiling: undefined,
                bypassAlreadyNoted: true,

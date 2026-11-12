@@ -75,8 +75,9 @@ export interface Variant<Extra = unknown> {
    /**
     * The candidate keeps the domain's contracts (R3): it compiles the author's
     * own text, gates included, so `govern()` grafts and proves a row-level gate
-    * on it exactly as on live. The row-level veto skips every other candidate
-    * (`row_level_gate`), whose shape carries no annotations; this one is tried.
+    * on it exactly as on live. An `entry_point` veto skips every other
+    * candidate (`row_level_gate`), whose shape carries no annotations; this
+    * one is tried. Any other veto skips it too.
     */
    keepsContracts?: boolean;
 }
@@ -104,6 +105,13 @@ export interface ConsideredVariant {
    callerDetail?: string;
 }
 
+/**
+ * The row-level veto for one query: `true` skips every candidate; `entry_point`
+ * (only the run target's own chain is gated) skips every candidate but one
+ * that {@link Variant.keepsContracts}; `false` skips none.
+ */
+export type RowLevelVeto = boolean | "entry_point";
+
 /** The router's decision for one query. */
 export type RouteDecision<Extra> =
    | {
@@ -123,7 +131,7 @@ export type RouteDecision<Extra> =
  */
 export async function routeQuery<Extra>(
    variants: ReadonlyArray<Variant<Extra>>,
-   blockedByGate: () => Promise<boolean>,
+   blockedByGate: () => Promise<RowLevelVeto>,
    /**
     * Count each candidate in `publisher_query_variant_routing_total` now. Off
     * when the caller counts after the run instead ({@link recordVariantRouting}),
@@ -156,10 +164,10 @@ export function recordVariantRouting(
 
 async function decideRoute<Extra>(
    variants: ReadonlyArray<Variant<Extra>>,
-   blockedByGate: () => Promise<boolean>,
+   blockedByGate: () => Promise<RowLevelVeto>,
 ): Promise<RouteDecision<Extra>> {
    const considered: ConsideredVariant[] = [];
-   const blocked =
+   const veto: RowLevelVeto =
       variants.some((v) => v.applicable) && (await blockedByGate());
    for (const variant of variants) {
       if (!variant.applicable) {
@@ -170,7 +178,10 @@ async function decideRoute<Extra>(
          });
          continue;
       }
-      if (blocked && !variant.keepsContracts) {
+      if (
+         veto === true ||
+         (veto === "entry_point" && !variant.keepsContracts)
+      ) {
          considered.push({
             kind: variant.kind,
             outcome: "skipped",

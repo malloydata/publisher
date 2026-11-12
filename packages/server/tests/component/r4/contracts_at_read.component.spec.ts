@@ -100,6 +100,20 @@ for (const gated of [true, false]) {
          });
       }
 
+      it("answers a caller join into the gated source live, as with the switch off", async () => {
+         // A caller join's gate is never grafted on a routed compile, so the
+         // served copy must not answer past it (it would be denied).
+         const run = await fixture.run({
+            name: "caller join",
+            malloy:
+               "run: orders extend { join_one: o2 is orders on id = o2.id } -> { group_by: o2.org_id; aggregate: total }",
+            givens: { GROUPS: ["acme"] },
+         });
+         expect(run.servedFrom).not.toBe("storage");
+         expect(rowDifference(run.live, run.served)).toBeUndefined();
+         expect(run.served.map((r) => r.org_id)).toEqual(["acme"]);
+      });
+
       if (gated) {
          // Last: it empties the origin table, so only the stored table can
          // answer, and the answer must still be the gate's rows of it.
@@ -132,3 +146,45 @@ for (const gated of [true, false]) {
       });
    });
 }
+
+describe("R3: a gated read whose stored table fails at run time falls back live", () => {
+   let restore: () => void;
+   let fixture: R4Fixture;
+   beforeAll(async () => {
+      restore = installSettings({
+         env: {
+            PERSIST_STORAGE_MODE: "on",
+            PUBLISHER_MATERIALIZE: "true",
+            PUBLISHER_MATERIALIZE_GATED_SOURCES: "true",
+         },
+      }).restore;
+      fixture = await buildScenario({
+         files: { "m.malloy": model },
+         seedSql,
+         materialize: true,
+      });
+   });
+   afterAll(async () => {
+      restore();
+      await disposeScenarios();
+   });
+
+   it("grafts the gate on the author's model for the retry, not the served copy's", async () => {
+      for (const b of fixture.bindings) b.freshnessFallback = "live";
+      const before = await fixture.run({
+         name: "served",
+         malloy: byOrg,
+         givens: { GROUPS: ["acme"] },
+      });
+      expect(before.servedVia).toBe("served_copy");
+      await fixture.storedSQL((t) => `DROP TABLE ${t("orders__mat")}`);
+      const run = await fixture.run({
+         name: "after the table is gone",
+         malloy: byOrg,
+         givens: { GROUPS: ["acme"] },
+      });
+      expect(run.servedFrom).toBe("live_fallback");
+      expect(rowDifference(run.live, run.served)).toBeUndefined();
+      expect(run.served.map((r) => r.org_id)).toEqual(["acme"]);
+   });
+});

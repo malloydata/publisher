@@ -1506,6 +1506,24 @@ export class QueryGovernor {
       /** Where caller text sits, so a caller join into a gated source counts. */
       callerRegion?: CallerRegion,
    ): Promise<boolean> {
+      return (await this.rowLevelGateVeto(runnable, callerRegion)) !== "none";
+   }
+
+   /**
+    * {@link queryEntryPointHasRowLevelGate}, saying which gate it found:
+    * `entry_point` when only the run target's own chain is gated, so a
+    * routed shape that keeps the author's gates (the served copy, R3) can
+    * have them grafted and proven by `govern()`; `caller_join` when a caller
+    * join reaches a gated source, which `govern()` refuses on any routed
+    * compile (`routed_past_caller_join_gate`); `unproven` when the walk could
+    * not decide. Only `entry_point` may let a routed shape through.
+    */
+   public async rowLevelGateVeto(
+      runnable: {
+         getPreparedQuery(): Promise<unknown>;
+      },
+      callerRegion?: CallerRegion,
+   ): Promise<"none" | "entry_point" | "caller_join" | "unproven"> {
       try {
          const { struct, modelDef, compositeResolvedSourceDef } =
             await this.resolveRunTargetStruct(runnable);
@@ -1513,7 +1531,7 @@ export class QueryGovernor {
          // swallows a live compile failure as `modelDef: undefined`, while the
          // annotation-free serve shape may still compile and answer from
          // unfiltered rows.
-         if (!modelDef) return true;
+         if (!modelDef) return "unproven";
          const seen = new Set<SourceDef>();
          const gates = this.collectEntryPointGates(
             struct,
@@ -1536,18 +1554,20 @@ export class QueryGovernor {
                ),
             );
          }
-         if (gates.length > 0) return true;
-         if (!callerRegion) return false;
+         const entryGated = gates.length > 0;
+         if (!callerRegion) return entryGated ? "entry_point" : "none";
          // The serve shape carries no annotation for a caller join's gate
-         // either, so the same route-blind question is asked of each one.
+         // either, so the same route-blind question is asked of each one,
+         // even when the entry point is gated too: the served copy may answer
+         // past an entry-point gate, never past a caller join's.
          const callerJoins = await this.resolvedCallerJoins(
             runnable,
             callerRegion,
          );
-         if (!callerJoins) return true;
+         if (!callerJoins) return "unproven";
          const gated = (name: string) =>
             (this.entryPointGatesBySource.get(name)?.length ?? 0) > 0;
-         return callerJoins.some(
+         const joinGated = callerJoins.some(
             ({ resolution, compiledModelDef }) =>
                resolution.kind === "unproven" ||
                Array.from(resolution.names).some(gated) ||
@@ -1563,10 +1583,11 @@ export class QueryGovernor {
                      ).length > 0,
                ),
          );
+         return joinGated ? "caller_join" : entryGated ? "entry_point" : "none";
       } catch {
          // Fail closed: a false positive costs a live query; a false negative
          // serves unfiltered rows with nothing downstream to catch it.
-         return true;
+         return "unproven";
       }
    }
 
