@@ -212,11 +212,11 @@ Seven phases in two lanes: telemetry work runs beside the core. The core (phases
 | Now. Standalone fixes | #6644 (a same-named source reads the wrong table; v1 fix), #5967 (stale data reporting fresh; control plane) and the @env. fix. Each is its own PR and waits for no phase. | None |
 | 0. Prove it | Most of this ran on 2026-11-07 (Evidence): the re-rooted served copy with inline join_one, the pair table with childless parents, rolling windows, view-call recognition and the include-item annotation. The R4 harness grown from the #7098 fixture, the cross-connection join (#6982) and the pair-table timing rerun are done (2026-11-11, Evidence). | S1, S2, S2a, S25 |
 | 1. Router, path report, annotations (on v1) | Variant router replacing the `runQueryResults` chain, taking a catalog; D1 report; three-tier outcomes with serve verdict at publish (#6277), preview (#7090) and reasons (#6446); one annotation reader for every Publisher route, with closed keys, the near-miss scan and the `#@ preaggregate` deprecation; D3 flag removal | S9, S12a, S13, S14, S14a |
-| 2. v1 defects and telemetry base | #7096, #6646, #6293, #7087, #6642, #6145, #6986 and #6847 (failure classification), #7078; workload log on the access record and an opt-in local store (T1), which also carries each query's path report and a `storage=` build's row count; what-if over existing annotations (T3); build_plan.ts moved off the deprecated getSQL() and makeBuildId() | S17 |
+| 2. v1 defects and telemetry base | #7096, #6646, #6293, #7087, #6642, #6145, #6986 and #6847 (failure classification), #7078; workload log on the access record and an opt-in local store (T1), which also carries each query's path report and a `storage=` build's row count; build_plan.ts moved off the deprecated getSQL() and makeBuildId() | S17 |
 | 3. `#(materialize)` | Source map; re-root rewriter (cross-file, query-shaped segments, inline joins); build-file generator; served model on `virtual` with load-time compile; reference joins; inline join_one with the uniqueness check; P9 probes; rolling windows with the incremental delete; extension tables; `name=` view; contracts at read (R3); the shared chain, probe service and generated-file host; v1 packages served through the same rewriter, gated on the #7098 fixture; joins across origin connections between sources stored in one destination (#6982): builds planned from the author's file with those joins removed (the file does not compile live), the served copy as the compile of record, and a coded refusal from build state, leaving an unbuilt side's handle out of the `virtualMap`; the v1-to-#(materialize) migration recipe, which ships with the minor that ships the v2 annotations | S1–S7, S2c, S2d, S3, S3a, S6a, S12, S25–S25c |
 | 4. Rollups, view routing, inline join_many | `#(preaggregate)` A1–A7 on the source map and measure grammar; rollup variants in the user's file; retire `preaggregation_coverage.ts` and the IR classifier; `#@ persist` view leg (P14); join-to-rollup leg (A7); pair-table serving (P5) | S2a, S8–S11, S9a, S9b, S15, S16, S16a |
 | 5. Consistency and simplification | Consistency's own design pass first (it can run beside phase 3), then: run manifest published whole, per-query manifest pinning, upstream-pinned fingerprints, per-warehouse as-of reads, as-of in D1 and T1; the control plane's promote and cleanup, all on the v1 plan's B1 records (#1563). Then a simplification pass over the core: remove what the router and rewriter replaced, merge duplicate paths, and leave it easy to understand and maintain. The core is vetted (R4, the hammer suite, the #7098 fixture) before phase 6 starts | S22–S24 |
-| 6. Cost estimation and the agent loop | T2 table stats; T4 (row counts first, then column widths and dry runs), T5 adapters, T6 compare, T7 tools; what-if over proposed v2 annotations; the `estimating` skill reference and tuning guide | S18–S21 |
+| 6. Cost estimation and the agent loop | T2 table stats; T4 (row counts first, then column widths and dry runs), T5 adapters, T6 compare, T7 tools; what-if (T3) over existing v1 and proposed v2 annotations; the `estimating` skill reference and tuning guide | S18–S21 |
 
 ```mermaid
 flowchart TB
@@ -228,8 +228,8 @@ flowchart TB
     P5["5. Consistency and simplification<br/>C1 to C4; design pass beside phase 3"]
   end
   subgraph Measurement and cost
-    P2["2. v1 defects and telemetry base<br/>P12, A3 defects, T1 to T3"]
-    P6["6. Cost estimation and agent loop<br/>T3 to T7"]
+    P2["2. v1 defects and telemetry base<br/>P12, A3 defects, T1"]
+    P6["6. Cost estimation and agent loop<br/>T2 to T7"]
   end
   P0 --> P1
   P0 --> P2
@@ -245,7 +245,7 @@ The core lane is the critical path, phases 0, 1, 3, 4 and then 5; phase 2 fits b
 **Where the suggested delivery order changes.**
 
 1. **Build routing once.** The hand-off puts the path report on v1 first (item 1) and new routing later (item 6), which builds routing twice. Phase 1 builds the variant router on v1's annotations, and D1 comes from it; phase 4 adds legs to the same router.
-2. **What-if needs the desugaring.** T3 can land before join work, as the hand-off says, but not before P1–P3: routing against a proposed `#(materialize)` needs its columns, which come from the build-source generator. What-if over existing v1 annotations lands in phase 2, and over proposed v2 annotations in phase 6. Row-count estimates need no generator, but they wait for phase 6: their consumer is the estimate half of the agent loop, and until the T5 adapters land the only method is an exact count that scans everything the build would read. Table stats (T2) wait for phase 6 too: their consumers are `compare` and the agent tools. Phase 2 keeps their inputs, the path report on the workload log and a `storage=` build's row count, so the history is there when phase 6 reads it.
+2. **What-if needs the desugaring.** T3 can land before join work, as the hand-off says, but not before P1–P3: routing against a proposed `#(materialize)` needs its columns, which come from the build-source generator. What-if waits for phase 6, over existing v1 annotations and proposed v2 ones alike: it is the estimate half of the agent loop, and until then the dry-run preview (`POST …/packages?dryRun=true`) gives an author the build plan and a serve verdict for every materialized source and named view. Row-count estimates need no generator, but they wait for phase 6: their consumer is the estimate half of the agent loop, and until the T5 adapters land the only method is an exact count that scans everything the build would read. Table stats (T2) wait for phase 6 too: their consumers are `compare` and the agent tools. Phase 2 keeps their inputs, the path report on the workload log and a `storage=` build's row count, so the history is there when phase 6 reads it.
 3. **Wrong-data issues move early.** #6644 (a same-named source reading the wrong table), #5967 (reuse reporting fresh) and the @env. fix each ship now as a standalone PR, outside the phases. #5967 stays a control-plane fix, and C2 still depends on it.
 4. **D3 goes with annotation ownership** in phase 1, since the annotation reader is what removes the flag.
 
@@ -430,7 +430,7 @@ All 41 requirements land in Publisher, with C1, C3, T1 and T2 shared with the co
 | C4 as-of on every table | Recorded in the manifest; shown in D1; spread logged in T1. | 5 |
 | T1 workload log | Shape, path report and cost added to the access record; an opt-in local store in OSS, Credible's store at scale. | 2 |
 | T2 table statistics | From the manifest, build records and path reports. | 6 (its inputs land in 2) |
-| T3 what-if | The router over a proposed catalog. | 2 (v1 annotations), 5 (v2) |
+| T3 what-if | The router over a proposed catalog. | 6 |
 | T4 cost estimation | Count queries, column widths, dry runs (Telemetry and cost estimation). | 6 |
 | T5 warehouse adapters | BigQuery, Snowflake, Postgres, DuckDB. | 6 |
 | T6 before/after | Workload log split at the build time. | 6 |
