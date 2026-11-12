@@ -16,6 +16,13 @@ env:
 permissions:
   contents: read
 
+# A newer push to a pull request supersedes the run on the older one, so that run is
+# cancelled rather than holding runners it no longer needs. A push to main is its own
+# group (its run id), so every commit on main is still tested.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event_name == 'pull_request' && github.head_ref || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 jobs:
   playwright:
     name: Playwright (packages/app)
