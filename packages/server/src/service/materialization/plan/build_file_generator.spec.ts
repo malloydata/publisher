@@ -11,6 +11,10 @@ import {
    deriveBuildPlanOutcome,
 } from "./build_plan";
 import { compilePackageBuildPlan } from "./build_plan_compile";
+import { collectIncrementalDeclarations } from "./build_plan";
+import { incrementalLineage } from "../run/incremental_build";
+import { assertInlinedJoinsUnique } from "../run/inline_uniqueness";
+import { rollingWindowsOf } from "./rolling_window";
 import {
    buildSourceName,
    generateBuildFile,
@@ -49,6 +53,19 @@ afterEach(async () => {
    restore?.();
    await packages.cleanup();
 });
+
+async function contentsOf(
+   pkg: Awaited<ReturnType<typeof packages.create>>,
+): Promise<Record<string, unknown>> {
+   const { Model } = await import("../../model");
+   const { runtime, modelURL, importBaseURL } = await Model.getModelRuntime(
+      pkg.getPackagePath(),
+      "m.malloy",
+      pkg.getMalloyConfig(),
+   );
+   const m = await runtime.loadModel(modelURL, { importBaseURL }).getModel();
+   return m._modelDef.contents as Record<string, unknown>;
+}
 
 async function compiled(files: string | Record<string, string>) {
    const pkg = await packages.create(files);
@@ -151,6 +168,64 @@ source: orders__mat is orders__mat__base -> {
 });
 
 describe("the generated companion, compiled into the build plan", () => {
+   it(
+      "carries a rolling window from the compiled source to the refresh's lineage, and builds the term as written",
+      async () => {
+         const c = await compiled(`source: events_raw is duckdb.sql("""
+  select * from (values
+    (1, timestamp '2026-01-01 00:00:00'),
+    (2, timestamp '2026-01-02 00:00:00')
+  ) as t(id, ts)
+""")
+
+#(materialize) name="recent_events" refresh="incremental" watermark="ts"
+source: recent is events_raw extend {
+  where: ts >= now - 30 days
+}
+`);
+         const [p] = generatedPlans(c);
+         expect(p.readTimeTerms).toEqual([
+            {
+               kind: "current_time",
+               code: "ts >= now - 30 days",
+               columns: ["ts"],
+               window: {
+                  field: "ts",
+                  op: ">=",
+                  offset: { sign: -1, amount: 30, unit: "day" },
+               },
+            },
+         ]);
+         // The keying rule: the plan, the source and the declaration all sit
+         // under the author's sourceID.
+         const declaration = collectIncrementalDeclarations(
+            c.sources,
+            c.materializePlans,
+         )[p.sourceID];
+         expect(declaration?.rollingWindow).toEqual([
+            rollingWindowsOf(p.readTimeTerms)[0],
+         ]);
+         expect(
+            incrementalLineage({
+               declaration,
+               // As stored from a Postgres origin: a DuckDB origin has no
+               // incremental range to read.
+               dialect: "postgres",
+               targetDialect: "duckdb",
+               physicalTableName: "recent_events",
+               connectionName: "duckdb",
+               sourceEntityId: "sid",
+            })?.rollingWindow,
+         ).toEqual([rollingWindowsOf(p.readTimeTerms)[0]]);
+         // Built as written: the address reads the warehouse's own clock, never
+         // a literal of Publisher's, so it does not move between builds.
+         const sql = addressSQL(c.sources[p.sourceID], c.targets?.[p.sourceID]);
+         expect(sql).toContain("LOCALTIMESTAMP");
+         expect(sql).not.toMatch(/TIMESTAMP '20\d\d-/);
+      },
+      { timeout: 30000 },
+   );
+
    it(
       "plans orders__mat: public dimensions stored under their own names, measures, views, joins and private fields left out",
       async () => {
@@ -309,14 +384,184 @@ source: orders is orders_raw
       { timeout: 30000 },
    );
 
+   const JOINED = `${BASE}
+source: regions is duckdb.sql("""
+  select * from (values ('east', 'East coast'), ('west', 'West coast')) as t(code, label)
+""") extend {
+  primary_key: code
+  dimension: loud_label is upper(label)
+}
+source: lines is duckdb.sql("""
+  select * from (values (1, 1, 2.0), (2, 1, 3.0), (3, 2, 4.0)) as t(line_id, order_id, qty)
+""")
+`;
+
    it(
-      "refuses inline= until the joins pull request, and plans nothing for it",
+      "keeps a dimension through a reference join out of the table, and a join_many's fan-out out of the build",
+      async () => {
+         const c = await compiled(`${JOINED}
+#(materialize) name="orders_all"
+source: orders is orders_raw extend {
+  join_one: regions with region
+  join_many: lines on lines.order_id = id
+  dimension:
+    region_label is regions.label
+    line_qty is lines.qty
+    doubled is amount * 2
+}
+`);
+         const [plan] = generatedPlans(c);
+         expect(plan.columns.map((x) => x.column)).toEqual([
+            "id",
+            "region",
+            "amount",
+            "order_date",
+            "doubled",
+         ]);
+         expect(plan.inline).toBeUndefined();
+      },
+      { timeout: 30000 },
+   );
+
+   it(
+      "inlines a join_one: stores what reads through it and the joined source's dimensions, with a uniqueness check",
+      async () => {
+         const c = await compiled(`${JOINED}
+#(materialize) name="orders_all" inline=["regions"]
+source: orders is orders_raw extend {
+  join_one: regions with region
+  dimension: region_label is regions.label
+}
+`);
+         const [plan] = generatedPlans(c);
+         expect(plan.inline).toEqual(["regions"]);
+         expect(
+            plan.columns.map((x) => [x.column, x.join ?? null, x.computed]),
+         ).toEqual([
+            ["id", null, false],
+            ["region", null, false],
+            ["amount", null, false],
+            ["order_date", null, false],
+            ["region_label", null, true],
+            ["regions__code", "regions", true],
+            ["regions__label", "regions", true],
+            ["regions__loud_label", "regions", true],
+         ]);
+         expect(plan.uniquenessChecks).toHaveLength(1);
+         const [check] = plan.uniquenessChecks ?? [];
+         expect(check.join).toBe("regions");
+         expect(check.keyColumn).toBe("code");
+         expect(check.connectionName).toBe("duckdb");
+         expect(check.sql).toContain("HAVING");
+         // The check finds no duplicate here, and one when there is.
+         const pkg = await packages.create("");
+         const duckdb = await pkg.getMalloyConnection("duckdb");
+         expect((await duckdb.runSQL(check.sql as string)).rows).toEqual([]);
+         await assertInlinedJoinsUnique(plan, duckdb);
+      },
+      { timeout: 30000 },
+   );
+
+   it(
+      "fails a build whose inlined join_one matches a key twice, naming the join",
       async () => {
          const c = await compiled(`${BASE}
+source: regions is duckdb.sql("""
+  select * from (values ('east', 'East'), ('east', 'Also east'), ('west', 'West')) as t(code, label)
+""") extend { primary_key: code }
 #(materialize) name="orders_all" inline=["regions"]
-source: orders is orders_raw
+source: orders is orders_raw extend {
+  join_one: regions with region
+}
+`);
+         const [plan] = generatedPlans(c);
+         const pkg = await packages.create("");
+         const duckdb = await pkg.getMalloyConnection("duckdb");
+         await expect(assertInlinedJoinsUnique(plan, duckdb)).rejects.toThrow(
+            /inlines the join_one 'regions'/,
+         );
+         // A plan with no compiled check refuses, and says why.
+         const unchecked = {
+            ...plan,
+            uniquenessChecks: (plan.uniquenessChecks ?? []).map((check) => ({
+               ...check,
+               sql: undefined,
+            })),
+         };
+         await expect(
+            assertInlinedJoinsUnique(unchecked, duckdb),
+         ).rejects.toThrow(/carries no uniqueness check/);
+      },
+      { timeout: 30000 },
+   );
+
+   for (const [name, inline, why] of [
+      ["a name that is not a join", '["nope"]', /not a join/],
+      ["a join_many", '["lines"]', /join_many/],
+      ["a join defined in place", '["r2"]', /defined in place/],
+      ["a list of something else", '"regions"', /list of join names/],
+      ["a join with no single key", '["r3"]', /not one equality/],
+      // Keyed on a join_many's column: a build would store a row per line.
+      [
+         "a join keyed through a join_many",
+         '["r4"]',
+         /reads another join \(`lines`\)/,
+      ],
+      [
+         "a join keyed on a dimension that reads a join_many",
+         '["r5"]',
+         /reads another join \(`lines`\)/,
+      ],
+   ] as const) {
+      it(
+         `refuses inline= naming ${name}, and plans nothing for it`,
+         async () => {
+            const pkg = await packages.create(`${JOINED}
+#(materialize) name="orders_all" inline=${inline}
+source: orders is orders_raw extend {
+  join_one: regions with region
+  join_one: r2 is duckdb.sql("""select 'east' as code""") on r2.code = region
+  join_many: lines on lines.order_id = id
+  join_one: r3 is regions on r3.code = region and r3.label != 'x'
+  join_one: r4 is regions on r4.code = lines.line_id::string
+  dimension: line_sku is lines.line_id::string
+  join_one: r5 is regions on r5.code = line_sku
+}
+`);
+            const c = await compilePackageBuildPlan(pkg);
+            expect(generatedPlans(c)).toEqual([]);
+            // Reported as a package warning, not only logged.
+            const findings = (c.annotationFindings ?? []).filter(
+               (f) => f.code === "materialize-not-built",
+            );
+            expect(findings.map((f) => f.subject)).toEqual(["orders"]);
+            expect(findings[0].message).toMatch(why);
+            const { plans, refused } = planModelMaterialize(
+               await contentsOf(pkg),
+            );
+            expect(plans).toEqual([]);
+            expect(refused[0]?.reason).toMatch(why);
+         },
+         { timeout: 30000 },
+      );
+   }
+
+   it(
+      "refuses an inlined column that clashes with one of the source's own, as a package warning",
+      async () => {
+         const c = await compiled(`${JOINED}
+#(materialize) name="orders_all" inline=["regions"]
+source: orders is orders_raw extend {
+  join_one: regions with region
+  dimension: regions__label is upper(region)
+}
 `);
          expect(generatedPlans(c)).toEqual([]);
+         const findings = (c.annotationFindings ?? []).filter(
+            (f) => f.code === "materialize-not-built",
+         );
+         expect(findings.map((f) => f.subject)).toEqual(["orders"]);
+         expect(findings[0].message).toContain("`regions__label`");
       },
       { timeout: 30000 },
    );
@@ -592,4 +837,159 @@ source: orders is orders_raw -> { select: * }
       );
       expect(reason('#(materialize) name="a\n')).toContain("does not parse");
    });
+
+   it(
+      "plans only a source that declares #(materialize) itself, not an extension that inherits it",
+      async () => {
+         const c = await compiled(`${BASE}
+#(materialize) name="orders_all"
+source: orders is orders_raw extend { dimension: big is amount > 10 }
+
+source: east_orders is orders extend { where: region = 'east' }
+
+source: renamed_orders is orders
+
+#(materialize) name="west_all"
+source: west_orders is orders extend { where: region = 'west' }
+`);
+         // Malloy copies orders' note onto east_orders and renamed_orders by
+         // reference; neither declares one, so neither gets a build.
+         expect(
+            generatedPlans(c)
+               .map((p) => [p.sourceName, p.buildSourceName])
+               .sort(),
+         ).toEqual([
+            ["orders", "orders__mat"],
+            ["west_orders", "west_orders__mat"],
+         ]);
+         expect(Object.values(c.sources).map((s) => s.name)).not.toContain(
+            "east_orders__mat",
+         );
+         expect(
+            (c.annotationFindings ?? []).filter(
+               (f) => f.code === "materialize-not-built",
+            ),
+         ).toEqual([]);
+      },
+      { timeout: 30000 },
+   );
+
+   it(
+      "reads a declaration by the statement that wrote it: across an import, past comments, through chained extensions, and on every definition of a block",
+      async () => {
+         const c = await compiled({
+            "a.malloy": `${BASE}
+#(materialize) name="orders_all"
+source: orders is orders_raw extend { dimension: big is amount > 10 }
+`,
+            "m.malloy": `import 'a.malloy'
+// orders' declaration reaches these by reference, from another file.
+source: east_orders is orders extend { where: region = 'east' }
+source: renamed_orders is orders
+
+#(materialize) name="west_all"
+
+// A comment and blank lines between the annotation and its statement.
+
+source: west_orders is orders extend { where: region = 'west' }
+source: west_big is west_orders extend { where: big }
+source: west_big_east is west_big extend { dimension: e is region = 'east' }
+
+// A block annotation is every definition's own: both are read as declaring
+// it, so both are refused for the same reason.
+#(materialize)
+source:
+   first_copy is orders extend {}
+   second_copy is orders extend {}
+`,
+         });
+         expect(
+            generatedPlans(c)
+               .map((p) => [p.sourceName, p.buildSourceName])
+               .sort(),
+         ).toEqual([
+            ["orders", "orders__mat"],
+            ["west_orders", "west_orders__mat"],
+         ]);
+         expect(
+            (c.annotationFindings ?? [])
+               .filter((f) => f.code === "materialize-not-built")
+               .map((f) => f.message.match(/`(\w+)`/)?.[1] ?? f.message)
+               .sort(),
+         ).toEqual(["first_copy", "second_copy"]);
+      },
+      { timeout: 30000 },
+   );
+});
+
+describe("a gated #(materialize) source (R3, contracts at read)", () => {
+   const GATED = `##! experimental.givens
+given: GROUPS :: string[]
+${BASE}
+#(access_filter) region in $GROUPS
+#(materialize) storage="lake"
+source: orders is orders_raw
+`;
+
+   async function outcome(gatedSources: boolean, text = GATED) {
+      restore?.();
+      restore = installSettings({
+         env: {
+            PUBLISHER_MATERIALIZE: "true",
+            PERSIST_STORAGE_MODE: "on",
+            PUBLISHER_MATERIALIZE_GATED_SOURCES: String(gatedSources),
+         },
+      }).restore;
+      const c = await compiled(text);
+      const [sourceID] = Object.keys(c.materializePlans ?? {});
+      return { c, sourceID, outcome: deriveBuildPlanOutcome(c, null) };
+   }
+
+   it(
+      "classifies the gate against the author's model, where its givens are declared",
+      async () => {
+         const { c, sourceID } = await outcome(true);
+         expect(c.sourceGateOutcomes?.[sourceID]).toEqual({
+            classification: "row_level",
+            attributed: true,
+         });
+      },
+      { timeout: 30000 },
+   );
+
+   it(
+      "is built and served from storage only with materialize.gatedSources on",
+      async () => {
+         const on = await outcome(true);
+         expect(on.outcome.plan?.refusedSources ?? {}).toEqual({});
+         expect(on.outcome.sourceEligibility.eligible).toEqual([on.sourceID]);
+         // Off, the managed tier never holds the gated source's columns.
+         const off = await outcome(false);
+         expect(off.outcome.plan?.refusedSources?.[off.sourceID]?.reason).toBe(
+            "authorize",
+         );
+         expect(off.outcome.sourceEligibility.eligible).toEqual([]);
+      },
+      { timeout: 30000 },
+   );
+
+   it(
+      "keeps refusing a gated #@ persist storage= source with the switch on",
+      async () => {
+         const { outcome: o } = await outcome(
+            true,
+            `##! experimental { persistence givens }
+given: GROUPS :: string[]
+${BASE}
+#(access_filter) region in $GROUPS
+#@ persist storage="lake" name="o_all"
+source: orders is orders_raw -> { select: * }
+`,
+         );
+         expect(
+            Object.values(o.plan?.refusedSources ?? {}).map((r) => r.reason),
+         ).toEqual(["authorize"]);
+      },
+      { timeout: 30000 },
+   );
 });

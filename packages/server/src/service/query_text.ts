@@ -80,6 +80,101 @@ export function extractRunTargetSourceNames(query?: string): string[] {
    return [];
 }
 
+/**
+ * A query that starts from a named view, read from its text: `run: ops ->
+ * by_carrier`, refined (`ops -> by_carrier + { limit: 3 }`), or with later
+ * stages (`ops -> by_carrier -> { … }`). The names are as written; whether
+ * `source` is a source and `view` one of its views is the model's to say.
+ */
+export interface RunViewCall {
+   source: string;
+   view: string;
+   /** A `+ { … }` refinement follows the view. */
+   refined: boolean;
+   /** How many `-> …` stages follow the view's own. */
+   laterStages: number;
+}
+
+/**
+ * The view the LAST run statement starts from (Malloy runs the last), or
+ * undefined when its first stage is not a bare view name: a hand-written
+ * stage (`-> { … }`), a source with arguments or a refinement of its own
+ * (`ops extend { … } -> …`), or anything this reader does not follow.
+ *
+ * An exact call (`ops -> by_carrier`, nothing after it) is also recognized
+ * from the compiled result schema (`resultExplore.name`); this reader is the
+ * half the schema cannot give, a query that only starts from the view
+ * (materialization v2 plan, Ownership, P14). Strips its own input.
+ */
+export function extractRunViewCall(query?: string): RunViewCall | undefined {
+   if (!query) return undefined;
+   const tokens = tokenize(stripMalloyCommentsAndLiterals(query));
+   let start = -1;
+   for (let k = 0; k + 1 < tokens.count; k++) {
+      if (isWord(tokens, k, "run") && textIs(tokens, k + 1, ":")) start = k + 2;
+   }
+   if (start < 0) {
+      // The bare form, as extractRunTargetSourceNames reads it.
+      for (let k = 0; k + 2 < tokens.count; k++) {
+         if (
+            isName(tokens, k) &&
+            arrowAt(tokens, k + 1) &&
+            opensLine(tokens, k)
+         ) {
+            start = k;
+            break;
+         }
+      }
+   }
+   if (start < 0 || !isName(tokens, start) || !arrowAt(tokens, start + 1)) {
+      return undefined;
+   }
+   const viewAt = start + 3;
+   if (!isName(tokens, viewAt)) return undefined;
+   let k = viewAt + 1;
+   let refined = false;
+   if (textIs(tokens, k, "+") && tokens.kind[k] === PUNCT) {
+      if (!textIs(tokens, k + 1, "{") || tokens.partner[k + 1] < 0) {
+         return undefined;
+      }
+      refined = true;
+      k = tokens.partner[k + 1] + 1;
+   }
+   let laterStages = 0;
+   while (arrowAt(tokens, k)) {
+      const stage = k + 2;
+      if (textIs(tokens, stage, "{") && tokens.partner[stage] >= 0) {
+         k = tokens.partner[stage] + 1;
+      } else if (isName(tokens, stage)) {
+         k = stage + 1;
+      } else {
+         return undefined;
+      }
+      laterStages++;
+   }
+   // The statement must end here: the next statement, or the text's end.
+   if (k < tokens.count && !(isName(tokens, k) && textIs(tokens, k + 1, ":"))) {
+      return undefined;
+   }
+   return {
+      source: textOf(tokens, start),
+      view: textOf(tokens, viewAt),
+      refined,
+      laterStages,
+   };
+}
+
+/** Whether tokens `k` and `k + 1` are an adjacent `->`. */
+function arrowAt(tokens: Tokens, k: number): boolean {
+   return (
+      textIs(tokens, k, "-") &&
+      tokens.kind[k] === PUNCT &&
+      textIs(tokens, k + 1, ">") &&
+      tokens.kind[k + 1] === PUNCT &&
+      tokens.start[k + 1] === tokens.start[k] + 1
+   );
+}
+
 /** Whether token `k` is the first on its line. */
 function opensLine(tokens: Tokens, k: number): boolean {
    if (k === 0) return true;

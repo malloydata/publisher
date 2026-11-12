@@ -102,7 +102,18 @@ export interface ChainedPlanFacts {
     * warns ({@link noteWrongTierRecompute}). Absent means self-instructed.
     */
    hostInstructed?: boolean;
+   /**
+    * What a strict build does with a source whose only build recomputes a
+    * stored upstream from the warehouse (ms2data/service#6756): `recompute`
+    * builds it and reports `upstreamReuse: recomputed`; `refuse` fails it
+    * ({@link WarehouseRecomputeRefusedError}). Only a host sets it; absent
+    * means `recompute`, and a non-strict build ignores it.
+    */
+   warehouseReach?: WarehouseReach;
 }
+
+/** See {@link ChainedPlanFacts.warehouseReach}. */
+export type WarehouseReach = "recompute" | "refuse";
 
 /** A build with no plan to consult: nothing is known to be stored. */
 export const NO_PLAN_FACTS: ChainedPlanFacts = {

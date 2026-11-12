@@ -257,6 +257,7 @@ export function incrementalLineage(params: {
       mergeKeys,
       scopeColumns: d.scopeColumns,
       strategy: d.strategy as IncrementalStrategy,
+      ...(d.rollingWindow?.length ? { rollingWindow: d.rollingWindow } : {}),
    };
 }
 
@@ -683,7 +684,10 @@ export function incrementalRunContext(
    // declaration, so that source builds full.
    const declarations: Record<string, IncrementalDeclaration> = {};
    for (const [sourceID, declaration] of Object.entries(
-      collectIncrementalDeclarations(compiled.sources),
+      collectIncrementalDeclarations(
+         compiled.sources,
+         compiled.materializePlans,
+      ),
    )) {
       if (declaration.incremental) declarations[sourceID] = declaration;
    }

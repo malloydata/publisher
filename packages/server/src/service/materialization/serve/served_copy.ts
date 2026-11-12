@@ -34,8 +34,13 @@
  * `virtual()` handles the server mapped.
  */
 
-import { identifier, stringLiteral } from "../../malloy_text";
+import { identifier, nowComparison, stringLiteral } from "../../malloy_text";
+import type { MaterializeReadTimeTerm } from "../plan/build_file_generator";
 import { duckdbTypeToMalloy } from "./materialization_serve_transform";
+import { declarationSpans, topLevelTokens } from "../declaration_text";
+import { isName, lexAll, offsetOf, statementStarts } from "../malloy_lexer";
+
+export { declarationSpans };
 
 /** A zero-based Malloy range, as a compiled source's `location.range` carries. */
 export interface ServedCopyRange {
@@ -78,6 +83,14 @@ export interface Reroot {
     * `internal` field.
     */
    reservedNames?: readonly string[];
+   /**
+    * For a `#(materialize)` re-root: its plan's read-time terms, applied again
+    * over the stored table at every read ({@link readTimeTermText}). A term
+    * inherited from a base is not in the source's own text, so the re-root
+    * writes every term right on the stored table (one the source's own
+    * `extend` repeats is applied twice, which is harmless).
+    */
+   readTimeTerms?: readonly MaterializeReadTimeTerm[];
 }
 
 /** One stored column of a re-rooted source. */
@@ -226,6 +239,7 @@ export function rerootDeclaration(
       | "typeName"
       | "storedDimensions"
       | "reservedNames"
+      | "readTimeTerms"
    > & { columns?: Reroot["columns"] },
 ): string | undefined {
    const spans = declarationSpans(declaration);
@@ -272,7 +286,35 @@ export function rerootDeclaration(
       if (opened === undefined) return undefined;
       extend = opened;
    }
-   return `${name} is ${virtual}${extend ? ` ${extend}` : ""}`;
+   const terms = (r.readTimeTerms ?? [])
+      .map(readTimeTermText)
+      .filter((t) => t !== undefined);
+   const reread = terms.length ? ` extend { where: ${terms.join(", ")} }` : "";
+   return `${name} is ${virtual}${reread}${extend ? ` ${extend}` : ""}`;
+}
+
+/**
+ * The `where:` text the re-root writes over the stored table for one
+ * read-time term, or undefined when the source's own text already carries it.
+ * Exhaustive by `kind`, so a new kind of read-time term must say how it is
+ * re-applied.
+ */
+function readTimeTermText(term: MaterializeReadTimeTerm): string | undefined {
+   switch (term.kind) {
+      case "current_time":
+         // Written from the classified parts, never the author's text: a term
+         // inherited from a base is re-applied here, outside its own file.
+         return nowComparison(
+            term.window.field,
+            term.window.op,
+            term.window.offset,
+         );
+      case "given":
+         // Kept, not written: a given-reading term (P2) is in the
+         // declaration's own trailing `extend`, which the re-root keeps as the
+         // author wrote it (the build generator takes a term out only there).
+         return;
+   }
 }
 
 /** A timeframe column with the internal name its stored value is renamed to. */
@@ -355,28 +397,6 @@ function intoFirstExtend(
    // On its own line, so the author's first statement keeps its own.
    const sep = /^[ \t]*\n/.test(rest) ? "" : "\n";
    return extend.slice(0, open.end) + statements + sep + rest;
-}
-
-/** Indexes in `tokens` of a word followed by `:` (not `::`) at its own depth. */
-function statementStarts(tokens: readonly Token[]): number[] {
-   const starts: number[] = [];
-   for (let k = 0; k + 1 < tokens.length; k++) {
-      const t = tokens[k];
-      if (
-         t.kind === "word" &&
-         tokens[k + 1].text === ":" &&
-         tokens[k + 1].start === t.end &&
-         tokens[k + 2]?.text !== ":"
-      ) {
-         starts.push(k);
-      }
-   }
-   return starts;
-}
-
-/** Whether `t` can name a definition: a word or a quoted identifier. */
-function isName(t: Token | undefined): t is Token {
-   return !!t && (t.kind === "word" || t.text.startsWith("`"));
 }
 
 /**
@@ -581,189 +601,4 @@ function withTypes(text: string, applied: readonly Reroot[]): string {
    const head = lines.slice(0, i).join("\n");
    const rest = lines.slice(i).join("\n");
    return `${head}${head ? "\n" : ""}${SERVED_COPY_FLAG}\n${types}\n\n${rest}`;
-}
-
-/** The character offset of a zero-based line/character position, or -1. */
-function offsetOf(
-   text: string,
-   pos: { line: number; character: number },
-): number {
-   let offset = 0;
-   let line = 0;
-   while (line < pos.line) {
-      const nl = text.indexOf("\n", offset);
-      if (nl < 0) return -1;
-      offset = nl + 1;
-      line++;
-   }
-   const lineEnd = text.indexOf("\n", offset);
-   const length = (lineEnd < 0 ? text.length : lineEnd) - offset;
-   if (pos.character > length) return -1;
-   return offset + pos.character;
-}
-
-/** One lexical token, at the bracket depth it sits at. */
-interface Token {
-   kind: "word" | "open" | "close" | "other";
-   text: string;
-   start: number;
-   end: number;
-   /** The brackets enclosing it; a bracket itself has the depth outside it. */
-   depth: number;
-}
-
-/**
- * Where the name ends (`is` begins) and where the trailing run of top-level
- * `extend { … }` blocks begins, if any. Undefined when no top-level `is`
- * follows the name.
- */
-export function declarationSpans(
-   declaration: string,
-): { nameEnd: number; extendStart?: number; queryShaped: boolean } | undefined {
-   const tokens = topLevelTokens(declaration);
-   if (!tokens) return undefined;
-   const isIndex = tokens.findIndex(
-      (t) => t.kind === "word" && t.text === "is",
-   );
-   if (isIndex <= 0) return undefined;
-   const nameEnd = tokens[isIndex].start;
-   // Walk back from the end over `extend` + block pairs.
-   let extendStart: number | undefined;
-   let j = tokens.length - 1;
-   while (j > isIndex + 1) {
-      const close = tokens[j];
-      if (close.kind !== "close") break;
-      // The block's opening brace is the matching top-level "open" before it.
-      const open = tokens[j - 1];
-      const kw = tokens[j - 2];
-      if (
-         open?.kind !== "open" ||
-         kw?.kind !== "word" ||
-         kw.text !== "extend" ||
-         j - 2 <= isIndex
-      ) {
-         break;
-      }
-      extendStart = kw.start;
-      j -= 3;
-   }
-   // A query-shaped base has a top-level `->` before its trailing extends.
-   const baseEnd = extendStart ?? declaration.length;
-   const queryShaped = tokens.some(
-      (t, k) =>
-         k > isIndex &&
-         t.text === "-" &&
-         t.end <= baseEnd &&
-         tokens[k + 1]?.text === ">" &&
-         tokens[k + 1].start === t.end,
-   );
-   return {
-      nameEnd,
-      ...(extendStart !== undefined ? { extendStart } : {}),
-      queryShaped,
-   };
-}
-
-/**
- * The tokens at brace depth 0: words, quoted text, and each top-level `{ … }`
- * block as an "open" token at its `{` and a "close" token at its `}` (the
- * block's inside is skipped). Undefined when the text does not lex.
- */
-function topLevelTokens(s: string): Token[] | undefined {
-   const all = lexAll(s);
-   if (!all) return undefined;
-   return all.filter(
-      (t) =>
-         t.depth === 0 &&
-         ((t.kind !== "open" && t.kind !== "close") ||
-            t.text === "{" ||
-            t.text === "}"),
-   );
-}
-
-/**
- * Every token of `s` with its depth. Comments and `#` annotation lines are
- * skipped; a string or quoted identifier is one "other" token. Undefined when
- * brackets do not balance or a string or comment does not close.
- */
-function lexAll(s: string): Token[] | undefined {
-   const out: Token[] = [];
-   let depth = 0;
-   let i = 0;
-   const n = s.length;
-   const push = (kind: Token["kind"], start: number, end: number, d = depth) =>
-      out.push({ kind, text: s.slice(start, end), start, end, depth: d });
-   while (i < n) {
-      const c = s[i];
-      const next = s[i + 1];
-      // Comments, and annotations (`#` to the end of the line).
-      if (
-         (c === "-" && next === "-") ||
-         (c === "/" && next === "/") ||
-         c === "#"
-      ) {
-         const nl = s.indexOf("\n", i);
-         i = nl < 0 ? n : nl + 1;
-         continue;
-      }
-      if (c === "/" && next === "*") {
-         const close = s.indexOf("*/", i + 2);
-         if (close < 0) return undefined;
-         i = close + 2;
-         continue;
-      }
-      // Strings and quoted identifiers.
-      if (c === '"' && s.startsWith('"""', i)) {
-         const close = s.indexOf('"""', i + 3);
-         if (close < 0) return undefined;
-         push("other", i, close + 3);
-         i = close + 3;
-         continue;
-      }
-      if (c === "'" || c === '"' || c === "`") {
-         const end = quotedEnd(s, i, c);
-         if (end < 0) return undefined;
-         push("other", i, end);
-         i = end;
-         continue;
-      }
-      if (c === "{" || c === "(" || c === "[") {
-         push("open", i, i + 1);
-         depth++;
-         i++;
-         continue;
-      }
-      if (c === "}" || c === ")" || c === "]") {
-         depth--;
-         if (depth < 0) return undefined;
-         push("close", i, i + 1);
-         i++;
-         continue;
-      }
-      if (/[A-Za-z_]/.test(c)) {
-         let j = i + 1;
-         while (j < n && /[A-Za-z0-9_]/.test(s[j])) j++;
-         push("word", i, j);
-         i = j;
-         continue;
-      }
-      if (!/\s/.test(c)) push("other", i, i + 1);
-      i++;
-   }
-   return depth === 0 ? out : undefined;
-}
-
-/** The index just past the closing `quote` of a string starting at `start`. */
-function quotedEnd(s: string, start: number, quote: string): number {
-   let i = start + 1;
-   while (i < s.length) {
-      const c = s[i];
-      if (c === "\\") {
-         i += 2;
-         continue;
-      }
-      if (c === quote) return i + 1;
-      i++;
-   }
-   return -1;
 }

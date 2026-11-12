@@ -191,7 +191,7 @@ describe("R4: a stored timeframe truncation keeps its timeframe in the served co
             c.reason ? [c.kind, c.outcome, c.reason] : [c.kind, c.outcome],
          );
       // Keyed by the author's sourceID, the table is found on the chain of
-      // `stored` (and of its extension) even when the served copy declined.
+      // `stored` even when the served copy declined.
       // Declined for its timezone, and the report says so.
       expect(tables(declined.path)).toEqual([
          ["materialized", "skipped", "TIME_ZONE"],
@@ -201,11 +201,23 @@ describe("R4: a stored timeframe truncation keeps its timeframe in the served co
       const ext = await fixture.runAsIs(
          "run: stored_ext -> { timezone: 'UTC'; group_by: is_march }",
       );
-      expect(tables(ext.path)).toEqual([
-         ["materialized", "skipped", "TIME_ZONE"],
-      ]);
+      // The extension declares no #(materialize), so it has no table of its
+      // own: `stored`'s table answers it. When the served copy declines, the
+      // report cannot place that table on the extension's chain, since Malloy
+      // records no `extends` on an extension of a table-backed extension.
+      expect(tables(ext.path)).toEqual([]);
+      expect(ext.path?.servedBy.kind).toBe("live");
+      const extAnswered = await fixture.runAsIs(
+         "run: stored_ext -> { group_by: is_march }",
+      );
+      expect(tables(extAnswered.path)).toEqual([["materialized", "used"]]);
       expect(
-         JSON.stringify([declined.path, answered.path, ext.path]),
+         JSON.stringify([
+            declined.path,
+            answered.path,
+            ext.path,
+            extAnswered.path,
+         ]),
       ).not.toContain("__mat");
    });
 

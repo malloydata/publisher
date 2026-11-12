@@ -12,6 +12,7 @@ import {
    MaterializationEligibilityError,
    ModelCompilationError,
    UnconfiguredConnectionError,
+   WarehouseRecomputeRefusedError,
 } from "../../../errors";
 import {
    causeChain,
@@ -23,6 +24,7 @@ import {
    HostSuppliedWrongTierError,
    strictMissSourceId,
 } from "./materialization_run_support";
+import { InlinedJoinNotUniqueError } from "./inline_uniqueness";
 
 /**
  * Whether retrying one source's failed build could succeed, as reported on
@@ -126,11 +128,15 @@ export function classifyBuildError(err: unknown): BuildRetryable {
    // The host supplied an upstream at the wrong tier: the same instructions
    // fail the same way, so the host must change them.
    if (err instanceof HostSuppliedWrongTierError) return false;
+   // The instructions refused the only build there is (warehouseReach:
+   // refuse): the same instructions refuse it again.
+   if (err instanceof WarehouseRecomputeRefusedError) return false;
    // An upstream no manifest holds: unclassified on its own (see above).
    if (isUpstreamMissingError(err)) return undefined;
    // A property of the model, the package or the environment's configuration.
    if (
       err instanceof MaterializationEligibilityError ||
+      err instanceof InlinedJoinNotUniqueError ||
       err instanceof ChainedShapeNotCarriedError ||
       err instanceof ModelCompilationError ||
       err instanceof MalloyError ||

@@ -5136,7 +5136,13 @@ components:
             it carries an `#(authorize)` or `#(access_filter)` gate, which the
             storage tier and rollups cannot keep yet), `shadowed` (its storage
             table is bound, but every model's source of that name is another
-            source).
+            source), `destination_missing` (`storage=` names a destination the
+            environment does not configure), `connection_cannot_hold_table`
+            (colocated, on a connection whose type creates no tables),
+            `served_copy` (a `#(materialize)` source, which only the served copy
+            reads: the served copy is off, no model's served copy reads its
+            table, or it is colocated, which the served copy does not serve
+            yet). An open set.
         message:
           type: string
           description: What the verdict means for this source, in a sentence.
@@ -5846,6 +5852,16 @@ components:
                   naming it). `deprecated-filter-annotation`: a source declaring
                   deprecated `#(filter)` annotations (one per declaring source,
                   `model` naming its file and `subject` the source).
+                  `deprecated-persist-opt-out`: a source declaring v1's
+                  `#@ -persist`, which materialization v2 deprecates (one per
+                  declaring source, `model` its file and `subject` the source;
+                  `warn`; only while `PUBLISHER_MATERIALIZE` is on; see
+                  docs/materialization-migration.md).
+                  `deprecated-preaggregate-annotation`: reserved, not yet
+                  emitted. It will name a measure declaring `#@ preaggregate`,
+                  whose v2 spelling is `#(preaggregate)` (one per measure,
+                  `model` its file, `subject` the source and the message the
+                  measure; `warn`), once `#(preaggregate)` is read.
                   `report-name-ambiguous`: two or more grid reports share a
                   basename, so the deprecated `GET …/dashboards/{name}` route
                   answers 409 for it (one per name, `subject` naming it and the
@@ -8634,8 +8650,10 @@ components:
             the server's PERSIST_STORAGE_MODE routes no query to it),
             `unreachable` (no published source reaches it), `row_level_gate`
             (every published entry point over it carries a gate it cannot keep
-            yet), `refused` (the package refuses to serve it) or `shadowed` (its
-            storage table is bound to another source of the same name). An open
+            yet), `refused` (the package refuses to serve it), `shadowed` (its
+            storage table is bound to another source of the same name) or
+            `served_copy` (only the served copy reads it, and it does not answer
+            from it). An open
             set: treat a code you do not know as a warning like any other.
         tableId:
           type: string
@@ -8732,8 +8750,8 @@ components:
           type: string
           description: >-
             For a `WARNED` skip, the serve verdict's reason the table answers no
-            query: `storage_mode`, `unreachable`, `row_level_gate`, `refused` or
-            `shadowed` (see `QueryPathWarning`); or, for a table only the served
+            query: `storage_mode`, `unreachable`, `row_level_gate`, `refused`,
+            `shadowed` or `served_copy` (see `QueryPathWarning`); or, for a table only the served
             copy reads, `served-copy-not-served` (the package warning of that
             code) or `persist-opt-out` (the queried source opts out with
             `#@ -persist`). An open set. Absent on any
@@ -11023,6 +11041,25 @@ components:
             in referenceManifest fails the build (compiler strict mode) instead
             of silently recomputing it live. Per-unit dispatch should set this
             true.
+        warehouseReach:
+          type: string
+          default: recompute
+          description: >-
+            What a strict build (`strictUpstreams: true`) does with a
+            `storage=` source whose only build recomputes a stored upstream
+            from the source warehouse: the source reaches the warehouse through
+            an intermediate that no stored table can stand in for, so no build
+            over the stored tables exists for it. `recompute` (the default,
+            and what an absent or null value means) builds it and reports
+            `upstreamReuse: recomputed` with the reason; `refuse` fails the
+            source instead, with that reason in its `SourceFailure.reason` and
+            `retryable: false`, and nothing reads the warehouse. Non-strict
+            builds ignore it, as they ignore `strictUpstreams`.
+
+
+            An open string, not an enum, so a later value needs no client
+            change; today's values are `recompute` and `refuse`, and any other
+            is a 400.
         ledger:
           type: array
           items:
@@ -11359,7 +11396,9 @@ components:
             deterministically earlier in the same run. That last source
             inherits its upstream's classification (`true` when any such
             upstream's failure is transient) and its `reason` names the
-            upstream's own failure.
+            upstream's own failure. Also `false` for a source a strict build
+            refused under `warehouseReach: refuse`, whose only build would
+            recompute its stored upstreams from the warehouse.
 
 
             `true` is a transient failure, not a property of the inputs: the

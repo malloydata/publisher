@@ -10,11 +10,12 @@
  * for two callers with different givens against live; a source whose term the
  * served copy cannot keep is left as written, with a coded warning.
  *
- * The harness builds each table with its SQL as compiled, so a source whose
- * given the build reads holds the default caller's rows only (a real package's
- * build gate refuses it; a build that strips the term, as the re-address does,
- * would hold every caller's). Either way a served copy that dropped the term
- * answers the other caller wrongly, which is what these tests would catch.
+ * The harness builds each table with its SQL as compiled. A `#@ persist`
+ * source's given is in its extend block, never in the build; a
+ * `#(materialize)` source's given term is left out of its build by the
+ * generator's build copy (P2), so its table holds every caller's rows and only
+ * the served copy's re-applied term scopes a read. A served copy that dropped
+ * the term would answer each caller with every caller's rows.
  */
 
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
@@ -159,26 +160,46 @@ describe("R4: a given-reading where: is applied per caller in the served copy", 
          });
       });
 
-      it("leaves a source whose term is in an inline extend in its head as written, warned, and answers each caller live", async () => {
+      it("does not build a source whose term is in an inline extend in its head, and answers each caller live", async () => {
+         // The generator refuses it (the re-root would drop the term), so no
+         // table exists for it and the served copy has nothing to re-root.
+         expect(
+            fixture.bindings
+               .flatMap((b) => b.sourceIDs ?? [])
+               .map((id) => id.split("@")[0]),
+         ).toEqual(["trailing_where"]);
          const runs = await expectEachCallerLive(
             fixture,
             "head_extend",
             "run: head_extend -> { group_by: org; aggregate: total }",
          );
          for (const run of runs) expect(run.servedVia).toBeUndefined();
-         const problems = await fixture.servedCopyProblems();
-         expect(
-            problems
-               .filter((p) => p.sourceName === "head_extend")
-               .map((p) => p.reason),
-         ).toEqual(["read_terms_not_kept"]);
       });
 
-      it("keeps a term in the source's own extend on the served source", async () => {
+      it("builds a term in the source's own extend out of the table and re-applies it per caller from the served copy", async () => {
+         // The build left the term out: the table holds every caller's rows.
+         const stored = await fixture.storedSQL(
+            (table) => `SELECT * FROM ${table("trailing_where")}`,
+         );
+         expect([...new Set(stored.map((r) => r.org))].sort()).toEqual([
+            "acme",
+            "globex",
+         ]);
          const problems = await fixture.servedCopyProblems();
          expect(
             problems.filter((p) => p.sourceName === "trailing_where"),
          ).toEqual([]);
+         for (const malloy of [
+            "run: trailing_where -> { group_by: org; aggregate: total }",
+            "run: trailing_where -> { group_by: d; aggregate: total, n is count() }",
+         ]) {
+            const runs = await expectEachCallerLive(
+               fixture,
+               "trailing_where",
+               malloy,
+            );
+            for (const run of runs) expect(run.servedVia).toBe("served_copy");
+         }
       });
    });
 });

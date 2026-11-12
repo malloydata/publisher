@@ -51,6 +51,34 @@ function reroot(
 }
 
 describe("rerootDeclaration", () => {
+   it("re-applies a rolling window on the stored table, before the author's blocks", () => {
+      const out = rerootDeclaration(
+         "recent is last30 extend {\n  measure: n is count()\n}",
+         {
+            sourceName: "recent",
+            connectionAlias: "x",
+            virtualHandle: "h",
+            typeName: "recent__served",
+            storedDimensions: [],
+            readTimeTerms: [
+               {
+                  kind: "current_time",
+                  code: "now - 30 days <= ts",
+                  columns: ["ts"],
+                  window: {
+                     field: "ts",
+                     op: ">=",
+                     offset: { sign: -1, amount: 30, unit: "day" },
+                  },
+               },
+            ],
+         },
+      );
+      expect(out).toBe(
+         "recent is x.virtual('h')::recent__served extend { where: ts >= now - 30 days } extend {\n  measure: n is count()\n}",
+      );
+   });
+
    it("replaces the base and keeps the author's extend block verbatim", () => {
       const out = rerootDeclaration(
          `daily is ev -> {\n  group_by: r\n  aggregate: total is amt.sum()\n} extend {\n  dimension: big is total > 1\n  primary_key: r\n}`,

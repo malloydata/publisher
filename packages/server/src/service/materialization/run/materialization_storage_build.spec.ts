@@ -149,6 +149,8 @@ describe("buildOneSourceIntoStorage (chained-build fallback ladder)", () => {
          | "wrongTierAndMissing";
       /** The host instructed the run (orchestrated). */
       hostInstructed?: boolean;
+      /** The host's `warehouseReach` (ms2data/service#6756). */
+      warehouseReach?: "recompute" | "refuse";
    }): Promise<{
       physicalTableName: string;
       storageDestinationName?: string;
@@ -282,7 +284,7 @@ describe("buildOneSourceIntoStorage (chained-build fallback ladder)", () => {
             },
          },
          dependsOnStorageUpstream: true,
-         ...(opts.hostInstructed
+         ...(opts.hostInstructed || opts.warehouseReach
             ? {
                  planFacts: {
                     persistSourceIds: new Set<string>(),
@@ -290,6 +292,9 @@ describe("buildOneSourceIntoStorage (chained-build fallback ladder)", () => {
                     addressBySourceId: {},
                     compilerKeyBySourceId: {},
                     hostInstructed: true,
+                    ...(opts.warehouseReach
+                       ? { warehouseReach: opts.warehouseReach }
+                       : {}),
                  },
               }
             : {}),
@@ -408,6 +413,61 @@ describe("buildOneSourceIntoStorage (chained-build fallback ladder)", () => {
       }
    });
 
+   // ms2data/service#6756: the orchestrator can refuse the one recompute
+   // strict permits.
+   it("strict + warehouseReach refuse + a downstream that reaches the warehouse: refuses with the reason, never recomputing", async () => {
+      const { WarehouseRecomputeRefusedError } = await import(
+         "../../../errors"
+      );
+      const call = callInto({
+         strict: true,
+         stackOnParent: "raw",
+         warehouseReach: "refuse",
+      });
+      await expect(call).rejects.toBeInstanceOf(WarehouseRecomputeRefusedError);
+      // The reason the entry would have carried, and the knob that refused it.
+      await expect(call).rejects.toThrow(
+         /warehouseReach: refuse.*reads the source warehouse \(regions\) through 'daily_regional'/is,
+      );
+   });
+
+   it("warehouseReach recompute is today's behaviour: strict recomputes a downstream that reaches the warehouse", async () => {
+      await expect(
+         callInto({
+            strict: true,
+            stackOnParent: "raw",
+            warehouseReach: "recompute",
+         }),
+      ).rejects.toThrow(/Failed to materialize source 'monthly'/i);
+   });
+
+   it("a non-strict build ignores warehouseReach refuse, as it ignores strictUpstreams", async () => {
+      await expect(
+         callInto({
+            strict: false,
+            stackOnParent: "raw",
+            warehouseReach: "refuse",
+         }),
+      ).rejects.toThrow(/Failed to materialize source 'monthly'/i);
+   });
+
+   it("warehouseReach refuse changes no other rung: a missing upstream and an uncarried shape still refuse as before", async () => {
+      const missing = callInto({
+         strict: true,
+         stackOnParent: "missing",
+         warehouseReach: "refuse",
+      });
+      await expect(missing).rejects.toBeInstanceOf(ChainedUpstreamMissingError);
+      const uncarried = callInto({
+         strict: true,
+         stackOnParent: "uncarried",
+         warehouseReach: "refuse",
+      });
+      await expect(uncarried).rejects.toBeInstanceOf(
+         ChainedShapeNotCarriedError,
+      );
+   });
+
    it("non-strict + a downstream that reaches the warehouse falls through to recompute-from-raw", async () => {
       await expect(
          callInto({ strict: false, stackOnParent: "raw" }),
@@ -443,11 +503,17 @@ describe("buildOneSourceIntoStorage (chained-build fallback ladder)", () => {
          await callInto({ strict: true, stackOnParent: "infra" }).catch(
             () => undefined,
          );
+         // The refused recompute is a strict refusal, not a fallback.
+         await callInto({
+            strict: true,
+            stackOnParent: "raw",
+            warehouseReach: "refuse",
+         }).catch(() => undefined);
          for (const [outcome, n] of [
             ["parent_reuse", 1],
             ["strict_shape_fallback", 1],
             ["inline_fallback", 1],
-            ["strict_refused", 2],
+            ["strict_refused", 3],
             ["infra_failure", 1],
          ] as const) {
             expect(await harness.collectCounter(COUNTER, { outcome })).toBe(n);

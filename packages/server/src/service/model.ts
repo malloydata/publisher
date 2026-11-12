@@ -38,6 +38,7 @@ import {
 import * as fs from "fs/promises";
 import { createRequire } from "module";
 import * as path from "path";
+import { fileURLToPath } from "url";
 import { components } from "../api";
 import {
    getMaxQueryRows,
@@ -61,6 +62,12 @@ import {
    PayloadTooLargeError,
 } from "../errors";
 import { getMaterializeEnabled, getPersistStorageMode } from "../config";
+import { keyedOverlay } from "./overlay_key";
+import {
+   compiledFileText,
+   loadLeavingOutCrossConnectionJoins,
+   type LeftOutDefinition,
+} from "./materialization/plan/cross_connection_joins";
 import {
    planModelPreaggregation,
    type RollupPlan,
@@ -80,6 +87,7 @@ import type { SerializedModel } from "../package_load/protocol";
 import { decodeSerializedModel } from "../package_load/protocol_decode";
 import { BuildManifest } from "./materialization/types";
 import {
+   modelAnnotations,
    ownModelAnnotations,
    ownModelNoteObjects,
    ownModelNotes,
@@ -123,6 +131,10 @@ import {
    type FilterParams,
 } from "./filter";
 import { assertFilterGivensParse, gateGivenSource } from "./given";
+import {
+   deprecatedPersistAnnotations,
+   type DeprecatedPersistAnnotation,
+} from "./deprecated/persist_annotations";
 import { filterPublisherOwnedRenderLogs } from "./report_manifest";
 import {
    docCommentTitleAndDescription,
@@ -130,6 +142,7 @@ import {
    parseRouteTag,
    readAutorun,
    readStartingGivens,
+   routeHasKey,
    tagText,
 } from "./motly";
 import {
@@ -383,6 +396,11 @@ export interface ModelState {
     * row-level gate denies.
     */
    gateRuntime?: HydrationRuntime;
+   /**
+    * The model file's absolute path, which tells a source this file declares
+    * from one an import brought in. Absent: no source counts as declared here.
+    */
+   modelFile?: string;
 }
 
 export class Model {
@@ -392,6 +410,12 @@ export class Model {
    private modelType: ModelType;
    private modelMaterializer: ModelMaterializer | undefined;
    private modelDef: ModelDef | undefined;
+   /** See {@link ModelState.modelFile}. */
+   private modelFile: string | undefined;
+   /** See {@link declaredDeprecatedPersistAnnotations}. */
+   private deprecatedPersistAnnotationsMemo:
+      | DeprecatedPersistAnnotation[]
+      | undefined;
    private modelInfo: Malloy.ModelInfo | undefined;
    private storageServe = new StorageServeShape(this.serveShapeHost());
    /**
@@ -451,6 +475,11 @@ export class Model {
     * on disk is newer than the served IR.
     */
    private compiledSourceText: string | undefined;
+   /**
+    * For a model whose files join sources across connections (#6982), loaded
+    * from its build view: the definitions left out. Undefined otherwise.
+    */
+   private crossConnectionLeftOut: LeftOutDefinition[] | undefined;
    /** {@link getReportModelFacts}, once read; boxed so `undefined` is cached too. */
    private reportModelFacts:
       | { value: ReportModelFacts | undefined }
@@ -596,6 +625,7 @@ export class Model {
       this.dataStyles = state.dataStyles;
       this.modelType = state.modelType;
       this.modelDef = state.modelDef;
+      this.modelFile = state.modelFile;
       this.modelMaterializer = state.modelMaterializer;
       this.sources = state.sources;
       this.queries = state.queries;
@@ -635,15 +665,6 @@ export class Model {
     */
    public declaredFilterSourceNames(): string[] {
       if (!this.modelDef) return [];
-      const ownFile = (url: string): boolean => {
-         try {
-            return decodeURIComponent(new URL(url).pathname).endsWith(
-               `/${this.modelPath}`,
-            );
-         } catch {
-            return false;
-         }
-      };
       const names: string[] = [];
       for (const entry of Object.values(this.modelDef.contents)) {
          if (!isSourceDef(entry)) continue;
@@ -652,11 +673,38 @@ export class Model {
             (note) =>
                note.text.trim().startsWith(FILTER_ANNOTATION_PREFIX) &&
                note.at !== undefined &&
-               ownFile(note.at.url),
+               this.declaredHere(note.at.url),
          );
          if (declares) names.push(entry.as || entry.name);
       }
       return names.sort();
+   }
+
+   /**
+    * Whether a document URL is this model's own file. Compared as resolved
+    * paths: a suffix match on {@link modelPath} would take
+    * `sub/models/a.malloy`, imported here, for `models/a.malloy`.
+    */
+   private declaredHere(url: string): boolean {
+      if (this.modelFile === undefined) return false;
+      try {
+         return path.resolve(fileURLToPath(url)) === this.modelFile;
+      } catch {
+         return false;
+      }
+   }
+
+   /**
+    * The deprecated v1 `#@ -persist` and `#@ preaggregate` annotations THIS
+    * file declares, each once, at the source or measure it is written on.
+    */
+   public declaredDeprecatedPersistAnnotations(): DeprecatedPersistAnnotation[] {
+      if (!this.modelDef) return [];
+      // Read per package request, and the model never changes: walk it once.
+      return (this.deprecatedPersistAnnotationsMemo ??=
+         deprecatedPersistAnnotations(this.modelDef, (url) =>
+            this.declaredHere(url),
+         ));
    }
 
    /** The parsed filter definitions for a source; empty when none. */
@@ -856,15 +904,56 @@ export class Model {
       );
 
       try {
-         const { modelMaterializer, runnableNotebookCells } =
-            await Model.getModelMaterializer(
-               runtime,
-               importBaseURL,
-               modelURL,
-               modelPath,
-            );
-
-         const compiled = await modelMaterializer?.getModel();
+         const loadedModel = await Model.getModelMaterializer(
+            runtime,
+            importBaseURL,
+            modelURL,
+            modelPath,
+         );
+         let modelMaterializer = loadedModel.modelMaterializer;
+         const runnableNotebookCells = loadedModel.runnableNotebookCells;
+         let gateRuntime = runtime;
+         let compiled:
+            | Awaited<ReturnType<ModelMaterializer["getModel"]>>
+            | undefined;
+         let crossConnectionLeftOut: LeftOutDefinition[] | undefined;
+         try {
+            compiled = await modelMaterializer?.getModel();
+         } catch (first) {
+            // A file that joins sources across connections (#6982) loads
+            // from its build view behind the materialize switch.
+            const view =
+               modelType === "model"
+                  ? await loadLeavingOutCrossConnectionJoins({
+                       firstError: first,
+                       readText: (url) =>
+                          compiledFileText(url, options?.overlay),
+                       load: async (files) => {
+                          const rt = await Model.getModelRuntime(
+                             packagePath,
+                             modelPath,
+                             malloyConfig,
+                             {
+                                ...options,
+                                overlay: new Map([
+                                   ...(options?.overlay ?? []),
+                                   ...keyedOverlay(files),
+                                ]),
+                             },
+                          );
+                          const mm = rt.runtime.loadModel(rt.modelURL, {
+                             importBaseURL: rt.importBaseURL,
+                          });
+                          return { rt, mm, model: await mm.getModel() };
+                       },
+                    })
+                  : undefined;
+            if (!view) throw first;
+            modelMaterializer = view.result.mm;
+            gateRuntime = view.result.rt.runtime;
+            compiled = view.result.model;
+            crossConnectionLeftOut = view.leftOut;
+         }
          const checked =
             modelMaterializer && compiled
                ? await extractCheckedModel(
@@ -898,6 +987,7 @@ export class Model {
             modelType,
             modelMaterializer,
             modelDef,
+            modelFile: path.resolve(packagePath, modelPath),
             sources,
             queries,
             sourceInfos,
@@ -907,9 +997,10 @@ export class Model {
             policy,
             // Cast: `_loadModelFromModelDef` is internal and undeclared on the
             // public `Runtime` type.
-            gateRuntime: runtime as HydrationRuntime,
+            gateRuntime: gateRuntime as HydrationRuntime,
          });
          model.compiledSourceText = compiledTextFor(modelURL);
+         model.crossConnectionLeftOut = crossConnectionLeftOut;
          return model;
       } catch (thrown) {
          if (thrown instanceof Error && thrown.stack) {
@@ -947,7 +1038,7 @@ export class Model {
     */
    public static fromSerialized(
       packageName: string,
-      _packagePath: string,
+      packagePath: string,
       malloyConfig: ModelConnectionInput,
       data: SerializedModel,
       options: {
@@ -1017,6 +1108,7 @@ export class Model {
          modelType: data.modelType,
          modelMaterializer,
          modelDef,
+         modelFile: path.resolve(packagePath, data.modelPath),
          sources,
          queries,
          sourceInfos,
@@ -1035,6 +1127,9 @@ export class Model {
       // Paired with `modelDef` above: the coordinates in that IR index this
       // text and no other revision of the file.
       model.compiledSourceText = data.modelSourceText;
+      model.crossConnectionLeftOut = data.crossConnectionLeftOut as
+         | LeftOutDefinition[]
+         | undefined;
       model.preparedRenderTagResults = data.renderTagResults as
          | { label: string; result?: Malloy.Result }[]
          | undefined;
@@ -1236,6 +1331,38 @@ export class Model {
          ? { ...manifest, entries }
          : undefined;
    }
+
+   /**
+    * `manifest`, or undefined when this model does not carry `##!
+    * experimental.persistence` (its own or through an import). Malloy refuses
+    * a non-empty `buildManifest` against such a model, and the package's
+    * manifest is package-wide: one colocated table bound for another model
+    * (a `#@ persist` model beside it, or a `#(materialize)` source, whose
+    * author file needs no flag) would 400 every query here. A model without
+    * the flag has no persisted source for Malloy to substitute, so nothing it
+    * reads is lost. Presence only, decided as Malloy decides it.
+    */
+   private manifestIfPersistent(
+      manifest: BuildManifest | undefined,
+   ): BuildManifest | undefined {
+      const modelDef = this.modelDef;
+      if (!manifest || !modelDef) return undefined;
+      if (this.persistenceFlagMemo?.modelDef !== modelDef) {
+         this.persistenceFlagMemo = {
+            modelDef,
+            persistent: routeHasKey(
+               new Annotations(modelAnnotations(modelDef)),
+               "!",
+               "experimental",
+               "persistence",
+            ),
+         };
+      }
+      return this.persistenceFlagMemo.persistent ? manifest : undefined;
+   }
+
+   /** {@link manifestIfPersistent}'s answer for the model it was read from. */
+   private persistenceFlagMemo?: { modelDef: ModelDef; persistent: boolean };
 
    /** `includeHidden` lists sources the file does not export, which `queryableSources: "all"` still serves. */
    public getSources(includeHidden = false): ApiSource[] | undefined {
@@ -2665,6 +2792,24 @@ export class Model {
       await this.servedCopy.prepare();
    }
 
+   /**
+    * The definitions this model's build view leaves out because they join
+    * sources across connections (#6982); empty for any other model.
+    */
+   public crossConnectionLeftOutDefinitions(): readonly LeftOutDefinition[] {
+      return this.crossConnectionLeftOut ?? [];
+   }
+
+   /**
+    * The sources this model's served copy answers from storage, by author
+    * `sourceID`: undefined when the served copy is off for this model, and
+    * `pending` before it has compiled.
+    */
+   public servedCopySourceIDs(): ReadonlySet<string> | "pending" | undefined {
+      if (!this.servedCopyEnabled()) return undefined;
+      return this.servedCopy.rerootedSourceIDs() ?? "pending";
+   }
+
    /** Why this model's served copy leaves sources unserved (empty when off). */
    public servedCopyProblems(): readonly ServedCopyProblem[] {
       if (!this.servedCopyEnabled()) return [];
@@ -2894,7 +3039,9 @@ export class Model {
       // and run all agree on the same freshness substitution.
       const buildManifest = this.resolveFreshBuildManifest();
       // Without rollup entries, for every runnable that is NOT the companion.
-      const liveBuildManifest = this.withoutPreaggregateEntries(buildManifest);
+      const liveBuildManifest = this.manifestIfPersistent(
+         this.withoutPreaggregateEntries(buildManifest),
+      );
       // See filterGivensToModelSurface. Resolved from the caller's own compiled
       // query, before routing or any graft replaces it.
       let querySurfaceGivens: Record<string, GivenValue> | undefined;
@@ -3075,16 +3222,23 @@ export class Model {
                preaggServeMaterializer,
             }),
             async () => {
-               const blocked =
-                  !bypassAuthorize &&
-                  // Cheap short-circuit for gate-free models. Safe, unlike
-                  // `hasAuthorize()`: see `hasAnyAuthorizeNote`.
-                  this.governor.hasAnyAuthorizeNote() &&
-                  (await this.governor.queryEntryPointHasRowLevelGate(
-                     runnable,
-                     callerRegion,
-                  ));
-               return blocked;
+               // Cheap short-circuit for gate-free models. Safe, unlike
+               // `hasAuthorize()`: see `hasAnyAuthorizeNote`.
+               if (bypassAuthorize || !this.governor.hasAnyAuthorizeNote()) {
+                  return false;
+               }
+               const veto = await this.governor.rowLevelGateVeto(
+                  runnable,
+                  callerRegion,
+               );
+               // Only an entry-point gate can be grafted on a routed compile
+               // (the served copy, R3); a caller join's gate, or one the walk
+               // could not decide, keeps every routed shape away.
+               return veto === "none"
+                  ? false
+                  : veto === "entry_point"
+                    ? "entry_point"
+                    : true;
             },
             { recordMetrics: false },
          );
@@ -3207,6 +3361,13 @@ export class Model {
          // The caller's OWN text, not the synthesized/injected `queryString`.
          callerQueryText: query,
          ceiling: { audit, source: () => compiledSource ?? sourceName },
+         // The served copy is the author's text, gates included: a row-level
+         // gate is grafted and proven on its own compile, so the routed answer
+         // keeps it (R3), and an answer let past an entry-point gate is
+         // re-proven there. Any other routed shape carries no annotations and
+         // is never reached past a row-level gate (the router's veto).
+         graftScope: answer.graftScope,
+         routedPastEntryPointGate: answer.pastEntryPointGate,
       };
       const { runnable: governed, decision } = await this.governor.govern(
          governRequest,
@@ -3239,9 +3400,11 @@ export class Model {
       // After the gate, so a denied caller gets its 403 rather than a 400 about
       // a value; before prepare, which is where Malloy would parse it.
       this.assertFilterGivens(givens);
-      // No post-hoc gate check is possible on a routed runnable (the serve
-      // shape carries no annotations): storage routing's correctness rests
-      // entirely on `queryEntryPointHasRowLevelGate`.
+      // No post-hoc gate check is possible on a serve-shape or rollup
+      // runnable (it carries no annotations): their correctness rests
+      // entirely on `queryEntryPointHasRowLevelGate`. The served copy is the
+      // exception (R3): it keeps the author's gates, and `govern()` above
+      // grafted and proved them on its own compile.
 
       const maxRows = getMaxQueryRows();
       const maxBytes = getMaxResponseBytes();
@@ -3389,14 +3552,17 @@ export class Model {
          answer = liveFallbackAnswer(answer);
          // The retry runs the LIVE compile, which `governed` is not (it is the
          // serve shape), so it is governed in its own right here: the same
-         // bind, on the runnable that will execute. Today routing already
-         // refuses any gated entry point (`queryEntryPointHasRowLevelGate`),
-         // so this decides nothing new; it is what keeps an ungoverned live
-         // runnable from ever running if that refusal narrows. Outside the
-         // retry's try, so a denial answers 403, not a mapped run error.
+         // bind, on the runnable that will execute. A gated entry point
+         // reaches here only through the served copy (R3), whose answer's
+         // graft scope is the served copy's: the retry grafts on the author's
+         // own scope, or the graft would recompile against the stored table
+         // that just failed. Outside the retry's try, so a denial answers
+         // 403, not a mapped run error.
          const { runnable: governedLive } = await this.governor.govern(
             {
                ...governRequest,
+               graftScope: undefined,
+               routedPastEntryPointGate: false,
                boundary: undefined,
                ceiling: undefined,
                bypassAlreadyNoted: true,

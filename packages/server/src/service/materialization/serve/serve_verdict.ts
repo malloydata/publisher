@@ -26,6 +26,36 @@ type PersistSourcePlan = components["schemas"]["PersistSourcePlan"];
 /** The `code` of the package warning for a materialized source no published query can reach. */
 export const MATERIALIZATION_UNREACHABLE_CODE = "materialization-unreachable";
 
+/**
+ * The `code` of the package warning for a `storage=` source whose destination
+ * the environment does not configure (P13): every build into it fails, so the
+ * source serves live.
+ */
+export const MATERIALIZATION_DESTINATION_MISSING_CODE =
+   "materialization-destination-missing";
+
+/**
+ * The `code` of the package warning for a colocated source whose connection
+ * cannot hold a table (P13): a colocated build writes into that connection, so
+ * the source serves live.
+ */
+export const MATERIALIZATION_CONNECTION_CANNOT_HOLD_TABLE_CODE =
+   "materialization-connection-cannot-hold-table";
+
+/**
+ * The live verdict reasons that carry a publish warning of their own, with its
+ * code. The other live reasons are warned where their cause is found (storage
+ * mode, refusals, rollups over a stored base).
+ */
+export const VERDICT_WARNING_CODES: Readonly<
+   Partial<Record<ServeVerdictReason, string>>
+> = {
+   unreachable: MATERIALIZATION_UNREACHABLE_CODE,
+   destination_missing: MATERIALIZATION_DESTINATION_MISSING_CODE,
+   connection_cannot_hold_table:
+      MATERIALIZATION_CONNECTION_CANNOT_HOLD_TABLE_CODE,
+};
+
 /** Why a materialized source's table answers no query. Open: see the module doc. */
 export type ServeVerdictReason =
    /** The plan refused to build it (the eligibility gate). */
@@ -41,7 +71,18 @@ export type ServeVerdictReason =
    /** Its table is past its freshness window, and its fallback does not serve stale. */
    | "stale"
    /** Its storage table is bound, but every model's source of that name is another source. */
-   | "shadowed";
+   | "shadowed"
+   /** `storage=` names a destination the environment does not configure (P13). */
+   | "destination_missing"
+   /** Colocated, on a connection whose type creates no tables (P13). */
+   | "connection_cannot_hold_table"
+   /**
+    * A `#(materialize)` source, which only the served copy reads: the served
+    * copy is off (PUBLISHER_MATERIALIZE or PERSIST_STORAGE_MODE), or no
+    * model's served copy re-roots it (see the `served-copy-not-served`
+    * warning), or it is colocated, which the served copy does not serve yet.
+    */
+   | "served_copy";
 
 /** Whether one named view of a stored source compiles against its serve shape (#7090). */
 export interface ViewServeVerdict {
@@ -95,6 +136,13 @@ export interface ServeVerdictFacts {
       modelPath?: string,
    ): boolean;
    /**
+    * Storage: the served copy keeps the author's gates and answers a gated
+    * entry point over a stored table, the gate grafted on it (R3,
+    * `materialize.gatedSources`), so {@link gated} no longer means live.
+    * Rollups are never served past a gate.
+    */
+   servedCopyKeepsGates?: boolean;
+   /**
     * Why the bind refuses this source although the plan holds it (the
     * eligibility gate the bind applies, such as a rollup name two models
     * share), or undefined when the bind keeps it.
@@ -117,10 +165,32 @@ export interface ServeVerdictFacts {
    servedStorageNames: ReadonlySet<string>;
    /** Storage: the bound source names still fresh. Absent: every bound one is. */
    freshStorageNames?: ReadonlySet<string>;
+   /**
+    * The plan's `#(materialize)` sources, by sourceID, and whether the served
+    * copy answers each from its table: `serves` when some model's compiled
+    * served copy re-roots it (or a served copy has yet to compile), `off` when
+    * the served copy is off, `not_served` otherwise. Absent: no source is a
+    * `#(materialize)` source.
+    */
+   materialize?(sourceID: string): "serves" | "off" | "not_served" | undefined;
    /** Rollups over a stored base (#6293), left out of the plan. */
    rollupsOverStoredBase?: readonly { baseName: string; modelPath?: string }[];
    /** Per stored source's plan sourceID, its views' verdicts (a preview). */
    views?: ReadonlyMap<string, ViewServeVerdict[]>;
+   /**
+    * Whether the environment configures this storage destination: `false`
+    * only when the destination list is known and does not name it. Absent, or
+    * `undefined` (the list is not known), never warns: a deployment fact that
+    * cannot be read must not send a source live.
+    */
+   destinationConfigured?(destinationName: string): boolean | undefined;
+   /**
+    * Whether this connection can hold a table, read from its capability:
+    * `false` only when its configured type creates no tables. Absent, or
+    * `undefined` (not an environment connection, or an unknown type), never
+    * warns.
+    */
+   connectionCanHoldTable?(connectionName: string): boolean | undefined;
 }
 
 /** The tier a plan source's table lives in. */
@@ -210,6 +280,56 @@ function verdictFor(
       fixes,
    });
 
+   // Deployment facts (P13), ahead of the storage mode: under `write-only` the
+   // build runs and fails on them, so they are the reason worth naming. Under
+   // `off` the annotation is ignored, so a destination is never read. A table
+   // already bound is never called unbuildable: what serves is reported as it
+   // is, and the fact is read only to explain a table nothing has bound.
+   const destination = source.annotationFields?.storage?.trim();
+   // Read once, here and in the storage branch below: one name-keyed lookup.
+   const storageBound = facts.boundStorageNames.has(source.name);
+   if (
+      tier === "storage" &&
+      destination &&
+      facts.storageMode !== "off" &&
+      !storageBound &&
+      facts.destinationConfigured?.(destination) === false
+   ) {
+      // A preview's per-view verdicts still say what would serve once the
+      // destination exists, so they are kept.
+      const views = facts.views?.get(sourceID);
+      return {
+         ...(views && views.length > 0 ? { views } : {}),
+         ...live(
+            "destination_missing",
+            `${subject} declares storage="${destination}", but this environment ` +
+               `configures no storage destination of that name, so no build can ` +
+               `write its table and queries on it are answered live.`,
+            [
+               `Configure a storage destination named "${destination}" on the environment ` +
+                  `(one the config lists but the server rejected, such as an unsupported type, is skipped with the reason in the server log).`,
+               "Or name a configured destination in storage=, or drop storage= to build it in its own warehouse.",
+            ],
+         ),
+      };
+   }
+   if (
+      tier === "colocated" &&
+      !facts.boundEntityIds.has(source.sourceEntityId) &&
+      facts.connectionCanHoldTable?.(source.connectionName) === false
+   ) {
+      return live(
+         "connection_cannot_hold_table",
+         `${subject} is materialized in its own warehouse, but its connection ` +
+            `'${source.connectionName}' cannot create tables, so no build can ` +
+            `write its table and queries on it are answered live.`,
+         [
+            "Add storage= naming a configured storage destination, so the table is written there instead.",
+            "Or drop the annotation if the source is not meant to be materialized.",
+         ],
+      );
+   }
+
    if (tier === "storage" && facts.storageMode !== "on") {
       return live(
          "storage_mode",
@@ -236,9 +356,11 @@ function verdictFor(
    }
 
    // Colocated persist is substituted inside Malloy, gates and all; storage
-   // and rollups go through the router, which skips a gated entry point.
+   // and rollups go through the router, which skips a gated entry point,
+   // unless the served copy keeps the gates (R3), which it does for storage.
    if (
-      (tier === "storage" || origin === "preaggregate") &&
+      (origin === "preaggregate" ||
+         (tier === "storage" && !facts.servedCopyKeepsGates)) &&
       facts.gated(readID, readName, source.modelPath)
    ) {
       return live(
@@ -266,6 +388,31 @@ function verdictFor(
       );
    }
 
+   // `#(materialize)` is served by the served copy alone (never the serve
+   // shape, which drops its bindings, nor the colocated manifest, which Malloy
+   // never substitutes for it), so the served copy decides its verdict.
+   const materialized = facts.materialize?.(sourceID);
+   if (materialized !== undefined && tier === "colocated") {
+      return live(
+         "served_copy",
+         `${subject} is materialized with #(materialize) into its own ` +
+            `warehouse, which is built but not served yet, so its queries are ` +
+            `answered live.`,
+         [
+            "Give #(materialize) a storage= destination, which the served copy serves from (PUBLISHER_MATERIALIZE and PERSIST_STORAGE_MODE=on).",
+         ],
+      );
+   }
+   if (materialized === "off") {
+      return live(
+         "served_copy",
+         `${subject} is materialized with #(materialize), which only the ` +
+            `served copy reads, and the served copy is off, so its queries are ` +
+            `answered live.`,
+         ["Set PUBLISHER_MATERIALIZE=true and PERSIST_STORAGE_MODE=on."],
+      );
+   }
+
    const stale = (): ServeVerdict =>
       live(
          "stale",
@@ -279,7 +426,7 @@ function verdictFor(
    if (tier === "storage") {
       const views = facts.views?.get(sourceID);
       const withViews = views && views.length > 0 ? { views } : {};
-      if (!facts.boundStorageNames.has(source.name)) {
+      if (!storageBound) {
          return {
             ...base,
             ...withViews,
@@ -287,7 +434,25 @@ function verdictFor(
             message: `${subject} will serve from storage once a build binds its table.`,
          };
       }
-      if (origin === "persist" && !facts.servedStorageNames.has(source.name)) {
+      if (materialized === "not_served") {
+         return live(
+            "served_copy",
+            `${subject}'s table is bound, but no model's served copy reads ` +
+               `it, so no query is answered from it: the served copy reads a ` +
+               `source it is built on from that source's table instead, or ` +
+               `leaves it as written for the reason a served-copy-not-served ` +
+               `warning gives.`,
+            [
+               "Fix what the served-copy-not-served warning names, if there is one.",
+               "Or drop #(materialize) from it if a source it is built on already answers its queries.",
+            ],
+         );
+      }
+      if (
+         materialized === undefined &&
+         origin === "persist" &&
+         !facts.servedStorageNames.has(source.name)
+      ) {
          return live(
             "shadowed",
             `${subject}'s table is bound, but every model's source of that name ` +
@@ -307,7 +472,10 @@ function verdictFor(
          ...base,
          ...withViews,
          verdict: "serves",
-         message: `${subject} serves from storage.`,
+         message:
+            materialized === "serves"
+               ? `${subject} serves from storage, through its served copy.`
+               : `${subject} serves from storage.`,
       };
    }
 

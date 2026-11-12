@@ -4,6 +4,7 @@
 import { describe, expect, it } from "bun:test";
 import { derivationTerminals } from "./caller_joins";
 import {
+   extractRunViewCall,
    buildDerivationBaseMap,
    buildIsEdgeMap,
    buildJoinBaseMap,
@@ -910,3 +911,72 @@ function fastestMs(run: () => void, runs = 5): number {
    }
    return best;
 }
+
+describe("extractRunViewCall", () => {
+   it("reads an exact call of a view", () => {
+      expect(extractRunViewCall("run: ops -> by_carrier")).toEqual({
+         source: "ops",
+         view: "by_carrier",
+         refined: false,
+         laterStages: 0,
+      });
+   });
+
+   it("reads a query that starts from a view, with later stages", () => {
+      expect(
+         extractRunViewCall(
+            "run: ops -> by_carrier -> { select: * } -> top_one",
+         ),
+      ).toEqual({
+         source: "ops",
+         view: "by_carrier",
+         refined: false,
+         laterStages: 2,
+      });
+   });
+
+   it("reads a refinement of the view", () => {
+      expect(
+         extractRunViewCall(
+            "run: ops -> by_carrier + { limit: 3 } -> { select: * }",
+         ),
+      ).toEqual({
+         source: "ops",
+         view: "by_carrier",
+         refined: true,
+         laterStages: 1,
+      });
+   });
+
+   it("reads the bare form, backticked names, and the last run statement", () => {
+      expect(extractRunViewCall("`my ops` -> `by carrier`")).toMatchObject({
+         source: "my ops",
+         view: "by carrier",
+      });
+      expect(
+         extractRunViewCall("run: a -> v1\nrun: b -> v2 -> { select: * }"),
+      ).toMatchObject({ source: "b", view: "v2", laterStages: 1 });
+   });
+
+   it("ignores comments and strings", () => {
+      expect(
+         extractRunViewCall(
+            "// run: x -> y\nrun: ops -> by_carrier -> { where: name = 'a -> b' }",
+         ),
+      ).toMatchObject({ source: "ops", view: "by_carrier", laterStages: 1 });
+   });
+
+   it("reads nothing from a query whose first stage is not a view name", () => {
+      for (const text of [
+         "run: ops -> { group_by: carrier }",
+         "run: ops extend { dimension: x is 1 } -> by_carrier",
+         "run: ops(p is 1) -> by_carrier",
+         "run: ops -> by_carrier extend { dimension: x is 1 }",
+         "run: ops -> by_carrier + 3",
+         "run: ops",
+         "",
+      ]) {
+         expect(extractRunViewCall(text)).toBeUndefined();
+      }
+   });
+});

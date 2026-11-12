@@ -19,13 +19,16 @@
 
 import { readFileSync } from "fs";
 import { fileURLToPath } from "url";
-import type {
-   MalloyConfig,
-   ModelMaterializer,
-   QueryMaterializer,
+import {
+   MalloyError,
+   type MalloyConfig,
+   type ModelDef,
+   type ModelMaterializer,
+   type QueryMaterializer,
 } from "@malloydata/malloy";
+import type { GraftRuntime, GraftScope } from "../../gate_classification";
 import { quoteManifestTablePath } from "../../quoting";
-import { overlayKey } from "../../overlay_key";
+import { keyedOverlay, overlayKey } from "../../overlay_key";
 import {
    createModelRuntime,
    type ModelConnectionInput,
@@ -33,6 +36,7 @@ import {
 import { SourceMap } from "../plan/source_map";
 import { givenReadingFilterTerms } from "../plan/persist_dynamic_terms";
 import type { MaterializePlan } from "../plan/build_file_generator";
+import { rollingWindowsOf } from "../plan/rolling_window";
 import { evaluateManifestFreshness } from "../run/freshness";
 import {
    declaredColumnsOf,
@@ -58,13 +62,21 @@ import {
    type ServedCopyRange,
 } from "./served_copy";
 import { servedCopyConfig, servedCopyAlias } from "./served_copy_config";
+import { offsetOf } from "../malloy_lexer";
+import { classificationFindingsBySource } from "../../classification_findings";
+import {
+   isCrossConnectionRefusal,
+   leaveOutCrossConnectionJoins,
+   type LeftOutDefinition,
+} from "../plan/cross_connection_joins";
 
 type VirtualMap = Map<string, Map<string, string>>;
 
 /**
  * Why the served copy declined a query, for the path report: `time_zone`, the
  * query sets a timezone over a stored computed dimension; `cross_connection`,
- * the copy waits on a join across connections; `not_served`, the copy (or the
+ * the copy waits on a join across connections, or the query reads a join it
+ * leaves out across connections; `not_served`, the copy (or the
  * queried source in it) carries a `served-copy-not-served` warning;
  * `opt_out`, the queried source opts out with `#@ -persist`.
  */
@@ -79,10 +91,57 @@ export class ServedCopyDecline extends Error {
    constructor(
       message: string,
       readonly code: ServedCopyDeclineCode,
+      /** What the path report may tell the caller; the message stays in logs. */
+      readonly callerDetail?: string,
    ) {
       super(message);
    }
 }
+
+/** The caller's detail for a query through a join left out across connections. */
+const LEFT_OUT_JOIN_DETAIL =
+   "The query uses a join to a source on another connection than the destination this table is stored in, so it is answered live.";
+
+/**
+ * Whether a query's compile failure reads a definition the served copy left
+ * out across connections: a missing field whose name, where the problem points
+ * in the query's text, is one left out (the copy keeps every other field of
+ * the author's). A problem whose place cannot be read counts, since declining
+ * only sends the query on to live.
+ */
+function readsLeftOutDefinition(
+   compiled: Compiled,
+   error: unknown,
+   queryString: string,
+): boolean {
+   if (!compiled.leftOut?.length) return false;
+   if (!(error instanceof MalloyError)) return false;
+   const names = new Set(compiled.leftOut.map((l) => l.name));
+   return (
+      error.problems as {
+         code?: string;
+         at?: { range?: { start: { line: number; character: number } } };
+      }[]
+   ).some((p) => {
+      if (p.code === undefined || !MISSING_FIELD_CODES.has(p.code)) {
+         return false;
+      }
+      const start = p.at?.range?.start;
+      const offset = start ? offsetOf(queryString, start) : -1;
+      if (offset < 0) return true;
+      const path = /^[`A-Za-z0-9_.]+/.exec(queryString.slice(offset))?.[0];
+      if (!path) return true;
+      return path
+         .split(".")
+         .some((part) => names.has(part.replace(/^`|`$/g, "")));
+   });
+}
+
+/** Malloy's codes for a compile that reads a field the model does not have. */
+const MISSING_FIELD_CODES: ReadonlySet<string> = new Set([
+   "field-not-found",
+   "aggregate-source-not-found",
+]);
 
 /** The code on a package warning for a served copy that did not compile or re-root. */
 export const SERVED_COPY_WARNING_CODE = "served-copy-not-served";
@@ -99,7 +158,23 @@ export interface ServedCopyProblem {
       | "range_not_found"
       | "definition_not_parsed"
       | "fields_not_carried"
-      | "read_terms_not_kept";
+      | "read_terms_not_kept"
+      | "cross_connection_join"
+      | "classification_not_kept";
+   /**
+    * For `cross_connection_join`: the join the served copy leaves out, because
+    * it reads a source on another connection than the destination its source
+    * is stored in.
+    */
+   join?: string;
+   /**
+    * For `classification_not_kept`: the served copy's `#(carries)` leaks on
+    * the source, in the words the load would refuse it with, and its
+    * classification-coverage findings, which the compile of record does not
+    * have.
+    */
+   leaks?: string[];
+   coverage?: string[];
    /** The compiler's message, for logs and the package warning only. */
    detail?: string;
 }
@@ -118,8 +193,16 @@ interface Compiled {
    materializer?: ModelMaterializer;
    /** The served copy's compiled model, read (never edited) for source chains. */
    modelDef?: unknown;
+   /** The runtime it compiled in: a row-level graft reloads through it (R3). */
+   runtime?: GraftRuntime;
    /** The `sourceID`s of sources that opt out with `#@ -persist`. */
    optOutIDs?: ReadonlySet<string>;
+   /**
+    * The `sourceID`s of sources whose surface in the served copy has a
+    * `#(carries)` leak or an unclassified field that the compile of record
+    * does not: the served copy never answers a query on one.
+    */
+   unsafeIDs?: ReadonlySet<string>;
    /** Bindings actually re-rooted, with their destination under its alias. */
    rerooted: ServeBinding[];
    /**
@@ -138,6 +221,12 @@ interface Compiled {
     * (decision 6). Dropped with the compile: a rebind or reload starts empty.
     */
    declined?: Map<string, ServedCopyDecline>;
+   /**
+    * Definitions left out because a join they read crosses connections in the
+    * served copy (question 11): a query that reads one skips the served copy
+    * with reason `cross_connection`.
+    */
+   leftOut?: readonly LeftOutDefinition[];
 }
 
 /** How many declined queries one compiled copy remembers before starting over. */
@@ -213,6 +302,16 @@ export class ServedCopyServe {
       this.inFlight = undefined;
    }
 
+   /**
+    * The author `sourceID`s the compiled copy re-rooted on a stored table,
+    * which are the sources it answers from storage; undefined before the
+    * first compile.
+    */
+   rerootedSourceIDs(): ReadonlySet<string> | undefined {
+      if (!this.compiled) return undefined;
+      return new Set(this.compiled.rerooted.flatMap((b) => b.sourceIDs ?? []));
+   }
+
    /** Why the last compile left sources unserved; empty before the first. */
    problems(): readonly ServedCopyProblem[] {
       return this.compiled?.problems ?? [];
@@ -245,6 +344,12 @@ export class ServedCopyServe {
       virtualMap: VirtualMap;
       bindings: ServeBinding[];
       tablesRead: ServeBinding[];
+      /**
+       * The served copy's compiled model, where a row-level gate is grafted
+       * when this answer runs (R3): the gate's text is the author's, kept in
+       * the copy, so the graft and its proofs read the same compile that runs.
+       */
+      graftScope: GraftScope;
    }> {
       const compiled = await this.ensureCompiled();
       if (!compiled.materializer || compiled.rerooted.length === 0) {
@@ -260,12 +365,33 @@ export class ServedCopyServe {
       }
       const declined = compiled.declined?.get(queryString);
       if (declined !== undefined) throw declined;
-      const decline = (reason: string, code: ServedCopyDeclineCode): never => {
+      const decline = (
+         reason: string,
+         code: ServedCopyDeclineCode,
+         callerDetail?: string,
+      ): never => {
          const memo = (compiled.declined ??= new Map());
          if (memo.size >= DECLINED_LIMIT) memo.clear();
-         const error = new ServedCopyDecline(reason, code);
+         const error = new ServedCopyDecline(reason, code, callerDetail);
          memo.set(queryString, error);
          throw error;
+      };
+      // A query through a join left out across connections (question 11)
+      // fails to compile for the field it reads: declined as
+      // `cross_connection`, which depends only on the query and this compile.
+      const compiling = async <T>(work: () => Promise<T>): Promise<T> => {
+         try {
+            return await work();
+         } catch (error) {
+            if (readsLeftOutDefinition(compiled, error, queryString)) {
+               decline(
+                  "the query reads a join the served copy leaves out across connections",
+                  "cross_connection",
+                  LEFT_OUT_JOIN_DETAIL,
+               );
+            }
+            throw error;
+         }
       };
       const virtualMap = buildVirtualMap(compiled.aliased);
       const runnable = compiled.materializer.loadRestrictedQuery(queryString);
@@ -273,13 +399,24 @@ export class ServedCopyServe {
       // the served copy every name reads its re-rooted base, so a query whose
       // source is an opted-out reader, or derives from one, is declined here
       // and answered by the next candidate (which never carries one).
-      if (compiled.optOutIDs && compiled.optOutIDs.size > 0) {
-         const prepared = await readPreparedQuery(runnable);
+      // A source whose served surface the load-time classification checks
+      // flag is declined the same way: answered live, or refused there.
+      if (
+         (compiled.optOutIDs && compiled.optOutIDs.size > 0) ||
+         (compiled.unsafeIDs && compiled.unsafeIDs.size > 0)
+      ) {
+         const prepared = await compiling(() => readPreparedQuery(runnable));
          const struct = resolveStructRefSource<unknown>(
             prepared.structRef,
             compiled.modelDef as never,
          );
          const chain = SourceMap.of(compiled.modelDef).chainOf(struct);
+         if (chain.some((id) => compiled.unsafeIDs?.has(id))) {
+            decline(
+               "the query reads a source whose served copy exposes a field the compile of record does not classify or carry",
+               "not_served",
+            );
+         }
          if (chain.some((id) => compiled.optOutIDs?.has(id))) {
             decline(
                "the query reads a source that opts out of persist",
@@ -289,10 +426,12 @@ export class ServedCopyServe {
       }
       // Compile eagerly so a query the copy cannot answer fails inside the
       // router's attempt, not at run time past the fallback.
-      const sql = await runnable.getSQL({
-         virtualMap,
-         givens: givens as never,
-      });
+      const sql = await compiling(() =>
+         runnable.getSQL({
+            virtualMap,
+            givens: givens as never,
+         }),
+      );
       const tablesRead = compiled.rerooted.filter((b) =>
          sql.includes(quoteManifestTablePath(b.tablePath, "duckdb")),
       );
@@ -303,16 +442,26 @@ export class ServedCopyServe {
          // left unserved, with a package warning saying why.
          decline("the query reads no re-rooted table", "not_served");
       }
-      // A stored computed dimension (`order_ts.day`, `day_of_week(order_ts)`)
-      // was evaluated at build in the default timezone; live evaluates it in
-      // the query's. A query that sets a timezone reads such a table only
-      // live: the serve shape never carries a `#(materialize)` table.
+      // A query that sets a timezone is answered live when it reads either
+      // of two tables. A stored computed dimension (`order_ts.day`,
+      // `day_of_week(order_ts)`) was evaluated at build in the default
+      // timezone; live evaluates it in the query's. And a rolling window's
+      // cut-off moves: Malloy takes its offset in the zone's wall time, so
+      // across a daylight-saving change a read at the build's own clock needs
+      // up to an hour older than the build stored. The serve shape never
+      // carries a `#(materialize)` table.
+      const computed = tablesRead.some((b) =>
+         compiled.computedTables?.has(b.tablePath),
+      );
+      const windowed = tablesRead.some((b) => this.readsRollingWindow(b));
       if (
-         tablesRead.some((b) => compiled.computedTables?.has(b.tablePath)) &&
+         (computed || windowed) &&
          setsTimezone((await readPreparedQuery(runnable)).query)
       ) {
          decline(
-            "the query sets a timezone over a stored computed dimension",
+            computed
+               ? "the query sets a timezone over a stored computed dimension"
+               : "the query sets a timezone, which moves a rolling window's cut-off past what its table stores",
             "time_zone",
          );
       }
@@ -321,7 +470,25 @@ export class ServedCopyServe {
          virtualMap,
          bindings: compiled.rerooted,
          tablesRead,
+         graftScope: {
+            modelDef: compiled.modelDef as ModelDef,
+            materializer: compiled.materializer,
+            // Its own cache scope: a graft built on the served copy must never
+            // be shared with one built on the author's model, and a new
+            // compile (new bindings, a reload) starts afresh.
+            cacheScope: `served_copy\u0000${compiled.key}`,
+            runtime: compiled.runtime,
+         },
       };
+   }
+
+   /** Whether a binding stores a `#(materialize)` source with a rolling window. */
+   private readsRollingWindow(binding: ServeBinding): boolean {
+      return (binding.sourceIDs ?? []).some(
+         (id) =>
+            rollingWindowsOf(this.materializePlans[id]?.readTimeTerms).length >
+            0,
+      );
    }
 
    private freshBindings(now: number): ServeBinding[] {
@@ -450,6 +617,9 @@ export class ServedCopyServe {
          const stored = new Map(binding.schema.map((c) => [c.name, c.type]));
          columns = [];
          for (const c of plan.columns) {
+            // An inlined join's own columns are for readers outside Malloy;
+            // the served source reads the joined source through its join.
+            if (c.join !== undefined) continue;
             const type = stored.get(c.column);
             // A build that stored a dimension under another name cannot be
             // read back as that field.
@@ -488,9 +658,12 @@ export class ServedCopyServe {
          ...(plan
             ? {
                  storedDimensions: plan.columns
-                    .filter((c) => c.computed)
+                    .filter((c) => c.computed && c.join === undefined)
                     .map((c) => c.dimension),
               }
+            : {}),
+         ...(plan?.readTimeTerms?.length
+            ? { readTimeTerms: plan.readTimeTerms }
             : {}),
          sourceID: node.sourceID,
       } as Reroot & { sourceID: string };
@@ -583,41 +756,101 @@ export class ServedCopyServe {
          for (const [url, text] of copy.files) {
             overlay.set(overlayKey(url), text);
          }
-         let materializer: ModelMaterializer;
-         let servedDef: unknown;
-         try {
+         const packagePath = this.packagePath;
+         const config = servedCopyConfig(
+            this.packageConfig,
+            destinations(),
+            new Set(rerooted.map((b) => b.destinationName)),
+         );
+         const load = async (files: ReadonlyMap<string, string>) => {
             const { runtime, modelURL, importBaseURL } =
                await createModelRuntime(
-                  this.packagePath,
+                  packagePath,
                   this.host.modelPath(),
-                  servedCopyConfig(
-                     this.packageConfig,
-                     destinations(),
-                     new Set(rerooted.map((b) => b.destinationName)),
-                  ),
-                  { overlay },
+                  config,
+                  { overlay: files },
                );
-            materializer = runtime.loadModel(modelURL, { importBaseURL });
-            const model = await materializer.getModel();
-            // eslint-disable-next-line @typescript-eslint/no-explicit-any
-            servedDef = (model as any)._modelDef;
+            const m = runtime.loadModel(modelURL, { importBaseURL });
+            const model = await m.getModel();
+            return {
+               materializer: m,
+               // eslint-disable-next-line @typescript-eslint/no-explicit-any
+               def: (model as any)._modelDef,
+               runtime: runtime as unknown as GraftRuntime,
+            };
+         };
+         let materializer: ModelMaterializer;
+         let servedDef: unknown;
+         let servedRuntime: GraftRuntime;
+         let leftOut: LeftOutDefinition[] = [];
+         try {
+            ({
+               materializer,
+               def: servedDef,
+               runtime: servedRuntime,
+            } = await load(overlay));
          } catch (err) {
-            const detail = err instanceof Error ? err.message : String(err);
-            problems.push({
-               reason: classifyServedCopyFailure(detail),
-               detail,
-            });
-            return { key, generation, rerooted: [], aliased: [], problems };
+            // A reference join the re-root moved across connections (question
+            // 11): leave it out, with what reads it, so every other query
+            // still reads the table.
+            const byURL = new Map(
+               [...copy.files].map(([url, text]) => [url, text] as const),
+            );
+            const kept = await leaveOutCrossConnectionJoins({
+               firstError: err,
+               overlay: byURL,
+               readText: (u) => lift.fileText(u),
+               compile: async (files) => {
+                  await load(keyedOverlay(files));
+               },
+            }).catch(() => undefined);
+            if (!kept) {
+               const detail = err instanceof Error ? err.message : String(err);
+               problems.push({
+                  reason: classifyServedCopyFailure(err),
+                  detail,
+               });
+               return { key, generation, rerooted: [], aliased: [], problems };
+            }
+            try {
+               ({
+                  materializer,
+                  def: servedDef,
+                  runtime: servedRuntime,
+               } = await load(keyedOverlay(kept.overlay)));
+            } catch (again) {
+               const detail =
+                  again instanceof Error ? again.message : String(again);
+               problems.push({ reason: "compile_failed", detail });
+               return { key, generation, rerooted: [], aliased: [], problems };
+            }
+            leftOut = kept.leftOut;
          }
          // A re-rooted source must keep every field the author's has. One it
          // inherited from a base the re-root replaced (a measure, a view, a
          // join declared on the base) is not in its own text, so it is lost:
          // that source is left as written and the copy compiled again.
          const servedMap = SourceMap.of(servedDef);
+         // What a cross-connection join took with it is reported on its own,
+         // when it was left out of this source or one it is built from.
          const lost = candidates.filter((c) => {
             const author = fieldNames(map.node(c.reroot.sourceID)?.def);
             const served = fieldNames(servedMap.node(c.reroot.sourceID)?.def);
-            return [...author].some((name) => !served.has(name));
+            const node = map.node(c.reroot.sourceID);
+            const chain = new Set(
+               (node ? map.chainOf(node.def) : [c.reroot.sourceID])
+                  .map((id) => map.node(id)?.name)
+                  .filter((n): n is string => n !== undefined),
+            );
+            chain.add(c.reroot.sourceName);
+            const excused = new Set(
+               leftOut
+                  .filter((l) => chain.has(l.declaration ?? l.name))
+                  .map((l) => l.name),
+            );
+            return [...author].some(
+               (name) => !served.has(name) && !excused.has(name),
+            );
          });
          // Fail closed on tenant isolation: every `where:` term that reads a
          // given (re-applied per caller at read, never in the table) must be
@@ -658,6 +891,21 @@ export class ServedCopyServe {
                optOutIDs.add(node.sourceID);
             }
          }
+         for (const l of leftOut) {
+            if (!l.crossConnection) continue;
+            problems.push({
+               sourceName: l.declaration ?? l.name,
+               reason: "cross_connection_join",
+               join: l.name,
+            });
+         }
+         const unsafeIDs = classificationNotKept(
+            this.host.modelPath(),
+            modelDef,
+            servedDef,
+            servedMap,
+            problems,
+         );
          return {
             key,
             generation,
@@ -668,14 +916,62 @@ export class ServedCopyServe {
             ),
             materializer,
             modelDef: servedDef,
+            runtime: servedRuntime,
             optOutIDs,
+            unsafeIDs,
             rerooted,
             aliased,
             problems,
+            ...(leftOut.length > 0 ? { leftOut } : {}),
          };
       }
       return { key, generation, rerooted: [], aliased: [], problems };
    }
+}
+
+/**
+ * The load-time classification checks, run on the served copy's own compile:
+ * the compile that answers a query, which may reach fields the compile of
+ * record never had (a join #6982 left out of it, answered once both sides are
+ * built). A source whose served surface has a `#(carries)` leak, or an
+ * unclassified field, that the compile of record does not is never served
+ * from the copy, and a `classification_not_kept` problem names each finding.
+ * Returns those sources' `sourceID`s.
+ */
+function classificationNotKept(
+   modelPath: string,
+   recordDef: unknown,
+   servedDef: unknown,
+   servedMap: SourceMap,
+   problems: ServedCopyProblem[],
+): Set<string> {
+   const unsafe = new Set<string>();
+   const before = classificationFindingsBySource(
+      modelPath,
+      recordDef as ModelDef,
+   );
+   const after = classificationFindingsBySource(
+      modelPath,
+      servedDef as ModelDef,
+   );
+   for (const [source, found] of after) {
+      // A source the copy generates (a re-rooted base's) is reached only
+      // through the author's sources, which are checked.
+      const was = before.get(source);
+      if (!was) continue;
+      const leaks = found.leaks.filter((m) => !was?.leaks.includes(m));
+      const coverage = found.coverage.filter((m) => !was?.coverage.includes(m));
+      if (leaks.length === 0 && coverage.length === 0) continue;
+      const id = servedMap.sourceIDOf(source);
+      if (id) unsafe.add(id);
+      problems.push({
+         sourceName: source,
+         reason: "classification_not_kept",
+         leaks,
+         coverage,
+      });
+   }
+   return unsafe;
 }
 
 /**
@@ -766,9 +1062,9 @@ function fieldNames(def: unknown): Set<string> {
  * and that is a coded wait, not a broken model.
  */
 export function classifyServedCopyFailure(
-   detail: string,
+   error: unknown,
 ): "cross_connection_unbuilt" | "compile_failed" {
-   return /Cannot join .* on connection/i.test(detail)
+   return isCrossConnectionRefusal(error)
       ? "cross_connection_unbuilt"
       : "compile_failed";
 }

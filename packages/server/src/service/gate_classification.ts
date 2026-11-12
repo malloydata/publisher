@@ -100,10 +100,25 @@ export type GateEntry = {
  * scopes that name a source identically must never share a classification or
  * a materializer grafted against the wrong modelDef.
  */
+/** What a {@link GraftScope} reloads a grafted model copy through. */
+export interface GraftRuntime {
+   _loadModelFromModelDef(modelDef: ModelDef): ModelMaterializer;
+}
+
 export interface GraftScope {
    modelDef: ModelDef;
    materializer: ModelMaterializer;
    cacheScope: string;
+   /**
+    * The runtime `modelDef` was compiled in, which a graft on this scope
+    * reloads its grafted copy through: the model's own for the query path and
+    * notebook cells, the served copy's for a served-copy answer (its
+    * connections reach the storage destinations its `virtual()` sources name).
+    * Never defaulted: a graft reloaded through another runtime would bind the
+    * gate to the wrong connections, so a scope without one denies every
+    * row-level gate. Classification alone (the build plan) needs none.
+    */
+   runtime?: GraftRuntime;
 }
 
 /**

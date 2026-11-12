@@ -17,6 +17,7 @@
  * rewriter is checked against the same scenarios when it lands (phase 3).
  */
 
+import { loadLeavingOutCrossConnectionJoins } from "../../../src/service/materialization/plan/cross_connection_joins";
 import { tryCompileMaterializeCompanion } from "../../../src/service/materialization/plan/materialize_compile";
 import type { MaterializePlan } from "../../../src/service/materialization/plan/build_file_generator";
 import type { ServedCopyServe } from "../../../src/service/materialization/serve/served_copy_serve";
@@ -31,6 +32,7 @@ import {
    InMemoryURLReader,
    MalloyConfig,
    modelDefToModelInfo,
+   type QueryRecord,
    Runtime,
 } from "@malloydata/malloy";
 import { unrecordedAudit } from "../../../src/service/access_record";
@@ -52,6 +54,8 @@ import {
 } from "../../../src/service/materialization/stored_column_types";
 import type { ManifestEntry } from "../../../src/service/materialization/types";
 import { Model } from "../../../src/service/model";
+import type { HydrationRuntime } from "../../../src/service/model_runtime";
+import { malloyGivenToApi, type MalloyGiven } from "../../../src/service/given";
 import { ModelPolicy } from "../../../src/service/model_policy";
 import { QueryPrivileges } from "../../../src/service/model_query_request";
 
@@ -98,6 +102,20 @@ export interface R4Scenario {
     * the model their plans, as a package with PUBLISHER_MATERIALIZE on does.
     */
    materialize?: boolean;
+   /**
+    * Pin the scenario's clock: Malloy's `now` (DuckDB's `LOCALTIMESTAMP`)
+    * reads this instant, in builds and reads alike, until
+    * {@link R4Fixture.setClock} moves it. Unpinned by default.
+    */
+   clock?: string;
+   /**
+    * Origin connections besides `duckdb`, by name, each a DuckDB of its own
+    * with its seed SQL. A source on one is built there and its rows copied
+    * into the destination, as a storage build does across connections.
+    */
+   origins?: Record<string, string[]>;
+   /** Planned sources, by name, to leave unbuilt (no table, no binding). */
+   unbuilt?: string[];
 }
 
 export type Row = Record<string, unknown>;
@@ -117,6 +135,8 @@ export interface R4Run {
 /** A built scenario: run queries against it. */
 export interface R4Fixture {
    bindings: ServeBinding[];
+   /** The model queries run against, for a test that reaches its internals. */
+   model: Model;
    run(query: R4Query): Promise<R4Run>;
    /**
     * Point the model at `bindings` (`[]` for live), clearing the memoized
@@ -138,6 +158,12 @@ export interface R4Fixture {
    servedFieldNotes(source: string, field: string): Promise<string[]>;
    /** The model's served copy, bound to {@link bindings}. */
    servedCopy(): ServedCopyServe;
+   /** Move a pinned clock (see {@link R4Scenario.clock}) for later runs. */
+   setClock(at: string): void;
+   /** Rows of a stored table, by its physical name, with SQL over it. */
+   storedSQL(
+      sql: (table: (sourceName: string) => string) => string,
+   ): Promise<Row[]>;
 }
 
 /**
@@ -153,6 +179,34 @@ export function freshDuckDB(
    const connection = new DuckDBConnection(name, path.join(dir, `${name}.db`));
    opened.push(connection);
    return connection;
+}
+
+/**
+ * A DuckDB whose current time is pinned: every statement reads `clock` where
+ * Malloy's `now` compiles to `LOCALTIMESTAMP`. DuckDB has no clock to set, so
+ * the pin rewrites the statement; the scenario's own SQL never spells it.
+ */
+export class PinnedClockDuckDB extends DuckDBConnection {
+   clock: string | undefined;
+   private pin(sql: string): string {
+      return this.clock === undefined
+         ? sql
+         : sql.replace(
+              /\b(LOCALTIMESTAMP|CURRENT_TIMESTAMP)\b/g,
+              `TIMESTAMP '${this.clock}'`,
+           );
+   }
+   protected override runDuckDBQuery(
+      sql: string,
+   ): Promise<{ rows: QueryRecord[]; totalRows: number }> {
+      return super.runDuckDBQuery(this.pin(sql));
+   }
+   override runSQLStream(
+      sql: string,
+      options?: Parameters<DuckDBConnection["runSQLStream"]>[1],
+   ): ReturnType<DuckDBConnection["runSQLStream"]> {
+      return super.runSQLStream(this.pin(sql), options);
+   }
 }
 
 // Every connection and directory a scenario made, so disposeScenarios can
@@ -182,7 +236,16 @@ export async function disposeScenarios(): Promise<void> {
  */
 export async function buildScenario(scenario: R4Scenario): Promise<R4Fixture> {
    const dir = scratchDir();
-   const duckdb = freshDuckDB("duckdb", dir);
+   let duckdb: DuckDBConnection;
+   let pinned: PinnedClockDuckDB | undefined;
+   if (scenario.clock !== undefined) {
+      pinned = new PinnedClockDuckDB("duckdb", path.join(dir, "duckdb.db"));
+      pinned.clock = scenario.clock;
+      opened.push(pinned);
+      duckdb = pinned;
+   } else {
+      duckdb = freshDuckDB("duckdb", dir);
+   }
    for (const sql of scenario.seedSql) await duckdb.runSQL(sql);
    // On disk, as a package's files are: the serve shape lifts a source's joins
    // and views verbatim from its file, and drops them when it cannot read it.
@@ -195,10 +258,13 @@ export async function buildScenario(scenario: R4Scenario): Promise<R4Fixture> {
    const root = `${pathToFileURL(dir).href}/`;
    const urlOf = (file: string) => pathToFileURL(path.join(dir, file)).href;
 
-   const authorConnections = new FixedConnectionMap(
-      new Map([["duckdb", duckdb]]),
-      "duckdb",
-   );
+   const connections = new Map<string, DuckDBConnection>([["duckdb", duckdb]]);
+   for (const [name, sql] of Object.entries(scenario.origins ?? {})) {
+      const origin = freshDuckDB(name, dir);
+      for (const statement of sql) await origin.runSQL(statement);
+      connections.set(name, origin);
+   }
+   const authorConnections = new FixedConnectionMap(connections, "duckdb");
    const [entry] = Object.keys(scenario.files);
    const urlReader = new InMemoryURLReader(
       new Map(
@@ -208,11 +274,46 @@ export async function buildScenario(scenario: R4Scenario): Promise<R4Fixture> {
          ]),
       ),
    );
-   const runtime = new Runtime({ urlReader, connections: authorConnections });
-   const materializer = runtime.loadModel(new URL(urlOf(entry)), {
+   let runtime = new Runtime({ urlReader, connections: authorConnections });
+   let materializer = runtime.loadModel(new URL(urlOf(entry)), {
       importBaseURL: new URL(root),
    });
-   const compiled = await materializer.getModel();
+   // A model joining sources across origin connections does not compile;
+   // with the materialize switch it loads from its build view (#6982), as a
+   // package load does.
+   let buildView: ReadonlyMap<string, string> = new Map();
+   let compiled: Awaited<ReturnType<typeof materializer.getModel>>;
+   try {
+      compiled = await materializer.getModel();
+   } catch (first) {
+      const view = await loadLeavingOutCrossConnectionJoins({
+         firstError: first,
+         readText: (url) =>
+            Object.entries(scenario.files).find(([f]) => urlOf(f) === url)?.[1],
+         load: async (overlay) => {
+            const rt = new Runtime({
+               urlReader: new InMemoryURLReader(
+                  new Map([
+                     ...Object.entries(scenario.files).map(
+                        ([file, text]) => [urlOf(file), text] as const,
+                     ),
+                     ...overlay,
+                  ]),
+               ),
+               connections: authorConnections,
+            });
+            const mm = rt.loadModel(new URL(urlOf(entry)), {
+               importBaseURL: new URL(root),
+            });
+            return { rt, mm, model: await mm.getModel() };
+         },
+      });
+      if (!view) throw first;
+      runtime = view.result.rt;
+      materializer = view.result.mm;
+      compiled = view.result.model;
+      buildView = view.overlay;
+   }
 
    // Build each persist source with its real SQL.
    const entries: Record<string, ManifestEntry> = {};
@@ -224,6 +325,7 @@ export async function buildScenario(scenario: R4Scenario): Promise<R4Fixture> {
            packagePath: dir,
            modelPath: entry,
            contents: authorDef.contents,
+           givens: authorDef.givens ?? {},
            getRuntime: async (overlay) => ({
               runtime: new Runtime({
                  urlReader: new InMemoryURLReader(
@@ -231,6 +333,7 @@ export async function buildScenario(scenario: R4Scenario): Promise<R4Fixture> {
                        ...Object.entries(scenario.files).map(
                           ([file, text]) => [urlOf(file), text] as const,
                        ),
+                       ...buildView,
                        ...overlay,
                     ]),
                  ),
@@ -266,6 +369,7 @@ export async function buildScenario(scenario: R4Scenario): Promise<R4Fixture> {
       plan[source.sourceID] = { name: source.name, sourceEntityId: `h${i}` };
    });
    for (const [i, source] of sources.entries()) {
+      if (scenario.unbuilt?.includes(source.name)) continue;
       const table = `r4_${source.name}_${i}`;
       // Cast to the declared types as the storage build does.
       const select = scenario.uncast
@@ -275,7 +379,19 @@ export async function buildScenario(scenario: R4Scenario): Promise<R4Fixture> {
               persistSourceDeclaredColumns(source),
               { queryTimezone: persistSourceQueryTimezone(source) },
            );
-      await duckdb.runSQL(`CREATE TABLE ${DESTINATION}.${table} AS ${select}`);
+      const origin = connections.get(source.connectionName);
+      if (origin && origin !== duckdb) {
+         // Built on its origin, its rows copied into the destination.
+         const file = path.join(dir, `${table}.parquet`);
+         await origin.runSQL(`COPY (${select}) TO '${file}' (FORMAT parquet)`);
+         await duckdb.runSQL(
+            `CREATE TABLE ${DESTINATION}.${table} AS SELECT * FROM read_parquet('${file}')`,
+         );
+      } else {
+         await duckdb.runSQL(
+            `CREATE TABLE ${DESTINATION}.${table} AS ${select}`,
+         );
+      }
       // runSQL returns 10 rows unless told otherwise: one per column here.
       const described = await duckdb.runSQL(
          `DESCRIBE ${DESTINATION}.${table}`,
@@ -329,6 +445,13 @@ export async function buildScenario(scenario: R4Scenario): Promise<R4Fixture> {
       modelMaterializer: materializer as any,
       modelDef,
       modelInfo: modelDefToModelInfo(modelDef),
+      // The model's given surface, as a package derives it, so a row-level
+      // gate reading a given can be decided.
+      givens: (
+         Array.from(compiled.givens.values()) as unknown as MalloyGiven[]
+      ).map(malloyGivenToApi),
+      // A row-level gate grafts through the model's runtime, as a package's does.
+      gateRuntime: runtime as unknown as HydrationRuntime,
       policy,
    });
    const serveConfig = new MalloyConfig({ connections: {} });
@@ -339,11 +462,7 @@ export async function buildScenario(scenario: R4Scenario): Promise<R4Fixture> {
    model.setServeDestinationConfig(() => serveConfig);
    // The served copy (materialization v2) compiles the author's own files with
    // the package's connections; only routed when its setting is on.
-   model.setServedCopyContext(
-      dir,
-      new Map([["duckdb", duckdb]]),
-      materializePlans,
-   );
+   model.setServedCopyContext(dir, connections, materializePlans);
 
    const runOnce = async (
       malloy: string,
@@ -367,8 +486,24 @@ export async function buildScenario(scenario: R4Scenario): Promise<R4Fixture> {
       };
    };
 
+   const physicalNames = new Map(
+      Object.values(entries).map((e) => [e.sourceName, e.physicalTableName]),
+   );
    return {
       bindings,
+      model,
+      setClock(at) {
+         if (!pinned) throw new Error("the scenario's clock is not pinned");
+         pinned.clock = at;
+      },
+      async storedSQL(sql) {
+         const text = sql((sourceName) => {
+            const table = physicalNames.get(sourceName);
+            if (!table) throw new Error(`no stored table for ${sourceName}`);
+            return `${DESTINATION}.${table}`;
+         });
+         return (await duckdb.runSQL(text)).rows as Row[];
+      },
       setBindings(next) {
          model.setServeBindings(next);
       },

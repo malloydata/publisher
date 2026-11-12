@@ -1,6 +1,7 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
+import { assertInlinedJoinsUnique } from "./inline_uniqueness";
 import type {
    Connection as MalloyConnection,
    PersistSource,
@@ -60,7 +61,18 @@ import {
    physicalTargetKey,
    refusalRecord,
    reportRetainedStorageTables,
+   type WarehouseReach,
 } from "./materialization_run_support";
+import {
+   nameViewIntentFor,
+   preflightNameView,
+   publishNameViews,
+   swapDependentsFor,
+   type NameViewContext,
+   type NameViewRecord,
+   type SwapDependents,
+} from "./name_view";
+import { nameViewOwner } from "./name_view_sql";
 import type { SourceBuilder } from "./source_build";
 
 /** sourceID -> the sourceIDs it reads, merged across every connection's build. */
@@ -161,6 +173,8 @@ export class InstructedBuild {
       // entry at the wrong tier is refused, not recomputed (see
       // ChainedPlanFacts.hostInstructed).
       hostInstructed = false,
+      // What a strict build does with the warehouse recompute (#6756).
+      warehouseReach: WarehouseReach = "recompute",
    ): Promise<{
       entries: Record<string, ManifestEntry>;
       failures: Record<string, SourceFailure>;
@@ -177,6 +191,11 @@ export class InstructedBuild {
        * eligible sources, and only these answer live.
        */
       refusedBesideBuilt: Record<string, RefusedSource>;
+      /**
+       * What became of each `name=` view the built sources call for, made
+       * once every source built (name_view.ts). Empty without any.
+       */
+      nameViews: NameViewRecord[];
    }> {
       const { builds, sources, connectionDigests, connections } = compiled;
       const index = indexInstructions(instructions);
@@ -200,6 +219,7 @@ export class InstructedBuild {
                   index.bySourceEntityId.get(sourceEntityId),
             ),
             hostInstructed,
+            warehouseReach,
          },
          ...this.seedInstructedRun(seedEntries, connections, strict),
          builtThisRun: [],
@@ -214,6 +234,7 @@ export class InstructedBuild {
          builtAddresses: new Set(),
          builtSources: [],
          writtenTargets: new Map(),
+         nameViewIntents: [],
       };
       assertNoTableCollisions(builds, sources, connectionDigests, index);
 
@@ -294,11 +315,18 @@ export class InstructedBuild {
          throw err;
       }
 
+      // Only once every source built, so a run that fails part-way never
+      // points a view at a table its manifest will not name. Never throws.
+      const nameViews = run.nameViewIntents?.length
+         ? await publishNameViews(run.nameViewIntents, nameViewContext(run))
+         : [];
+
       return {
          entries: run.entries,
          failures: run.failures,
          sourcesRefused: run.refusals.length,
          ...settled,
+         nameViews,
       };
    }
 
@@ -422,8 +450,9 @@ export class InstructedBuild {
       // persist` is inherited) compile to the same address, and a source used
       // across models appears in several builds. Only the same-content case is
       // decided here; DIFFERENT definitions on one table were reported (and
-      // refused under PERSIST_COLLISION_ENFORCE) by assertNoTableCollisions, so
-      // reaching here means the deployment chose to warn and write anyway.
+      // refused unless PERSIST_COLLISION_ENFORCE=false) by
+      // assertNoTableCollisions, so reaching here means the deployment opted
+      // out, to warn and write anyway.
       const target = physicalTargetKey(instruction, graphConnectionName);
       const written = run.writtenTargets.get(target);
       if (written && written.sourceEntityId === sourceEntityId) {
@@ -437,6 +466,13 @@ export class InstructedBuild {
          return;
       }
 
+      const nameView = nameViewIntentFor(
+         compiled,
+         persistSource,
+         instruction,
+         sourceEntityId,
+         nameViewOwnerOf(run),
+      );
       let entry;
       try {
          // An instructed destination that cannot be honored REFUSES, never
@@ -447,6 +483,29 @@ export class InstructedBuild {
             instruction,
             compiled,
          );
+
+         // An inlined join_one must match at most one row (P8): checked on
+         // the source's own connection before anything is written.
+         await assertInlinedJoinsUnique(
+            compiled.materializePlans?.[persistSource.sourceID],
+            connection,
+         );
+
+         // A `name=` someone else holds fails the source before it writes.
+         let swapDependents: SwapDependents | undefined;
+         if (nameView) {
+            const probed = await preflightNameView(
+               nameView,
+               nameViewContext(run, connection),
+            );
+            if (probed && !instruction.destination) {
+               swapDependents = swapDependentsFor(
+                  nameView,
+                  probed.slot,
+                  probed.dialect,
+               );
+            }
+         }
 
          entry = await this.seams.buildOneSource(
             persistSource,
@@ -462,6 +521,8 @@ export class InstructedBuild {
             // boundary can never be read against different SQL.
             sourceEntityId,
             run.planFacts,
+            // Passed only when present, so a seam's recorded call is unchanged.
+            ...(swapDependents ? ([swapDependents] as const) : []),
          );
          // A manifest travels without its build plan, so this is the only
          // signal that a table belongs to a rollup in no model file; served as
@@ -487,6 +548,7 @@ export class InstructedBuild {
          sourceEntityId,
          sourceName: persistSource.name,
       });
+      if (nameView) run.nameViewIntents?.push(nameView);
       if (isReclaimableStorageTable(entry)) {
          run.builtThisRun.push(entry);
       } else if (entry.storageDestinationName) {
@@ -568,6 +630,39 @@ export class InstructedBuild {
       }
       return false;
    }
+}
+
+/** The package a run's `name=` views are marked as made by. */
+function nameViewOwnerOf(run: InstructedRun): string {
+   return nameViewOwner(
+      run.buildMetadata?.context.environment ??
+         run.environment.getEnvironmentName?.() ??
+         "",
+      run.buildMetadata?.context.package ?? run.owner?.packageName ?? "",
+   );
+}
+
+/**
+ * How a run reaches the site of a `name=` view: the source's connection (the
+ * one this build holds, when given), or the destination the run builds into.
+ */
+export function nameViewContext(
+   run: Pick<InstructedRun, "compiled" | "environment">,
+   connection?: MalloyConnection,
+): NameViewContext {
+   return {
+      connectionFor: (name) =>
+         (connection && connection.name === name ? connection : undefined) ??
+         run.compiled.connections.get(name),
+      destinationFor: (name) => {
+         try {
+            return run.environment.getStorageDestination(name);
+         } catch {
+            return undefined;
+         }
+      },
+      environmentPath: run.environment.getEnvironmentPath(),
+   };
 }
 
 /**

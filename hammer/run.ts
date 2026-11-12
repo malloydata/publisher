@@ -26,7 +26,7 @@ import {
 } from "./lib/config";
 import { writePackage } from "./lib/packages";
 import { runLakeSql } from "./lib/ducklake";
-import { startPostgres } from "./lib/postgres";
+import { reapStaleContainers, startPostgres } from "./lib/postgres";
 import { installSignalTeardown } from "./lib/signals";
 
 import {
@@ -486,12 +486,16 @@ async function main(): Promise<void> {
 
    await buildServerIfNeeded(repoRoot, args.rebuild);
 
+   // Containers left by earlier runs that died without tearing down (SIGKILL,
+   // a crash): only hammer's own, and only when their run is provably over.
+   await reapStaleContainers();
    // One container per run, on a port Docker assigns, so two runs started at
    // the same moment never share a name or race for a port.
    const pg = await startPostgres({
       hostPort: args.pgPort,
       containerName: args.pgContainer,
       reuse: args.reusePg,
+      keep: args.keep,
    });
    // The clusters a worker has running right now, so an interrupted run can
    // stop their publishers too.
@@ -512,7 +516,7 @@ async function main(): Promise<void> {
    // when its container goes, and its `finally` asks again.
    const teardown = (): Promise<void> => (tearingDown ??= tearDownOnce());
    // Ctrl-C or SIGTERM mid-run: the `finally` below never runs, so tear down
-   // here, or the container is left under a name no later run will find.
+   // here; the watchdog and the next run's reaper only cover a hard kill.
    let interrupted = false;
    const removeSignalTeardown = installSignalTeardown(async () => {
       interrupted = true;
