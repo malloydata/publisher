@@ -6,6 +6,7 @@ import "@malloydata/db-bigquery";
 import type { BigQueryConnection } from "@malloydata/db-bigquery";
 import "@malloydata/db-databricks";
 import { DuckDBConnection } from "@malloydata/db-duckdb";
+import { installDuckDBInstanceSharing } from "./duckdb_instance_sharing";
 import "@malloydata/db-duckdb/native";
 import "@malloydata/db-mysql";
 import type { MySQLConnection } from "@malloydata/db-mysql";
@@ -89,6 +90,9 @@ import {
 } from "./gcs_s3_utils";
 import { openProxy, type ProxyEndpoint } from "./proxy";
 import { quoteIdentifier } from "./quoting";
+
+// One DuckDB instance per database file (duckdb_instance_sharing.ts).
+installDuckDBInstanceSharing();
 
 type AttachedDatabase = components["schemas"]["AttachedDatabase"];
 type ApiConnection = components["schemas"]["Connection"];

@@ -1,0 +1,352 @@
+// Copyright (c) Credible Data Inc.
+// SPDX-License-Identifier: MIT
+
+import { DuckDBConnection } from "@malloydata/db-duckdb";
+import { afterEach, beforeEach, describe, expect, it, mock } from "bun:test";
+import * as fs from "fs";
+import * as os from "os";
+import * as path from "path";
+import {
+   canonicalDuckDBFile,
+   DuckDBInstanceSettingsChangedError,
+   installDuckDBInstanceSharing,
+   instanceKeyOf,
+   openDuckDBFilesForTesting,
+} from "./duckdb_instance_sharing";
+import { Environment } from "./environment";
+import { installSettings } from "../test_helpers/settings_env";
+
+installDuckDBInstanceSharing();
+
+type Internals = { shareKey: string };
+const shareKeyOf = (connection: DuckDBConnection) =>
+   (connection as unknown as Internals).shareKey;
+/**
+ * Whether this process can open a file again after closing it. Not on Windows:
+ * db-duckdb's close is a refcount decrement that keeps the OS file lock while
+ * its C++ connections live (its own note in `detachInstance`), so a reopen in
+ * the same process is refused there until they are collected. Sharing means an
+ * edit never needs that reopen; it is checked where the platform allows it.
+ */
+const canReopenAfterClose = process.platform !== "win32";
+const instanceOf = (connection: DuckDBConnection) =>
+   DuckDBConnection.activeDBs[shareKeyOf(connection)]?.instance;
+/** The open files under this test's directory; other specs share the process. */
+const openFilesHere = () =>
+   openDuckDBFilesForTesting().filter((file) =>
+      file.startsWith(canonicalDuckDBFile(dir)!),
+   );
+
+let dir: string;
+const opened: DuckDBConnection[] = [];
+
+function open(options: Record<string, unknown>): DuckDBConnection {
+   const connection = new DuckDBConnection({ name: "duck", ...options });
+   opened.push(connection);
+   return connection;
+}
+
+beforeEach(() => {
+   dir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "duck-share-")));
+});
+
+afterEach(async () => {
+   for (const connection of opened.splice(0)) {
+      await connection.close().catch(() => {});
+   }
+   // Nothing this spec opened may outlive its test: in a serial run every later
+   // spec file shares this process.
+   expect(openFilesHere()).toEqual([]);
+   fs.rmSync(dir, { recursive: true, force: true });
+});
+
+describe("canonicalDuckDBFile", () => {
+   it("names no file for in-memory and MotherDuck databases", () => {
+      expect(canonicalDuckDBFile(undefined)).toBeUndefined();
+      expect(canonicalDuckDBFile(":memory:")).toBeUndefined();
+      expect(canonicalDuckDBFile("md:analytics")).toBeUndefined();
+      expect(canonicalDuckDBFile("motherduck:analytics")).toBeUndefined();
+   });
+
+   it("spells one file one way through a symlinked directory", () => {
+      const real = path.join(dir, "real");
+      fs.mkdirSync(real);
+      fs.writeFileSync(path.join(real, "a.duckdb"), "");
+      const link = path.join(dir, "link");
+      fs.symlinkSync(real, link, "dir");
+      expect(canonicalDuckDBFile(path.join(link, "a.duckdb"))).toBe(
+         canonicalDuckDBFile(path.join(real, "a.duckdb")),
+      );
+   });
+
+   it("resolves a file not created yet through its directory", () => {
+      const expected = path.join(dir, "new.duckdb");
+      expect(canonicalDuckDBFile(expected)).toBe(
+         process.platform === "win32" ? expected.toLowerCase() : expected,
+      );
+   });
+
+   it("case-folds on Windows, whose file system is case-insensitive", () => {
+      const file = path.join(dir, "Mixed.DuckDB");
+      expect(canonicalDuckDBFile(file, "win32")).toBe(file.toLowerCase());
+      expect(canonicalDuckDBFile(file, "linux")).toBe(file);
+   });
+});
+
+describe("instanceKeyOf", () => {
+   const base = { databasePath: "/x.duckdb", threads: 2, readOnly: false };
+
+   it("ignores setupSQL, which each connection runs on its own session", () => {
+      expect(instanceKeyOf({ ...base, setupSQL: "SELECT 1" })).toBe(
+         instanceKeyOf({ ...base, setupSQL: "SELECT 2" }),
+      );
+   });
+
+   it("differs on a setting DuckDB fixes when it opens the file", () => {
+      expect(instanceKeyOf({ ...base, threads: 4 })).not.toBe(
+         instanceKeyOf(base),
+      );
+   });
+});
+
+describe("one DuckDB instance per file", () => {
+   it("shares one instance between connections that differ only in setupSQL", async () => {
+      const file = path.join(dir, "shared.duckdb");
+      const a = open({ databasePath: file, setupSQL: "SELECT 1" });
+      await a.runSQL("CREATE TABLE t AS SELECT 42 AS v");
+      const b = open({ databasePath: file, setupSQL: "SELECT 2" });
+      const rows = await b.runSQL("SELECT v FROM t");
+
+      expect(shareKeyOf(a)).not.toBe(shareKeyOf(b));
+      expect(instanceOf(b)).toBe(instanceOf(a));
+      expect(rows.rows).toEqual([{ v: 42 }]);
+      expect(openFilesHere()).toEqual([canonicalDuckDBFile(file)!]);
+   });
+
+   it("keeps the instance open until the last connection on it closes", async () => {
+      const file = path.join(dir, "refcount.duckdb");
+      const a = open({ databasePath: file, setupSQL: "SELECT 1" });
+      await a.runSQL("CREATE TABLE t AS SELECT 1 AS v");
+      const b = open({ databasePath: file, setupSQL: "SELECT 2" });
+      await b.runSQL("SELECT 1");
+
+      await a.close();
+      expect(
+         (await b.runSQL("SELECT count(*)::INTEGER AS n FROM t")).rows,
+      ).toEqual([{ n: 1 }]);
+
+      await b.close();
+      expect(openFilesHere()).toEqual([]);
+      expect(
+         Object.keys(DuckDBConnection.activeDBs).filter(
+            (key) => key === shareKeyOf(a) || key === shareKeyOf(b),
+         ),
+      ).toEqual([]);
+
+      // A later connection opens the file afresh, not a closed instance.
+      if (!canReopenAfterClose) return;
+      const c = open({ databasePath: file, setupSQL: "SELECT 3" });
+      expect(
+         (await c.runSQL("SELECT count(*)::INTEGER AS n FROM t")).rows,
+      ).toEqual([{ n: 1 }]);
+   });
+
+   it("keeps the instance open while a joining connection connects, even if the last other one closes meanwhile", async () => {
+      const file = path.join(dir, "race.duckdb");
+      const a = open({ databasePath: file, setupSQL: "SELECT 1" });
+      await a.runSQL("CREATE TABLE t AS SELECT 5 AS v");
+      // b joins a's instance; its connect is still pending when a closes.
+      const b = open({ databasePath: file, setupSQL: "SELECT 2" });
+      await a.close();
+      expect((await b.runSQL("SELECT v FROM t")).rows).toEqual([{ v: 5 }]);
+      await b.close();
+      expect(openFilesHere()).toEqual([]);
+   });
+
+   it("does not share between different files", async () => {
+      const a = open({ databasePath: path.join(dir, "a.duckdb") });
+      const b = open({ databasePath: path.join(dir, "b.duckdb") });
+      await a.runSQL("SELECT 1");
+      await b.runSQL("SELECT 1");
+      expect(instanceOf(a)).not.toBe(instanceOf(b));
+   });
+
+   it("refuses a second instance with different open-time settings, rather than opening one", async () => {
+      const file = path.join(dir, "settings.duckdb");
+      const a = open({ databasePath: file, threads: 1 });
+      await a.runSQL("SELECT 1");
+      const b = open({ databasePath: file, threads: 2 });
+      await expect(b.runSQL("SELECT 1")).rejects.toBeInstanceOf(
+         DuckDBInstanceSettingsChangedError,
+      );
+
+      // Once the file is released, the new settings open it.
+      await a.close();
+      if (!canReopenAfterClose) return;
+      const c = open({ databasePath: file, threads: 2 });
+      expect((await c.runSQL("SELECT 1 AS one")).rows).toEqual([{ one: 1 }]);
+   });
+});
+
+describe("a connection edit to a file-backed DuckDB connection", () => {
+   let restoreSettings: () => void;
+   let envPath: string;
+
+   beforeEach(() => {
+      restoreSettings = installSettings({
+         env: { PUBLISHER_ALLOW_DUCKDB_SETUP_SQL: "true" },
+      }).restore;
+      envPath = path.join(dir, "env");
+      fs.mkdirSync(envPath);
+   });
+
+   afterEach(() => {
+      restoreSettings();
+   });
+
+   const duck = (setupSQL: string) =>
+      ({
+         name: "duck",
+         type: "duckdb",
+         duckdbConnection: { setupSQL },
+      }) as never;
+
+   it("opens the edited connection on the same instance, and the draining one keeps answering", async () => {
+      const env = await Environment.create("testEnv", envPath, [
+         duck("SELECT 1"),
+      ]);
+      try {
+         const before = (await env.getMalloyConnection(
+            "duck",
+         )) as unknown as DuckDBConnection;
+         await before.runSQL("CREATE TABLE t AS SELECT 7 AS v");
+
+         await env.update({
+            name: "testEnv",
+            connections: [duck("SELECT 2")],
+         } as never);
+         const after = (await env.getMalloyConnection(
+            "duck",
+         )) as unknown as DuckDBConnection;
+
+         expect(after).not.toBe(before);
+         expect(instanceOf(after)).toBe(instanceOf(before));
+         // Both generations answer: the edited one at once, the retired one
+         // for the rest of its drain.
+         const [now, draining] = await Promise.all([
+            after.runSQL("SELECT v FROM t"),
+            before.runSQL("SELECT v FROM t"),
+         ]);
+         expect(now.rows).toEqual([{ v: 7 }]);
+         expect(draining.rows).toEqual([{ v: 7 }]);
+      } finally {
+         await env.closeAllConnections();
+      }
+   });
+});
+
+describe("build-plan retries after an environment closes", () => {
+   it("cancels a pending retry and queues nothing more once the environment closes", async () => {
+      const envPath = path.join(dir, "retry-env");
+      fs.mkdirSync(envPath);
+      const env = await Environment.create("retryEnv", envPath, []);
+      const refreshBuildPlan = mock(async () => true);
+      const pkg = {
+         refreshBuildPlan,
+         isBuildPlanUnavailable: () => true,
+         markBuildPlanStale: () => {},
+         getPackageName: () => "p",
+         getVersionId: () => undefined,
+      };
+      const internals = env as unknown as {
+         schedulePlanRetry(p: unknown): void;
+         schedulePlanRefresh(p: unknown): void;
+         planRefreshBackoff: Map<unknown, { timer?: unknown }>;
+      };
+
+      internals.schedulePlanRetry(pkg);
+      expect(internals.planRefreshBackoff.get(pkg)?.timer).toBeDefined();
+
+      await env.closeAllConnections();
+      expect(internals.planRefreshBackoff.size).toBe(0);
+
+      // Nothing queues or runs after close.
+      internals.schedulePlanRefresh(pkg);
+      internals.schedulePlanRetry(pkg);
+      expect(internals.planRefreshBackoff.size).toBe(0);
+      expect(refreshBuildPlan).not.toHaveBeenCalled();
+   });
+
+   it("cancels every open environment's retries on shutdown", async () => {
+      const envPath = path.join(dir, "shutdown-env");
+      fs.mkdirSync(envPath);
+      const env = await Environment.create("shutdownEnv", envPath, []);
+      const internals = env as unknown as {
+         schedulePlanRetry(p: unknown): void;
+         planRefreshBackoff: Map<unknown, unknown>;
+      };
+      internals.schedulePlanRetry({
+         refreshBuildPlan: async () => true,
+         isBuildPlanUnavailable: () => true,
+         getPackageName: () => "p",
+      });
+      expect(internals.planRefreshBackoff.size).toBe(1);
+
+      Environment.cancelAllPlanRefreshes();
+      expect(internals.planRefreshBackoff.size).toBe(0);
+   });
+});
+
+describe("package-load workers", () => {
+   // Workers are threads of this process, and the registry above lives in the
+   // main thread's isolate: a worker that opened a DuckDB file would be a
+   // second instance of it. They never do: every connection a worker looks up
+   // is a proxy whose statements run on the main thread's connection
+   // (package_load_worker.ts, buildWorkerMalloyConfig). This pins it, by
+   // checking nothing the worker imports loads db-duckdb.
+   it("never import db-duckdb, so they never open a DuckDB file", () => {
+      const root = path.resolve(
+         __dirname,
+         "../package_load/package_load_worker.ts",
+      );
+      const seen = new Set<string>();
+      const bare = new Set<string>();
+      const visit = (file: string) => {
+         if (seen.has(file)) return;
+         seen.add(file);
+         const text = fs.readFileSync(file, "utf-8");
+         const specifiers = [
+            ...text.matchAll(
+               /^\s*import\s+(?!type\b)[^;]*?from\s+["']([^"']+)["']/gms,
+            ),
+            ...text.matchAll(
+               /^\s*export\s+(?!type\b)[^;]*?from\s+["']([^"']+)["']/gms,
+            ),
+            ...text.matchAll(/^\s*import\s+["']([^"']+)["']/gm),
+         ].map((m) => m[1]);
+         for (const spec of specifiers) {
+            if (!spec.startsWith(".")) {
+               bare.add(spec);
+               continue;
+            }
+            const base = path.resolve(path.dirname(file), spec);
+            const candidates = [
+               base,
+               `${base}.ts`,
+               path.join(base, "index.ts"),
+               base.replace(/\.js$/, ".ts"),
+            ];
+            const found = candidates.find(
+               (c) => fs.existsSync(c) && fs.statSync(c).isFile(),
+            );
+            if (found && found.endsWith(".ts")) visit(found);
+         }
+      };
+      visit(root);
+      expect(seen.size).toBeGreaterThan(10);
+      expect(
+         [...bare].filter((s) => s.startsWith("@malloydata/db-duckdb")),
+      ).toEqual([]);
+      expect([...bare].filter((s) => s.startsWith("@duckdb/"))).toEqual([]);
+   });
+});
