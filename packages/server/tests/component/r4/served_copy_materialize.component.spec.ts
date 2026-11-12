@@ -131,4 +131,15 @@ describe("R4: the served copy over #(materialize) answers equal to live", () => 
       expect(run.servedVia).toBeUndefined();
       expect(rowDifference(run.live, run.served)).toBeUndefined();
    });
+
+   it("reports that source's table as WARNED with the package warning's code, not a missing field", async () => {
+      fixture.setBindings(fixture.bindings);
+      const { path } = await fixture.runAsIs(
+         "run: kept_west -> { aggregate: grand }",
+      );
+      expect(path?.servedBy.kind).toBe("live");
+      expect(
+         path?.considered.map((c) => [c.outcome, c.reason, c.code]),
+      ).toEqual([["skipped", "WARNED", "served-copy-not-served"]]);
+   });
 });

@@ -8733,7 +8733,10 @@ components:
           description: >-
             For a `WARNED` skip, the serve verdict's reason the table answers no
             query: `storage_mode`, `unreachable`, `row_level_gate`, `refused` or
-            `shadowed` (see `QueryPathWarning`). An open set. Absent on any
+            `shadowed` (see `QueryPathWarning`); or, for a table only the served
+            copy reads, `served-copy-not-served` (the package warning of that
+            code) or `persist-opt-out` (the queried source opts out with
+            `#@ -persist`). An open set. Absent on any
             other outcome, and on a `WARNED` skip whose verdict is not known.
         detail:
           type: string

@@ -187,16 +187,23 @@ describe("R4: a stored timeframe truncation keeps its timeframe in the served co
          "run: stored -> { group_by: ts_day }",
       );
       const tables = (path: typeof declined.path) =>
-         (path?.considered ?? []).map((c) => [c.kind, c.outcome]);
+         (path?.considered ?? []).map((c) =>
+            c.reason ? [c.kind, c.outcome, c.reason] : [c.kind, c.outcome],
+         );
       // Keyed by the author's sourceID, the table is found on the chain of
       // `stored` (and of its extension) even when the served copy declined.
-      expect(tables(declined.path)).toEqual([["materialized", "skipped"]]);
+      // Declined for its timezone, and the report says so.
+      expect(tables(declined.path)).toEqual([
+         ["materialized", "skipped", "TIME_ZONE"],
+      ]);
       expect(declined.path?.servedBy.kind).toBe("live");
       expect(tables(answered.path)).toEqual([["materialized", "used"]]);
       const ext = await fixture.runAsIs(
          "run: stored_ext -> { timezone: 'UTC'; group_by: is_march }",
       );
-      expect(tables(ext.path)).toEqual([["materialized", "skipped"]]);
+      expect(tables(ext.path)).toEqual([
+         ["materialized", "skipped", "TIME_ZONE"],
+      ]);
       expect(
          JSON.stringify([declined.path, answered.path, ext.path]),
       ).not.toContain("__mat");

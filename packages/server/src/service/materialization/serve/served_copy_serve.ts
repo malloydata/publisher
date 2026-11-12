@@ -60,6 +60,29 @@ import { servedCopyConfig, servedCopyAlias } from "./served_copy_config";
 
 type VirtualMap = Map<string, Map<string, string>>;
 
+/**
+ * Why the served copy declined a query, for the path report: `time_zone`, the
+ * query sets a timezone over a stored computed dimension; `cross_connection`,
+ * the copy waits on a join across connections; `not_served`, the copy (or the
+ * queried source in it) carries a `served-copy-not-served` warning;
+ * `opt_out`, the queried source opts out with `#@ -persist`.
+ */
+export type ServedCopyDeclineCode =
+   | "time_zone"
+   | "cross_connection"
+   | "not_served"
+   | "opt_out";
+
+/** A query the served copy declines, with why. */
+export class ServedCopyDecline extends Error {
+   constructor(
+      message: string,
+      readonly code: ServedCopyDeclineCode,
+   ) {
+      super(message);
+   }
+}
+
 /** The code on a package warning for a served copy that did not compile or re-root. */
 export const SERVED_COPY_WARNING_CODE = "served-copy-not-served";
 
@@ -112,7 +135,7 @@ interface Compiled {
     * this compile, so a repeat is declined without compiling it again
     * (decision 6). Dropped with the compile: a rebind or reload starts empty.
     */
-   declined?: Map<string, string>;
+   declined?: Map<string, ServedCopyDecline>;
 }
 
 /** How many declined queries one compiled copy remembers before starting over. */
@@ -223,18 +246,24 @@ export class ServedCopyServe {
    }> {
       const compiled = await this.ensureCompiled();
       if (!compiled.materializer || compiled.rerooted.length === 0) {
-         throw new Error(
+         throw new ServedCopyDecline(
             compiled.problems[0]?.detail ??
                "no stored table is re-rooted in this model's served copy",
+            compiled.problems.some(
+               (p) => p.reason === "cross_connection_unbuilt",
+            )
+               ? "cross_connection"
+               : "not_served",
          );
       }
       const declined = compiled.declined?.get(queryString);
-      if (declined !== undefined) throw new Error(declined);
-      const decline = (reason: string): never => {
+      if (declined !== undefined) throw declined;
+      const decline = (reason: string, code: ServedCopyDeclineCode): never => {
          const memo = (compiled.declined ??= new Map());
          if (memo.size >= DECLINED_LIMIT) memo.clear();
-         memo.set(queryString, reason);
-         throw new Error(reason);
+         const error = new ServedCopyDecline(reason, code);
+         memo.set(queryString, error);
+         throw error;
       };
       const virtualMap = buildVirtualMap(compiled.aliased);
       const runnable = compiled.materializer.loadRestrictedQuery(queryString);
@@ -250,7 +279,10 @@ export class ServedCopyServe {
          );
          const chain = SourceMap.of(compiled.modelDef).chainOf(struct);
          if (chain.some((id) => compiled.optOutIDs?.has(id))) {
-            decline("the query reads a source that opts out of persist");
+            decline(
+               "the query reads a source that opts out of persist",
+               "opt_out",
+            );
          }
       }
       // Compile eagerly so a query the copy cannot answer fails inside the
@@ -265,7 +297,9 @@ export class ServedCopyServe {
       if (tablesRead.length === 0) {
          // The query reads no stored table: the served copy would only add
          // work over live. Let the next candidate answer.
-         decline("the query reads no re-rooted table");
+         // A table on the queried source's chain that is not re-rooted was
+         // left unserved, with a package warning saying why.
+         decline("the query reads no re-rooted table", "not_served");
       }
       // A stored computed dimension (`order_ts.day`, `day_of_week(order_ts)`)
       // was evaluated at build in the default timezone; live evaluates it in
@@ -275,7 +309,10 @@ export class ServedCopyServe {
          tablesRead.some((b) => compiled.computedTables?.has(b.tablePath)) &&
          setsTimezone((await readPreparedQuery(runnable)).query)
       ) {
-         decline("the query sets a timezone over a stored computed dimension");
+         decline(
+            "the query sets a timezone over a stored computed dimension",
+            "time_zone",
+         );
       }
       return {
          runnable,

@@ -155,6 +155,64 @@ describe("buildQueryPath", () => {
       ]);
    });
 
+   it("reports a served-copy decline of a #(materialize) table under its most accurate reason", () => {
+      const daily = storageOf("daily");
+      const skipFor = (code: string | undefined, withShape: boolean) =>
+         buildQueryPath(
+            input({
+               catalog: catalog([planned("daily")]),
+               storage: { all: [daily], fresh: [daily] },
+               servedCopyTables: new Set([daily.tablePath]),
+               considered: [
+                  {
+                     kind: "served",
+                     outcome: "skipped",
+                     reason: "does_not_answer",
+                     ...(code ? { code } : {}),
+                  },
+                  // The serve shape was tried for another table; its reason
+                  // is not this table's.
+                  ...(withShape
+                     ? [
+                          {
+                             kind: "storage" as const,
+                             outcome: "skipped" as const,
+                             reason: "does_not_answer" as const,
+                          },
+                       ]
+                     : []),
+               ],
+            }),
+         ).considered[0];
+      type Candidate = ReturnType<typeof buildQueryPath>["considered"][number];
+      const row = (
+         reason: NonNullable<Candidate["reason"]>,
+         code?: string,
+      ): Candidate => ({
+         tableId: "id_daily",
+         kind: "materialized",
+         outcome: "skipped",
+         reason,
+         ...(code ? { code } : {}),
+      });
+      for (const withShape of [false, true]) {
+         expect(skipFor("served_copy_time_zone", withShape)).toEqual(
+            row("TIME_ZONE"),
+         );
+         expect(skipFor("served_copy_cross_connection", withShape)).toEqual(
+            row("CROSS_CONNECTION"),
+         );
+         expect(skipFor("served_copy_not_served", withShape)).toEqual(
+            row("WARNED", "served-copy-not-served"),
+         );
+         expect(skipFor("served_copy_opt_out", withShape)).toEqual(
+            row("WARNED", "persist-opt-out"),
+         );
+         // A query that does not compile against the table: a field it lacks.
+         expect(skipFor(undefined, withShape)).toEqual(row("MISSING_FIELD"));
+      }
+   });
+
    it("names a storage answer's table even when the chain does not place it", () => {
       const other = storageOf("other");
       const report = buildQueryPath(

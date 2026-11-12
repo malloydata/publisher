@@ -49,7 +49,10 @@ import {
    serveShapeDiagnostics,
 } from "./materialization/serve/materialization_serve_transform";
 import type { StorageServeShape } from "./materialization/serve/model_serve_shape";
-import type { ServedCopyServe } from "./materialization/serve/served_copy_serve";
+import {
+   ServedCopyDecline,
+   type ServedCopyServe,
+} from "./materialization/serve/served_copy_serve";
 import {
    type ApiQueryPath,
    buildQueryPath,
@@ -395,6 +398,10 @@ export function routeCandidates(
                },
             };
          },
+         explain: (err) =>
+            err instanceof ServedCopyDecline
+               ? { code: `served_copy_${err.code}` }
+               : undefined,
          onSkip: (err) => {
             logger.debug("served copy cannot answer this query", {
                modelPath: host.modelPath,
@@ -642,6 +649,9 @@ export async function queryPathFor(
          considered: answer.considered,
          storageTablesRead: answer.storageTablesRead?.map(toTable),
          ...(answer.via ? { via: answer.via } : {}),
+         servedCopyTables: new Set(
+            host.servedCopy.materializeBindings().map((b) => b.tablePath),
+         ),
          runFailed: answer.runFailed,
          colocatedRead: answer.colocatedRead,
          ...(answer.rollupMember ? { rollupMember: answer.rollupMember } : {}),
