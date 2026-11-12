@@ -4,7 +4,12 @@
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import { tempBuildPlanPackages } from "../../../test_helpers/incremental_test_harness";
 import { installSettings } from "../../../test_helpers/settings_env";
-import { addressSQL, buildSQLOf, computeSourceEntityId } from "./build_plan";
+import {
+   addressSQL,
+   buildSQLOf,
+   computeSourceEntityId,
+   deriveBuildPlanOutcome,
+} from "./build_plan";
 import { compilePackageBuildPlan } from "./build_plan_compile";
 import {
    buildSourceName,
@@ -66,7 +71,6 @@ describe("planModelMaterialize and generateBuildFile", () => {
          { dimension: "big", column: "big", computed: true },
       ],
       persist: {},
-      declaringURL: "file:///pkg/m.malloy",
       ...overrides,
    });
 
@@ -123,21 +127,21 @@ source: orders__mat is orders__mat__base -> {
       expect(text).toContain("    `date`,\n    `count`");
    });
 
-   it("imports a source declared in another file from that file, by its declared name", () => {
+   it("carries a group's properties as dotted keys", () => {
       const text = generateBuildFile(
          [
             plan({
-               sourceName: "o",
-               sourceID: "orders@file:///pkg/base.malloy",
-               declaringURL: "file:///pkg/base.malloy",
+               persist: {
+                  name: "orders_all",
+                  "freshness.window": "24h",
+                  "queryMetadata.team": "ops",
+               },
             }),
          ],
-         "index.malloy",
-         (url) =>
-            url === "file:///pkg/base.malloy" ? "base.malloy" : undefined,
+         "m.malloy",
       );
       expect(text).toContain(
-         "import { orders__mat__base is orders } from 'base.malloy'",
+         '#@ persist name="orders_all" freshness.window="24h" queryMetadata.team="ops"',
       );
    });
 
@@ -288,6 +292,24 @@ source: o2 is o
    );
 
    it(
+      "builds a model in a subdirectory, importing it from beside the companion",
+      async () => {
+         const c = await compiled({
+            "sub/m.malloy": `${BASE}
+#(materialize) name="orders_all"
+source: orders is orders_raw
+`,
+         });
+         const [sourceID] = Object.entries(c.sources).find(
+            ([, s]) => s.name === "orders__mat",
+         )!;
+         expect(c.sourceModelPaths?.[sourceID]).toBe("sub/m.malloy");
+         expect(generatedPlans(c).map((p) => p.sourceName)).toEqual(["orders"]);
+      },
+      { timeout: 30000 },
+   );
+
+   it(
       "refuses inline= until the joins pull request, and plans nothing for it",
       async () => {
          const c = await compiled(`${BASE}
@@ -343,6 +365,78 @@ source: orders is orders_raw
          const [p] = generatedPlans(c);
          expect(p.persist.name).toBe("orders");
          expect(p.buildSourceName).toBe("orders__mat");
+      },
+      { timeout: 30000 },
+   );
+
+   it(
+      "reports a refused declaration as a package warning, and builds the rest",
+      async () => {
+         const c = await compiled(`${BASE}
+#(materialize)
+source: unnamed is orders_raw
+
+#(materialize) nmae="typo" storage="lake"
+source: misspelt is orders_raw
+
+#(materialize) name="orders_all"
+source: orders is orders_raw
+`);
+         expect(generatedPlans(c).map((p) => p.sourceName)).toEqual(["orders"]);
+         const findings = (c.annotationFindings ?? []).filter(
+            (f) => f.code === "materialize-not-built",
+         );
+         expect(findings.map((f) => [f.subject, f.tier, f.model])).toEqual([
+            ["misspelt", "unservable", "m.malloy"],
+            ["unnamed", "unservable", "m.malloy"],
+         ]);
+         // A misspelt name= is refused, never defaulted to the source's name.
+         expect(findings[0].message).toContain("`nmae=`");
+         expect(findings[1].message).toContain("needs name=");
+      },
+      { timeout: 30000 },
+   );
+
+   it(
+      "carries freshness onto the generated source, where the plan reads it",
+      async () => {
+         const c = await compiled(`${BASE}
+#(materialize) name="orders_all" freshness.window="24h" freshness.fallback="serve_stale"
+source: orders is orders_raw
+`);
+         const [p] = generatedPlans(c);
+         expect(p.persist).toEqual({
+            name: "orders_all",
+            "freshness.window": "24h",
+            "freshness.fallback": "serve_stale",
+         });
+         const outcome = deriveBuildPlanOutcome(c, null);
+         const wire = Object.values(outcome.plan?.sources ?? {}).find(
+            (s) => s.name === "orders__mat",
+         );
+         expect(wire?.freshness?.window).toBe("24h");
+      },
+      { timeout: 30000 },
+   );
+
+   it(
+      "refuses a source that also carries its own #@ persist, rather than storing it twice",
+      async () => {
+         const c = await compiled(`##! experimental.persistence
+${BASE}
+#@ persist name="by_hand"
+#(materialize) name="orders_all"
+source: orders is orders_raw -> { select: * }
+`);
+         expect(generatedPlans(c)).toEqual([]);
+         expect(Object.values(c.sources).map((s) => s.name)).toEqual([
+            "orders",
+         ]);
+         expect(
+            c.annotationFindings?.find(
+               (f) => f.code === "materialize-not-built",
+            )?.message,
+         ).toContain("its own #@ persist");
       },
       { timeout: 30000 },
    );
@@ -417,5 +511,35 @@ source: orders is orders_raw
             reason: "the source has no public dimension to store",
          },
       ]);
+   });
+
+   it("refuses a value of the wrong shape and a declaration that does not parse", () => {
+      const declared = (text: string) => ({
+         sourceID: "orders@file:///pkg/m.malloy",
+         annotations: {
+            notes: [
+               {
+                  text,
+                  at: {
+                     url: "file:///pkg/m.malloy",
+                     range: {
+                        start: { line: 0, character: 0 },
+                        end: { line: 0, character: text.length },
+                     },
+                  },
+               },
+            ],
+         },
+         fields: [{ name: "id", type: "number" }],
+      });
+      const reason = (text: string) =>
+         planModelMaterialize({ orders: declared(text) }).refused[0]?.reason;
+      expect(reason('#(materialize) name=["a", "b"]\n')).toContain(
+         "`name=` must be a string",
+      );
+      expect(reason('#(materialize) name="a" freshness="24h"\n')).toContain(
+         "`freshness` takes properties",
+      );
+      expect(reason('#(materialize) name="a\n')).toContain("does not parse");
    });
 });

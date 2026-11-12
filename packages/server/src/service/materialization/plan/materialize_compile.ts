@@ -30,8 +30,6 @@ import type { SynthesizedRuntimeFactory } from "./preaggregation_compile";
 export interface GeneratedMaterialize {
    /** The sources the generator planned. Never empty. */
    plans: MaterializePlan[];
-   /** Declarations the generator refused, for the operator-facing log. */
-   refused: MaterializeRefusal[];
    /** The compiled companion: its build targets are the generated sources. */
    model: MalloyModel;
    materializer: ModelMaterializer;
@@ -53,87 +51,65 @@ export function materializeCompanionURL(
 }
 
 /**
- * Plan, generate and compile the build companion for one author model, or
- * undefined when it declares no plannable `#(materialize)`. Refusals are
- * logged here; the eligibility gates judge the generated sources like any
- * persist source once they are in the plan.
+ * Plan, generate and compile the build companion for one author model.
+ * `generated` is undefined when the model declares no plannable
+ * `#(materialize)`, or when the companion does not compile: a failure is a
+ * publisher bug (the text is generated), so it is logged at `error` level and
+ * costs that model its generated builds and nothing else. `refused` holds the
+ * declarations the generator would not plan, for the caller to report; the
+ * eligibility gates judge the generated sources like any persist source once
+ * they are in the plan.
  */
-async function compileMaterializeCompanion(args: {
+export async function tryCompileMaterializeCompanion(args: {
    packagePath: string;
    modelPath: string;
    contents: Record<string, unknown>;
    getRuntime: SynthesizedRuntimeFactory;
-}): Promise<GeneratedMaterialize | undefined> {
-   const modelFile = path.join(args.packagePath, args.modelPath);
-   const { plans, refused } = planModelMaterialize(
-      args.contents,
-      (declaringURL) => {
+}): Promise<{
+   generated?: GeneratedMaterialize;
+   refused: MaterializeRefusal[];
+}> {
+   const modelFile = path.resolve(args.packagePath, args.modelPath);
+   let refused: MaterializeRefusal[] = [];
+   try {
+      const planned = planModelMaterialize(args.contents, (declaringURL) => {
          try {
-            return (
-               path.resolve(fileURLToPath(declaringURL)) ===
-               path.resolve(modelFile)
-            );
+            return path.resolve(fileURLToPath(declaringURL)) === modelFile;
          } catch {
             // Not a local file (a host, another scheme): planned, as before.
             return true;
          }
-      },
-   );
-   for (const refusal of refused) {
-      logger.warn("#(materialize) declaration not built", {
-         modelPath: args.modelPath,
-         sourceName: refusal.sourceName,
-         reason: refusal.reason,
       });
-   }
-   if (plans.length === 0) return undefined;
-
-   const text = generateBuildFile(
-      plans,
-      path.basename(args.modelPath),
-      (declaringURL) => {
-         let declaringFile: string;
-         try {
-            declaringFile = fileURLToPath(declaringURL);
-         } catch {
-            return undefined;
-         }
-         if (path.resolve(declaringFile) === path.resolve(modelFile)) {
-            return undefined;
-         }
-         return path
-            .relative(path.dirname(modelFile), declaringFile)
-            .split(path.sep)
-            .join("/");
-      },
-   );
-   if (!text) return undefined;
-
-   const url = materializeCompanionURL(args.packagePath, args.modelPath);
-   const { runtime, importBaseURL } = await args.getRuntime(
-      new Map([[url.href, text]]),
-   );
-   const materializer = runtime.loadModel(url, { importBaseURL });
-   const model = await materializer.getModel();
-   return { plans, refused, model, materializer, runtime, text };
-}
-
-/**
- * {@link compileMaterializeCompanion}, with a compile failure logged and
- * swallowed, so a generated file that does not compile costs that model its
- * generated builds and nothing else. A failure is a publisher bug (the text
- * is generated), hence `error` level.
- */
-export async function tryCompileMaterializeCompanion(
-   args: Parameters<typeof compileMaterializeCompanion>[0],
-): Promise<GeneratedMaterialize | undefined> {
-   try {
-      return await compileMaterializeCompanion(args);
+      refused = planned.refused;
+      const text = generateBuildFile(
+         planned.plans,
+         path.basename(args.modelPath),
+      );
+      if (!text) return { refused };
+      const url = materializeCompanionURL(args.packagePath, args.modelPath);
+      const { runtime, importBaseURL } = await args.getRuntime(
+         new Map([[url.href, text]]),
+      );
+      const materializer = runtime.loadModel(url, { importBaseURL });
+      const model = await materializer.getModel();
+      return {
+         generated: {
+            plans: planned.plans,
+            model,
+            materializer,
+            runtime,
+            text,
+         },
+         refused,
+      };
    } catch (error) {
-      logger.error("Failed to compile the generated #(materialize) companion", {
-         modelPath: args.modelPath,
-         error: error instanceof Error ? error.message : String(error),
-      });
-      return undefined;
+      logger.error(
+         "Failed to plan or compile the generated #(materialize) companion",
+         {
+            modelPath: args.modelPath,
+            error: error instanceof Error ? error.message : String(error),
+         },
+      );
+      return { refused };
    }
 }

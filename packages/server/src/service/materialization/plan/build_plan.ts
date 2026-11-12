@@ -52,7 +52,10 @@ import {
    type SynthesizedRuntimeFactory,
 } from "./preaggregation_compile";
 import type { RollupPlan } from "./preaggregation_synthesis";
-import type { MaterializePlan } from "./build_file_generator";
+import {
+   materializeRefusalFinding,
+   type MaterializePlan,
+} from "./build_file_generator";
 import { tryCompileMaterializeCompanion } from "./materialize_compile";
 import { getMaterializeEnabled } from "../../../config";
 import {
@@ -595,7 +598,13 @@ async function collectGeneratedMaterialize(
       contents: Record<string, unknown>;
    },
 ): Promise<void> {
-   const generated = await tryCompileMaterializeCompanion(args);
+   const { generated, refused } = await tryCompileMaterializeCompanion(args);
+   for (const refusal of refused) {
+      addAnnotationFinding(
+         parts,
+         materializeRefusalFinding(refusal, args.modelPath),
+      );
+   }
    if (!generated) return;
    const targets = await generated.runtime.getBuildTargets(generated.model);
    parts.builds.push(...sourceBuildsOf(targets));
