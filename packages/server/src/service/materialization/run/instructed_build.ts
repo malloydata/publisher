@@ -427,8 +427,9 @@ export class InstructedBuild {
       // persist` is inherited) compile to the same address, and a source used
       // across models appears in several builds. Only the same-content case is
       // decided here; DIFFERENT definitions on one table were reported (and
-      // refused under PERSIST_COLLISION_ENFORCE) by assertNoTableCollisions, so
-      // reaching here means the deployment chose to warn and write anyway.
+      // refused unless PERSIST_COLLISION_ENFORCE=false) by
+      // assertNoTableCollisions, so reaching here means the deployment opted
+      // out, to warn and write anyway.
       const target = physicalTargetKey(instruction, graphConnectionName);
       const written = run.writtenTargets.get(target);
       if (written && written.sourceEntityId === sourceEntityId) {

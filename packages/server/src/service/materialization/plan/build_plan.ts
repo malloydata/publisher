@@ -85,7 +85,7 @@ import {
    collectColocatedSourceEligibility,
    collectSourceEligibility,
    collidingRollups,
-   refuseCollidingMaterializeDefaults,
+   refuseCollidingMaterialize,
    storedBaseOfRollup,
    type ColocatedSourceEligibility,
    type SourceEligibility,
@@ -1129,7 +1129,7 @@ export function deriveBuildPlanOutcome(
 ): BuildPlanOutcome {
    // Before anything reads the plan: a refused source is neither built nor
    // served, and its warning replaces it (#6644).
-   const compiled = refuseCollidingMaterializeDefaults(collected);
+   const compiled = refuseCollidingMaterialize(collected);
    const droppedPersistSources = compiled.droppedPersistSources ?? [];
    const incrementalDeclarations = collectIncrementalDeclarations(
       compiled.sources,

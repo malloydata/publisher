@@ -1625,16 +1625,16 @@ export const CONTRACT: Record<string, Case[]> = {
       },
    ],
    "persist.collisionEnforcementEnabled": [
-      { name: "unset", expect: value(false) },
+      { name: "unset", expect: value(true) },
       {
          name: "PERSIST_COLLISION_ENFORCE",
-         env: { PERSIST_COLLISION_ENFORCE: "1" },
-         expect: value(true),
+         env: { PERSIST_COLLISION_ENFORCE: "0" },
+         expect: value(false),
       },
       {
          name: "blank",
          env: { PERSIST_COLLISION_ENFORCE: "" },
-         expect: value(false),
+         expect: value(true),
       },
       {
          name: "not a boolean",

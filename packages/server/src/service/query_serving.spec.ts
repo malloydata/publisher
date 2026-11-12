@@ -210,18 +210,37 @@ describe("recordingManifest", () => {
       expect([...read]).toEqual(["a"]);
    });
 
-   it("does not count Malloy's enumeration of the entries as a lookup", async () => {
+   it("does not count any enumeration of the entries as a lookup", () => {
       const read = new Set<string>();
       const wrapped = recordingManifest(manifest(["a", "b"]), read)!;
-      // Malloy checks every entry's table path before it compiles.
+      // Malloy checks every entry's table path before it compiles. Every
+      // enumeration form, in any order, synchronously beside a lookup.
       for (const [, entry] of Object.entries(wrapped.entries)) void entry;
+      void Object.values(wrapped.entries);
       void { ...wrapped.entries };
+      void Object.assign({}, wrapped.entries);
+      void JSON.stringify(wrapped.entries);
+      void JSON.stringify(wrapped);
+      const held = wrapped.entries;
+      for (const key in held) void held[key];
       expect(Object.keys(wrapped.entries)).toEqual(["a", "b"]);
       expect([...read]).toEqual([]);
-      // It awaits (connection lookups) before the compile looks a table up.
-      await Promise.resolve();
+      // A lookup in the same synchronous step still records, plain or guarded.
       void wrapped.entries["b"];
       expect([...read]).toEqual(["b"]);
+      const entries = wrapped.entries;
+      if (Object.hasOwn(entries, "a")) void entries["a"];
+      expect([...read].sort()).toEqual(["a", "b"]);
+   });
+
+   it("keeps the manifest's other fields", () => {
+      const read = new Set<string>();
+      const wrapped = recordingManifest(
+         { ...manifest(["a"]), strict: true } as BuildManifest,
+         read,
+      )!;
+      expect(wrapped.strict).toBe(true);
+      expect(Object.keys(wrapped.entries)).toEqual(["a"]);
    });
 
    it("is undefined for no manifest", () => {

@@ -152,16 +152,31 @@ export function collidingRollups(compiled: {
    return colliding;
 }
 
-/** The table a source writes: its destination and physical name, as the build names it. */
-function physicalTarget(source: PersistSource): {
-   key: string;
-   name: string;
-   destination: string;
-} {
-   const fields = deriveAnnotationFields(source);
-   const name = (fields.name || source.name).trim();
-   const destination = fields.storage?.trim() || source.connectionName;
+/**
+ * The table a persist source writes: its destination and physical name, as
+ * the build names it, and the key two sources share exactly when they write
+ * one table. The one definition of a persist-target collision, read by the
+ * serve refusal ({@link sharedTables}), the `#(materialize)` refusal and the
+ * publish check (`persistenceCollisionWarnings`), so the three never disagree.
+ * Verbatim: names differing only by case or quoting may still fold to one
+ * table on some destinations, and normalizing is dialect-dependent.
+ */
+export function persistTableTarget(
+   fields: { name?: string; storage?: string },
+   sourceName: string,
+   connectionName: string,
+): { key: string; name: string; destination: string } {
+   const name = (fields.name || sourceName).trim();
+   const destination = fields.storage?.trim() || connectionName;
    return { key: `${destination}\u0000${name}`, name, destination };
+}
+
+function physicalTarget(source: PersistSource) {
+   return persistTableTarget(
+      deriveAnnotationFields(source),
+      source.name,
+      source.connectionName,
+   );
 }
 
 /** One source sharing a table with another, for {@link sharedTables}. */
@@ -240,8 +255,8 @@ const sharedTablesBySources = new WeakMap<
  * so serving it hands one source's readers the other's rows. Both are still
  * planned and built, as before; a query on either is answered live until each
  * has a `name=` of its own. Serving is refused whatever
- * `PERSIST_COLLISION_ENFORCE` says: that flag decides whether a publish is
- * refused, and a wrong answer is never the alternative.
+ * `PERSIST_COLLISION_ENFORCE` says: that flag (on by default) decides whether
+ * a publish is refused, and a wrong answer is never the alternative.
  */
 export function sharedTables(
    compiled: EligibilityPlan,
@@ -265,15 +280,19 @@ export function sharedTables(
 }
 
 /**
- * The compiled plan less every `#(materialize)` source whose table takes its
- * source's name by default (no `name=`) and is also another source's table,
- * each reported as `materialize-not-built`. Refused outright, not built: with
- * no `name=` the collision is the default's, not the author's, and
- * `#(materialize)` has no packages to stay compatible with. Whatever still
- * shares a table afterwards (two `name=`s an author chose, or v1 sources) is
- * {@link sharedTables}', served live.
+ * The compiled plan less every `#(materialize)` source whose table is also
+ * another source's table (same destination, same physical name, a different
+ * content address), each reported as `materialize-not-built` naming the
+ * others. Refused outright, not built, whether its name is the default (the
+ * source's own, with no `name=`) or a `name=` the author chose:
+ * `#(materialize)` has no packages to stay compatible with, and a build over
+ * another source's table would hand one source's readers the other's rows.
+ * The same source reached through two models is one address, and is no
+ * collision. What still shares a table afterwards (v1 sources only) is
+ * {@link sharedTables}', served live, and refused at publish under
+ * `PERSIST_COLLISION_ENFORCE`.
  */
-export function refuseCollidingMaterializeDefaults<
+export function refuseCollidingMaterialize<
    T extends EligibilityPlan & {
       builds: SourceBuild[];
       materializePlans?: Record<string, MaterializePlan>;
@@ -284,15 +303,18 @@ export function refuseCollidingMaterializeDefaults<
    const refused = new Map<string, string>();
    for (const { table, destination, members } of sharedTableGroups(compiled)) {
       for (const member of members) {
-         if (!plans[member.sourceID]?.nameDefaulted) continue;
+         const plan = plans[member.sourceID];
+         if (!plan) continue;
          const others = members.filter((m) => m.address !== member.address);
+         const named = plan.nameDefaulted
+            ? `with no name=, its table takes the source's name \`${table}\``
+            : `its name= \`${table}\` is a table`;
          refused.set(
             member.sourceID,
-            `with no name=, its table takes the source's name \`${table}\` in ` +
-               `"${destination}", which ${describeMembers(others)} also ` +
+            `${named} in "${destination}", which ${describeMembers(others)} also ` +
                `${others.length > 1 ? "write" : "writes"}, so each build would ` +
                `overwrite the other and one source would read the other's rows; ` +
-               `give #(materialize) a name= no other source's table uses`,
+               `give each source a distinct name=`,
          );
       }
    }

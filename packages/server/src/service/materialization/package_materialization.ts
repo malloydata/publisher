@@ -77,6 +77,7 @@ import {
    type ViewServeVerdict,
 } from "./serve/serve_verdict";
 import { storageTablePath } from "./run/storage_table_path";
+import { persistTableTarget } from "./plan/eligibility_collect";
 import { quoteManifestTablePath } from "../quoting";
 import { structsReachedFrom } from "../governance/ir/source_graph";
 import { CLASSIFICATION_COVERAGE } from "../classification";
@@ -587,6 +588,9 @@ export class PackageMaterialization {
          // The deployment facts are read live, not replaced wholesale, so
          // they key the memo by what they answer for this plan.
          this.deploymentSignature(),
+         // So is each model's served copy, which compiles after the bind and
+         // is dropped on invalidation; a `#(materialize)` verdict reads it.
+         this.servedCopyState(models).signature,
       ];
       const cached = this.liveVerdictCache;
       if (cached && cached.key.every((part, i) => part === key[i])) {
@@ -1389,18 +1393,7 @@ export class PackageMaterialization {
             servedStorageNames.add(name);
          }
       }
-      // What the served copies answer from storage: every model's, since a
-      // source is re-rooted in each model that reads it.
-      let servedCopyOn = false;
-      let servedCopyPending = false;
-      const servedCopyIDs = new Set<string>();
-      for (const model of models.values()) {
-         const ids = model.servedCopySourceIDs?.();
-         if (ids === undefined) continue;
-         servedCopyOn = true;
-         if (ids === "pending") servedCopyPending = true;
-         else for (const id of ids) servedCopyIDs.add(id);
-      }
+      const servedCopy = this.servedCopyState(models);
       const materializeIDs = new Set(Object.keys(this.materializePlans));
       const now = new Date();
       const freshStorageNames = new Set(
@@ -1454,8 +1447,8 @@ export class PackageMaterialization {
          rollupsOverStoredBase: this.rollupsOverStoredBase,
          materialize: (sourceID) => {
             if (!materializeIDs.has(sourceID)) return undefined;
-            if (!servedCopyOn) return "off";
-            return servedCopyIDs.has(sourceID) || servedCopyPending
+            if (!servedCopy.on) return "off";
+            return servedCopy.ids.has(sourceID) || servedCopy.pending
                ? "serves"
                : "not_served";
          },
@@ -1477,6 +1470,34 @@ export class PackageMaterialization {
     * the {@link liveVerdictsByTable} memo's key part for facts the
     * environment can change under a loaded package.
     */
+   /**
+    * What the models' served copies answer from storage, by author
+    * `sourceID`: every model's, since a source is re-rooted in each model that
+    * reads it. `on` when any model's served copy is enabled, `pending` when one
+    * has yet to compile, and a `signature` that changes whenever either does.
+    */
+   private servedCopyState(models: ReadonlyMap<string, Model>): {
+      on: boolean;
+      pending: boolean;
+      ids: ReadonlySet<string>;
+      signature: string;
+   } {
+      let on = false;
+      let pending = false;
+      const ids = new Set<string>();
+      for (const model of models.values()) {
+         const reread = model.servedCopySourceIDs?.();
+         if (reread === undefined) continue;
+         on = true;
+         if (reread === "pending") pending = true;
+         else for (const id of reread) ids.add(id);
+      }
+      const signature = on
+         ? `${pending ? "pending" : "compiled"}:${[...ids].sort().join(",")}`
+         : "off";
+      return { on, pending, ids, signature };
+   }
+
    private deploymentSignature(): string {
       if (!this.deploymentFacts) return "";
       const parts: string[] = [];
@@ -1921,8 +1942,8 @@ export class PackageMaterialization {
     * not flagged. The destination comes from the DECLARED annotation, so the
     * storage kill switch never hides a collision.
     *
-    * Warn-only unless `PERSIST_COLLISION_ENFORCE` is set, so packages published
-    * before this check still republish. Either way none of them is served
+    * A publish refusal unless `PERSIST_COLLISION_ENFORCE=false` opts out, and
+    * a warning at load either way. Either way none of them is served
     * from the shared table (`sharedTables` in eligibility_collect.ts): it
     * holds whichever build ran last, so each answers live. Cross-version and
     * cross-package collisions need the host's global view.
@@ -1936,14 +1957,16 @@ export class PackageMaterialization {
          { name: string; destination: string; sources: Map<string, string> }
       >();
       for (const source of sources) {
-         const fields = source.annotationFields ?? {};
-         const physicalName = (fields.name || source.name).trim();
-         const storage = fields.storage?.trim();
-         const destination = storage ? storage : source.connectionName;
-         // Verbatim key: names differing only by case or quoting may still fold
-         // to one table on some destinations. Normalizing is dialect-dependent,
-         // so the host's naming is the backstop.
-         const key = `${destination} ${physicalName}`;
+         // The one definition of a collision, shared with the serve refusal.
+         const {
+            key,
+            name: physicalName,
+            destination,
+         } = persistTableTarget(
+            source.annotationFields ?? {},
+            source.name,
+            source.connectionName,
+         );
          const bucket = targets.get(key) ?? {
             name: physicalName,
             destination,
@@ -1975,10 +1998,18 @@ export class PackageMaterialization {
       return warnings;
    }
 
-   /** Collisions as a publish rejection; "" unless `PERSIST_COLLISION_ENFORCE` is set. */
+   /** Collisions as a publish rejection; "" when `PERSIST_COLLISION_ENFORCE=false`. */
    formatPersistenceCollisionRejections(): string {
       if (!getPersistCollisionEnforce()) return "";
-      return this.persistenceCollisionWarnings().join("\n");
+      const collisions = this.persistenceCollisionWarnings();
+      if (collisions.length === 0) return "";
+      // The operator's opt-out, named once, after the author's fix.
+      return [
+         ...collisions,
+         "A deployment that must publish such a package anyway can set " +
+            "PERSIST_COLLISION_ENFORCE=false, which warns instead and serves " +
+            "the colliding sources live.",
+      ].join("\n");
    }
 }
 

@@ -297,8 +297,8 @@ export interface MaterializePlan {
    uniquenessChecks?: InlineUniquenessCheck[];
    /**
     * The table takes the source's own name because the declaration has no
-    * `name=`. Such a name is refused when another source's table takes it
-    * too (see `refuseCollidingMaterializeDefaults`).
+    * `name=`, which the refusal of a colliding table name says (see
+    * `refuseCollidingMaterialize`).
     */
    nameDefaulted?: true;
 }

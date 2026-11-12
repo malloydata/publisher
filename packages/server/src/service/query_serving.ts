@@ -311,50 +311,67 @@ export function recordRoutingDecision(route: RouteDecision<RoutedExtra>): void {
 /**
  * The build manifest a run is handed, wrapped to record which entries Malloy
  * looked up and found: the colocated tables it substituted. Malloy looks a
- * persisted source up by its key in exactly one place (`persistedTableFor`),
- * a plain `entries[buildId]`, so a hit is a table the SQL reads, with no
+ * persisted source up by its key in exactly one place (`persistedTableFor`,
+ * `buildManifest.entries[buildId]`), so a hit is a table the SQL reads, with no
  * reading of the SQL text.
  *
  * Malloy also ENUMERATES the entries before it compiles (it checks every
  * entry's table path), and an enumeration reads each value too. Those reads
  * are not lookups: recording them reported every bound table as having
  * answered, including for a `#@ -persist` reader that recomputes and for a
- * source Malloy never substitutes. An enumeration (`Object.entries`, spread,
- * `for…in`) asks for a key's own-property descriptor and then, in the same
- * synchronous step, reads that key's value; a lookup reads the value alone.
- * So a read of the key whose descriptor was just asked for is not recorded.
- * "Just" ends at the next read or the next microtask, whichever is first:
- * `Object.keys` asks for descriptors and reads no value, and Malloy awaits
- * (its connection lookups) between that and the compile that looks up.
+ * source Malloy never substitutes.
+ *
+ * The two are told apart by which object they read, not by the order of the
+ * reads. Every read of `manifest.entries` is handed a fresh view of the same
+ * entries, and a view's reads are lookups only while nothing has enumerated
+ * that view. Every enumeration (`Object.entries`, `Object.keys`,
+ * `Object.values`, spread, `for…in`, `JSON.stringify`, `Object.assign`) asks
+ * for the object's own keys first ([[OwnPropertyKeys]], the `ownKeys` trap),
+ * and a keyed lookup never does, whether it reads the value alone or checks
+ * `hasOwn` first (Malloy's `safeRecordGet`). So this holds for any enumeration
+ * and any lookup form, in any order, sync or async. (The order heuristic this
+ * replaced, "a read right after its own key's descriptor is an enumeration",
+ * missed `JSON.stringify`, which describes every key before reading any, and
+ * would have dropped every real lookup had Malloy guarded it with `hasOwn`, as
+ * its own `safeRecordGet` does.) It assumes only that Malloy reaches
+ * `entries` afresh for a lookup, as `persistedTableFor` does, rather than
+ * enumerating and then looking up through one held reference, or re-reading
+ * `entries` for each value of an enumeration (`for (k in m.entries)
+ * m.entries[k]`). `query_serving_malloy.spec.ts` runs a real compile against
+ * the pinned Malloy and fails loudly if either assumption stops holding.
  */
 export function recordingManifest(
    manifest: BuildManifest | undefined,
    read: Set<string>,
 ): BuildManifest | undefined {
    if (!manifest) return undefined;
-   let described: string | symbol | undefined;
-   const entries = new Proxy(manifest.entries, {
-      getOwnPropertyDescriptor(target, key) {
-         described = key;
-         queueMicrotask(() => {
-            if (described === key) described = undefined;
-         });
-         return Reflect.getOwnPropertyDescriptor(target, key);
-      },
-      get(target, key, receiver) {
-         const enumerated = described === key;
-         described = undefined;
-         if (
-            !enumerated &&
-            typeof key === "string" &&
-            Object.hasOwn(target, key)
-         ) {
-            read.add(key);
-         }
-         return Reflect.get(target, key, receiver);
-      },
+   const target = manifest.entries;
+   const view = (): BuildManifest["entries"] => {
+      let enumerated = false;
+      return new Proxy(target, {
+         ownKeys(t) {
+            enumerated = true;
+            return Reflect.ownKeys(t);
+         },
+         get(t, key, receiver) {
+            if (
+               !enumerated &&
+               typeof key === "string" &&
+               Object.hasOwn(t, key)
+            ) {
+               read.add(key);
+            }
+            return Reflect.get(t, key, receiver);
+         },
+      });
+   };
+   const wrapped = { ...manifest } as BuildManifest;
+   Object.defineProperty(wrapped, "entries", {
+      get: view,
+      enumerable: true,
+      configurable: true,
    });
-   return { ...manifest, entries };
+   return wrapped;
 }
 
 /**

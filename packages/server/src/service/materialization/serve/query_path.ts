@@ -553,6 +553,8 @@ export function verdictWarningMessage(reason: string): string {
          return "The package refuses to serve this table, so its queries are answered live; the package's warnings say why.";
       case "shadowed":
          return "Its storage table is bound to a different source of the same name, so its queries are answered live.";
+      case "served_copy":
+         return "Only the served copy reads this table, and it does not answer from it here, so its queries are answered live.";
       default:
          return "This table carries a publish warning and serves live; the package's warnings say why.";
    }

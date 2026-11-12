@@ -22,7 +22,7 @@ import {
    type BuildPlanPackage,
    type CompiledBuildPlan,
 } from "./build_plan";
-import { refuseCollidingMaterializeDefaults } from "./eligibility_collect";
+import { refuseCollidingMaterialize } from "./eligibility_collect";
 import { createEventLoopYielder } from "../../event_loop_yield";
 import { Model } from "../../model";
 import { keyedOverlay } from "../../overlay_key";
@@ -121,7 +121,7 @@ export async function compilePackageBuildPlan(
 
    // The build path reads this plan directly: a `#(materialize)` source
    // refused for its table name must not build here either.
-   return refuseCollidingMaterializeDefaults({
+   return refuseCollidingMaterialize({
       builds: parts.builds,
       sources: parts.sources,
       targets: parts.targets,

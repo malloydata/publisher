@@ -490,6 +490,70 @@ source: summary is orders_raw -> {
          await fixture.dispose();
       }
    });
+   it("#(materialize) with equal explicit name=s is refused on both, naming the other, and both answer live", async () => {
+      const { fixture, live } = await loadBuilt(
+         sameNamed('#(materialize) storage="lake" name="s_dup"', ""),
+         SAME_NAMED_QUERIES,
+      );
+      try {
+         expect(fixture.built).toEqual([]);
+         const refused = codes(fixture, "materialize-not-built");
+         expect(refused.map((w) => w.subject)).toEqual(["summary", "summary"]);
+         for (const w of refused) {
+            expect(w.message).toContain("name= `s_dup`");
+            expect(w.message).toContain("distinct name=");
+         }
+         expect(refused.map((w) => w.message).join("\n")).toContain(
+            '"summary" (a.malloy)',
+         );
+         expect(refused.map((w) => w.message).join("\n")).toContain(
+            '"summary" (b.malloy)',
+         );
+         for (const key of ["a", "b"] as const) {
+            const ran = await run(
+               fixture,
+               SAME_NAMED_QUERIES[key].model,
+               SUMMARY_QUERY,
+            );
+            expect(rowDifference(live[key], ran.rows)).toBeUndefined();
+            expect(ran.servedBy).toBe("live");
+         }
+      } finally {
+         await fixture.dispose();
+      }
+   });
+
+   it("v1 sources with one table and the SAME definition share it legitimately: built, served, no collision", async () => {
+      // One content address on one table is one table, not a collision: two
+      // models persisting identical text read identical rows.
+      const same = sameNamed('#@ persist storage="lake" name="s_same"');
+      const files = {
+         "a.malloy": same["a.malloy"],
+         "b.malloy": same["a.malloy"],
+      };
+      const { fixture, live } = await loadBuilt(files, SAME_NAMED_QUERIES);
+      try {
+         expect(
+            fixture.warnings.filter((w) =>
+               w.message?.includes("same materialized table"),
+            ),
+         ).toEqual([]);
+         expect(fixture.verdicts.every((v) => v.endsWith(":serves"))).toBe(
+            true,
+         );
+         for (const key of ["a", "b"] as const) {
+            const ran = await run(
+               fixture,
+               SAME_NAMED_QUERIES[key].model,
+               SUMMARY_QUERY,
+            );
+            expect(rowDifference(live[key], ran.rows)).toBeUndefined();
+            expect(ran.servedBy).toBe("materialized");
+         }
+      } finally {
+         await fixture.dispose();
+      }
+   });
 });
 
 describe("#(materialize) on a source that inherits #@ persist", () => {

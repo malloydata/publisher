@@ -249,7 +249,8 @@ export function resolveInstruction(
  *
  * Not host-only: collisions are always warn-only at load whatever
  * PERSIST_COLLISION_ENFORCE says (see loadPackage), so a package with a
- * model-declared collision can still reach this build.
+ * model-declared collision can still reach this build. Refused unless that
+ * setting is `false` (it is on by default).
  */
 export function assertNoTableCollisions(
    builds: CompiledBuildPlan["builds"],

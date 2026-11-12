@@ -164,10 +164,10 @@ export const storage = [
    setting({
       key: "persist.collisionEnforcementEnabled",
       type: boolean(),
-      default: false,
+      default: true,
       description:
          "Refuse a publish where two persist sources resolve to the same table.",
-      notes: "Set to `true` to refuse a publish in which two persist sources of one package resolve to the same table in the same destination. Off, a collision is a warning; loading a package only ever warns. Either way neither source is served from the shared table, which holds whichever build ran last: queries on both are answered live until each has its own `name=`.",
+      notes: "On by default: a publish in which two different persist sources of one package resolve to the same table in the same destination is refused, as is a build of such a package, before anything is written. Give each source a distinct `name=` to fix it. Set to `false` to opt out, which turns the refusal into a warning; loading a package only ever warns. Either way neither source is served from the shared table, which holds whichever build ran last: queries on both are answered live until each has its own `name=`. A `#(materialize)` source on another source's table is never built, whatever this says (`materialize-not-built`).",
       aliases: { env: ["PERSIST_COLLISION_ENFORCE"] },
    }),
    setting({

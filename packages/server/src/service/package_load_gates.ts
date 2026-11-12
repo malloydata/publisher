@@ -196,7 +196,8 @@ function judgeLoadGates(
       throw new BadRequestError(invalidPreaggregate);
    }
    // Persist-target collisions only warn at load, whatever
-   // PERSIST_COLLISION_ENFORCE says; that flag governs publish rejection.
+   // PERSIST_COLLISION_ENFORCE says; that flag (on by default) governs publish
+   // and build rejection.
    const collisions = pkg.persistenceCollisionWarnings();
    if (collisions.length > 0) {
       logger.warn(`Package ${packageName} has persist-target collisions`, {
