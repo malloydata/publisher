@@ -270,3 +270,57 @@ describe("build-plan retries after an environment closes", () => {
       expect(internals.planRefreshBackoff.size).toBe(0);
    });
 });
+
+describe("package-load workers", () => {
+   // Workers are threads of this process, and the registry above lives in the
+   // main thread's isolate: a worker that opened a DuckDB file would be a
+   // second instance of it. They never do: every connection a worker looks up
+   // is a proxy whose statements run on the main thread's connection
+   // (package_load_worker.ts, buildWorkerMalloyConfig). This pins it, by
+   // checking nothing the worker imports loads db-duckdb.
+   it("never import db-duckdb, so they never open a DuckDB file", () => {
+      const root = path.resolve(
+         __dirname,
+         "../package_load/package_load_worker.ts",
+      );
+      const seen = new Set<string>();
+      const bare = new Set<string>();
+      const visit = (file: string) => {
+         if (seen.has(file)) return;
+         seen.add(file);
+         const text = fs.readFileSync(file, "utf-8");
+         const specifiers = [
+            ...text.matchAll(
+               /^\s*import\s+(?!type\b)[^;]*?from\s+["']([^"']+)["']/gms,
+            ),
+            ...text.matchAll(
+               /^\s*export\s+(?!type\b)[^;]*?from\s+["']([^"']+)["']/gms,
+            ),
+            ...text.matchAll(/^\s*import\s+["']([^"']+)["']/gm),
+         ].map((m) => m[1]);
+         for (const spec of specifiers) {
+            if (!spec.startsWith(".")) {
+               bare.add(spec);
+               continue;
+            }
+            const base = path.resolve(path.dirname(file), spec);
+            const candidates = [
+               base,
+               `${base}.ts`,
+               path.join(base, "index.ts"),
+               base.replace(/\.js$/, ".ts"),
+            ];
+            const found = candidates.find(
+               (c) => fs.existsSync(c) && fs.statSync(c).isFile(),
+            );
+            if (found && found.endsWith(".ts")) visit(found);
+         }
+      };
+      visit(root);
+      expect(seen.size).toBeGreaterThan(10);
+      expect(
+         [...bare].filter((s) => s.startsWith("@malloydata/db-duckdb")),
+      ).toEqual([]);
+      expect([...bare].filter((s) => s.startsWith("@duckdb/"))).toEqual([]);
+   });
+});
