@@ -42,10 +42,15 @@ export const MATERIALIZATION_DESTINATION_MISSING_CODE =
 export const MATERIALIZATION_CONNECTION_CANNOT_HOLD_TABLE_CODE =
    "materialization-connection-cannot-hold-table";
 
-/** The serve verdict reason each deployment-fact warning reports, with its code. */
-export const DEPLOYMENT_VERDICT_CODES: Readonly<
+/**
+ * The live verdict reasons that carry a publish warning of their own, with its
+ * code. The other live reasons are warned where their cause is found (storage
+ * mode, refusals, rollups over a stored base).
+ */
+export const VERDICT_WARNING_CODES: Readonly<
    Partial<Record<ServeVerdictReason, string>>
 > = {
+   unreachable: MATERIALIZATION_UNREACHABLE_CODE,
    destination_missing: MATERIALIZATION_DESTINATION_MISSING_CODE,
    connection_cannot_hold_table:
       MATERIALIZATION_CONNECTION_CANNOT_HOLD_TABLE_CODE,
@@ -286,7 +291,8 @@ function verdictFor(
                `configures no storage destination of that name, so no build can ` +
                `write its table and queries on it are answered live.`,
             [
-               `Configure a storage destination named "${destination}" on the environment.`,
+               `Configure a storage destination named "${destination}" on the environment ` +
+                  `(one the config lists but the server rejected, such as an unsupported type, is skipped with the reason in the server log).`,
                "Or name a configured destination in storage=, or drop storage= to build it in its own warehouse.",
             ],
          ),

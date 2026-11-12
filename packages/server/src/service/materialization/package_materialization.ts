@@ -72,8 +72,7 @@ import {
 import { STORED_COLUMN_TYPE_MISMATCH_CODE } from "./stored_column_types";
 import {
    computeServeVerdicts,
-   DEPLOYMENT_VERDICT_CODES,
-   MATERIALIZATION_UNREACHABLE_CODE,
+   VERDICT_WARNING_CODES,
    type ServeVerdict,
    type ViewServeVerdict,
 } from "./serve/serve_verdict";
@@ -568,7 +567,9 @@ export class PackageMaterialization {
     * it on that tier is `live`. Staleness is left out, since the
     * report decides it per query from the window it reads now, and every other
     * reason reads no clock, so this is memoized on the facts the verdicts read
-    * (each replaced wholesale) and costs a query only a key compare.
+    * (each replaced wholesale, except the deployment facts, which key it by
+    * what they answer for this plan) and costs a query a key compare plus one
+    * fact read per planned source.
     */
    private liveVerdictsByTable(): LiveVerdicts | undefined {
       const models = this.owner.models();
@@ -1556,37 +1557,23 @@ export class PackageMaterialization {
    }
 
    /**
-    * Warnings for materialized sources whose verdict is `unreachable`: nothing
-    * on the published surface reads them, so their tables are built for no
-    * query (ms2data/service#6277). The other live verdicts already carry a
-    * warning of their own (storage mode, refusals, rollups over a stored base).
-    */
-   unreachableMaterializationWarnings(): ApiPackageWarning[] {
-      // serveVerdicts degrades to none on a throw, so a package read never fails here.
-      return this.serveVerdicts()
-         .filter((v) => v.reason === "unreachable")
-         .map((v) => ({
-            model: v.modelPath ?? "",
-            subject: v.sourceName,
-            code: MATERIALIZATION_UNREACHABLE_CODE,
-            severity: "warn" as const,
-            message: v.message + " " + (v.fixes ?? []).join(" "),
-         }));
-   }
-
-   /**
-    * Publish warnings for a materialized source the deployment cannot hold
-    * (P13): a `storage=` destination the environment does not configure
+    * The publish warnings a serve verdict carries, from one verdict pass:
+    * `unreachable` (`materialization-unreachable`: nothing on the published
+    * surface reads the source, so its table is built for no query;
+    * ms2data/service#6277), and the deployment facts (P13): a `storage=`
+    * destination the environment does not configure
     * (`materialization-destination-missing`), or a colocated source on a
     * connection that cannot create tables
     * (`materialization-connection-cannot-hold-table`). Unservable, not
-    * malformed: the package loads, the source serves live, and the warning
-    * clears once the deployment changes, with no reload.
+    * malformed: the package loads, the source serves live, and a deployment
+    * warning clears once the deployment changes, with no reload. The other
+    * live verdicts already carry a warning of their own (storage mode,
+    * refusals, rollups over a stored base).
     */
-   deploymentWarnings(): ApiPackageWarning[] {
+   verdictWarnings(): ApiPackageWarning[] {
       // serveVerdicts degrades to none on a throw, so a package read never fails here.
       return this.serveVerdicts().flatMap((v) => {
-         const code = v.reason ? DEPLOYMENT_VERDICT_CODES[v.reason] : undefined;
+         const code = v.reason ? VERDICT_WARNING_CODES[v.reason] : undefined;
          if (!code) return [];
          return [
             {

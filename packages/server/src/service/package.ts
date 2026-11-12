@@ -1931,8 +1931,8 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
          ...this.materialization.annotationFindingWarnings(),
          ...this.annotationNearMissWarnings(),
          ...this.materialization.persistRefusalWarnings(),
-         ...this.materialization.unreachableMaterializationWarnings(),
-         ...this.materialization.deploymentWarnings(),
+         // One verdict pass: unreachable, and the deployment facts (P13).
+         ...this.materialization.verdictWarnings(),
          // Not in exploresWarnings: an import-only file must not block publish.
          ...this.emptyDiscoveryWarnings(),
          ...deprecatedFormatWarnings(this.models),
