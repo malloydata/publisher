@@ -185,6 +185,10 @@ export interface QueryPathInput {
    considered: readonly ConsideredVariant[];
    /** For a storage answer: the bindings whose tables the routed query read. */
    storageTablesRead?: readonly StorageTable[];
+   /** The tables only the served copy reads (`#(materialize)`): its decision is theirs. */
+   servedCopyTables?: ReadonlySet<string>;
+   /** For a storage answer: `served_copy` when the served copy on `virtual` answered. */
+   via?: "served_copy";
    /**
     * The routed storage read failed at run time and the query ran live. Its
     * error is logged, never reported: it can carry storage paths.
@@ -220,7 +224,14 @@ export interface QueryPathInput {
 export function buildQueryPath(input: QueryPathInput): ApiQueryPath {
    const onChain = new Set(input.chain);
    const decided = new Map(input.considered.map((c) => [c.kind, c]));
-   const storageDecision = decided.get("storage");
+   // The served copy on `virtual` reads the same stored tables as the serve
+   // shape; when it answered, its decision is the storage tier's.
+   const servedCopyAnswered = input.via === "served_copy";
+   // Otherwise the serve shape's decision, or, when only the served copy was
+   // tried (a `#(materialize)` table), the served copy's.
+   const storageDecision = servedCopyAnswered
+      ? decided.get("served")
+      : (decided.get("storage") ?? decided.get("served"));
    const rollupDecision = decided.get("rollup");
    // Computed once per report.
    const freshStorage = new Set(input.storage.fresh.map((b) => b.tablePath));
@@ -240,13 +251,19 @@ export function buildQueryPath(input: QueryPathInput): ApiQueryPath {
          ...(t.dataAsOf ? { dataAsOf: t.dataAsOf } : {}),
       };
    };
-   const skip = (t: TableState, reason: SkipReason, detail?: string) => {
+   const skip = (
+      t: TableState,
+      reason: SkipReason,
+      detail?: string,
+      code?: string,
+   ) => {
       if (!t.tableId) return;
       const candidate: ApiCandidate = {
          tableId: t.tableId,
          kind: t.kind,
          outcome: "skipped",
          reason,
+         ...(code ? { code } : {}),
          ...(detail ? { detail } : {}),
       };
       tierOf.set(candidate, t.tier);
@@ -275,10 +292,20 @@ export function buildQueryPath(input: QueryPathInput): ApiQueryPath {
                storageAnswered = true;
             }
          } else {
+            // A table only the served copy reads skipped for the served
+            // copy's reason, whichever candidate the tier reported.
+            const served = decided.get("served");
+            const decision =
+               served && input.servedCopyTables?.has(t.binding?.tablePath ?? "")
+                  ? served
+                  : storageDecision;
             skip(
                t,
-               skipReasonOf(storageDecision),
-               storageDecision.callerDetail,
+               skipReasonOf(decision),
+               decision.callerDetail,
+               VARIANT_WARNED_CODES[
+                  decision.code as keyof typeof VARIANT_SKIP_CODES
+               ],
             );
          }
       }
@@ -359,7 +386,10 @@ export function buildQueryPath(input: QueryPathInput): ApiQueryPath {
 
    return {
       query: input.shape,
-      servedBy,
+      servedBy:
+         servedCopyAnswered && servedBy.kind === "materialized"
+            ? { ...servedBy, via: "served_copy" }
+            : servedBy,
       considered,
       notConsidered: nearbyTables(
          input,
@@ -528,7 +558,22 @@ export function verdictWarningMessage(reason: string): string {
 export const VARIANT_SKIP_CODES = {
    rollup_missing_field: "MISSING_FIELD",
    rollup_count_semantics: "COUNT_SEMANTICS",
+   served_copy_time_zone: "TIME_ZONE",
+   served_copy_cross_connection: "CROSS_CONNECTION",
+   served_copy_not_served: "WARNED",
+   served_copy_opt_out: "WARNED",
 } as const satisfies Record<string, SkipReason>;
+
+/**
+ * The `code` a `WARNED` skip carries: the package warning that explains it,
+ * or, for a reader whose own `#@ -persist` sends it live, that annotation.
+ */
+const VARIANT_WARNED_CODES: Partial<
+   Record<keyof typeof VARIANT_SKIP_CODES, string>
+> = {
+   served_copy_not_served: "served-copy-not-served",
+   served_copy_opt_out: "persist-opt-out",
+};
 
 /** The reason for a variant the router skipped because it did not answer. */
 function skipReasonOf(decision: ConsideredVariant): SkipReason {

@@ -50,6 +50,10 @@ import {
 } from "./materialization/serve/materialization_serve_transform";
 import type { StorageServeShape } from "./materialization/serve/model_serve_shape";
 import {
+   ServedCopyDecline,
+   type ServedCopyServe,
+} from "./materialization/serve/served_copy_serve";
+import {
    type ApiQueryPath,
    buildQueryPath,
    type MaterializedTableCatalog,
@@ -91,6 +95,8 @@ export type RoutedExtra =
         bindings: ServeBinding[];
         origin: "persist" | "preaggregate";
         tablesRead: ServeBinding[];
+        /** Set when the served copy on `virtual` answered, not the serve shape. */
+        via?: "served_copy";
      }
    | {
         kind: "rollup";
@@ -119,6 +125,8 @@ export interface Answer {
    readonly serveShapeBindings: readonly ServeBinding[];
    /** For a storage answer: the stored tables the query reads. */
    readonly storageTablesRead: readonly ServeBinding[] | undefined;
+   /** For a storage answer: `served_copy` when the served copy on `virtual` answered rather than the serve shape. */
+   readonly via: "served_copy" | undefined;
    /** For a rollup answer: the composite member the compile resolved to. */
    readonly rollupMember: string | undefined;
    /** A storage read failed at run time and the query was answered live. */
@@ -135,6 +143,7 @@ export const LIVE_ANSWER: Answer = Object.freeze({
    virtualMap: undefined,
    serveShapeBindings: [],
    storageTablesRead: undefined,
+   via: undefined,
    rollupMember: undefined,
    runFailed: false,
    colocatedRead: new Set<string>(),
@@ -154,6 +163,7 @@ export function routedAnswer(route: RouteDecision<RoutedExtra>): Answer {
          virtualMap: route.extra.virtualMap,
          serveShapeBindings: route.extra.bindings,
          storageTablesRead: route.extra.tablesRead,
+         via: route.extra.via,
       });
    }
    return Object.freeze({
@@ -266,7 +276,11 @@ export function recordRoutingDecision(route: RouteDecision<RoutedExtra>): void {
       recordStorageServeRouting("blocked_by_row_level_gate");
       return;
    }
-   const storage = route.considered.find((c) => c.kind === "storage");
+   // The served copy reads the same stored tables, so it counts as the tier.
+   const storage =
+      route.considered.find(
+         (c) => c.kind === "served" && c.outcome === "used",
+      ) ?? route.considered.find((c) => c.kind === "storage");
    if (!storage) return;
    if (route.served === "variant" && route.extra.kind === "storage") {
       recordStorageServeRouting("storage", route.extra.origin);
@@ -315,6 +329,8 @@ function explainCoverageSkip(
 export interface QueryServingHost {
    readonly modelPath: string;
    readonly storageServe: StorageServeShape;
+   /** The served copy on `virtual` (materialization v2), the `served` candidate. */
+   readonly servedCopy: ServedCopyServe;
    /** The rollups the model's `#@ preaggregate` declarations describe. */
    rollupPlans(): readonly RollupPlan[];
    modelDef(): ModelDef | undefined;
@@ -327,8 +343,9 @@ export interface QueryServingHost {
 }
 
 /**
- * The router's candidates for one query, in catalog order: the `storage=`
- * serve shape, then the pre-aggregation companion. A candidate is listed
+ * The router's candidates for one query, in catalog order: the served copy on
+ * `virtual` (when `materialize.enabled` is on), the `storage=` serve shape,
+ * then the pre-aggregation companion. A candidate is listed
  * only when its variant exists for this model (so the gate check runs
  * exactly when one could route), and is inapplicable when it cannot help
  * this request. Each keeps its own logs and metrics.
@@ -340,6 +357,7 @@ export function routeCandidates(
       surfaceGivens: Record<string, GivenValue> | undefined;
       buildManifest: BuildManifest | undefined;
       storageRoutingPossible: boolean;
+      servedCopyPossible: boolean;
       preaggServeMaterializer: ModelMaterializer | undefined;
    },
 ): Variant<RoutedExtra>[] {
@@ -348,9 +366,50 @@ export function routeCandidates(
       surfaceGivens,
       buildManifest,
       storageRoutingPossible,
+      servedCopyPossible,
       preaggServeMaterializer,
    } = args;
    const candidates: Variant<RoutedExtra>[] = [];
+   // The served copy on `virtual` (materialization v2): the author's own
+   // files with each stored source re-rooted on its table. Tried first when
+   // enabled; a query it cannot answer falls through to the serve shape.
+   if (servedCopyPossible) {
+      candidates.push({
+         kind: "served",
+         applicable: true,
+         attempt: async () => {
+            const served = await host.servedCopy.loadQuery(
+               queryString,
+               surfaceGivens,
+            );
+            logger.debug("Serving query from the served copy (virtual)", {
+               modelPath: host.modelPath,
+               tables: served.tablesRead.map((b) => b.sourceName),
+            });
+            return {
+               runnable: served.runnable,
+               extra: {
+                  kind: "storage",
+                  virtualMap: served.virtualMap,
+                  bindings: served.bindings,
+                  origin: "persist",
+                  tablesRead: served.tablesRead,
+                  via: "served_copy",
+               },
+            };
+         },
+         explain: (err) =>
+            err instanceof ServedCopyDecline
+               ? { code: `served_copy_${err.code}` }
+               : undefined,
+         onSkip: (err) => {
+            logger.debug("served copy cannot answer this query", {
+               modelPath: host.modelPath,
+               error: err instanceof Error ? err.message : String(err),
+            });
+         },
+      });
+   }
    // storage= serve routing: compile against the serve-shape model
    // (materialized sources rebound to virtual sources). If it does not
    // compile, the next candidate (or live) answers.
@@ -537,6 +596,7 @@ export async function queryPathFor(
       if (
          (catalog?.planned.size ?? 0) === 0 &&
          host.storageServe.serveBindings.length === 0 &&
+         host.servedCopy.materializeBindings().length === 0 &&
          plans.length === 0 &&
          answer.considered.length === 0
       ) {
@@ -548,6 +608,7 @@ export async function queryPathFor(
             warnings: [],
          };
       }
+      const now = Date.now();
       const toTable = (b: ServeBinding): StorageTable => ({
          sourceName: b.sourceName,
          sourceIDs: b.sourceIDs,
@@ -564,11 +625,18 @@ export async function queryPathFor(
          freshColocated: args.freshManifest
             ? new Set(Object.keys(args.freshManifest.entries))
             : undefined,
+         // The serve shape's tables, and the `#(materialize)` tables only the
+         // served copy reads, so a table on the chain is named whichever
+         // candidate answered.
          storage: {
-            all: host.storageServe.serveBindings.map(toTable),
-            fresh: host.storageServe
-               .freshServeBindings(Date.now())
-               .map(toTable),
+            all: [
+               ...host.storageServe.serveBindings,
+               ...host.servedCopy.materializeBindings(),
+            ].map(toTable),
+            fresh: [
+               ...host.storageServe.freshServeBindings(now),
+               ...host.servedCopy.materializeBindings(now),
+            ].map(toTable),
          },
          rollups: plans.map((p) => ({
             rollupSourceName: p.rollupSourceName,
@@ -580,6 +648,10 @@ export async function queryPathFor(
          storageWarned: getPersistStorageMode() !== "on",
          considered: answer.considered,
          storageTablesRead: answer.storageTablesRead?.map(toTable),
+         ...(answer.via ? { via: answer.via } : {}),
+         servedCopyTables: new Set(
+            host.servedCopy.materializeBindings().map((b) => b.tablePath),
+         ),
          runFailed: answer.runFailed,
          colocatedRead: answer.colocatedRead,
          ...(answer.rollupMember ? { rollupMember: answer.rollupMember } : {}),

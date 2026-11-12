@@ -205,6 +205,48 @@ export function buildSQLOf(
    return buildTargetOf(source, target).buildSQL(manifest);
 }
 
+/**
+ * `source` presented under another identity: its `name` and `sourceID` are
+ * `identity`'s, and everything else (its SQL, annotations, connection and
+ * build target) is its own. A generated `#(materialize)` build source
+ * (`<src>__mat` in the companion file) is presented as the author's source it
+ * builds, so no outward surface (the wire plan, warnings, manifest entries, a
+ * name-scoped run) shows the generated name. Its address is computed from its
+ * build target's SQL, so it does not move.
+ */
+export function presentAs(
+   source: PersistSource,
+   identity: { name: string; sourceID: string },
+): PersistSource {
+   const presented = Object.create(source, {
+      name: { get: () => identity.name },
+      sourceID: { get: () => identity.sourceID },
+   }) as PersistSource;
+   const target = buildTargets.get(source);
+   if (target !== undefined) buildTargets.set(presented, target);
+   const problem = unkeyable.get(source);
+   if (problem !== undefined) unkeyable.set(presented, problem);
+   return presented;
+}
+
+/** `build` with each sourceID `rename` maps replaced, everywhere it appears. */
+export function renameBuildSourceIDs(
+   build: SourceBuild,
+   rename: ReadonlyMap<string, string>,
+): SourceBuild {
+   const to = (id: string) => rename.get(id) ?? id;
+   return {
+      connectionName: build.connectionName,
+      order: build.order.map(to),
+      dependsOn: Object.fromEntries(
+         Object.entries(build.dependsOn).map(([id, reads]) => [
+            to(id),
+            reads.map(to),
+         ]),
+      ),
+   };
+}
+
 /** Record `source`'s target on `parts`, when it has one (an unkeyable source has none). */
 export function recordTarget(
    parts: { targets: Record<string, BuildTarget> },

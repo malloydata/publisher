@@ -8704,6 +8704,14 @@ components:
           description: >-
             The moment the table's rows reflect, as on its manifest entry. Absent
             when `kind` is `live`, or when the manifest entry does not record it.
+        via:
+          type: string
+          description: >-
+            How a `materialized` table was read, when it was not today's serve
+            shape: `served_copy` means the model's served copy answered (the
+            author's own files with each stored source re-rooted on its table,
+            behind `PUBLISHER_MATERIALIZE`). An open string; absent
+            otherwise.
 
     QueryPathCandidate:
       type: object
@@ -8725,7 +8733,10 @@ components:
           description: >-
             For a `WARNED` skip, the serve verdict's reason the table answers no
             query: `storage_mode`, `unreachable`, `row_level_gate`, `refused` or
-            `shadowed` (see `QueryPathWarning`). An open set. Absent on any
+            `shadowed` (see `QueryPathWarning`); or, for a table only the served
+            copy reads, `served-copy-not-served` (the package warning of that
+            code) or `persist-opt-out` (the queried source opts out with
+            `#@ -persist`). An open set. Absent on any
             other outcome, and on a `WARNED` skip whose verdict is not known.
         detail:
           type: string

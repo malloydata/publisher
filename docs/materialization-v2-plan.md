@@ -267,6 +267,15 @@ The core lane is the critical path, phases 0, 1, 3, 4 and then 5; phase 2 fits b
 
 Order: 1, then 3, 4, 5 and 6, with 2 beside 3. If 2 or 3 is too large to review, 3 splits into the text module and answer record, then the rewriter and served model; 2 lands the generator before the re-address.
 
+**The served copy's six calls (decided 2026-11-12, pull request 3b).**
+
+1. The materialize switch moves query-shaped `#@ persist storage=` sources onto the served copy as well as `#(materialize)` ones. The v1 cutover (pull request 6) needs exactly that, and the switch is off by default.
+2. A source whose re-root would lose a measure, view or join declared on its base is left as written and serves live with a coded warning, rather than having the inherited fields copied in.
+3. A stored computed dimension keeps its timeframe. Today its `type:` declaration is bare, so `order_date.month` reads back as a plain `date`: the answers match, but result metadata, chart granularity and filters can differ from live. Settled in pull request 3b by probe: a `type:` field cannot carry a timeframe, so the served copy re-applies it. In the re-rooted source's first extend it writes `internal rename: order_month__stored is order_month` (an internal name checked against every field name in the model, `internal` so extensions see it), and rewrites the author's definition in place as `order_month is order_month__stored.month`, annotations kept; an inherited truncation, or a `#@ persist` query's output column, is defined there with its annotations. Results, rows and filters match live on DuckDB. A query that sets its own `timezone:` over a stored computed dimension is declined to live, since the build evaluated it in the default timezone.
+4. Tables built under an older type stay on today's serve shape until the v1 cutover retires it.
+5. The served copy reaches a storage destination through a connection name chosen at random per process, so a model cannot name a destination.
+6. A query that reads no re-rooted table does not pay a served-copy compile on every call: the router remembers the decline per compiled model and skips that candidate until the model reloads.
+
 **Phase 4 in four pull requests (decided 2026-11-11).**
 
 | # | Pull request | Scope |
@@ -490,7 +499,7 @@ The plan accounts for all 60 open issues under [ms2data/service#6647](https://gi
 | #6282 | P2 | Narrow the pre-aggregate fan-out refusal | The A6 rule | 4 |
 | #6425 | P2 | A derived rollup freezes a parameter's default, and rollups build for sources nobody annotated | A1: rollups only for annotated measures; variants in the user's file read givens at read. Source parameters are out of scope. | 4 |
 | #6446 | P2 | `servedFrom: null` conflates three outcomes | D1 path report | 1 |
-| #7089 | P2 | Fields served from storage lose `#(doc)`, `# percent` and timeframes | The served copy keeps every annotation (`#(doc)` verified 2026-11-07) | 3 |
+| #7089 | P2 | Fields served from storage lose `#(doc)`, `# percent` and timeframes | The served copy keeps every annotation (`#(doc)` verified 2026-11-07); a stored computed dimension keeps its timeframe (decided 2026-11-12) | 3 |
 | #6272 | P2 | No routing metric on the colocated pre-aggregation rung | The router records a metric per variant | 1 |
 | #7547 | P2 | SQL Server colocated | Independent of v2 | — |
 | #5957 | P2 | Materialization failures surface as an indexing error | Publisher half: D2's structured outcomes | 1 |

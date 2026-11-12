@@ -473,6 +473,7 @@ function persistLine(plan: MaterializePlan): string {
       const at = (CARRIED_KEYS as readonly string[]).indexOf(key);
       return at >= 0 ? at : CARRIED_KEYS.length;
    };
+   // malloy-text: each key is a CARRIED_KEYS or PLAIN_PROPERTY-checked bare path, each value annotationValue
    const keys = Object.entries(plan.persist)
       .sort(([a], [b]) => rank(a) - rank(b) || (a < b ? -1 : a > b ? 1 : 0))
       .map(([key, value]) => `${key}=${annotationValue(value)}`)

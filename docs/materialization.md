@@ -709,6 +709,16 @@ Every query result carries `path`, the path report. It says which materialized t
 
 The report is assembled after the query runs and never changes which table answers. It is absent only if it could not be assembled.
 
+### The served copy (in development, `PUBLISHER_MATERIALIZE`)
+
+With `PUBLISHER_MATERIALIZE=true` and `PERSIST_STORAGE_MODE=on`, a query on a built `storage=` source may be answered from the model's **served copy**: your own files, held in memory, with the source's definition replaced by its stored table under the same name. Its trailing `extend { … }` blocks, its annotations and every other line are your text, so an extension, a join to it, a view, a named query or a source in a file that imports it reads the stored table with no change to how it is written. The served copy compiles when the package binds its stored tables; a query it cannot answer falls through to the serve shape, then live. When it answers, the path report's `servedBy` carries `via: "served_copy"`.
+
+- **`#(materialize)`**: the table is the one the source's generated build source builds, which stores the source's rows with its `where:` applied, so a source of any shape re-roots. A computed dimension is stored under its own name, so the served copy drops its definition and the stored column is the field; the dimension's annotations (`#(doc)`, `#(classification)` and the rest) are written on that field, so they read back as before. A timeframe truncation (`order_date.month`) keeps its timeframe: its definition is rewritten in place to truncate the stored column again, so results, charts and filters see a `month` field as they do live. A query that sets its own `timezone:` over a stored computed dimension is answered live, since the build computed it in the default timezone. A dimension the source inherits from its base is simply its stored column. A source whose base declares a measure, view or join it inherits is left as written (its table does not carry them) and warned about.
+- **`#@ persist storage=`**: only a query-shaped source (`x -> { … }`) is re-rooted, since its table is exactly its query's output; a timeframe column in that output keeps its timeframe too. A source declared by refinement alone stores its root's rows and is left as written; it still reads a re-rooted base by name.
+- A reader that opts out with `#@ -persist`, or any source built on one, is never answered from the served copy.
+
+A served copy that does not compile, or a source it cannot re-root, is a `served-copy-not-served` package warning, and those sources serve as they did without it. A model that joins sources on different connections compiles once both sides are built into one destination, and reports that wait under the same code until then. Off (the default), nothing here runs.
+
 ## Standalone vs. hosted (control-plane) deployments
 
 The same package definition behaves differently depending on who drives materialization. Honest divergences to be aware of:

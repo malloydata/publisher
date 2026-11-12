@@ -143,7 +143,7 @@ export async function createModelRuntime(
    };
 }
 
-function toMalloyConfig(input: ModelConnectionInput): MalloyConfig {
+export function toMalloyConfig(input: ModelConnectionInput): MalloyConfig {
    if (input instanceof MalloyConfig) {
       return input;
    }

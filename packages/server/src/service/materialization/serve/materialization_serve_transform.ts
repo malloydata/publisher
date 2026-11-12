@@ -670,7 +670,7 @@ export interface DerivedSourceDef {
  * Read from the source's OWN block notes, not the `persistent` flag, which is
  * also false for a source that never inherited `#@ persist`.
  */
-function optsOutOfPersist(def: DerivedSourceDef): boolean {
+export function optsOutOfPersist(def: DerivedSourceDef): boolean {
    const notes = (
       def.annotations as { blockNotes?: { text?: unknown }[] } | undefined
    )?.blockNotes;

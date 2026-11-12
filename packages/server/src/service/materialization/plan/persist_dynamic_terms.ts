@@ -548,6 +548,23 @@ export function readTimeDynamicTerms(
  * the shape re-emits every `filterList` entry, so the missing `given:`
  * declaration fails its compile and the binding is withheld (serves live).
  */
+/**
+ * The `where:` terms a compiled source applies that read a given, as their
+ * source text and the givens they read. These must be applied when a stored
+ * table is read; a source served from its table that lost one would answer
+ * every caller alike. A term whose text the compiler did not record has an
+ * empty `code`, so a caller comparing texts fails closed on it.
+ */
+export function givenReadingFilterTerms(
+   def: unknown,
+): { code: string; givens: string[] }[] {
+   const filterList = (def as { filterList?: unknown } | null)?.filterList;
+   return collectDynamicTerms(filterList).map((t) => ({
+      code: t.code,
+      givens: [...t.givens].sort(),
+   }));
+}
+
 function collectDynamicTerms(filterList: unknown): DynamicTerm[] {
    if (!Array.isArray(filterList)) return [];
    const terms: DynamicTerm[] = [];
