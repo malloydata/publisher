@@ -251,6 +251,20 @@ export class PackageMaterialization {
     * plan is derived.
     */
    private servingPlanWhileUnavailable: BuildPlan | null = null;
+   /**
+    * Connections edited since the plan was last derived (see
+    * markBuildPlanStale). A failed re-derivation keeps colocated eligibility
+    * only for sources on connections outside this set: a colocated table lives
+    * in, and is read through, its connection, so one the edit changed may now
+    * be a different warehouse. Cleared when a plan is derived.
+    */
+   private connectionsChangedSinceDerived = new Set<string>();
+   /**
+    * Whether the last failed refresh failed in the load pool (a worker timeout
+    * or crash), which a retry can clear, rather than in the plan compute, which
+    * fails the same way until the model or a connection changes.
+    */
+   private lastRefreshFailedTransiently = false;
 
    constructor(private readonly owner: PackageMaterializationOwner) {}
 
@@ -826,13 +840,21 @@ export class PackageMaterialization {
     * own compile would refuse them as "measured under a different definition"
     * (ms2data/service#6145).
     */
-   markBuildPlanStale(): void {
+   markBuildPlanStale(changedConnections: Iterable<string> = []): void {
+      for (const name of changedConnections) {
+         this.connectionsChangedSinceDerived.add(name);
+      }
       this.buildPlanStaleSeq++;
       if (!this.buildPlanStale) {
          let resolve!: () => void;
          const promise = new Promise<void>((r) => (resolve = r));
          this.buildPlanStale = { promise, resolve };
       }
+   }
+
+   /** See {@link lastRefreshFailedTransiently}. */
+   lastBuildPlanRefreshFailedTransiently(): boolean {
+      return this.lastRefreshFailedTransiently;
    }
 
    /** Whether a connection edit has made the plan stale and it is not re-derived yet. */
@@ -877,9 +899,11 @@ export class PackageMaterialization {
             buildConnectionNames: this.buildConnectionNames,
          };
          let workerPlan: LoadPackageOutcome["buildPlan"];
+         let poolFailed = false;
          try {
             workerPlan = await derive();
          } catch (err) {
+            poolFailed = true;
             workerPlan = {
                ok: false,
                error: errMessage(err),
@@ -890,8 +914,16 @@ export class PackageMaterialization {
          }
          const derived =
             (await this.applyLoadBuildPlan(workerPlan)) !== undefined;
-         if (!derived && lastGood.sourceEligibility !== undefined) {
+         this.lastRefreshFailedTransiently = !derived && poolFailed;
+         if (derived) {
+            this.connectionsChangedSinceDerived.clear();
+         } else if (lastGood.sourceEligibility !== undefined) {
             Object.assign(this, lastGood);
+            this.colocatedSourceEligibility = withoutChangedConnections(
+               lastGood.colocatedSourceEligibility,
+               lastGoodPlan,
+               this.connectionsChangedSinceDerived,
+            );
             this.servingPlanWhileUnavailable = lastGoodPlan;
          }
          if (seq === this.buildPlanStaleSeq && this.buildPlanStale) {
@@ -1719,3 +1751,36 @@ const PREVIEW_STORED_TYPES: Readonly<Record<string, string>> = {
    timestamp: "TIMESTAMP",
    timestamptz: "TIMESTAMP WITH TIME ZONE",
 };
+
+/**
+ * Colocated eligibility from the last good plan, less every address a source on
+ * a changed connection builds: those tables were built through the connection
+ * as it was, and are read through it as it is now. Refused with a reason, so
+ * the bind's log says why they serve live until the plan is re-derived.
+ */
+function withoutChangedConnections(
+   eligibility: ColocatedSourceEligibility | undefined,
+   plan: BuildPlan | null,
+   changed: ReadonlySet<string>,
+): ColocatedSourceEligibility | undefined {
+   if (!eligibility || changed.size === 0) return eligibility;
+   const dropped = new Set<string>();
+   for (const source of Object.values(plan?.sources ?? {})) {
+      if (changed.has(source.connectionName))
+         dropped.add(source.sourceEntityId);
+   }
+   if (dropped.size === 0) return eligibility;
+   const refused = { ...eligibility.refused };
+   for (const address of dropped) {
+      if (eligibility.eligibleEntityIds.has(address)) {
+         refused[address] =
+            "its connection changed and the build plan could not be re-derived yet";
+      }
+   }
+   return {
+      eligibleEntityIds: new Set(
+         [...eligibility.eligibleEntityIds].filter((a) => !dropped.has(a)),
+      ),
+      refused,
+   };
+}

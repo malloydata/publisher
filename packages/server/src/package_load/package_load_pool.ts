@@ -125,19 +125,40 @@ interface JobContext {
 }
 
 /**
- * Which queued job a free worker takes: the oldest foreground job, or the
- * oldest background job when no foreground job waits (see
- * LoadPackageJob.background).
+ * How long a background job may wait behind foreground jobs before a free
+ * worker takes it anyway, so sustained user load never starves a connection
+ * edit's re-derivation (whose readers would otherwise answer 503 forever).
+ */
+export const BACKGROUND_JOB_MAX_WAIT_MS = 30_000;
+
+/**
+ * Which queued job a free worker takes: the oldest background job once it has
+ * waited {@link BACKGROUND_JOB_MAX_WAIT_MS}, otherwise the oldest foreground
+ * job, or the oldest background job when no foreground job waits (see
+ * LoadPackageJob.background). A job without `enqueuedAt` never ages.
  */
 export function nextQueuedJobIndex(
-   queue: readonly { request: { background?: boolean } }[],
+   queue: readonly {
+      request: { background?: boolean };
+      enqueuedAt?: number;
+   }[],
+   now: number = Date.now(),
+   maxBackgroundWaitMs: number = BACKGROUND_JOB_MAX_WAIT_MS,
 ): number {
+   const background = queue.findIndex((q) => q.request.background);
+   const waitedSince =
+      background >= 0 ? queue[background].enqueuedAt : undefined;
+   if (waitedSince !== undefined && now - waitedSince >= maxBackgroundWaitMs) {
+      return background;
+   }
    const foreground = queue.findIndex((q) => !q.request.background);
    return foreground >= 0 ? foreground : 0;
 }
 
 interface QueuedJob {
    request: LoadPackageJob;
+   /** When it was queued, for {@link nextQueuedJobIndex}'s aging. */
+   enqueuedAt?: number;
    resolve: (result: LoadPackageOutcome) => void;
    reject: (err: Error) => void;
 }
@@ -320,7 +341,7 @@ export class PackageLoadPool {
          throw new Error("PackageLoadPool is shutting down");
       }
       return new Promise<LoadPackageOutcome>((resolve, reject) => {
-         this.queue.push({ request, resolve, reject });
+         this.queue.push({ request, resolve, reject, enqueuedAt: Date.now() });
          this.tryDispatch();
       });
    }

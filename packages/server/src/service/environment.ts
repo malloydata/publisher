@@ -337,6 +337,12 @@ function planRefreshConcurrency(): number {
  * compared: rotating a secret behind a stable fingerprint moves no address and
  * re-derives nothing. Without a fingerprint the stored config is compared
  * whole (secrets included), since a connector's own digest may read any of it.
+ *
+ * This assumes the host changes a connection's fingerprint whenever a setting
+ * changes what its builds compile to (its project, database or default
+ * schema, which decide how Malloy resolves a table name): such a change moves
+ * the build SQL, and so the address, under a stable fingerprint, and a
+ * fingerprint-only comparison would not re-derive it.
  */
 export function changedConnectionNames(
    before: readonly ApiConnection[],
@@ -933,8 +939,11 @@ export class Environment {
     * PLAN_REFRESH_CONCURRENCY at a time, so one edit never recompiles every
     * package together.
     */
-   private schedulePlanRefresh(_package: Package): void {
-      _package.markBuildPlanStale();
+   private schedulePlanRefresh(
+      _package: Package,
+      changedConnections: Iterable<string> = this.lastChangedConnections,
+   ): void {
+      _package.markBuildPlanStale(changedConnections);
       // This edit's refresh supersedes a pending retry.
       const backoff = this.planRefreshBackoff.get(_package);
       if (backoff?.timer) clearTimeout(backoff.timer);
@@ -999,9 +1008,28 @@ export class Environment {
                   this.planRefreshBackoff.delete(next);
                   return;
                }
+               if (!next.lastBuildPlanRefreshFailedTransiently()) {
+                  // The plan compute itself failed (a model that no longer
+                  // compiles, a connection that does not resolve): it fails
+                  // the same way until the model or a connection changes, and
+                  // either re-derives it, so no retry loop recompiles it.
+                  const backoff = this.planRefreshBackoff.get(next);
+                  if (backoff?.timer) clearTimeout(backoff.timer);
+                  this.planRefreshBackoff.delete(next);
+                  logger.warn(
+                     "Build plan could not be re-derived after a connection change; run creation answers 409 until the next connection edit or a reload",
+                     {
+                        environmentName: this.environmentName,
+                        packageName: next.getPackageName(),
+                        versionId: next.getVersionId(),
+                        changedConnections: connections,
+                     },
+                  );
+                  return;
+               }
                this.schedulePlanRetry(next);
                logger.warn(
-                  "Build plan could not be re-derived after a connection change; run creation answers 409 and the re-derivation is retried with backoff",
+                  "Build plan could not be re-derived after a connection change (the load pool failed); run creation answers 409 and the re-derivation is retried with backoff",
                   {
                      environmentName: this.environmentName,
                      packageName: next.getPackageName(),

@@ -20,6 +20,17 @@ describe("nextQueuedJobIndex", () => {
       expect(nextQueuedJobIndex([job(true), job(true)])).toBe(0);
    });
 
+   it("takes a background job that has waited past the bound, so user load can't starve it", () => {
+      const queue = [
+         { request: { background: true }, enqueuedAt: 0 },
+         { request: {}, enqueuedAt: 100 },
+      ];
+      expect(nextQueuedJobIndex(queue, 29_999, 30_000)).toBe(1);
+      expect(nextQueuedJobIndex(queue, 30_000, 30_000)).toBe(0);
+      // A job without a queue time never ages.
+      expect(nextQueuedJobIndex([job(true), job()], 1e12, 30_000)).toBe(1);
+   });
+
    it("is first-in, first-out for foreground jobs", () => {
       expect(nextQueuedJobIndex([job(false), job()])).toBe(0);
    });

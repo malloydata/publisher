@@ -2047,8 +2047,13 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
    }
 
    /** See {@link PackageMaterialization.markBuildPlanStale}. */
-   public markBuildPlanStale(): void {
-      this.materialization.markBuildPlanStale();
+   public markBuildPlanStale(changedConnections: Iterable<string> = []): void {
+      this.materialization.markBuildPlanStale(changedConnections);
+   }
+
+   /** See {@link PackageMaterialization.lastBuildPlanRefreshFailedTransiently}. */
+   public lastBuildPlanRefreshFailedTransiently(): boolean {
+      return this.materialization.lastBuildPlanRefreshFailedTransiently();
    }
 
    /** See {@link PackageMaterialization.isBuildPlanStale}. */
