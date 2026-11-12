@@ -52,6 +52,17 @@ Pending build-plan retries now stop when an environment is deleted and when the 
 
 **Off by default, because turning it on re-addresses every `storage=` table once.** Reuse misses, an incremental source re-seeds, each table rebuilds under its new address on its next run, and a `storage=` source serves live until it has. A table Publisher names itself is rebuilt in place; a table a host instructed under a generational name is the host's to reclaim. Over the repo's persist corpus, every `storage=` source moves (190) and no colocated source does (31); a `#@ preaggregate storage=` rollup moves with them. The setting is read at startup, so set it the same on every worker serving an environment and restart them together: workers with different settings compute different addresses for the same source. Turn it on per deployment as a scheduled rollout, after checking the rebuild cost, and make the first run after it a full one so chained sources find their parents under the new address.
 
+**This is the one move.** Leaving a given-reading `where:` out of the build (P2) does not re-address anything a second time: a `#@ persist` table's build never held such a term, and the `#(materialize)` sources that now leave one out (behind `PUBLISHER_MATERIALIZE`, still in development) could not build before. A current-time `where:` (a rolling window) is addressed as written, over `now` rather than the time a build ran, so it moves no address either.
+
+What a host such as a control plane does when it turns the switch on for a deployment:
+
+1. **Size it.** Every source in the build plan with `annotationFields.storage` set rebuilds once, at its normal full-refresh cost; colocated sources do not move.
+2. **Flip every worker at once.** Set the same value on every worker serving the environment and restart them together.
+3. **Re-read the build plan.** Each `storage=` source keeps its `sourceID` and name and gets a new `sourceEntityId`. Key the new tables by (`sourceEntityId`, destination) as always; nothing carries over by name.
+4. **Run full, not incremental, the first time.** Do not echo ledger entries or upstream entries recorded under the old addresses; they no longer match. Incremental sources re-seed.
+5. **Reclaim the old generations after the new ones build.** Until a new table exists its source serves live, and nothing reads an old-address table after the flip.
+6. **Schedule the move per customer.** If the v1 plan's generational renaming (B1) lands in the same window, the move can ride it.
+
 The build plan's addressing, plan layers and eligibility collection moved out of `build_plan.ts` into their own modules; nothing else changes.
 
 ## [Unreleased] — Rollups behind an index.malloy report as served, an inherited #@ preaggregate no longer fails a load, and the preview reads a destination before its first build
