@@ -116,17 +116,39 @@ export class VersionController {
       body: unknown,
    ): Promise<ApiPackage> {
       this.assertWritable();
-      const fields = (body ?? {}) as { manifestLocation?: unknown };
-      const location = fields.manifestLocation;
-      // A location the manifest loader reads (see isManifestLocation), or
-      // null to clear the binding.
       if (
-         !("manifestLocation" in fields) ||
-         (location !== null &&
-            (typeof location !== "string" || !isManifestLocation(location)))
+         body !== undefined &&
+         body !== null &&
+         (typeof body !== "object" || Array.isArray(body))
       ) {
          throw new BadRequestError(
-            `\`manifestLocation\` must be ${MANIFEST_LOCATION_FORMS}, or null to serve live.`,
+            "The body must be an object with an optional `manifestLocation`.",
+         );
+      }
+      const fields = (body ?? {}) as Record<string, unknown>;
+      // The body's only field, so a typo (`manifestUri`) is refused rather
+      // than read as a clear.
+      const unknownKeys = Object.keys(fields).filter(
+         (key) => key !== "manifestLocation",
+      );
+      if (unknownKeys.length > 0) {
+         throw new BadRequestError(
+            `Unknown field${unknownKeys.length > 1 ? "s" : ""} ` +
+               `${unknownKeys.map((k) => `\`${k}\``).join(", ")}: the body takes ` +
+               "only `manifestLocation`.",
+         );
+      }
+      // A location the manifest loader reads (see isManifestLocation), or
+      // null to clear the binding. An absent field clears too: a PUT replaces
+      // the binding, and generated clients drop a null field from the JSON
+      // they send, so `{}` is how they say null.
+      const location = fields.manifestLocation ?? null;
+      if (
+         location !== null &&
+         (typeof location !== "string" || !isManifestLocation(location))
+      ) {
+         throw new BadRequestError(
+            `\`manifestLocation\` must be ${MANIFEST_LOCATION_FORMS}, or null (or absent) to serve live.`,
          );
       }
       const { versions, environment } = await this.service(environmentName);

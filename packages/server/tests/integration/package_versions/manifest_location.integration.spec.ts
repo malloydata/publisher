@@ -185,6 +185,26 @@ describe("a version bound to a manifest on this server's disk", () => {
       await expectLive();
    });
 
+   it("clears a binding with an empty body, as a client that drops null fields sends it", async () => {
+      const file = writeManifest("then-empty.json", sourceEntityId);
+      const bound = await call("PUT", `/${PKG}/versions/1.0.0/manifest`, {
+         manifestLocation: file,
+      });
+      expect(bound.status).toBe(200);
+      await expectBoundTo(file);
+
+      // A typo is refused and leaves the binding as it was.
+      const typo = await call("PUT", `/${PKG}/versions/1.0.0/manifest`, {
+         manifestUri: file,
+      });
+      expect(typo.status).toBe(400);
+      await expectBoundTo(file);
+
+      const cleared = await call("PUT", `/${PKG}/versions/1.0.0/manifest`, {});
+      expect(cleared.status).toBe(200);
+      await expectLive();
+   });
+
    it("binds an absolute path through the deprecated PATCH, which binds latest", async () => {
       const file = writeManifest("by-patch.json", sourceEntityId);
       const patched = await call("PATCH", `/${PKG}`, {
