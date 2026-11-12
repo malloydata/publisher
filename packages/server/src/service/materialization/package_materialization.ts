@@ -138,13 +138,6 @@ export interface PackageMaterializationOwner {
 export const BUILD_PLAN_REFRESH_WAIT_MS = 10_000;
 
 /**
- * A package's materialization state: its build plan and which sources may be
- * served from a materialized table, the manifest it is bound to (both tiers),
- * the serve routing it pushes onto its models, and the persistence-policy
- * findings a publish and a load judge it by. Held by `Package`, which
- * delegates to it only what callers outside this module use.
- */
-/**
  * The code on the warning for a `#@ persist` source a compile-time gate
  * refused (a row-level gate, a free parameter, a given in the persisted query,
  * or a `storage=` source the storage gate refuses). Not counted as an
@@ -152,6 +145,13 @@ export const BUILD_PLAN_REFRESH_WAIT_MS = 10_000;
  */
 export const PERSIST_SOURCE_REFUSED_CODE = "persist-source-refused";
 
+/**
+ * A package's materialization state: its build plan and which sources may be
+ * served from a materialized table, the manifest it is bound to (both tiers),
+ * the serve routing it pushes onto its models, and the persistence-policy
+ * findings a publish and a load judge it by. Held by `Package`, which
+ * delegates to it only what callers outside this module use.
+ */
 export class PackageMaterialization {
    /** The environment's storage destinations for a serve-shape compile; see {@link setServeDestinationConfig}. */
    private serveDestinationConfig?: () => MalloyConfig;
