@@ -40,6 +40,7 @@ import {
    NO_PLAN_FACTS,
    noteWrongTierRecompute,
    readAuthorFile,
+   HostSuppliedWrongTierError,
    upstreamEntryIsCurrent,
    upstreamReuseFromManifest,
    wrongTierDetail,
@@ -120,22 +121,84 @@ export class SourceBuilder {
             address in manifest.buildManifest.entries &&
             !upstreamEntryIsCurrent(address, entry, planFacts),
       );
-      let buildSQL: string;
-      try {
-         buildSQL = buildSQLOf(persistSource, buildManifest);
-      } catch (err) {
-         // A strict colocated render misses an upstream whose entry was
-         // supplied, at the wrong tier: say that, not Malloy's generic miss.
+      // The wrong-tier upstreams a strict render misses, by the name its
+      // error quotes; a reference carries no sourceName, so the plan's names
+      // for the address are tried too.
+      const staleMisses = (err: unknown) => {
          const message = err instanceof Error ? err.message : String(err);
-         // The name Malloy's miss quotes; a reference carries no sourceName,
-         // so the plan's names for the address are tried too.
-         const stale = wrongTier.flatMap(([address, entry]) => {
+         return wrongTier.flatMap(([address, entry]) => {
             const name = [
                ...(entry.sourceName ? [entry.sourceName] : []),
                ...(planFacts.namesByAddress?.[address] ?? []),
             ].find((n) => message.includes(`'${n}'`));
             return name ? [{ address, entry, name }] : [];
          });
+      };
+      const refuseHostSupplied = (
+         stale: ReturnType<typeof staleMisses>,
+      ): never => {
+         throw new HostSuppliedWrongTierError(
+            persistSource.name,
+            stale.map((s) => ({
+               name: s.name,
+               detail: wrongTierDetail(s.name, s.address, s.entry, planFacts),
+            })),
+         );
+      };
+      // A host-instructed colocated build refuses, strict or not, an upstream
+      // the host supplied at the wrong tier (#7087, decided 2026-11-12), when
+      // this source reads it. A source reads an upstream exactly when adding
+      // that upstream's entry back changes its permissive render (the table
+      // replaces the inlined SQL); permissive renders never throw, so a
+      // genuinely missing upstream cannot hide one, and the check does not
+      // depend on which miss a strict render happens to report first. The
+      // wrong-tier entry is rendered only to compare, never run.
+      if (!isStorageBuild && planFacts.hostInstructed && wrongTier.length > 0) {
+         const render = (entries: typeof buildManifest.entries) =>
+            buildSQLOf(
+               persistSource,
+               manifestForCompiler(
+                  { ...buildManifest, entries, strict: false },
+                  planFacts,
+               ),
+            );
+         let base: string | undefined;
+         try {
+            base = render(buildManifest.entries);
+         } catch {
+            // The source does not render at all; the build below reports why.
+         }
+         if (base !== undefined) {
+            const read = wrongTier.flatMap(([address, entry]) => {
+               let withEntry: string;
+               try {
+                  withEntry = render({
+                     ...buildManifest.entries,
+                     [address]: manifest.buildManifest.entries[address],
+                  });
+               } catch {
+                  return [];
+               }
+               if (withEntry === base) return [];
+               const name =
+                  entry.sourceName ??
+                  planFacts.namesByAddress?.[address]?.[0] ??
+                  address;
+               return [{ address, entry, name }];
+            });
+            if (read.length > 0) refuseHostSupplied(read);
+         }
+      }
+      let buildSQL: string;
+      try {
+         buildSQL = buildSQLOf(persistSource, buildManifest);
+      } catch (err) {
+         // A strict colocated render misses an upstream whose entry was
+         // supplied, at the wrong tier: say that, not Malloy's generic miss.
+         const stale = staleMisses(err);
+         if (!isStorageBuild && planFacts.hostInstructed && stale.length > 0) {
+            refuseHostSupplied(stale);
+         }
          if (!isStorageBuild && manifest.strict && stale.length > 0) {
             throw new ChainedUpstreamMissingError(
                stale.map((s) => s.name),
@@ -229,8 +292,11 @@ export class SourceBuilder {
       // A colocated build that recomputes an upstream because its entry is at
       // the wrong tier reads the warehouse for it: logged and counted once per
       // run per upstream, since the entry fields alone hide the cost (#7087).
+      // A host-instructed build refuses instead (HostSuppliedWrongTierError):
+      // the host handed it another tier's table, which it must not.
       if (!isStorageBuild && wrongTier.length > 0) {
          const wrongTierAddresses = new Map(wrongTier);
+         const refused: { name: string; detail: string }[] = [];
          for (const { name, sourceID } of reached.persisted) {
             const address = planFacts.addressBySourceId[sourceID];
             const entry =
@@ -238,13 +304,21 @@ export class SourceBuilder {
                   ? undefined
                   : wrongTierAddresses.get(address);
             if (!entry || !reuse.inManifestOnly.includes(name)) continue;
+            const detail = wrongTierDetail(name, address!, entry, planFacts);
+            if (planFacts.hostInstructed) {
+               refused.push({ name, detail });
+               continue;
+            }
             noteWrongTierRecompute({
                planFacts,
                build: "colocated",
                sourceName: persistSource.name,
                upstream: name,
-               detail: wrongTierDetail(name, address!, entry, planFacts),
+               detail,
             });
+         }
+         if (refused.length > 0) {
+            throw new HostSuppliedWrongTierError(persistSource.name, refused);
          }
       }
 

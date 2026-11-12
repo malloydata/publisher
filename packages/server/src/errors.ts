@@ -923,11 +923,22 @@ export class ChainedUpstreamMissingError extends Error {
    }
 
    readonly missing: readonly string[];
+   /**
+    * Why each missing upstream could not be used, by name, when the thrower
+    * knows: lets a caller act on one cause (an entry at the wrong tier)
+    * without parsing the joined message.
+    */
+   readonly details?: readonly { name: string; detail: string }[];
 
-   constructor(missing: readonly string[], detail: string) {
+   constructor(
+      missing: readonly string[],
+      detail: string,
+      details?: readonly { name: string; detail: string }[],
+   ) {
       super(detail);
       this.name = "ChainedUpstreamMissingError";
       this.missing = missing;
+      if (details) this.details = details;
    }
 }
 

@@ -270,12 +270,12 @@ Order: 1, then 3, 4, 5 and 6, with 2 beside 3. If 2 or 3 is too large to review,
 
 | # | Pull request | Scope |
 | --- | --- | --- |
-| 1 | `#(preaggregate)` | A1 to A7 on the source map and measure grammar; rollup variants in the user's file; `preaggregation_coverage.ts` and the IR classifier retired; the real fix for #6293 (a rollup over a `storage=` base); the `#@ preaggregate` deprecation warning |
+| 1 | `#(preaggregate)` | A1 to A7 on the source map and measure grammar; rollup variants in the user's file; `preaggregation_coverage.ts` and the IR classifier retired; the real fix for #6293 (a rollup over a `storage=` base); one build-plan entry per rollup (review bug 8); the `#@ preaggregate` deprecation warning |
 | 2 | View routing | The `#@ persist` view leg (P14): a persisted view answers a query only when the query calls that view exactly |
 | 3 | Join-to-rollup | The A7 leg; its count measures wait for Publisher's Malloy pin to include malloydata/malloy#3207 (question 12) |
 | 4 | Inline join_many | Pair-table serving (P5) with the parent-row flag written at build (Evidence 8) |
 
-Order: 1 first; 2, 3 and 4 in parallel after it, since they are separate legs of the same router. Rollups listed once per importing model file (one entry per rollup in the build plan) are de-duplicated in phase 3's pull request 2, where the source map supplies the identity.
+Order: 1 first; 2, 3 and 4 in parallel after it, since they are separate legs of the same router. Rollups listed once per importing model file (review bug 8) are de-duplicated in pull request 1, which replaces the rollup synthesis that causes the duplication (decided 2026-11-12).
 
 ## Telemetry and cost estimation
 
@@ -471,7 +471,7 @@ The plan accounts for all 60 open issues under [ms2data/service#6647](https://gi
 | Issue | Pri | Problem | What the plan does | Phase |
 | --- | --- | --- | --- | --- |
 | #6644 | P0 | `storage=` serve bindings match by source name, so a same-named source can read the wrong table | v2 retires name-keyed bindings: each source is re-rooted in its own file's copy, keyed by `sourceID`. Wrong data now, so v1 is fixed first. | Now (v1 fix), 3 |
-| #7087 | P1 | Moving a source to `storage=` keeps its content address | P12: the storage destination is part of the fingerprint, with P2's re-address; the chained-build half needs no re-address and is fixed by #1619 | 2 (chained build, #1619), 3 |
+| #7087 | P1 | Moving a source to `storage=` keeps its content address | P12: the storage destination is part of the fingerprint, with P2's re-address; the chained-build half needs no re-address and is fixed by #1619. A host-instructed build refuses a host-supplied upstream entry at the wrong tier rather than recomputing it (decided 2026-11-12: two workers with separate stores sharing one config is a case the control plane prevents); a self-instructed build recomputes and warns | 2 (chained build, #1619), 3 |
 | #6983 | P1 | A keyed `join_one … with` sends the source live; the serve shape drops `primary_key:` | The served copy keeps `primary_key:` and joins as written (verified 2026-11-07) | 3 |
 | #6277 | P1 | A package that materializes but never serves says nothing | D2: serve verdict at publish | 1 |
 | #7096 | P1 | A rollup on a source `index.malloy` re-exports collides by name | A3: one artifact per content address; first check whether #7054 already cleared it | 2 |

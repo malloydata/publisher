@@ -835,6 +835,7 @@ export class MaterializationService {
             incremental,
             Object.values(derivedRefused),
             clearedTiers,
+            orchestrated,
          );
 
          const { sourcesBuilt, sourcesFailed, sourcesReused } = tallySources(
