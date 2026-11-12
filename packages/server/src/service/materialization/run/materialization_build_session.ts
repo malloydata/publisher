@@ -651,6 +651,13 @@ export interface StorageBuildResult {
    /** Authoritative DuckDB column schema, captured post-build via DESCRIBE. */
    schema: WireColumn[];
    /**
+    * Rows in the table after the build, counted in the destination (cheap in
+    * DuckDB and DuckLake, which keep row counts with their files), and
+    * recorded as the manifest entry's `rowCount`. Null when the count could
+    * not be read; the build stands either way.
+    */
+   rowCount: number | null;
+   /**
     * What the source warehouse charged for the read, when its shape reported it.
     * Null means unknown, not free (except on a chained build, which reads no
     * warehouse).
@@ -913,6 +920,7 @@ export async function buildSourceIntoStorage(params: {
                // declares the schema on every publication; omitting it would
                // leave the source unservable until its next full build.
                schema: await describeTable(session, target),
+               rowCount: await countStoredRows(session, target),
                readCost: refreshed.readCost,
                refresh: refreshed,
             };
@@ -950,6 +958,7 @@ export async function buildSourceIntoStorage(params: {
          seededThrough,
          storageDestinationName: destinationName,
          schema,
+         rowCount: await countStoredRows(session, target),
          // BigQuery's labelled read reports its cost; Snowflake's must be asked
          // after the read, while the session still holds the credentials.
          readCost:
@@ -1061,6 +1070,7 @@ async function buildSameCatalogIntoStorage(params: {
       return {
          storageDestinationName: destinationName,
          schema,
+         rowCount: await countStoredRows(session, target),
          readCost: null,
       };
    } finally {
@@ -1233,6 +1243,7 @@ export async function buildDownstreamIntoStorage(params: {
       return {
          storageDestinationName: destinationName,
          schema,
+         rowCount: await countStoredRows(session, target),
          // Reads no source warehouse: here, uniquely, null means "spent nothing".
          readCost: null,
          upstreamReuse: "reused",
@@ -1887,6 +1898,30 @@ async function inTransaction<T>(
       throw buildErr;
    }
    return result;
+}
+
+/**
+ * The rows a built table holds, or null when the count could not be read
+ * (logged at debug): the manifest entry records it, and a build never fails
+ * on it.
+ */
+async function countStoredRows(
+   session: DuckDBConnection,
+   quotedTablePath: string,
+): Promise<number | null> {
+   try {
+      const result = await session.runSQL(
+         `SELECT count(*) AS n FROM ${quotedTablePath}`,
+      );
+      const n = Number(resultRows(result)[0]?.n);
+      return Number.isFinite(n) ? n : null;
+   } catch (error) {
+      logger.debug("Could not count a built table's rows", {
+         table: quotedTablePath,
+         error: errMessage(error),
+      });
+      return null;
+   }
 }
 
 async function describeTable(

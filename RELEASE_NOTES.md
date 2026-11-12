@@ -21,6 +21,12 @@ Give the heading a title — `## [Unreleased] — what changed`, with an em dash
 
 Two consequences worth knowing. A section merged to `main` ships in the **next** release, whenever that is, so do not write one for work that has not landed. And a heading already stamped with a version is history: a follow-up that changes that behaviour opens a **new** `[Unreleased]` section referencing the shipped version by number, rather than editing the old one.
 
+## [Unreleased] — A storage= build records its row count, and the workload log records which table answered
+
+A `storage=` build now records its table's row count in the manifest (`ManifestEntry.rowCount`, until now always null), counted in the destination after the build. A count that cannot be read leaves it null and the build stands. A colocated build still leaves it null, since counting would scan the warehouse.
+
+Each answered query's access record gains an optional `path`: the table that answered (`servedBy`) and each table considered, with its outcome and skip reason, from the query's path report. The workload log's local store keeps it with the rest of the record, so its history says which materialized table served each shape and why the others did not. See [docs/access-record.md](docs/access-record.md).
+
 ## [Unreleased] — Every materialized source says whether it serves, and a dry run previews it
 
 A materialized table that no query reads looked exactly like a working one: the build succeeded, the manifest bound, and every query was quietly answered live, with nothing above a per-query log line to say so. `GET …/packages/{pkg}/status` now carries `serveVerdicts`: for each `#@ persist` source and each synthesized rollup, a `verdict` (`serves`, `not_built`, or `live`), and for a `live` one a `reason`, a sentence, and the `fixes` that would let it serve. The reasons are `refused`, `storage_mode` (`storage=` while `PERSIST_STORAGE_MODE` is not `on`), `rollup_over_stored_base`, `unreachable` (no source on the package's published surface reads it: `index.malloy` hides it and nothing it publishes is built on it, extends it or joins it), `row_level_gate` (a gate the storage tier or a rollup cannot keep yet) and `shadowed`. The verdicts are recomputed from the build plan and the binding on every read, so they follow each bind. A source no published query can reach is also a publish warning with the new code `materialization-unreachable`, counted in `publisher_annotation_findings_total` with the other coded `#@` findings.
