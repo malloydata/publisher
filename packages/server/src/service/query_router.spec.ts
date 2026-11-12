@@ -8,7 +8,7 @@ import {
    startMetricsHarness,
    type MetricsHarness,
 } from "../test_helpers/metrics_harness";
-import { routeQuery, type Variant } from "./query_router";
+import { recordVariantRouting, routeQuery, type Variant } from "./query_router";
 
 const runnable = (name: string) => ({ name }) as unknown as QueryMaterializer;
 
@@ -201,6 +201,25 @@ describe("routeQuery metrics", () => {
       ).toBe(1);
       expect(
          await count({ variant: "rollup", outcome: "used", reason: "none" }),
+      ).toBe(1);
+   });
+
+   it("counts a chosen variant whose run failed as skipped run_failed, not used", async () => {
+      const decision = await routeQuery(
+         [variant("storage", "answers", [])],
+         async () => false,
+         { recordMetrics: false },
+      );
+      recordVariantRouting(decision.considered, true);
+      expect(
+         await count({ variant: "storage", outcome: "used", reason: "none" }),
+      ).toBe(0);
+      expect(
+         await count({
+            variant: "storage",
+            outcome: "skipped",
+            reason: "run_failed",
+         }),
       ).toBe(1);
    });
 

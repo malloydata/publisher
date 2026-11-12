@@ -103,6 +103,25 @@ describe("compile scopes (compileSource)", () => {
       ).toEqual([]);
    });
 
+   it("file: reports a misspelled gate as an error, since the load refuses it", async () => {
+      const edited = TRACKS_MODEL.replace(
+         "source: tracks is",
+         "#(authorise) 'finance' = 'finance'\nsource: tracks is",
+      );
+      const { problems } = await compile("tracks.malloy", edited, "file");
+      const gate = problems.filter(
+         (p) => p.code === "annotation-gate-near-miss",
+      );
+      expect(gate).toHaveLength(1);
+      expect(gate[0]).toMatchObject({ severity: "error" });
+      expect(gate[0]?.message).toContain("never enforced");
+      expect(gate[0]?.message).toContain("(meant `#(authorize)`?)");
+      // Not also reported as an ordinary near-miss warning.
+      expect(problems.filter((p) => p.code === "annotation-near-miss")).toEqual(
+         [],
+      );
+   });
+
    it("file: diagnostics land at true coordinates in the submitted text", async () => {
       // Error deliberately on 0-based line 2 of the submitted text. Append
       // scope would offset this by the on-disk file's line count; file scope

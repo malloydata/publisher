@@ -196,10 +196,13 @@ application, and a publish still succeeds. Gates are the exception, because a ga
 leaves the source open. The spellings Publisher already refused (`#(AUTHORIZE)`, `# (authorize)`,
 `#(access-filter)` and the like, see [authorize.md](authorize.md)) still fail the load, and so now
 does a misspelled gate: `#(authorise)`, `#(autorize)`, `#(acess_filter)`, any route word within two
-edits of `authorize` or `access_filter`. A word that extends a gate's name, such as `#(authorized)`,
-reads as another application's route and only warns. Each model reports only the annotations in its own
-file, so a file several models import is reported once. `compile_model` at `file` scope returns the
-near misses as `warn` diagnostics at their line, so an editor sees them before a save. They are
+edits of `authorize` or `access_filter`, on a source, a field or a named query. A word that contains
+a gate's name, such as `#(authorized)` or `#(reauthorize)`, reads as another application's route and
+only warns. Each model reports only the annotations in its own file, so a file several models import
+is reported once. `compile_model` at `file` scope returns the near misses as `warn` diagnostics at
+their line, and a misspelled gate as an `error` (code `annotation-gate-near-miss`), so an editor sees
+the refusal before a save. A capitalized directive (`#@ Persist`, `# Persist`) is a near miss too:
+Malloy reads only the lower-case `persist`. They are
 counted in `publisher_annotation_findings_total` with the other annotation findings.
 
 ## Lifecycle: what is served

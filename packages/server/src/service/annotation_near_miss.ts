@@ -26,7 +26,7 @@ import type { DocumentLocation, ModelDef, StructDef } from "@malloydata/malloy";
 import { isSourceDef } from "@malloydata/malloy";
 import {
    editDistance,
-   isRouteAttempt,
+   foldRouteName,
    payloadOfNote,
    PUBLISHER_ROUTES,
    publisherRouteOf,
@@ -47,6 +47,12 @@ export const ANNOTATION_NEAR_MISS_CODE = "annotation-near-miss";
 
 /** The code of a finding for an annotation whose prefix Malloy cannot route. */
 export const ANNOTATION_MALFORMED_ROUTE_CODE = "annotation-malformed-route";
+
+/**
+ * The `code` of a `compile_model` error for a misspelled gate, which the load
+ * refuses ("never enforced"): the editor sees the refusal before the save.
+ */
+export const ANNOTATION_GATE_NEAR_MISS_CODE = "annotation-gate-near-miss";
 
 /** The bracketed app routes Publisher owns, as `#(name)`. */
 const OWNED_ROUTES: readonly string[] = Object.keys(PUBLISHER_ROUTES)
@@ -72,11 +78,6 @@ interface Intended {
    route: string;
 }
 
-/** A route name folded for comparison: lower case, no separators. */
-function fold(name: string): string {
-   return name.toLowerCase().replace(/[-_\s]/g, "");
-}
-
 /**
  * The owned route `name` is a misspelling of, or `undefined`. A folded match
  * (`#(Doc)`, `#(access-filter)`), or an edit within 1 for a short name and 2
@@ -85,11 +86,11 @@ function fold(name: string): string {
  */
 function misspelledOwnedRoute(name: string): Intended | undefined {
    if (/[/.:]/.test(name)) return undefined;
-   const folded = fold(name);
+   const folded = foldRouteName(name);
    if (folded === "") return undefined;
    let best: { route: string; distance: number } | undefined;
    for (const route of OWNED_ROUTES) {
-      const target = fold(route);
+      const target = foldRouteName(route);
       const distance = editDistance(folded, target);
       const limit = target.length <= 5 ? 1 : 2;
       if (distance <= limit && (!best || distance < best.distance)) {
@@ -97,15 +98,21 @@ function misspelledOwnedRoute(name: string): Intended | undefined {
       }
    }
    if (best) return { spelling: `#(${best.route})`, route: best.route };
-   const directive = PERSIST_DIRECTIVES.find((d) => fold(d) === folded);
+   const directive = PERSIST_DIRECTIVES.find(
+      (d) => foldRouteName(d) === folded,
+   );
    return directive ? { spelling: `#@ ${directive}`, route: "@" } : undefined;
 }
 
-/** The `#@` directive `word` is a misspelling of (an edit within 2), or `undefined`. */
+/**
+ * The `#@` directive `word` is a misspelling of (an edit within 2, or a
+ * different case: Malloy reads only `persist`, never `Persist`), or
+ * `undefined`.
+ */
 function misspelledDirective(word: string): string | undefined {
    const lowered = word.toLowerCase();
    return PERSIST_DIRECTIVES.find(
-      (d) => d !== lowered && editDistance(lowered, d) <= 2,
+      (d) => d !== word && editDistance(lowered, d) <= 2,
    );
 }
 
@@ -141,7 +148,7 @@ function intendedRoute(text: string): Intended | "malformed" | undefined {
    if (read === "") {
       const payload = payloadOfNote(trimmed);
       // `# persist name="t"`: a render tag named for a directive.
-      const word = firstWord(payload);
+      const word = firstWord(payload)?.toLowerCase();
       if (word !== undefined && PERSIST_DIRECTIVES.includes(word)) {
          return { spelling: `#@ ${word}`, route: "@" };
       }
@@ -149,12 +156,7 @@ function intendedRoute(text: string): Intended | "malformed" | undefined {
       const bracketed = /^\s*[([{<]\s*([^)\]}>\s]+)\s*[)\]}>]/.exec(payload);
       if (bracketed?.[1] !== undefined) {
          const intended = misspelledOwnedRoute(bracketed[1]);
-         if (
-            intended &&
-            isRouteAttempt(trimmed, intended.route, [bracketed[1]])
-         ) {
-            return intended;
-         }
+         if (intended) return intended;
       }
       return undefined;
    }

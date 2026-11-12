@@ -412,6 +412,49 @@ export function readRouteList(
 
 const REGEXP_SPECIAL = /[.*+?^${}()|[\]\\]/g;
 
+/** A route name folded for comparison: lower case, no separators. */
+export function foldRouteName(name: string): string {
+   return name.toLowerCase().replace(/[-_\s]/g, "");
+}
+
+/** The two patterns {@link isRouteAttempt} tests, compiled once per name list. */
+interface RouteAttemptPatterns {
+   /** A malformed-prefix note reaching for a name: `#( doc )`, `#doc`. */
+   malformed: RegExp;
+   /** A MOTLY payload that is a bracketed name: `# (doc) …`. */
+   motly: RegExp;
+}
+
+const routeAttemptPatternCache = new Map<string, RouteAttemptPatterns>();
+
+/**
+ * {@link isRouteAttempt}'s patterns for `names`, compiled on first use and
+ * cached: the load sweep and the near-miss scan test every note against the
+ * same few lists. `names` must not be empty (see isRouteAttempt).
+ */
+export function routeAttemptPatterns(
+   names: readonly string[],
+): RouteAttemptPatterns {
+   const key = names.join("\u0000");
+   const cached = routeAttemptPatternCache.get(key);
+   if (cached) return cached;
+   const words = names
+      .map((name) => name.replace(REGEXP_SPECIAL, "\\$&"))
+      .join("|");
+   const patterns = {
+      malformed: new RegExp(
+         `^##?\\|?[ \\t]*(?:[([{<][ \\t]*)?(?:${words})`,
+         "iu",
+      ),
+      motly: new RegExp(
+         `^[ \\t]*[([{<][ \\t]*(?:${words})[ \\t]*[)\\]}>]`,
+         "iu",
+      ),
+   };
+   routeAttemptPatternCache.set(key, patterns);
+   return patterns;
+}
+
 /**
  * Whether `text` reads as an author reaching for `route`, written as one of
  * `names` (case-insensitive), while Malloy routes it somewhere else, so no
@@ -442,20 +485,11 @@ export function isRouteAttempt(
    const trimmed = text.trimStart();
    const noted = routeOfNote(trimmed);
    if (noted === route) return false;
-   const words = names
-      .map((name) => name.replace(REGEXP_SPECIAL, "\\$&"))
-      .join("|");
    if (noted === undefined) {
-      return new RegExp(
-         `^##?\\|?[ \\t]*(?:[([{<][ \\t]*)?(?:${words})`,
-         "iu",
-      ).test(trimmed);
+      return routeAttemptPatterns(names).malformed.test(trimmed);
    }
    if (noted === "") {
-      return new RegExp(
-         `^[ \\t]*[([{<][ \\t]*(?:${words})[ \\t]*[)\\]}>]`,
-         "iu",
-      ).test(payloadOfNote(trimmed));
+      return routeAttemptPatterns(names).motly.test(payloadOfNote(trimmed));
    }
    const lowered = noted.toLowerCase();
    return names.some((name) => name.toLowerCase() === lowered);

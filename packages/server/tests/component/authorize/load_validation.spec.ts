@@ -865,6 +865,23 @@ describe("a near miss of the lock's spelling fails the load", () => {
       expect(err.message).toContain(`(meant \`${meant}\`?)`);
    });
 
+   it("refuses a misspelled gate on a named query, which the load used to skip", async () => {
+      const err = await expectLoadError(
+         `source: plain is duckdb.table('customers') extend {}\n\n#(acess_filter) region = 'x'\nquery: q is plain -> { select: * }\n`,
+      );
+      expect(err.message).toMatch(/never enforced/i);
+      expect(err.message).toContain("(meant `#(access_filter)`?)");
+   });
+
+   it.each(["#(reauthorize)", "#(unauthorize)", "#(noaccessfilter)"])(
+      "loads %s, a word containing a gate's name, as another app's route",
+      async (tag) => {
+         await expectLoadsClean(
+            `${tag} "not a gate"\nsource: other_app is duckdb.table('customers') extend {}\n`,
+         );
+      },
+   );
+
    it("refuses a near miss reached only through a derivation hop", async () => {
       // `near_layer` imports `near_qs` alone, so the misspelled base is only
       // the inline struct on `near_qs`'s query.structRef; the sweep must

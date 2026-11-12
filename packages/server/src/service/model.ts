@@ -21,6 +21,7 @@ import { recordStorageServeRouting } from "../materialization_metrics";
 import {
    type ConsideredVariant,
    type RouteDecision,
+   recordVariantRouting,
    routeQuery,
    type Variant,
    type VariantSkipExplanation,
@@ -3043,6 +3044,7 @@ export class Model {
                   ));
                return blocked;
             },
+            { recordMetrics: false },
          );
          routeConsidered = route.considered;
          recordRoutingDecision(route);
@@ -3474,6 +3476,9 @@ export class Model {
             error: (err as Error).message,
          });
       }
+      // Counted once the run answered, so a variant whose run failed and fell
+      // back live counts as skipped (`run_failed`), not used.
+      recordVariantRouting(routeConsidered, runFailed);
       const path = await this.queryPathFor({
          // The author's own compile: its names, and no grafted gate filter.
          runnable: liveRunnable ?? runnable,

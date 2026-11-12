@@ -69,10 +69,27 @@ describe("annotationNearMisses", () => {
       }
    });
 
-   it("does not read a word that extends a gate's name as a misspelled gate", () => {
+   it("reports a capitalized directive, which Malloy never plans", () => {
+      for (const text of [
+         '#@ Persist name="t"',
+         '#@ PERSIST name="t"',
+         '# Persist name="t"',
+      ]) {
+         const [finding] = scan(text);
+         expect(finding).toMatchObject({ code: ANNOTATION_NEAR_MISS_CODE });
+         expect(finding?.message).toContain("`#@ persist`");
+      }
+      expect(scan('#@ persist name="t"')).toEqual([]);
+   });
+
+   it("does not read a word that contains a gate's name as a misspelled gate", () => {
       for (const text of [
          "#(authorized) not a gate",
+         "#(reauthorize) x",
+         "#(unauthorize) x",
+         "#(xauthorize) x",
          "#(access_filters) x",
+         "#(noaccessfilter) x",
          "#(authorize) org_id = $ORG",
          "#(access_filter) org_id = $ORG",
          "#(author) x",

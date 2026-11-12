@@ -36,11 +36,12 @@ import { UNCODED_REPORT_FINDING } from "../report_metrics";
 import { lazyCounter } from "../telemetry";
 import { URL_READER } from "../utils";
 import {
+   ANNOTATION_GATE_NEAR_MISS_CODE,
    ANNOTATION_NEAR_MISS_CODE,
    annotationNearMisses,
    authoredNotes,
 } from "./annotation_near_miss";
-import { assertNoCallerAuthorizeAnnotation } from "./authorize";
+import { assertNoCallerAuthorizeAnnotation, gateNearMissOf } from "./authorize";
 import type { CallerRegion } from "./caller_joins";
 import { compileDocument, type CompiledDocument } from "./compile_document";
 import {
@@ -1282,9 +1283,26 @@ function warningAsProblem(
    } as LogMessage;
 }
 
-/** The near-miss scan's findings on a compiled file, as compile warnings. */
+/**
+ * The near-miss scan's findings on a compiled file: a misspelled gate as an
+ * error, since the load refuses it, and every other near miss as a warning.
+ */
 export function nearMissLogMessages(modelDef: ModelDef): LogMessage[] {
-   return annotationNearMisses(authoredNotes(modelDef))
+   const notes = authoredNotes(modelDef);
+   const gates: LogMessage[] = notes.flatMap((note) => {
+      const message = gateNearMissOf(note.text);
+      return message === undefined
+         ? []
+         : [
+              {
+                 message,
+                 severity: "error" as const,
+                 code: ANNOTATION_GATE_NEAR_MISS_CODE,
+                 ...(note.at ? { at: note.at } : {}),
+              } as LogMessage,
+           ];
+   });
+   const warnings = annotationNearMisses(notes)
       .filter((finding) => finding.code === ANNOTATION_NEAR_MISS_CODE)
       .map((finding) => ({
          message: `${finding.message}; ${finding.rewrite}`,
@@ -1292,4 +1310,5 @@ export function nearMissLogMessages(modelDef: ModelDef): LogMessage[] {
          code: finding.code,
          ...(finding.at ? { at: finding.at } : {}),
       }));
+   return [...gates, ...warnings];
 }
