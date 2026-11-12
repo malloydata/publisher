@@ -11,6 +11,8 @@ import {
    deriveBuildPlanOutcome,
 } from "./build_plan";
 import { compilePackageBuildPlan } from "./build_plan_compile";
+import { collectIncrementalDeclarations } from "./build_plan";
+import { incrementalLineage } from "../run/incremental_build";
 import {
    buildSourceName,
    generateBuildFile,
@@ -151,6 +153,64 @@ source: orders__mat is orders__mat__base -> {
 });
 
 describe("the generated companion, compiled into the build plan", () => {
+   it(
+      "carries a rolling window from the compiled source to the refresh's lineage, and builds the term as written",
+      async () => {
+         const c = await compiled(`source: events_raw is duckdb.sql("""
+  select * from (values
+    (1, timestamp '2026-01-01 00:00:00'),
+    (2, timestamp '2026-01-02 00:00:00')
+  ) as t(id, ts)
+""")
+
+#(materialize) name="recent_events" refresh="incremental" watermark="ts"
+source: recent is events_raw extend {
+  where: ts >= now - 30 days
+}
+`);
+         const [p] = generatedPlans(c);
+         expect(p.readTimeTerms).toEqual([
+            {
+               kind: "current_time",
+               code: "ts >= now - 30 days",
+               columns: ["ts"],
+               window: {
+                  field: "ts",
+                  op: ">=",
+                  offset: { sign: -1, amount: 30, unit: "day" },
+               },
+            },
+         ]);
+         // The keying rule: the plan, the source and the declaration all sit
+         // under the author's sourceID.
+         const declaration = collectIncrementalDeclarations(
+            c.sources,
+            c.materializePlans,
+         )[p.sourceID];
+         expect(declaration?.rollingWindow).toEqual([
+            p.readTimeTerms![0].window,
+         ]);
+         expect(
+            incrementalLineage({
+               declaration,
+               // As stored from a Postgres origin: a DuckDB origin has no
+               // incremental range to read.
+               dialect: "postgres",
+               targetDialect: "duckdb",
+               physicalTableName: "recent_events",
+               connectionName: "duckdb",
+               sourceEntityId: "sid",
+            })?.rollingWindow,
+         ).toEqual([p.readTimeTerms![0].window]);
+         // Built as written: the address reads the warehouse's own clock, never
+         // a literal of Publisher's, so it does not move between builds.
+         const sql = addressSQL(c.sources[p.sourceID], c.targets?.[p.sourceID]);
+         expect(sql).toContain("LOCALTIMESTAMP");
+         expect(sql).not.toMatch(/TIMESTAMP '20\d\d-/);
+      },
+      { timeout: 30000 },
+   );
+
    it(
       "plans orders__mat: public dimensions stored under their own names, measures, views, joins and private fields left out",
       async () => {

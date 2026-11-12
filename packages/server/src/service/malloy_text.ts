@@ -186,3 +186,46 @@ export function doubleQuotedString(value: string): string {
 export function annotationValue(value: string): string {
    return JSON.stringify(value);
 }
+
+/** The current-time offset units a rolling-window term may use. */
+export const NOW_OFFSET_UNITS = [
+   "second",
+   "minute",
+   "hour",
+   "day",
+   "week",
+   "month",
+   "quarter",
+   "year",
+] as const;
+export type NowOffsetUnit = (typeof NOW_OFFSET_UNITS)[number];
+
+/** The comparisons a rolling-window term may use. */
+export type NowComparisonOp = ">=" | ">" | "<" | "<=";
+
+/**
+ * A comparison of a field with the current time, `<field> <op> now [± <n>
+ * <unit>s]`, as a `where:` term re-applies a rolling window at read. Every part
+ * is checked against a closed set (the field is quoted as an identifier), so
+ * the text cannot carry anything but the comparison.
+ */
+export function nowComparison(
+   field: string,
+   op: NowComparisonOp,
+   offset?: { sign: 1 | -1; amount: number; unit: NowOffsetUnit },
+): string {
+   if (![">=", ">", "<", "<="].includes(op)) {
+      throw new Error(`not a comparison: ${op}`);
+   }
+   let now = "now";
+   if (offset) {
+      if (!Number.isSafeInteger(offset.amount) || offset.amount < 0) {
+         throw new Error(`not a whole offset: ${offset.amount}`);
+      }
+      if (!(NOW_OFFSET_UNITS as readonly string[]).includes(offset.unit)) {
+         throw new Error(`not a time unit: ${offset.unit}`);
+      }
+      now = `now ${offset.sign < 0 ? "-" : "+"} ${offset.amount} ${offset.unit}s`;
+   }
+   return `${identifier(field)} ${op} ${now}`;
+}

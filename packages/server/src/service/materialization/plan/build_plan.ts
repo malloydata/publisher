@@ -57,6 +57,7 @@ import {
    type MaterializePlan,
 } from "./build_file_generator";
 import { tryCompileMaterializeCompanion } from "./materialize_compile";
+import { rollingWindowsOf } from "./rolling_window";
 import { getMaterializeEnabled } from "../../../config";
 import {
    classifyDynamicTerms,
@@ -1112,6 +1113,7 @@ export function deriveBuildPlanOutcome(
    const droppedPersistSources = compiled.droppedPersistSources ?? [];
    const incrementalDeclarations = collectIncrementalDeclarations(
       compiled.sources,
+      compiled.materializePlans,
    );
    const plan =
       compiled.builds.length === 0
@@ -1165,14 +1167,25 @@ export function deriveBuildPlanOutcome(
  */
 export function collectIncrementalDeclarations(
    sources: Record<string, PersistSource>,
+   /**
+    * The generated `#(materialize)` sources' plans by sourceID: a plan's
+    * rolling window rides on its declaration, for the refresh's delete.
+    */
+   materializePlans: Readonly<Record<string, MaterializePlan>> = {},
 ): Record<string, IncrementalDeclaration> {
    const declarations: Record<string, IncrementalDeclaration> = {};
    for (const [sourceID, source] of Object.entries(sources)) {
       try {
-         declarations[sourceID] = resolveIncrementalDeclaration(
+         const declaration = resolveIncrementalDeclaration(
             source,
             deriveAnnotationFields(source),
          );
+         const window = rollingWindowsOf(
+            materializePlans[sourceID]?.readTimeTerms,
+         );
+         declarations[sourceID] = window.length
+            ? { ...declaration, rollingWindow: window }
+            : declaration;
       } catch (err) {
          // One unreadable source must not cost the package its plan. "No
          // declaration" is safe: the build path dispatches a delta only for a

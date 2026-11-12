@@ -8,6 +8,7 @@ import type { IncrementalLedgerEntry } from "../../../storage/DatabaseInterface"
 import type { IncrementalStrategy } from "../types";
 import { errMessage } from "../../../utils";
 import { quoteIdentifier } from "../../quoting";
+import { windowDeleteBefore, type RollingWindow } from "../plan/rolling_window";
 
 /**
  * Generating and applying an incremental DELTA: the bounded slice of a persisted
@@ -635,6 +636,12 @@ export function deltaStatements(params: {
    watermarkName: string;
    start: WatermarkBound;
    end: WatermarkBound;
+   /**
+    * Rolling-window deletes, run after the write in the same transaction:
+    * each removes the rows of `column` below `before`, which no read from
+    * this refresh on needs (rolling_window.ts).
+    */
+   windowDeletes?: readonly { column: string; before: WatermarkBound }[];
 }): string[] {
    const {
       dialect,
@@ -646,6 +653,11 @@ export function deltaStatements(params: {
    } = params;
    const q = (name: string) => quoteIdentifier(name, dialect);
    const columnList = columns.map(q).join(", ");
+   const windowDeletes = (params.windowDeletes ?? []).map(
+      (d) =>
+         `DELETE FROM ${quotedTablePath} WHERE ${q(d.column)} < ` +
+         renderSqlBound(d.before, dialect),
+   );
 
    if (mergeKeys.length > 0) {
       // `merge_key=` was chosen against the source AS WRITTEN, filtered to one
@@ -687,7 +699,13 @@ export function deltaStatements(params: {
          `WHEN NOT MATCHED THEN INSERT (${columnList}) ` +
             `VALUES (${columns.map((c) => `__s.${q(c)}`).join(", ")})`,
       );
-      return [clauses.join("\n")];
+      if (windowDeletes.length === 0) return [clauses.join("\n")];
+      // The merge and the window's delete commit together, so a reader never
+      // sees the delete without the rows that replaced the window's edge.
+      const body = [clauses.join("\n"), ...windowDeletes];
+      if (dialect === "snowflake") return [snowflakeScriptingBlock(body)];
+      const transaction = transactionKeywords(dialect);
+      return [transaction.begin, ...body, transaction.commit];
    }
 
    const watermark = q(watermarkName);
@@ -698,6 +716,7 @@ export function deltaStatements(params: {
       `DELETE FROM ${quotedTablePath} WHERE ${range}`,
       `INSERT INTO ${quotedTablePath} (${columnList}) ` +
          `SELECT ${columnList} FROM (${deltaSQL}) AS __s`,
+      ...windowDeletes,
    ];
    if (dialect === "snowflake") return [snowflakeScriptingBlock(body)];
    const transaction = transactionKeywords(dialect);
@@ -824,6 +843,13 @@ export interface IncrementalLineage {
     */
    scopeColumns: string[];
    strategy: IncrementalStrategy;
+   /**
+    * A `#(materialize)` source's rolling-window terms: each delta also deletes
+    * the rows below every term's new lower bound ({@link windowDeleteBefore}).
+    * Not compared with the ledger: the terms are in the build SQL, so a change
+    * to one already changes {@link sourceEntityId}.
+    */
+   rollingWindow?: readonly RollingWindow[];
 }
 
 /**
@@ -1233,6 +1259,13 @@ export async function planIncrementalStep(inputs: {
       watermarkName: lineage.watermarkName,
       start,
       end: end.bound,
+      windowDeletes: (lineage.rollingWindow ?? []).map((window) => ({
+         column: window.field,
+         before: canonicalBoundValue(
+            "timestamp",
+            windowDeleteBefore(window, inputs.now),
+         ),
+      })),
    });
    return {
       mode: "delta",

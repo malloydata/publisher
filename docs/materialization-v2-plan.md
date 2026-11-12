@@ -45,7 +45,7 @@ source: flights__mat is flights -> {
 - The experimental flag lives in the generated file, so the user's file needs none (D3).
 - The build runs over a copy of the chain with access-modifier statements removed, because a query can't select internal or private fields; the served copy re-applies them as written (P3).
 - A materialized extension builds from its parent's build source, so Malloy's planner orders the builds (P10).
-- A `where:` term that reads a given is left out of the build query; a current-time term is written with a literal `now` (Rolling windows). Both stay in the served copy and are re-applied at read (P2).
+- A `where:` term that reads a given is left out of the build query; a current-time term is built as written, so the build's own clock stores the widest set (Rolling windows). Both stay in the served copy and are re-applied at read (P2). One classifier sorts every term by what it reads (`classifyWhereTerms`, below), and the plan carries one list of the terms the served copy re-applies (`MaterializePlan.readTimeTerms`, one entry per term, by `kind`).
 
 **Serve: re-root the source in place.** In an in-memory copy of the user's file, `flights` keeps its name and is redefined over the stored table.
 
@@ -189,7 +189,7 @@ The spec accepts this tax ("inlining a join_many taxes parent-only queries"), an
 
 ## Rolling windows
 
-Publisher writes a current-time `where:` term into the build file with `now` replaced by a literal, and keeps the term in the served copy so every read re-applies it at its own clock. The literal depends on which way the term points, and the requirements' P2 and S25 pick the wrong one for the common "last 30 days" case. All four cases in the table were run on 2026-11-07: both widest-set choices matched live exactly, and both narrow ones came up short. Malloy spells the current time `now`; `now()` compiles with a warning, so the term parser accepts both.
+Publisher builds a current-time `where:` term with the `now` the build query itself evaluates, and keeps the term in the served copy so every read re-applies it at its own clock. The literal depends on which way the term points, and the requirements' P2 and S25 pick the wrong one for the common "last 30 days" case. All four cases in the table were run on 2026-11-07: both widest-set choices matched live exactly, and both narrow ones came up short. Malloy spells the current time `now`; `now()` compiles with a warning, so the term parser accepts both.
 
 The rule: over the table's serving window, from build start *b* to *b* + refresh interval, write the `now` that makes the stored set widest. The programming model states this for the backward case; P2 then applies the backward case's literal to every term, which is wrong for a lower bound.
 
@@ -200,7 +200,9 @@ The rule: over the table's serving window, from build start *b* to *b* + refresh
 
 S25 expects the lower-bound table to hold rows from *b* + 1d − 30d. A read at *b* + 12h needs rows from *b* + 12h − 30d, which that table lacks, so the answer would come up 12 hours short of live. S25 should expect rows from *b* − 30d (question 1).
 
-- **Accepted form.** A single inequality comparing a stored time field to an expression of `now`. The source map finds the term and a narrow parser checks its shape; anything else is a compile error.
+- **Accepted form.** A single inequality comparing a stored timestamp field to `now`, optionally offset by a whole number of one unit. The one `where:` classifier (`classifyWhereTerms` in `persist_dynamic_terms.ts`, which reads the compiled filter list) reads the term's shape and direction; anything else that reads `now`, directly or through a dimension or join, leaves the source unbuilt with a `materialize-not-built` warning (D2's unservable tier), and it serves live.
+- **No literal (decided 2026-11-12, phase 3 PR 5).** For a lower bound the widest-set `now` is *b*, and the build query's own `now` is at or after *b* while every read of the table runs after it was written, so the build file writes the term as the author did. The content address is computed over that text, never over a clock value, so it does not move between builds. An upper bound, the one case that needs a literal (*b* + interval), is refused until the refresh interval is known (question 2).
+- **Clocks.** The build evaluates `now` at the origin and the read at the destination. They agree because every Malloy connector reads `now` in UTC (DuckDB, Postgres, Snowflake and Trino pin the session; BigQuery and SQL Server read UTC). A query `timezone:` moves the cut-off to that zone's wall time, which across a daylight-saving change needs up to an hour the table does not hold, so the served copy answers it live (`time_zone`).
 - **Incremental.** Each refresh appends rows above the watermark, as v1 does, and then deletes rows below the new lower bound. v1's incremental pipeline only range-replaces, so the delete is a new step per warehouse. The table stays one window plus one interval in size (S25c).
 - **Derived tables.** A rollup or persisted view over a rolling-window source must carry the time field in its grain or `group_by`, or it is a compile error (S25b).
 - **Refresh interval.** It comes from the opt-in scheduler's cron in OSS and from the deployment's schedule in hosted mode. A manual-only OSS deployment has none (question 2).
@@ -586,7 +588,7 @@ Dispositions: **shared reader** is the target; **phase 5** moves onto `governanc
 | Materialization | `serve/materialization_serve_transform.ts` | Chains, fields, refinements, joins | No | Phase 3 (the rewriter replaces it) |
 | Materialization | `serve/query_path.ts` | Source chain; query shape | Chain on the source map (#1625) | Phase 3 for the chain; phase 5 for the shape (one reader with `workload_shape.ts`) |
 | Materialization | `workload_shape.ts` | First stage's fields, filters, time zone | Partly (`resolveStructRef`) | Phase 5 (one shape reader with `query_path.ts`) |
-| Materialization | `plan/persist_dynamic_terms.ts` | Givens in a persisted query | No | Phase 3 (source map) |
+| Materialization | `plan/persist_dynamic_terms.ts` | Givens in a persisted query; every `where:` term by what it reads (fixed, given, current time) and the fields that depend on the current time (`classifyWhereTerms`, phase 3 PR 5) | No | Phase 3 (source map); the one reader of `where:` terms and their field dependencies |
 | Materialization | `stored_column_types.ts` | Declared fields and query time zone of a build target | No | Phase 3 (source map) |
 | Materialization | `plan/preaggregation_coverage.ts` | Composite resolution and rollup fields | No | Phase 4 (retired) |
 | Materialization | `plan/preaggregation_classifier.ts` | Measure expressions | No | Phase 4 (retired) |

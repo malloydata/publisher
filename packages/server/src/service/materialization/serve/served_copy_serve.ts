@@ -33,6 +33,7 @@ import {
 import { SourceMap } from "../plan/source_map";
 import { givenReadingFilterTerms } from "../plan/persist_dynamic_terms";
 import type { MaterializePlan } from "../plan/build_file_generator";
+import { rollingWindowsOf } from "../plan/rolling_window";
 import { evaluateManifestFreshness } from "../run/freshness";
 import {
    declaredColumnsOf,
@@ -303,16 +304,26 @@ export class ServedCopyServe {
          // left unserved, with a package warning saying why.
          decline("the query reads no re-rooted table", "not_served");
       }
-      // A stored computed dimension (`order_ts.day`, `day_of_week(order_ts)`)
-      // was evaluated at build in the default timezone; live evaluates it in
-      // the query's. A query that sets a timezone reads such a table only
-      // live: the serve shape never carries a `#(materialize)` table.
+      // A query that sets a timezone is answered live when it reads either
+      // of two tables. A stored computed dimension (`order_ts.day`,
+      // `day_of_week(order_ts)`) was evaluated at build in the default
+      // timezone; live evaluates it in the query's. And a rolling window's
+      // cut-off moves: Malloy takes its offset in the zone's wall time, so
+      // across a daylight-saving change a read at the build's own clock needs
+      // up to an hour older than the build stored. The serve shape never
+      // carries a `#(materialize)` table.
+      const computed = tablesRead.some((b) =>
+         compiled.computedTables?.has(b.tablePath),
+      );
+      const windowed = tablesRead.some((b) => this.readsRollingWindow(b));
       if (
-         tablesRead.some((b) => compiled.computedTables?.has(b.tablePath)) &&
+         (computed || windowed) &&
          setsTimezone((await readPreparedQuery(runnable)).query)
       ) {
          decline(
-            "the query sets a timezone over a stored computed dimension",
+            computed
+               ? "the query sets a timezone over a stored computed dimension"
+               : "the query sets a timezone, which moves a rolling window's cut-off past what its table stores",
             "time_zone",
          );
       }
@@ -322,6 +333,15 @@ export class ServedCopyServe {
          bindings: compiled.rerooted,
          tablesRead,
       };
+   }
+
+   /** Whether a binding stores a `#(materialize)` source with a rolling window. */
+   private readsRollingWindow(binding: ServeBinding): boolean {
+      return (binding.sourceIDs ?? []).some(
+         (id) =>
+            rollingWindowsOf(this.materializePlans[id]?.readTimeTerms).length >
+            0,
+      );
    }
 
    private freshBindings(now: number): ServeBinding[] {
@@ -491,6 +511,9 @@ export class ServedCopyServe {
                     .filter((c) => c.computed)
                     .map((c) => c.dimension),
               }
+            : {}),
+         ...(plan?.readTimeTerms?.length
+            ? { readTimeTerms: plan.readTimeTerms }
             : {}),
          sourceID: node.sourceID,
       } as Reroot & { sourceID: string };

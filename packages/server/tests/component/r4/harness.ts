@@ -31,6 +31,7 @@ import {
    InMemoryURLReader,
    MalloyConfig,
    modelDefToModelInfo,
+   type QueryRecord,
    Runtime,
 } from "@malloydata/malloy";
 import { unrecordedAudit } from "../../../src/service/access_record";
@@ -98,6 +99,12 @@ export interface R4Scenario {
     * the model their plans, as a package with PUBLISHER_MATERIALIZE on does.
     */
    materialize?: boolean;
+   /**
+    * Pin the scenario's clock: Malloy's `now` (DuckDB's `LOCALTIMESTAMP`)
+    * reads this instant, in builds and reads alike, until
+    * {@link R4Fixture.setClock} moves it. Unpinned by default.
+    */
+   clock?: string;
 }
 
 export type Row = Record<string, unknown>;
@@ -138,6 +145,12 @@ export interface R4Fixture {
    servedFieldNotes(source: string, field: string): Promise<string[]>;
    /** The model's served copy, bound to {@link bindings}. */
    servedCopy(): ServedCopyServe;
+   /** Move a pinned clock (see {@link R4Scenario.clock}) for later runs. */
+   setClock(at: string): void;
+   /** Rows of a stored table, by its physical name, with SQL over it. */
+   storedSQL(
+      sql: (table: (sourceName: string) => string) => string,
+   ): Promise<Row[]>;
 }
 
 /**
@@ -153,6 +166,34 @@ export function freshDuckDB(
    const connection = new DuckDBConnection(name, path.join(dir, `${name}.db`));
    opened.push(connection);
    return connection;
+}
+
+/**
+ * A DuckDB whose current time is pinned: every statement reads `clock` where
+ * Malloy's `now` compiles to `LOCALTIMESTAMP`. DuckDB has no clock to set, so
+ * the pin rewrites the statement; the scenario's own SQL never spells it.
+ */
+export class PinnedClockDuckDB extends DuckDBConnection {
+   clock: string | undefined;
+   private pin(sql: string): string {
+      return this.clock === undefined
+         ? sql
+         : sql.replace(
+              /\b(LOCALTIMESTAMP|CURRENT_TIMESTAMP)\b/g,
+              `TIMESTAMP '${this.clock}'`,
+           );
+   }
+   protected override runDuckDBQuery(
+      sql: string,
+   ): Promise<{ rows: QueryRecord[]; totalRows: number }> {
+      return super.runDuckDBQuery(this.pin(sql));
+   }
+   override runSQLStream(
+      sql: string,
+      options?: Parameters<DuckDBConnection["runSQLStream"]>[1],
+   ): ReturnType<DuckDBConnection["runSQLStream"]> {
+      return super.runSQLStream(this.pin(sql), options);
+   }
 }
 
 // Every connection and directory a scenario made, so disposeScenarios can
@@ -182,7 +223,16 @@ export async function disposeScenarios(): Promise<void> {
  */
 export async function buildScenario(scenario: R4Scenario): Promise<R4Fixture> {
    const dir = scratchDir();
-   const duckdb = freshDuckDB("duckdb", dir);
+   let duckdb: DuckDBConnection;
+   let pinned: PinnedClockDuckDB | undefined;
+   if (scenario.clock !== undefined) {
+      pinned = new PinnedClockDuckDB("duckdb", path.join(dir, "duckdb.db"));
+      pinned.clock = scenario.clock;
+      opened.push(pinned);
+      duckdb = pinned;
+   } else {
+      duckdb = freshDuckDB("duckdb", dir);
+   }
    for (const sql of scenario.seedSql) await duckdb.runSQL(sql);
    // On disk, as a package's files are: the serve shape lifts a source's joins
    // and views verbatim from its file, and drops them when it cannot read it.
@@ -367,8 +417,23 @@ export async function buildScenario(scenario: R4Scenario): Promise<R4Fixture> {
       };
    };
 
+   const physicalNames = new Map(
+      Object.values(entries).map((e) => [e.sourceName, e.physicalTableName]),
+   );
    return {
       bindings,
+      setClock(at) {
+         if (!pinned) throw new Error("the scenario's clock is not pinned");
+         pinned.clock = at;
+      },
+      async storedSQL(sql) {
+         const text = sql((sourceName) => {
+            const table = physicalNames.get(sourceName);
+            if (!table) throw new Error(`no stored table for ${sourceName}`);
+            return `${DESTINATION}.${table}`;
+         });
+         return (await duckdb.runSQL(text)).rows as Row[];
+      },
       setBindings(next) {
          model.setServeBindings(next);
       },
