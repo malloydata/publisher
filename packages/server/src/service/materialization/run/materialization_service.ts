@@ -792,6 +792,10 @@ export class MaterializationService {
             entries,
             failures,
             sourcesRefused: instructedRefused,
+            // Defaults keep a seam that predates the split meaning "every
+            // refusal is in failures".
+            refusalsInFailures = instructedRefused,
+            refusedBesideBuilt = {},
          } = await this.executeInstructedBuild(
             compiled,
             environment,
@@ -828,7 +832,8 @@ export class MaterializationService {
          );
          // Auto-run refusals ride the run's free-form metadata, not the manifest
          // a strict-schema caller parses. Orchestrated refusals are in
-         // `failures`, where that caller already looks.
+         // `failures`, where that caller already looks, unless an eligible
+         // sibling built their table (then in `refusedSources`).
          const sourcesRefused =
             Object.keys(derivedRefused).length + instructedRefused;
          const durationMs = Date.now() - startedAt;
@@ -840,8 +845,18 @@ export class MaterializationService {
             sourcesBuilt,
             sourcesReused,
             ...(sourcesRefused > 0 ? { sourcesRefused } : {}),
-            ...(Object.keys(derivedRefused).length > 0
-               ? { refusedSources: derivedRefused }
+            // Auto-run's refusals, plus instructed sources refused beside a
+            // table an eligible sibling built (ms2data/service#7078), which
+            // are not in `failures`.
+            ...(Object.keys(derivedRefused).length +
+               Object.keys(refusedBesideBuilt).length >
+            0
+               ? {
+                    refusedSources: {
+                       ...derivedRefused,
+                       ...refusedBesideBuilt,
+                    },
+                 }
                : {}),
             durationMs,
             // commitManifest replaces the metadata, so the version is set again.
@@ -877,10 +892,10 @@ export class MaterializationService {
 
          recordSourcesOutcome("built", sourcesBuilt, mode);
          recordSourcesOutcome("reused", sourcesReused, mode);
-         // An instructed refusal is in `failures` but metered once, as refused.
+         // An instructed refusal in `failures` is metered once, as refused.
          recordSourcesOutcome(
             "failed",
-            sourcesFailed - instructedRefused,
+            sourcesFailed - refusalsInFailures,
             mode,
          );
          recordSourcesOutcome("refused", sourcesRefused, mode);

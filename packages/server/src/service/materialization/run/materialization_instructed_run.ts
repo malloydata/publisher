@@ -7,11 +7,17 @@ import {
    MaterializationEligibilityError,
 } from "../../../errors";
 import { logger } from "../../../logger";
+import type { EligibilityRefusalReason } from "../../../materialization_metrics";
 import {
    recordSharedAddressInstructions,
    recordTableCollision,
 } from "../../../materialization_metrics";
-import type { BuildInstruction, ManifestEntry, SourceFailure } from "../types";
+import type {
+   BuildInstruction,
+   ManifestEntry,
+   RefusedSource,
+   SourceFailure,
+} from "../types";
 import { errMessage } from "../../../utils";
 import {
    getPersistCollisionEnforce,
@@ -74,11 +80,50 @@ export interface InstructedRun {
    upstreamsBySourceID: Map<string, string[]>;
    failedReasons: string[];
    refusals: MaterializationEligibilityError[];
+   /**
+    * Refusals not yet recorded against their address (ms2data/service#7078).
+    * A refused source can share its content address with an eligible sibling
+    * (a base and its `extend`); the refusal is decided after the loop, so it
+    * fails the address only when no sibling built it, whatever the order.
+    */
+   pendingRefusals: PendingRefusal[];
+   /**
+    * Sources auto-run already refused (deriveSelfInstructions), by sourceID.
+    * One sharing an eligible sibling's address still reaches the loop through
+    * that sibling's instruction; it is skipped, already reported.
+    */
+   priorRefusedIDs: ReadonlySet<string>;
+   /**
+    * Addresses some planned source on which the colocated gate refuses, by
+    * address, computed on first use (see colocatedRefusalOn).
+    */
+   colocatedRefusedAddresses?: Map<
+      string,
+      {
+         sourceID: string;
+         name: string;
+         reason: EligibilityRefusalReason | undefined;
+         message: string;
+      }
+   >;
+   /** Content addresses a source of this run built (not carried, not failed). */
+   builtAddresses: Set<string>;
    builtSources: string[];
    // Keyed by physical table, not content address: the address says what a
    // table CONTAINS, the coordinate says which table it IS, and only the latter
    // answers "have I written this already".
    writtenTargets: Map<string, { sourceEntityId: string; sourceName: string }>;
+}
+
+/** One gate refusal, held until the run knows whether its address was built. */
+export interface PendingRefusal {
+   /** The address the refusal would fail. */
+   failedKey: string;
+   failure: SourceFailure;
+   /** The `ManifestEntry.error` mirror of `failure`, for the deprecation window. */
+   errorEntry: ManifestEntry;
+   /** The same refusal, per source, for the run's `refusedSources` metadata. */
+   refused: RefusedSource;
 }
 
 /** A run's instructions, indexed both ways a source can find its own. */

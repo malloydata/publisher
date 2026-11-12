@@ -1450,6 +1450,121 @@ describe("executeInstructedBuild", () => {
          ).toBe(false);
       });
 
+      // ms2data/service#7078, colocated: a base and its `extend` share one
+      // content address, and a colocated table is served by address (the bind
+      // refuses the whole address when any source on it is refused). So a
+      // refused extension refuses the address in both run orders: nothing is
+      // built that could not serve, and the outcome no longer depends on order.
+      for (const [label, order] of [
+         ["the eligible source comes first", [["ok"], ["base"], ["ext"]]],
+         ["the refused source comes first", [["ok"], ["ext"], ["base"]]],
+      ] as const) {
+         it(`refuses a colocated address a refused sibling shares when ${label}, building nothing on it`, async () => {
+            const runSQL = sinon.stub().resolves();
+            const connection = { runSQL } as unknown as MalloyConnection;
+            const ok = fakeSource({
+               name: "ok",
+               sourceEntityId: "b0k0k0k0k0k0k0k0",
+            });
+            const base = fakeSource({
+               name: "base",
+               sourceEntityId: "bshared7078aaaaa",
+            });
+            const ext = fakeSource({
+               name: "ext",
+               sourceEntityId: "bshared7078aaaaa",
+               sourceDef: { blockNotes: ["#(authorize) true"] },
+            });
+            const compiled = compiledWith(
+               { ok, base, ext },
+               order.map((o) => [...o]),
+               new Map([["duckdb", connection]]),
+            );
+            const result = (await callExecute(
+               compiled,
+               [
+                  {
+                     sourceEntityId: "b0k0k0k0k0k0k0k0",
+                     materializedTableId: "mt-ok",
+                     physicalTableName: "ok_v1",
+                     realization: "COPY",
+                  },
+                  {
+                     sourceEntityId: "bshared7078aaaaa",
+                     materializedTableId: "mt-shared",
+                     physicalTableName: "shared_v1",
+                     realization: "COPY",
+                  },
+               ],
+               {},
+            )) as ExecuteResult & {
+               refusalsInFailures: number;
+               refusedBesideBuilt: Record<string, unknown>;
+            };
+            expect(result.entries["b0k0k0k0k0k0k0k0"].physicalTableName).toBe(
+               "ok_v1",
+            );
+            expect(result.failures["bshared7078aaaaa"]).toMatchObject({
+               refused: true,
+               retryable: false,
+               physicalTableName: "shared_v1",
+            });
+            expect(result.refusalsInFailures).toBe(1);
+            expect(result.sourcesRefused).toBe(2);
+            expect(result.refusedBesideBuilt).toEqual({});
+            expect(
+               createsFrom(runSQL).some((sql) => sql.includes("shared_v1")),
+               "nothing is built on a refused colocated address",
+            ).toBe(false);
+         });
+      }
+
+      it("still fails an address only refused sources reach", async () => {
+         const runSQL = sinon.stub().resolves();
+         const connection = { runSQL } as unknown as MalloyConnection;
+         const ok = fakeSource({
+            name: "ok",
+            sourceEntityId: "b0k0k0k0k0k0k0k0",
+         });
+         const a = refusedColocated("bonlyrefusedaaaa");
+         const b = fakeSource({
+            name: "refused_too",
+            sourceEntityId: "bonlyrefusedaaaa",
+            sourceDef: { blockNotes: ["#(authorize) true"] },
+         });
+         const compiled = compiledWith(
+            { ok, refused: a, refused_too: b },
+            [["ok"], ["refused", "refused_too"]],
+            new Map([["duckdb", connection]]),
+         );
+         const result = (await callExecute(
+            compiled,
+            [
+               {
+                  sourceEntityId: "b0k0k0k0k0k0k0k0",
+                  materializedTableId: "mt-ok",
+                  physicalTableName: "ok_v1",
+                  realization: "COPY",
+               },
+               {
+                  sourceEntityId: "bonlyrefusedaaaa",
+                  materializedTableId: "mt-ref",
+                  physicalTableName: "refused_v1",
+                  realization: "COPY",
+               },
+            ],
+            {},
+         )) as ExecuteResult & { refusalsInFailures: number };
+         expect(result.failures["bonlyrefusedaaaa"]).toMatchObject({
+            refused: true,
+            retryable: false,
+            physicalTableName: "refused_v1",
+         });
+         // Once per address in failures, though both sources are refused.
+         expect(result.refusalsInFailures).toBe(1);
+         expect(result.sourcesRefused).toBe(2);
+      });
+
       it("still 422s when every instructed source is refused", async () => {
          const runSQL = sinon.stub().resolves();
          const connection = { runSQL } as unknown as MalloyConnection;
