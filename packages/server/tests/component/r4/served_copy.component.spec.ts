@@ -10,7 +10,8 @@
  * today's serve shape answers.
  */
 
-import { afterAll, beforeAll, describe, expect, it } from "bun:test";
+import { afterAll, beforeAll, describe, expect, it, spyOn } from "bun:test";
+import type { ModelMaterializer } from "@malloydata/malloy";
 import { installSettings } from "../../../src/test_helpers/settings_env";
 import {
    buildScenario,
@@ -131,6 +132,76 @@ describe("R4: the served copy answers equal to live", () => {
          expect(run.servedVia).toBeUndefined();
          expect(run.servedFrom).toBeNull();
          expect(rowDifference(run.live, run.served)).toBeUndefined();
+      });
+   });
+
+   describe("a query that reads no stored table (decision 6)", () => {
+      let fixture: R4Fixture;
+      beforeAll(async () => {
+         fixture = await buildScenario({
+            files: { "m.malloy": model },
+            seedSql,
+         });
+      });
+      it("is declined once per compiled copy, then without compiling again", async () => {
+         const servedCopy = fixture.servedCopy();
+         await servedCopy.compiledModelDef();
+         const materializer = (
+            servedCopy as unknown as {
+               compiled: { materializer: ModelMaterializer };
+            }
+         ).compiled.materializer;
+         const compiles = spyOn(materializer, "loadRestrictedQuery");
+         const miss = "run: ev -> { group_by: region }";
+         for (let i = 0; i < 3; i++) {
+            await expect(servedCopy.loadQuery(miss)).rejects.toThrow(
+               "the query reads no re-rooted table",
+            );
+         }
+         expect(compiles).toHaveBeenCalledTimes(1);
+         // The opt-out decline is remembered the same way.
+         const optOut = "run: daily_optout -> { group_by: region }";
+         await expect(servedCopy.loadQuery(optOut)).rejects.toThrow("opts out");
+         await expect(servedCopy.loadQuery(optOut)).rejects.toThrow("opts out");
+         expect(compiles).toHaveBeenCalledTimes(2);
+         // A query that reads the table still answers.
+         const hit = await servedCopy.loadQuery(
+            "run: daily -> { group_by: region }",
+         );
+         expect(hit.tablesRead.map((b) => b.sourceName)).toEqual(["daily"]);
+         // And through the router, the decline still falls through to live.
+         const run = await fixture.run({ name: "miss", malloy: miss });
+         expect(run.servedVia).toBeUndefined();
+         expect(rowDifference(run.live, run.served)).toBeUndefined();
+      });
+
+      it("compiles once with no fresh binding, not on every query", async () => {
+         const servedCopy = fixture.servedCopy();
+         servedCopy.setBindings([]);
+         const compile = spyOn(
+            servedCopy as unknown as { compile(): Promise<unknown> },
+            "compile",
+         );
+         for (let i = 0; i < 3; i++) await servedCopy.compiledModelDef();
+         expect(compile).toHaveBeenCalledTimes(1);
+         compile.mockRestore();
+      });
+
+      it("forgets its declines when the copy is compiled again", async () => {
+         const servedCopy = fixture.servedCopy();
+         await servedCopy.compiledModelDef();
+         servedCopy.invalidate();
+         await servedCopy.compiledModelDef();
+         const materializer = (
+            servedCopy as unknown as {
+               compiled: { materializer: ModelMaterializer };
+            }
+         ).compiled.materializer;
+         const compiles = spyOn(materializer, "loadRestrictedQuery");
+         await expect(
+            servedCopy.loadQuery("run: ev -> { group_by: region }"),
+         ).rejects.toThrow();
+         expect(compiles).toHaveBeenCalledTimes(1);
       });
    });
 

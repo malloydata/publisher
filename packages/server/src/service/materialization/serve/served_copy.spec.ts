@@ -8,6 +8,7 @@ import {
    declaredBaseName,
    dropDimensions,
    rerootDeclaration,
+   rewriteDimensions,
    SERVED_COPY_FLAG,
    typeDeclaration,
    type Reroot,
@@ -388,5 +389,133 @@ source: east is orders extend {
             end: { line: 1, character: 34 },
          }),
       ).toBeUndefined();
+   });
+});
+
+describe("a stored timeframe truncation (decision 3)", () => {
+   const target = {
+      sourceName: "east",
+      connectionAlias: "x",
+      virtualHandle: "h",
+      typeName: "east__served",
+   };
+
+   it("renames the stored column internally and rewrites the definition in place, keeping its annotations", () => {
+      expect(
+         rerootDeclaration(
+            "east is orders extend {\n  where: region = 'east'\n  dimension:\n    big is amt > 10\n    #(doc) \"The month\"\n    order_month is d.month\n  measure: n is count()\n}",
+            {
+               ...target,
+               storedDimensions: ["big", "order_month"],
+               columns: [
+                  { name: "big", type: "BOOLEAN" },
+                  { name: "order_month", type: "DATE", timeframe: "month" },
+               ],
+            },
+         ),
+      ).toBe(
+         "east is x.virtual('h')::east__served extend {\n  internal rename:\n    order_month__stored is order_month\n  where: region = 'east'\n  dimension:\n    #(doc) \"The month\"\n    order_month is order_month__stored.month\n  measure: n is count()\n}",
+      );
+   });
+
+   it("rewrites a definition in a later extend, and defines an inherited one in the first with its annotations", () => {
+      expect(
+         rerootDeclaration(
+            "east is orders extend { where: r = 1 } extend { dimension: wk is d.week, k is 1 }",
+            {
+               ...target,
+               storedDimensions: ["wk", "k", "inh"],
+               columns: [
+                  { name: "wk", type: "DATE", timeframe: "week" },
+                  { name: "k", type: "INTEGER" },
+                  {
+                     name: "inh",
+                     type: "TIMESTAMP",
+                     timeframe: "hour",
+                     notes: ['#(doc) "Inherited"\n'],
+                  },
+               ],
+            },
+         ),
+      ).toBe(
+         "east is x.virtual('h')::east__served extend {\n  internal rename:\n    wk__stored is wk\n    inh__stored is inh\n  dimension:\n    #(doc) \"Inherited\"\n    inh is inh__stored.hour\n where: r = 1 } extend { dimension: wk is wk__stored.week }",
+      );
+   });
+
+   it("opens an extend for a #@ persist query's timeframe output column", () => {
+      expect(
+         rerootDeclaration(
+            "daily is ev -> { group_by: m is d.month; aggregate: t is amt.sum() }",
+            {
+               ...target,
+               sourceName: "daily",
+               typeName: "daily__served",
+               columns: [
+                  { name: "m", type: "DATE", timeframe: "month" },
+                  { name: "t", type: "DOUBLE" },
+               ],
+            },
+         ),
+      ).toBe(
+         "daily is x.virtual('h')::daily__served extend {\n  internal rename:\n    m__stored is m\n  dimension:\n    m is m__stored.month\n}",
+      );
+   });
+
+   it("picks an internal name no field of the model uses", () => {
+      const out = rerootDeclaration(
+         "east is orders extend { dimension: m is d.month }",
+         {
+            ...target,
+            storedDimensions: ["m"],
+            reservedNames: ["m__stored", "m__stored_2"],
+            columns: [{ name: "m", type: "DATE", timeframe: "month" }],
+         },
+      );
+      expect(out).toContain("m__stored_3 is m");
+      expect(out).toContain("m is m__stored_3.month");
+   });
+
+   it("quotes a name that needs it, and ignores a timeframe outside the closed set", () => {
+      const out = rerootDeclaration(
+         "east is orders extend { dimension: `order month` is d.month }",
+         {
+            ...target,
+            storedDimensions: ["order month", "odd"],
+            columns: [
+               { name: "order month", type: "DATE", timeframe: "month" },
+               { name: "odd", type: "DATE", timeframe: "fortnight" },
+            ],
+         },
+      );
+      expect(out).toBe(
+         "east is x.virtual('h')::east__served extend {\n  internal rename:\n    `order month__stored` is `order month`\n dimension: `order month` is `order month__stored`.month }",
+      );
+   });
+
+   it("leaves a timeframe column's annotations off the type, since its field carries them", () => {
+      expect(
+         typeDeclaration({
+            typeName: "t",
+            columns: [
+               {
+                  name: "m",
+                  type: "DATE",
+                  timeframe: "month",
+                  notes: ['#(doc) "x"\n'],
+               },
+            ],
+         }),
+      ).toBe("type: t is {\n   m::date\n}");
+   });
+
+   it("rewrites one definition among dropped neighbours", () => {
+      const out = rewriteDimensions(
+         "extend { dimension: a is 1, m is d.month, b is 2 }",
+         new Set(["a", "b"]),
+         new Map([["m", "m__stored.month"]]),
+      );
+      expect(out?.text).toBe("extend { dimension: m is m__stored.month }");
+      expect([...(out?.rewritten ?? [])]).toEqual(["m"]);
+      expect([...(out?.dropped ?? [])].sort()).toEqual(["a", "b"]);
    });
 });

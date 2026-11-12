@@ -62,11 +62,7 @@ export interface Reroot {
     * the annotation lines its field carries (`#(doc) "…"`, `#(classification)
     * …`), written on the field in the `type:` so they read back on it.
     */
-   columns: readonly {
-      name: string;
-      type: string;
-      notes?: readonly string[];
-   }[];
+   columns: readonly ServedColumn[];
    /**
     * For a `#(materialize)` re-root: the computed dimensions its table stores
     * under their own names. Its table is the whole source (`src -> { select:
@@ -75,7 +71,45 @@ export interface Reroot {
     * the stored column is the field. Absent for a `#@ persist` re-root.
     */
    storedDimensions?: readonly string[];
+   /**
+    * Every field name the model declares, on any source. A stored timeframe
+    * column is renamed internally (see {@link ServedColumn.timeframe}), and
+    * the internal name must not collide with any of them: an extension sees an
+    * `internal` field.
+    */
+   reservedNames?: readonly string[];
 }
+
+/** One stored column of a re-rooted source. */
+export interface ServedColumn {
+   name: string;
+   /** The stored (warehouse) type. */
+   type: string;
+   /** The annotation lines its field carries, written on it again. */
+   notes?: readonly string[];
+   /**
+    * The timeframe the author's field truncates to (`order_date.month`). A
+    * `type:` field cannot carry one, so the stored column is renamed
+    * internally and the field redefined as that column truncated again, which
+    * is the identity on a truncated value and restores the field's timeframe:
+    *
+    *    internal rename: order_month__stored is order_month
+    *    dimension: order_month is order_month__stored.month
+    */
+   timeframe?: string;
+}
+
+/** The timeframes a stored truncation can carry, the only ones emitted. */
+const TIMEFRAMES: ReadonlySet<string> = new Set([
+   "second",
+   "minute",
+   "hour",
+   "day",
+   "week",
+   "month",
+   "quarter",
+   "year",
+]);
 
 /** Why a declaration could not be re-rooted; the source then serves live. */
 export interface RerootRefusal {
@@ -191,7 +225,8 @@ export function rerootDeclaration(
       | "virtualHandle"
       | "typeName"
       | "storedDimensions"
-   >,
+      | "reservedNames"
+   > & { columns?: Reroot["columns"] },
 ): string | undefined {
    const spans = declarationSpans(declaration);
    if (!spans) return undefined;
@@ -203,14 +238,121 @@ export function rerootDeclaration(
       spans.extendStart === undefined
          ? ""
          : declaration.slice(spans.extendStart).trimEnd();
-   if (r.storedDimensions && r.storedDimensions.length > 0) {
+   // Each stored timeframe column, renamed internally so its field can be
+   // redefined with the timeframe a `type:` cannot declare.
+   const timeframed = timeframedColumns(r.columns ?? [], r.reservedNames ?? []);
+   const stored = new Set(r.storedDimensions ?? []);
+   const rewrite = new Map<string, string>();
+   for (const c of timeframed) {
+      // Only a `#(materialize)` computed dimension has a definition in the
+      // source's own text to rewrite; a `#@ persist` query's output has none.
+      if (stored.has(c.name)) rewrite.set(c.name, timeframeExpression(c));
+   }
+   let rewritten = new Set<string>();
+   if (stored.size > 0) {
       // A dimension the source inherits is not in its own text: the base the
       // re-root replaces defined it, and the stored column stands in alone.
-      const kept = dropDimensions(extend, new Set(r.storedDimensions));
+      const kept = rewriteDimensions(
+         extend,
+         new Set([...stored].filter((n) => !rewrite.has(n))),
+         rewrite,
+      );
       if (!kept) return undefined;
       extend = kept.text;
+      rewritten = kept.rewritten;
+   }
+   if (timeframed.length > 0) {
+      const opened = intoFirstExtend(
+         extend,
+         timeframeStatements(
+            timeframed,
+            timeframed.filter((c) => !rewritten.has(c.name)),
+         ),
+      );
+      if (opened === undefined) return undefined;
+      extend = opened;
    }
    return `${name} is ${virtual}${extend ? ` ${extend}` : ""}`;
+}
+
+/** A timeframe column with the internal name its stored value is renamed to. */
+interface Timeframed extends ServedColumn {
+   timeframe: string;
+   internalName: string;
+}
+
+/**
+ * The columns that carry a timeframe, each with an internal name that is
+ * none of `reserved` and no stored column's name.
+ */
+function timeframedColumns(
+   columns: readonly ServedColumn[],
+   reserved: readonly string[],
+): Timeframed[] {
+   const taken = new Set([...reserved, ...columns.map((c) => c.name)]);
+   const out: Timeframed[] = [];
+   for (const c of columns) {
+      if (!c.timeframe || !TIMEFRAMES.has(c.timeframe)) continue;
+      let internalName = `${c.name}__stored`;
+      for (let n = 2; taken.has(internalName); n++) {
+         internalName = `${c.name}__stored_${n}`;
+      }
+      taken.add(internalName);
+      out.push({ ...c, timeframe: c.timeframe, internalName });
+   }
+   return out;
+}
+
+/** `<internal>.<timeframe>`: the stored value truncated again. */
+function timeframeExpression(c: Timeframed): string {
+   return `${identifier(c.internalName)}.${c.timeframe}`;
+}
+
+/**
+ * The statements that open the first extend block: the internal renames, and
+ * a `dimension:` for each timeframe field whose definition is not in the
+ * source's own text (an inherited one, or a `#@ persist` query's output
+ * column), with the field's annotations.
+ */
+function timeframeStatements(
+   all: readonly Timeframed[],
+   emitted: readonly Timeframed[],
+): string {
+   const renames = all
+      .map((c) => `    ${identifier(c.internalName)} is ${identifier(c.name)}`)
+      .join("\n");
+   let out = `\n  internal rename:\n${renames}`;
+   if (emitted.length > 0) {
+      const dims = emitted
+         .map(
+            (c) =>
+               (c.notes ?? []).map((n) => `    ${n.trimEnd()}\n`).join("") +
+               `    ${identifier(c.name)} is ${timeframeExpression(c)}`,
+         )
+         .join("\n");
+      out += `\n  dimension:\n${dims}`;
+   }
+   return out;
+}
+
+/**
+ * `statements` placed just inside the first `extend {` of a run of extend
+ * blocks, or as a new block when there is none. Undefined when the text does
+ * not lex.
+ */
+function intoFirstExtend(
+   extend: string,
+   statements: string,
+): string | undefined {
+   if (extend === "") return `extend {${statements}\n}`;
+   const open = lexAll(extend)?.find(
+      (t) => t.kind === "open" && t.text === "{",
+   );
+   if (!open) return undefined;
+   const rest = extend.slice(open.end);
+   // On its own line, so the author's first statement keeps its own.
+   const sep = /^[ \t]*\n/.test(rest) ? "" : "\n";
+   return extend.slice(0, open.end) + statements + sep + rest;
 }
 
 /** Indexes in `tokens` of a word followed by `:` (not `::`) at its own depth. */
@@ -247,10 +389,26 @@ export function dropDimensions(
    text: string,
    names: ReadonlySet<string>,
 ): { text: string; dropped: Set<string> } | undefined {
+   const out = rewriteDimensions(text, names, new Map());
+   return out && { text: out.text, dropped: out.dropped };
+}
+
+/**
+ * {@link dropDimensions}, and also replace the expression of each definition
+ * named in `rewrite` (`<name> is <expression>`) with the given text, keeping
+ * its name, its annotations and its place. Returns the names it dropped and
+ * the names it rewrote.
+ */
+export function rewriteDimensions(
+   text: string,
+   names: ReadonlySet<string>,
+   rewrite: ReadonlyMap<string, string>,
+): { text: string; dropped: Set<string>; rewritten: Set<string> } | undefined {
    const tokens = lexAll(text);
    if (!tokens) return undefined;
    const dropped = new Set<string>();
-   const cuts: { start: number; end: number }[] = [];
+   const rewritten = new Set<string>();
+   const cuts: { start: number; end: number; insert?: string }[] = [];
    // A block's statements are its depth-1 tokens; its closing brace is not one.
    const level = tokens.filter((t) => t.depth === 1 && t.kind !== "close");
    const closes = tokens.filter((t) => t.kind === "close" && t.depth === 0);
@@ -297,12 +455,23 @@ export function dropDimensions(
             name: nameTok.text.startsWith("`")
                ? nameTok.text.slice(1, -1)
                : nameTok.text,
+            exprFrom,
             exprEnd: inExpr[inExpr.length - 1]?.end,
             afterComma: comma?.end,
          };
       });
       if (defs.some((d) => d.exprEnd === undefined)) return undefined;
-      const drop = defs.map((d) => names.has(d.name));
+      for (const def of defs) {
+         const expression = rewrite.get(def.name);
+         if (expression === undefined) continue;
+         rewritten.add(def.name);
+         cuts.push({
+            start: def.exprFrom,
+            end: def.exprEnd as number,
+            insert: ` ${expression}`,
+         });
+      }
+      const drop = defs.map((d) => names.has(d.name) && !rewrite.has(d.name));
       if (!drop.some(Boolean)) continue;
       for (const [d, def] of defs.entries()) if (drop[d]) dropped.add(def.name);
       if (drop.every(Boolean)) {
@@ -335,9 +504,9 @@ export function dropDimensions(
    }
    let out = text;
    for (const c of cuts.sort((a, b) => b.start - a.start)) {
-      out = out.slice(0, c.start) + out.slice(c.end);
+      out = out.slice(0, c.start) + (c.insert ?? "") + out.slice(c.end);
    }
-   return { text: out, dropped };
+   return { text: out, dropped, rewritten };
 }
 
 /**
@@ -373,7 +542,10 @@ export function typeDeclaration(
    const fields = r.columns
       .map(
          (c) =>
-            (c.notes ?? []).map((note) => `   ${note.trimEnd()}\n`).join("") +
+            // A timeframe column's notes go on its redefined field instead.
+            (c.timeframe && TIMEFRAMES.has(c.timeframe) ? [] : (c.notes ?? []))
+               .map((note) => `   ${note.trimEnd()}\n`)
+               .join("") +
             `   ${identifier(c.name)}::${duckdbTypeToMalloy(c.type)}`,
       )
       .join(",\n");

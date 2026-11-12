@@ -2641,15 +2641,30 @@ export class Model {
       this.servedCopy.setContext(packagePath, malloyConfig, materializePlans);
    }
 
+   /**
+    * Whether the router may try the served copy: a model file, with the
+    * materialize switch and the storage tier both on. Warnings and the compile at bind follow the
+    * same rule, so a package never warns about a copy that is not routed.
+    */
+   private servedCopyEnabled(): boolean {
+      // A notebook or report is not a model file the served copy can load.
+      return (
+         this.modelType === "model" &&
+         !this.isNotebook() &&
+         getMaterializeEnabled() &&
+         getPersistStorageMode() === "on"
+      );
+   }
+
    /** Compile the served copy now, when it is enabled, so its warnings exist. */
    public async prepareServedCopy(): Promise<void> {
-      if (!getMaterializeEnabled()) return;
+      if (!this.servedCopyEnabled()) return;
       await this.servedCopy.prepare();
    }
 
    /** Why this model's served copy leaves sources unserved (empty when off). */
    public servedCopyProblems(): readonly ServedCopyProblem[] {
-      if (!getMaterializeEnabled()) return [];
+      if (!this.servedCopyEnabled()) return [];
       return this.servedCopy.problems();
    }
 
@@ -3032,8 +3047,7 @@ export class Model {
          // The served copy holds bindings the serve shape drops (a
          // `#(materialize)` build source is no source of this model by name).
          const servedCopyPossible =
-            getMaterializeEnabled() &&
-            getPersistStorageMode() === "on" &&
+            this.servedCopyEnabled() &&
             this.servedCopy.hasBindings() &&
             !!this.storageServe.serveDestinationConfig;
          // Captured once so the guard and the use below see the same companion.

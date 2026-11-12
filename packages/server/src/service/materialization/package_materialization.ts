@@ -1187,15 +1187,6 @@ export class PackageMaterialization {
    }
 
    /**
-    * Warnings for stored columns whose type does not serve as the type Malloy
-    * declares for them (ms2data/service#6642), one per source and column. A
-    * castable column is read through a cast to its declared type, and a
-    * rebuild stores that type; any other is answered live. Read from the
-    * bindings bound now, so it follows the manifest rather than the load. Keyed
-    * by the source's sourceID, so two models' same-named sources both report,
-    * and a source several models import reports once.
-    */
-   /**
     * Warnings for a model whose served copy (materialization v2) leaves
     * sources unserved: it did not compile, a cross-connection join waits for
     * the other side to build, or a source could not be re-rooted. Those
@@ -1218,6 +1209,15 @@ export class PackageMaterialization {
       return warnings;
    }
 
+   /**
+    * Warnings for stored columns whose type does not serve as the type Malloy
+    * declares for them (ms2data/service#6642), one per source and column. A
+    * castable column is read through a cast to its declared type, and a
+    * rebuild stores that type; any other is answered live. Read from the
+    * bindings bound now, so it follows the manifest rather than the load. Keyed
+    * by the source's sourceID, so two models' same-named sources both report,
+    * and a source several models import reports once.
+    */
    storedColumnTypeWarnings(): ApiPackageWarning[] {
       const warnings: ApiPackageWarning[] = [];
       const seen = new Set<string>();

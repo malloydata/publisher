@@ -19,6 +19,7 @@
 
 import { tryCompileMaterializeCompanion } from "../../../src/service/materialization/plan/materialize_compile";
 import type { MaterializePlan } from "../../../src/service/materialization/plan/build_file_generator";
+import type { ServedCopyServe } from "../../../src/service/materialization/serve/served_copy_serve";
 import { DuckDBConnection } from "@malloydata/db-duckdb";
 import * as fs from "fs";
 import * as os from "os";
@@ -101,6 +102,9 @@ export interface R4Run {
    live: Row[];
    served: Row[];
    servedFrom: string | null;
+   /** Each result's fields with their wire types (a timeframe included). */
+   liveFields: { name: string; type: unknown }[];
+   servedFields: { name: string; type: unknown }[];
    /** `served_copy` when the served copy on `virtual` answered. */
    servedVia?: string;
    truth?: Row[];
@@ -128,6 +132,8 @@ export interface R4Fixture {
    servedCopyProblems(): Promise<ReturnType<Model["servedCopyProblems"]>>;
    /** The annotation lines on a field of a source in the compiled served copy. */
    servedFieldNotes(source: string, field: string): Promise<string[]>;
+   /** The model's served copy, bound to {@link bindings}. */
+   servedCopy(): ServedCopyServe;
 }
 
 /**
@@ -260,7 +266,11 @@ export async function buildScenario(scenario: R4Scenario): Promise<R4Fixture> {
               { queryTimezone: persistSourceQueryTimezone(source) },
            );
       await duckdb.runSQL(`CREATE TABLE ${DESTINATION}.${table} AS ${select}`);
-      const described = await duckdb.runSQL(`DESCRIBE ${DESTINATION}.${table}`);
+      // runSQL returns 10 rows unless told otherwise: one per column here.
+      const described = await duckdb.runSQL(
+         `DESCRIBE ${DESTINATION}.${table}`,
+         { rowLimit: 10_000 },
+      );
       entries[`h${i}`] = {
          sourceEntityId: `h${i}`,
          sourceName: source.name,
@@ -333,6 +343,12 @@ export async function buildScenario(scenario: R4Scenario): Promise<R4Fixture> {
       );
       return {
          rows: result.compactResult as unknown as Row[],
+         // The result's field types as the wire carries them (a timeframe
+         // included), so a test can hold served metadata to live's.
+         fields: (result.result?.schema?.fields ?? []).map((f) => ({
+            name: f.name,
+            type: (f as { type?: unknown }).type,
+         })),
          servedFrom: result.servedFrom,
          path: result.path,
       };
@@ -357,6 +373,7 @@ export async function buildScenario(scenario: R4Scenario): Promise<R4Fixture> {
                {
                   fields?: {
                      name?: string;
+                     as?: string;
                      annotations?: { notes?: { text: string }[] };
                      annotation?: { notes?: { text: string }[] };
                   }[];
@@ -364,11 +381,17 @@ export async function buildScenario(scenario: R4Scenario): Promise<R4Fixture> {
             >;
          };
          const f = servedDef?.contents?.[source]?.fields?.find(
-            (x) => x.name === field,
+            // `as` first: a renamed field keeps its old `name`.
+            (x) => (x.as ?? x.name) === field,
          );
          return ((f?.annotations ?? f?.annotation)?.notes ?? []).map((n) =>
             n.text.trim(),
          );
+      },
+      servedCopy() {
+         model.setServeBindings(bindings);
+         return (model as unknown as { servedCopy: ServedCopyServe })
+            .servedCopy;
       },
       async servedCopyProblems() {
          model.setServeBindings(bindings);
@@ -385,11 +408,14 @@ export async function buildScenario(scenario: R4Scenario): Promise<R4Fixture> {
          model.setServeBindings(bindings);
          const served = await runOnce(query.malloy);
          const truth = query.truthSql
-            ? ((await duckdb.runSQL(query.truthSql)).rows as Row[])
+            ? ((await duckdb.runSQL(query.truthSql, { rowLimit: 10_000 }))
+                 .rows as Row[])
             : undefined;
          return {
             live: live.rows,
             served: served.rows,
+            liveFields: live.fields,
+            servedFields: served.fields,
             servedFrom: served.servedFrom,
             ...(served.path?.servedBy?.via
                ? { servedVia: served.path.servedBy.via }

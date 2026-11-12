@@ -53,6 +53,7 @@ import {
    buildServedCopy,
    declaredBaseName,
    type Reroot,
+   type ServedColumn,
    type ServedCopyRange,
 } from "./served_copy";
 import { servedCopyConfig, servedCopyAlias } from "./served_copy_config";
@@ -87,6 +88,8 @@ export interface ServedCopyHost {
 
 interface Compiled {
    key: string;
+   /** The invalidation generation it was compiled under. */
+   generation: number;
    materializer?: ModelMaterializer;
    /** The served copy's compiled model, read (never edited) for source chains. */
    modelDef?: unknown;
@@ -94,9 +97,26 @@ interface Compiled {
    optOutIDs?: ReadonlySet<string>;
    /** Bindings actually re-rooted, with their destination under its alias. */
    rerooted: ServeBinding[];
+   /**
+    * Tables that store a computed dimension (`#(materialize)`), by table
+    * path. The build evaluated it in the default timezone, so a query that
+    * sets its own `timezone:` would read values live computes differently.
+    */
+   computedTables?: ReadonlySet<string>;
    aliased: ServeBinding[];
    problems: ServedCopyProblem[];
+   /**
+    * Queries this compiled copy declined for their shape (they read no
+    * re-rooted table, or read an opted-out source), by query text, with the
+    * reason. Neither depends on the givens or the clock, only on the query and
+    * this compile, so a repeat is declined without compiling it again
+    * (decision 6). Dropped with the compile: a rebind or reload starts empty.
+    */
+   declined?: Map<string, string>;
 }
+
+/** How many declined queries one compiled copy remembers before starting over. */
+const DECLINED_LIMIT = 1000;
 
 /** One model's served copy. */
 export class ServedCopyServe {
@@ -111,7 +131,11 @@ export class ServedCopyServe {
     */
    private bindings: ServeBinding[] = [];
    private compiled?: Compiled;
-   private inFlight?: { key: string; promise: Promise<Compiled> };
+   private inFlight?: {
+      key: string;
+      generation: number;
+      promise: Promise<Compiled>;
+   };
    /** Bumped on every invalidation, so a compile started before it is never kept. */
    private generation = 0;
 
@@ -190,6 +214,14 @@ export class ServedCopyServe {
                "no stored table is re-rooted in this model's served copy",
          );
       }
+      const declined = compiled.declined?.get(queryString);
+      if (declined !== undefined) throw new Error(declined);
+      const decline = (reason: string): never => {
+         const memo = (compiled.declined ??= new Map());
+         if (memo.size >= DECLINED_LIMIT) memo.clear();
+         memo.set(queryString, reason);
+         throw new Error(reason);
+      };
       const virtualMap = buildVirtualMap(compiled.aliased);
       const runnable = compiled.materializer.loadRestrictedQuery(queryString);
       // `#@ -persist` means recompute rather than read the pre-built table. In
@@ -204,9 +236,7 @@ export class ServedCopyServe {
          );
          const chain = SourceMap.of(compiled.modelDef).chainOf(struct);
          if (chain.some((id) => compiled.optOutIDs?.has(id))) {
-            throw new Error(
-               "the query reads a source that opts out of persist",
-            );
+            decline("the query reads a source that opts out of persist");
          }
       }
       // Compile eagerly so a query the copy cannot answer fails inside the
@@ -221,7 +251,17 @@ export class ServedCopyServe {
       if (tablesRead.length === 0) {
          // The query reads no stored table: the served copy would only add
          // work over live. Let the next candidate answer.
-         throw new Error("the query reads no re-rooted table");
+         decline("the query reads no re-rooted table");
+      }
+      // A stored computed dimension (`order_ts.day`, `day_of_week(order_ts)`)
+      // was evaluated at build in the default timezone; live evaluates it in
+      // the query's. A query that sets a timezone reads such a table only
+      // live: the serve shape never carries a `#(materialize)` table.
+      if (
+         tablesRead.some((b) => compiled.computedTables?.has(b.tablePath)) &&
+         setsTimezone((await readPreparedQuery(runnable)).query)
+      ) {
+         decline("the query sets a timezone over a stored computed dimension");
       }
       return {
          runnable,
@@ -251,7 +291,6 @@ export class ServedCopyServe {
    private async ensureCompiled(): Promise<Compiled> {
       const bindings = this.freshBindings(Date.now());
       const key = [
-         String(this.generation),
          ...bindings
             .map(
                (b) =>
@@ -259,9 +298,24 @@ export class ServedCopyServe {
             )
             .sort(),
       ].join("|");
-      if (this.compiled && this.compiled.key === key) return this.compiled;
-      if (!this.inFlight || this.inFlight.key !== key) {
-         const started = { key, promise: this.compile(key, bindings) };
+      const generation = this.generation;
+      if (
+         this.compiled &&
+         this.compiled.key === key &&
+         this.compiled.generation === generation
+      ) {
+         return this.compiled;
+      }
+      if (
+         !this.inFlight ||
+         this.inFlight.key !== key ||
+         this.inFlight.generation !== generation
+      ) {
+         const started = {
+            key,
+            generation,
+            promise: this.compile(key, generation, bindings),
+         };
          this.inFlight = started;
          void started.promise.finally(() => {
             if (this.inFlight === started) this.inFlight = undefined;
@@ -270,7 +324,7 @@ export class ServedCopyServe {
       const compiled = await this.inFlight.promise;
       // An invalidation while it compiled makes it stale: keep it only when
       // it is still the current generation's.
-      if (compiled.key.startsWith(`${this.generation}|`)) {
+      if (compiled.generation === this.generation) {
          this.compiled = compiled;
       }
       return compiled;
@@ -284,6 +338,7 @@ export class ServedCopyServe {
       binding: ServeBinding,
       map: SourceMap,
       problems: ServedCopyProblem[],
+      reservedNames: readonly string[],
    ): Reroot | undefined {
       // `#(materialize)`: the binding is the generated build source's; its
       // plan names the author's source, by sourceID.
@@ -319,17 +374,27 @@ export class ServedCopyServe {
          problems.push({ sourceName, reason: "column_types" });
          return undefined;
       }
-      let columns: { name: string; type: string; notes?: string[] }[];
+      // The author's field of each name: its annotations, and the timeframe a
+      // truncation carries, which the served copy restores on the field.
+      const fieldsByName = new Map(
+         (
+            (def.fields ?? []) as {
+               name?: unknown;
+               as?: unknown;
+               timeframe?: unknown;
+            }[]
+         ).map((f) => [String(f.as ?? f.name), f] as const),
+      );
+      const timeframeOf = (name: string) => {
+         const tf = fieldsByName.get(name)?.timeframe;
+         return typeof tf === "string" ? { timeframe: tf } : {};
+      };
+      let columns: ServedColumn[];
       if (plan) {
          // Exactly what the build stored: the plan's columns (the source's
          // public atomic dimensions, computed ones too, each under its own
          // name), typed as stored, with each field's annotations.
          const stored = new Map(binding.schema.map((c) => [c.name, c.type]));
-         const fieldsByName = new Map(
-            ((def.fields ?? []) as { name?: unknown; as?: unknown }[]).map(
-               (f) => [String(f.as ?? f.name), f] as const,
-            ),
-         );
          columns = [];
          for (const c of plan.columns) {
             const type = stored.get(c.column);
@@ -344,17 +409,19 @@ export class ServedCopyServe {
                name: c.column,
                type,
                ...(notes.length > 0 ? { notes } : {}),
+               ...timeframeOf(c.dimension),
             });
          }
       } else {
-         columns = narrowSchemaToPublic(binding.schema, def.fields);
+         const narrowed = narrowSchemaToPublic(binding.schema, def.fields);
          if (
-            storedColumnTypeMismatches(columns, declaredColumnsOf(def.fields))
+            storedColumnTypeMismatches(narrowed, declaredColumnsOf(def.fields))
                .length > 0
          ) {
             problems.push({ sourceName, reason: "column_types" });
             return undefined;
          }
+         columns = narrowed.map((c) => ({ ...c, ...timeframeOf(c.name) }));
       }
       return {
          url,
@@ -364,6 +431,7 @@ export class ServedCopyServe {
          virtualHandle: binding.virtualHandle,
          typeName: `${sourceName}__served`,
          columns,
+         reservedNames,
          ...(plan
             ? {
                  storedDimensions: plan.columns
@@ -377,12 +445,13 @@ export class ServedCopyServe {
 
    private async compile(
       key: string,
+      generation: number,
       bindings: ServeBinding[],
    ): Promise<Compiled> {
       const problems: ServedCopyProblem[] = [];
       const destinations = this.host.serveDestinationConfig();
       if (!destinations || !this.packagePath || !this.packageConfig) {
-         return { key, rerooted: [], aliased: [], problems };
+         return { key, generation, rerooted: [], aliased: [], problems };
       }
       const modelDef = this.host.modelDef();
       const map = SourceMap.of(modelDef);
@@ -390,8 +459,9 @@ export class ServedCopyServe {
          binding: ServeBinding;
          reroot: Reroot & { sourceID: string };
       }[] = [];
+      const reservedNames = modelFieldNames(map);
       for (const binding of bindings) {
-         const reroot = this.rerootFor(binding, map, problems);
+         const reroot = this.rerootFor(binding, map, problems, reservedNames);
          if (reroot) {
             candidates.push({
                binding,
@@ -449,7 +519,7 @@ export class ServedCopyServe {
             (c) => !refused.has(`${c.reroot.url}\u0000${c.reroot.sourceName}`),
          );
          if (candidates.length === 0) {
-            return { key, rerooted: [], aliased: [], problems };
+            return { key, generation, rerooted: [], aliased: [], problems };
          }
          const rerooted = candidates.map((c) => c.binding);
          const aliased = rerooted.map((b) => ({
@@ -484,7 +554,7 @@ export class ServedCopyServe {
                reason: classifyServedCopyFailure(detail),
                detail,
             });
-            return { key, rerooted: [], aliased: [], problems };
+            return { key, generation, rerooted: [], aliased: [], problems };
          }
          // A re-rooted source must keep every field the author's has. One it
          // inherited from a base the re-root replaced (a measure, a view, a
@@ -515,6 +585,12 @@ export class ServedCopyServe {
          }
          return {
             key,
+            generation,
+            computedTables: new Set(
+               candidates
+                  .filter((c) => (c.reroot.storedDimensions ?? []).length > 0)
+                  .map((c) => c.binding.tablePath),
+            ),
             materializer,
             modelDef: servedDef,
             optOutIDs,
@@ -523,7 +599,7 @@ export class ServedCopyServe {
             problems,
          };
       }
-      return { key, rerooted: [], aliased: [], problems };
+      return { key, generation, rerooted: [], aliased: [], problems };
    }
 }
 
@@ -553,6 +629,28 @@ function fieldNotes(field: unknown): string[] {
       | undefined;
    walk(f?.annotations ?? f?.annotation, 0);
    return out;
+}
+
+/** Whether a compiled query sets a `timezone:` anywhere in it. */
+function setsTimezone(query: unknown, depth = 0): boolean {
+   if (!query || typeof query !== "object" || depth > 64) return false;
+   if (Array.isArray(query)) {
+      return query.some((q) => setsTimezone(q, depth + 1));
+   }
+   for (const [k, v] of Object.entries(query)) {
+      if (k === "queryTimezone" && typeof v === "string") return true;
+      if (typeof v === "object" && setsTimezone(v, depth + 1)) return true;
+   }
+   return false;
+}
+
+/** Every field name any source in the model declares. */
+function modelFieldNames(map: SourceMap): string[] {
+   const names = new Set<string>();
+   for (const node of map.nodes()) {
+      for (const n of fieldNames(node.def)) names.add(n);
+   }
+   return [...names];
 }
 
 /** The names of a compiled source's fields. */
