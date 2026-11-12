@@ -105,6 +105,20 @@ source: broken is duckdb.sql("select 1 as id") extend { dimension: x is no_such_
          },
          { timeout: 20000 },
       );
+
+      it(
+         "names a skipped source's connection in the outcome, so creating that connection re-derives the plan",
+         async () => {
+            const pkg = await packages.create(ONE_PERSIST_SOURCE, {
+               getMalloyConnection: async () => {
+                  throw new Error("no such connection");
+               },
+            });
+            const outcome = await computePackageBuildPlan(pkg);
+            expect(outcome.buildConnectionNames).toEqual(["duckdb"]);
+         },
+         { timeout: 20000 },
+      );
    });
 });
 
@@ -168,6 +182,7 @@ describe("compilePackageBuildPlan", () => {
          hasFlag,
          sourceIDs,
          modelAnnotations: {
+            forRoute: () => [],
             parseAsTag: () => ({ tag: { has: () => hasFlag } }),
          },
          givens: new Map(),

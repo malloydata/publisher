@@ -70,6 +70,7 @@ import { EnvironmentStore } from "./service/environment_store";
 import { MaterializationScheduler } from "./service/materialization/run/materialization_scheduler";
 import { MaterializationService } from "./service/materialization/run/materialization_service";
 import { PackageMemoryGovernor } from "./service/package_memory_governor";
+import { startWorkloadLogFromSettings } from "./service/workload_log_store";
 import { ThemeStore } from "./service/theme_store";
 import { createAdminApp } from "./routes/admin";
 import { CatalogAdmin, catalogAdminConfig } from "./service/catalog_admin";
@@ -370,6 +371,9 @@ export async function buildApp(settings: AppSettings): Promise<BuiltApp> {
       environmentStore,
       materializationService,
    );
+   // The workload log's local store, when PUBLISHER_WORKLOAD_LOG_STORE=on; it
+   // buffers until storage opens. Its timer is unref'd.
+   startWorkloadLogFromSettings(environmentStore.storageManager);
    const themeStore = new ThemeStore(
       environmentStore.storageManager,
       SERVER_ROOT,

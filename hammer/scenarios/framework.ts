@@ -110,6 +110,11 @@ export interface ScenarioContext extends ServerControl {
       env?: string,
    ): Promise<void>;
    /**
+    * The generated SOURCE package directory on this host, the tree a dry-run
+    * publish (`## Preview`) is pointed at. `env` as for {@link editPackageModel}.
+    */
+   packageDir(pkg: string, env?: string): string;
+   /**
     * Run operator/orchestrator DDL against a destination connection out-of-band.
     * For the DuckLake destination this uses a READ-WRITE attach (the publisher's
     * serve attach is read-only), mirroring how a orchestrator provisions the

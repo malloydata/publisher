@@ -164,7 +164,6 @@ describe("buildOneSource: incremental refresh", () => {
          source,
          instruction,
          { runSQL: params.runSQL },
-         { wh: "dig" },
          params.manifest ?? new Manifest(),
          {
             getApiConnection: () => {
@@ -423,7 +422,6 @@ describe("buildOneSource: incremental refresh", () => {
             realization: "COPY",
          } as BuildInstruction,
          { runSQL },
-         { duckdb: "dig" },
          new Manifest(),
          {
             getApiConnection: () => {

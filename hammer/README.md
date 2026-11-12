@@ -202,22 +202,54 @@ bun hammer/run.ts --attention-older-than 30 # show only ⚠ callouts raised ≥3
 bun hammer/run.ts --workers 2              # scenarios in parallel (default 6)
 bun hammer/run.ts --rebuild                # force a fresh server build first
 bun hammer/run.ts --keep                   # leave the pg container + workdir up to inspect
-bun hammer/run.ts --reuse-pg               # reuse a running hammer pg container (fast iteration)
+bun hammer/run.ts --reuse-pg               # reuse a hammer pg container a --keep run left (fast iteration)
 ```
 
 `--scenarios` and `--tags` narrow together (a scenario must match both).
 
-Flags: `--pg-port` (default 55432), `--port` (14000), `--mcp-port` (14040),
-`--quiet`. Exit code is nonzero if any scenario fails.
+Flags: `--pg-port` (default: a free port Docker assigns), `--pg-container`
+(default `publisher-hammer-pg-<run id>`), `--port` (14000), `--mcp-port`
+(14040), `--quiet`. Exit code is nonzero if any scenario fails; Ctrl-C or
+SIGTERM tears the run down (its publishers, container and workdir, unless
+`--keep`) and exits 130 or 143, and a second Ctrl-C exits at once.
 
 Set `HAMMER_STEP_TIMING=1` to report any step over 500ms — how you localise a
 scenario that is slow only inside a full run.
 
 The harness picks non-default ports so it won't collide with your own stacks.
-If you used `--keep`, tear the container down with:
+If you used `--keep`, the run prints the container's name; tear it down with:
 
 ```bash
-docker rm -fv publisher-hammer-pg
+docker rm -fv publisher-hammer-pg-<run id>   # the name the run printed
+```
+
+### Running two at once
+
+Each run gets its own Postgres container, named for the run and published on a
+port Docker assigns, so two runs started at the same moment never share a name
+or race for a port. The container is labelled with the run's id, host, pid and
+the pid's start time.
+
+- A run removes only a container it created; one it reused stays up.
+- It never removes or reuses a container a live run on this host owns, and
+  refuses one created on another host (a shared Docker daemon), since it cannot
+  check that run. A label left by a crash or a reboot (the pid gone, or reused
+  by a later process) does not count as live.
+- If Docker cannot say who owns a container, the run leaves it alone and stops.
+- `--reuse-pg` reuses the newest running hammer container no live run owns: one
+  a `--keep` run left, including one under the old fixed name
+  `publisher-hammer-pg`. With none, it starts a new one.
+- `--pg-container NAME` uses that container: reused when it is running and no
+  live run owns it, replaced when it is stopped or stale, created when absent.
+
+Build the server once first (`bun run build:server-only`): two runs that both
+find no build start building at once and collide. Then give the second run its
+own Publisher ports, since each worker's servers sit at fixed offsets from
+`--port` and `--mcp-port`:
+
+```bash
+bun hammer/run.ts --tags security &
+bun hammer/run.ts --tags orchestration --port 24000 --mcp-port 24040
 ```
 
 ## Each scenario is a clean room

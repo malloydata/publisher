@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 import { Annotations, type PersistSource } from "@malloydata/malloy";
+import { parseRouteTag } from "../../motly";
 import { collectGivenRefs } from "../../given";
 
 /**
@@ -442,9 +443,12 @@ const MAX_JOIN_DEPTH = 4;
 function declaresStorage(annotations: unknown): boolean {
    if (annotations === undefined || annotations === null) return false;
    try {
-      const tag = new Annotations(
-         annotations as ConstructorParameters<typeof Annotations>[0],
-      ).parseAsTag("@").tag;
+      const tag = parseRouteTag(
+         new Annotations(
+            annotations as ConstructorParameters<typeof Annotations>[0],
+         ),
+         "@",
+      ).tag;
       if (!tag.has("persist")) return false;
       const storage = tag.text("storage");
       return typeof storage === "string" && storage.trim().length > 0;

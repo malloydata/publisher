@@ -35,7 +35,13 @@ import {
 import { UNCODED_REPORT_FINDING } from "../report_metrics";
 import { lazyCounter } from "../telemetry";
 import { URL_READER } from "../utils";
-import { assertNoCallerAuthorizeAnnotation } from "./authorize";
+import {
+   ANNOTATION_GATE_NEAR_MISS_CODE,
+   ANNOTATION_NEAR_MISS_CODE,
+   annotationNearMisses,
+   authoredNotes,
+} from "./annotation_near_miss";
+import { assertNoCallerAuthorizeAnnotation, gateNearMissOf } from "./authorize";
 import type { CallerRegion } from "./caller_joins";
 import { compileDocument, type CompiledDocument } from "./compile_document";
 import {
@@ -980,11 +986,17 @@ async function compileVirtualFile(
          scope === "append"
             ? []
             : notebookLintProblems(modelName, fullSource, virtualUri);
+      // The near-miss scan, so the editor warns where the package will; for a
+      // whole file only, like the lint. Malloy's own `malformed-route` is
+      // already in `model.problems`.
+      const nearMissProblems: LogMessage[] =
+         scope === "append" ? [] : nearMissLogMessages(model._modelDef);
       return {
          problems: tagProblems([
             ...model.problems,
             ...(readerProblem ? [readerProblem] : []),
             ...lintProblems,
+            ...nearMissProblems,
          ]),
          sql,
       };
@@ -1269,4 +1281,34 @@ function warningAsProblem(
          : warning.message,
       code,
    } as LogMessage;
+}
+
+/**
+ * The near-miss scan's findings on a compiled file: a misspelled gate as an
+ * error, since the load refuses it, and every other near miss as a warning.
+ */
+export function nearMissLogMessages(modelDef: ModelDef): LogMessage[] {
+   const notes = authoredNotes(modelDef);
+   const gates: LogMessage[] = notes.flatMap((note) => {
+      const message = gateNearMissOf(note.text);
+      return message === undefined
+         ? []
+         : [
+              {
+                 message,
+                 severity: "error" as const,
+                 code: ANNOTATION_GATE_NEAR_MISS_CODE,
+                 ...(note.at ? { at: note.at } : {}),
+              } as LogMessage,
+           ];
+   });
+   const warnings = annotationNearMisses(notes)
+      .filter((finding) => finding.code === ANNOTATION_NEAR_MISS_CODE)
+      .map((finding) => ({
+         message: `${finding.message}; ${finding.rewrite}`,
+         severity: "warn" as const,
+         code: finding.code,
+         ...(finding.at ? { at: finding.at } : {}),
+      }));
+   return [...gates, ...warnings];
 }

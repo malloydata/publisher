@@ -152,6 +152,7 @@ function runLabel(query: unknown, index: number, cell?: number): string {
         )?.range?.start?.line
       : undefined;
    const at = typeof line === "number" ? `line ${line + 1}` : `#${index + 1}`;
+   // malloy-text: a run label for messages, not Malloy that is compiled
    return cell === undefined
       ? `run: statement at ${at}`
       : `run: statement in notebook cell ${cell} (${at})`;

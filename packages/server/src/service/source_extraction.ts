@@ -329,9 +329,23 @@ export function extractSourcesFromModelDef(
       }
       nearMissAuthorize.push(
          ...collectAuthorizeNearMissesAllRoutes(
-            ownLevelNotes((entry as StructDef).annotations).map(
-               (note) => note.text,
-            ),
+            [
+               ...ownLevelNotes((entry as StructDef).annotations),
+               ...(entry as StructDef).fields.flatMap((field) =>
+                  ownLevelNotes(field.annotations),
+               ),
+            ].map((note) => note.text),
+         ),
+      );
+   }
+   // A named query's own notes: a gate is never read there, so a misspelled
+   // one is as unenforced as anywhere, and the near-miss scan leaves every
+   // gate spelling to this refusal.
+   for (const obj of Object.values(modelDef.contents)) {
+      if (obj.type !== "query") continue;
+      nearMissAuthorize.push(
+         ...collectAuthorizeNearMissesAllRoutes(
+            ownLevelNotes(obj.annotations).map((note) => note.text),
          ),
       );
    }

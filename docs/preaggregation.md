@@ -270,9 +270,12 @@ extended with measures — the annotation parses, and the build refuses the whol
 `#@ persist` source that was dropped from the plan.
 
 That first case is reachable deliberately, not only by inheritance: writing `storage=` on
-both the base's `#@ persist` and the `#@ preaggregate` line hits the same wall, and the
-build reports it against the rollup. Even had it built, the base's own stored table already
-claims the name its rollups would be served under, so nothing would have read it.
+both the base's `#@ persist` and the `#@ preaggregate` line hits the same wall. Even had it
+built, the base's own stored table already claims the name its rollups would be served
+under, so nothing would have read it. So Publisher leaves such rollups out of the plan and
+every run, rather than attempting a build that cannot succeed: the base still builds and
+serves from its stored table, and the package carries a `preaggregate-over-stored-base`
+warning (`warn`, one per base). Rollups over a stored base are planned for a later release.
 
 So a rollup goes to a destination because its own line says so, which is also the
 common case: a rollup's base is usually a table extended with measures, and Malloy admits

@@ -3,6 +3,7 @@
 
 import {
    BadRequestError,
+   BuildPlanUnavailableError,
    InvalidStateTransitionError,
    MaterializationEligibilityError,
    MaterializationNotFoundError,
@@ -216,6 +217,13 @@ export class MaterializationService {
          }
          return null;
       }
+      // A configured package whose boot publish was refused is published
+      // again first, so a run resolves the version that publish makes rather
+      // than an unversioned slot that does not exist.
+      await environment.publishRefusedConfiguredPackage?.(
+         packageName,
+         versionId.requested(),
+      );
       return (
          (await versions.resolve(packageName, versionId.requested()))
             ?.versionId ?? null
@@ -371,6 +379,17 @@ export class MaterializationService {
          );
       }
       if (orchestrated) {
+         // Validate against the plan the run will build from: a connection
+         // edit re-derives it (ms2data/service#6145).
+         await pkg.whenBuildPlanCurrent?.();
+         // Never against a plan that failed to derive: after a failed
+         // re-derivation the pre-edit plan is gone, and validating against
+         // nothing would let stale ledger entries through to the build.
+         if (pkg.isBuildPlanUnavailable?.()) {
+            throw new BuildPlanUnavailableError(
+               `The build plan of package ${packageName} could not be derived, so the build instructions cannot be checked against it. Reload the package to derive it again.`,
+            );
+         }
          validateInstructions(
             pkg.getBuildPlan(),
             buildInstructions,
@@ -785,6 +804,10 @@ export class MaterializationService {
             entries,
             failures,
             sourcesRefused: instructedRefused,
+            // Defaults keep a seam that predates the split meaning "every
+            // refusal is in failures".
+            refusalsInFailures = instructedRefused,
+            refusedBesideBuilt = {},
          } = await this.executeInstructedBuild(
             compiled,
             environment,
@@ -812,6 +835,7 @@ export class MaterializationService {
             incremental,
             Object.values(derivedRefused),
             clearedTiers,
+            orchestrated,
          );
 
          const { sourcesBuilt, sourcesFailed, sourcesReused } = tallySources(
@@ -821,7 +845,8 @@ export class MaterializationService {
          );
          // Auto-run refusals ride the run's free-form metadata, not the manifest
          // a strict-schema caller parses. Orchestrated refusals are in
-         // `failures`, where that caller already looks.
+         // `failures`, where that caller already looks, unless an eligible
+         // sibling built their table (then in `refusedSources`).
          const sourcesRefused =
             Object.keys(derivedRefused).length + instructedRefused;
          const durationMs = Date.now() - startedAt;
@@ -833,8 +858,18 @@ export class MaterializationService {
             sourcesBuilt,
             sourcesReused,
             ...(sourcesRefused > 0 ? { sourcesRefused } : {}),
-            ...(Object.keys(derivedRefused).length > 0
-               ? { refusedSources: derivedRefused }
+            // Auto-run's refusals, plus instructed sources refused beside a
+            // table an eligible sibling built (ms2data/service#7078), which
+            // are not in `failures`.
+            ...(Object.keys(derivedRefused).length +
+               Object.keys(refusedBesideBuilt).length >
+            0
+               ? {
+                    refusedSources: {
+                       ...derivedRefused,
+                       ...refusedBesideBuilt,
+                    },
+                 }
                : {}),
             durationMs,
             // commitManifest replaces the metadata, so the version is set again.
@@ -870,10 +905,10 @@ export class MaterializationService {
 
          recordSourcesOutcome("built", sourcesBuilt, mode);
          recordSourcesOutcome("reused", sourcesReused, mode);
-         // An instructed refusal is in `failures` but metered once, as refused.
+         // An instructed refusal in `failures` is metered once, as refused.
          recordSourcesOutcome(
             "failed",
-            sourcesFailed - instructedRefused,
+            sourcesFailed - refusalsInFailures,
             mode,
          );
          recordSourcesOutcome("refused", sourcesRefused, mode);

@@ -307,9 +307,11 @@ export class PackageController {
          packageName,
          versionId,
       );
+      // A connection edit re-derives the plan; never hand out the old one.
+      await pkg.whenBuildPlanCurrent();
       if (pkg.isBuildPlanUnavailable()) {
          throw new BuildPlanUnavailableError(
-            `The build plan of package ${packageName} could not be derived at load. Reload the package to derive it again; retrying the read does not.`,
+            `The build plan of package ${packageName} could not be derived (at load, or after a connection change). Reload the package to derive it again; retrying the read does not.`,
          );
       }
       return pkg.getBuildPlan() ?? { graphs: [], sources: {} };
@@ -541,11 +543,19 @@ export class PackageController {
                validate: (loaded) => formatPublishRejections(loaded),
                // A versioned publish refuses a tree with no valid version.
                readVersion: versioned,
-               describe: (pkg, versionId) => ({
-                  ...pkg.getPackageMetadata(),
-                  location: bodyLocation,
-                  ...(versionId !== undefined && { versionId }),
-               }),
+               describe: async (pkg, versionId) => {
+                  // What a publish would build and serve (#7090): the
+                  // verdicts, views checked, and the plan they come from.
+                  const serveVerdicts = await pkg.previewServeVerdicts();
+                  const buildPlan = pkg.getBuildPlan();
+                  return {
+                     ...pkg.getPackageMetadata(),
+                     location: bodyLocation,
+                     ...(versionId !== undefined && { versionId }),
+                     ...(buildPlan && { buildPlan }),
+                     ...(serveVerdicts.length > 0 && { serveVerdicts }),
+                  };
+               },
             },
          );
       } catch (error) {
@@ -628,7 +638,7 @@ export class PackageController {
                   body,
                );
             }
-            // Versioning off, the transition default: installed in
+            // Versioning off (PUBLISHER_PACKAGE_VERSIONING=off): installed in
             // place, as every publish from a location was before versions,
             // whatever its publisher.json declares. Versions already published
             // are not replaced.

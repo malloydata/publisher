@@ -5,6 +5,7 @@ import type {
    Connection as MalloyConnection,
    PersistSource,
 } from "@malloydata/malloy";
+import { BuildRunFailedError, combineRetryable } from "./build_failure_class";
 import { Manifest } from "@malloydata/malloy";
 import {
    BadRequestError,
@@ -24,6 +25,8 @@ import {
    computeSourceEntityId,
    deriveAnnotationFields,
    sourcesInBuildOrder,
+   tierGateInputs,
+   storedBaseOfRollup,
 } from "../plan/build_plan";
 import {
    assertMaterializationEligible,
@@ -42,8 +45,10 @@ import {
    indexInstructions,
    recordInstructedBuildFailure,
    resolveInstruction,
+   type ColocatedRefusal,
    type EligibilityTier,
    type InstructedRun,
+   type PendingRefusal,
    type ResolvedInstruction,
 } from "./materialization_instructed_run";
 import {
@@ -53,9 +58,23 @@ import {
    chainedPlanFacts,
    isReclaimableStorageTable,
    physicalTargetKey,
+   refusalRecord,
    reportRetainedStorageTables,
 } from "./materialization_run_support";
 import type { SourceBuilder } from "./source_build";
+
+/** sourceID -> the sourceIDs it reads, merged across every connection's build. */
+function upstreamsBySourceID(
+   builds: CompiledBuildPlan["builds"],
+): Map<string, string[]> {
+   const out = new Map<string, string[]>();
+   for (const build of builds) {
+      for (const [sourceID, reads] of Object.entries(build.dependsOn ?? {})) {
+         out.set(sourceID, [...(out.get(sourceID) ?? []), ...reads]);
+      }
+   }
+   return out;
+}
 
 /**
  * The instructed tier: a run's build loop, shared by auto-run and orchestrated
@@ -138,14 +157,26 @@ export class InstructedBuild {
       // Tiers auto-run already cleared (see deriveSelfInstructions); a listed
       // source is not asserted again.
       clearedTiers?: ReadonlyMap<string, EligibilityTier>,
+      // The host instructed this run (orchestrated): a host-supplied upstream
+      // entry at the wrong tier is refused, not recomputed (see
+      // ChainedPlanFacts.hostInstructed).
+      hostInstructed = false,
    ): Promise<{
       entries: Record<string, ManifestEntry>;
       failures: Record<string, SourceFailure>;
       /**
-       * Instructed sources the eligibility gate refused. Each is also in
-       * `failures`; the count is kept apart so a refusal is metered as one.
+       * Instructed sources the eligibility gate refused, metered as refused.
+       * `refusalsInFailures` of them are also in `failures` (no sibling built
+       * their address); the rest are in `refusedBesideBuilt`.
        */
       sourcesRefused: number;
+      refusalsInFailures: number;
+      /**
+       * Refused sources whose table an eligible sibling built
+       * (ms2data/service#7078), by sourceID: the table stands and serves its
+       * eligible sources, and only these answer live.
+       */
+      refusedBesideBuilt: Record<string, RefusedSource>;
    }> {
       const { builds, sources, connectionDigests, connections } = compiled;
       const index = indexInstructions(instructions);
@@ -158,18 +189,38 @@ export class InstructedBuild {
          clearedTiers,
          index,
          // Once per run: it depends only on the plan.
-         planFacts: chainedPlanFacts(sources, connectionDigests),
+         planFacts: {
+            ...chainedPlanFacts(
+               sources,
+               connectionDigests,
+               // A host can imply a destination the annotation does not declare,
+               // so the instruction decides a source's current tier (#7087).
+               (sourceID, sourceEntityId) =>
+                  index.bySourceID.get(sourceID) ??
+                  index.bySourceEntityId.get(sourceEntityId),
+            ),
+            hostInstructed,
+         },
          ...this.seedInstructedRun(seedEntries, connections, strict),
          builtThisRun: [],
          retainedThisRun: [],
          failures: {},
+         failedBySourceID: new Map(),
+         upstreamsBySourceID: upstreamsBySourceID(builds),
          failedReasons: [],
          refusals: [],
+         pendingRefusals: [],
+         priorRefusedIDs: new Set(priorRefusals.map((r) => r.sourceID)),
+         builtAddresses: new Set(),
          builtSources: [],
          writtenTargets: new Map(),
       };
       assertNoTableCollisions(builds, sources, connectionDigests, index);
 
+      let settled: ReturnType<typeof settleRefusals> = {
+         refusalsInFailures: 0,
+         refusedBesideBuilt: {},
+      };
       try {
          for (const build of builds) {
             const connection = connections.get(build.connectionName);
@@ -195,20 +246,37 @@ export class InstructedBuild {
             }
          }
 
+         settled = settleRefusals(run);
+
          // A run that produced nothing must not report success with errors
          // attached. Thrown inside the try so it takes the same cleanup path as
          // any other total failure.
          if (run.builtSources.length === 0 && run.failedReasons.length > 0) {
-            throw new Error(
+            throw new BuildRunFailedError(
                [
                   ...run.failedReasons,
                   ...run.refusals.map((e) => e.message),
                   ...priorRefusals.map((r) => r.message),
                ].join("; "),
+               // Every source's own answer (a refusal is recorded in
+               // `failures` as `false` too), plus auto-run's refusals, which
+               // never reached this loop and are deterministic.
+               combineRetryable([
+                  ...Object.values(run.failures).map((f) => f.retryable),
+                  ...priorRefusals.map(() => false),
+               ]),
             );
          }
-         // Every instructed source was refused: the refusal is the answer.
-         if (run.builtSources.length === 0 && run.refusals.length > 0) {
+         // Every instructed source was refused by its own gate: the refusal is
+         // the answer. Not when a source its own gate admits was held back only
+         // because a colocated sibling on its table is refused: the address
+         // fails in `failures`, as an address with a refused source always
+         // has, and the run is not failed for it (ms2data/service#7078).
+         if (
+            run.builtSources.length === 0 &&
+            run.refusals.length > 0 &&
+            !run.heldBackBySibling
+         ) {
             throw allSourcesRefusedError(run.refusals);
          }
       } catch (err) {
@@ -230,6 +298,7 @@ export class InstructedBuild {
          entries: run.entries,
          failures: run.failures,
          sourcesRefused: run.refusals.length,
+         ...settled,
       };
    }
 
@@ -297,7 +366,44 @@ export class InstructedBuild {
       // identity. A sourceID match has not computed it yet.
       const sourceEntityId =
          resolved.sourceEntityId ??
-         computeSourceEntityId(persistSource, compiled.connectionDigests);
+         computeSourceEntityId(
+            persistSource,
+            compiled.connectionDigests,
+            compiled.targets?.[persistSource.sourceID],
+         );
+
+      // A colocated table is served by its address, so the bind refuses the
+      // whole address when any source on it is refused
+      // (collectColocatedSourceEligibility). Building it would write a table
+      // nothing serves; refuse this source with its sibling's reason instead,
+      // so every source on the address gets one outcome whatever the order.
+      if (!instruction.destination) {
+         const sibling = colocatedRefusalOn(
+            run,
+            sourceEntityId,
+            persistSource.sourceID,
+         );
+         if (sibling) {
+            recordPendingRefusal(
+               run,
+               persistSource,
+               instruction,
+               sourceEntityId,
+               new MaterializationEligibilityError({
+                  reason: sibling.reason,
+                  message:
+                     `'${persistSource.name}' is not built: it shares its ` +
+                     `table with '${sibling.name}', which the eligibility ` +
+                     `gate refuses for a colocated build, and a colocated ` +
+                     `table is served to every source on it. ` +
+                     sibling.message,
+               }),
+               false,
+            );
+            run.heldBackBySibling = true;
+            return;
+         }
+      }
 
       // Re-assert (idempotent) so no path into a storage build is ungated.
       if (
@@ -346,7 +452,6 @@ export class InstructedBuild {
             persistSource,
             instruction,
             connection,
-            compiled.connectionDigests,
             run.manifest,
             run.environment,
             run.entries,
@@ -377,6 +482,7 @@ export class InstructedBuild {
       }
       run.builtSources.push(persistSource.name);
       run.entries[sourceEntityId] = entry;
+      run.builtAddresses.add(sourceEntityId);
       run.writtenTargets.set(target, {
          sourceEntityId,
          sourceName: persistSource.name,
@@ -400,12 +506,31 @@ export class InstructedBuild {
    ): boolean {
       const { compiled } = run;
       const { instruction, orchestrated } = resolved;
+      // Auto-run refused it and reported it already; it reaches the loop only
+      // through an eligible sibling's instruction on the same address.
+      if (run.priorRefusedIDs.has(persistSource.sourceID)) return true;
       // A refusal fails THIS source, not the run (as in
       // deriveSelfInstructions), and is reported in `failures` because an
       // absent entry reads as "built". A host building from the plan never
       // instructs a refused source, so reaching the catch means the plan and
       // this gate disagreed.
       try {
+         // A host instructing from an older plan can still name a rollup over
+         // a stored base, which can never build (storedBaseOfRollup). Refuse
+         // it with the reason, rather than fail inside the chained build.
+         // No `reason` enum value: the refusal rides `failures` as text.
+         const storedBase = storedBaseOfRollup(
+            compiled,
+            persistSource.sourceID,
+         );
+         if (storedBase) {
+            throw new MaterializationEligibilityError({
+               message:
+                  `'${persistSource.name}' is a '#@ preaggregate storage=' rollup ` +
+                  `over '${storedBase.name}', which is itself persisted with ` +
+                  `'storage=': a rollup over a stored base cannot build or serve yet`,
+            });
+         }
          // Host-supplied storage instructions are gated too, not trusted.
          // Skipped when the mode is off: the destination refusal owns that.
          const storage =
@@ -417,7 +542,11 @@ export class InstructedBuild {
          // auto-run already cleared the source through one of the two gates.
          // Never both: the storage gate already runs the same IR walk.
          if (storage || !run.clearedTiers?.has(persistSource.sourceID)) {
-            assertTierEligible(persistSource, storage, compiled);
+            assertTierEligible(
+               persistSource,
+               storage,
+               tierGateInputs(compiled),
+            );
          }
       } catch (err) {
          if (!(err instanceof MaterializationEligibilityError)) throw err;
@@ -425,41 +554,210 @@ export class InstructedBuild {
          // content address (getSQL throws for a given or free parameter).
          const failedKey =
             resolved.sourceEntityId ?? instruction.sourceEntityId;
-         if (!run.failures[failedKey]) {
-            const reason = errMessage(err);
-            run.refusals.push(err);
-            logger.warn("Instructed source refused by the eligibility gate", {
-               packageName: run.owner?.packageName,
-               sourceName: persistSource.name,
-               physicalTableName: instruction.physicalTableName,
-               reason,
-            });
-            run.failures[failedKey] = {
-               sourceEntityId: failedKey,
-               sourceName: persistSource.name,
-               materializedTableId: instruction.materializedTableId,
-               physicalTableName: instruction.physicalTableName,
-               reason,
-               // Marks the failure permanent, so a caller that retries
-               // failures can tell it from one that may clear.
-               refused: true,
-               connectionName: persistSource.connectionName,
-               ...(instruction.destination
-                  ? { storageDestinationName: instruction.destination }
-                  : {}),
-            };
-            // Mirrored into `entries` for the `ManifestEntry.error`
-            // deprecation window, as the build-failure path below does.
-            run.entries[failedKey] = {
-               sourceEntityId: failedKey,
-               sourceName: persistSource.name,
-               physicalTableName: instruction.physicalTableName,
-               materializedTableId: instruction.materializedTableId,
-               error: reason,
-            } as ManifestEntry;
-         }
+         recordPendingRefusal(
+            run,
+            persistSource,
+            instruction,
+            // Keyed by the caller's address: a refused source may have no
+            // content address (getSQL throws for a given or free parameter).
+            failedKey,
+            err,
+            true,
+         );
          return true;
       }
       return false;
    }
+}
+
+/**
+ * Record the run's gate refusals against their addresses, now that the loop
+ * knows which addresses it built (ms2data/service#7078). A base and its
+ * `extend` share one content address, and the gate decides per source. A
+ * refusal on an address an eligible sibling built fails only the refused
+ * source: the table stands, its eligible sources serve it, and the refused
+ * one answers live (routing skips a gated entry point). It stays out of
+ * `failures` and `entries`, which the control plane reads by address, and is
+ * reported per source instead. A refusal on an address nothing built is
+ * recorded as before, once per address. Run order no longer decides either.
+ */
+function settleRefusals(run: InstructedRun): {
+   refusalsInFailures: number;
+   refusedBesideBuilt: Record<string, RefusedSource>;
+} {
+   let refusalsInFailures = 0;
+   const refusedBesideBuilt: Record<string, RefusedSource> = {};
+   const unbuilt = new Map<string, PendingRefusal[]>();
+   for (const pending of run.pendingRefusals) {
+      if (run.builtAddresses.has(pending.failedKey)) {
+         refusedBesideBuilt[pending.refused.sourceID] = pending.refused;
+         logger.warn(
+            "A refused source shares a table an eligible source built; the table stands and only the refused source answers live",
+            {
+               packageName: run.owner?.packageName,
+               sourceName: pending.failure.sourceName,
+               physicalTableName: pending.failure.physicalTableName,
+               reason: pending.failure.reason,
+            },
+         );
+         continue;
+      }
+      const onAddress = unbuilt.get(pending.failedKey);
+      if (onAddress) onAddress.push(pending);
+      else unbuilt.set(pending.failedKey, [pending]);
+   }
+   for (const [address, pendings] of unbuilt) {
+      // Once per address, as before; a build failure already there stands.
+      if (run.failures[address]) continue;
+      // The same failure whatever the run order: a source its own gate refused
+      // before one refused only for sharing the table, then by sourceID.
+      const chosen = [...pendings].sort(
+         (a, b) =>
+            Number(b.own) - Number(a.own) ||
+            (a.sourceID < b.sourceID ? -1 : a.sourceID > b.sourceID ? 1 : 0),
+      )[0];
+      refusalsInFailures++;
+      run.failures[address] = chosen.failure;
+      run.entries[address] = chosen.errorEntry;
+   }
+   run.pendingRefusals = [];
+   return { refusalsInFailures, refusedBesideBuilt };
+}
+
+/**
+ * Record one source's gate refusal on `run`: counted and logged now, held
+ * against its address until {@link settleRefusals} knows whether an eligible
+ * sibling built that address.
+ */
+function recordPendingRefusal(
+   run: InstructedRun,
+   persistSource: PersistSource,
+   instruction: BuildInstruction,
+   failedKey: string,
+   err: MaterializationEligibilityError,
+   own: boolean,
+): void {
+   const reason = errMessage(err);
+   run.refusals.push(err);
+   run.failedBySourceID.set(persistSource.sourceID, {
+      name: persistSource.name,
+      reason,
+      retryable: false,
+   });
+   logger.warn("Instructed source refused by the eligibility gate", {
+      packageName: run.owner?.packageName,
+      sourceName: persistSource.name,
+      physicalTableName: instruction.physicalTableName,
+      reason,
+   });
+   run.pendingRefusals.push({
+      failedKey,
+      failure: {
+         sourceEntityId: failedKey,
+         sourceName: persistSource.name,
+         materializedTableId: instruction.materializedTableId,
+         physicalTableName: instruction.physicalTableName,
+         reason,
+         // Marks the failure permanent, so a caller that retries failures can
+         // tell it from one that may clear.
+         refused: true,
+         retryable: false,
+         connectionName: persistSource.connectionName,
+         ...(instruction.destination
+            ? { storageDestinationName: instruction.destination }
+            : {}),
+      },
+      // Mirrored into `entries` for the `ManifestEntry.error` deprecation
+      // window, as the build-failure path does.
+      errorEntry: {
+         sourceEntityId: failedKey,
+         sourceName: persistSource.name,
+         physicalTableName: instruction.physicalTableName,
+         materializedTableId: instruction.materializedTableId,
+         error: reason,
+      } as ManifestEntry,
+      refused: refusalRecord(
+         persistSource,
+         err,
+         run.compiled.preaggregatePlans?.[persistSource.sourceID]
+            ? "preaggregate"
+            : instruction.destination
+              ? "storage"
+              : "colocated",
+         run.compiled.sourceModelPaths?.[persistSource.sourceID],
+      ),
+      sourceID: persistSource.sourceID,
+      own,
+   });
+}
+
+/**
+ * Another planned source on `address` that the colocated gate refuses, or
+ * undefined. Only the sources on that address are gated, once per address per
+ * run, so an unrelated source can never fail this build. Any error from the
+ * gate refuses, as the bind's collectColocatedSourceEligibility treats it, so
+ * build and serve agree on the address. The first refused source in sourceID
+ * order is named, so the reason never depends on run order.
+ */
+function colocatedRefusalOn(
+   run: InstructedRun,
+   address: string,
+   sourceID: string,
+): ColocatedRefusal | undefined {
+   const { compiled } = run;
+   if (!run.sourceIDsByAddress) {
+      const byAddress = new Map<string, string[]>();
+      for (const [id, source] of Object.entries(compiled.sources)) {
+         let sourceAddress: string;
+         try {
+            sourceAddress = computeSourceEntityId(
+               source,
+               compiled.connectionDigests,
+               compiled.targets?.[id],
+            );
+         } catch {
+            // No address, so no table it could share.
+            continue;
+         }
+         const ids = byAddress.get(sourceAddress);
+         if (ids) ids.push(id);
+         else byAddress.set(sourceAddress, [id]);
+      }
+      run.sourceIDsByAddress = byAddress;
+   }
+   run.colocatedRefusalsByAddress ??= new Map();
+   let refusals = run.colocatedRefusalsByAddress.get(address);
+   if (!refusals) {
+      refusals = [];
+      const ids = [...(run.sourceIDsByAddress.get(address) ?? [])].sort();
+      for (const id of ids) {
+         const source = compiled.sources[id];
+         if (!source) continue;
+         try {
+            assertTierEligible(source, false, tierGateInputs(compiled));
+         } catch (err) {
+            if (!(err instanceof MaterializationEligibilityError)) {
+               logger.warn(
+                  "The colocated gate could not decide a source; refusing its address, as the bind does",
+                  {
+                     packageName: run.owner?.packageName,
+                     sourceName: source.name,
+                     error: errMessage(err),
+                  },
+               );
+            }
+            refusals.push({
+               sourceID: id,
+               name: source.name,
+               reason:
+                  err instanceof MaterializationEligibilityError
+                     ? err.reason
+                     : undefined,
+               message: errMessage(err),
+            });
+         }
+      }
+      run.colocatedRefusalsByAddress.set(address, refusals);
+   }
+   return refusals.find((refusal) => refusal.sourceID !== sourceID);
 }

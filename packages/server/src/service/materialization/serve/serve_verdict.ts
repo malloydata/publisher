@@ -1,0 +1,332 @@
+// Copyright (c) Credible Data Inc.
+// SPDX-License-Identifier: MIT
+
+/**
+ * The serve verdict (materialization v2, D2): for each source the package
+ * materializes, whether queries will be answered from its table, and when not,
+ * why and what to change. ms2data/service#6277 asks for it as package state at
+ * publish, #7090 for the same answer before anything is published, and #6446
+ * for a reason in place of a silent live fallback.
+ *
+ * A pure function of facts the package already holds (the build plan, the
+ * published surface, the entry-point gates, the storage mode, what is bound),
+ * so a dry run, a load and every bind compute it the same way. Per query, the
+ * path report says which table answered one query; this says, per table,
+ * whether any query can be answered from it at all.
+ *
+ * Reasons are open strings, not an enum, so a later phase can add one without
+ * breaking a strict client (the control plane rejects unknown enum values).
+ */
+
+import type { components } from "../../../api";
+
+type BuildPlan = components["schemas"]["BuildPlan"];
+type PersistSourcePlan = components["schemas"]["PersistSourcePlan"];
+
+/** The `code` of the package warning for a materialized source no published query can reach. */
+export const MATERIALIZATION_UNREACHABLE_CODE = "materialization-unreachable";
+
+/** Why a materialized source's table answers no query. Open: see the module doc. */
+export type ServeVerdictReason =
+   /** The plan refused to build it (the eligibility gate). */
+   | "refused"
+   /** `storage=` while PERSIST_STORAGE_MODE is not `on`. */
+   | "storage_mode"
+   /** A rollup over a `storage=` base, left out of the plan (#6293). */
+   | "rollup_over_stored_base"
+   /** Nothing on the package's published surface reaches it (#6277). */
+   | "unreachable"
+   /** Every entry point over it carries a row-level gate the tier cannot keep. */
+   | "row_level_gate"
+   /** Its table is past its freshness window, and its fallback does not serve stale. */
+   | "stale"
+   /** Its storage table is bound, but every model's source of that name is another source. */
+   | "shadowed";
+
+/** Whether one named view of a stored source compiles against its serve shape (#7090). */
+export interface ViewServeVerdict {
+   view: string;
+   verdict: "serves" | "live";
+   /** The compile error that sends it live. */
+   detail?: string;
+}
+
+/** One materialized source's serve verdict. */
+export interface ServeVerdict {
+   sourceName: string;
+   sourceID: string;
+   modelPath?: string;
+   origin: "persist" | "preaggregate";
+   /** Where its table lives: the source's own connection, or a `storage=` destination. */
+   tier: "colocated" | "storage";
+   /**
+    * `serves`: bound, and queries can be answered from its table.
+    * `not_built`: nothing is bound yet; queries will be answered from its
+    * table once a build binds it. `live`: no query will be, for `reason`.
+    */
+   verdict: "serves" | "not_built" | "live";
+   reason?: ServeVerdictReason;
+   /** What the verdict means for this source, in a sentence. */
+   message: string;
+   /** For a `live` verdict, the changes that would let it serve. */
+   fixes?: string[];
+   /** Per named view, for a stored source on a preview (#7090). */
+   views?: ViewServeVerdict[];
+}
+
+/** What {@link computeServeVerdicts} reads. Every predicate is per source. */
+export interface ServeVerdictFacts {
+   plan: BuildPlan | null;
+   /** PERSIST_STORAGE_MODE. */
+   storageMode: "on" | "off" | "write-only" | string;
+   /**
+    * Whether some query on the published surface can read this source. A
+    * rollup asks about its base, by name: no sourceID of the base is planned.
+    */
+   reachable(sourceID: string | undefined, sourceName: string): boolean;
+   /**
+    * Whether every published entry point that reads this source carries a
+    * row-level gate, so the router skips the tier for every query that could
+    * reach it (route, then govern: a gated entry point is answered live).
+    */
+   gated(
+      sourceID: string | undefined,
+      sourceName: string,
+      modelPath?: string,
+   ): boolean;
+   /**
+    * Why the bind refuses this source although the plan holds it (the
+    * eligibility gate the bind applies, such as a rollup name two models
+    * share), or undefined when the bind keeps it.
+    */
+   refusedAtBind?(
+      sourceID: string,
+      source: PersistSourcePlan,
+      tier: "colocated" | "storage",
+   ): string | undefined;
+   /** Colocated: the plan's sourceEntityIds the bound manifest has a table for. */
+   boundEntityIds: ReadonlySet<string>;
+   /**
+    * Colocated: the bound sourceEntityIds still within their freshness window
+    * (or whose fallback serves stale). Absent: every bound one is.
+    */
+   freshEntityIds?: ReadonlySet<string>;
+   /** Storage: the source names the package holds a serve binding for. */
+   boundStorageNames: ReadonlySet<string>;
+   /** Storage: the source names some model kept a binding for. */
+   servedStorageNames: ReadonlySet<string>;
+   /** Storage: the bound source names still fresh. Absent: every bound one is. */
+   freshStorageNames?: ReadonlySet<string>;
+   /** Rollups over a stored base (#6293), left out of the plan. */
+   rollupsOverStoredBase?: readonly { baseName: string; modelPath?: string }[];
+   /** Per stored source's plan sourceID, its views' verdicts (a preview). */
+   views?: ReadonlyMap<string, ViewServeVerdict[]>;
+}
+
+/** The tier a plan source's table lives in. */
+export function planTier(source: PersistSourcePlan): "colocated" | "storage" {
+   return source.annotationFields?.storage?.trim() ? "storage" : "colocated";
+}
+
+/**
+ * Every materialized source's verdict, in plan order: planned sources first,
+ * then refused ones, then rollups left out of the plan.
+ */
+export function computeServeVerdicts(facts: ServeVerdictFacts): ServeVerdict[] {
+   const out: ServeVerdict[] = [];
+   const sources = facts.plan?.sources ?? {};
+   for (const [sourceID, source] of Object.entries(sources)) {
+      out.push(verdictFor(sourceID, source, facts));
+   }
+   for (const [sourceID, refused] of Object.entries(
+      facts.plan?.refusedSources ?? {},
+   )) {
+      // A preaggregate-tier refusal sits beside its base's own plan entry,
+      // which already has a verdict.
+      if (sourceID in sources) continue;
+      out.push({
+         sourceName: refused.name,
+         sourceID,
+         ...(refused.modelPath ? { modelPath: refused.modelPath } : {}),
+         origin: refused.tier === "preaggregate" ? "preaggregate" : "persist",
+         tier: refused.tier === "storage" ? "storage" : "colocated",
+         verdict: "live",
+         reason: "refused",
+         message: `Not built, so queries on it are answered live: ${refused.message}`,
+         fixes: [
+            "Remove what the refusal names, or drop the annotation if the source is not meant to be materialized.",
+         ],
+      });
+   }
+   for (const rollup of facts.rollupsOverStoredBase ?? []) {
+      out.push({
+         sourceName: rollup.baseName,
+         sourceID: `${rollup.baseName}#preaggregate`,
+         ...(rollup.modelPath ? { modelPath: rollup.modelPath } : {}),
+         origin: "preaggregate",
+         tier: "storage",
+         verdict: "live",
+         reason: "rollup_over_stored_base",
+         message:
+            `The rollups of \`${rollup.baseName}\` are not built, because it is ` +
+            `stored with storage=; its queries are answered from its own table.`,
+         fixes: [
+            `Declare the rollup on a source \`${rollup.baseName}\` is built from, or drop storage= from \`${rollup.baseName}\`.`,
+         ],
+      });
+   }
+   return out;
+}
+
+function verdictFor(
+   sourceID: string,
+   source: PersistSourcePlan,
+   facts: ServeVerdictFacts,
+): ServeVerdict {
+   const origin = source.origin === "preaggregate" ? "preaggregate" : "persist";
+   const tier = planTier(source);
+   const base: Omit<ServeVerdict, "verdict" | "message"> = {
+      sourceName: source.name,
+      sourceID,
+      ...(source.modelPath ? { modelPath: source.modelPath } : {}),
+      origin,
+      tier,
+   };
+   // A rollup is never queried by name: its base is what a query names.
+   const rollupBase = source.preaggregate?.baseSourceName;
+   // malloy-text: markdown code formatting in a verdict message, not Malloy
+   const subject = rollupBase
+      ? `The rollup of \`${rollupBase}\` at (${source.preaggregate?.grainDimensions.join(", ")})`
+      : `\`${source.name}\``;
+   const live = (
+      reason: ServeVerdictReason,
+      message: string,
+      fixes: string[],
+   ): ServeVerdict => ({
+      ...base,
+      verdict: "live",
+      reason,
+      message,
+      fixes,
+   });
+
+   if (tier === "storage" && facts.storageMode !== "on") {
+      return live(
+         "storage_mode",
+         facts.storageMode === "off"
+            ? `${subject} declares storage=, which PERSIST_STORAGE_MODE=off ignores.`
+            : `${subject} is built into storage, but PERSIST_STORAGE_MODE is ` +
+                 `${facts.storageMode}, so no query is routed to it.`,
+         ["Set PERSIST_STORAGE_MODE=on on the server, or drop storage=."],
+      );
+   }
+
+   const readName = rollupBase ?? source.name;
+   const readID = rollupBase ? undefined : sourceID;
+   if (!facts.reachable(readID, readName)) {
+      return live(
+         "unreachable",
+         `${subject} is materialized, but no source on the package's published ` +
+            `surface reaches it, so no query can be answered from its table.`,
+         [
+            `Publish \`${readName}\`, or a source built on it, in index.malloy.`,
+            "Or drop the annotation if nothing is meant to query it.",
+         ],
+      );
+   }
+
+   // Colocated persist is substituted inside Malloy, gates and all; storage
+   // and rollups go through the router, which skips a gated entry point.
+   if (
+      (tier === "storage" || origin === "preaggregate") &&
+      facts.gated(readID, readName, source.modelPath)
+   ) {
+      return live(
+         "row_level_gate",
+         `Every published entry point that reads ${subject} carries a ` +
+            `row-level gate (#(authorize) or #(access_filter)), which ` +
+            `${tier === "storage" ? "the storage tier" : "a rollup"} cannot keep ` +
+            `yet, so every query that reaches it is answered live.`,
+         [
+            "Materialize the source without storage= (colocated), where the gate is kept.",
+            "Or publish an ungated entry point over it, for the queries that need no gate.",
+         ],
+      );
+   }
+
+   const refusedAtBind = facts.refusedAtBind?.(sourceID, source, tier);
+   if (refusedAtBind !== undefined) {
+      return live(
+         "refused",
+         `${subject} is planned, but the bind refuses to serve it, so queries ` +
+            `on it are answered live: ${refusedAtBind}`,
+         [
+            "Remove what the refusal names, or drop the annotation if the source is not meant to be materialized.",
+         ],
+      );
+   }
+
+   const stale = (): ServeVerdict =>
+      live(
+         "stale",
+         `${subject}'s table is past its freshness window, so no query is ` +
+            `answered from it until a build refreshes it.`,
+         [
+            "Run a build, or widen the freshness window, or set its fallback to stale_ok.",
+         ],
+      );
+
+   if (tier === "storage") {
+      const views = facts.views?.get(sourceID);
+      const withViews = views && views.length > 0 ? { views } : {};
+      if (!facts.boundStorageNames.has(source.name)) {
+         return {
+            ...base,
+            ...withViews,
+            verdict: "not_built",
+            message: `${subject} will serve from storage once a build binds its table.`,
+         };
+      }
+      if (origin === "persist" && !facts.servedStorageNames.has(source.name)) {
+         return live(
+            "shadowed",
+            `${subject}'s table is bound, but every model's source of that name ` +
+               `is a different source, so none is served from it.`,
+            [
+               "Give the materialized source a name no other model's source uses.",
+            ],
+         );
+      }
+      if (
+         facts.freshStorageNames &&
+         !facts.freshStorageNames.has(source.name)
+      ) {
+         return stale();
+      }
+      return {
+         ...base,
+         ...withViews,
+         verdict: "serves",
+         message: `${subject} serves from storage.`,
+      };
+   }
+
+   if (!facts.boundEntityIds.has(source.sourceEntityId)) {
+      return {
+         ...base,
+         verdict: "not_built",
+         message: `${subject} will serve from its table once a build binds it.`,
+      };
+   }
+   if (
+      facts.freshEntityIds &&
+      !facts.freshEntityIds.has(source.sourceEntityId)
+   ) {
+      return stale();
+   }
+   return {
+      ...base,
+      verdict: "serves",
+      message: `${subject} serves from its table.`,
+   };
+}

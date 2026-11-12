@@ -15,10 +15,10 @@ import { quoteIdentifier } from "../../quoting";
  * rebuilding it.
  *
  * The delta is composed SQL, never a compiled Malloy query: the source's own
- * build SQL (`PersistSource.getSQL()`, the string the seed's CTAS runs) wrapped
- * in a `WHERE` on the watermark. A compiled query's SQL arrives FINALIZED (see
- * {@link deltaSelect}), and a generated source extension silently DROPS its
- * `where:`, which would rewrite every row. Pinned in
+ * build SQL (the target's `buildSQL()`, the string the seed's CTAS runs)
+ * wrapped in a `WHERE` on the watermark. A compiled query's SQL arrives
+ * FINALIZED (see {@link deltaSelect}), and a generated source extension
+ * silently DROPS its `where:`, which would rewrite every row. Pinned in
  * incremental_compiler_contract.spec.ts.
  *
  * The range is HALF-OPEN, `[start, end)`, which makes a run idempotent: a crash
@@ -243,15 +243,15 @@ export function snapshotBound(malloyType: string, now: Date): WatermarkBound {
 
 /**
  * The delta's SELECT for one source and range: the source's OWN build SQL
- * (`PersistSource.getSQL()`, the string the seed's CTAS runs), wrapped and
+ * (the target's `buildSQL()`, the string the seed's CTAS runs), wrapped and
  * filtered on the watermark, so the delta cannot disagree with the seed about
  * what the source computes.
  *
  * Not a compiled Malloy query, because a query's SQL is FINALIZED: on Postgres
  * (the only dialect with `hasFinalStage`) it becomes
  * `SELECT row_to_json(finalStage) as row FROM …`, one JSON column, and an
- * `INSERT … SELECT "col"` off it fails. `getSQL()` is unfinalized, and there is
- * no supported way to ask a query for that. Pinned as the TRIPWIRE in
+ * `INSERT … SELECT "col"` off it fails. The build SQL is unfinalized, and
+ * there is no supported way to ask a query for that. Pinned as the TRIPWIRE in
  * incremental_compiler_contract.spec.ts; see docs/materialization.md,
  * "Materializing on Postgres".
  *
@@ -259,7 +259,7 @@ export function snapshotBound(malloyType: string, now: Date): WatermarkBound {
  */
 export function deltaSelect(params: {
    dialect: string;
-   /** `PersistSource.getSQL(...)`, resolved against the build's manifest. */
+   /** The target's `buildSQL(manifest)`, resolved against the build's manifest. */
    sourceSQL: string;
    watermarkName: string;
    start: WatermarkBound;
@@ -575,9 +575,9 @@ export function compareBounds(a: WatermarkBound, b: WatermarkBound): number {
  * the DML names every column).
  *
  * Membership can legitimately differ: the DML names the source's compiled
- * schema, while `getSQL()` (and so the seed's table) also projects columns the
- * source renames or hides (`rename:`, `except:`, non-public access). Pinned in
- * incremental_compiler_contract.spec.ts. Such sources seed, because naming a
+ * schema, while the build SQL (and so the seed's table) also projects columns
+ * the source renames or hides (`rename:`, `except:`, non-public access). Pinned
+ * in incremental_compiler_contract.spec.ts. Such sources seed, because naming a
  * subset would rewrite the unnamed columns to NULL.
  */
 export function shapeMismatch(
@@ -1054,8 +1054,8 @@ export function warehouseDeltaTarget(params: {
    quotedTablePath: string;
    lineage: IncrementalLineage;
    /**
-    * `PersistSource.getSQL()` resolved against the build manifest: the string the
-    * seed's CTAS runs (see {@link deltaSelect}).
+    * The target's `buildSQL()` resolved against the build manifest: the string
+    * the seed's CTAS runs (see {@link deltaSelect}).
     */
    sourceSQL: string;
 }): DeltaTarget {

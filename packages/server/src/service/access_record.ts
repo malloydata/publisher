@@ -38,6 +38,8 @@ import { settings } from "../settings";
 import { ACCESS_FILTER_ROUTE, AUTHORIZE_ROUTE } from "./authorize_routes";
 import { readQueryFieldReads } from "./classification";
 import { readPreparedQuery } from "./governance/ir/prepared_query";
+import { accessRecordSink } from "./access_record_sink";
+import { workloadShapeOf, type WorkloadShape } from "./workload_shape";
 
 const MAX_RECORDED_ERROR_CHARS = 2000;
 
@@ -105,6 +107,12 @@ export interface QueryAccessSummary {
    fieldsReadComplete: boolean;
    /** Rows returned, after the cap. */
    rowCount: number;
+   /**
+    * The query's workload shape, literals replaced (materialization v2, T1):
+    * what the workload log groups by. Absent when the compiled query could
+    * not be read.
+    */
+   shape?: WorkloadShape;
 }
 
 const byCodepoint = (a: string, b: string) => (a < b ? -1 : a > b ? 1 : 0);
@@ -172,6 +180,8 @@ export async function summarizeQueryAccess(args: {
    bypassAuthorize: boolean;
    grafts: ReadonlyArray<{ givenNames: readonly string[] }>;
    rowCount: number;
+   /** The view the request named on its source, for the workload shape. */
+   view?: string;
 }): Promise<QueryAccessSummary> {
    const apiSource =
       !args.enforced && args.source
@@ -193,8 +203,19 @@ export async function summarizeQueryAccess(args: {
 
    let fieldsRead: FieldRead[] = [];
    let fieldsReadComplete = false;
+   let shape: WorkloadShape | undefined;
    try {
       const prepared = await readPreparedQuery(args.runnable);
+      try {
+         shape = workloadShapeOf({
+            query: prepared.query,
+            modelDef: prepared.modelDef ?? args.modelDef,
+            source: args.source,
+            view: args.view,
+         });
+      } catch {
+         // The record is emitted without a shape rather than not at all.
+      }
       // The compiled model, which holds a source the caller declared in the query.
       const reads = readQueryFieldReads(
          prepared.modelDef ?? args.modelDef,
@@ -258,6 +279,7 @@ export async function summarizeQueryAccess(args: {
       fieldsRead,
       fieldsReadComplete,
       rowCount: args.rowCount,
+      ...(shape ? { shape } : {}),
    };
 }
 
@@ -280,6 +302,68 @@ export function outcomeOf(error: unknown, status: number): AccessOutcome {
    if (status === 403) return "denied_lock";
    if (status === 400) return "bad_request";
    return "error";
+}
+
+/** A table the router considered for a query, as the access record keeps it. */
+export interface AccessPathCandidate {
+   tableId: string;
+   kind: string;
+   outcome: string;
+   reason?: string;
+   /** The serve verdict's reason on a `WARNED` skip, when the report gives one. */
+   code?: string;
+}
+
+/** The access record's copy of a query's path report: see `AccessRecord.path`. */
+export interface AccessPath {
+   servedBy: { kind: string; tableId?: string };
+   considered: AccessPathCandidate[];
+}
+
+/**
+ * The access record's copy of a path report: which table answered and each
+ * table considered. Structural, so it reads the API's `QueryPath` without this
+ * module importing the materialization code that builds it.
+ *
+ * `undefined` when the query answered live with nothing considered, the
+ * common case in a package with nothing materialized: that copy would say no
+ * more than `servedFrom` and would add bytes to every record.
+ */
+/** The shape of a verdict code the record keeps (`storage_mode`, `unreachable`). */
+const SAFE_CODE = /^[a-z_]+$/;
+
+export function accessPathOf(report: {
+   servedBy: { kind: string; tableId?: string };
+   considered: readonly {
+      tableId: string;
+      kind: string;
+      outcome: string;
+      reason?: string;
+      code?: string;
+   }[];
+}): AccessPath | undefined {
+   if (report.servedBy.kind === "live" && report.considered.length === 0) {
+      return undefined;
+   }
+   return {
+      servedBy: {
+         kind: report.servedBy.kind,
+         ...(report.servedBy.tableId !== undefined
+            ? { tableId: report.servedBy.tableId }
+            : {}),
+      },
+      considered: report.considered.map((c) => ({
+         tableId: c.tableId,
+         kind: c.kind,
+         outcome: c.outcome,
+         ...(c.reason !== undefined ? { reason: c.reason } : {}),
+         // A coded value only: anything else is dropped, so free text can
+         // never reach the log or the local store.
+         ...(c.code !== undefined && SAFE_CODE.test(c.code)
+            ? { code: c.code }
+            : {}),
+      })),
+   };
 }
 
 /** One emitted record. */
@@ -305,6 +389,26 @@ export interface AccessRecord extends Partial<QueryAccessSummary> {
    durationMs: number;
    servedFrom?: string | null;
    executionTimeMs?: number;
+   /**
+    * Warehouse bytes the query scanned, where the backend reports them inline
+    * (BigQuery today). Absent is not zero.
+    */
+   scannedBytes?: number;
+   /**
+    * What answered the query, from its path report (materialization v2, D1),
+    * kept compact: the table that answered and each table considered, with
+    * why it was skipped, which is what a workload analysis counts. The query's
+    * shape is `shape`; the report's nearby tables and skip details stay on the
+    * query result. Absent when the query answered live with nothing
+    * considered.
+    */
+   path?: AccessPath;
+   /**
+    * True when the query answered but its path report could not be
+    * assembled, so an absent `path` reads as "unknown", not as "answered
+    * live with nothing considered".
+    */
+   pathUnavailable?: true;
    /** The refusal's message, on a non-ok outcome. Never a gate's detail: the route already redacts those. */
    error?: string;
 }
@@ -315,6 +419,8 @@ export interface AccessRecord extends Partial<QueryAccessSummary> {
  */
 export function emitAccessRecord(record: AccessRecord): void {
    logger.info("Access record", record);
+   // The workload log's local store, when it is on; it never throws.
+   accessRecordSink()?.add(record);
    const span = trace.getActiveSpan();
    if (!span) return;
    span.setAttributes({
@@ -359,6 +465,9 @@ export interface QueryAudit {
    version?: string;
    servedFrom?: string | null;
    executionTimeMs?: number;
+   scannedBytes?: number;
+   path?: AccessPath;
+   pathUnavailable?: true;
 }
 
 /** What a route knows before it runs the request. */
@@ -464,6 +573,11 @@ export async function withAccessRecord<T>(
       ...(audit.executionTimeMs !== undefined
          ? { executionTimeMs: audit.executionTimeMs }
          : {}),
+      ...(audit.scannedBytes !== undefined
+         ? { scannedBytes: audit.scannedBytes }
+         : {}),
+      ...(audit.path !== undefined ? { path: audit.path } : {}),
+      ...(audit.pathUnavailable ? { pathUnavailable: true as const } : {}),
    }));
    return result;
 }

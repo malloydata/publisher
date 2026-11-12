@@ -68,8 +68,9 @@ The fields the server reads:
 Unknown top-level keys are ignored and preserved. Inside `retrieval` they are not: an unknown key fails the
 package load with a message naming the valid ones. `version` is read when the package is published
 from a location (`POST …/packages` with a `location`): it numbers the immutable version that publish
-creates, and a publish without one is refused. A package loaded from `publisher.config.json` ignores
-it. See [package-versions.md](package-versions.md). (One more field, `manifestLocation`, exists for orchestrated
+creates, and a publish without one is refused. A package in `publisher.config.json` is published
+the same way, unless its environment is watched (`--watch-env`), which mounts it in place and
+ignores it. See [package-versions.md](package-versions.md). (One more field, `manifestLocation`, exists for orchestrated
 control-plane deployments; a locally authored package never needs it. It is deprecated and goes
 away with the package `PATCH` that writes it: bind a version's build manifest with
 `PUT …/versions/{v}/manifest` instead. See [#1540](https://github.com/malloydata/publisher/issues/1540).)
@@ -175,28 +176,57 @@ There is no directory scan: a package on disk serves only once it is registered.
   the rest of the API this endpoint is unauthenticated, so keep the server on localhost or behind
   a gateway.
 
-## Lifecycle: the served copy
+### Annotations that do nothing
 
-When an environment is first created, Publisher copies each configured package into its own
-storage at `publisher_data/<env>/<pkg>/` (in the server root: the directory the server was
-launched from, unless `--server_root` set another) and compiles it, then serves that copy.
-Consequences:
+Malloy decides which reader sees an annotation by its prefix, so a small slip makes one silently do
+nothing: `#(clasification) "phi"`, `# (doc) …` with a space before the bracket, `#@persist` with no
+space, `# persist` or `#(persist)` for `#@ persist`, or `#@ persits`. Each loaded model reports these
+in the package's `warnings`, at severity `warn`, with the line and the spelling it meant:
 
-- Editing your original source directory afterwards changes nothing, unless the environment runs
-  in watch mode (`--watch-env <env>`), which mounts local packages in place as symlinks instead of
-  copying them.
-- After editing the served copy, reload the package to recompile it:
-  `GET /api/v0/environments/{env}/packages/{pkg}?reload=true` over REST, or the
-  `reload_package` MCP tool. The reload is in place for a package that came from
-  `publisher.config.json`; a package the server installed from a location (below) is re-fetched
-  from it instead, which overwrites local edits. A reload that fails to compile leaves the files
-  alone and keeps serving the previous model.
-- `--init` deletes `publisher_data/` and re-copies everything from the configured locations. Keep
-  your source of truth outside `publisher_data/`.
+- `annotation-near-miss`: an annotation that reads as an attempt at a route Publisher reads
+  (`#(doc)`, `#(markdown)`, `#(classification)`, `#(carries)`, `#(secure)`, `#(index)`,
+  `#(dbmeta)`, `#(authorize)`, `#(access_filter)`, `#@ persist`, `#@ preaggregate`) but does not
+  reach it.
+- `annotation-malformed-route`: a prefix Malloy cannot route at all, such as `#percent` (write
+  `# percent` for a tag, or `#(name)` for an app route). Malloy warns about these when it compiles,
+  and the package now carries the warning.
 
-### Installed packages
+They are warnings, not refusals: a route that only looks like one of these may belong to another
+application, and a publish still succeeds. Gates are the exception, because a gate loaded inert
+leaves the source open. The spellings Publisher already refused (`#(AUTHORIZE)`, `# (authorize)`,
+`#(access-filter)` and the like, see [authorize.md](authorize.md)) still fail the load, and so now
+does a misspelled gate: `#(authorise)`, `#(autorize)`, `#(acess_filter)`, any route word within two
+edits of `authorize` or `access_filter`, on a source, a field or a named query. A word that contains
+a gate's name, such as `#(authorized)` or `#(reauthorize)`, reads as another application's route and
+only warns. Each model reports only the annotations in its own file, so a file several models import
+is reported once. `compile_model` at `file` scope returns the near misses as `warn` diagnostics at
+their line, and a misspelled gate as an `error` (code `annotation-gate-near-miss`), so an editor sees
+the refusal before a save. A capitalized directive (`#@ Persist`, `# Persist`) is a near miss too:
+Malloy reads only the lower-case `persist`. They are
+counted in `publisher_annotation_findings_total` with the other annotation findings.
 
-A package can also arrive through the API: a `POST` to an environment's `packages` with a
+## Lifecycle: what is served
+
+When an environment is first created, Publisher publishes each configured package as the version
+its `publisher.json` declares, into its own storage at `publisher_data/<env>/<pkg>/<version>/` (in
+the server root: the directory the server was launched from, unless `--server_root` set another),
+compiles it, and serves it. A package that declares no `version` fails to load. Consequences:
+
+- A published version is immutable. Editing your original source directory afterwards changes
+  nothing, and neither does a reload: `GET …/packages/{pkg}?reload=true` or `reload_package`
+  answers the version unchanged. To ship an edit, bump `version` in `publisher.json` and publish
+  again. See [package-versions.md](package-versions.md).
+- In watch mode (`--watch-env <env>`), the environment's local packages are mounted in place as
+  symlinks instead, with no versions, and an edit is read: reload the package to recompile it,
+  `GET /api/v0/environments/{env}/packages/{pkg}?reload=true` over REST or the `reload_package`
+  MCP tool. A reload that fails to compile leaves the files alone and keeps serving the previous
+  model.
+- `--init` deletes `publisher_data/` and publishes everything again from the configured
+  locations. Keep your source of truth outside `publisher_data/`.
+
+### Installed packages (versioning off)
+
+With `PUBLISHER_PACKAGE_VERSIONING=off`, a package can also arrive through the API: a `POST` to an environment's `packages` with a
 `location`, or a `PATCH` on a package that names one. The server downloads it, compiles the new
 copy beside the one that is serving (if any), and swaps it in; the previous copy answers queries
 until the swap. Four things follow from how that is recorded:

@@ -59,7 +59,33 @@ const BASE = {
 /** Every emitted record carries the event name and the route's base. */
 const RECORD = { event: "access", ...BASE } as const;
 
+/**
+ * The workload shape an answered query carries (materialization v2, T1). The
+ * key is pinned: the workload log groups stored records by it, so a change to
+ * how it is derived splits every shape already stored.
+ */
+const shape = (
+   key: string,
+   source: string,
+   dimensions: string[],
+   measures: string[],
+) => ({
+   shape: {
+      key,
+      source,
+      kind: "reduce",
+      stages: 1,
+      dimensions,
+      measures,
+      filteredDimensions: [],
+      filters: [],
+      complete: true,
+   },
+});
+
 /** An answered query's outcome; a live (not storage-served) answer. */
+// Nothing here is materialized, so a query answers live with nothing
+// considered and its record carries no `path` (see accessPathOf).
 const OK = { outcome: "ok", status: 200, servedFrom: null } as const;
 
 let info: ReturnType<typeof spyOn>;
@@ -128,6 +154,7 @@ describe("access record goldens, one per decision path", () => {
          ],
          fieldsReadComplete: true,
          rowCount: 2,
+         ...shape("aa10f2754254fe61", "open_src", ["label"], ["n"]),
          ...OK,
       });
    });
@@ -151,6 +178,7 @@ describe("access record goldens, one per decision path", () => {
          ],
          fieldsReadComplete: true,
          rowCount: 2,
+         ...shape("c75690b5ae0a16dd", "chart", ["patient"], ["n"]),
          ...OK,
       });
    });
@@ -177,6 +205,8 @@ describe("access record goldens, one per decision path", () => {
          fieldsReadComplete: true,
          // org1: east and west.
          rowCount: 2,
+         // The row filter is the gate's, not the caller's: it is not in the shape.
+         ...shape("75ff355706fe8e05", "accounts_src", ["area"], ["n"]),
          ...OK,
       });
    });
@@ -201,6 +231,7 @@ describe("access record goldens, one per decision path", () => {
          fieldsRead: [{ path: "n", classifications: [] }],
          fieldsReadComplete: true,
          rowCount: 1,
+         ...shape("8fe51b9da644acdb", "chart", [], ["n"]),
          ...OK,
       });
    });
@@ -248,6 +279,7 @@ describe("access record goldens, one per decision path", () => {
          ],
          fieldsReadComplete: true,
          rowCount: 2,
+         ...shape("d62206df7bdf53fb", "mine", ["patient"], ["n"]),
          ...OK,
       });
    });

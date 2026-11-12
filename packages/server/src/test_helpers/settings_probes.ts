@@ -1,6 +1,7 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
+import { reportAppOrigin } from "../mcp/tools/report_app_tools";
 import {
    BYPASS_AUTHORIZE_HEADER,
    readBypassAuthorize,
@@ -24,6 +25,7 @@ import {
    getMemoryGovernorConfig,
    getModelPageMode,
    getPartitionedWriteFlushThreshold,
+   getPersistAddressIncludesDestination,
    getPersistCollisionEnforce,
    getPersistStorageMode,
    getPostgresPoolMax,
@@ -103,6 +105,7 @@ export const PROBES: Record<string, (context: SettingsContext) => unknown> = {
    "mcp.includeHiddenFilesAndSources": () =>
       isMcpIncludeHiddenFilesAndSources(),
    "mcp.trace": () => settings.get("mcp.trace") === "retrieval",
+   "mcp.appOrigin": () => reportAppOrigin(),
 
    "admin.port": () => settings.get("admin.port") ?? null,
    "admin.host": () => settings.get("admin.host"),
@@ -153,6 +156,8 @@ export const PROBES: Record<string, (context: SettingsContext) => unknown> = {
       return getDuckLakeTargetFileSizeBytes();
    },
    "persist.storageMode": () => getPersistStorageMode(),
+   "persist.addressIncludesDestination": () =>
+      getPersistAddressIncludesDestination(),
    "persist.collisionEnforcementEnabled": () => getPersistCollisionEnforce(),
    "materialization.schedulerEnabled": () =>
       getMaterializationSchedulerConfig() !== null,
@@ -179,6 +184,9 @@ export const PROBES: Record<string, (context: SettingsContext) => unknown> = {
    "logging.level": () => settings.get("logging.level"),
    "logging.responseBodiesEnabled": () =>
       settings.get("logging.responseBodiesEnabled"),
+   "workloadLog.store": () => settings.get("workloadLog.store"),
+   "workloadLog.retentionDays": () => settings.get("workloadLog.retentionDays"),
+   "workloadLog.maxRows": () => settings.get("workloadLog.maxRows"),
    "shutdown.drainDurationSeconds": () =>
       settings.get("shutdown.drainDurationSeconds"),
    "shutdown.gracefulCloseTimeoutSeconds": () =>

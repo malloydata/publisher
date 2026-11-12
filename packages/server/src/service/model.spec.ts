@@ -1880,6 +1880,11 @@ describe("service/model", () => {
             .map((a) => a as Record<string, string>)
             .find((a) => a["malloy.model.query.status"] === "error");
          expect(errored).toBeDefined();
+         // The storage run failed and the live retry failed: neither is a
+         // storage-served error, so the storage tier's error rate stays clean.
+         expect(errored?.["malloy.model.query.served_from"]).toBe(
+            "live_fallback",
+         );
       });
 
       it("labels a request malformed before compiling as rejected, not error", async () => {

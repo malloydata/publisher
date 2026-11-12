@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 import { unrecordedAudit } from "../../access_record";
+import { BuildRunFailedError } from "./build_failure_class";
 import { afterEach, beforeEach, describe, expect, it, spyOn } from "bun:test";
 import * as fs from "fs";
 import * as os from "os";
@@ -793,6 +794,38 @@ describe('scope "package": the versions share the package\'s tables', () => {
       await tamper("summary", 202);
       expect(await answerOf("1.0.0")).toBe(202);
       expect(await answerOf("2.0.0")).toBe(202);
+   });
+
+   it("a run that builds nothing records whether retrying it could help, beside its other metadata", async () => {
+      await publish("1.0.0", 1, "package");
+      const failWith = async (err: Error) => {
+         const failing = spyOn(
+            service as unknown as {
+               executeInstructedBuild: () => Promise<unknown>;
+            },
+            "executeInstructedBuild",
+         ).mockRejectedValue(err);
+         const failed = await build({ forceRefresh: true });
+         failing.mockRestore();
+         expect(failed.status).toBe("FAILED");
+         // Merged, not replaced: the run's own metadata survives.
+         expect(failed.metadata?.writesTables).toEqual(["summary"]);
+         return failed.metadata?.errorRetryable;
+      };
+      // Every source failed deterministically: a retry fails the same way.
+      expect(
+         await failWith(
+            new BuildRunFailedError("Binder Error: no column x", false),
+         ),
+      ).toBe(false);
+      // The build session ran out of memory: retryable.
+      expect(
+         await failWith(
+            new Error("Out of Memory Error: could not allocate block"),
+         ),
+      ).toBe(true);
+      // Unrecognized: omitted, so the consumer keeps its own judgment.
+      expect(await failWith(new Error("something odd"))).toBeUndefined();
    });
 
    it("a run that fails after it starts rebuilding leaves the shared tables unbound for every other definition", async () => {

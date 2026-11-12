@@ -114,7 +114,7 @@ A retrieval response is a `sources` array. Each entry's `source_info.resource_id
 - a named view or query: pass its `name` as `queryName` (with the card's `resource_id.source` as `sourceName` for a view), or
 - an ad-hoc query: pass Malloy code as `query`.
 
-The result is JSON. Charts and reports defined in the package render in the Publisher UI at http://localhost:4000.
+The result is JSON. Charts and reports defined in the package render in the Publisher UI at http://localhost:4000. To put a whole report in front of the user rather than answer from it, call `list_reports` for the package's report paths, then `show_report` with one: a host that supports MCP Apps (Claude Desktop, claude.ai) draws it in the conversation, and every client gets its Console address. Never call `report_api`; it is the panel's own tool.
 
 ## 3. When you need Malloy syntax
 

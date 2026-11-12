@@ -31,6 +31,9 @@
 //                                        redaction check can name a secret only the harness knows]
 //   ## Compile <label> (pkg=P[, refused]) + ```malloy (appended source) + `cites:` -> /compile
 //   ## Warns [<pkg>]                     [body: `cites: <substring>`]  -> package warning
+//   ## Preview [<pkg>]                   + `- <source>[.<view>]: serves|live|not_built` lines ->
+//                                        POST /packages?dryRun=true on the package's own tree,
+//                                        asserting each source's serve verdict, or one view's
 //   ## Republish [refused] [<pkg>]       [body: `cites: <substring>`]  -> POST /packages (the
 //                                        author-in-the-loop publish gate); `refused` asserts a 4xx
 //   ## Bind [<pkg>] [(empty|clear|bad|from=<publisher>)]  -> orchestrator manifestLocation PATCH
@@ -311,6 +314,15 @@ type Step =
         mode: PersistStorageMode;
         name?: string;
         extraEnv?: Record<string, string>;
+     }
+   | {
+        /** `## Preview <pkg>`: a dry-run publish and the verdicts it predicts. */
+        kind: "preview";
+        pub?: string;
+        env: string;
+        pkg: string;
+        mode: PersistStorageMode;
+        expects: { source: string; view?: string; verdict: string }[];
      }
    | {
         kind: "republish";
@@ -1074,6 +1086,42 @@ function parseMarkdown(text: string, fallbackId: string): ParsedMd {
                pkg: arg.trim() || defaultPackage,
                mode,
                cites: firstKey(sec.body, "cites") ?? "",
+            });
+            break;
+         }
+         case "preview": {
+            // A dry-run publish of the package's own tree, asserting the serve
+            // verdict it predicts for each source, or for one source's view.
+            const expects: {
+               source: string;
+               view?: string;
+               verdict: string;
+            }[] = [];
+            for (const line of sec.body) {
+               const m =
+                  /^\s*-\s*([A-Za-z_][\w]*)(?:\.([A-Za-z_][\w]*))?\s*:\s*(serves|live|not_built)\s*$/.exec(
+                     line,
+                  );
+               if (m) {
+                  expects.push({
+                     source: m[1],
+                     ...(m[2] ? { view: m[2] } : {}),
+                     verdict: m[3],
+                  });
+               }
+            }
+            if (expects.length === 0) {
+               throw new Error(
+                  `## Preview ${arg}: expected at least one \`- <source>[.<view>]: serves|live|not_built\` line`,
+               );
+            }
+            steps.push({
+               kind: "preview",
+               pub,
+               env,
+               pkg: arg.trim() || defaultPackage,
+               mode,
+               expects,
             });
             break;
          }
@@ -2900,7 +2948,9 @@ export async function parseScenarioFile(dir: string): Promise<Scenario> {
                if (step.variant === "clear") {
                   // manifestLocation:null → drop the orchestrator binding; the publisher
                   // reverts to its own local-store rebind (from the latest build).
-                  await rest.patchPackage(step.pkg, { manifestLocation: null });
+                  // A versioned package clears through its version's manifest
+                  // route (see RestClient.clearManifest).
+                  await rest.clearManifest(step.pkg);
                } else if (step.variant === "bad") {
                   // Bind an unreachable manifestLocation (a file:// URI that does
                   // not exist). The publisher must fetch-fail and fall back to
@@ -3056,6 +3106,50 @@ export async function parseScenarioFile(dir: string): Promise<Scenario> {
                activeRest = await ctx.usePublisher(activeName, activeMode, {
                   extraEnv: step.extraEnv,
                });
+               break;
+            }
+            case "preview": {
+               // POST /packages?dryRun=true on the package's own tree: what a
+               // publish would build and serve, with nothing installed.
+               const rest = await serverFor(step.pub, step.env);
+               const location = ctx.packageDir(step.pkg, step.env);
+               const res = await rest.dryRunFrom(step.pkg, location);
+               assert.ok(
+                  `preview ${step.pkg}: answered`,
+                  res.ok,
+                  res.ok
+                     ? undefined
+                     : `expected the dry run to answer 200, got ${res.status}: ${JSON.stringify(res.body).slice(0, 200)}`,
+               );
+               const verdicts = (res.body.serveVerdicts ?? []) as {
+                  sourceName?: string;
+                  verdict?: string;
+                  reason?: string;
+                  views?: { view: string; verdict: string; detail?: string }[];
+               }[];
+               for (const want of step.expects) {
+                  const source = verdicts.find(
+                     (v) => v.sourceName === want.source,
+                  );
+                  if (want.view === undefined) {
+                     assert.ok(
+                        `preview ${want.source}: ${want.verdict}`,
+                        source?.verdict === want.verdict,
+                        source?.verdict === want.verdict
+                           ? undefined
+                           : `got ${source ? `${source.verdict}${source.reason ? ` (${source.reason})` : ""}` : "no verdict"}`,
+                     );
+                     continue;
+                  }
+                  const view = source?.views?.find((v) => v.view === want.view);
+                  assert.ok(
+                     `preview ${want.source}.${want.view}: ${want.verdict}`,
+                     view?.verdict === want.verdict,
+                     view?.verdict === want.verdict
+                        ? undefined
+                        : `got ${view ? `${view.verdict}${view.detail ? `: ${view.detail}` : ""}` : "no view verdict"}`,
+                  );
+               }
                break;
             }
             case "republish": {

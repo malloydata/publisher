@@ -37,6 +37,7 @@ import {
    type EnvironmentName,
 } from "./identity";
 import { startedStore } from "../test_helpers/started_store";
+import type { simpleGit } from "simple-git";
 
 type MockData = Record<string, unknown>;
 
@@ -899,12 +900,26 @@ describe("EnvironmentStore Service", () => {
       // siblings queued behind it: the group-level catch used to wrap the whole
       // loop, so with three packages from one repo a throw on the second meant
       // the third was never copied even though nothing was wrong with it.
-      const shared = path.join(serverRootPath, "shared-src");
-      mkdirSync(shared, { recursive: true });
-      writeFileSync(
-         path.join(shared, "publisher.json"),
-         JSON.stringify({ version: "1.0.0", name: "shared" }),
-      );
+      // A repository, because a local location is published without the
+      // shared download (publishConfiguredPackages).
+      const packageNames = ["first", "middle", "last"];
+      const fakeGit = (() => ({
+         clone: (
+            _repoUrl: string,
+            dir: string,
+            _opts: unknown,
+            cb: (err: Error | null) => void,
+         ) => {
+            for (const name of packageNames) {
+               mkdirSync(path.join(dir, name), { recursive: true });
+               writeFileSync(
+                  path.join(dir, name, "publisher.json"),
+                  JSON.stringify({ version: "1.0.0", name }),
+               );
+            }
+            cb(null);
+         },
+      })) as unknown as typeof simpleGit;
 
       writeFileSync(
          path.join(serverRootPath, "publisher.config.json"),
@@ -912,21 +927,20 @@ describe("EnvironmentStore Service", () => {
             environments: [
                {
                   name: projectName,
-                  packages: [
-                     { name: "first", location: shared },
-                     { name: "middle", location: shared },
-                     { name: "last", location: shared },
-                  ],
+                  packages: packageNames.map((name) => ({
+                     name,
+                     location: `https://github.com/example/repo/tree/main/${name}`,
+                  })),
                   connections: [],
                },
             ],
          }),
       );
 
-      // Fail exactly one package's copy. Everything reachable from config is
-      // shared across the group (same location, hence the same source path), so
-      // the copy is the only per-package step that can realistically fail on
-      // its own — the same shape as a GitHub subdirectory that isn't there.
+      // Fail exactly one package's copy. Everything before it is shared across
+      // the group (one clone), so the copy is the only per-package step that
+      // can realistically fail on its own — the same shape as a GitHub
+      // subdirectory that isn't there.
       const realCp = fsPromises.cp;
       const cpStub = sinon.stub(fsPromises, "cp").callsFake((async (
          src: Parameters<typeof realCp>[0],
@@ -943,6 +957,7 @@ describe("EnvironmentStore Service", () => {
          const newEnvironmentStore = startedStore(
             new EnvironmentStore(serverRootPath, {
                storageManager,
+               simpleGit: fakeGit,
             }),
          );
          await newEnvironmentStore.finishedInitialization;
@@ -995,11 +1010,14 @@ describe("EnvironmentStore Service", () => {
          }),
       );
 
-      const newEnvironmentStore = startedStore(
-         new EnvironmentStore(serverRootPath, {
-            storageManager,
-         }),
-      );
+      // Mounted in place, as a watched environment is: the one mount whose
+      // root is the environment directory itself. Elsewhere a local package is
+      // published without a mount, and a remote one mounts into `.staging`.
+      const newEnvironmentStore = new EnvironmentStore(serverRootPath, {
+         storageManager,
+      });
+      newEnvironmentStore.markInPlace(projectName);
+      startedStore(newEnvironmentStore);
       await newEnvironmentStore.finishedInitialization;
 
       // Boot pre-validates the names and skips the environment, so reach the

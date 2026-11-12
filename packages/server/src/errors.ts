@@ -110,6 +110,9 @@ export type ErrorReason =
    // 409: the package's build plan could not be derived at load; a reload
    // derives it again, a retry does not.
    | "BUILD_PLAN_UNAVAILABLE"
+   // 503: the package's build plan is being re-derived after a connection
+   // change; retry after the Retry-After seconds.
+   | "BUILD_PLAN_REFRESHING"
    // 409: the package is fetched again from the location it was installed
    // from on reload, which would discard the write.
    | "PACKAGE_INSTALLED_FROM_LOCATION"
@@ -387,6 +390,8 @@ function bodyParserClientStatus(error: Error): number | undefined {
 /** What {@link internalErrorToHttpError} answers with. */
 export interface HttpErrorAnswer {
    status: number;
+   /** Headers to send with it, when the error's mapping names any. */
+   headers?: Record<string, string>;
    json: {
       code: number;
       message: string;
@@ -431,13 +436,16 @@ export function internalErrorToHttpError(
    const status = resolve(row.status, error);
    const message =
       row.message === undefined ? error.message : resolve(row.message, error);
+   const headers = row.headers?.(error);
    if (row.problems) {
       return {
          status,
+         ...(headers ? { headers } : {}),
          json: { code: status, message, problems: row.problems(error) },
       };
    }
-   return httpError(status, message, resolve(row.reason, error));
+   const answer = httpError(status, message, resolve(row.reason, error));
+   return headers ? { ...answer, headers } : answer;
 }
 
 function resolve<E, T>(value: T | ((error: E) => T), error: E): T {
@@ -471,6 +479,25 @@ export class BuildPlanUnavailableError extends Error {
    constructor(message: string) {
       super(message);
       this.name = "BuildPlanUnavailableError";
+   }
+}
+
+/**
+ * A package's build plan is being re-derived after a connection change and
+ * the wait for it passed its cap: answered 503 with Retry-After, rather than
+ * holding the request until the re-derivation finishes.
+ */
+export class BuildPlanRefreshingError extends Error {
+   get kind(): "build_plan_refreshing" {
+      return "build_plan_refreshing";
+   }
+
+   /** Seconds a caller should wait before retrying, sent as Retry-After. */
+   readonly retryAfterSeconds = 5;
+
+   constructor(message: string) {
+      super(message);
+      this.name = "BuildPlanRefreshingError";
    }
 }
 
@@ -896,11 +923,22 @@ export class ChainedUpstreamMissingError extends Error {
    }
 
    readonly missing: readonly string[];
+   /**
+    * Why each missing upstream could not be used, by name, when the thrower
+    * knows: lets a caller act on one cause (an entry at the wrong tier)
+    * without parsing the joined message.
+    */
+   readonly details?: readonly { name: string; detail: string }[];
 
-   constructor(missing: readonly string[], detail: string) {
+   constructor(
+      missing: readonly string[],
+      detail: string,
+      details?: readonly { name: string; detail: string }[],
+   ) {
       super(detail);
       this.name = "ChainedUpstreamMissingError";
       this.missing = missing;
+      if (details) this.details = details;
    }
 }
 
@@ -1314,6 +1352,7 @@ type PayloadTooLargeKind = "payload_too_large" | "response_unserializable";
 interface ErrorByKind {
    package_version: PackageVersionError;
    build_plan_unavailable: BuildPlanUnavailableError;
+   build_plan_refreshing: BuildPlanRefreshingError;
    not_implemented: NotImplementedError;
    bad_request: BadRequestError;
    invalid_argument: InvalidArgumentError;
@@ -1395,6 +1434,7 @@ const ERROR_CLASSES: {
 } = {
    package_version: PackageVersionError,
    build_plan_unavailable: BuildPlanUnavailableError,
+   build_plan_refreshing: BuildPlanRefreshingError,
    not_implemented: NotImplementedError,
    bad_request: BadRequestError,
    invalid_argument: InvalidArgumentError,
@@ -1532,6 +1572,8 @@ export interface ErrorMapping<E> {
    log?: LogLine | ((error: E) => LogLine | undefined);
    /** The HTTP body also carries the compile problems. */
    problems?: (error: E) => HttpErrorAnswer["json"]["problems"];
+   /** Response headers to send with the error (Retry-After on a 503). */
+   headers?: (error: E) => Record<string, string>;
    mcp: McpAdvice<E>;
    mcpSetup?: McpSetupScope;
 }
@@ -1701,6 +1743,20 @@ export const ERROR_TABLE: { [K in ErrorKind]: ErrorMapping<ErrorByKind[K]> } = {
       status: 409,
       reason: "BUILD_PLAN_UNAVAILABLE",
       mcp: { advice: "internal" },
+   },
+   build_plan_refreshing: {
+      status: 503,
+      reason: "BUILD_PLAN_REFRESHING",
+      headers: (error) => ({ "Retry-After": String(error.retryAfterSeconds) }),
+      // Transient: a connection edit's re-derivation is running. Retryable
+      // advice, not "internal", so an agent waits and retries.
+      mcp: {
+         advice: "fixed",
+         suggestions: [
+            "Retry in a few seconds: the build plan is being re-derived after a connection change.",
+         ],
+      },
+      mcpSetup: "package",
    },
    // Otherwise reported as internal, and an agent retries it forever.
    connection_not_found: NOT_FOUND,

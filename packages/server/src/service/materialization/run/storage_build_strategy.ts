@@ -9,6 +9,7 @@ import {
 } from "../../../errors";
 import { logger } from "../../../logger";
 import {
+   recordStoredColumnTypeMismatch,
    recordChainedStorageBuild,
    recordSourceBuildDuration,
    recordStorageBuildFailure,
@@ -28,11 +29,16 @@ import {
    documentFlagsForLifts,
    liftDerivedSources,
    missingPersistedTables,
-   reachedPersistedSources,
    REFINEMENT_TIER_KINDS,
    type ServeBinding,
    type SourceLocation,
 } from "../serve/materialization_serve_transform";
+import { reachPersisted } from "../plan/source_map";
+import {
+   STORED_COLUMN_TYPE_MISMATCH_CODE,
+   storageBuildCasts,
+   storedColumnTypeMismatches,
+} from "../stored_column_types";
 import { BuildInstruction, ManifestEntry } from "../types";
 import type { BuildStrategy } from "./build_strategy";
 import {
@@ -61,6 +67,12 @@ import {
    partitionColumnsForBuild,
    readAuthorFile,
    redactConnectionSecrets,
+   currentUpstreamEntries,
+   noteWrongTierRecompute,
+   HostSuppliedWrongTierError,
+   upstreamEntryIsCurrent,
+   WRONG_TIER_MARKER,
+   wrongTierDetail,
 } from "./materialization_run_support";
 import { carriesAuthorSql, isSameCatalog } from "./same_catalog_build";
 import { destinationSchemaOf } from "./storage_table_path";
@@ -203,6 +215,10 @@ export class StorageBuildStrategy
               })
             : undefined;
 
+      // Store each column as the type Malloy declares where one DuckDB type
+      // is faithful to it (ms2data/service#6642); checked again below.
+      const { declaredColumns, castOptions } = storageBuildCasts(persistSource);
+
       const startTime = performance.now();
       let result;
       // Set when stacking on the parents was declined and the recompute below
@@ -269,15 +285,50 @@ export class StorageBuildStrategy
                      `into storage destination '${destinationName}': ${safeDetail}`,
                );
             }
+            // A host-instructed build refuses a host-supplied upstream entry
+            // at the wrong tier, strict or not, instead of recomputing it
+            // (#7087, decided 2026-11-12).
+            // Only the upstreams whose own entry is at the wrong tier are named,
+            // each with its own reason: one host-supplied wrong-tier entry is
+            // enough to refuse, whatever else is missing.
+            const wrongTierUpstreams =
+               planFacts.hostInstructed &&
+               err instanceof ChainedUpstreamMissingError
+                  ? err.details
+                     ? err.details.filter((d) =>
+                          d.detail.includes(WRONG_TIER_MARKER),
+                       )
+                     : // A thrower that gives no per-name reasons: the whole
+                       // message is the reason for each missing upstream.
+                       safeDetail.includes(WRONG_TIER_MARKER)
+                       ? err.missing.map((name) => ({
+                            name,
+                            detail: safeDetail,
+                         }))
+                       : []
+                  : [];
+            if (wrongTierUpstreams.length > 0) {
+               recordChainedStorageBuild("strict_refused");
+               recordStorageBuildFailure(destinationName);
+               throw new HostSuppliedWrongTierError(
+                  persistSource.name,
+                  wrongTierUpstreams,
+               );
+            }
             if (manifest.strict && pinnedRecompute) {
                recordChainedStorageBuild("strict_refused");
                recordStorageBuildFailure(destinationName);
-               throw new Error(
+               const message =
                   `Failed to materialize chained source '${persistSource.name}' ` +
-                     `into storage destination '${destinationName}' by reading ` +
-                     `its materialized upstream, and strict upstreams forbid ` +
-                     `recomputing it from raw: ${safeDetail}`,
-               );
+                  `into storage destination '${destinationName}' by reading ` +
+                  `its materialized upstream, and strict upstreams forbid ` +
+                  `recomputing it from raw: ${safeDetail}`;
+               // Re-raised as the same type, so the run can classify the
+               // failure (build_failure_class.ts): a missing upstream that
+               // failed earlier in the run, or a shape no retry can carry.
+               throw err instanceof ChainedUpstreamMissingError
+                  ? new ChainedUpstreamMissingError(err.missing, message)
+                  : new ChainedShapeNotCarriedError(message);
             }
             recordChainedStorageBuild(
                manifest.strict ? "strict_shape_fallback" : "inline_fallback",
@@ -293,6 +344,22 @@ export class StorageBuildStrategy
                   reason: safeDetail,
                },
             );
+            // A recompute because a parent's entry is at the wrong tier reads
+            // the warehouse; counted once per run per parent (#7087).
+            if (
+               err instanceof ChainedUpstreamMissingError &&
+               safeDetail.includes(WRONG_TIER_MARKER)
+            ) {
+               for (const upstream of err.missing) {
+                  noteWrongTierRecompute({
+                     planFacts,
+                     build: "storage",
+                     sourceName: persistSource.name,
+                     upstream,
+                     detail: safeDetail,
+                  });
+               }
+            }
          }
       }
 
@@ -311,6 +378,8 @@ export class StorageBuildStrategy
                   ),
                   physicalTableName,
                   partitionColumns: partitionColumnsForBuild(persistSource),
+                  declaredColumns,
+                  castOptions,
                   environmentPath: environment.getEnvironmentPath(),
                   queryMetadata,
                   incremental: refresh,
@@ -412,6 +481,32 @@ export class StorageBuildStrategy
          throw gateErr;
       }
 
+      // What the cast could not make faithful (a number the warehouse returned
+      // as text), or a delta applied to a table an older build typed. Not a
+      // refusal: the serve shape leaves such a column off, so only queries
+      // that read it are answered live, and the package reports it.
+      const mistyped = storedColumnTypeMismatches(
+         result.schema.flatMap((c) =>
+            c.name && c.type ? [{ name: c.name, type: c.type }] : [],
+         ),
+         declaredColumns,
+      );
+      if (mistyped.length > 0) {
+         for (const m of mistyped) {
+            recordStoredColumnTypeMismatch("build", m.declaredType);
+         }
+         logger.warn(
+            "Storage build stored columns whose type does not serve as the declared Malloy type; queries reading them are answered live",
+            {
+               code: STORED_COLUMN_TYPE_MISMATCH_CODE,
+               sourceName: persistSource.name,
+               destinationName,
+               physicalTableName,
+               columns: mistyped,
+            },
+         );
+      }
+
       // Make this table visible to downstream sources built later in this run,
       // so a chained storage source can stack on it (above).
       manifest.update(sourceEntityId, { tableName: physicalTableName });
@@ -450,7 +545,7 @@ export class StorageBuildStrategy
          storageDestinationName: result.storageDestinationName,
          schema: result.schema,
          realization: instruction.realization,
-         rowCount: null,
+         rowCount: result.rowCount,
          // A refresh reports the APPLY's duration, not the session setup. A
          // SKIP reports null rather than skewing the series as a fast build.
          buildDurationMs: result.refresh
@@ -520,8 +615,11 @@ export class StorageBuildStrategy
             (alias) => typeof lift.contents[alias]?.extends !== "string",
          );
       }
+      // Only an entry at the destination its source is declared in NOW: a
+      // stored table left from before the source moved is stale (#7087).
+      const currentEntries = currentUpstreamEntries(builtEntries, planFacts);
       const upstreams: ServeBinding[] = deriveServeBindings(
-         builtEntries,
+         currentEntries,
          aliasesForBinding,
          (name) => {
             try {
@@ -562,7 +660,7 @@ export class StorageBuildStrategy
       // Stored tables the downstream reads, directly or transitively. One absent
       // from this destination's parents is named here, before any compile, which
       // would report only "undefined object".
-      const reached = reachedPersistedSources(
+      const reached = reachPersisted(
          lift,
          persistSource.name,
          (_name, sourceID) => planFacts.persistSourceIds.has(sourceID),
@@ -589,6 +687,23 @@ export class StorageBuildStrategy
                   : planFacts.addressBySourceId[sourceID];
             const entry =
                address === undefined ? undefined : builtEntries[address];
+            if (
+               entry !== undefined &&
+               address !== undefined &&
+               !upstreamEntryIsCurrent(address, entry, planFacts)
+            ) {
+               return wrongTierDetail(name, address, entry, planFacts);
+            }
+            if (
+               entry?.storageDestinationName === destinationName &&
+               !entry.schema?.length
+            ) {
+               return (
+                  `'${name}' is materialized in destination '${destinationName}', ` +
+                  `but by a reference that carries no column list, which this ` +
+                  `build needs to read it`
+               );
+            }
             if (entry?.storageDestinationName !== undefined) {
                return (
                   `'${name}' is materialized in destination ` +
@@ -607,12 +722,14 @@ export class StorageBuildStrategy
                `'${destinationName}' for this build`
             );
          };
+         const details = missing.map((name) => ({ name, detail: where(name) }));
          throw new ChainedUpstreamMissingError(
             missing,
             `persisted upstream of '${persistSource.name}': ` +
-               `${missing.map(where).join("; ")} — the build cannot stack on ` +
-               `it, and the recompute that remains would rebuild the stored ` +
-               `tables its SQL inlines`,
+               `${details.map((d) => d.detail).join("; ")} — the build cannot ` +
+               `stack on it, and the recompute that remains would rebuild the ` +
+               `stored tables its SQL inlines`,
+            details,
          );
       }
       // A path to the source warehouse (a joined table, a SQL source) has no

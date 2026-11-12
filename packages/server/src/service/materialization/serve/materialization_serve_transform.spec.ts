@@ -16,13 +16,13 @@ import {
 import { beforeAll, describe, expect, it } from "bun:test";
 import { MaterializationEligibilityError } from "../../../errors";
 import { plannedSources } from "../plan/build_plan";
+import { reachPersisted } from "../plan/source_map";
 import {
    assertServesInDuckDB,
    buildChainedStorageBuildModel,
    documentFlagLines,
    liftDerivedSources,
    missingPersistedTables,
-   reachedPersistedSources,
    type SourceRefinement,
    REFINEMENT_TIER_KINDS,
    buildOverTiers,
@@ -210,6 +210,66 @@ describe("serve transform end-to-end (generate -> compile -> bind -> run)", () =
       const result = await query.run({ virtualMap } as any);
       const out = result.data.toObject() as { total: number }[];
       expect(out[0].total).toBe(60);
+   });
+
+   // A source, a refinement field and a stored column that each need
+   // backticks: emitted bare, the shape fails to compile and every query on
+   // the model serves live.
+   it("quotes a rollup group's base and member names", () => {
+      const member: ServeBinding = {
+         sourceName: "date",
+         destinationName: "duckdb",
+         virtualHandle: "h_date",
+         tablePath: "t",
+         schema: [{ name: "n", type: "INTEGER" }],
+         origin: "preaggregate",
+      };
+      const { modelText } = buildServeShapeModelForBindings(
+         [],
+         [{ baseSourceName: "order-facts", members: [member] }],
+      );
+      expect(modelText).toContain("source: `order-facts` is compose(`date`)");
+   });
+
+   it("compiles and runs for names that need quoting, a read cast included", async () => {
+      const binding: ServeBinding = {
+         sourceName: "order-facts",
+         destinationName: "duckdb",
+         virtualHandle: "of_handle",
+         tablePath: "mz_physical",
+         schema: [
+            { name: "amount", type: "INTEGER" },
+            { name: "region", type: "VARCHAR" },
+         ],
+         readCasts: [{ column: "amount", castTo: "DOUBLE" }],
+         refinements: [
+            { kind: "dimension", name: "date", code: "region" },
+            { kind: "measure", name: "count", code: "amount.sum()" },
+         ],
+      };
+      const { modelText } = buildServeShapeModelForBindings([binding]);
+      expect(modelText).toContain("source: `order-facts` is");
+      expect(modelText).toContain("dimension: `date` is region");
+      const root = "file:///quoting-e2e/";
+      const runtime = new Runtime({
+         urlReader: new InMemoryURLReader(
+            new Map([[`${root}m.malloy`, modelText]]),
+         ),
+         connections,
+      });
+      const query = runtime
+         .loadModel(new URL(`${root}m.malloy`), {
+            importBaseURL: new URL(root),
+         })
+         .loadQuery(
+            "run: `order-facts` -> { group_by: `date`; aggregate: `count` }",
+         );
+      const result = await query.run({
+         virtualMap: buildVirtualMap([binding]),
+         // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      } as any);
+      const out = result.data.toObject() as { date: string; count: number }[];
+      expect(out.find((r) => r.date === "US")?.count).toBe(40);
    });
 
    it("assertServesInDuckDB passes for a well-formed captured schema", async () => {
@@ -1210,7 +1270,7 @@ describe("buildChainedStorageBuildModel (stack-on-parent transient build model)"
       // The downstream is persist-annotated (so it surfaces in the transient
       // build plan) and re-declared over the rebound parent with `source: `
       // prepended to the lifted RHS.
-      expect(model).toContain("#@ persist storage=lake");
+      expect(model).toContain(`#@ persist storage="lake"`);
       expect(model).toContain("source: monthly_orders is daily_orders ->");
    });
 
@@ -1680,9 +1740,7 @@ function modelCtx(contents: Record<string, unknown>) {
       sourceNameById.set((def as { sourceID: string }).sourceID, name);
    }
    return {
-      contents: contents as Parameters<
-         typeof reachedPersistedSources
-      >[0]["contents"],
+      contents: contents as Parameters<typeof reachPersisted>[0]["contents"],
       sourceNameById,
    };
 }
@@ -1756,7 +1814,7 @@ describe("authorModelLiftContext sees the registry's hidden dependencies", () =>
    });
 });
 
-describe("reachedPersistedSources through an import", () => {
+describe("reachPersisted through an import", () => {
    it("stops at a hidden-dependency persist source the registry carries", () => {
       const ctx = authorModelLiftContext(
          {
@@ -1789,7 +1847,7 @@ describe("reachedPersistedSources through an import", () => {
          },
          () => undefined,
       );
-      const out = reachedPersistedSources(
+      const out = reachPersisted(
          ctx,
          "weekly",
          (_n, id) => id.startsWith("daily@") || id.startsWith("weekly@"),
@@ -1809,7 +1867,7 @@ describe("reachedPersistedSources through an import", () => {
             query: { structRef: "weekly@file:///srv/models/orders.malloy" },
          },
       });
-      const stop = reachedPersistedSources(c, "monthly", (_n, id) =>
+      const stop = reachPersisted(c, "monthly", (_n, id) =>
          id.startsWith("weekly@"),
       );
       expect(stop).toMatchObject({
@@ -1821,7 +1879,7 @@ describe("reachedPersistedSources through an import", () => {
          ],
          raw: false,
       });
-      const raw = reachedPersistedSources(c, "monthly", () => false);
+      const raw = reachPersisted(c, "monthly", () => false);
       expect(raw.raw).toBe(true);
       expect(raw.rawLeaves).toEqual(["weekly"]);
       expect(JSON.stringify(raw)).not.toContain("file:///");
@@ -2016,7 +2074,7 @@ describe("liftDerivedSources through an inline parenthesized extend", () => {
    });
 });
 
-describe("reachedPersistedSources", () => {
+describe("reachPersisted", () => {
    it("stops at the first persist source on each path, through any number of intermediates", () => {
       const c = modelCtx({
          orders: tableDef("orders"),
@@ -2026,7 +2084,7 @@ describe("reachedPersistedSources", () => {
          monthly: persistedDef("monthly", "daily_wider"),
       });
       expect(
-         reachedPersistedSources(c, "monthly", persistedIn("daily", "monthly")),
+         reachPersisted(c, "monthly", persistedIn("daily", "monthly")),
       ).toEqual({
          persisted: [stop("daily")],
          raw: false,
@@ -2050,7 +2108,7 @@ describe("reachedPersistedSources", () => {
          monthly: persistedDef("monthly", "daily_regional"),
       });
       expect(
-         reachedPersistedSources(
+         reachPersisted(
             c,
             "monthly",
             persistedIn("daily", "daily_regional", "monthly"),
@@ -2070,7 +2128,7 @@ describe("reachedPersistedSources", () => {
          monthly: persistedDef("monthly", "daily_regional"),
       });
       expect(
-         reachedPersistedSources(
+         reachPersisted(
             c,
             "monthly",
             persistedIn("daily", "daily_regional", "monthly"),
@@ -2101,11 +2159,7 @@ describe("reachedPersistedSources", () => {
          monthly: persistedDef("monthly", "ext"),
       });
       expect(
-         reachedPersistedSources(
-            c,
-            "monthly",
-            persistedIn("daily", "ext", "monthly"),
-         ),
+         reachPersisted(c, "monthly", persistedIn("daily", "ext", "monthly")),
       ).toMatchObject({ persisted: [stop("ext")], raw: false });
    });
 
@@ -2118,11 +2172,7 @@ describe("reachedPersistedSources", () => {
          monthly: persistedDef("monthly", "joined"),
       });
       expect(
-         reachedPersistedSources(
-            c,
-            "monthly",
-            persistedIn("daily", "sites", "monthly"),
-         ),
+         reachPersisted(c, "monthly", persistedIn("daily", "sites", "monthly")),
       ).toMatchObject({
          persisted: [stop("daily"), stop("sites")],
          raw: false,
@@ -2142,7 +2192,7 @@ describe("reachedPersistedSources", () => {
          },
       });
       expect(
-         reachedPersistedSources(c, "monthly", persistedIn("daily", "monthly")),
+         reachPersisted(c, "monthly", persistedIn("daily", "monthly")),
       ).toMatchObject({ persisted: [stop("daily")], raw: false });
    });
 
@@ -2151,9 +2201,11 @@ describe("reachedPersistedSources", () => {
          orders: tableDef("orders"),
          daily: persistedDef("daily", "orders"),
       });
-      expect(
-         reachedPersistedSources(c, "daily", persistedIn("daily")),
-      ).toMatchObject({ persisted: [], raw: true, rawLeaves: ["orders"] });
+      expect(reachPersisted(c, "daily", persistedIn("daily"))).toMatchObject({
+         persisted: [],
+         raw: true,
+         rawLeaves: ["orders"],
+      });
    });
 
    it("treats a reference with no identity at all as raw", () => {
@@ -2165,7 +2217,7 @@ describe("reachedPersistedSources", () => {
          },
       });
       expect(
-         reachedPersistedSources(c, "monthly", persistedIn("daily", "monthly")),
+         reachPersisted(c, "monthly", persistedIn("daily", "monthly")),
       ).toMatchObject({ persisted: [], raw: true });
    });
 
@@ -2178,7 +2230,7 @@ describe("reachedPersistedSources", () => {
          monthly: persistedDef("monthly", "wide"),
       });
       expect(
-         reachedPersistedSources(c, "monthly", persistedIn("daily", "monthly")),
+         reachPersisted(c, "monthly", persistedIn("daily", "monthly")),
       ).toMatchObject({
          persisted: [stop("daily")],
          raw: true,
@@ -2200,7 +2252,7 @@ describe("reachedPersistedSources", () => {
          monthly: persistedDef("monthly", "wide"),
       });
       expect(
-         reachedPersistedSources(c, "monthly", persistedIn("daily", "monthly")),
+         reachPersisted(c, "monthly", persistedIn("daily", "monthly")),
       ).toMatchObject({
          raw: true,
          rawLeaves: ["(unnamed)"],

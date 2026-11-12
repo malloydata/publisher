@@ -21,6 +21,7 @@ import { logger } from "../logger";
 import { withAuthorizeModel } from "../test_helpers/authorize_fixture";
 import { withSettings } from "../test_helpers/settings_env";
 import {
+   accessPathOf,
    callerHeaderName,
    emitAccessRecord,
    outcomeOf,
@@ -402,6 +403,26 @@ describe("withAccessRecord", () => {
       }
    });
 
+   it("marks a record whose path report could not be assembled, and only that one", async () => {
+      const { info, records } = emitted();
+      try {
+         await withAccessRecord(base, undefined, async (audit) => {
+            audit.pathUnavailable = true;
+         });
+         await withAccessRecord(base, undefined, async () => undefined);
+         const [unavailable, live] = records() as {
+            pathUnavailable?: boolean;
+            path?: unknown;
+         }[];
+         expect(unavailable.pathUnavailable).toBe(true);
+         expect(unavailable.path).toBeUndefined();
+         expect(live.pathUnavailable).toBeUndefined();
+         expect(live.path).toBeUndefined();
+      } finally {
+         info.mockRestore();
+      }
+   });
+
    it("records a server-authored connection message as written", async () => {
       const { info, records } = emitted();
       try {
@@ -446,5 +467,108 @@ describe("withAccessRecord", () => {
       } finally {
          info.mockRestore();
       }
+   });
+});
+
+describe("accessPathOf", () => {
+   it("keeps which table answered and each table considered, and nothing else", () => {
+      const path = accessPathOf({
+         servedBy: { kind: "materialized", tableId: "abc123" },
+         considered: [
+            { tableId: "abc123", kind: "materialized", outcome: "used" },
+            {
+               tableId: "def456",
+               kind: "rollup",
+               outcome: "skipped",
+               reason: "GRAIN_TOO_COARSE",
+            },
+         ],
+         // A full report carries more; the record keeps only the two above.
+         ...({ notConsidered: [{ sourceName: "x" }], query: {} } as object),
+      } as Parameters<typeof accessPathOf>[0]);
+      expect(path).toEqual({
+         servedBy: { kind: "materialized", tableId: "abc123" },
+         considered: [
+            { tableId: "abc123", kind: "materialized", outcome: "used" },
+            {
+               tableId: "def456",
+               kind: "rollup",
+               outcome: "skipped",
+               reason: "GRAIN_TOO_COARSE",
+            },
+         ],
+      });
+   });
+
+   it("leaves out a tableId, reason or code the report does not have, and keeps a code it does", () => {
+      expect(
+         accessPathOf({
+            servedBy: { kind: "live" },
+            considered: [
+               { tableId: "abc", kind: "materialized", outcome: "skipped" },
+               {
+                  tableId: "def",
+                  kind: "materialized",
+                  outcome: "skipped",
+                  reason: "WARNED",
+                  code: "unreachable",
+               },
+            ],
+         }),
+      ).toEqual({
+         servedBy: { kind: "live" },
+         considered: [
+            { tableId: "abc", kind: "materialized", outcome: "skipped" },
+            {
+               tableId: "def",
+               kind: "materialized",
+               outcome: "skipped",
+               reason: "WARNED",
+               code: "unreachable",
+            },
+         ],
+      });
+   });
+
+   it("drops a code that is not a plain lower-case code, so free text never reaches the record", () => {
+      const path = accessPathOf({
+         servedBy: { kind: "live" },
+         considered: [
+            {
+               tableId: "abc",
+               kind: "materialized",
+               outcome: "skipped",
+               reason: "WARNED",
+               code: 'relation "secret_schema.t" does not exist',
+            },
+            {
+               tableId: "def",
+               kind: "materialized",
+               outcome: "skipped",
+               reason: "WARNED",
+               code: "Storage_Mode",
+            },
+         ],
+      });
+      expect(path?.considered).toEqual([
+         {
+            tableId: "abc",
+            kind: "materialized",
+            outcome: "skipped",
+            reason: "WARNED",
+         },
+         {
+            tableId: "def",
+            kind: "materialized",
+            outcome: "skipped",
+            reason: "WARNED",
+         },
+      ]);
+   });
+
+   it("records nothing for a live answer with nothing considered", () => {
+      expect(
+         accessPathOf({ servedBy: { kind: "live" }, considered: [] }),
+      ).toBeUndefined();
    });
 });

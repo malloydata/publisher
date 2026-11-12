@@ -407,6 +407,41 @@
       ]
     }
   },
+  "BuildPlanRefreshingError": {
+    "class": "BuildPlanRefreshingError",
+    "http": {
+      "status": 503,
+      "json": {
+        "code": 503,
+        "message": "build plan is being re-derived",
+        "reason": "BUILD_PLAN_REFRESHING"
+      },
+      "headers": {
+        "Retry-After": "5"
+      },
+      "logged": false,
+      "logs": []
+    },
+    "mcp": {
+      "message": "build plan is being re-derived",
+      "suggestions": [
+        "Retry in a few seconds: the build plan is being re-derived after a connection change."
+      ],
+      "logs": []
+    },
+    "mcpSetup": {
+      "message": "build plan is being re-derived",
+      "suggestions": [
+        "Retry in a few seconds: the build plan is being re-derived after a connection change."
+      ],
+      "logs": [
+        [
+          "warn",
+          "[MCP Tool executeQuery] model setup refused"
+        ]
+      ]
+    }
+  },
   "NotImplementedError": {
     "class": "NotImplementedError",
     "http": {

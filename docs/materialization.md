@@ -27,9 +27,13 @@ source: order_summary is raw_orders -> {
 }
 ```
 
+A misspelled `#@ persist` persists nothing and the source serves live: `#@persist` (no space), `# persist` or `#(persist)` (another route), and `#@ persits` (a misspelled directive) are each reported in the package's `warnings` with code `annotation-near-miss`, naming the spelling it meant. See [packages.md](packages.md#annotations-that-do-nothing).
+
 `name=` is the physical table Publisher writes. Persist the sources that are expensive to compute and reused by many queries; leave cheap or rarely-read sources unpersisted. The [materialization tuning guide](../skills/malloy-materialization/reference/tuning.md) helps decide.
 
 `name=` may also name the container the table goes in — `name="analytics.order_summary"` writes `order_summary` into the `analytics` schema/dataset rather than the connection's default one. The container must already exist; Publisher does not create it. On BigQuery a dataset is required, since a table cannot live outside one.
+
+The name is a plain identifier path: dot-separated segments of letters, digits, `_` and `-`. Publisher quotes each segment for the target warehouse itself, so case is preserved (`name="OrdersDaily"` creates `OrdersDaily`) and a reserved word works (`name="order"`). Don't quote inside the value: a name holding quotes, spaces, backticks or semicolons, such as `name="\"Orders Daily\""`, is refused when the model loads, because the name is written into the build's DDL.
 
 ### Opting a reader out: `#@ -persist`
 
@@ -111,7 +115,9 @@ point's own row filter, and refused otherwise.
 
 Every refusal names the source and the remedy; a package carrying one fails to build (or, for
 `storage=`, fails that materialization run) rather than silently serving the gated source to
-everyone.
+everyone. A source a compile-time gate refuses is also a package warning, code
+`persist-source-refused`, carrying the gate's message, with `subject` the source (a rollup's base
+for a rollup).
 
 ### Tenant-scoped sources: where a given may sit
 
@@ -413,6 +419,87 @@ serves live and the package's warnings carry the refusal. A `storage=` destinati
 question — it reads from the source and writes elsewhere — and the storage build names the source
 types it can read.
 
+### Stored column types follow the model, not the warehouse
+
+A `storage=` table holds what the warehouse returned, and the warehouse's type for a column is not
+always the type Malloy declares for the field. Date arithmetic is the common case: Postgres answers
+a month truncation, and DuckDB answers `order_date + 1 month`, with a timestamp, though Malloy types
+the field as a date. A `sql_boolean` over a 0/1 integer, or a `sql_number` over text, keeps the
+warehouse's type too. Served as the stored type, such a column changes answers: a date compared
+with a date column no longer compiles, and a boolean groups as `0` and `1`.
+
+A storage build therefore casts each `string`, `boolean` and `date` column to its declared type
+(`VARCHAR`, `BOOLEAN`, `DATE`) in the destination, around the warehouse's result; the warehouse
+runs exactly the build SQL it ran before. Numbers and timestamps are not cast: every DuckDB numeric
+type serves a Malloy `number`, and either DuckDB timestamp type serves a `timestamp` or
+`timestamptz`, since builds and queries both run in UTC.
+Under a query time zone (`timezone:` in the source's query) a `date` is not cast at build: DuckDB
+would take an instant's date in the build session's UTC, not in that zone. A cast that cannot
+convert a value (a boolean the warehouse returned as `'open'`) retries the build without the casts
+and stores what the warehouse returned, rather than failing a build that used to succeed or storing
+`TRY_CAST`'s NULLs.
+
+A column whose stored type still does not serve as its declared type, such as any castable column of
+a table built before this cast, is read through a cast to its declared type where that is faithful:
+an integer flag as a `boolean`, a naive timestamp as a `date`, and an instant as a `date` when the
+source has no query time zone. Every field, join and view built on it still serves from storage. A
+column no cast reproduces faithfully (a `number` the warehouse returned as text, a `boolean` stored
+as text) is left off the shape when nothing on the shape names it, so only a query that reads it is
+answered live; when a dimension, measure, join, filter or view names it, that one source is served
+live instead, and the rest of the model keeps serving from storage. An incremental source whose
+table holds a type a rebuild would cast re-seeds on its next run, since a delta only inserts into
+the columns the table already has. The package reports each such column as a warning with code
+`storage-column-type-mismatch`, naming the source, the column, its stored and declared types, and
+whether it is cast or answered live. A rebuild stores the castable ones as declared. For the
+rest, give the field a native cast in the model so the warehouse returns the declared type, for
+example `amount_text::"double"`: a cast to a type Malloy already believes the field has, such as
+`::number` here, emits no SQL.
+
+## Will it serve? The serve verdict
+
+Every source a package materializes (each `#@ persist` source, and each rollup a `#@ preaggregate`
+synthesizes) carries a **serve verdict**: whether queries are answered from its table, and when
+not, why and what to change. A materialized table that no query reads otherwise looks exactly like
+a working one: the build succeeds, the manifest binds, and every query is quietly answered live.
+
+`GET …/packages/{pkg}/status` reports the verdicts as `serveVerdicts`, recomputed from the build
+plan and the binding on every read:
+
+| `verdict` | Meaning |
+| --- | --- |
+| `serves` | Its table is bound, and queries can be answered from it. |
+| `not_built` | Nothing is bound yet; queries are answered from its table once a build binds it. |
+| `live` | No query is answered from it until something changes. `reason` says why and `fixes` says what to change. |
+
+A `live` verdict's `reason`:
+
+| `reason` | Why | Fix |
+| --- | --- | --- |
+| `refused` | The plan refused to build it (the build plan's `refusedSources` names why). | Remove what the refusal names. |
+| `storage_mode` | `storage=` while `PERSIST_STORAGE_MODE` is not `on`. | Turn the mode on, or drop `storage=`. |
+| `rollup_over_stored_base` | A rollup over a `storage=` base, left out of the plan. | Declare the rollup on a source the base is built from. |
+| `unreachable` | No source on the package's published surface reads it: `index.malloy` hides it, and nothing it publishes is built on it, extends it or joins it. | Publish it, or a source built on it, or drop the annotation. |
+| `row_level_gate` | Every query through it carries an `#(authorize)` or `#(access_filter)` gate, which the storage tier and rollups cannot keep yet. | Materialize without `storage=`, or move the gate onto an entry point over the table. |
+| `shadowed` | Its storage table is bound, but every model's source of that name is another source. | Rename it. |
+
+`unreachable` is also a publish warning, code `materialization-unreachable`: the table is built
+for no query. The other `live` reasons already carry warnings of their own.
+
+**Preview before publishing.** `POST …/packages?dryRun=true` answers the same verdicts, plus the
+`buildPlan`, for a package that is not published. For a source stored with `storage=` it also
+compiles each named view against a serve shape declared from the plan's output columns, which needs
+no built table, and lists it under `views` as `serves` or `live` with the compile error. Use it to
+learn what a change builds and serves without a publish and a build per attempt.
+
+A view that does not compile against the stored columns (it reaches through a join to a source
+that is not materialized, or reads a field the table does not hold) is answered live on its own:
+the serve shape drops just that view, and the source's other views, and every other source's, keep
+serving from storage. Its `views` entry is `live` with that view's compile error. The shape finds
+such views by halving when it is built for a set of bindings, never per query, and spends at most 64
+compiles on it; a view it never reached says so and is answered live. An entry that
+says the shape left the source's views off means the shape could not single out a view at fault, so
+every view of the source is answered live.
+
 ## The persistence policy (the publish gate)
 
 Package-level persistence policy lives at the root of `publisher.json`:
@@ -499,13 +586,13 @@ is therefore narrower than the disjunction you wrote. Both fail in the same dire
 duplicated row, never a row belonging to another caller. If either applies to your source,
 rebuild it rather than refreshing.
 
-**An invalid declaration fails the package, it does not downgrade it.** The rules below are checked wherever a package is admitted — a publish or PATCH answers 400, and a package **load** fails outright, the same severity a model that does not compile has. So a broken declaration cannot sit in a log while the source quietly rebuilds in full forever: `watermark=` without `refresh="incremental"`, `merge_key=` without `watermark=`, a malformed key value, a watermark that names no materialized column (or names an aggregate, or a type with no ordering), a `calculate:` field, or an unsupported dialect. Every rejection is reported at once, so a model with two broken declarations takes one republish to fix. What is _legal but probably unintended_ stays a warning on the package instead: an unrecognized `#@ persist` key, and a keyless delta.
+**An invalid declaration fails the package, it does not downgrade it.** The rules below are checked wherever a package is admitted — a publish or PATCH answers 400, and a package **load** fails outright, the same severity a model that does not compile has. So a broken declaration cannot sit in a log while the source quietly rebuilds in full forever: `watermark=` without `refresh="incremental"`, `merge_key=` without `watermark=`, a malformed key value, a watermark that names no materialized column (or names an aggregate, or a type with no ordering), a `calculate:` field, or an unsupported dialect. Every rejection is reported at once, so a model with two broken declarations takes one republish to fix. What is _legal but probably unintended_ stays a warning on the package instead: an unrecognized `#@ persist` key (code `persist-unknown-key`), and a keyless delta (code `persist-incremental-no-merge-key`).
 
 Details that decide whether a run advances or rebuilds:
 
 - **It is exempt from skip-if-unchanged.** A content address does not move when data does, so an incremental source is instructed on every run and its `covered_through` boundary — not its address — decides whether there is work to do.
 - **`forceRefresh` never re-seeds.** It means one thing — build even though the content address is unchanged — and an incremental source is exempt from that carry-forward anyway, so the flag has nothing to say about how one is built. Ask for a full rebuild with `reseed` (`malloy-pub materialize --reseed`, or per source with `BuildInstruction.reseed`). Keeping them separate is what lets a schedule drive deltas at all, since the scheduler forces on every single fire.
-- **Two sources that compile to identical SQL share everything.** The content address that keys the boundary is a hash of the connection and the canonical SQL — not the source name, not `name=`, not the model file — so a copy-pasted source body collapses onto one table and one boundary however you name it. If their declarations also differ, neither can ever advance: each refresh finds the other's lineage recorded and rebuilds. Publisher warns when this happens and names both sources, since nothing in the model text shows it.
+- **Two sources that compile to identical SQL share everything.** The content address that keys the boundary is a hash of the connection and the canonical SQL — not the source name, not `name=`, not the model file — so a copy-pasted source body collapses onto one table and one boundary however you name it. If their declarations also differ, neither can ever advance: each refresh finds the other's lineage recorded and rebuilds. Publisher warns when this happens and names both sources (code `persist-incremental-shared-address`), since nothing in the model text shows it.
 - **Anything unproven falls back to a full rebuild**, which is always correct and merely expensive: no recorded boundary, a boundary describing a different table or watermark, a table whose columns no longer match what the source computes, or `MERGE` asked for on Postgres 14 or older (it requires 15).
 - **Postgres, BigQuery, and Snowflake only**, and that is the SOURCE's dialect — the engine that has to express the bounded range. Declaring it elsewhere is a rejection rather than a silent full refresh, so it never looks like it is advancing when it is not — which does mean a DuckDB source has to say `refresh="full"` to be served at all.
 - **`storage=` is supported, and the delta is split across the two engines.** The source warehouse computes the bounded range (the predicate is pushed into its own query, so it never streams rows it will not keep) and the DML lands in the destination, which is where the table is. Everything an author declares means the same thing either way. Two differences worth knowing: a stored table holds exactly the source's public columns, so the rename/`except:` rebuild below does not arise from `getSQL()` projecting more than the schema describes — though changing which columns are public still rebuilds, since the stored table's shape no longer matches; and a CHAINED stored source — one reading another stored source's table — still rebuilds every refresh, reported under its own reason code, because its parent's delta can restate rows below the child's own frontier where no delta of the child's would revisit them.
@@ -573,7 +660,9 @@ See [configuration.md](configuration.md) for the env vars. Fire semantics:
 ## Manage it with the CLI
 
 ```bash
-# View / set / clear a package's schedule (set also sets scope: version)
+# View / set / clear a package's schedule (set also sets scope: version). set and clear edit the
+# package, which a published version refuses with 409 PACKAGE_IS_VERSIONED: set the schedule in
+# its publisher.json and publish a new version instead.
 malloy-pub schedule view  --environment <env> --package <pkg>
 malloy-pub schedule set "0 6 * * *" --environment <env> --package <pkg>
 malloy-pub schedule clear --environment <env> --package <pkg>
@@ -591,6 +680,34 @@ malloy-pub delete materialization <id> --environment <env> --package <pkg> --dro
 The `schedule` commands share the server's publish-gate validation: an invalid cron or an illegal scope/freshness combination is rejected, so a rejection means the change was unsafe.
 
 > **`--drop-tables` drops the physical tables in that run's manifest, except any that a still-ready run also names.** Auto-run assigns stable table names and carries unchanged sources forward, so an old run's manifest names tables a newer manifest still serves, and those survive the delete. Deleting a run also re-derives the package's serve bindings from the latest remaining ready run (or clears them, so queries compute live), so a delete does not break queries — it can leave a table behind. To remove a persisted source, delete its annotation, `materialize --wait`, then delete the old runs that name its table; a table no ready run names is dropped.
+
+## Which table answered a query: the path report
+
+Every query result carries `path`, the path report. It says which materialized table answered the query, or that it ran live, and why every other table that could have answered did not. Unlike `servedFrom`, which reports the `storage=` tier only, it covers colocated `#@ persist` tables and pre-aggregation rollups too.
+
+```json
+"path": {
+  "query": { "sourceName": "daily", "groupedBy": ["region"], "filteredBy": [], "measures": ["total"] },
+  "servedBy": { "kind": "materialized", "tableId": "9f1c…", "dataAsOf": "2026-11-01T00:00:00.000Z" },
+  "considered": [
+    { "tableId": "4ab0…", "kind": "rollup", "outcome": "skipped", "reason": "COUNT_SEMANTICS", "detail": "aggregate count() is computed over the rollup's rows, not from a stored partial" },
+    { "tableId": "9f1c…", "kind": "materialized", "outcome": "used" }
+  ],
+  "notConsidered": [
+    { "tableId": "77de…", "kind": "materialized", "sourceName": "by_region", "relationship": "sibling", "built": true }
+  ]
+}
+```
+
+- `tableId` is the table's `sourceEntityId`, the content address the build plan and manifest key on. Sources that build the same SQL share one table, so they share one id.
+- `considered` lists the tables on the queried source's chain (the source, what it extends or renames, and the source its query reads from) and the rollups of a source on it, in the order they are tried: `storage=` tables, then colocated rollups, then colocated tables nearest first. A table that was not tried because an earlier one answered is left out.
+- `reason` is one of `NOT_BUILT` (not bound to this package), `STALE` (past its freshness window), `CONTRACT` (the entry point has a row-level gate, which stored data cannot keep yet), `MISSING_FIELD` (the query does not compile against the stored form, or reaches a field a rollup does not carry), `COUNT_SEMANTICS` (a rollup cannot reproduce an aggregate the query computes), `GRAIN_TOO_COARSE` (a rollup's grain does not hold the query's groups), `RUN_FAILED` (the stored read failed and the freshness fallback answered live) or `WARNED` (the table answers no query at all: its serve verdict is `live`; see below). The list is closed, and codes may be added.
+- A `WARNED` skip carries `code`, the serve verdict's reason the table will not serve: `storage_mode` (a `storage=` table while `PERSIST_STORAGE_MODE` is `off` or `write-only`; the query reads the source's own warehouse, where its colocated table may answer), `unreachable` (nothing the package publishes reaches it), `row_level_gate` (every published entry point over it carries a row-level gate, which stored data cannot keep yet), `refused` (the package refuses to serve it) or `shadowed` (its storage table is bound to another source of the same name). Where the verdict says a table will never serve, it replaces what one query alone showed, but only where the router never tried the table: a source the bind refuses reads `WARNED` `refused`, not `NOT_BUILT`, and a table every published entry point gates reads `WARNED` `row_level_gate`, not `CONTRACT`. A skip the router reached by trying the table (`MISSING_FIELD`, `GRAIN_TOO_COARSE`, `COUNT_SEMANTICS`) keeps its own reason, and `STALE` and `RUN_FAILED` stay as they are, since only the query knows them. A `storage=` table and its colocated copy share a `tableId` but each reads its own verdict. The set of codes is open.
+- `warnings` has one entry per such table, with its `code`, `tableId`, `sourceName` and a sentence for a person. A table whose source the caller cannot list gets no warning, though its skip keeps its code. The package's own warnings and `GET …/packages/{pkg}/status` carry the full message and the fixes.
+- `detail` is in the caller's own terms: the field path or aggregate in the query that a rollup cannot reproduce. A compile error against the stored form or a run-time storage error carries no `detail`, since its message can name storage paths and generated sources; it is in the server log.
+- `notConsidered` names up to ten tables near the queried source that the query cannot use: on a source that extends it (`below`) or that shares an ancestor with it (`sibling`). Querying that source instead, or moving an annotation, would let one answer. A source the caller cannot list (hidden by the package's `index.malloy` or the file's exports) is never named, unless the caller may see hidden sources.
+
+The report is assembled after the query runs and never changes which table answers. It is absent only if it could not be assembled.
 
 ## Standalone vs. hosted (control-plane) deployments
 

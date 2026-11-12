@@ -56,7 +56,6 @@ describe("buildOneSource", () => {
                s: unknown,
                i: BuildInstruction,
                c: unknown,
-               d: Record<string, string>,
                m: Manifest,
                env: unknown,
                built: Record<string, unknown>,
@@ -67,7 +66,6 @@ describe("buildOneSource", () => {
          source,
          instruction,
          connection,
-         { duckdb: "dig" },
          manifest,
          {
             getApiConnection: () => {
@@ -338,7 +336,6 @@ describe("buildOneSource", () => {
             realization: "COPY",
          }, // no destination ⇒ colocated
          { runSQL },
-         { duckdb: "dig" },
          manifest,
          {
             getApiConnection: () => {
@@ -448,7 +445,6 @@ describe("buildOneSource reports upstreamReuse from the manifest it substituted 
          source,
          instruction,
          { runSQL: sinon.stub().resolves(undefined) },
-         { duckdb: "dig" },
          manifest,
          {
             getApiConnection: () => ({}),

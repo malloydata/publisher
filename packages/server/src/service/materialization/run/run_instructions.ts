@@ -16,6 +16,8 @@ import {
    CompiledBuildPlan,
    computeSourceEntityId,
    sourcesInBuildOrder,
+   tierGateInputs,
+   storedBaseOfRollup,
 } from "../plan/build_plan";
 import { assertTierEligible } from "../plan/materialization_eligibility";
 import {
@@ -104,6 +106,9 @@ export function deriveSelfInstructions(
             continue;
          }
 
+         // Never buildable today (#6293); the package warning says so.
+         if (storedBaseOfRollup(compiled, persistSource.sourceID)) continue;
+
          const destination = resolveStorageDestination(persistSource);
          const isRollup =
             !!compiled.preaggregatePlans?.[persistSource.sourceID];
@@ -118,7 +123,11 @@ export function deriveSelfInstructions(
          // an authorize-gated source materialized there would be served to
          // every caller.
          try {
-            assertTierEligible(persistSource, !!destination, compiled);
+            assertTierEligible(
+               persistSource,
+               !!destination,
+               tierGateInputs(compiled),
+            );
          } catch (err) {
             if (!(err instanceof MaterializationEligibilityError)) throw err;
             if (include) throw err;

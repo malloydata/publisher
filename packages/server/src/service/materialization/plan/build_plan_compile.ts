@@ -91,10 +91,12 @@ export async function compilePackageBuildPlan(
    return {
       builds: parts.builds,
       sources: parts.sources,
+      targets: parts.targets,
       connectionDigests,
       connections,
       sourceModelPaths: parts.sourceModelPaths,
       droppedPersistSources: parts.droppedPersistSources,
+      annotationFindings: parts.annotationFindings,
       preaggregatePlans: parts.preaggregatePlans,
       sourceGateOutcomes: parts.sourceGateOutcomes,
    };

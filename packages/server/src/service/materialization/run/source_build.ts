@@ -6,6 +6,7 @@ import type {
    Manifest,
    PersistSource,
 } from "@malloydata/malloy";
+import { ChainedUpstreamMissingError } from "../../../errors";
 import { logger } from "../../../logger";
 import {
    recordChainedStorageBuild,
@@ -14,13 +15,12 @@ import {
 import { getPersistStorageMode } from "../../../config";
 import { mergeQueryMetadata, type QueryMetadata } from "../../query_metadata";
 import {
+   buildSQLOf,
    projectToPublicColumns,
    resolveQueryMetadata,
 } from "../plan/build_plan";
-import {
-   authorModelLiftContext,
-   reachedPersistedSources,
-} from "../serve/materialization_serve_transform";
+import { authorModelLiftContext } from "../serve/materialization_serve_transform";
+import { reachPersisted } from "../plan/source_map";
 import { BuildInstruction, ManifestEntry } from "../types";
 import type { BuildStrategy, ColocatedBuildRequest } from "./build_strategy";
 import { ColocatedCtasStrategy } from "./colocated_build_strategy";
@@ -38,8 +38,12 @@ import {
    manifestExcludingStorage,
    manifestForCompiler,
    NO_PLAN_FACTS,
+   noteWrongTierRecompute,
    readAuthorFile,
+   HostSuppliedWrongTierError,
+   upstreamEntryIsCurrent,
    upstreamReuseFromManifest,
+   wrongTierDetail,
 } from "./materialization_run_support";
 import type { StorageBuildRequest } from "./storage_build_strategy";
 
@@ -72,7 +76,6 @@ export class SourceBuilder {
       persistSource: PersistSource,
       instruction: BuildInstruction,
       connection: MalloyConnection,
-      connectionDigests: Record<string, string>,
       manifest: Manifest,
       environment: BuildEnvironment,
       builtEntries: Record<string, ManifestEntry>,
@@ -102,14 +105,114 @@ export class SourceBuilder {
       // before parent reuse could run. Strict is enforced below, where a
       // recompute would really happen. A colocated build keeps strict: its
       // buildSQL IS what runs.
-      const reducedManifest = manifestExcludingStorage(manifest, builtEntries);
+      const reducedManifest = manifestExcludingStorage(
+         manifest,
+         builtEntries,
+         planFacts,
+      );
       const buildManifest = isStorageBuild
          ? { ...reducedManifest, strict: false }
          : reducedManifest;
-      const buildSQL = persistSource.getSQL({
-         buildManifest,
-         connectionDigests,
-      });
+      // Entries left out of the warehouse render only because they are at the
+      // wrong tier for the upstream as declared now (#7087), by address.
+      const wrongTier = Object.entries(builtEntries).filter(
+         ([address, entry]) =>
+            !entry.storageDestinationName &&
+            address in manifest.buildManifest.entries &&
+            !upstreamEntryIsCurrent(address, entry, planFacts),
+      );
+      // The wrong-tier upstreams a strict render misses, by the name its
+      // error quotes; a reference carries no sourceName, so the plan's names
+      // for the address are tried too.
+      const staleMisses = (err: unknown) => {
+         const message = err instanceof Error ? err.message : String(err);
+         return wrongTier.flatMap(([address, entry]) => {
+            const name = [
+               ...(entry.sourceName ? [entry.sourceName] : []),
+               ...(planFacts.namesByAddress?.[address] ?? []),
+            ].find((n) => message.includes(`'${n}'`));
+            return name ? [{ address, entry, name }] : [];
+         });
+      };
+      const refuseHostSupplied = (
+         stale: ReturnType<typeof staleMisses>,
+      ): never => {
+         throw new HostSuppliedWrongTierError(
+            persistSource.name,
+            stale.map((s) => ({
+               name: s.name,
+               detail: wrongTierDetail(s.name, s.address, s.entry, planFacts),
+            })),
+         );
+      };
+      // A host-instructed colocated build refuses, strict or not, an upstream
+      // the host supplied at the wrong tier (#7087, decided 2026-11-12), when
+      // this source reads it. A source reads an upstream exactly when adding
+      // that upstream's entry back changes its permissive render (the table
+      // replaces the inlined SQL); permissive renders never throw, so a
+      // genuinely missing upstream cannot hide one, and the check does not
+      // depend on which miss a strict render happens to report first. The
+      // wrong-tier entry is rendered only to compare, never run.
+      if (!isStorageBuild && planFacts.hostInstructed && wrongTier.length > 0) {
+         const render = (entries: typeof buildManifest.entries) =>
+            buildSQLOf(
+               persistSource,
+               manifestForCompiler(
+                  { ...buildManifest, entries, strict: false },
+                  planFacts,
+               ),
+            );
+         let base: string | undefined;
+         try {
+            base = render(buildManifest.entries);
+         } catch {
+            // The source does not render at all; the build below reports why.
+         }
+         if (base !== undefined) {
+            const read = wrongTier.flatMap(([address, entry]) => {
+               let withEntry: string;
+               try {
+                  withEntry = render({
+                     ...buildManifest.entries,
+                     [address]: manifest.buildManifest.entries[address],
+                  });
+               } catch {
+                  return [];
+               }
+               if (withEntry === base) return [];
+               const name =
+                  entry.sourceName ??
+                  planFacts.namesByAddress?.[address]?.[0] ??
+                  address;
+               return [{ address, entry, name }];
+            });
+            if (read.length > 0) refuseHostSupplied(read);
+         }
+      }
+      let buildSQL: string;
+      try {
+         buildSQL = buildSQLOf(persistSource, buildManifest);
+      } catch (err) {
+         // A strict colocated render misses an upstream whose entry was
+         // supplied, at the wrong tier: say that, not Malloy's generic miss.
+         const stale = staleMisses(err);
+         if (!isStorageBuild && planFacts.hostInstructed && stale.length > 0) {
+            refuseHostSupplied(stale);
+         }
+         if (!isStorageBuild && manifest.strict && stale.length > 0) {
+            throw new ChainedUpstreamMissingError(
+               stale.map((s) => s.name),
+               `Failed to materialize source '${persistSource.name}': ` +
+                  stale
+                     .map((s) =>
+                        wrongTierDetail(s.name, s.address, s.entry, planFacts),
+                     )
+                     .join("; ") +
+                  `, and strict upstreams forbid recomputing it from raw`,
+            );
+         }
+         throw err;
+      }
 
       // Which stored tables this source reads, and whether the substituted
       // manifest holds each, decided once for both tiers. It drives stacking on
@@ -122,7 +225,7 @@ export class SourceBuilder {
          persistSource._model?._modelDef,
          readAuthorFile,
       );
-      const reached = reachedPersistedSources(
+      const reached = reachPersisted(
          lift,
          persistSource.name,
          (_name, sourceID) => planFacts.persistSourceIds.has(sourceID),
@@ -149,16 +252,15 @@ export class SourceBuilder {
       try {
          if (excludedSomething) {
             sqlInlinesStored =
-               persistSource.getSQL({
-                  buildManifest: { ...fullForCompiler, strict: false },
-                  connectionDigests,
+               buildSQLOf(persistSource, {
+                  ...fullForCompiler,
+                  strict: false,
                }) !== buildSQL;
          }
          if (isStorageBuild || !manifest.strict) {
             compilerMissing = compilerMissingUpstream(
                persistSource,
                fullForCompiler,
-               connectionDigests,
                lift.sourceNameById,
             );
          }
@@ -187,6 +289,38 @@ export class SourceBuilder {
               rootAddress: contentSourceEntityId ?? instruction.sourceEntityId,
            })
          : { fields: {}, inManifestOnly: [], missing: [] };
+      // A colocated build that recomputes an upstream because its entry is at
+      // the wrong tier reads the warehouse for it: logged and counted once per
+      // run per upstream, since the entry fields alone hide the cost (#7087).
+      // A host-instructed build refuses instead (HostSuppliedWrongTierError):
+      // the host handed it another tier's table, which it must not.
+      if (!isStorageBuild && wrongTier.length > 0) {
+         const wrongTierAddresses = new Map(wrongTier);
+         const refused: { name: string; detail: string }[] = [];
+         for (const { name, sourceID } of reached.persisted) {
+            const address = planFacts.addressBySourceId[sourceID];
+            const entry =
+               address === undefined
+                  ? undefined
+                  : wrongTierAddresses.get(address);
+            if (!entry || !reuse.inManifestOnly.includes(name)) continue;
+            const detail = wrongTierDetail(name, address!, entry, planFacts);
+            if (planFacts.hostInstructed) {
+               refused.push({ name, detail });
+               continue;
+            }
+            noteWrongTierRecompute({
+               planFacts,
+               build: "colocated",
+               sourceName: persistSource.name,
+               upstream: name,
+               detail,
+            });
+         }
+         if (refused.length > 0) {
+            throw new HostSuppliedWrongTierError(persistSource.name, refused);
+         }
+      }
 
       // Every statement of this build carries the same metadata so query history
       // shows it as one unit of work. Resolved before the storage branch so both
@@ -207,7 +341,10 @@ export class SourceBuilder {
          if (manifest.strict && reuse.missing.length > 0) {
             recordChainedStorageBuild("strict_refused");
             recordStorageBuildFailure(instruction.destination!);
-            throw new Error(
+            // Typed, so the failure can be attributed to an upstream that
+            // failed earlier in this run (see build_failure_class.ts).
+            throw new ChainedUpstreamMissingError(
+               reuse.missing,
                `Failed to materialize source '${persistSource.name}' into ` +
                   `storage destination '${instruction.destination}': persisted ` +
                   `upstream ${reuse.missing.map((n) => `'${n}'`).join(", ")} is ` +
@@ -220,7 +357,7 @@ export class SourceBuilder {
          // table (the two renders differ). The walk alone must not decide: a
          // declared join the query never reads needs no chained attempt.
          const dependsOnStorageUpstream = sqlInlinesStored;
-         // Materialize ONLY the source's PUBLIC columns. `getSQL` projects
+         // Materialize ONLY the source's PUBLIC columns. The build SQL projects
          // hidden ones too (`except:`, access modifiers); serving is already
          // bounded by the shape, so this keeps hidden VALUES from sitting at
          // rest in the destination, reachable by direct catalog access. Refuses

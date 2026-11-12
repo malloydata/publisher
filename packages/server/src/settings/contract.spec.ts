@@ -330,7 +330,7 @@ export const CONTRACT: Record<string, Case[]> = {
       },
    ],
    packageVersioning: [
-      { name: "unset", expect: value(false) },
+      { name: "unset", expect: value(true) },
       {
          name: "PUBLISHER_PACKAGE_VERSIONING on",
          env: { PUBLISHER_PACKAGE_VERSIONING: "on" },
@@ -349,7 +349,7 @@ export const CONTRACT: Record<string, Case[]> = {
       {
          name: "blank",
          env: { PUBLISHER_PACKAGE_VERSIONING: "" },
-         expect: value(false),
+         expect: value(true),
       },
       {
          name: "a boolean spelling is not one of its two values, and fails",
@@ -358,8 +358,8 @@ export const CONTRACT: Record<string, Case[]> = {
       },
       {
          name: "the file is not read today",
-         file: { packageVersioning: "on" },
-         expect: warned(false, "is not read from the file"),
+         file: { packageVersioning: "off" },
+         expect: warned(true, "is not read from the file"),
       },
    ],
    versionPromotion: [
@@ -823,6 +823,27 @@ export const CONTRACT: Record<string, Case[]> = {
          name: "an unreadable file fails startup",
          file: "{",
          expect: fails("Failed to parse"),
+      },
+   ],
+   "mcp.appOrigin": [
+      {
+         name: "unset is localhost on the REST port",
+         expect: value("http://localhost:4000"),
+      },
+      {
+         name: "follows PUBLISHER_PORT",
+         env: { PUBLISHER_PORT: "4100" },
+         expect: value("http://localhost:4100"),
+      },
+      {
+         name: "MCP_APP_ORIGIN",
+         env: { MCP_APP_ORIGIN: "https://publisher.example.com" },
+         expect: value("https://publisher.example.com"),
+      },
+      {
+         name: "a path is cut to the origin",
+         env: { MCP_APP_ORIGIN: "https://publisher.example.com/base/" },
+         expect: value("https://publisher.example.com"),
       },
    ],
    "mcp.trace": [
@@ -1532,6 +1553,19 @@ export const CONTRACT: Record<string, Case[]> = {
          expect: fails("PERSIST_STORAGE_MODE"),
       },
    ],
+   "persist.addressIncludesDestination": [
+      { name: "unset", expect: value(false) },
+      {
+         name: "PUBLISHER_PERSIST_ADDRESS_INCLUDES_DESTINATION",
+         env: { PUBLISHER_PERSIST_ADDRESS_INCLUDES_DESTINATION: "true" },
+         expect: value(true),
+      },
+      {
+         name: "not a boolean",
+         env: { PUBLISHER_PERSIST_ADDRESS_INCLUDES_DESTINATION: "sometimes" },
+         expect: fails("PUBLISHER_PERSIST_ADDRESS_INCLUDES_DESTINATION"),
+      },
+   ],
    "persist.collisionEnforcementEnabled": [
       { name: "unset", expect: value(false) },
       {
@@ -1782,6 +1816,70 @@ export const CONTRACT: Record<string, Case[]> = {
          name: "blank",
          env: { DISABLE_RESPONSE_LOGGING: "" },
          expect: value(true),
+      },
+   ],
+   "workloadLog.store": [
+      { name: "unset", expect: value("off") },
+      {
+         name: "PUBLISHER_WORKLOAD_LOG_STORE on",
+         env: { PUBLISHER_WORKLOAD_LOG_STORE: "on" },
+         expect: value("on"),
+      },
+      {
+         name: "any case, with surrounding space",
+         env: { PUBLISHER_WORKLOAD_LOG_STORE: " On " },
+         expect: value("on"),
+      },
+      {
+         name: "blank",
+         env: { PUBLISHER_WORKLOAD_LOG_STORE: "" },
+         expect: value("off"),
+      },
+      {
+         name: "another value fails",
+         env: { PUBLISHER_WORKLOAD_LOG_STORE: "yes" },
+         expect: fails("PUBLISHER_WORKLOAD_LOG_STORE"),
+      },
+   ],
+   "workloadLog.retentionDays": [
+      { name: "unset", expect: value(30) },
+      {
+         name: "PUBLISHER_WORKLOAD_LOG_RETENTION_DAYS",
+         env: { PUBLISHER_WORKLOAD_LOG_RETENTION_DAYS: "7" },
+         expect: value(7),
+      },
+      {
+         name: "blank",
+         env: { PUBLISHER_WORKLOAD_LOG_RETENTION_DAYS: "" },
+         expect: value(30),
+      },
+      {
+         name: "zero fails",
+         env: { PUBLISHER_WORKLOAD_LOG_RETENTION_DAYS: "0" },
+         expect: fails("PUBLISHER_WORKLOAD_LOG_RETENTION_DAYS"),
+      },
+      {
+         name: "not a number fails",
+         env: { PUBLISHER_WORKLOAD_LOG_RETENTION_DAYS: "a week" },
+         expect: fails("PUBLISHER_WORKLOAD_LOG_RETENTION_DAYS"),
+      },
+   ],
+   "workloadLog.maxRows": [
+      { name: "unset", expect: value(1000000) },
+      {
+         name: "PUBLISHER_WORKLOAD_LOG_MAX_ROWS",
+         env: { PUBLISHER_WORKLOAD_LOG_MAX_ROWS: "5000" },
+         expect: value(5000),
+      },
+      {
+         name: "blank",
+         env: { PUBLISHER_WORKLOAD_LOG_MAX_ROWS: "" },
+         expect: value(1000000),
+      },
+      {
+         name: "not a number fails",
+         env: { PUBLISHER_WORKLOAD_LOG_MAX_ROWS: "lots" },
+         expect: fails("PUBLISHER_WORKLOAD_LOG_MAX_ROWS"),
       },
    ],
    "shutdown.drainDurationSeconds": [

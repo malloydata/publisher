@@ -641,10 +641,31 @@ describe("service/package", () => {
             new Map(),
          );
          // Private by design: its only writer is the load path, which needs a
-         // compiled package. Set directly to isolate the filter.
+         // compiled package. Set directly to isolate the filter. Eligibility is
+         // keyed by sourceID, and a binding names the plan sources it
+         // materializes, so the plan holds every source the case names.
+         const id = (name: string) => `${name}@m.malloy`;
          (
             pkg as unknown as { sourceEligibility: typeof eligibility }
-         ).sourceEligibility = eligibility;
+         ).sourceEligibility = eligibility && {
+            eligible: eligibility.eligible.map(id),
+            refused: Object.fromEntries(
+               Object.entries(eligibility.refused).map(([n, r]) => [id(n), r]),
+            ),
+         };
+         const planned = [
+            ...(eligibility?.eligible ?? []),
+            ...Object.keys(eligibility?.refused ?? {}),
+         ];
+         (pkg as unknown as { buildPlan: unknown }).buildPlan = {
+            graphs: [],
+            sources: Object.fromEntries(
+               planned.map((name) => [
+                  id(name),
+                  { name, sourceEntityId: `eid-${name}`, sourceID: id(name) },
+               ]),
+            ),
+         };
          return pkg;
       };
 
@@ -665,6 +686,65 @@ describe("service/package", () => {
          });
 
          expect(boundSources(pkg)).toEqual(["all_rollup"]);
+      });
+
+      it("keeps a binding only for its eligible source when two models' same-named sources share a table", () => {
+         // Two models declare `orders` with identical SQL (one address); one
+         // carries a gate the eligibility check refuses. The binding names both
+         // plan sources, and only the eligible one may keep it: admitting the
+         // binding whole would serve the refused model's source from the table.
+         const pkg = new Package(
+            "testProject",
+            "testPackage",
+            testPackageDirectory,
+            { name: "testPackage" },
+            [],
+            new Map(),
+         );
+         const open = "orders@file:///open.malloy";
+         const gated = "orders@file:///gated.malloy";
+         (
+            pkg as unknown as {
+               sourceEligibility: {
+                  eligible: string[];
+                  refused: Record<string, string>;
+               };
+            }
+         ).sourceEligibility = {
+            eligible: [open],
+            refused: { [gated]: "protected by a gate" },
+         };
+         (pkg as unknown as { buildPlan: unknown }).buildPlan = {
+            graphs: [],
+            sources: {
+               [open]: {
+                  name: "orders",
+                  sourceEntityId: "eid-orders",
+                  sourceID: open,
+               },
+               [gated]: {
+                  name: "orders",
+                  sourceEntityId: "eid-orders",
+                  sourceID: gated,
+               },
+            },
+         };
+
+         pkg.bindStorageServeBindings({ a: entry("orders", "t_orders") });
+
+         // The wire projection drops sourceIDs; read the bound set itself.
+         const bound = (
+            pkg as unknown as {
+               materialization: {
+                  storageServeBindings: {
+                     sourceName: string;
+                     sourceIDs?: string[];
+                  }[];
+               };
+            }
+         ).materialization.storageServeBindings;
+         expect(bound.map((b) => b.sourceName)).toEqual(["orders"]);
+         expect(bound[0].sourceIDs).toEqual([open]);
       });
 
       it("refuses every binding when the build plan could not be computed", () => {
