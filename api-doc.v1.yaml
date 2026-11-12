@@ -6530,10 +6530,37 @@ components:
             $ref: "#/components/schemas/QueryPathJoin"
         warnings:
           type: array
-          description: "The publish warnings on the materialization annotations this query touched: an annotation that is
-            well-formed but cannot be honoured here, so its source answers live. Empty when there are none."
+          description: "Why a table on the queried source's chain answers no query: the serve verdict of an annotation that is
+            well-formed but cannot be honoured here, so its source answers live. Filtered to what the caller may see.
+            Empty when there are none."
           items:
-            $ref: "#/components/schemas/Problem"
+            $ref: "#/components/schemas/QueryPathWarning"
+      readOnly: true
+
+    QueryPathWarning:
+      type: object
+      description: Why a table on the queried source's chain answers no query.
+      required:
+        - code
+        - tableId
+        - message
+      properties:
+        code:
+          type: string
+          description: "The serve verdict's reason: `storage_mode` (built into storage, but the server routes no query to
+            it), `unreachable` (no published source reaches it), `row_level_gate` (every published entry point over it
+            carries a gate it cannot keep yet), `refused` (the package refuses to serve it) or `shadowed` (its storage
+            table is bound to another source of the same name). An open set: treat a code you do not know as a warning
+            like any other."
+        tableId:
+          type: string
+          description: The table, as `considered` names it.
+        sourceName:
+          type: string
+          description: The source a query names to reach the table; for a rollup, the source it rolls up.
+        message:
+          type: string
+          description: A fixed sentence per code, for a person. Never carries a refusal's own text.
       readOnly: true
 
     QueryPathCandidate:
@@ -6560,6 +6587,10 @@ components:
           type: string
           description: "For a skip, the specifics, for a person: the missing field's name, the grain the query needed, the time
             zones. Absent when `outcome` is `used`."
+        code:
+          type: string
+          description: "On a `WARNED` skip, the serve verdict's reason (the codes `QueryPathWarning.code` lists). An open set,
+            not an enum. Absent on any other outcome."
       readOnly: true
 
     QueryPathJoin:
