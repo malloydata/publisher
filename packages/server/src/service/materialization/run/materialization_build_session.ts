@@ -36,7 +36,11 @@ import {
    type DeclaredColumn,
 } from "../stored_column_types";
 import { recordStoredColumnTypeMismatch } from "../../../materialization_metrics";
-import { plannedSources, projectToPublicColumns } from "../plan/build_plan";
+import {
+   buildSQLOf,
+   plannedSources,
+   projectToPublicColumns,
+} from "../plan/build_plan";
 import {
    bigQueryQueryLabelValue,
    snowflakeQueryTagValue,
@@ -737,7 +741,7 @@ export async function buildSourceIntoStorage(params: {
    destinationName: string;
    destinationConnection: ApiConnection;
    sourceConnection: ApiConnection;
-   /** The source-dialect compiled SELECT (`getSQL` output), verbatim. */
+   /** The source-dialect compiled SELECT (the target's `buildSQL` output), verbatim. */
    buildSQL: string;
    /**
     * Whether the source's compiled definition carries SQL its author wrote
@@ -1072,7 +1076,7 @@ async function buildSameCatalogIntoStorage(params: {
  * `transientModel` (see {@link buildChainedStorageBuildModel}) rebinds every
  * upstream to a virtual source on this destination and re-declares the
  * downstream as a persist source over them. It is compiled against the build
- * session, and the downstream's `getSQL({ virtualMap })` is CTAS'd into the
+ * session, and the downstream's `buildSQL` (planned under the `virtualMap`) is CTAS'd into the
  * destination; nothing is federated and nothing leaves DuckDB. Session
  * lifecycle mirrors {@link buildSourceIntoStorage}.
  *
@@ -1204,7 +1208,7 @@ export async function buildDownstreamIntoStorage(params: {
       // values are not stored at rest.
       const sql = projectToPublicColumns(
          downstream,
-         downstream.getSQL({ virtualMap }),
+         buildSQLOf(downstream, { entries: {} }),
       );
 
       // Quoted as in buildSourceIntoStorage, to match the serve side.

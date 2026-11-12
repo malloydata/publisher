@@ -1,7 +1,7 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
-import type { PersistSource } from "@malloydata/malloy";
+import { makeDigest, type PersistSource } from "@malloydata/malloy";
 import { afterEach, describe, expect, it } from "bun:test";
 import * as sinon from "sinon";
 import {
@@ -362,18 +362,35 @@ describe("projectToPublicColumns", () => {
 });
 
 describe("computeSourceEntityId", () => {
-   it("delegates to PersistSource.makeBuildId with the connection digest and SQL", () => {
-      const makeBuildId = sinon.stub().returns("computed-id");
+   it("hashes the connection digest with its build target's SQL, as the compiler keys a BuildID", () => {
+      const source = { connectionName: "duckdb" } as unknown as PersistSource;
+      plannedSources({
+         connections: [
+            {
+               connectionName: "duckdb",
+               targets: [{ sql: "SELECT 7", sources: [source] }],
+            },
+         ],
+         unbuildable: [],
+      } as unknown as Parameters<typeof plannedSources>[0]);
+
+      expect(computeSourceEntityId(source, { duckdb: "dig-1" })).toBe(
+         makeDigest("dig-1", "SELECT 7"),
+      );
+      // The digest is the connection's: the same SQL elsewhere is another table.
+      expect(computeSourceEntityId(source, { duckdb: "dig-2" })).not.toBe(
+         computeSourceEntityId(source, { duckdb: "dig-1" }),
+      );
+   });
+
+   it("refuses a source that maps onto no build target", () => {
       const source = {
+         name: "loose",
          connectionName: "duckdb",
-         makeBuildId,
-         getSQL: () => "SELECT 7",
       } as unknown as PersistSource;
-
-      const id = computeSourceEntityId(source, { duckdb: "dig-1" });
-
-      expect(id).toBe("computed-id");
-      expect(makeBuildId.calledOnceWithExactly("dig-1", "SELECT 7")).toBe(true);
+      expect(() => computeSourceEntityId(source, { duckdb: "dig-1" })).toThrow(
+         /no build target/,
+      );
    });
 });
 

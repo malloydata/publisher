@@ -2,6 +2,8 @@
 // SPDX-License-Identifier: MIT
 
 import type {
+   BuildManifest,
+   BuildTarget,
    ConnectionBuild,
    MalloyConfig,
    Connection as MalloyConnection,
@@ -21,7 +23,7 @@ import {
    type PackageAnnotationFinding,
 } from "../../annotation_reader";
 import { parseRouteTag, routeHasKey } from "../../motly";
-import { Annotations } from "@malloydata/malloy";
+import { Annotations, makeDigest } from "@malloydata/malloy";
 import { components } from "../../../api";
 import { MaterializationEligibilityError } from "../../../errors";
 import { logger } from "../../../logger";
@@ -207,7 +209,7 @@ function planDynamicFields(
  * A source's PUBLIC column names, or a throw. The strict counterpart to
  * {@link deriveColumns}: this list decides what gets WRITTEN, so "unknown" must
  * not read as "nothing to narrow". Empty throws too — it means everything
- * `getSQL` projects is hidden.
+ * the build SQL projects is hidden.
  */
 function publicColumnNames(persistSource: PersistSource): string[] {
    let names: string[];
@@ -228,7 +230,7 @@ function publicColumnNames(persistSource: PersistSource): string[] {
 }
 
 /**
- * Wrap a source's build SQL to project only its PUBLIC columns. `getSQL` emits
+ * Wrap a source's build SQL to project only its PUBLIC columns. the build SQL emits
  * every underlying column, including hidden ones (`except:`, non-public access).
  *
  * A `storage=` build must not put a hidden column's values AT REST in the
@@ -521,12 +523,80 @@ export function plannedSources(targets: {
    connections: ConnectionBuild[];
    unbuildable: UnbuildableSource[];
 }): PersistSource[] {
+   for (const connection of targets.connections) {
+      for (const target of connection.targets) {
+         for (const source of target.sources) {
+            buildTargets.set(source, target);
+         }
+      }
+   }
    return [
       ...targets.connections.flatMap((c) =>
          c.targets.flatMap((t) => t.sources),
       ),
       ...targets.unbuildable.map((u) => u.source),
    ];
+}
+
+/**
+ * The build target each planned source maps onto, recorded by
+ * {@link plannedSources}: the one place targets become sources, so every
+ * source a plan, build or run holds has its target here. Weak, so a model's
+ * sources and targets are collected with it.
+ */
+const buildTargets = new WeakMap<PersistSource, BuildTarget>();
+
+/** Addresses a test double fixed in place of the hash; never set in production. */
+const fixedAddresses = new WeakMap<PersistSource, string>();
+
+/**
+ * Give a test double's source a fixed address (both its content address and
+ * its compiler key), in place of hashing its target's SQL. For fixtures whose
+ * expectations name the address; production never calls it.
+ */
+export function fixSourceAddressForTesting(
+   source: PersistSource,
+   address: string,
+): void {
+   fixedAddresses.set(source, address);
+}
+
+/**
+ * The build target `source` maps onto. Throws for a source with none: one
+ * `getBuildTargets` could not key (an unbound parameter, a given with no
+ * value), which the deprecated `getSQL()` also threw for, and every caller
+ * already treats as unaddressable.
+ */
+export function buildTargetOf(source: PersistSource): BuildTarget {
+   const target = buildTargets.get(source);
+   if (target === undefined) {
+      throw new Error(
+         `Persisted source '${source.name}' has no build target: it cannot be ` +
+            "keyed (an unbound parameter or a given with no value).",
+      );
+   }
+   return target;
+}
+
+/**
+ * The SQL `source`'s table is keyed by: the target's fully inlined `sql`, with
+ * no manifest substitution, so it describes what the source computes whatever
+ * else has been built.
+ */
+export function addressSQL(source: PersistSource): string {
+   return buildTargetOf(source).sql;
+}
+
+/**
+ * The SQL to execute for `source`'s table: the target's `buildSQL`, which reads
+ * the dependencies `manifest` holds from their tables and is generated under
+ * the same givens and `virtualMap` as {@link addressSQL}.
+ */
+export function buildSQLOf(
+   source: PersistSource,
+   manifest: BuildManifest,
+): string {
+   return buildTargetOf(source).buildSQL(manifest);
 }
 
 /** The sources of `build` in build order, skipping any absent from `sources`. */
@@ -552,14 +622,22 @@ export function computeSourceEntityId(
    source: PersistSource,
    connectionDigests: Record<string, string>,
 ): string {
-   // The no-options `getSQL()` is load-bearing: this address keys the
-   // covered_through ledger (incremental_build.ts), so it must describe WHAT the
-   // source computes, never HOW FAR a run got. A boundary value in this SQL would
+   // The target's `sql` is load-bearing: this address keys the covered_through
+   // ledger (incremental_build.ts), so it must describe WHAT the source
+   // computes, never HOW FAR a run got. A boundary value in this SQL would
    // re-address the table every refresh and re-seed forever. A declaration alone
    // must not move it either (fact 1 in incremental_compiler_contract.spec.ts).
-   return source.makeBuildId(
+   //
+   // Hashed the way the compiler hashes a BuildID (`makeDigest(digest, sql)`)
+   // over the target's `sql`, with Publisher's digest: equal to the target's
+   // own `buildId` (build_targets_address_equality pins it), and the digest
+   // stays the caller's, so the same SQL on another connection is another
+   // table.
+   const fixed = fixedAddresses.get(source);
+   if (fixed !== undefined) return fixed;
+   return makeDigest(
       connectionDigests[source.connectionName],
-      addressPartitionLayout(source, source.getSQL()),
+      addressText(source, addressSQL(source)),
    );
 }
 
@@ -573,15 +651,17 @@ export function compilerBuildId(
    source: PersistSource,
    connectionDigests: Record<string, string>,
 ): string {
-   return source.makeBuildId(
+   const fixed = fixedAddresses.get(source);
+   if (fixed !== undefined) return fixed;
+   return makeDigest(
       connectionDigests[source.connectionName],
-      source.getSQL(),
+      addressSQL(source),
    );
 }
 
 /**
  * Fold a source's `partition=` into the text its address is computed from.
- * `getSQL()` carries no annotation bytes, so without this a `partition=` change
+ * The target's `sql` carries no annotation bytes, so without this a `partition=` change
  * would be skipped as unchanged and the table would keep the old layout.
  *
  * Derived here rather than passed in so every caller agrees
@@ -589,7 +669,7 @@ export function compilerBuildId(
  * keeping unpartitioned addresses stable; a change moves the address once, which
  * is the rebuild the author asked for.
  */
-function addressPartitionLayout(source: PersistSource, sql: string): string {
+export function addressText(source: PersistSource, sql: string): string {
    let columns: string[] = [];
    try {
       const resolved = resolvePartitionColumns(
@@ -1246,13 +1326,13 @@ export function deriveBuildPlan(
    const refusedSources: Record<string, WireRefusedSource> = {};
    for (const [sourceID, source] of Object.entries(sources)) {
       if (include && !include.has(source.name)) continue;
-      // One unreadable source must not cost the package its plan: getSQL()
+      // One unreadable source must not cost the package its plan: addressing
       // throws for a colocated source referencing a given with no default, and
       // an escaping throw would drop EVERY colocated binding for the package.
       try {
          const annotationFields = deriveAnnotationFields(source);
 
-         // Tier-appropriate eligibility BEFORE getSQL()/computeSourceEntityId(),
+         // Tier-appropriate eligibility BEFORE computeSourceEntityId(),
          // which fail for a refused source. Mirrors the build path: `storage=`
          // gets the storage-destination gate; plain `#@ persist` gets the
          // colocated gate, which admits a resolved, fully-attributed gate. The
@@ -1374,7 +1454,7 @@ export function deriveBuildPlan(
                  }
                : null,
             sourceEntityId: computeSourceEntityId(source, connectionDigests),
-            sql: source.getSQL(),
+            sql: addressSQL(source),
             // Verbatim; the resolved declaration is deliberately not a wire field
             // (see resolveIncrementalDeclaration).
             refresh: annotationFields.refresh ?? null,
@@ -1541,7 +1621,7 @@ function collectSourceEligibility(
  * eligibility authorize the other.
  *
  * Two DIFFERENT sources can share an id (identical SQL, different gates, since
- * `getSQL()` excludes annotations). Refusal therefore dominates: one refusal
+ * the build SQL excludes annotations). Refusal therefore dominates: one refusal
  * retracts the id for good, regardless of iteration order.
  */
 export type ColocatedSourceEligibility = {
@@ -1560,8 +1640,8 @@ function collectColocatedSourceEligibility(
       try {
          assertTierEligible(source, false, tierGateInputs(compiled));
       } catch (err) {
-         // Gated BEFORE computeSourceEntityId: the gate never calls getSQL(),
-         // so it refuses cleanly even when getSQL() would throw.
+         // Gated BEFORE computeSourceEntityId: the gate never addresses the source,
+         // so it refuses cleanly even when addressing would throw.
          let sourceEntityId: string;
          try {
             sourceEntityId = computeSourceEntityId(
@@ -1587,7 +1667,7 @@ function collectColocatedSourceEligibility(
          eligibleEntityIds.delete(sourceEntityId);
          continue;
       }
-      // A given-referencing colocated source's getSQL() can throw; contain it
+      // A given-referencing colocated source's addressing can throw; contain it
       // to this source's binding.
       let sourceEntityId: string;
       try {

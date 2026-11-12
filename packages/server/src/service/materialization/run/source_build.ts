@@ -15,6 +15,7 @@ import {
 import { getPersistStorageMode } from "../../../config";
 import { mergeQueryMetadata, type QueryMetadata } from "../../query_metadata";
 import {
+   buildSQLOf,
    projectToPublicColumns,
    resolveQueryMetadata,
 } from "../plan/build_plan";
@@ -73,7 +74,10 @@ export class SourceBuilder {
       persistSource: PersistSource,
       instruction: BuildInstruction,
       connection: MalloyConnection,
-      connectionDigests: Record<string, string>,
+      // Unused: the build SQL now comes from the source's build target, which
+      // resolves the manifest under the digests it was keyed with. Kept so the
+      // positional signature (and its callers) are unchanged.
+      _connectionDigests: Record<string, string>,
       manifest: Manifest,
       environment: BuildEnvironment,
       builtEntries: Record<string, ManifestEntry>,
@@ -107,10 +111,7 @@ export class SourceBuilder {
       const buildManifest = isStorageBuild
          ? { ...reducedManifest, strict: false }
          : reducedManifest;
-      const buildSQL = persistSource.getSQL({
-         buildManifest,
-         connectionDigests,
-      });
+      const buildSQL = buildSQLOf(persistSource, buildManifest);
 
       // Which stored tables this source reads, and whether the substituted
       // manifest holds each, decided once for both tiers. It drives stacking on
@@ -150,16 +151,15 @@ export class SourceBuilder {
       try {
          if (excludedSomething) {
             sqlInlinesStored =
-               persistSource.getSQL({
-                  buildManifest: { ...fullForCompiler, strict: false },
-                  connectionDigests,
+               buildSQLOf(persistSource, {
+                  ...fullForCompiler,
+                  strict: false,
                }) !== buildSQL;
          }
          if (isStorageBuild || !manifest.strict) {
             compilerMissing = compilerMissingUpstream(
                persistSource,
                fullForCompiler,
-               connectionDigests,
                lift.sourceNameById,
             );
          }
@@ -224,7 +224,7 @@ export class SourceBuilder {
          // table (the two renders differ). The walk alone must not decide: a
          // declared join the query never reads needs no chained attempt.
          const dependsOnStorageUpstream = sqlInlinesStored;
-         // Materialize ONLY the source's PUBLIC columns. `getSQL` projects
+         // Materialize ONLY the source's PUBLIC columns. The build SQL projects
          // hidden ones too (`except:`, access modifiers); serving is already
          // bounded by the shape, so this keeps hidden VALUES from sitting at
          // rest in the destination, reachable by direct catalog access. Refuses

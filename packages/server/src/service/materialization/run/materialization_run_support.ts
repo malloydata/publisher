@@ -17,6 +17,7 @@ import {
 } from "../types";
 import { errMessage } from "../../../utils";
 import {
+   buildSQLOf,
    computeSourceEntityId,
    deriveAnnotationFields,
    compilerBuildId,
@@ -259,14 +260,10 @@ export function strictMissSourceId(
 export function compilerMissingUpstream(
    persistSource: PersistSource,
    fullManifest: Manifest["buildManifest"],
-   connectionDigests: Record<string, string>,
    sourceNameById: ReadonlyMap<string, string>,
 ): { name: string; sourceID: string }[] {
    try {
-      persistSource.getSQL({
-         buildManifest: { ...fullManifest, strict: true },
-         connectionDigests,
-      });
+      buildSQLOf(persistSource, { ...fullManifest, strict: true });
       return [];
    } catch (err) {
       const miss = strictMissSourceId(err);

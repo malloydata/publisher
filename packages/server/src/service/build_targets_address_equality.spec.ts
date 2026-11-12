@@ -41,6 +41,7 @@ import { beforeAll, describe, expect, it } from "bun:test";
 import {
    compilerBuildId,
    computeSourceEntityId,
+   plannedSources,
 } from "./materialization/plan/build_plan";
 import {
    duckdbTestConnections,
@@ -98,7 +99,10 @@ const MODEL_NO_FLAG = `source: base is duckdb.sql("""${BASE_ROWS}""")
 
 async function buildTargets(model = MODEL) {
    const { runtime, materializer } = loadTestRuntime(connections, model);
-   return runtime.getBuildTargets(await materializer.getModel());
+   const targets = await runtime.getBuildTargets(await materializer.getModel());
+   // As a plan does: record each source's target, which addressing reads.
+   plannedSources(targets);
+   return targets;
 }
 
 describe("address equality: getBuildTargets vs computeSourceEntityId", () => {
@@ -152,9 +156,11 @@ describe("address equality: getBuildTargets vs computeSourceEntityId", () => {
       // disagree, work keyed on these addresses has to wait for the port.
       const { runtime, materializer } = loadTestRuntime(connections, MODEL);
       const model = await materializer.getModel();
+      // The deprecated API's address, spelled out: getBuildPlan's sources have
+      // no build target to read.
       const fromPlan = new Set(
          Object.values(model.getBuildPlan().sources).map((s) =>
-            computeSourceEntityId(s, connectionDigests),
+            s.makeBuildId(connectionDigests[s.connectionName], s.getSQL()),
          ),
       );
       const fromTargets = new Set(
