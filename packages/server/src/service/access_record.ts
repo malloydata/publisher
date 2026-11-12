@@ -316,7 +316,11 @@ export interface AccessPathCandidate {
 
 /** The access record's copy of a query's path report: see `AccessRecord.path`. */
 export interface AccessPath {
-   servedBy: { kind: string; tableId?: string };
+   /**
+    * `via: "served_copy"` when the served copy answered, which is how a query
+    * through a row-level gate is answered from a stored table (R3).
+    */
+   servedBy: { kind: string; tableId?: string; via?: "served_copy" };
    considered: AccessPathCandidate[];
 }
 
@@ -333,7 +337,7 @@ export interface AccessPath {
 const SAFE_CODE = /^[a-z_]+$/;
 
 export function accessPathOf(report: {
-   servedBy: { kind: string; tableId?: string };
+   servedBy: { kind: string; tableId?: string; via?: string };
    considered: readonly {
       tableId: string;
       kind: string;
@@ -350,6 +354,10 @@ export function accessPathOf(report: {
          kind: report.servedBy.kind,
          ...(report.servedBy.tableId !== undefined
             ? { tableId: report.servedBy.tableId }
+            : {}),
+         // The one value it can take; anything else is dropped.
+         ...(report.servedBy.via === "served_copy"
+            ? { via: "served_copy" as const }
             : {}),
       },
       considered: report.considered.map((c) => ({
