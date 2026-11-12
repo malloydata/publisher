@@ -52,6 +52,8 @@ describe("executeInstructedBuild", () => {
       seed: Record<string, unknown>,
       apiConnections?: Record<string, unknown>,
       strict = false,
+      // The host instructed the run (orchestrated).
+      hostInstructed = false,
    ): Promise<ExecuteResult> {
       // A stub BuildEnvironment. The `storage=` branch reads it, and so does the
       // per-source failure path, which redacts against the connection's CONFIG.
@@ -76,6 +78,7 @@ describe("executeInstructedBuild", () => {
                s: Record<string, unknown>,
                sig: AbortSignal,
                strict: boolean,
+               ...rest: unknown[]
             ) => Promise<ExecuteResult>;
          }
       ).executeInstructedBuild(
@@ -85,6 +88,12 @@ describe("executeInstructedBuild", () => {
          seed,
          new AbortController().signal,
          strict,
+         undefined,
+         undefined,
+         undefined,
+         [],
+         undefined,
+         hostInstructed,
       );
    }
 
@@ -1287,6 +1296,7 @@ describe("executeInstructedBuild", () => {
          seed: Record<string, unknown>;
          mode?: string;
          strict?: boolean;
+         hostInstructed?: boolean;
       }) {
          // Every render Malloy is handed. The FIRST is the build SQL; later ones
          // only classify the build's upstreams and are never executed.
@@ -1350,6 +1360,7 @@ describe("executeInstructedBuild", () => {
                opts.seed,
                undefined,
                opts.strict ?? false,
+               opts.hostInstructed ?? false,
             );
             return { seen: renders[0], result };
          } finally {
@@ -1436,6 +1447,93 @@ describe("executeInstructedBuild", () => {
          expect(reason).toContain("supplied at the wrong tier");
          expect(reason).toContain("strict upstreams forbid");
          expect(reason).not.toContain("not found in manifest");
+      });
+
+      // Decided 2026-11-12: a host that hands a build another tier's table
+      // (two workers with separate stores sharing one config) is a case the
+      // host must prevent, so a host-instructed build refuses, strict or not,
+      // rather than recomputing the upstream across that boundary.
+      const reasonOf = (p: Promise<unknown>) =>
+         p.then(
+            () => "",
+            (err: unknown) =>
+               err instanceof Error ? err.message : String(err),
+         );
+
+      it("refuses a host-instructed build whose upstream's unlabeled reference is at the wrong tier, not strict", async () => {
+         const reason = await reasonOf(
+            downstreamSees({
+               upStorage: "lake",
+               hostInstructed: true,
+               seed: {
+                  up: {
+                     sourceEntityId: "up",
+                     physicalTableName: "up__g004__e9c3ad40",
+                     connectionName: "duckdb",
+                  },
+               },
+            }),
+         );
+         expect(reason).toContain("the host supplied an upstream entry");
+         expect(reason).toContain(
+            "'up' is declared in storage destination 'lake'",
+         );
+         expect(reason).toContain("a reference that does not say where");
+         expect(reason).not.toContain("not found in manifest");
+      });
+
+      it("refuses a host-instructed strict build with the host-supplied message", async () => {
+         const reason = await reasonOf(
+            downstreamSees({
+               upStorage: "lake",
+               hostInstructed: true,
+               strict: true,
+               seed: oldWarehouseTable,
+            }),
+         );
+         expect(reason).toContain("the host supplied an upstream entry");
+         expect(reason).not.toContain("strict upstreams forbid");
+      });
+
+      it("classifies the host-supplied refusal as deterministic", async () => {
+         const { classifyBuildError } = await import("./build_failure_class");
+         const { HostSuppliedWrongTierError } = await import(
+            "./materialization_run_support"
+         );
+         expect(
+            classifyBuildError(
+               new HostSuppliedWrongTierError("down", [
+                  { name: "up", detail: "x" },
+               ]),
+            ),
+         ).toBe(false);
+      });
+
+      it("still recomputes in a self-instructed build, not strict", async () => {
+         const { seen } = await downstreamSees({
+            upStorage: "lake",
+            seed: oldWarehouseTable,
+         });
+         expect(seen?.buildManifest?.entries?.up).toBeUndefined();
+      });
+
+      it("treats an entry built into the source's own database as current in a host-instructed build", async () => {
+         // No `storage=`, and a destination that is the source's own
+         // connection: the same database, so the entry is current and the host
+         // build refuses nothing (#1619's review fix).
+         const { result } = await downstreamSees({
+            hostInstructed: true,
+            seed: {
+               up: {
+                  sourceEntityId: "up",
+                  physicalTableName: "analytics.up_v1",
+                  connectionName: "duckdb",
+                  storageDestinationName: "duckdb",
+               },
+            },
+         });
+         expect(result.entries.bdownaaaaaaaaaa).toBeDefined();
+         expect(Object.keys(result.failures ?? {})).toEqual([]);
       });
 
       it("still renders a colocated upstream's warehouse table", async () => {

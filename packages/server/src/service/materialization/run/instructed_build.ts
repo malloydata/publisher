@@ -157,6 +157,10 @@ export class InstructedBuild {
       // Tiers auto-run already cleared (see deriveSelfInstructions); a listed
       // source is not asserted again.
       clearedTiers?: ReadonlyMap<string, EligibilityTier>,
+      // The host instructed this run (orchestrated): a host-supplied upstream
+      // entry at the wrong tier is refused, not recomputed (see
+      // ChainedPlanFacts.hostInstructed).
+      hostInstructed = false,
    ): Promise<{
       entries: Record<string, ManifestEntry>;
       failures: Record<string, SourceFailure>;
@@ -185,15 +189,18 @@ export class InstructedBuild {
          clearedTiers,
          index,
          // Once per run: it depends only on the plan.
-         planFacts: chainedPlanFacts(
-            sources,
-            connectionDigests,
-            // A host can imply a destination the annotation does not declare,
-            // so the instruction decides a source's current tier (#7087).
-            (sourceID, sourceEntityId) =>
-               index.bySourceID.get(sourceID) ??
-               index.bySourceEntityId.get(sourceEntityId),
-         ),
+         planFacts: {
+            ...chainedPlanFacts(
+               sources,
+               connectionDigests,
+               // A host can imply a destination the annotation does not declare,
+               // so the instruction decides a source's current tier (#7087).
+               (sourceID, sourceEntityId) =>
+                  index.bySourceID.get(sourceID) ??
+                  index.bySourceEntityId.get(sourceEntityId),
+            ),
+            hostInstructed,
+         },
          ...this.seedInstructedRun(seedEntries, connections, strict),
          builtThisRun: [],
          retainedThisRun: [],

@@ -19,7 +19,10 @@ import {
    isCredentialRejection,
 } from "../../../driver_errors";
 import { errMessage } from "../../../utils";
-import { strictMissSourceId } from "./materialization_run_support";
+import {
+   HostSuppliedWrongTierError,
+   strictMissSourceId,
+} from "./materialization_run_support";
 
 /**
  * Whether retrying one source's failed build could succeed, as reported on
@@ -120,6 +123,9 @@ export function isUpstreamMissingError(err: unknown): boolean {
  * of the run. See {@link BuildRetryable} for the three answers.
  */
 export function classifyBuildError(err: unknown): BuildRetryable {
+   // The host supplied an upstream at the wrong tier: the same instructions
+   // fail the same way, so the host must change them.
+   if (err instanceof HostSuppliedWrongTierError) return false;
    // An upstream no manifest holds: unclassified on its own (see above).
    if (isUpstreamMissingError(err)) return undefined;
    // A property of the model, the package or the environment's configuration.

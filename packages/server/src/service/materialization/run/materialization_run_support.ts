@@ -92,6 +92,16 @@ export interface ChainedPlanFacts {
    declaredTiersByAddress?: Record<string, readonly (string | null)[]>;
    /** The plan's source names at each content address, for messages. */
    namesByAddress?: Record<string, readonly string[]>;
+   /**
+    * Whether the host instructed this run (orchestrated), supplying its
+    * manifest and references. A host-supplied upstream entry at the wrong tier
+    * is then refused ({@link HostSuppliedWrongTierError}) rather than
+    * recomputed: a host that hands a build another tier's table (two workers
+    * with separate stores sharing one config) is a case the host must prevent.
+    * A self-instructed run, building from its own manifest, recomputes and
+    * warns ({@link noteWrongTierRecompute}). Absent means self-instructed.
+    */
+   hostInstructed?: boolean;
 }
 
 /** A build with no plan to consult: nothing is known to be stored. */
@@ -438,6 +448,32 @@ export function currentUpstreamEntries(
          upstreamEntryIsCurrent(address, entry, planFacts),
       ),
    );
+}
+
+/**
+ * A host-instructed build refused because the host supplied an upstream's
+ * entry at the wrong tier for the upstream as declared now (ms2data/service#7087,
+ * decided 2026-11-12). Deterministic: the same instructions fail the same way,
+ * so `retryable: false` (build_failure_class.ts), and the host sees why.
+ */
+export class HostSuppliedWrongTierError extends Error {
+   readonly missing: readonly string[];
+
+   constructor(
+      sourceName: string,
+      upstreams: readonly { name: string; detail: string }[],
+   ) {
+      super(
+         `Failed to materialize source '${sourceName}': the host supplied an ` +
+            `upstream entry this build cannot use: ` +
+            upstreams.map((u) => u.detail).join("; ") +
+            `. An instructed build refuses rather than recomputing that ` +
+            `upstream from raw; supply the entry for the table the upstream ` +
+            `is declared to have now (with its storageDestinationName).`,
+      );
+      this.name = "HostSuppliedWrongTierError";
+      this.missing = upstreams.map((u) => u.name);
+   }
 }
 
 /** The phrase every wrong-tier detail carries, for a caller that classifies one. */

@@ -8,24 +8,31 @@ Copyright (c) Credible Data Inc.
 SPDX-License-Identifier: MIT
 -->
 
-# A reference with nothing to resolve it fails loudly, never silently recomputing
+# A host-supplied reference at the wrong tier is refused, never silently recomputed
 
 Cross-worker reuse DOES work when the orchestrator refreshes the manifest first
 (see `cross-worker-refreshed-manifest`). This scenario pins the complementary
-NEGATIVE case: when a worker has neither the record nor a refreshed manifest, a
-bare thin reference is not enough, and the build must fail loudly — never silently
-recompute wrong or serve a table it can't reach.
+NEGATIVE case: two workers that share one config but keep separate
+materialization stores, where the second is handed a bare thin reference to a
+table the first built. That is a case the control plane must prevent, so the
+build refuses loudly rather than reading or rebuilding across that boundary.
 
 Two publishers share one config (same warehouse, DuckLake, packages) but have
 SEPARATE materialization stores — two orchestrator workers. `p1` builds the
 upstream; `p2` (which never built it, and was NOT sent a refreshed manifest) is
-asked to build the downstream with only a thin reference. `p2` can't resolve the
-upstream from its own store, has no bound manifest to resolve from, and the wire
-`ManifestReference` can't carry the storage fields — so the build fails.
+asked to build the downstream with only a thin reference. The reference names
+the stored table but carries no `storageDestinationName`, so it reads as a
+warehouse table, while `daily` is declared `storage=lake`: it is supplied at
+the wrong tier. An instructed build refuses that, strict or not (decided
+2026-11-12), naming the upstream, where the entry is and where the upstream is
+declared. A self-instructed build would recompute it from raw with a warning
+instead.
 
-The takeaway: to build a downstream on a worker that didn't build the upstream,
-refresh the manifest on that worker first (the realistic flow). Wiring in
-`hooks.ts`.
+A reference CAN carry `storageDestinationName` (since #1619), but even labelled,
+a thin reference has no column list, so `p2` still could not stack on the
+stored table; it could only recompute it. The takeaway: to build a downstream
+on a worker that didn't build the upstream, refresh the manifest on that worker
+first (the realistic flow). Wiring in `hooks.ts`.
 
 ## Data orders_pg.xw_orders
 
@@ -68,12 +75,11 @@ p2 has a SEPARATE store and never built the upstream.
 
 ## Build refused (orchestrated, pkg=xw)
 
-Ask p2 to build the downstream referencing `daily` from p1. p2 can't resolve the
-storage upstream (no local record, no refreshed manifest) and the thin reference
-can't carry the storage fields — so the build fails loudly rather than serving
-wrong data.
+Ask p2 to build the downstream referencing `daily` from p1. The thin reference
+is unlabeled, so it is at the wrong tier for a `storage=` upstream, and the
+instructed build refuses it rather than recomputing `daily` from raw.
 
 - rollup -> xw_rollup__g1 @ lake
   reference: daily (from=p1)
 
-cites: does not exist
+cites: the host supplied an upstream entry

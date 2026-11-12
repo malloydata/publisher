@@ -69,6 +69,7 @@ import {
    redactConnectionSecrets,
    currentUpstreamEntries,
    noteWrongTierRecompute,
+   HostSuppliedWrongTierError,
    upstreamEntryIsCurrent,
    WRONG_TIER_MARKER,
    wrongTierDetail,
@@ -282,6 +283,21 @@ export class StorageBuildStrategy
                throw new Error(
                   `Failed to materialize chained source '${persistSource.name}' ` +
                      `into storage destination '${destinationName}': ${safeDetail}`,
+               );
+            }
+            // A host-instructed build refuses a host-supplied upstream entry
+            // at the wrong tier, strict or not, instead of recomputing it
+            // (#7087, decided 2026-11-12).
+            if (
+               planFacts.hostInstructed &&
+               err instanceof ChainedUpstreamMissingError &&
+               safeDetail.includes(WRONG_TIER_MARKER)
+            ) {
+               recordChainedStorageBuild("strict_refused");
+               recordStorageBuildFailure(destinationName);
+               throw new HostSuppliedWrongTierError(
+                  persistSource.name,
+                  err.missing.map((name) => ({ name, detail: safeDetail })),
                );
             }
             if (manifest.strict && pinnedRecompute) {
