@@ -145,6 +145,12 @@ export const BUILD_PLAN_REFRESH_WAIT_MS = 10_000;
  */
 export const PERSIST_SOURCE_REFUSED_CODE = "persist-source-refused";
 
+/** The live serve verdicts the path report reads, by table and by source. */
+interface LiveVerdicts {
+   byTable: ReadonlyMap<string, LiveTableVerdict>;
+   bySource: ReadonlyMap<string, LiveTableVerdict>;
+}
+
 /**
  * A package's materialization state: its build plan and which sources may be
  * served from a materialized table, the manifest it is bound to (both tiers),
@@ -207,7 +213,7 @@ export class PackageMaterialization {
       | {
            plan: BuildPlan | null;
            bound: FreshnessManifest | undefined;
-           liveVerdicts: ReadonlyMap<string, LiveTableVerdict> | undefined;
+           liveVerdicts: LiveVerdicts | undefined;
            catalog: MaterializedTableCatalog;
         }
       | undefined;
@@ -215,7 +221,7 @@ export class PackageMaterialization {
    private liveVerdictCache:
       | {
            key: readonly unknown[];
-           byTable: ReadonlyMap<string, LiveTableVerdict> | undefined;
+           verdicts: LiveVerdicts | undefined;
         }
       | undefined;
    // `#@ persist` sources Malloy's build walk did not plan, which
@@ -509,7 +515,12 @@ export class PackageMaterialization {
       const catalog: MaterializedTableCatalog = {
          planned,
          bound,
-         ...(liveVerdicts ? { liveVerdicts } : {}),
+         ...(liveVerdicts
+            ? {
+                 liveVerdicts: liveVerdicts.byTable,
+                 sourceVerdicts: liveVerdicts.bySource,
+              }
+            : {}),
       };
       this.tableCatalogCache = {
          plan: this.buildPlan,
@@ -529,9 +540,7 @@ export class PackageMaterialization {
     * reason reads no clock, so this is memoized on the facts the verdicts read
     * (each replaced wholesale) and costs a query only a key compare.
     */
-   private liveVerdictsByTable():
-      | ReadonlyMap<string, LiveTableVerdict>
-      | undefined {
+   private liveVerdictsByTable(): LiveVerdicts | undefined {
       const models = this.owner.models();
       const key = [
          this.buildPlan,
@@ -546,13 +555,25 @@ export class PackageMaterialization {
       ];
       const cached = this.liveVerdictCache;
       if (cached && cached.key.every((part, i) => part === key[i])) {
-         return cached.byTable;
+         return cached.verdicts;
       }
-      let byTable: Map<string, LiveTableVerdict> | undefined;
+      let verdicts: LiveVerdicts | undefined;
       if (this.buildPlan) {
          const sources = this.buildPlan.sources ?? {};
          const perTable = new Map<string, ServeVerdict[]>();
+         const bySource = new Map<string, LiveTableVerdict>();
          for (const verdict of this.serveVerdicts()) {
+            if (
+               verdict.verdict === "live" &&
+               verdict.reason &&
+               verdict.reason !== "stale" &&
+               !bySource.has(verdict.sourceID)
+            ) {
+               bySource.set(verdict.sourceID, {
+                  reason: verdict.reason,
+                  sourceName: verdict.sourceName,
+               });
+            }
             const entityId = sources[verdict.sourceID]?.sourceEntityId;
             if (!entityId) continue;
             const key = liveVerdictKey(verdict.tier, entityId);
@@ -560,13 +581,13 @@ export class PackageMaterialization {
             list.push(verdict);
             perTable.set(key, list);
          }
-         byTable = new Map();
-         for (const [tableKey, verdicts] of perTable) {
-            const live = verdicts.every(
+         const byTable = new Map<string, LiveTableVerdict>();
+         for (const [tableKey, tableVerdicts] of perTable) {
+            const live = tableVerdicts.every(
                (v) => v.verdict === "live" && v.reason && v.reason !== "stale",
             );
             if (!live) continue;
-            const first = verdicts[0];
+            const first = tableVerdicts[0];
             const plan = sources[first.sourceID];
             byTable.set(tableKey, {
                reason: first.reason as string,
@@ -574,9 +595,10 @@ export class PackageMaterialization {
                   plan?.preaggregate?.baseSourceName ?? first.sourceName,
             });
          }
+         verdicts = { byTable, bySource };
       }
-      this.liveVerdictCache = { key, byTable };
-      return byTable;
+      this.liveVerdictCache = { key, verdicts };
+      return verdicts;
    }
 
    /**

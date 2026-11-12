@@ -418,10 +418,10 @@ describe("the verdicts, path report, preview and warnings agree on one package",
       );
       expect(r.path?.servedBy.kind).toBe("rollup");
 
-      // The gated extension shares its base's table. Its verdict (per
-      // source) says live because the gate refuses it; the path report (per
-      // table) says the gate kept the query off a table that still serves
-      // its base: CONTRACT, with no table-level verdict to replace it.
+      // The gated extension shares its base's table. Its verdict says live
+      // because the gate refused it, and the path report says why the query
+      // didn't use the table: WARNED with the verdict's code, `refused`
+      // (decided 2026-11-11), so both surfaces name the same cause.
       const secure = verdictOf("daily_s_secure");
       expect(secure).toMatchObject({ verdict: "live", reason: "refused" });
       expect(secure.message).toContain("protected by a gate");
@@ -434,8 +434,7 @@ describe("the verdicts, path report, preview and warnings agree on one package",
          (entry) =>
             entry.outcome === "skipped" && entry.kind === "materialized",
       );
-      expect(skipped).toMatchObject({ reason: "CONTRACT" });
-      expect(skipped?.code).toBeUndefined();
+      expect(skipped).toMatchObject({ reason: "WARNED", code: "refused" });
 
       // A mistyped column: the package warns about it, the source still
       // serves, and a query reading that column is answered live.
