@@ -10,7 +10,8 @@
  * Every finding is a coded publish warning (`annotation-near-miss`), never a
  * refusal: a route that merely looks like one of ours may be another app's,
  * and the outcome rule warns on what it cannot be sure of. The gate spellings
- * the load already refuses (`collectAuthorizeNearMisses`) are left to that
+ * the load refuses (`collectAuthorizeNearMisses`), including a misspelled
+ * gate such as `#(authorise)` (`misspelledGateRoute`), are left to that
  * refusal, and the matching itself is shared with it (`isRouteAttempt`).
  *
  * A note whose prefix Malloy cannot route at all (`#percent`) is reported too
@@ -51,12 +52,6 @@ export const ANNOTATION_MALFORMED_ROUTE_CODE = "annotation-malformed-route";
 const OWNED_ROUTES: readonly string[] = Object.keys(PUBLISHER_ROUTES)
    .filter((route) => !isReservedRoute(route))
    .sort();
-
-/** The gate routes, whose near miss leaves a source unprotected. */
-const GATE_ROUTES: ReadonlySet<string> = new Set([
-   "authorize",
-   "access_filter",
-]);
 
 /** The `#@` directives that make a source persist or roll up. */
 const PERSIST_DIRECTIVES: readonly string[] = ["persist", "preaggregate"];
@@ -234,16 +229,13 @@ export function annotationNearMisses(
          });
          continue;
       }
-      const unprotected = GATE_ROUTES.has(intended.route)
-         ? `; nothing enforces it, so the source is not protected by it`
-         : "";
       findings.push({
          route: intended.route,
          tier: "unservable",
          code: ANNOTATION_NEAR_MISS_CODE,
          message:
             `\`${written}\` is not read as \`${intended.spelling}\`, so it does ` +
-            `nothing (did you mean \`${intended.spelling}\`?)${unprotected}`,
+            `nothing (did you mean \`${intended.spelling}\`?)`,
          rewrite: `write \`${intended.spelling}\``,
          ...where,
       });

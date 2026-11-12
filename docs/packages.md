@@ -186,15 +186,18 @@ in the package's `warnings`, at severity `warn`, with the line and the spelling 
 - `annotation-near-miss`: an annotation that reads as an attempt at a route Publisher reads
   (`#(doc)`, `#(markdown)`, `#(classification)`, `#(carries)`, `#(secure)`, `#(index)`,
   `#(dbmeta)`, `#(authorize)`, `#(access_filter)`, `#@ persist`, `#@ preaggregate`) but does not
-  reach it. On a gate route it also says the source is not protected by it.
+  reach it.
 - `annotation-malformed-route`: a prefix Malloy cannot route at all, such as `#percent` (write
   `# percent` for a tag, or `#(name)` for an app route). Malloy warns about these when it compiles,
   and the package now carries the warning.
 
-They are warnings, never refusals: a route that only looks like one of these may belong to another
-application, and a publish still succeeds. The gate spellings Publisher already refuses
-(`#(AUTHORIZE)`, `# (authorize)`, `#(access-filter)` and the like, see
-[authorize.md](authorize.md)) still fail the load. Each model reports only the annotations in its own
+They are warnings, not refusals: a route that only looks like one of these may belong to another
+application, and a publish still succeeds. Gates are the exception, because a gate loaded inert
+leaves the source open. The spellings Publisher already refused (`#(AUTHORIZE)`, `# (authorize)`,
+`#(access-filter)` and the like, see [authorize.md](authorize.md)) still fail the load, and so now
+does a misspelled gate: `#(authorise)`, `#(autorize)`, `#(acess_filter)`, any route word within two
+edits of `authorize` or `access_filter`. A word that extends a gate's name, such as `#(authorized)`,
+reads as another application's route and only warns. Each model reports only the annotations in its own
 file, so a file several models import is reported once. `compile_model` at `file` scope returns the
 near misses as `warn` diagnostics at their line, so an editor sees them before a save. They are
 counted in `publisher_annotation_findings_total` with the other annotation findings.

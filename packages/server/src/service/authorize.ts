@@ -38,6 +38,7 @@
 
 import { createRequire } from "module";
 import {
+   editDistance,
    isRouteAttempt,
    payloadOfNote,
    routeOfNote,
@@ -547,12 +548,58 @@ export function collectAuthorizeNearMisses(
    const names = nearMissRouteNames(route);
    const found: string[] = [];
    for (const text of texts) {
-      if (!isRouteAttempt(text, route, names)) continue;
+      if (
+         !isRouteAttempt(text, route, names) &&
+         misspelledGateRoute(text) !== route
+      ) {
+         continue;
+      }
       // The first line only — the part that decides routing — so the gate
       // expression stays out of the load error.
       found.push(text.trimStart().split(/[\r\n]/, 1)[0]);
    }
    return found;
+}
+
+/** A route name folded for comparison: lower case, no separators. */
+function foldRouteName(name: string): string {
+   return name.toLowerCase().replace(/[-_\s]/g, "");
+}
+
+/**
+ * The gate route a note misspells (`#(authorise)`, `#(acess_filter)`,
+ * `# (autorize)`), or `undefined`: its route word within two edits of a gate
+ * route, folded. The fixed spellings in {@link nearMissRouteNames} catch case,
+ * separators and spacing; this catches the typos they cannot list. A misspelled
+ * gate is refused like those, since loading it inert leaves the source open.
+ *
+ * Not a misspelling: a word that extends a gate's name (`#(authorized)`,
+ * `#(access_filters)`), which reads as another app's route, and a name with a
+ * `/`, `.` or `:` (a URL or version). The near-miss scan still warns on those.
+ */
+export function misspelledGateRoute(text: string): string | undefined {
+   const trimmed = text.trimStart();
+   const noted = routeOfNote(trimmed);
+   let name: string | undefined;
+   if (noted === undefined) {
+      name = /^##?\|?[ \t]*[([{<]?[ \t]*([A-Za-z_][\w-]*)/.exec(trimmed)?.[1];
+   } else if (noted === "") {
+      name = /^[ \t]*[([{<][ \t]*([A-Za-z_][\w-]*)[ \t]*[)\]}>]/.exec(
+         payloadOfNote(trimmed),
+      )?.[1];
+   } else {
+      name = noted;
+   }
+   if (name === undefined || /[/.:]/.test(name)) return undefined;
+   if (RECOGNIZED_AUTHORIZE_SPELLINGS.includes(name)) return undefined;
+   const folded = foldRouteName(name);
+   for (const route of RECOGNIZED_AUTHORIZE_SPELLINGS) {
+      const target = foldRouteName(route);
+      if (folded.startsWith(target)) continue;
+      const distance = editDistance(folded, target);
+      if (distance >= 1 && distance <= 2) return route;
+   }
+   return undefined;
 }
 
 /**
@@ -578,6 +625,8 @@ export function collectAuthorizeNearMissesAllRoutes(
  * `#(rowauthorize)` author to the lock.
  */
 function guessedNearMissRoute(text: string): string {
+   const misspelled = misspelledGateRoute(text);
+   if (misspelled !== undefined) return misspelled;
    const lower = text.toLowerCase();
    let best = ACCESS_FILTER_ROUTE;
    let bestLength = 0;

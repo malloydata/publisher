@@ -850,6 +850,21 @@ describe("a near miss of the lock's spelling fails the load", () => {
       expect(err.message).toContain("(meant `#(authorize)`?)");
    });
 
+   it.each([
+      ["#(authorise)", "#(authorize)"],
+      ["#(autorize)", "#(authorize)"],
+      ["# (authorise)", "#(authorize)"],
+      ["#(acess_filter)", "#(access_filter)"],
+   ])("refuses the misspelled gate %s", async (tag, meant) => {
+      const err = await expectLoadError(
+         `##! experimental.givens\n\ngiven:\n  ROLE :: string[]\n\n${tag} 'finance' in $ROLE\nsource: near_locked is duckdb.table('customers') extend {}\n`,
+      );
+      expect(err).not.toBeInstanceOf(AuthorizeGrammarError);
+      expect(err.message).toMatch(/never enforced/i);
+      expect(err.message).toContain(tag);
+      expect(err.message).toContain(`(meant \`${meant}\`?)`);
+   });
+
    it("refuses a near miss reached only through a derivation hop", async () => {
       // `near_layer` imports `near_qs` alone, so the misspelled base is only
       // the inline struct on `near_qs`'s query.structRef; the sweep must

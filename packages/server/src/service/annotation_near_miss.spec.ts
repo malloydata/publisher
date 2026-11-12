@@ -14,7 +14,7 @@ import {
    annotationNearMisses,
    authoredNotes,
 } from "./annotation_near_miss";
-import { collectAuthorizeNearMisses } from "./authorize";
+import { collectAuthorizeNearMisses, misspelledGateRoute } from "./authorize";
 import { nearMissLogMessages } from "./compile_source";
 
 function scan(text: string) {
@@ -55,10 +55,31 @@ describe("annotationNearMisses", () => {
       });
    }
 
-   it("says a misspelled gate leaves the source unprotected", () => {
-      const [finding] = scan("#(authorise) org_id = $ORG");
-      expect(finding?.route).toBe("authorize");
-      expect(finding?.message).toContain("not protected");
+   it("leaves a misspelled gate to the load's refusal, which sees it", () => {
+      for (const [text, route] of [
+         ["#(authorise) org_id = $ORG", "authorize"],
+         ["#(autorize) org_id = $ORG", "authorize"],
+         ["# (authorise) org_id = $ORG", "authorize"],
+         ["#(acess_filter) org_id = $ORG", "access_filter"],
+         ["#(access_filtr) org_id = $ORG", "access_filter"],
+      ] as const) {
+         expect(scan(text)).toEqual([]);
+         expect(misspelledGateRoute(text)).toBe(route);
+         expect(collectAuthorizeNearMisses([text], route)).toHaveLength(1);
+      }
+   });
+
+   it("does not read a word that extends a gate's name as a misspelled gate", () => {
+      for (const text of [
+         "#(authorized) not a gate",
+         "#(access_filters) x",
+         "#(authorize) org_id = $ORG",
+         "#(access_filter) org_id = $ORG",
+         "#(author) x",
+         "#(acme/authorise) x",
+      ]) {
+         expect(misspelledGateRoute(text)).toBeUndefined();
+      }
    });
 
    it("leaves the gate spellings the load refuses to that refusal", () => {
