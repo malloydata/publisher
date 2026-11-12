@@ -18,9 +18,12 @@ leaves it warn-only (see `collision-enforce-refuses-publish`, which uses `true`)
 
 `alpha` and `beta` both declare `name="sbs_dup" storage=lake`, the collision.
 
+Package versioning is off on both publishers: `## Republish` re-publishes in place (`POST /packages` with no location), which a versioned package refuses with `PACKAGE_IS_VERSIONED`. This scenario is about how a boolean setting is read, not versions.
+
 ## Publisher strict
 
 - PERSIST_STORAGE_MODE: on
+- PUBLISHER_PACKAGE_VERSIONING: off
 - PERSIST_COLLISION_ENFORCE: Yes
 
 ## Data orders_pg.sbs_orders
@@ -59,6 +62,7 @@ cites: resolve to the same materialized table
 ## Publisher lax
 
 - PERSIST_STORAGE_MODE: on
+- PUBLISHER_PACKAGE_VERSIONING: off
 - PERSIST_COLLISION_ENFORCE: OFF
 
 ## Republish sbs

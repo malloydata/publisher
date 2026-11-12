@@ -8,7 +8,7 @@ import * as path from "path";
 import { EnvironmentStore } from "./environment_store";
 import { installSettings } from "../test_helpers/settings_env";
 import { writePackageFiles } from "../test_helpers/temp_package";
-import { parseEnvironmentName, parsePackageName } from "./identity";
+import { parseEnvironmentName, parsePackageName, VersionRef } from "./identity";
 import { startedStore } from "../test_helpers/started_store";
 
 /**
@@ -229,5 +229,211 @@ describe("configured packages with package versioning off", () => {
          false,
       );
       expect(served.getVersionId()).toBeUndefined();
+   });
+});
+
+/**
+ * A configured package whose boot-time publish is refused places nothing, so
+ * it used to have no files at all: compiling it, building it and reading it all
+ * answered "manifest does not exist", and a failure that clears on its own
+ * could never recover until `--init`. Its next access publishes it again.
+ */
+describe("a configured package whose boot publish was refused", () => {
+   function writeModel(dir: string, text: string) {
+      fs.writeFileSync(path.join(dir, "model.malloy"), text);
+   }
+
+   it("answers its compile error when read again, not a missing manifest", async () => {
+      env.PUBLISHER_PACKAGE_VERSIONING = "on";
+      const dir = source("broken", "1.0.0");
+      writeModel(dir, `source: numbers is duckdb.table('no_such_table_xyz')\n`);
+      configure([{ name: "broken", location: dir }]);
+
+      const s = await openStore();
+      expect(await versionsOf(s, "broken")).toEqual({ latest: null, ids: [] });
+      const environment = await s.getEnvironment(
+         parseEnvironmentName(ENV),
+         false,
+      );
+      const read = environment.getPackage(parsePackageName("broken"), false);
+      await expect(read).rejects.toThrow(/no_such_table_xyz/);
+      await expect(read).rejects.not.toThrow(/manifest/i);
+
+      const compiled = environment.compileSource(
+         "broken",
+         "model.malloy",
+         "",
+         false,
+         undefined,
+         "file",
+      );
+      await expect(compiled).rejects.toThrow(/no_such_table_xyz/);
+   });
+
+   it("is published as its version once the cause clears, with no restart", async () => {
+      env.PUBLISHER_PACKAGE_VERSIONING = "on";
+      const dir = source("late", "1.0.0");
+      writeModel(dir, `source: numbers is duckdb.table('late_table_xyz')\n`);
+      configure([{ name: "late", location: dir }]);
+
+      const s = await openStore();
+      expect(await versionsOf(s, "late")).toEqual({ latest: null, ids: [] });
+      const environment = await s.getEnvironment(
+         parseEnvironmentName(ENV),
+         false,
+      );
+      await expect(
+         environment.getPackage(parsePackageName("late"), false),
+      ).rejects.toThrow(/late_table_xyz/);
+
+      // What the model needed now exists: here, the model no longer reads the
+      // missing table, as a warehouse table created after boot would.
+      writeModel(dir, `source: numbers is duckdb.sql("SELECT 1 AS answer")\n`);
+      const served = await environment.getPackage(
+         parsePackageName("late"),
+         false,
+      );
+      expect(served.getVersionId()).toBe("1.0.0");
+      expect(await versionsOf(s, "late")).toEqual({
+         latest: "1.0.0",
+         ids: ["1.0.0"],
+      });
+      expect(environment.getFailedPackages().has("late")).toBe(false);
+   });
+});
+
+/**
+ * A retry copies the package and compiles it, from unauthenticated routes, so
+ * it is shared, backed off and gated to the default version, and a delete
+ * waits for one in flight rather than being undone by it.
+ */
+describe("retrying a refused configured package's publish", () => {
+   async function environmentWithRetry(
+      publish: () => Promise<unknown>,
+      fingerprint?: () => Promise<string | undefined>,
+   ) {
+      env.PUBLISHER_PACKAGE_VERSIONING = "on";
+      configure([{ name: "ok", location: source("ok", "1.0.0") }]);
+      const s = await openStore();
+      const environment = await s.getEnvironment(
+         parseEnvironmentName(ENV),
+         false,
+      );
+      environment.setConfiguredPublishRetry("ghost", publish, fingerprint);
+      return environment;
+   }
+   const ghost = parsePackageName("ghost");
+
+   it("runs one publish for callers that arrive together, and answers each its error", async () => {
+      let calls = 0;
+      const environment = await environmentWithRetry(async () => {
+         calls++;
+         await new Promise((resolve) => setTimeout(resolve, 50));
+         throw new Error("still broken: ghost_table");
+      });
+      const results = await Promise.allSettled([
+         environment.getPackage(ghost, false),
+         environment.getPackage(ghost, false),
+         environment.publishRefusedConfiguredPackage("ghost"),
+      ]);
+      expect(calls).toBe(1);
+      for (const result of results) {
+         expect(result.status).toBe("rejected");
+         expect(String((result as PromiseRejectedResult).reason)).toContain(
+            "ghost_table",
+         );
+      }
+   });
+
+   it("answers the last failure without publishing again until the backoff passes", async () => {
+      let calls = 0;
+      const environment = await environmentWithRetry(async () => {
+         calls++;
+         throw new Error(`failure ${calls}`);
+      });
+      await expect(environment.getPackage(ghost, false)).rejects.toThrow(
+         "failure 1",
+      );
+      await expect(environment.getPackage(ghost, false)).rejects.toThrow(
+         "failure 1",
+      );
+      expect(calls).toBe(1);
+      // The /status record is the retry's, as a load failure.
+      expect(environment.getFailedPackages().get("ghost")).toContain(
+         "failure 1",
+      );
+      const realNow = Date.now;
+      try {
+         Date.now = () => realNow() + 3_000;
+         await expect(environment.getPackage(ghost, false)).rejects.toThrow(
+            "failure 2",
+         );
+      } finally {
+         Date.now = realNow;
+      }
+      expect(calls).toBe(2);
+   });
+
+   it("publishes again at once when the package's files changed", async () => {
+      let calls = 0;
+      let files = "a";
+      const environment = await environmentWithRetry(
+         async () => {
+            calls++;
+            throw new Error("broken");
+         },
+         async () => files,
+      );
+      await expect(environment.getPackage(ghost, false)).rejects.toThrow();
+      await expect(environment.getPackage(ghost, false)).rejects.toThrow();
+      expect(calls).toBe(1);
+      files = "b";
+      await expect(environment.getPackage(ghost, false)).rejects.toThrow();
+      expect(calls).toBe(2);
+   });
+
+   it("publishes nothing for a request naming a version", async () => {
+      let calls = 0;
+      const environment = await environmentWithRetry(async () => {
+         calls++;
+         throw new Error("broken");
+      });
+      await expect(
+         environment.getPackage(ghost, false, {
+            versionId: VersionRef.of("9.9.9"),
+         }),
+      ).rejects.toThrow();
+      await environment.publishRefusedConfiguredPackage("ghost", "9.9.9");
+      expect(calls).toBe(0);
+      // The materialization path, with the default resolution, does publish.
+      await expect(
+         environment.publishRefusedConfiguredPackage("ghost"),
+      ).rejects.toThrow("broken");
+      expect(calls).toBe(1);
+   });
+
+   it("lets a delete land after a retry in flight, and starts none after it", async () => {
+      const events: string[] = [];
+      let release!: () => void;
+      const gate = new Promise<void>((resolve) => (release = resolve));
+      let calls = 0;
+      const environment = await environmentWithRetry(async () => {
+         calls++;
+         events.push("publish start");
+         await gate;
+         events.push("publish end");
+         throw new Error("broken");
+      });
+      const read = environment.getPackage(ghost, false).catch(() => {});
+      await new Promise((resolve) => setTimeout(resolve, 10));
+      const deleted = environment
+         .deletePackage(ghost)
+         .then(() => events.push("delete done"));
+      await new Promise((resolve) => setTimeout(resolve, 10));
+      release();
+      await Promise.all([read, deleted]);
+      expect(events).toEqual(["publish start", "publish end", "delete done"]);
+      await expect(environment.getPackage(ghost, false)).rejects.toThrow();
+      expect(calls).toBe(1);
    });
 });

@@ -24,11 +24,14 @@ start, so each is a separate publisher (`## Publisher` carries the env var).
 
 `alpha` and `beta` both declare `name="coe_dup" storage=lake` — the collision.
 
+Package versioning is off on both publishers: `## Republish` re-publishes in place (`POST /packages` with no location), which a versioned package refuses with `PACKAGE_IS_VERSIONED`. This scenario is about the collision gate, not versions.
+
 ## Publisher strict
 
 Boot with the enforce flag set.
 
 - PERSIST_STORAGE_MODE: on
+- PUBLISHER_PACKAGE_VERSIONING: off
 - PERSIST_COLLISION_ENFORCE: true
 
 ## Data orders_pg.coe_orders
@@ -69,6 +72,7 @@ cites: resolve to the same materialized table
 A second publisher WITHOUT the flag (the default posture).
 
 - PERSIST_STORAGE_MODE: on
+- PUBLISHER_PACKAGE_VERSIONING: off
 
 ## Republish coe
 
