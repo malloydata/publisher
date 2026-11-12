@@ -167,7 +167,7 @@ describe("R4: a persisted view answers its exact call, equal to live", () => {
          const viewSkip = path?.considered.find((c) => c.kind === "view");
          if (reason) {
             expect(viewSkip?.outcome).toBe("skipped");
-            expect(viewSkip?.reason).toBe(reason);
+            expect(viewSkip?.reason as string | undefined).toBe(reason);
             expect(viewSkip?.detail).toBeDefined();
          } else {
             expect(viewSkip).toBeUndefined();
