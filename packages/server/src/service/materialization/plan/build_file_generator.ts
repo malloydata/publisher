@@ -53,9 +53,6 @@
  * rather than built wrong):
  * - `inline=` on a join_many or join_cross (pair tables) is phase 4's; a
  *   declaration naming one is refused.
- * - A materialized extension builds from its own source over the raw tables,
- *   not from its parent's build source (P10): building over the parent needs
- *   the rewriter's re-rooted copy, so it waits for it.
  * - A dimension that reads a given is not left out of the build: a source
  *   with one is refused by the same eligibility gates that refuse it under
  *   `#@ persist` today.
@@ -94,6 +91,23 @@
  * once where the compiler says it is; and a source whose build reads a
  * `#@ persist` source (the copy would plan that source a second time).
  *
+ * Extension tables (P10). A materialized source whose nearest materialized
+ * ancestor is planned in the same file, reached through `extend` and renames
+ * only, builds over that ancestor's build source, so Malloy's planner orders
+ * the two builds and the extension's table is computed from its parent's
+ * (`buildsOver` on the plan). Its build copy of the author's file re-roots
+ * the parent on the parent's generated build source, keeping the parent's
+ * own `extend` blocks less the dimensions its table stores, and the
+ * extension's text is unchanged, so it reads the parent's table. Generated
+ * sources then sit in level files (`<model>.<n>.materialize-level.malloy`),
+ * one per depth of the chain, which the companion imports, since a build
+ * copy imports its parent's level and the companion cannot be imported by
+ * what it imports. Only a colocated pair with no incremental keys chains
+ * (the storage tier stacks on a parent by lifting author text, which a
+ * generated source has none of), and an extension that does not chain, or
+ * whose chained build does not compile, builds over the raw chain as before:
+ * the same rows, from the warehouse.
+ *
  * A declaration that is not built is reported as a package warning
  * (`materialize-not-built`), so an author sees why, and the source serves live.
  *
@@ -109,7 +123,12 @@ import {
 } from "../../annotation_reader";
 import { annotationValue, identifier, stringLiteral } from "../../malloy_text";
 import { parseRouteTag, routeHasKey } from "../../motly";
-import { declarationSpans } from "../declaration_text";
+import {
+   afterModelHeader,
+   declarationSpans,
+   dropDimensions,
+   inverseRenameBlocks,
+} from "../declaration_text";
 import { offsetOf } from "../malloy_lexer";
 import {
    classifyWhereTerms,
@@ -295,6 +314,22 @@ export interface MaterializePlan {
    inline?: string[];
    /** One uniqueness check per inlined join (P8). */
    uniquenessChecks?: InlineUniquenessCheck[];
+   /**
+    * For an extension table (P10): the materialized parent whose build source
+    * this source's build reads, so its table is computed from the parent's.
+    * Absent: built over the raw chain.
+    */
+   buildsOver?: MaterializeParent;
+}
+
+/** The parent an extension table builds over (P10). */
+export interface MaterializeParent {
+   /** The parent's identity: its `sourceID` (the keying rule). */
+   sourceID: string;
+   /** The parent's name in the shared declaring file; display only. */
+   sourceName: string;
+   /** The parent's declaration in that file, which the build copy re-roots. */
+   declaration: TermUse;
 }
 
 /** A declaration the generator could not plan, and why. */
@@ -1004,7 +1039,67 @@ export function planModelMaterialize(
          ...(inline.length > 0 ? { inline, uniquenessChecks } : {}),
       });
    }
+   chainExtensionTables(plans, contents);
    return { plans, refused };
+}
+
+/**
+ * The `#(materialize)` keys that make a table incremental. A chained build
+ * reads its parent's table, whose rows an incremental refresh moves on its
+ * own schedule, so neither side of a chain may carry one.
+ */
+const INCREMENTAL_KEYS = ["refresh", "watermark", "merge_key", "partition"];
+
+/**
+ * Give each plan that can build over its nearest materialized ancestor's build
+ * source (P10) its `buildsOver`. The ancestor is the first planned source up
+ * the chain, reached through `extend` and renames only (a query-shaped hop
+ * starts a new segment, which the build cannot re-root on a table), declared
+ * in the same file (the build copy re-roots it in that file's text). Both must
+ * be colocated (no `storage=`), carry no incremental key, and the parent no
+ * given-reading `where:` (its build source's own `extend` re-applies that
+ * term, which would scope the extension's build to one caller). A plan that
+ * does not qualify builds over the raw chain, as before: the same rows.
+ */
+function chainExtensionTables(
+   plans: MaterializePlan[],
+   contents: Record<string, unknown>,
+): void {
+   const map = SourceMap.of({ contents });
+   const byID = new Map(plans.map((p) => [p.sourceID, p]));
+   const declarationOfID = (sourceID: string) =>
+      declarationOf(map.node(sourceID)?.def as SourceDefLike);
+   for (const plan of plans) {
+      let node = map.node(plan.sourceID);
+      let parent: MaterializePlan | undefined;
+      for (let hops = 0; node && hops < 64 && !parent; hops++) {
+         const base = node.base;
+         if (!base || base.hop === "query" || base.sourceID === undefined) {
+            break;
+         }
+         parent = byID.get(base.sourceID);
+         node = map.node(base.sourceID);
+      }
+      if (!parent || parent === plan) continue;
+      const own = declarationOfID(plan.sourceID);
+      const declaration = declarationOfID(parent.sourceID);
+      if (!own || !declaration || own.url !== declaration.url) continue;
+      if (
+         plan.persist.storage !== undefined ||
+         parent.persist.storage !== undefined
+      ) {
+         continue;
+      }
+      const incremental = (p: MaterializePlan) =>
+         Object.keys(p.persist).some((k) => INCREMENTAL_KEYS.includes(k));
+      if (incremental(plan) || incremental(parent)) continue;
+      if (givenReadTerms(parent).length > 0) continue;
+      plan.buildsOver = {
+         sourceID: parent.sourceID,
+         sourceName: parent.sourceName,
+         declaration,
+      };
+   }
 }
 
 /**
@@ -1102,21 +1197,146 @@ function importAlias(plan: MaterializePlan): string {
  * caller. In a copy of its own, a source that reads another such source still
  * reads that one's given, and the eligibility gate refuses its build
  * (`given_in_persisted_query`).
+ *
+ * For an extension table (P10), `chain` names its parent's plan and the file
+ * the parent's build source is imported from: the copy also re-roots the
+ * parent's declaration on that build source ({@link rerootOnBuildSource}) and
+ * imports it, so the extension, as written, reads the parent's table.
  */
 export function buildCopyText(
    text: string,
    plan: MaterializePlan,
+   chain?: { parent: MaterializePlan; importFrom: string },
 ): { copy: string } | { reason: string } {
-   const found =
-      plan.declaration && givenReadTerms(plan).length > 0
-         ? termSpans(text, plan.declaration, givenReadTerms(plan))
-         : { reason: NOT_FOUND };
-   if ("reason" in found) return found;
+   const edits: { start: number; end: number; insert: string }[] = [];
+   const given = givenReadTerms(plan);
+   if (given.length > 0 || !chain) {
+      const found =
+         plan.declaration && given.length > 0
+            ? termSpans(text, plan.declaration, given)
+            : { reason: NOT_FOUND };
+      if ("reason" in found) return found;
+      for (const span of found.spans) edits.push({ ...span, insert: "true" });
+   }
+   if (chain) {
+      const parent = plan.buildsOver;
+      const from = parent ? offsetOf(text, parent.declaration.range.start) : -1;
+      const to = parent ? offsetOf(text, parent.declaration.range.end) : -1;
+      const rerooted =
+         from >= 0 && to >= from
+            ? rerootOnBuildSource(text.slice(from, to), chain.parent)
+            : undefined;
+      if (
+         rerooted === undefined ||
+         edits.some((e) => e.start < to && from < e.end)
+      ) {
+         return { reason: PARENT_NOT_REROOTED };
+      }
+      edits.push({ start: from, end: to, insert: rerooted });
+   }
    let copy = text;
-   for (const span of [...found.spans].sort((a, b) => b.start - a.start)) {
-      copy = `${copy.slice(0, span.start)}true${copy.slice(span.end)}`;
+   for (const edit of [...edits].sort((a, b) => b.start - a.start)) {
+      copy = `${copy.slice(0, edit.start)}${edit.insert}${copy.slice(edit.end)}`;
+   }
+   if (chain) {
+      const at = afterModelHeader(copy);
+      const line = `import { ${identifier(chain.parent.buildSourceName)} } from ${stringLiteral(chain.importFrom)}\n`;
+      copy = `${copy.slice(0, at)}${line}${copy.slice(at)}`;
    }
    return { copy };
+}
+
+const PARENT_NOT_REROOTED =
+   "the parent's declaration could not be re-rooted on its build source";
+
+/**
+ * A parent's declaration in an extension's build copy (P10): `<name> is
+ * <build source>`, then the blocks that undo its renames
+ * ({@link inverseRenameBlocks}), then its own trailing `extend` run less each
+ * computed dimension its table stores, so the stored column stands in for it,
+ * as the served copy re-roots a source on its table. Its measures, joins,
+ * views, its fields computed at read and its `where:` are kept as written, so
+ * the extension reads every field it read from the parent. Undefined when the
+ * declaration does not parse.
+ */
+function rerootOnBuildSource(
+   declaration: string,
+   parent: MaterializePlan,
+): string | undefined {
+   const spans = declarationSpans(declaration);
+   if (!spans) return undefined;
+   const name = declaration.slice(0, spans.nameEnd).trimEnd();
+   const run =
+      spans.extendStart === undefined
+         ? ""
+         : declaration.slice(spans.extendStart).trimEnd();
+   const stored = parent.columns.filter((c) => c.join === undefined);
+   const kept = dropDimensions(
+      run,
+      new Set(stored.filter((c) => c.computed).map((c) => c.dimension)),
+   );
+   if (!kept) return undefined;
+   const renames = inverseRenameBlocks(
+      kept.text,
+      new Set(stored.map((c) => c.column)),
+   );
+   if (renames === undefined) return undefined;
+   const base = identifier(parent.buildSourceName);
+   return `${name} is ${base}${renames}${kept.text ? ` ${kept.text}` : ""}`;
+}
+
+/** Ends a level file's name: one depth of a chain's generated sources (P10). */
+export const MATERIALIZE_LEVEL_SUFFIX = ".materialize-level.malloy";
+
+/** The level file of `level`'s generated sources, beside the author's model. */
+export function levelFileName(modelFileName: string, level: number): string {
+   return `${modelFileName}.${level}${MATERIALIZE_LEVEL_SUFFIX}`;
+}
+
+/**
+ * Each plan's depth in its chain of extension tables (P10), by sourceID: 0
+ * for one built over the raw chain, its parent's plus one otherwise. A plan
+ * whose parent is not among `plans` is depth 0 (see {@link settledChains}).
+ */
+export function chainLevels(
+   plans: readonly MaterializePlan[],
+): Map<string, number> {
+   const byID = new Map(plans.map((p) => [p.sourceID, p]));
+   const levels = new Map<string, number>();
+   const levelOf = (plan: MaterializePlan, depth = 0): number => {
+      const known = levels.get(plan.sourceID);
+      if (known !== undefined) return known;
+      const parent = plan.buildsOver
+         ? byID.get(plan.buildsOver.sourceID)
+         : undefined;
+      const level =
+         parent && depth < plans.length ? levelOf(parent, depth + 1) + 1 : 0;
+      levels.set(plan.sourceID, level);
+      return level;
+   };
+   for (const plan of plans) levelOf(plan);
+   return levels;
+}
+
+/**
+ * `plans` with every `buildsOver` whose parent is no longer planned removed,
+ * to a fixpoint: a parent refused after planning leaves its extension to
+ * build over the raw chain.
+ */
+export function settledChains(
+   plans: readonly MaterializePlan[],
+): MaterializePlan[] {
+   const ids = new Set(plans.map((p) => p.sourceID));
+   return plans.map((p) =>
+      p.buildsOver && !ids.has(p.buildsOver.sourceID) ? withoutParent(p) : p,
+   );
+}
+
+/** A plan built over the raw chain instead of its parent's build source. */
+export function withoutParent(plan: MaterializePlan): MaterializePlan {
+   if (!plan.buildsOver) return plan;
+   const { buildsOver: _parent, ...rest } = plan;
+   return rest;
 }
 
 const NOT_FOUND =
@@ -1196,7 +1416,8 @@ function termSpans(
  * model under another name). The experimental flag lives here, so the
  * author's file needs none (D3).
  *
- * A plan with read-time terms (P2) is imported from its own build copy,
+ * A plan with read-time terms (P2), or one built over its parent's build
+ * source (P10), is imported from its own build copy,
  * `buildCopyPaths` by sourceID, together with the givens its terms read,
  * which the re-written `where:` needs in scope: each from the file that
  * declares it (`from`), or the author's model. A model with no such plan
@@ -1210,7 +1431,7 @@ export function generateBuildFile(
 ): string | undefined {
    if (plans.length === 0) return undefined;
    const copyOf = (plan: MaterializePlan) =>
-      givenReadTerms(plan).length > 0
+      givenReadTerms(plan).length > 0 || plan.buildsOver
          ? buildCopyPaths.get(plan.sourceID)
          : undefined;
    const imports = plans.map((plan) => {
@@ -1256,4 +1477,82 @@ ${plans
    ])
    .join("\n\n")}
 `;
+}
+
+/** The generated files for one author model. */
+export interface GeneratedBuildFiles {
+   /** The companion: compiled, and its build targets are every generated source. */
+   entry: string;
+   /**
+    * Level files by file name (P10), each holding one depth of a chain's
+    * generated sources; the companion imports them. Empty with no chain, when
+    * the companion is exactly {@link generateBuildFile}'s.
+    */
+   levels: Map<string, string>;
+}
+
+/**
+ * {@link generateBuildFile}, with the extension tables of P10. A build copy
+ * that re-roots a parent imports the parent's build source, and the
+ * companion imports the extension's base from that copy, so the parent's
+ * build source cannot sit in the companion (the import would cycle): each
+ * depth of a chain gets a level file of its own, written as
+ * {@link generateBuildFile} writes a companion (without the uniqueness
+ * checks), and the companion imports every generated source from its level
+ * and holds the checks. Without a chain, the companion is exactly the text
+ * {@link generateBuildFile} writes.
+ */
+export function generateBuildFiles(
+   plans: MaterializePlan[],
+   importPath: string,
+   importPathForFile?: (url: string) => string | undefined,
+   buildCopyPaths: ReadonlyMap<string, string> = new Map(),
+): GeneratedBuildFiles | undefined {
+   if (plans.length === 0) return undefined;
+   const levels = chainLevels(plans);
+   if (![...levels.values()].some((level) => level > 0)) {
+      const entry = generateBuildFile(
+         plans,
+         importPath,
+         importPathForFile,
+         buildCopyPaths,
+      );
+      return entry === undefined ? undefined : { entry, levels: new Map() };
+   }
+   const byLevel = new Map<number, MaterializePlan[]>();
+   for (const plan of plans) {
+      const level = levels.get(plan.sourceID) ?? 0;
+      byLevel.set(level, [...(byLevel.get(level) ?? []), plan]);
+   }
+   const files = new Map<string, string>();
+   const imports: string[] = [];
+   for (const [level, group] of [...byLevel].sort(([a], [b]) => a - b)) {
+      const name = levelFileName(importPath, level);
+      const text = generateBuildFile(
+         group.map(({ uniquenessChecks: _checks, ...plan }) => plan),
+         importPath,
+         undefined,
+         buildCopyPaths,
+      );
+      if (text === undefined) continue;
+      files.set(name, text);
+      imports.push(
+         `import { ${group.map((p) => identifier(p.buildSourceName)).join(", ")} } from ${stringLiteral(name)}`,
+      );
+   }
+   const checks = plans.flatMap((plan) => plan.uniquenessChecks ?? []);
+   for (const check of checks) {
+      const joined = splitSourceID(check.joinedSourceID);
+      const path = (joined && importPathForFile?.(joined.url)) ?? importPath;
+      imports.push(
+         `import { ${identifier(checkAlias(check))} is ${identifier(joined?.name ?? check.join)} } from ${stringLiteral(path)}`,
+      );
+   }
+   const queries = checks.map(emitUniquenessCheck).join("\n\n");
+   return {
+      entry: `##! experimental.persistence
+${imports.join("\n")}
+${queries ? `\n${queries}\n` : ""}`,
+      levels: files,
+   };
 }

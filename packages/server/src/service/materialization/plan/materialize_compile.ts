@@ -18,14 +18,17 @@ import type {
 import * as path from "path";
 import { fileURLToPath, pathToFileURL } from "url";
 import { logger } from "../../../logger";
-import { sourceBuildsOf } from "./addressing";
 import {
    buildCopyName,
    buildCopyText,
-   generateBuildFile,
+   chainLevels,
+   generateBuildFiles,
    givenReadTerms,
+   levelFileName,
    MATERIALIZE_COMPANION_SUFFIX,
    planModelMaterialize,
+   settledChains,
+   withoutParent,
    type MaterializePlan,
    type MaterializeRefusal,
 } from "./build_file_generator";
@@ -45,6 +48,13 @@ export interface GeneratedMaterialize {
     * (P2): the author's text with that source's read-time terms taken out.
     */
    buildCopies?: ReadonlyMap<string, string>;
+   /**
+    * The URL of every file generated beside the author's (the companion, its
+    * level files and the build copies). A source declared in one that no plan
+    * names (a parent a build copy re-roots, P10) shares a generated source's
+    * table and is no build of its own.
+    */
+   generatedURLs: ReadonlySet<string>;
 }
 
 /** Where the generated companion for `modelPath` lives, as an absolute URL. */
@@ -99,34 +109,69 @@ export async function tryCompileMaterializeCompanion(args: {
          args.givens,
       );
       refused.push(...planned.refused);
-      const withCopies = await withBuildCopies(
-         planned.plans,
-         modelFile,
-         async () => {
-            // The text the author's model was compiled from, through the
-            // reader the companion compiles with: a package's build view
-            // (joins across connections left out) or a worker's file map, not
-            // necessarily the file on disk, and the compiled locations the
-            // terms are found by are positions in that text.
+      // The text the author's model was compiled from, through the reader
+      // the companion compiles with: a package's build view (joins across
+      // connections left out) or a worker's file map, not necessarily the
+      // file on disk, and the compiled locations the terms are found by are
+      // positions in that text. Read once.
+      let modelText: Promise<string> | undefined;
+      const readModelText = () =>
+         (modelText ??= (async () => {
             const { runtime } = await args.getRuntime(new Map());
             const read = await runtime.urlReader.readURL(
                pathToFileURL(modelFile),
             );
             return typeof read === "string" ? read : read.contents;
-         },
-      );
-      refused.push(...withCopies.refused);
-      let { plans } = withCopies;
-      const { copies } = withCopies;
-      let generated = await compileCompanion(args, plans, copies);
+         })());
+      const refusedIDs = new Set<string>();
+      const prepare = async (from: MaterializePlan[]) => {
+         const out = await withBuildCopies(from, modelFile, readModelText);
+         for (const r of out.refused) {
+            if (r.sourceID !== undefined && refusedIDs.has(r.sourceID))
+               continue;
+            if (r.sourceID !== undefined) refusedIDs.add(r.sourceID);
+            refused.push(r);
+         }
+         return out;
+      };
+      let { plans, copies } = await prepare(planned.plans);
+      let generated: GeneratedMaterialize | undefined;
+      try {
+         generated = await compileCompanion(args, plans, copies);
+      } catch (error) {
+         // A chained build that does not compile (an extension reading a
+         // field its parent's table does not carry) is no reason to lose the
+         // model's builds: every extension builds over the raw chain instead,
+         // as it did before P10, with the same rows.
+         if (!plans.some((p) => p.buildsOver)) throw error;
+         logger.warn(
+            "Extension tables of a #(materialize) model did not compile over their parents' build sources; they build over the raw chain",
+            {
+               modelPath: args.modelPath,
+               error: error instanceof Error ? error.message : String(error),
+            },
+         );
+         ({ plans, copies } = await prepare(plans.map(withoutParent)));
+         generated = await compileCompanion(args, plans, copies);
+      }
       // A build copy re-declares its whole file, so a `#@ persist` source the
       // copied source reads (its base, a join) would enter the plan a second
       // time under the copy's URL: a build node that no planned source names.
-      // Such a source's term is not taken out yet; it is refused, and the
-      // companion compiled again without it.
-      const leaked = generated
+      // A chained source builds over the raw chain instead; a source whose
+      // given term needs the copy is refused, and the companion compiled again
+      // without it.
+      let leaked = generated
          ? await copyDeclaredBuilds(generated, modelFile, copies)
          : new Map<string, string[]>();
+      if ([...leaked.keys()].some((id) => planOf(plans, id)?.buildsOver)) {
+         ({ plans, copies } = await prepare(
+            plans.map((p) => (leaked.has(p.sourceID) ? withoutParent(p) : p)),
+         ));
+         generated = await compileCompanion(args, plans, copies);
+         leaked = generated
+            ? await copyDeclaredBuilds(generated, modelFile, copies)
+            : new Map<string, string[]>();
+      }
       if (leaked.size > 0) {
          for (const plan of plans) {
             const names = leaked.get(plan.sourceID);
@@ -141,7 +186,9 @@ export async function tryCompileMaterializeCompanion(args: {
                   "a second time",
             });
          }
-         plans = plans.filter((p) => !leaked.has(p.sourceID));
+         ({ plans, copies } = await prepare(
+            plans.filter((p) => !leaked.has(p.sourceID)),
+         ));
          generated = await compileCompanion(args, plans, copies);
       }
       return generated ? { generated, refused } : { refused };
@@ -180,7 +227,7 @@ async function compileCompanion(
       }),
    );
    const modelFile = path.resolve(args.packagePath, args.modelPath);
-   const text = generateBuildFile(
+   const files = generateBuildFiles(
       plans,
       path.basename(args.modelPath),
       (declaringURL) => {
@@ -198,12 +245,16 @@ async function compileCompanion(
       },
       new Map([...used].map(([name, c]) => [name, c.fileName])),
    );
-   if (!text) return undefined;
+   if (!files) return undefined;
+   const text = files.entry;
    const url = materializeCompanionURL(args.packagePath, args.modelPath);
    const overlay = new Map([[url.href, text]]);
    const dir = path.dirname(modelFile);
    for (const copy of used.values()) {
       overlay.set(pathToFileURL(path.join(dir, copy.fileName)).href, copy.text);
+   }
+   for (const [name, level] of files.levels) {
+      overlay.set(pathToFileURL(path.join(dir, name)).href, level);
    }
    const { runtime, importBaseURL } = await args.getRuntime(overlay);
    const materializer = runtime.loadModel(url, { importBaseURL });
@@ -223,6 +274,7 @@ async function compileCompanion(
       materializer,
       runtime,
       text,
+      generatedURLs: new Set(overlay.keys()),
       ...(used.size > 0
          ? {
               buildCopies: new Map(
@@ -233,10 +285,21 @@ async function compileCompanion(
    };
 }
 
+/** The plan of `sourceID` among `plans`. */
+function planOf(
+   plans: readonly MaterializePlan[],
+   sourceID: string,
+): MaterializePlan | undefined {
+   return plans.find((p) => p.sourceID === sourceID);
+}
+
 /**
  * For each planned source whose build plans a source only its build copy
  * declares, the names of those sources. A `sourceID` is `name@<declaring
- * URL>`, so a build copy's own are told apart by the copy's URL.
+ * URL>`, so a build copy's own are told apart by the copy's URL. A copy's
+ * source on the table of a generated source (a parent an extension's copy
+ * re-roots on its build source, P10, and the extension over it) shares that
+ * table: no build of its own, so not one the copy declared.
  */
 async function copyDeclaredBuilds(
    generated: GeneratedMaterialize,
@@ -252,14 +315,34 @@ async function copyDeclaredBuilds(
          name,
       ]),
    );
+   const urlOf = (id: string) => {
+      const at = id.indexOf("@");
+      return at < 0 ? undefined : id.slice(at + 1);
+   };
    const targets = await generated.runtime.getBuildTargets(generated.model);
-   for (const build of sourceBuildsOf(targets)) {
-      for (const id of build.order) {
-         const at = id.indexOf("@");
-         const owner = at < 0 ? undefined : ownerByURL.get(id.slice(at + 1));
+   const groups = [
+      ...targets.connections.flatMap((c) =>
+         c.targets.map((t) => t.sources.map((s) => s.sourceID)),
+      ),
+      ...targets.unbuildable.map((u) => [u.source.sourceID]),
+   ];
+   for (const ids of groups) {
+      const sharesGenerated = ids.some((id) => {
+         const url = urlOf(id);
+         return (
+            url !== undefined &&
+            generated.generatedURLs.has(url) &&
+            !ownerByURL.has(url)
+         );
+      });
+      if (sharesGenerated) continue;
+      for (const id of ids) {
+         const url = urlOf(id);
+         const owner = url === undefined ? undefined : ownerByURL.get(url);
          if (owner === undefined) continue;
+         const name = id.slice(0, id.indexOf("@"));
          const names = out.get(owner) ?? [];
-         if (!names.includes(id.slice(0, at))) names.push(id.slice(0, at));
+         if (!names.includes(name)) names.push(name);
          out.set(owner, names.sort());
       }
    }
@@ -267,16 +350,23 @@ async function copyDeclaredBuilds(
 }
 
 /**
- * Give each plan with given-reading terms (P2) a build copy of the author's model,
- * whose text is read back here. Such a source must be declared in that model
- * and read givens declared in local files; otherwise, or when the file cannot
- * be read or a term not placed in it, the plan is refused (fail closed: built
- * from the author's file, the term would be baked into the table with the
- * given's default). Each given declared in another file is imported from that
- * file.
+ * Give each plan with given-reading terms (P2), and each extension table that
+ * builds over its parent's build source (P10), a build copy of the author's
+ * model, whose text is read back here. A P2 source must be declared in that
+ * model and read givens declared in local files; otherwise, or when the file
+ * cannot be read or a term not placed in it, the plan is refused (fail
+ * closed: built from the author's file, the term would be baked into the
+ * table with the given's default). Each given declared in another file is
+ * imported from that file. An extension table whose copy cannot be written
+ * (its parent no longer planned, a declaration that does not re-root) builds
+ * over the raw chain instead, which a P2 source still gets a copy for.
+ *
+ * Plans are visited parents first, so a copy imports its parent's build
+ * source from the parent's level file as it finally stands; the returned
+ * plans keep `plans`' order.
  */
 async function withBuildCopies(
-   plans: MaterializePlan[],
+   input: MaterializePlan[],
    modelFile: string,
    readModelText: () => Promise<string>,
 ): Promise<{
@@ -284,9 +374,10 @@ async function withBuildCopies(
    copies: Map<string, BuildCopy>;
    refused: MaterializeRefusal[];
 }> {
+   const plans = settledChains(input);
    const copies = new Map<string, BuildCopy>();
    const refused: MaterializeRefusal[] = [];
-   if (!plans.some((plan) => givenReadTerms(plan).length > 0)) {
+   if (!plans.some((p) => givenReadTerms(p).length > 0 || p.buildsOver)) {
       return { plans, copies, refused };
    }
    const refuse = (plan: MaterializePlan, reason: string) =>
@@ -309,12 +400,21 @@ async function withBuildCopies(
    } catch (error) {
       unreadable = error instanceof Error ? error.message : String(error);
    }
-   const kept: MaterializePlan[] = [];
-   for (const plan of plans) {
-      if (givenReadTerms(plan).length === 0) {
-         kept.push(plan);
-         continue;
-      }
+   const modelFileName = path.basename(modelFile);
+   // Parents first: a stable sort by depth in the planned chains.
+   const depth = chainLevels(plans);
+   const visitOrder = plans
+      .map((plan, index) => ({ plan, index }))
+      .sort(
+         (a, b) =>
+            (depth.get(a.plan.sourceID) ?? 0) -
+               (depth.get(b.plan.sourceID) ?? 0) || a.index - b.index,
+      );
+   const kept = new Map<string, MaterializePlan>();
+   const levels = new Map<string, number>();
+   for (const { plan: planned } of visitOrder) {
+      let plan = planned;
+      const given = givenReadTerms(plan).length > 0;
       const declaredIn = plan.declaration
          ? localPath(plan.declaration.url)
          : undefined;
@@ -322,7 +422,7 @@ async function withBuildCopies(
          ...g,
          file: localPath(g.url),
       }));
-      if (declaredIn !== modelFile || givens.some((g) => !g.file)) {
+      if (given && (declaredIn !== modelFile || givens.some((g) => !g.file))) {
          refuse(
             plan,
             "a `where:` reading a given can only be left out of the build " +
@@ -331,7 +431,7 @@ async function withBuildCopies(
          );
          continue;
       }
-      if (text === undefined) {
+      if (given && text === undefined) {
          refuse(
             plan,
             "the model file could not be read to leave its given-reading " +
@@ -339,29 +439,80 @@ async function withBuildCopies(
          );
          continue;
       }
-      const copy = buildCopyText(text, plan);
+      const parent = plan.buildsOver
+         ? kept.get(plan.buildsOver.sourceID)
+         : undefined;
+      if (
+         plan.buildsOver &&
+         (!parent ||
+            text === undefined ||
+            localPath(plan.buildsOver.declaration.url) !== modelFile)
+      ) {
+         plan = withoutParent(plan);
+      }
+      if (!given && !plan.buildsOver) {
+         kept.set(plan.sourceID, plan);
+         levels.set(plan.sourceID, 0);
+         continue;
+      }
+      const parentLevel = parent ? (levels.get(parent.sourceID) ?? 0) : 0;
+      let copy = buildCopyText(
+         text as string,
+         plan,
+         plan.buildsOver && parent
+            ? {
+                 parent,
+                 importFrom: levelFileName(modelFileName, parentLevel),
+              }
+            : undefined,
+      );
+      if ("reason" in copy && plan.buildsOver) {
+         plan = withoutParent(plan);
+         if (!given) {
+            kept.set(plan.sourceID, plan);
+            levels.set(plan.sourceID, 0);
+            continue;
+         }
+         copy = buildCopyText(text as string, plan);
+      }
       if ("reason" in copy) {
          refuse(plan, copy.reason);
          continue;
       }
       copies.set(plan.sourceID, {
-         fileName: buildCopyName(path.basename(modelFile), copies.size),
+         fileName: buildCopyName(modelFileName, copies.size),
          text: copy.copy,
       });
-      kept.push({
-         ...plan,
-         givenDeclarations: givens.map(({ file, ...g }) =>
-            file === modelFile
-               ? g
-               : {
-                    ...g,
-                    from: path
-                       .relative(path.dirname(modelFile), file as string)
-                       .split(path.sep)
-                       .join("/"),
-                 },
-         ),
-      });
+      levels.set(plan.sourceID, plan.buildsOver ? parentLevel + 1 : 0);
+      kept.set(
+         plan.sourceID,
+         given
+            ? {
+                 ...plan,
+                 givenDeclarations: givens.map(({ file, ...g }) =>
+                    file === modelFile
+                       ? g
+                       : {
+                            ...g,
+                            from: path
+                               .relative(
+                                  path.dirname(modelFile),
+                                  file as string,
+                               )
+                               .split(path.sep)
+                               .join("/"),
+                         },
+                 ),
+              }
+            : plan,
+      );
    }
-   return { plans: kept, copies, refused };
+   return {
+      plans: plans.flatMap((p) => {
+         const k = kept.get(p.sourceID);
+         return k ? [k] : [];
+      }),
+      copies,
+      refused,
+   };
 }

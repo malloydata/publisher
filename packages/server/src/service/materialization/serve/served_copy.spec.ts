@@ -51,6 +51,63 @@ function reroot(
 }
 
 describe("rerootDeclaration", () => {
+   it("keeps an extension table's ancestors' blocks ahead of its own, less the dimensions it stores (P10)", () => {
+      const out = rerootDeclaration(
+         "east is stored extend {\n  where: region = 'east'\n  dimension: twice is amt * 2\n}",
+         {
+            sourceName: "east",
+            connectionAlias: "x",
+            virtualHandle: "h",
+            typeName: "east__served",
+            storedDimensions: ["twice", "m"],
+            columns: [
+               { name: "region", type: "VARCHAR" },
+               { name: "amt", type: "DOUBLE" },
+               { name: "twice", type: "DOUBLE" },
+               { name: "m", type: "DATE" },
+            ],
+            keptBlocks:
+               "extend {\n  dimension: m is d.month\n  measure: total is amt.sum()\n}",
+         },
+      );
+      expect(out).toBe(
+         "east is x.virtual('h')::east__served extend {\n  measure: total is amt.sum()\n} extend {\n  where: region = 'east'\n}",
+      );
+   });
+
+   it("gives a stored renamed column back the name its kept blocks rename it from", () => {
+      const out = rerootDeclaration(
+         "renamed is stored extend {\n  rename: order_id is id\n  measure: s is order_id.sum()\n}",
+         {
+            sourceName: "renamed",
+            connectionAlias: "x",
+            virtualHandle: "h",
+            typeName: "renamed__served",
+            storedDimensions: [],
+            columns: [
+               { name: "order_id", type: "INTEGER" },
+               { name: "amt", type: "DOUBLE" },
+            ],
+            keptBlocks: "extend { measure: n is count() }",
+         },
+      );
+      expect(out).toBe(
+         "renamed is x.virtual('h')::renamed__served extend { rename: id is order_id } extend { measure: n is count() } extend {\n  rename: order_id is id\n  measure: s is order_id.sum()\n}",
+      );
+   });
+
+   it("refuses a rename it cannot read, rather than re-root around it", () => {
+      expect(
+         rerootDeclaration("r is s extend {\n  internal rename: a is b\n}", {
+            sourceName: "r",
+            connectionAlias: "x",
+            virtualHandle: "h",
+            typeName: "r__served",
+            columns: [{ name: "a", type: "INTEGER" }],
+         }),
+      ).toBeUndefined();
+   });
+
    it("re-applies a rolling window on the stored table, before the author's blocks", () => {
       const out = rerootDeclaration(
          "recent is last30 extend {\n  measure: n is count()\n}",

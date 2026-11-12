@@ -135,6 +135,13 @@ export interface R4Run {
 /** A built scenario: run queries against it. */
 export interface R4Fixture {
    bindings: ServeBinding[];
+   /** Each built source's table id (its content address in the plan), by name. */
+   tableIds: Record<string, string>;
+   /**
+    * For a `#(materialize)` scenario: the author sources each generated build
+    * reads the tables of (Malloy's build order), by the author's source name.
+    */
+   buildReads: Record<string, string[]>;
    /** The model queries run against, for a test that reaches its internals. */
    model: Model;
    run(query: R4Query): Promise<R4Run>;
@@ -361,6 +368,24 @@ export async function buildScenario(scenario: R4Scenario): Promise<R4Fixture> {
               : [];
         })
       : plannedSources(await runtime.getBuildTargets(compiled));
+   const buildReads: Record<string, string[]> = {};
+   if (companion) {
+      const targets = await companion.runtime.getBuildTargets(companion.model);
+      for (const connection of targets.connections) {
+         for (const target of connection.targets) {
+            const reads = target.dependsOn
+               .flatMap((d) => d.sources.map((s) => s.name))
+               .flatMap((n) => {
+                  const p = materializeByName.get(n);
+                  return p ? [p.sourceName] : [];
+               });
+            for (const s of target.sources) {
+               const p = materializeByName.get(s.name);
+               if (p) buildReads[p.sourceName] = reads;
+            }
+         }
+      }
+   }
    const materializePlans: Record<string, MaterializePlan> = {};
    for (const plan of companion?.plans ?? []) {
       materializePlans[plan.sourceID] = plan;
@@ -491,6 +516,10 @@ export async function buildScenario(scenario: R4Scenario): Promise<R4Fixture> {
    );
    return {
       bindings,
+      tableIds: Object.fromEntries(
+         Object.values(plan).map((p) => [p.name, p.sourceEntityId]),
+      ),
+      buildReads,
       model,
       setClock(at) {
          if (!pinned) throw new Error("the scenario's clock is not pinned");

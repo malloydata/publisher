@@ -16,8 +16,10 @@ import { incrementalLineage } from "../run/incremental_build";
 import { assertInlinedJoinsUnique } from "../run/inline_uniqueness";
 import { rollingWindowsOf } from "./rolling_window";
 import {
+   buildCopyText,
    buildSourceName,
    generateBuildFile,
+   generateBuildFiles,
    planModelMaterialize,
    type MaterializePlan,
 } from "./build_file_generator";
@@ -103,6 +105,110 @@ source: orders__mat is orders__mat__base -> {
     big
 }
 `,
+      );
+   });
+
+   it("writes an extension table's build copy over its parent's build source, and a level file per depth (P10)", () => {
+      const text = `##! experimental.givens
+given: R :: string is 'east'
+source: orders is duckdb.table('ev')
+
+source: stored is orders extend {
+  dimension: big is amt > 10
+  measure: total is amt.sum()
+}
+
+source: ext is stored extend {
+  where: region = $R
+}
+`;
+      const lines = text.split("\n");
+      const at = (name: string, endLine: number) => {
+         const line = lines.findIndex((l) =>
+            l.startsWith(`source: ${name} is`),
+         );
+         return {
+            url: "file:///pkg/m.malloy",
+            range: {
+               start: { line, character: 8 },
+               end: { line: endLine, character: 1 },
+            },
+         };
+      };
+      const parent = plan({
+         sourceName: "stored",
+         sourceID: "stored@file:///pkg/m.malloy",
+         buildSourceName: buildSourceName("stored"),
+      });
+      const ext = plan({
+         sourceName: "ext",
+         sourceID: "ext@file:///pkg/m.malloy",
+         buildSourceName: buildSourceName("ext"),
+         readTimeTerms: [
+            {
+               kind: "given",
+               code: "region = $R",
+               givens: ["R"],
+               columns: ["region"],
+               at: [
+                  {
+                     url: "file:///pkg/m.malloy",
+                     range: {
+                        start: { line: 10, character: 9 },
+                        end: { line: 10, character: 20 },
+                     },
+                  },
+               ],
+            },
+         ],
+         declaration: at("ext", 11),
+         buildsOver: {
+            sourceID: parent.sourceID,
+            sourceName: "stored",
+            declaration: at("stored", 7),
+         },
+      });
+      const copy = buildCopyText(text, ext, {
+         parent,
+         importFrom: "m.malloy.0.materialize-level.malloy",
+      });
+      // The parent re-rooted on its build source, less the dimension its
+      // table stores; the extension's given term out of its build (P2).
+      expect(copy).toEqual({
+         copy: `##! experimental.givens
+import { stored__mat } from 'm.malloy.0.materialize-level.malloy'
+given: R :: string is 'east'
+source: orders is duckdb.table('ev')
+
+source: stored is stored__mat extend {
+  measure: total is amt.sum()
+}
+
+source: ext is stored extend {
+  where: true
+}
+`,
+      });
+      const files = generateBuildFiles(
+         [parent, ext],
+         "m.malloy",
+         undefined,
+         new Map([[ext.sourceID, "m.malloy.0.materialize-build.malloy"]]),
+      )!;
+      expect([...files.levels.keys()]).toEqual([
+         "m.malloy.0.materialize-level.malloy",
+         "m.malloy.1.materialize-level.malloy",
+      ]);
+      expect(files.entry).toBe(`##! experimental.persistence
+import { stored__mat } from 'm.malloy.0.materialize-level.malloy'
+import { ext__mat } from 'm.malloy.1.materialize-level.malloy'
+`);
+      expect(files.levels.get("m.malloy.1.materialize-level.malloy")).toContain(
+         "import { ext__mat__base is ext } from 'm.malloy.0.materialize-build.malloy'",
+      );
+      // Without a chain, the companion is the one file it always was.
+      expect(generateBuildFiles([parent], "m.malloy")?.entry).toBe(
+         generateBuildFile([parent], "m.malloy"),
       );
    });
 
@@ -324,24 +430,132 @@ source: orders is orders_raw
    );
 
    it(
-      "builds a materialized extension from its own source, beside its parent's",
+      "builds a materialized extension from its parent's build source, after it (P10)",
       async () => {
-         const c = await compiled(`${BASE}
+         const pkg = await packages.create(`${BASE}
 #(materialize) name="orders_all"
-source: orders is orders_raw
+source: orders is orders_raw extend {
+  dimension: big is amount > 10
+  measure: total is amount.sum()
+}
 
 #(materialize) name="orders_east"
-source: orders_ext is orders extend { dimension: east is region = 'east' }
+source: orders_ext is orders extend {
+  where: region = 'east'
+  dimension: east_big is big and region = 'east'
+}
+
+#(materialize) name="orders_east_big"
+source: orders_ext2 is orders_ext extend { where: east_big }
 `);
+         const c = await compilePackageBuildPlan(pkg);
          expect(
             generatedPlans(c)
                .map((p) => p.buildSourceName)
                .sort(),
-         ).toEqual(["orders__mat", "orders_ext__mat"]);
+         ).toEqual(["orders__mat", "orders_ext2__mat", "orders_ext__mat"]);
+         const plan = (name: string) =>
+            generatedPlans(c).find((p) => p.sourceName === name)!;
+         expect(plan("orders").buildsOver).toBeUndefined();
+         expect(plan("orders_ext").buildsOver?.sourceName).toBe("orders");
+         expect(plan("orders_ext2").buildsOver?.sourceName).toBe("orders_ext");
+         expect(plan("orders_ext").columns.map((col) => col.column)).toContain(
+            "east_big",
+         );
+         // Malloy's planner orders the builds: each reads its parent's table.
+         // The sources a build copy re-roots share their parent's table and
+         // are no build of their own, so only author sourceIDs remain.
+         const [build] = c.builds;
+         const ids = ["orders", "orders_ext", "orders_ext2"].map(
+            (n) => plan(n).sourceID,
+         );
+         expect(build.order).toEqual(ids);
+         expect(build.dependsOn).toEqual({
+            [ids[0]]: [],
+            [ids[1]]: [ids[0]],
+            [ids[2]]: [ids[1]],
+         });
+         // Its table holds what the extension computes, read over the parent's.
+         const sourceID = ids[2];
+         const sql = buildSQLOf(
+            c.sources[sourceID],
+            { entries: {} },
+            c.targets?.[sourceID],
+         );
+         const duckdb = await pkg.getMalloyConnection!("duckdb");
+         const rows = (
+            await duckdb.runSQL(
+               `SELECT id, east_big FROM (${sql}) t ORDER BY id`,
+            )
+         ).rows;
+         expect(rows.map((r) => [Number(r.id), r.east_big])).toEqual([
+            [1, true],
+         ]);
+      },
+      { timeout: 30000 },
+   );
+
+   it(
+      "builds a storage= or incremental extension, and one in another file, over the raw chain",
+      async () => {
+         const c = await compiled({
+            "m.malloy": `${BASE}
+#(materialize) name="orders_all"
+source: orders is orders_raw
+
+#(materialize) storage="lake"
+source: stored_ext is orders extend { dimension: east is region = 'east' }
+
+#(materialize) name="orders_inc" refresh="incremental" watermark="order_date"
+source: inc_ext is orders extend { dimension: west is region = 'west' }
+`,
+            "other.malloy": `import "m.malloy"
+#(materialize) name="other_ext"
+source: other_ext is orders extend { dimension: n is 1 }
+`,
+         });
+         for (const p of generatedPlans(c)) {
+            expect([p.sourceName, p.buildsOver]).toEqual([
+               p.sourceName,
+               undefined,
+            ]);
+         }
+         expect(
+            generatedPlans(c)
+               .map((p) => p.sourceName)
+               .sort(),
+         ).toEqual(["inc_ext", "orders", "other_ext", "stored_ext"]);
+      },
+      { timeout: 30000 },
+   );
+
+   it(
+      "builds an extension over the raw chain when its chained build does not compile",
+      async () => {
+         // `regions` is joined above the parent, so the parent's build source
+         // does not carry it, and the extension's own dimension reads it.
+         const c = await compiled(`${BASE}
+source: regions is duckdb.sql("select 'east' as code, 'East' as label") extend {
+  primary_key: code
+}
+source: joined is orders_raw extend {
+  join_one: regions on region = regions.code
+}
+
+#(materialize) name="orders_all"
+source: orders is joined
+
+#(materialize) name="orders_ext" inline=["regions"]
+source: orders_ext is orders extend {
+  dimension: label is regions.label
+}
+`);
          const ext = generatedPlans(c).find(
-            (p) => p.buildSourceName === "orders_ext__mat",
+            (p) => p.sourceName === "orders_ext",
          )!;
-         expect(ext.columns.map((col) => col.column)).toContain("east");
+         expect(ext.buildsOver).toBeUndefined();
+         expect(ext.columns.map((col) => col.column)).toContain("label");
+         expect(c.builds.flatMap((b) => b.order).length).toBe(2);
       },
       { timeout: 30000 },
    );
