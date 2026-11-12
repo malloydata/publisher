@@ -5,6 +5,7 @@
 // catalog store AND a source warehouse (a `postgres` connection), mirroring the
 // tutorial. One server, several databases.
 
+import { spawn } from "node:child_process";
 import { randomBytes } from "node:crypto";
 import { hostname } from "node:os";
 import { log, run, runOrThrow, waitFor } from "./util";
@@ -18,6 +19,16 @@ const LABEL_RUN = "hammer.run";
 const LABEL_HOST = "hammer.host";
 const LABEL_PID = "hammer.pid";
 const LABEL_PID_START = "hammer.pidstart";
+/** Set on a container a `--keep` run created: it is left up on purpose. */
+const LABEL_KEEP = "hammer.keep";
+
+/**
+ * Where the postgres image declares its data VOLUME. Mounting a tmpfs there
+ * keeps Docker from creating an anonymous volume per container: a container
+ * removed without `-v` left that volume behind, and a few hundred of them
+ * filled Docker Desktop's disk.
+ */
+export const PG_DATA_DIR = "/var/lib/postgresql/data";
 
 /** The name the harness used before containers were per run, still reusable. */
 export const LEGACY_CONTAINER_NAME = "publisher-hammer-pg";
@@ -41,6 +52,8 @@ export interface ContainerOwner {
    host?: string;
    pid?: number;
    pidStart?: string;
+   /** Created by a `--keep` run, which asked for it to outlive the run. */
+   keep?: boolean;
 }
 
 /** What `docker inspect` said about a container that exists. */
@@ -146,6 +159,162 @@ export function decideContainerAction(
    return { action: "replace" };
 }
 
+/**
+ * Whether the startup reaper removes a container: only one under a hammer
+ * name, labelled by a hammer run, whose run on THIS host is provably over, and
+ * that no `--keep` run asked to keep. Anything else (an unlabelled or
+ * unreadable container, a live owner, another host's run, a kept container,
+ * any other name) is left alone, so the reaper never touches a container
+ * hammer did not create, nor one another run still needs.
+ */
+export function shouldReap(state: ContainerState): boolean {
+   if (!state.exists || !state.name.startsWith(LEGACY_CONTAINER_NAME)) {
+      return false;
+   }
+   if (state.owner?.kind !== "labelled") return false;
+   if (state.owner.owner.runId === undefined) return false;
+   if (state.owner.owner.keep) return false;
+   return state.liveness === "dead";
+}
+
+/**
+ * The `docker run` arguments for a run's container. Its data lives on a tmpfs
+ * (no anonymous volume to leak), and unless `--keep` asked for it to outlive
+ * the run it is started with `--rm`, so a container that stops for any reason
+ * takes its filesystem with it.
+ */
+export function containerRunArgs(o: {
+   name: string;
+   runId: string;
+   host: string;
+   pid: number;
+   pidStart: string;
+   keep: boolean;
+   user: string;
+   password: string;
+   hostPort?: number;
+   image: string;
+}): string[] {
+   return [
+      "docker",
+      "run",
+      "-d",
+      ...(o.keep ? [] : ["--rm"]),
+      "--name",
+      o.name,
+      "--label",
+      `${LABEL_RUN}=${o.runId}`,
+      "--label",
+      `${LABEL_HOST}=${o.host}`,
+      "--label",
+      `${LABEL_PID}=${o.pid}`,
+      "--label",
+      `${LABEL_PID_START}=${o.pidStart}`,
+      ...(o.keep ? ["--label", `${LABEL_KEEP}=1`] : []),
+      "--tmpfs",
+      PG_DATA_DIR,
+      "-e",
+      `POSTGRES_USER=${o.user}`,
+      "-e",
+      `POSTGRES_PASSWORD=${o.password}`,
+      "-e",
+      "POSTGRES_DB=postgres",
+      // Docker assigns the host port when none is asked for: probing for a
+      // free one and then binding it raced a second run started together.
+      "-p",
+      o.hostPort ? `127.0.0.1:${o.hostPort}:5432` : "127.0.0.1::5432",
+      o.image,
+      // No `max_connections` override: the default 100 is ample now that a
+      // publisher lives for one scenario. Publisher leaks 2 idle backends per
+      // materialization build and frees none until it exits, so a publisher
+      // shared across a whole run climbed past 100 by itself — a peak of 127
+      // measured serially. Per-scenario publishers bound that to one scenario's
+      // builds, and a measured run peaks at 15 even with 8 workers. If that ever
+      // regresses it shows up as "sorry, too many clients already" from a schema
+      // fetch mid-scenario, which reads like a product failure rather than a
+      // harness limit.
+      //
+      // A throwaway container: durability buys nothing and costs a lot. Creating
+      // ~130 databases leaves enough dirty buffers that the FIRST `DROP DATABASE`
+      // — which forces an immediate checkpoint — blocks for ~18s, landing on
+      // whichever scenario happens to drop something first and reading as a
+      // mystery slow scenario. With fsync off that drop is 0.2s, and provisioning
+      // is ~20% quicker as well.
+      "-c",
+      "fsync=off",
+      "-c",
+      "full_page_writes=off",
+      "-c",
+      "synchronous_commit=off",
+   ];
+}
+
+/**
+ * A shell script that waits for `pid` to exit, then removes every container
+ * labelled with `runId` and its volumes. It runs detached, so a hammer killed
+ * with SIGKILL (no handler, no `finally`) still loses its container within
+ * seconds instead of at the next run's reaper. It removes by the run's label,
+ * never by name: a later run that reuses a `--pg-container` name has another
+ * run id, so the watchdog cannot take its container.
+ */
+export function watchdogScript(runId: string, pid: number): string {
+   if (!/^[A-Za-z0-9_.-]+$/.test(runId)) {
+      throw new Error(`unsafe hammer run id: ${runId}`);
+   }
+   return (
+      `while kill -0 ${pid} 2>/dev/null; do sleep 2; done; ` +
+      `ids=$(docker ps -aq --filter label=${LABEL_RUN}=${runId}); ` +
+      `[ -n "$ids" ] && docker rm -fv $ids >/dev/null 2>&1; exit 0`
+   );
+}
+
+/** Start the detached watchdog for this run; its pid, to stop it at teardown. */
+function spawnWatchdog(runId: string): number | undefined {
+   const child = spawn("sh", ["-c", watchdogScript(runId, process.pid)], {
+      detached: true,
+      stdio: "ignore",
+   });
+   child.unref();
+   return child.pid;
+}
+
+/**
+ * Remove leftovers of earlier hammer runs that died without tearing down (a
+ * SIGKILL, a crash, a closed laptop): every container {@link shouldReap}
+ * accepts, with its anonymous volumes. Returns the names it removed.
+ */
+export async function reapStaleContainers(
+   probe: ProcessProbe = hostProbe,
+): Promise<string[]> {
+   const r = await run([
+      "docker",
+      "ps",
+      "-a",
+      "--filter",
+      `label=${LABEL_RUN}`,
+      "--filter",
+      `name=^/${LEGACY_CONTAINER_NAME}`,
+      "--format",
+      "{{.Names}}",
+   ]);
+   if (r.code !== 0) {
+      log.warn(`could not list hammer containers to reap: ${r.stderr.trim()}`);
+      return [];
+   }
+   const removed: string[] = [];
+   for (const name of r.stdout.trim().split("\n").filter(Boolean)) {
+      if (!shouldReap(await containerState(name, probe))) continue;
+      const rm = await run(["docker", "rm", "-fv", name]);
+      if (rm.code === 0) {
+         log.info(`reaped Postgres container ${name} (its run is gone)`);
+         removed.push(name);
+      } else {
+         log.warn(`could not reap ${name}: ${rm.stderr.trim()}`);
+      }
+   }
+   return removed;
+}
+
 /** The real process probe: this host's name, `kill -0`, and `ps` for start times. */
 export const hostProbe: ProcessProbe = {
    host: hostname(),
@@ -215,6 +384,11 @@ export interface PostgresOptions {
    reuse?: boolean;
    /** This run's id, for the default name and the owner label. */
    runId?: string;
+   /**
+    * `--keep`: the container outlives the run. It is created without `--rm`
+    * and without a watchdog, and labelled so the reaper leaves it alone.
+    */
+   keep?: boolean;
 }
 
 /** Who owns `name`, read from its labels. A failed inspect is "unknown". */
@@ -247,6 +421,7 @@ async function readOwner(name: string): Promise<OwnerReading> {
       host: labels?.[LABEL_HOST] || undefined,
       pid: Number.isInteger(pid) && pid > 0 ? pid : undefined,
       pidStart: labels?.[LABEL_PID_START] || undefined,
+      keep: labels?.[LABEL_KEEP] === "1" || undefined,
    };
    return owner.runId === undefined && owner.pid === undefined
       ? { kind: "unlabelled" }
@@ -335,67 +510,35 @@ export async function startPostgres(
    }
    if (action.action === "refuse") throw new Error(action.message);
    const justCreated = action.action !== "reuse";
+   let watchdogPid: number | undefined;
 
    if (action.action === "reuse") {
       log.ok(`reusing running Postgres container ${containerName}`);
    } else {
       if (action.action === "replace") {
          log.info(`removing stale container ${containerName}`);
-         await run(["docker", "rm", "-f", containerName]);
+         await run(["docker", "rm", "-fv", containerName]);
       }
       const pidStart = (await probe.startTime(process.pid)) ?? "";
       log.step(
          `starting Postgres (${image}) as ${containerName}` +
             (opts.hostPort ? ` on host port ${opts.hostPort}` : ""),
       );
-      await runOrThrow([
-         "docker",
-         "run",
-         "-d",
-         "--name",
-         containerName,
-         "--label",
-         `${LABEL_RUN}=${runId}`,
-         "--label",
-         `${LABEL_HOST}=${probe.host}`,
-         "--label",
-         `${LABEL_PID}=${process.pid}`,
-         "--label",
-         `${LABEL_PID_START}=${pidStart}`,
-         "-e",
-         `POSTGRES_USER=${user}`,
-         "-e",
-         `POSTGRES_PASSWORD=${password}`,
-         "-e",
-         "POSTGRES_DB=postgres",
-         // Docker assigns the host port when none is asked for: probing for a
-         // free one and then binding it raced a second run started together.
-         "-p",
-         opts.hostPort ? `127.0.0.1:${opts.hostPort}:5432` : "127.0.0.1::5432",
-         image,
-         // No `max_connections` override: the default 100 is ample now that a
-         // publisher lives for one scenario. Publisher leaks 2 idle backends per
-         // materialization build and frees none until it exits, so a publisher
-         // shared across a whole run climbed past 100 by itself — a peak of 127
-         // measured serially. Per-scenario publishers bound that to one scenario's
-         // builds, and a measured run peaks at 15 even with 8 workers. If that ever
-         // regresses it shows up as "sorry, too many clients already" from a schema
-         // fetch mid-scenario, which reads like a product failure rather than a
-         // harness limit.
-         //
-         // A throwaway container: durability buys nothing and costs a lot. Creating
-         // ~130 databases leaves enough dirty buffers that the FIRST `DROP DATABASE`
-         // — which forces an immediate checkpoint — blocks for ~18s, landing on
-         // whichever scenario happens to drop something first and reading as a
-         // mystery slow scenario. With fsync off that drop is 0.2s, and provisioning
-         // is ~20% quicker as well.
-         "-c",
-         "fsync=off",
-         "-c",
-         "full_page_writes=off",
-         "-c",
-         "synchronous_commit=off",
-      ]);
+      await runOrThrow(
+         containerRunArgs({
+            name: containerName,
+            runId,
+            host: probe.host,
+            pid: process.pid,
+            pidStart,
+            keep: opts.keep ?? false,
+            user,
+            password,
+            hostPort: opts.hostPort,
+            image,
+         }),
+      );
+      if (!opts.keep) watchdogPid = spawnWatchdog(runId);
    }
 
    // The port Docker published, read back: assigned when none was asked for,
@@ -484,7 +627,15 @@ export async function startPostgres(
             return;
          }
          log.info(`removing Postgres container ${containerName}`);
-         await run(["docker", "rm", "-f", containerName]);
+         // `-v`: a container's anonymous volumes outlive a plain `rm -f`.
+         await run(["docker", "rm", "-fv", containerName]);
+         if (watchdogPid !== undefined) {
+            try {
+               process.kill(watchdogPid);
+            } catch {
+               // Already gone.
+            }
+         }
       },
    };
 
